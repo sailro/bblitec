@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { isPinnedSource } from "../pinned-program.js";
 import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
-import { readOnlyDataMethods } from "./data-methods.js";
+import { readOnlyDataMethods } from "./receiver-methods.js";
 import { pinnedSourceHandleKind } from "./data-types.js";
 import { EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";

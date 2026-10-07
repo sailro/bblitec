@@ -179,6 +179,40 @@ test("an awaited call may omit an optional parameter", (t) => {
     runNative(result, directory, t);
 });
 
+test("an async reaction's early returns leave its loops and body", (t) => {
+    const directory = resolve("artifacts/async-reaction-early-returns");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        const worker=new Worker(new URL('./worker.ts',import.meta.url),{type:'module'});worker.terminate();
+        const removed:number[]=[];const added:number[]=[];
+        async function add(x:number):Promise<number|null>{await Promise.resolve();added.push(x);return x>2?null:x;}
+        let sequence=0;let tail:Promise<void>=Promise.resolve();
+        function reconcile(xs:readonly number[],limit:number):void{
+            const run=++sequence;
+            tail=tail.then(async()=>{
+                if(run!==sequence)return;
+                for(const x of xs){if(x<0)return;removed.push(x);}
+                for(const x of xs){if(added.length>=limit)return;await add(x);}
+            });
+        }
+        const gate=new Float32Array([0]);
+        const reconcilers:Array<typeof reconcile>=[reconcile];
+        const start=reconcilers[gate[0]!]!;
+        void(async()=>{
+            start([1,2,3],2);await tail;
+            start([4,-1,5],9);await tail;
+            start([6],9);start([7],9);await tail;
+            if(removed.join()!=='1,2,3,4,7'||added.join()!=='1,2,7')throw new Error('reaction early returns '+removed.join()+';'+added.join());
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    runNative(result, directory, t);
+});
+
 test("Promise.allSettled retains ordered values and original rejection identities", (t) => {
     const directory = resolve("artifacts/async-all-settled");
     mkdirSync(directory, { recursive: true });
@@ -218,6 +252,7 @@ test("Promise.allSettled retains ordered values and original rejection identitie
             if(mixed[0].status!=="fulfilled"||mixed[0].value!==original)throw new Error("object fulfillment identity");
             if(mixed[1].status!=="fulfilled"||mixed[1].value!==7)throw new Error("immediate settlement");
             if(mixed[2].status!=="rejected"||mixed[2].reason!==first)throw new Error("immediate rejection");
+            if(!("value" in mixed[1])||"reason" in mixed[1]||"value" in mixed[2]||Object.keys(mixed[2]).join()!=="status,reason")throw new Error("settlement own keys");
             const empty:Promise<number>[]=[];
             let synchronous=true;
             const done=Promise.allSettled(empty).then(values=>{if(synchronous||values.length)throw new Error("empty settlement ordering");});

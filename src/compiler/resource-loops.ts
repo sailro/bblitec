@@ -24,13 +24,15 @@ import {
 } from "./symbols.js";
 import {
     aliasedMutationScan,
-    callArgumentIsReadOnly,
     isSupportedFunction,
-    parameterIsReadOnly,
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
     type SupportedFunction,
 } from "./user-functions.js";
+import {
+    callArgumentIsReadOnly,
+    parameterIsReadOnly,
+} from "./parameter-effects.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,

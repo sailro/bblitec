@@ -4,6 +4,7 @@ import {
     EmissionMap,
     EmissionSet,
     EmissionWeakSet,
+    journaled,
     writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -64,13 +65,19 @@ import { emitStringAppend } from "./expressions.js";
 import {
     commonResourceValue,
     isStringValue,
+    optionalPresentCpp,
+    optionalValueCpp,
     staticStringValue,
 } from "./types.js";
 import { isJsonValue } from "./json-bridge.js";
+import { isNullishLiteral } from "./symbols.js";
+import { absenceKind } from "./type-facts.js";
 import {
     emitReachableStatements,
     enclosingLoopControl,
     firstReturn,
+    callsNever,
+    returnsNever,
 } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -81,7 +88,9 @@ import {
     type HandleCollectionTarget,
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
+import { ownEntries, ownKeysKnown } from "./object-statics.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
+import { exponentiationCall } from "./math-intrinsics.js";
 import { renderNativeEmission } from "./native-statements.js";
 
 interface StatementLoweringContext extends Pick<
@@ -117,7 +126,6 @@ interface StatementLoweringContext extends Pick<
     | "registerNativeBindingType"
     | "activeNativeReturnType"
     | "prefersNativeDataIteration"
-    | "activeInlineWrapper"
     | "trackResourceLoopEarlyReturn"
     | "isRuntimeResourceConstruction"
     | "emitNativeReturn"
@@ -200,14 +208,14 @@ interface StatementLoweringContext extends Pick<
  * writes its body out once per iteration, FLAT into the scope the loop stood
  * in (`emitUnrolledIteration`), so the yields become a run of sequential
  * yields — exactly the shape the continuation re-queue already lowers, one
- * nested `defer_start_continuation` per marker. `unrolled` is the set of
- * loops currently being emitted that way, so this asks the question the
+ * nested `defer_start_continuation` per marker. `unrolled` asks whether a
+ * loop is currently being emitted that way, so this asks the question the
  * emission answers rather than the one the source AST shows: every enclosing
  * loop written out is no loop at all by the time the marker lands.
  */
 function frameYieldInsideLoop(
     node: ts.Node,
-    unrolled: readonly { iteration: ts.IterationStatement }[],
+    unrolled: (loop: ts.IterationStatement) => boolean,
 ): boolean {
     for (
         let parent: ts.Node | undefined = node.parent;
@@ -221,8 +229,7 @@ function frameYieldInsideLoop(
             ts.isForInStatement(parent) ||
             ts.isDoStatement(parent)
         ) {
-            if (!unrolled.some(({ iteration }) => iteration === parent))
-                return true;
+            if (!unrolled(parent)) return true;
         }
     }
     return false;
@@ -275,9 +282,9 @@ function bodyStatements(
  * The compound assignments whose C++ operator would not mean the JavaScript
  * one, by spelling, with the `bbl::js` helper each lowers through: a bitwise
  * form applies its operator's `JS_BITWISE_FUNCTIONS` helper, and `%=` is
- * JavaScript's floating remainder.
+ * JavaScript's floating remainder. `**=` lowers as `**` does.
  */
-export const COMPOUND_ASSIGNMENT_HELPERS: ReadonlyMap<string, string> =
+const COMPOUND_ASSIGNMENT_HELPERS: ReadonlyMap<string, string> =
     new EmissionMap([
         ["%=", "remainder_js"],
         ...[...JS_BITWISE_FUNCTIONS].map(([kind, helper]): [string, string] => [
@@ -285,6 +292,41 @@ export const COMPOUND_ASSIGNMENT_HELPERS: ReadonlyMap<string, string> =
             helper,
         ]),
     ]);
+
+/**
+ * The number `previous op= right` stores. `native` when C++'s own `op=`
+ * means JavaScript's; `jsData` when the spelling reaches the runtime
+ * helpers. `staticRight` is the right side generation knows, which lets
+ * `**=` spell `std::pow` as `**` does (`exponentiationCall`).
+ */
+export function compoundAssignmentValue(
+    operator: string,
+    previous: string,
+    right: string,
+    staticRight: number | undefined,
+): {
+    readonly cpp: string;
+    readonly native: boolean;
+    readonly jsData: boolean;
+} {
+    if (operator === "**=")
+        return {
+            ...exponentiationCall(previous, right, staticRight),
+            native: false,
+        };
+    const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
+    return helper
+        ? {
+              cpp: `bbl::js::${helper}(${previous}, ${right})`,
+              native: false,
+              jsData: true,
+          }
+        : {
+              cpp: `(${previous} ${operator.slice(0, -1)} ${right})`,
+              native: true,
+              jsData: false,
+          };
+}
 
 /** `=` and the compound assignments the lowerings accept, by spelling. */
 export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
@@ -295,6 +337,7 @@ export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
         [ts.SyntaxKind.AsteriskEqualsToken, "*="],
         [ts.SyntaxKind.SlashEqualsToken, "/="],
         [ts.SyntaxKind.PercentEqualsToken, "%="],
+        [ts.SyntaxKind.AsteriskAsteriskEqualsToken, "**="],
         [ts.SyntaxKind.AmpersandEqualsToken, "&="],
         [ts.SyntaxKind.BarEqualsToken, "|="],
         [ts.SyntaxKind.CaretEqualsToken, "^="],
@@ -303,71 +346,186 @@ export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
         [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
     ]);
 
-export class StatementLowerer {
-    private readonly cleanupRegions = emissionArray<{
-        node: ts.Node;
-        returns: boolean;
-        jumps: Set<ts.BreakStatement | ts.ContinueStatement>;
-    }>();
+/**
+ * How an unrolled iteration ended at generation: on, by a break or continue
+ * it settles, or by a jump only the running program takes.
+ */
+type StaticCompletion = "normal" | "break" | "continue" | "jumped";
 
+/** One loop instance being unrolled. */
+interface UnrolledLoop {
+    readonly iteration: ts.IterationStatement;
+    /** The label after the last iteration, once a runtime break needs it. */
+    readonly breakLabel: JumpLabel | undefined;
+    /** Later iterations are scopes: a runtime break may pass over them. */
+    readonly scoped: boolean;
+    /** Whether the body may leave the loop under a runtime condition. */
+    readonly runtimeExits: boolean;
+}
+
+/** The iteration of an unrolled loop being emitted. */
+interface StaticIterationFrame {
+    readonly iteration: ts.IterationStatement;
+    readonly completion: StaticCompletion;
+    readonly loop: UnrolledLoop;
+    /**
+     * `flat` writes statements into the enclosing scope; `probe` does so
+     * speculatively and asks for a scope at the first runtime exit;
+     * `scoped` is that scope, whose exits jump.
+     */
+    readonly mode: "flat" | "probe" | "scoped";
+    /** Runtime branches open at the iteration's own level. */
+    readonly runtimeDepth: number;
+    /** A runtime exit was emitted: what follows is conditional. */
+    readonly exited: boolean;
+    readonly continueLabel: JumpLabel | undefined;
+}
+
+/** The first runtime exit of a speculatively flat iteration. */
+class RuntimeLoopExitRequired extends Error {
+    public constructor(public readonly iteration: ts.IterationStatement) {
+        super("An unrolled iteration takes a runtime exit.");
+    }
+}
+
+/** A label a jump goes to, emitted after its construct once a jump used it. */
+interface JumpLabel {
+    readonly name: string;
+    readonly used: boolean;
+}
+
+/**
+ * A cleanup that suspends (`emitSuspendingCleanup`): a native return or a
+ * break or continue leaving it completes through it, by an exception its
+ * handler turns back into that completion once the cleanup has run.
+ */
+interface CleanupRegion {
+    readonly returns: boolean;
+    readonly jumps: Set<ts.BreakStatement | ts.ContinueStatement>;
+}
+
+/**
+ * A construct being emitted that a break, continue or bare return binds or
+ * crosses, on the one stack every such jump lowers against. A jump resolves
+ * to the construct the language binds it to (`jumpBinding`); the entries
+ * above that construct's are the ones it crosses. Crossing a suspending
+ * cleanup, it completes through the cleanup. Otherwise it lowers as a native
+ * C++ jump when no crossed construct is itself a C++ breakable, as a goto to
+ * a label after a construct, or, for a loop being unrolled, as the end of an
+ * iteration that generation settles.
+ */
+interface JumpTarget {
+    /**
+     * A loop, a switch, a labeled statement or an inlined function, or the
+     * statement a suspending cleanup belongs to.
+     */
+    readonly node: ts.Node;
+    /** A suspending cleanup, which no jump binds. */
+    readonly cleanup: CleanupRegion | undefined;
+    /** A `do {} while (false)` stands for it: a native break leaves it. */
+    readonly breakable: boolean;
+    /** The label after it that a jump leaving it goes to. */
+    readonly exit: JumpLabel | undefined;
+    /** After this loop: where labeled continues of the enclosing loop land. */
+    readonly continueAfter: JumpLabel | undefined;
+    /** The iteration being emitted, while the loop is unrolled. */
+    readonly iteration: StaticIterationFrame | undefined;
+    /** The loop's body is emitted inside a runtime iteration. */
+    readonly iterating: boolean;
+}
+
+/** Whether a native break emitted inside binds the C++ construct emitted for it. */
+function nativelyBreakable(target: JumpTarget): boolean {
+    return (
+        target.breakable ||
+        (ts.isIterationStatement(target.node, false) &&
+            target.iteration === undefined)
+    );
+}
+
+function jumpTarget(
+    node: ts.Node,
+    fields: Partial<Omit<JumpTarget, "node">> = {},
+): JumpTarget {
+    return {
+        node,
+        cleanup: fields.cleanup,
+        breakable: fields.breakable ?? false,
+        exit: fields.exit,
+        continueAfter: fields.continueAfter,
+        iteration: fields.iteration,
+        iterating: fields.iterating ?? false,
+    };
+}
+
+/**
+ * The construct a jump binds by the language's rule: a bare return its
+ * function, a labeled jump its labeled statement, a continue the nearest
+ * loop and a break the nearest loop or switch.
+ */
+function jumpBinding(
+    statement: ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement,
+): ts.Node | undefined {
+    if (ts.isReturnStatement(statement))
+        return ts.findAncestor(statement.parent, ts.isFunctionLike);
+    for (
+        let parent: ts.Node | undefined = statement.parent;
+        parent && !ts.isFunctionLike(parent);
+        parent = parent.parent
+    ) {
+        if (statement.label) {
+            if (
+                ts.isLabeledStatement(parent) &&
+                parent.label.text === statement.label.text
+            )
+                return parent;
+        } else if (
+            ts.isIterationStatement(parent, false) ||
+            (ts.isBreakStatement(statement) && ts.isSwitchStatement(parent))
+        )
+            return parent;
+    }
+    return undefined;
+}
+
+/** The statement a label names, through any further labels on it. */
+function labeledBody(statement: ts.LabeledStatement): ts.Statement {
+    let body = statement.statement;
+    while (ts.isLabeledStatement(body)) body = body.statement;
+    return body;
+}
+
+export class StatementLowerer {
+    /**
+     * Whether a native return leaves a suspending cleanup of its own
+     * function, which then completes it; the innermost one is told.
+     */
     public needsReturnCompletion(statement: ts.ReturnStatement): boolean {
-        const owner = ts.findAncestor(statement, ts.isFunctionLike);
-        for (let index = this.cleanupRegions.length - 1; index >= 0; index--) {
-            const region = this.cleanupRegions[index]!;
-            if (ts.findAncestor(region.node, ts.isFunctionLike) !== owner)
-                continue;
-            writable(region).returns = true;
-            return true;
-        }
-        return false;
+        const region = this.innermostCleanup(
+            ts.findAncestor(statement, ts.isFunctionLike),
+        );
+        if (region) writable(region).returns = true;
+        return region !== undefined;
     }
 
-    private completeCleanupJump(
-        context: StatementLoweringContext,
-        statement: ts.BreakStatement | ts.ContinueStatement,
-    ): boolean {
-        const region = this.cleanupRegions.at(-1);
-        if (!region) return false;
-        for (
-            let current: ts.Node | undefined = statement.parent;
-            current;
-            current = current.parent
-        ) {
-            if (ts.isFunctionLike(current)) return false;
-            if (current === region.node) {
-                if (!statement.label && ts.isIterationStatement(current, false))
-                    return false;
-                region.jumps.add(statement);
-                context.emit({
-                    kind: "control",
-                    code: `throw bbl::js::LoopCompletion(${statement.pos + 1}u);`,
-                    transfer: "throw",
-                });
-                return true;
-            }
-            if (statement.label) {
-                if (
-                    ts.isLabeledStatement(current) &&
-                    current.label.text === statement.label.text
-                )
-                    return false;
-            } else if (
-                ts.isIterationStatement(current, false) ||
-                (ts.isBreakStatement(statement) &&
-                    ts.isSwitchStatement(current))
-            )
-                return false;
+    /** The innermost suspending cleanup being emitted in `owner`. */
+    private innermostCleanup(
+        owner: ts.Node | undefined,
+    ): CleanupRegion | undefined {
+        for (let index = this.jumpTargets.length - 1; index >= 0; index--) {
+            const { node, cleanup } = this.jumpTargets[index]!;
+            if (cleanup && ts.findAncestor(node, ts.isFunctionLike) === owner)
+                return cleanup;
         }
-        return false;
+        return undefined;
     }
     private readonly loweredTerminators = new EmissionWeakSet<ts.Statement>();
-    private readonly labels: Array<{ source: string; target: string }> =
-        emissionArray([]);
-    /** Source loops whose current iteration is being emitted statically. */
-    private readonly staticIterationCompletions: Array<{
-        readonly iteration: ts.IterationStatement;
-        readonly completion: "normal" | "break" | "continue";
-    }> = emissionArray([]);
+    /** Expression statements of a never-typed expression: they throw. */
+    private readonly neverTerminators = new EmissionWeakSet<ts.Statement>();
+    /** The constructs jumps can bind, innermost last. */
+    private readonly jumpTargets = emissionArray<JumpTarget>([]);
+    /** Runtime branches being emitted: an exit below one is not settled. */
+    @journaled private accessor runtimeBranchDepth = 0;
 
     private preferNativeDataIteration(
         context: StatementLoweringContext,
@@ -419,9 +577,11 @@ export class StatementLowerer {
         emitBody: () => T,
     ): T {
         context.enterRuntimeControlFlow();
+        this.runtimeBranchDepth += 1;
         try {
             return emitBody();
         } finally {
+            this.runtimeBranchDepth -= 1;
             context.leaveRuntimeControlFlow();
         }
     }
@@ -433,74 +593,402 @@ export class StatementLowerer {
         iteration?: ts.IterationStatement,
     ): T {
         context.enterRuntimeIteration();
+        const target = iteration
+            ? writable(this.targetOf(iteration))
+            : undefined;
+        const iterating = target?.iterating ?? false;
+        if (target) target.iterating = true;
         try {
             return iteration &&
                 !context.isInParameterizedResourceLoop(iteration)
                 ? context.emitNativeDataIteration(iteration, emitBody)
                 : emitBody();
         } finally {
+            if (target) target.iterating = iterating;
             context.leaveRuntimeIteration();
         }
     }
 
-    /** Whether this continue binds one of the loops currently being unrolled. */
-    private continueTargetsStaticIteration(
-        statement: ts.ContinueStatement,
-    ): boolean {
-        return this.staticIterationForControl(statement) !== undefined;
-    }
-
-    private staticIterationForControl(
-        statement: ts.BreakStatement | ts.ContinueStatement,
-    ): (typeof this.staticIterationCompletions)[number] | undefined {
-        for (
-            let parent: ts.Node | undefined = statement.parent;
-            parent;
-            parent = parent.parent
-        ) {
-            if (ts.isFunctionLike(parent)) return undefined;
-            if (ts.isBreakStatement(statement) && ts.isSwitchStatement(parent))
-                return undefined;
-            if (ts.isIterationStatement(parent, false)) {
-                return this.staticIterationCompletions.find(
-                    ({ iteration }) => iteration === parent,
-                );
-            }
+    /** Emit a construct whose jumps lower against `target`. */
+    private withJumpTarget<T>(target: JumpTarget, emit: () => T): T {
+        this.jumpTargets.push(target);
+        try {
+            return emit();
+        } finally {
+            this.jumpTargets.pop();
         }
-        return undefined;
     }
 
-    private completeStaticIteration(
-        statement: ts.BreakStatement | ts.ContinueStatement,
-    ): boolean {
-        const frame = this.staticIterationForControl(statement);
-        if (!frame) return false;
-        writable(frame).completion = ts.isBreakStatement(statement)
-            ? "break"
-            : "continue";
-        return true;
+    /** The index of the innermost entry jumps to `node` bind, or -1. */
+    private bindingIndex(node: ts.Node | undefined): number {
+        let index = this.jumpTargets.length - 1;
+        while (
+            index >= 0 &&
+            (this.jumpTargets[index]!.cleanup ||
+                this.jumpTargets[index]!.node !== node)
+        )
+            index--;
+        return index;
     }
 
-    private staticIterationCompleted(): boolean {
-        return this.staticIterationCompletions.some(
-            ({ completion }) => completion !== "normal",
+    /** The innermost entry of a construct being emitted. */
+    private targetOf(node: ts.Node): JumpTarget {
+        const target = this.jumpTargets[this.bindingIndex(node)];
+        if (!target)
+            throw new Error("A construct is lowered outside its jump target.");
+        return target;
+    }
+
+    /** Whether a loop's iteration is being emitted statically. */
+    private isUnrolled(loop: ts.Node): boolean {
+        return this.jumpTargets.some(
+            (target) => target.node === loop && target.iteration !== undefined,
         );
     }
 
-    /** Whether a subtree can continue one of the active static loops. */
-    private containsStaticIterationContinue(statement: ts.Statement): boolean {
-        const found = someAnalysisNode(statement, (node) => {
-            if (
-                ts.isContinueStatement(node) &&
-                !node.label &&
-                this.continueTargetsStaticIteration(node)
-            ) {
+    private jumpLabel(
+        context: StatementLoweringContext,
+        hint: string,
+    ): JumpLabel {
+        return { name: context.allocateTemporaryCppName(hint), used: false };
+    }
+
+    private goto(context: StatementLoweringContext, label: JumpLabel): void {
+        writable(label).used = true;
+        context.emit({
+            kind: "control",
+            code: `goto ${label.name};`,
+            transfer: "goto",
+        });
+    }
+
+    /** A label after its construct, once a jump went to it. */
+    private placeLabel(
+        context: StatementLoweringContext,
+        label: JumpLabel | undefined,
+    ): void {
+        if (label?.used) context.emit(`${label.name}:;`);
+    }
+
+    /**
+     * A break, continue or bare return, lowered against the construct it
+     * binds; false for a return of a function no inlined body emits. A break
+     * or continue leaving a suspending cleanup -- not the loop that cleanup
+     * belongs to, which it stays inside -- completes through the innermost
+     * one it leaves, which lowers it again after the cleanup has run.
+     */
+    private jump(
+        context: StatementLoweringContext,
+        statement:
+            ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement,
+    ): boolean {
+        const binding = jumpBinding(statement);
+        const index = this.bindingIndex(binding);
+        if (index < 0) {
+            if (ts.isReturnStatement(statement)) return false;
+            context.fail(
+                statement,
+                !statement.label
+                    ? "A jump has no active target."
+                    : ts.isBreakStatement(statement)
+                      ? "Labeled break has no active target."
+                      : "A labeled jump has no enclosing label.",
+            );
+        }
+        const target = this.jumpTargets[index]!;
+        const above = this.jumpTargets.slice(index + 1);
+        const crossed = above.filter((entry) => !entry.cleanup);
+        if (ts.isReturnStatement(statement)) {
+            // A jump out of an unrolled loop would skip the initialization of
+            // its flat iterations.
+            if (crossed.some(({ iteration }) => iteration))
+                context.fail(
+                    statement,
+                    "An early return out of a statically unrolled loop is not lowered.",
+                );
+            this.leave(context, statement, target, crossed);
+            return true;
+        }
+        let cleanup: CleanupRegion | undefined;
+        for (const entry of above)
+            if (entry.cleanup && entry.node !== binding)
+                cleanup = entry.cleanup;
+        if (cleanup) {
+            cleanup.jumps.add(statement);
+            context.emit({
+                kind: "control",
+                code: `throw bbl::js::LoopCompletion(${statement.pos + 1}u);`,
+                transfer: "throw",
+            });
+            return true;
+        }
+        const kind = ts.isBreakStatement(statement) ? "break" : "continue";
+        if (!ts.isLabeledStatement(target.node)) {
+            this.jumpTo(context, statement, kind, target, crossed);
+            return true;
+        }
+        // A labeled jump of the loop it stands in directly is that loop's
+        // own. One leaving further loops would skip the initialization of
+        // flat unrolled iterations, so it refuses past an unrolled one.
+        const body = labeledBody(target.node);
+        const own = crossed.findIndex((entry) => entry.node === body);
+        const loop = ts.isIterationStatement(body, false)
+            ? crossed[own]
+            : undefined;
+        const inside = crossed.slice(own + 1);
+        const left = inside.filter((entry) =>
+            ts.isIterationStatement(entry.node, false),
+        );
+        if (kind === "continue") {
+            if (!loop)
+                context.fail(statement, "A labeled continue must name a loop.");
+            if (left.length === 0) {
+                this.jumpTo(context, statement, kind, loop, inside);
                 return true;
             }
-            return false;
-        });
+            if (left.some(({ iteration }) => iteration))
+                context.fail(
+                    statement,
+                    "A labeled continue out of a statically unrolled loop is not lowered.",
+                );
+            // The outermost loop it leaves continues this one after itself.
+            this.goto(
+                context,
+                left[0]!.continueAfter ??
+                    context.fail(
+                        statement,
+                        "A labeled continue has no trampoline after the loop it leaves.",
+                    ),
+            );
+            return true;
+        }
+        if (
+            loop?.iteration &&
+            left.length === 0 &&
+            !inside.some((entry) => ts.isSwitchStatement(entry.node))
+        ) {
+            this.jumpTo(context, statement, kind, loop, inside);
+            return true;
+        }
+        if ([...left, loop].some((entry) => entry?.iteration))
+            context.fail(
+                statement,
+                "A labeled break out of a statically unrolled loop is not lowered.",
+            );
+        this.leave(context, statement, target, crossed);
+        return true;
+    }
 
-        return found;
+    /** A break or continue of the loop or switch `target`. */
+    private jumpTo(
+        context: StatementLoweringContext,
+        statement: ts.BreakStatement | ts.ContinueStatement,
+        kind: "break" | "continue",
+        target: JumpTarget,
+        crossed: readonly JumpTarget[],
+    ): void {
+        if (target.iteration) {
+            this.completeIteration(context, statement, target.iteration, kind);
+            return;
+        }
+        if (kind === "break") {
+            this.leave(context, statement, target, crossed);
+            return;
+        }
+        // A native continue would bind the innermost C++ breakable instead.
+        if (crossed.some(nativelyBreakable))
+            context.fail(
+                statement,
+                "A switch case with an early break cannot also continue an enclosing loop.",
+            );
+        context.emit({
+            kind: "control",
+            code: "continue;",
+            transfer: "continue",
+        });
+    }
+
+    /** A break or bare return leaving `target`. */
+    private leave(
+        context: StatementLoweringContext,
+        statement: ts.Statement,
+        target: JumpTarget,
+        crossed: readonly JumpTarget[],
+    ): void {
+        if (target.exit) {
+            this.goto(context, target.exit);
+            return;
+        }
+        if (!nativelyBreakable(target) || crossed.some(nativelyBreakable))
+            context.fail(
+                statement,
+                "A jump has no lowering out of the construct it leaves.",
+            );
+        context.emit({ kind: "control", code: "break;", transfer: "break" });
+    }
+
+    /**
+     * A break or continue of a loop being unrolled. Reached on a path the
+     * iteration settles, it completes the iteration at generation; under a
+     * runtime branch, or after an exit the program decides, it jumps.
+     */
+    private completeIteration(
+        context: StatementLoweringContext,
+        statement: ts.BreakStatement | ts.ContinueStatement,
+        frame: StaticIterationFrame,
+        exit: "break" | "continue",
+    ): void {
+        if (this.runtimeBranchDepth <= frame.runtimeDepth && !frame.exited) {
+            writable(frame).completion = exit;
+            return;
+        }
+        if (frame.mode === "probe")
+            throw new RuntimeLoopExitRequired(frame.iteration);
+        if (frame.mode === "flat")
+            context.fail(
+                statement,
+                exit === "break"
+                    ? "A break in a statically unrolled resource loop requires a generation-known condition."
+                    : "A continue in a statically unrolled loop requires a generation-known condition.",
+            );
+        let label: JumpLabel;
+        if (exit === "break") {
+            // Every later iteration is a scope the jump passes over.
+            const loop = writable(frame.loop);
+            label = loop.breakLabel ??= this.jumpLabel(
+                context,
+                "unrolled_break",
+            );
+            loop.scoped = true;
+        } else {
+            label = writable(frame).continueLabel ??= this.jumpLabel(
+                context,
+                "unrolled_continue",
+            );
+        }
+        writable(frame).exited = true;
+        // At the iteration's own level nothing after the jump runs.
+        if (this.runtimeBranchDepth <= frame.runtimeDepth)
+            writable(frame).completion = "jumped";
+        this.goto(context, label);
+    }
+
+    /**
+     * Emit a loop, the target of its own breaks and continues. Labeled
+     * continues of its enclosing loop leave it to a label after it, where
+     * that loop continues natively; nothing between the two loops may hold
+     * its own breakable or cleanup scope.
+     */
+    private emitLoop(
+        context: StatementLoweringContext,
+        loop: ts.IterationStatement,
+        emitLoop: () => void,
+    ): void {
+        let enclosing: ts.IterationStatement | undefined;
+        let crossed: ts.Node | undefined;
+        for (
+            let parent: ts.Node | undefined = loop.parent;
+            parent && !ts.isFunctionLike(parent);
+            parent = parent.parent
+        ) {
+            if (ts.isIterationStatement(parent, false)) {
+                enclosing = parent;
+                break;
+            }
+            if (ts.isSwitchStatement(parent) || ts.isTryStatement(parent))
+                crossed ??= parent;
+        }
+        const labels = new Set<string>();
+        for (
+            let parent = enclosing?.parent;
+            parent && ts.isLabeledStatement(parent);
+            parent = parent.parent
+        )
+            labels.add(parent.label.text);
+        const continues =
+            labels.size > 0 &&
+            someAnalysisNode(
+                loop,
+                (node) =>
+                    ts.isContinueStatement(node) &&
+                    node.label !== undefined &&
+                    labels.has(node.label.text),
+                { functions: "skip" },
+            );
+        let continueAfter: JumpLabel | undefined;
+        if (enclosing && continues) {
+            if (crossed)
+                context.fail(
+                    crossed,
+                    "A labeled continue cannot leave a switch or try statement.",
+                );
+            if (this.isUnrolled(enclosing))
+                context.fail(
+                    loop,
+                    "A labeled continue of a statically unrolled loop is not lowered.",
+                );
+            continueAfter = this.jumpLabel(context, "labeled_continue");
+        }
+        this.withJumpTarget(jumpTarget(loop, { continueAfter }), emitLoop);
+        if (!continueAfter?.used) return;
+        let iterating: ts.Node | undefined;
+        for (const target of this.jumpTargets)
+            if (target.iterating) iterating = target.node;
+        if (iterating !== enclosing)
+            context.fail(
+                loop,
+                "A labeled continue requires its loop to run as a native loop.",
+            );
+        const skip = this.jumpLabel(context, "labeled_continue_skip");
+        this.goto(context, skip);
+        this.placeLabel(context, continueAfter);
+        context.emit({
+            kind: "control",
+            code: "continue;",
+            transfer: "continue",
+        });
+        this.placeLabel(context, skip);
+    }
+
+    private staticIterationCompleted(): boolean {
+        return this.jumpTargets.some(
+            ({ iteration }) =>
+                iteration !== undefined && iteration.completion !== "normal",
+        );
+    }
+
+    /**
+     * An inlined function body whose bare early returns leave it: a
+     * `do {} while (false)` they break out of, or, when one stands inside a
+     * loop or switch, a scope with a label after it.
+     */
+    public emitInlinedBody<T>(
+        context: StatementLoweringContext,
+        declaration: ts.SignatureDeclaration,
+        returns: "break" | "label",
+        emitBody: () => T,
+    ): T {
+        const wrapper = returns === "break";
+        const target = jumpTarget(
+            declaration,
+            wrapper
+                ? { breakable: true }
+                : { exit: this.jumpLabel(context, "inline_return") },
+        );
+        context.emit(
+            wrapper
+                ? { kind: "open", code: "do {", breaks: true }
+                : { kind: "open", code: "{" },
+        );
+        context.increaseIndent();
+        const result = this.withJumpTarget(target, emitBody);
+        context.decreaseIndent();
+        context.emit({
+            kind: "close",
+            code: wrapper ? "} while (false);" : "}",
+        });
+        this.placeLabel(context, target.exit);
+        return result;
     }
 
     public terminatesAfterLowering(statement: ts.Statement): boolean {
@@ -598,6 +1086,11 @@ export class StatementLowerer {
             ) {
                 this.loweredTerminators.add(statement);
             }
+            // A call typed never throws: nothing after it runs.
+            if (callsNever(context.checker, statement.expression)) {
+                this.loweredTerminators.add(statement);
+                this.neverTerminators.add(statement);
+            }
             return;
         }
         if (ts.isIfStatement(statement)) {
@@ -615,99 +1108,74 @@ export class StatementLowerer {
             this.emitTry(context, statement);
             return;
         }
-        if (ts.isForStatement(statement)) {
-            this.emitFor(context, statement);
-            return;
-        }
-        if (ts.isDoStatement(statement)) {
-            this.emitDo(context, statement);
-            return;
-        }
-        if (ts.isWhileStatement(statement)) {
-            this.emitWhile(context, statement);
-            return;
-        }
-        if (ts.isForOfStatement(statement)) {
-            this.emitForOf(context, statement);
-            return;
-        }
-        if (ts.isForInStatement(statement)) {
-            this.emitForIn(context, statement);
+        if (ts.isIterationStatement(statement, false)) {
+            this.emitLoop(context, statement, () => {
+                if (ts.isForStatement(statement))
+                    this.emitFor(context, statement);
+                else if (ts.isDoStatement(statement))
+                    this.emitDo(context, statement);
+                else if (ts.isWhileStatement(statement))
+                    this.emitWhile(context, statement);
+                else if (ts.isForOfStatement(statement))
+                    this.emitForOf(context, statement);
+                else if (ts.isForInStatement(statement))
+                    this.emitForIn(context, statement);
+            });
             return;
         }
         if (ts.isSwitchStatement(statement)) {
-            this.emitSwitch(context, statement);
+            this.withJumpTarget(jumpTarget(statement), () =>
+                this.emitSwitch(context, statement),
+            );
             return;
         }
         if (ts.isLabeledStatement(statement)) {
-            const target = context.allocateTemporaryCppName(
-                `label_${statement.label.text}`,
+            // A labeled break goes to the label after the statement.
+            const target = jumpTarget(statement, {
+                exit: this.jumpLabel(context, `label_${statement.label.text}`),
+            });
+            this.withJumpTarget(target, () =>
+                this.emit(context, statement.statement),
             );
-            this.labels.push({ source: statement.label.text, target });
-            try {
-                this.emit(context, statement.statement);
-            } finally {
-                this.labels.pop();
-            }
-            context.emit(`${target}:;`);
-            return;
-        }
-        if (ts.isBreakStatement(statement)) {
-            if (this.completeCleanupJump(context, statement)) return;
-            if (statement.label) {
-                const label = this.labels
-                    .slice()
-                    .reverse()
-                    .find(({ source }) => source === statement.label!.text);
-                if (!label) {
-                    context.fail(
-                        statement,
-                        "Labeled break has no active target.",
-                    );
-                }
-                context.emit({
-                    kind: "control",
-                    code: `goto ${label.target};`,
-                    transfer: "goto",
-                });
-                return;
-            }
-            if (this.completeStaticIteration(statement)) return;
-            context.emit({
-                kind: "control",
-                code: "break;",
-                transfer: "break",
-            });
-            return;
-        }
-        if (ts.isContinueStatement(statement)) {
-            if (this.completeCleanupJump(context, statement)) return;
-            if (statement.label) {
-                context.fail(
-                    statement,
-                    "Labeled continue is not supported; use a labeled break or an unlabeled continue.",
-                );
-            }
-            if (this.completeStaticIteration(statement)) return;
-            context.emit({
-                kind: "control",
-                code: "continue;",
-                transfer: "continue",
-            });
+            this.placeLabel(context, target.exit);
             return;
         }
         if (
+            ts.isBreakStatement(statement) ||
+            ts.isContinueStatement(statement)
+        ) {
+            this.jump(context, statement);
+            return;
+        }
+        // An early bare return of an inlined body leaves it; a native
+        // function's own return is its native one.
+        if (
             ts.isReturnStatement(statement) &&
             !statement.expression &&
-            context.activeInlineWrapper()
+            context.activeNativeReturnType() === undefined &&
+            this.jump(context, statement)
+        )
+            return;
+        if (
+            ts.isReturnStatement(statement) &&
+            returnsNever(context.checker, statement)
         ) {
-            // Early bare return of an inlined function: leave the
-            // breakable wrapper emitted around the inline body.
-            context.emit({
-                kind: "control",
-                code: "break;",
-                transfer: "break",
-            });
+            // The returned expression throws; no value reaches the caller. A
+            // native function still needs a path that leaves it, unless the
+            // lowered expression already ends in a transfer of control.
+            const lowered = context.captureEmittedStatements(() =>
+                this.emitExpression(context, statement.expression!),
+            );
+            context.emitCapturedStatements(lowered);
+            if (
+                context.activeNativeReturnType() !== undefined &&
+                lowered.at(-1)?.statement.kind !== "control"
+            )
+                context.emit({
+                    kind: "control",
+                    code: 'throw std::runtime_error("A never-returning call returned.");',
+                    transfer: "throw",
+                });
             return;
         }
         if (
@@ -859,42 +1327,106 @@ export class StatementLowerer {
     ): void {
         const discriminant = context.allocateTemporaryCppName("switch");
         const value = context.compileValue(statement.expression);
-        if (value.staticString !== undefined) {
-            const staticDiscriminant = context.cppString(value.staticString);
-            const clauses = statement.caseBlock.clauses;
-            let matched = false;
-            for (const clause of clauses) {
-                if (ts.isDefaultClause(clause)) {
-                    if (clause !== clauses.at(-1))
-                        context.fail(
-                            clause,
-                            "A switch default clause must be last.",
-                        );
-                    matched = true;
-                } else if (!matched) {
-                    matched =
-                        this.compileStaticSwitchString(
-                            context,
-                            clause.expression,
-                        ) === staticDiscriminant;
-                }
-                // Empty labels fall through to the next body. Only the reached
-                // body participates in feature selection and specialization.
-                if (matched && clause.statements.length > 0) {
+        const clauses = statement.caseBlock.clauses;
+        const nullishLabel = clauses.find(
+            (clause) =>
+                ts.isCaseClause(clause) &&
+                isNullishLiteral(context.checker, clause.expression),
+        );
+        // A null or undefined label matches only the absence the
+        // discriminant's empty value stands for, which its declared type
+        // must hold apart from the other one.
+        const absence = nullishLabel
+            ? absenceKind(context.checker, value, statement.expression)
+            : undefined;
+        const requireAbsenceApart = (holdsAbsence: boolean): void => {
+            if (
+                nullishLabel &&
+                (!holdsAbsence ||
+                    absence === "either" ||
+                    typeof absence === "object")
+            )
+                context.fail(
+                    nullishLabel,
+                    "A null or undefined case label requires a discriminant that holds null and undefined apart.",
+                );
+        };
+        const nullishLabelMatches = (clause: ts.CaseClause): boolean =>
+            (context.unwrap(clause.expression).kind ===
+                ts.SyntaxKind.NullKeyword) ===
+            (absence === "null");
+        // A case label matches before the default wherever it stands;
+        // labels evaluate in order until one matches.
+        const staticString = value.staticString;
+        let staticSelection: number | undefined;
+        if (staticString !== undefined)
+            staticSelection = clauses.findIndex(
+                (clause) =>
+                    ts.isCaseClause(clause) &&
+                    !isNullishLiteral(context.checker, clause.expression) &&
+                    this.compileStaticSwitchString(
+                        context,
+                        clause.expression,
+                    ) === context.cppString(staticString),
+            );
+        else if (value.kind === "json-null") {
+            requireAbsenceApart(true);
+            staticSelection = clauses.findIndex(
+                (clause) =>
+                    ts.isCaseClause(clause) &&
+                    isNullishLiteral(context.checker, clause.expression) &&
+                    nullishLabelMatches(clause),
+            );
+        }
+        if (staticSelection !== undefined) {
+            const selected =
+                staticSelection === -1
+                    ? clauses.findIndex(ts.isDefaultClause)
+                    : staticSelection;
+            // Empty labels fall through to the next body. Only the reached
+            // bodies participate in feature selection and specialization.
+            const run =
+                selected === -1 ? [] : switchFallthroughRun(clauses, selected);
+            if (run.length === 1) {
+                context.emit({ kind: "open", code: "{" });
+                this.emitSwitchBody(context, run[0]!);
+                context.emit({ kind: "close", code: "}" });
+            } else if (run.length > 1) {
+                this.withSwitchBreakTarget(context, statement, () => {
                     context.emit({ kind: "open", code: "{" });
-                    this.emitSwitchBody(context, clause);
+                    this.emitScopedStatements(
+                        context,
+                        run.flatMap((clause) => [...clause.statements]),
+                    );
                     context.emit({ kind: "close", code: "}" });
-                    return;
-                }
+                });
             }
             return;
         }
-        const stringSwitch = isStringValue(value);
-        const enumSwitch =
-            value.kind === "data" && value.dataType?.kind === "enum";
+        // A maybe-absent discriminant never equals a present label: absent,
+        // it takes the default clause. A document compares strictly with
+        // each label, null and undefined included.
+        const optional =
+            value.kind === "data" &&
+            value.dataType?.kind === "optional" &&
+            value.optionalFoundCpp === undefined &&
+            ["string", "enum", "number"].includes(value.dataType.inner.kind)
+                ? value.dataType.inner
+                : undefined;
+        const document = isJsonValue(value);
+        const stringSwitch =
+            isStringValue(value) || optional?.kind === "string";
+        const enumType =
+            optional?.kind === "enum"
+                ? optional
+                : value.kind === "data" && value.dataType?.kind === "enum"
+                  ? value.dataType
+                  : undefined;
         if (
+            !document &&
             !stringSwitch &&
-            !enumSwitch &&
+            !enumType &&
+            optional?.kind !== "number" &&
             value.kind !== "number" &&
             !(value.kind === "data" && value.dataType?.kind === "number")
         ) {
@@ -903,46 +1435,96 @@ export class StatementLowerer {
                 `Switch discriminants must be numbers or strings, received ${value.kind}.`,
             );
         }
+        // An optional discriminant's empty storage is its absence; a
+        // document compares with each nullish label itself.
+        if (!document) requireAbsenceApart(optional !== undefined);
         context.emit({ kind: "open", code: "{" });
         context.increaseIndent();
-        if (stringSwitch) {
+        const storage = `${discriminant}_storage`;
+        if (stringSwitch || optional || document) {
             // The view must not outlive its characters: a discriminant such
             // as `prefix + "x"` is a temporary, so its storage is bound first.
             context.emit({
                 kind: "declaration",
                 type: "const auto&",
-                name: `${discriminant}_storage`,
+                name: storage,
                 initializer: value.cpp,
             });
+        }
+        if (stringSwitch && !optional) {
             context.emit({
                 kind: "declaration",
                 type: "const std::string_view",
                 name: discriminant,
-                initializer: `${discriminant}_storage`,
+                initializer: storage,
             });
-        } else {
+        } else if (!stringSwitch && !optional && !document) {
             context.emit(
-                enumSwitch
+                enumType
                     ? `const auto ${discriminant} = ${value.cpp};`
                     : `const double ${discriminant} = ${value.cpp};`,
             );
         }
-        const clauses = statement.caseBlock.clauses;
+        // The test that one clause's label matches, or undefined for a
+        // label this invocation cannot hold.
+        const labelTest = (clause: ts.CaseClause): string | undefined => {
+            if (document) {
+                return (
+                    context.dataLowerer.jsonStrictEquality(
+                        storage,
+                        clause.expression,
+                    ) ??
+                    context.fail(
+                        clause.expression,
+                        "A switch over a document requires scalar or nullish case labels.",
+                    )
+                );
+            }
+            if (
+                optional &&
+                isNullishLiteral(context.checker, clause.expression)
+            )
+                // Empty storage is one absence; the other label never matches.
+                return nullishLabelMatches(clause)
+                    ? `!${optionalPresentCpp(storage)}`
+                    : undefined;
+            const label = stringSwitch
+                ? this.compileStaticSwitchString(context, clause.expression)
+                : enumType
+                  ? context.compileEnumSwitchLabel(clause.expression, enumType)
+                  : context.compileNumber(clause.expression, "double");
+            if (label === undefined) return undefined;
+            if (!optional) return `${discriminant} == ${label}`;
+            return `(${optionalPresentCpp(storage)} && ${optionalValueCpp(storage)} == ${label})`;
+        };
         const defaultIndex = clauses.findIndex(ts.isDefaultClause);
-        if (defaultIndex !== -1 && defaultIndex !== clauses.length - 1) {
-            context.fail(
-                clauses[defaultIndex]!,
-                "A switch default clause must be last.",
+        if (
+            (defaultIndex !== -1 && defaultIndex !== clauses.length - 1) ||
+            clauses.some(
+                (clause, index) =>
+                    index < clauses.length - 1 &&
+                    clause.statements.length > 0 &&
+                    !switchClauseCompletes(clause),
+            )
+        ) {
+            this.emitFallthroughSwitch(
+                context,
+                statement,
+                discriminant,
+                labelTest,
             );
+            context.decreaseIndent();
+            context.emit({ kind: "close", code: "}" });
+            return;
         }
         let emittedBranch = false;
-        let pendingLabels: string[] = [];
+        let pendingTests: string[] = [];
         for (const clause of clauses) {
             if (ts.isDefaultClause(clause)) {
                 // Empty cases immediately before the final default share
                 // its body. The emitted final `else` already selects every
                 // value not handled above, including those pending labels.
-                pendingLabels = [];
+                pendingTests = [];
                 context.emit(emittedBranch ? "} else {" : "{");
                 this.inRuntimeControlFlow(context, () =>
                     this.emitSwitchBody(context, clause),
@@ -950,42 +1532,27 @@ export class StatementLowerer {
                 emittedBranch = true;
                 continue;
             }
-            const label = stringSwitch
-                ? this.compileStaticSwitchString(context, clause.expression)
-                : enumSwitch
-                  ? context.compileEnumSwitchLabel(
-                        clause.expression,
-                        value.dataType,
-                    )
-                  : context.compileNumber(clause.expression, "double");
+            const test = labelTest(clause);
             // An inlined function may receive a narrower string-literal
             // union than its declared parameter. Labels outside that union
             // are unreachable for this invocation.
-            if (label === undefined) {
+            if (test === undefined) {
                 continue;
             }
-            pendingLabels.push(label);
+            pendingTests.push(test);
             if (clause.statements.length === 0) {
                 continue;
             }
-            const condition = pendingLabels
-                .map((label) => `${discriminant} == ${label}`)
-                .join(" || ");
             context.emit(
-                `${emittedBranch ? "} else if" : "if"} (${condition}) {`,
+                `${emittedBranch ? "} else if" : "if"} (${pendingTests.join(" || ")}) {`,
             );
             this.inRuntimeControlFlow(context, () =>
                 this.emitSwitchBody(context, clause),
             );
             emittedBranch = true;
-            pendingLabels = [];
+            pendingTests = [];
         }
-        if (pendingLabels.length > 0) {
-            context.fail(
-                statement,
-                "Trailing case clauses without a body are not supported.",
-            );
-        }
+        // Trailing labels without a body select nothing to run.
         if (emittedBranch) {
             context.emit({ kind: "close", code: "}" });
         }
@@ -1011,9 +1578,10 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         clause: ts.CaseClause | ts.DefaultClause,
     ): void {
+        // The callers hand one clause that completes (or is the last, which
+        // completes the switch by finishing); fallthrough is lowered apart.
         const statements = [...clause.statements];
         let last = statements.at(-1);
-        let terminalBreakRemoved = false;
         // A braced case body (`case x: { ... break; }`) gives its locals a
         // lexical scope but the break still belongs to the switch. Each
         // lowered branch already owns a scope, so flatten that final block
@@ -1024,17 +1592,9 @@ export class StatementLowerer {
                 statements.pop();
                 statements.push(...last.statements.slice(0, -1));
                 last = statements.at(-1);
-                terminalBreakRemoved = true;
             }
         }
-        if (last && ts.isBreakStatement(last)) {
-            statements.pop();
-        } else if (!terminalBreakRemoved && (!last || !terminatesFlow(last))) {
-            context.fail(
-                clause,
-                "Non-empty switch cases must end with break or return.",
-            );
-        }
+        if (last && ts.isBreakStatement(last)) statements.pop();
         const nestedBreak = statements
             .map((statement) => this.findSwitchBoundBreak(statement))
             .find((candidate) => candidate !== undefined);
@@ -1049,24 +1609,102 @@ export class StatementLowerer {
                 );
             }
         }
+        // The switch itself was lowered to an if/else chain. A
+        // single-iteration scope restores the one missing control boundary
+        // so an early case `break` still skips the rest of that case
+        // without escaping an enclosing loop.
+        const wrapper = nestedBreak
+            ? writable(this.targetOf(clause.parent.parent))
+            : undefined;
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            if (nestedBreak) {
-                // The switch itself was lowered to an if/else chain. A
-                // single-iteration scope restores the one missing control
-                // boundary so an early case `break` still skips the rest of
-                // that case without escaping an enclosing loop.
+            if (wrapper) {
                 context.emit({ kind: "open", code: "do {", breaks: true });
                 context.increaseIndent();
+                wrapper.breakable = true;
             }
             for (const statement of statements) {
                 this.emit(context, statement);
             }
-            if (nestedBreak) {
+            if (wrapper) {
                 context.decreaseIndent();
                 context.emit({ kind: "close", code: "} while (false);" });
             }
+        } finally {
+            if (wrapper) wrapper.breakable = false;
+            context.bindings.popScope();
+            context.decreaseIndent();
+        }
+    }
+
+    /**
+     * A switch whose clauses fall into one another, or whose default is not
+     * last: the matching clause's index is selected first (case labels in
+     * order, then the default), and every body from it onward runs in
+     * source order until a break jumps to the switch's end.
+     */
+    private emitFallthroughSwitch(
+        context: StatementLoweringContext,
+        statement: ts.SwitchStatement,
+        discriminant: string,
+        labelTest: (clause: ts.CaseClause) => string | undefined,
+    ): void {
+        const clauses = statement.caseBlock.clauses;
+        const defaultIndex = clauses.findIndex(ts.isDefaultClause);
+        const tests: Array<{ condition: string; index: number }> = [];
+        clauses.forEach((clause, index) => {
+            if (!ts.isCaseClause(clause)) return;
+            const condition = labelTest(clause);
+            if (condition !== undefined) tests.push({ condition, index });
+        });
+        const selected = `${discriminant}_selected`;
+        context.emit({
+            kind: "declaration",
+            type: "const int",
+            name: selected,
+            initializer: tests.reduceRight(
+                (rest, { condition, index }) =>
+                    `(${condition}) ? ${index} : ${rest}`,
+                String(defaultIndex === -1 ? clauses.length : defaultIndex),
+            ),
+        });
+        this.withSwitchBreakTarget(context, statement, () => {
+            clauses.forEach((clause, index) => {
+                if (clause.statements.length === 0) return;
+                context.emit({
+                    kind: "open",
+                    code: `if (${selected} <= ${index}) {`,
+                });
+                this.inRuntimeControlFlow(context, () =>
+                    this.emitScopedStatements(context, clause.statements),
+                );
+                context.emit({ kind: "close", code: "}" });
+            });
+        });
+    }
+
+    /** Emit a switch body whose breaks jump to a label after it. */
+    private withSwitchBreakTarget(
+        context: StatementLoweringContext,
+        statement: ts.SwitchStatement,
+        emitBody: () => void,
+    ): void {
+        const exit = this.jumpLabel(context, "switch_end");
+        writable(this.targetOf(statement)).exit = exit;
+        emitBody();
+        this.placeLabel(context, exit);
+    }
+
+    /** One scope holding statements, emitted until one leaves it. */
+    private emitScopedStatements(
+        context: StatementLoweringContext,
+        statements: readonly ts.Statement[],
+    ): void {
+        context.increaseIndent();
+        context.bindings.pushScope(context.allocateBlockPrefix());
+        try {
+            this.emitReachableBody(context, statements);
         } finally {
             context.bindings.popScope();
             context.decreaseIndent();
@@ -1155,36 +1793,17 @@ export class StatementLowerer {
             } else if (statement.elseStatement) {
                 this.emitScopedBody(context, statement.elseStatement, true);
             }
-            if (selected && terminatesFlow(selected)) {
+            if (
+                selected &&
+                terminatesFlow(selected, (node) =>
+                    this.neverTerminators.has(node),
+                )
+            ) {
                 this.loweredTerminators.add(statement);
             }
             return;
         }
-        if (
-            this.containsStaticIterationContinue(statement.thenStatement) ||
-            (statement.elseStatement !== undefined &&
-                this.containsStaticIterationContinue(statement.elseStatement))
-        ) {
-            context.fail(
-                statement.expression,
-                "A continue in a statically unrolled loop requires a generation-known condition.",
-            );
-        }
-        if (this.staticIterationCompletions.length > 0) {
-            const control =
-                enclosingLoopControl(statement.thenStatement) ??
-                (statement.elseStatement &&
-                    enclosingLoopControl(statement.elseStatement));
-            if (
-                control &&
-                ts.isBreakStatement(control) &&
-                this.staticIterationForControl(control)
-            ) {
-                context.fail(
-                    statement.expression,
-                    "A break in a statically unrolled resource loop requires a generation-known condition.",
-                );
-            }
+        if (this.jumpTargets.some(({ iteration }) => iteration)) {
             if (
                 firstReturn([statement.thenStatement]) ||
                 (statement.elseStatement &&
@@ -1469,32 +2088,29 @@ export class StatementLowerer {
         emitBody: () => void,
         emitCleanup: (pending: string) => void,
     ): void {
-        const region = {
-            node: statement,
+        const region: CleanupRegion = {
             returns: false,
             jumps: new EmissionSet<ts.BreakStatement | ts.ContinueStatement>(),
         };
         const pending = context.allocateTemporaryCppName("cleanup_exception");
-        this.cleanupRegions.push(region);
-        let body: string[];
-        try {
-            body = context.captureEmittedLines(() => {
-                context.emit(`std::exception_ptr ${pending};`);
-                context.emit({ kind: "open", code: "try {" });
-                context.increaseIndent();
-                emitBody();
-                context.decreaseIndent();
-                context.emit(
-                    `} ${context.options.workers ? "catch (const bbl::pal::WorkerTerminated&) { throw; } " : ""}catch (...) { ${pending} = std::current_exception(); }`,
-                );
-                emitCleanup(pending);
-                context.emit(
-                    `if (${pending}) std::rethrow_exception(${pending});`,
-                );
-            });
-        } finally {
-            this.cleanupRegions.pop();
-        }
+        const body = this.withJumpTarget(
+            jumpTarget(statement, { cleanup: region }),
+            () =>
+                context.captureEmittedLines(() => {
+                    context.emit(`std::exception_ptr ${pending};`);
+                    context.emit({ kind: "open", code: "try {" });
+                    context.increaseIndent();
+                    emitBody();
+                    context.decreaseIndent();
+                    context.emit(
+                        `} ${context.options.workers ? "catch (const bbl::pal::WorkerTerminated&) { throw; } " : ""}catch (...) { ${pending} = std::current_exception(); }`,
+                    );
+                    emitCleanup(pending);
+                    context.emit(
+                        `if (${pending}) std::rethrow_exception(${pending});`,
+                    );
+                }),
+        );
         context.emit({
             kind: "open",
             code: region.returns || region.jumps.size ? "try {" : "{",
@@ -1521,12 +2137,10 @@ export class StatementLowerer {
                     : `} catch ([[maybe_unused]] const bbl::js::AsyncReturn<${cpp}>& ${result}) {`,
             );
             context.increaseIndent();
-            const parent = this.cleanupRegions.at(-1);
-            if (
-                parent &&
-                ts.findAncestor(parent.node, ts.isFunctionLike) ===
-                    ts.findAncestor(statement, ts.isFunctionLike)
-            ) {
+            const parent = this.innermostCleanup(
+                ts.findAncestor(statement, ts.isFunctionLike),
+            );
+            if (parent) {
                 writable(parent).returns = true;
                 context.emit("throw;");
             } else
@@ -1760,10 +2374,11 @@ export class StatementLowerer {
     ): string[] {
         // A pending break/continue leaves the try only after every cleanup
         // statement runs. An abrupt cleanup completion can replace it.
-        const completions = this.staticIterationCompletions.map((frame) => ({
-            frame,
-            completion: frame.completion,
-        }));
+        const completions = this.jumpTargets.flatMap(({ iteration }) =>
+            iteration
+                ? [{ frame: iteration, completion: iteration.completion }]
+                : [],
+        );
         for (const { frame } of completions)
             writable(frame).completion = "normal";
         context.bindings.pushScope(context.allocateBlockPrefix());
@@ -1810,14 +2425,23 @@ export class StatementLowerer {
         // `throw new Error(message)` builds the Error value for this one
         // consumer, so its message stays an expression; a held Error value
         // or a string carries its message as a value.
-        const errorName = ts.isNewExpression(thrown)
-            ? errorConstructor(thrown, (callee) =>
+        const constructed =
+            ts.isNewExpression(thrown) || ts.isCallExpression(thrown)
+                ? thrown
+                : undefined;
+        const errorName = constructed
+            ? errorConstructor(constructed, (callee) =>
                   context.libraryGlobal(callee),
               )
             : undefined;
         const sourceError =
-            ts.isNewExpression(thrown) && errorName !== undefined
-                ? compileErrorConstruction(context, thrown, errorName, "thrown")
+            constructed && errorName !== undefined
+                ? compileErrorConstruction(
+                      context,
+                      constructed,
+                      errorName,
+                      "thrown",
+                  )
                 : context.compileValue(thrown);
         const error = authoredErrorValue(context, sourceError) ?? sourceError;
         if (error.dataType?.kind === "error") {
@@ -2071,23 +2695,114 @@ export class StatementLowerer {
      * locals. The generator scope pushed here already prefixes each
      * iteration's names uniquely, so flattening cannot collide two of them.
      *
-     * Shared by the three unrollers, because the reason is the loop's shape
+     * Shared by the unrollers, because the reason is the loop's shape
      * rather than which collection it walked.
+     *
+     * A break or continue that only the running program decides cannot
+     * leave flat statements: a jump past them would skip their
+     * initialization. An iteration that takes one is emitted again as a
+     * scope of its own, run as runtime control flow; its continue jumps to
+     * the scope's end and its break past the loop, whose later iterations
+     * are scopes too.
+     *
+     * `guard` names the runtime condition an iteration runs under, when
+     * only the running program knows whether it runs.
      */
-    private emitUnrolledIteration(
+    private emitUnrolledLoop(
         context: StatementLoweringContext,
         iteration: ts.IterationStatement,
-        body: ts.Statement,
-        bind: () => void,
-    ): "normal" | "break" | "continue" {
-        context.bindings.pushScope(context.allocateBlockPrefix());
-        const completion: {
-            iteration: ts.IterationStatement;
-            completion: "normal" | "break" | "continue";
-        } = { iteration, completion: "normal" };
-        this.staticIterationCompletions.push(completion);
-        context.enterStaticIteration(iteration);
+        binds: readonly (() => void)[],
+        guard?: (index: number) => string | undefined,
+    ): void {
+        const loop: UnrolledLoop = {
+            iteration,
+            breakLabel: undefined,
+            scoped: false,
+            runtimeExits: this.mayExitAtRuntime(context, iteration),
+        };
+        for (const [index, bind] of binds.entries()) {
+            const condition = guard?.(index);
+            const emit = (): StaticCompletion =>
+                this.emitUnrolledIteration(context, loop, bind);
+            if (
+                (condition
+                    ? this.guarded(context, condition, emit)
+                    : emit()) === "break"
+            )
+                break;
+        }
+        this.placeLabel(context, loop.breakLabel);
+    }
+
+    /** Emit under `if (condition)`, as runtime control flow. */
+    private guarded<T>(
+        context: StatementLoweringContext,
+        condition: string,
+        emit: () => T,
+    ): T {
+        context.emit({ kind: "open", code: `if (${condition}) {` });
+        context.increaseIndent();
         try {
+            return this.inRuntimeControlFlow(context, emit);
+        } finally {
+            context.decreaseIndent();
+            context.emit({ kind: "close", code: "}" });
+        }
+    }
+
+    private emitUnrolledIteration(
+        context: StatementLoweringContext,
+        loop: UnrolledLoop,
+        bind: () => void,
+    ): StaticCompletion {
+        if (loop.scoped || !loop.runtimeExits)
+            return this.emitIterationBody(
+                context,
+                loop,
+                bind,
+                loop.scoped ? "scoped" : "flat",
+            );
+        try {
+            return context.probeEmission(
+                () => this.emitIterationBody(context, loop, bind, "probe"),
+                () => true,
+            );
+        } catch (error) {
+            if (
+                !(error instanceof RuntimeLoopExitRequired) ||
+                error.iteration !== loop.iteration
+            )
+                // A refusal inside the attempt: lower the iteration again
+                // where statement recovery sees each statement.
+                return this.emitIterationBody(context, loop, bind, "flat");
+        }
+        return this.emitIterationBody(context, loop, bind, "scoped");
+    }
+
+    private emitIterationBody(
+        context: StatementLoweringContext,
+        loop: UnrolledLoop,
+        bind: () => void,
+        mode: StaticIterationFrame["mode"],
+    ): StaticCompletion {
+        context.bindings.pushScope(context.allocateBlockPrefix());
+        const frame: StaticIterationFrame = {
+            iteration: loop.iteration,
+            completion: "normal",
+            loop,
+            mode,
+            // A scope runs as runtime control flow; its own top level is
+            // what this iteration decides.
+            runtimeDepth: this.runtimeBranchDepth + (mode === "scoped" ? 1 : 0),
+            exited: false,
+            continueLabel: undefined,
+        };
+        const target = writable(this.targetOf(loop.iteration));
+        const enclosing = target.iteration;
+        target.iteration = frame;
+        context.enterStaticIteration(loop.iteration);
+        const body = loop.iteration.statement;
+        const emitStatements = (): void => {
             bind();
             const statements = ts.isBlock(body) ? body.statements : [body];
             for (const nested of statements) {
@@ -2098,12 +2813,60 @@ export class StatementLowerer {
                 )
                     break;
             }
+        };
+        try {
+            if (mode === "scoped") {
+                context.emit({ kind: "open", code: "{" });
+                context.increaseIndent();
+                try {
+                    this.inRuntimeControlFlow(context, emitStatements);
+                } finally {
+                    context.decreaseIndent();
+                }
+                context.emit({ kind: "close", code: "}" });
+                this.placeLabel(context, frame.continueLabel);
+            } else emitStatements();
         } finally {
             context.leaveStaticIteration();
-            this.staticIterationCompletions.pop();
+            target.iteration = enclosing;
             context.bindings.popScope();
         }
-        return completion.completion;
+        return frame.completion;
+    }
+
+    /**
+     * Whether an unrolled body has a break or continue of its own loop under
+     * a condition that is not visibly generation-known.
+     */
+    private mayExitAtRuntime(
+        context: StatementLoweringContext,
+        iteration: ts.IterationStatement,
+    ): boolean {
+        if (enclosingLoopControl(iteration.statement) === undefined)
+            return false;
+        const bindings = new EmissionSet<ts.Symbol>();
+        const initializer =
+            ts.isForStatement(iteration) ||
+            ts.isForOfStatement(iteration) ||
+            ts.isForInStatement(iteration)
+                ? iteration.initializer
+                : undefined;
+        if (initializer && ts.isVariableDeclarationList(initializer))
+            for (const declaration of initializer.declarations)
+                forEachAnalysisNode(declaration.name, (node) => {
+                    if (
+                        !ts.isIdentifier(node) ||
+                        (node !== declaration.name &&
+                            !(
+                                ts.isBindingElement(node.parent) &&
+                                node.parent.name === node
+                            ))
+                    )
+                        return;
+                    const symbol = context.symbols.valueSymbol(node);
+                    if (symbol) bindings.add(symbol);
+                });
+        return !this.hasStaticLoopExits(context, iteration.statement, bindings);
     }
 
     private emitStaticIndexFor(
@@ -2188,25 +2951,18 @@ export class StatementLowerer {
                 "Static index-loop bodies cannot mutate the loop index.",
             );
         }
-        const emitIndexIteration = (
-            index: number,
-        ): "normal" | "break" | "continue" => {
-            return this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () => {
-                    context.bindings.bindCompileTimeValue(indexBinding, {
-                        kind: "number",
-                        cpp: `${index}.0`,
-                        staticNumber: index,
-                    });
-                },
-            );
-        };
-        for (let offset = 0; offset < iterations; offset += 1) {
-            if (emitIndexIteration(start + offset) === "break") break;
-        }
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            Array.from({ length: iterations }, (_, offset) => () => {
+                const index = start + offset;
+                context.bindings.bindCompileTimeValue(indexBinding, {
+                    kind: "number",
+                    cpp: `${index}.0`,
+                    staticNumber: index,
+                });
+            }),
+        );
         return true;
     }
 
@@ -2309,22 +3065,36 @@ export class StatementLowerer {
                 ? context.dataLowerer.narrowOptional(raw, statement.expression)
                 : raw;
         if (owner.kind === "record") {
-            for (const key of Object.keys(owner.recordProperties ?? {})) {
-                const completed = this.emitUnrolledIteration(
-                    context,
+            // A key a conditional spread wrote is visited while it is own;
+            // a runtime skip cannot carry a static loop exit, so each key's
+            // iteration stands alone under its guard.
+            const conditional = !ownKeysKnown(context, owner, statement);
+            if (
+                conditional &&
+                (enclosingLoopControl(statement.statement) ??
+                    firstReturn([statement.statement]))
+            )
+                context.fail(
                     statement,
-                    statement.statement,
-                    () =>
-                        this.bindStaticIterationValue(
-                            context,
-                            binding,
-                            staticStringValue(key, (text) =>
-                                context.cppString(text),
-                            ),
-                        ),
+                    "for...in over a record whose keys a conditional spread decides cannot leave the loop early.",
                 );
-                if (completed === "break") break;
-            }
+            const entries = ownEntries(context, owner, statement.expression)!;
+            this.emitUnrolledLoop(
+                context,
+                statement,
+                entries.map(
+                    ({ key }) =>
+                        () =>
+                            this.bindStaticIterationValue(
+                                context,
+                                binding,
+                                staticStringValue(key, (text) =>
+                                    context.cppString(text),
+                                ),
+                            ),
+                ),
+                (index) => entries[index]!.presence?.ownCpp,
+            );
             return;
         }
         const ownKeys = this.forInOwnKeys(context, owner, statement.expression);
@@ -2441,12 +3211,13 @@ export class StatementLowerer {
             ).cpp;
             const presence = fields.map((field) => ({
                 field,
-                present: context.dataTypes.ownPropertyPresentCpp(
+                present: context.dataTypes.ownPresence(
                     dataType.name,
                     field,
-                    `${object}${access}${field.name}`,
+                    object,
+                    access,
                     node,
-                ),
+                )?.ownCpp,
             }));
             const optional = presence.filter(({ present }) => present);
             const pushes = presence.map(({ field, present }) => {
@@ -2701,26 +3472,31 @@ export class StatementLowerer {
             })
         )
             return;
-        if (this.bindsEnclosingLoop(statement.statement)) {
-            context.fail(
-                statement,
-                "break/continue in for...of requires a runtime data container.",
-            );
-        }
         if (executed) {
-            for (const value of executed)
-                this.emitUnrolledIteration(
-                    context,
-                    statement,
-                    statement.statement,
-                    () =>
+            this.emitUnrolledLoop(
+                context,
+                statement,
+                executed.map(
+                    (value) => () =>
                         this.bindStaticIterationValue(
                             context,
                             declaration.name,
                             value,
                         ),
-                );
+                ),
+            );
             return;
+        }
+        if (
+            this.bindsEnclosingLoop(statement.statement) &&
+            !context.probeStaticArrayLiteral(statement.expression)
+        ) {
+            // An iterated value that does not lower names its own cause.
+            context.compileValue(statement.expression);
+            context.fail(
+                statement,
+                "break/continue in for...of requires a runtime data container.",
+            );
         }
         const values = context.expectStaticArrayLiteral(statement.expression);
         const compiled = this.preferNativeDataIteration(context, statement)
@@ -2751,26 +3527,17 @@ export class StatementLowerer {
         ) {
             return;
         }
-        const emitElementIteration = (
-            element: ts.Expression,
-            index: number,
-        ): void => {
-            this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () => {
-                    this.bindStaticIterationValue(
-                        context,
-                        declaration.name,
-                        compiled?.[index] ?? context.compileValue(element),
-                    );
-                },
-            );
-        };
-        for (const [index, element] of values.elements.entries()) {
-            emitElementIteration(element, index);
-        }
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            values.elements.map((element, index) => () => {
+                this.bindStaticIterationValue(
+                    context,
+                    declaration.name,
+                    compiled?.[index] ?? context.compileValue(element),
+                );
+            }),
+        );
     }
 
     private emitStaticResourceExitForOf(
@@ -2839,20 +3606,18 @@ export class StatementLowerer {
                 "A static resource-loop exit requires settled iteration values.",
             );
         }
-        for (const value of values) {
-            const completion = this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () =>
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            values.map(
+                (value) => () =>
                     this.bindStaticIterationValue(
                         context,
                         declaration.name,
                         value,
                     ),
-            );
-            if (completion === "break") break;
-        }
+            ),
+        );
         return true;
     }
 
@@ -3059,42 +3824,29 @@ export class StatementLowerer {
         ) {
             return true;
         }
-        if (this.bindsEnclosingLoop(statement.statement)) {
-            context.fail(
-                statement,
-                "break/continue in for...of requires a runtime data container.",
-            );
-        }
-        for (const [index, element] of elements.entries()) {
-            const indexValue: Value = {
-                kind: "number",
-                cpp: doubleLiteral(index),
-                staticNumber: index,
-                dataType: { kind: "number" },
-            };
-            const value: Value =
-                method === "keys"
-                    ? indexValue
-                    : method === "values"
-                      ? element
-                      : {
-                            kind: "tuple",
-                            cpp: "",
-                            tupleElements: [indexValue, element],
-                        };
-            const completion = this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () =>
-                    this.bindStaticIterationValue(
-                        context,
-                        declaration.name,
-                        value,
-                    ),
-            );
-            if (completion === "break") break;
-        }
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            elements.map((element, index) => () => {
+                const indexValue: Value = {
+                    kind: "number",
+                    cpp: doubleLiteral(index),
+                    staticNumber: index,
+                    dataType: { kind: "number" },
+                };
+                const value: Value =
+                    method === "keys"
+                        ? indexValue
+                        : method === "values"
+                          ? element
+                          : {
+                                kind: "tuple",
+                                cpp: "",
+                                tupleElements: [indexValue, element],
+                            };
+                this.bindStaticIterationValue(context, declaration.name, value);
+            }),
+        );
         return true;
     }
 
@@ -3145,16 +3897,11 @@ export class StatementLowerer {
         ) {
             return true;
         }
-        if (this.bindsEnclosingLoop(statement.statement)) {
-            if (context.dataIterationTarget(statement.expression)) {
-                return false;
-            }
-            if (this.breaksEnclosingLoop(statement.statement)) {
-                context.fail(
-                    statement,
-                    "break in for...of requires a runtime data container.",
-                );
-            }
+        if (
+            this.bindsEnclosingLoop(statement.statement) &&
+            context.dataIterationTarget(statement.expression)
+        ) {
+            return false;
         }
         if (
             this.emitNativeHandleTableForOf(
@@ -3166,20 +3913,17 @@ export class StatementLowerer {
         ) {
             return true;
         }
-        for (const element of elements) {
-            this.emitUnrolledIteration(
-                context,
-                statement,
-                statement.statement,
-                () => {
-                    this.bindStaticIterationValue(
-                        context,
-                        declaration.name,
-                        element,
-                    );
-                },
-            );
-        }
+        this.emitUnrolledLoop(
+            context,
+            statement,
+            elements.map((element) => () => {
+                this.bindStaticIterationValue(
+                    context,
+                    declaration.name,
+                    element,
+                );
+            }),
+        );
         return true;
     }
 
@@ -3525,33 +4269,7 @@ export class StatementLowerer {
                 name: iterator,
                 initializer: `${range}.begin()`,
             });
-            for (let index = 0; index < count; ++index) {
-                const completed = this.emitUnrolledIteration(
-                    context,
-                    statement,
-                    statement.statement,
-                    () => {
-                        const member =
-                            context.allocateTemporaryCppName("resource_member");
-                        context.emit({
-                            kind: "declaration",
-                            type: "auto",
-                            name: member,
-                            initializer: `*${iterator}`,
-                            attributes: "[[maybe_unused]] ",
-                        });
-                        context.emit({
-                            kind: "expression",
-                            code: `++${iterator};`,
-                        });
-                        context.bindDataIterationVariable(
-                            declaration.name,
-                            member,
-                            target.element,
-                            target.template,
-                        );
-                    },
-                );
+            const unchangedSize = (): void => {
                 if (
                     context.knownCollectionCardinality(statement.expression) !==
                     count
@@ -3561,8 +4279,34 @@ export class StatementLowerer {
                         "A statically expanded resource iteration cannot resize its array.",
                     );
                 }
-                if (completed === "break") break;
-            }
+            };
+            this.emitUnrolledLoop(
+                context,
+                statement,
+                Array.from({ length: count }, () => () => {
+                    unchangedSize();
+                    const member =
+                        context.allocateTemporaryCppName("resource_member");
+                    context.emit({
+                        kind: "declaration",
+                        type: "auto",
+                        name: member,
+                        initializer: `*${iterator}`,
+                        attributes: "[[maybe_unused]] ",
+                    });
+                    context.emit({
+                        kind: "expression",
+                        code: `++${iterator};`,
+                    });
+                    context.bindDataIterationVariable(
+                        declaration.name,
+                        member,
+                        target.element,
+                        target.template,
+                    );
+                }),
+            );
+            unchangedSize();
             return true;
         }
         const item =
@@ -3722,6 +4466,48 @@ export class StatementLowerer {
     }
 
     /**
+     * `condition ? a() : b()` whose value is discarded: each arm is a
+     * statement of its own branch, so arms of different value types (one
+     * void) never meet in one native expression.
+     */
+    private emitConditionalStatement(
+        context: StatementLoweringContext,
+        expression: ts.ConditionalExpression,
+    ): void {
+        const condition = context.conditions.compileCondition(
+            expression.condition,
+        );
+        const emitArm = (arm: ts.Expression): void => {
+            if (this.emitExpression(context, arm))
+                context.fail(
+                    arm,
+                    "A conditional expression statement cannot suspend in one arm.",
+                );
+        };
+        if (condition === "true" || condition === "false") {
+            emitArm(
+                condition === "true"
+                    ? expression.whenTrue
+                    : expression.whenFalse,
+            );
+            return;
+        }
+        const emitBranch = (arm: ts.Expression): void => {
+            context.increaseIndent();
+            try {
+                this.inRuntimeControlFlow(context, () => emitArm(arm));
+            } finally {
+                context.decreaseIndent();
+            }
+        };
+        context.emit({ kind: "open", code: `if (${condition}) {` });
+        emitBranch(expression.whenTrue);
+        context.emit({ kind: "branch", code: "} else {" });
+        emitBranch(expression.whenFalse);
+        context.emit({ kind: "close", code: "}" });
+    }
+
+    /**
      * One expression lowered as a statement. Public for a caller holding
      * an expression rather than an `ExpressionStatement` — a concise
      * arrow body, whose value the pin's callback contract discards.
@@ -3771,6 +4557,10 @@ export class StatementLowerer {
             // only its value. At a statement boundary the value was already
             // unused, so lower the operand through the same statement path.
             return this.emitExpression(context, operand);
+        }
+        if (ts.isConditionalExpression(unwrapped)) {
+            this.emitConditionalStatement(context, unwrapped);
+            return;
         }
         if (ts.isDeleteExpression(unwrapped)) {
             context.emitDelete(unwrapped);
@@ -3835,17 +4625,13 @@ export class StatementLowerer {
                     return;
                 }
                 if (target.kind === "number") {
-                    const right = context.compileNumber(
-                        unwrapped.right,
-                        "double",
-                    );
                     context.emit({
                         kind: "expression",
                         code: this.numericAssignmentCpp(
                             context,
                             target.cpp,
                             operator,
-                            right,
+                            unwrapped.right,
                         ),
                     });
                 } else if (target.kind === "boolean" && operator === "=") {
@@ -4031,7 +4817,7 @@ export class StatementLowerer {
             // Recognize it before ordinary call inlining reaches the
             // browser-only constructor in the helper's return expression.
             if (
-                frameYieldInsideLoop(unwrapped, this.staticIterationCompletions)
+                frameYieldInsideLoop(unwrapped, (loop) => this.isUnrolled(loop))
             ) {
                 context.fail(
                     unwrapped,
@@ -4109,7 +4895,7 @@ export class StatementLowerer {
             // each iteration would silently turn it into none, so it
             // refuses; a written-out one is N sequential yields.
             if (
-                frameYieldInsideLoop(unwrapped, this.staticIterationCompletions)
+                frameYieldInsideLoop(unwrapped, (loop) => this.isUnrolled(loop))
             ) {
                 context.fail(
                     unwrapped,
@@ -4206,14 +4992,19 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         target: string,
         operator: string,
-        right: string,
+        right: ts.Expression,
     ): string {
-        const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
-        if (!helper) {
-            return `${target} ${operator} ${right};`;
-        }
-        context.reachJsData();
-        return `${target} = bbl::js::${helper}(${target}, ${right});`;
+        const cpp = context.compileNumber(right, "double");
+        if (operator === "=") return `${target} = ${cpp};`;
+        const value = compoundAssignmentValue(
+            operator,
+            target,
+            cpp,
+            staticNumberValue(context, right),
+        );
+        if (value.native) return `${target} ${operator} ${cpp};`;
+        if (value.jsData) context.reachJsData();
+        return `${target} = ${value.cpp};`;
     }
 
     private emitCameraVectorSet(
@@ -4664,6 +5455,26 @@ export class StatementLowerer {
         });
         return true;
     }
+}
+
+/** Whether a case clause leaves the switch at its end instead of falling on. */
+function switchClauseCompletes(clause: ts.CaseOrDefaultClause): boolean {
+    const last = clause.statements.at(-1);
+    return last !== undefined && terminatesFlow(last);
+}
+
+/** The non-empty clauses a match at `start` runs: through one that completes. */
+function switchFallthroughRun(
+    clauses: readonly ts.CaseOrDefaultClause[],
+    start: number,
+): ts.CaseOrDefaultClause[] {
+    const run: ts.CaseOrDefaultClause[] = [];
+    for (const clause of clauses.slice(start)) {
+        if (clause.statements.length === 0) continue;
+        run.push(clause);
+        if (switchClauseCompletes(clause)) break;
+    }
+    return run;
 }
 
 /**

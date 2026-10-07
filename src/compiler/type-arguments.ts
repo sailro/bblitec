@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { isTypeReference } from "./type-facts.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -108,6 +109,11 @@ export function mentionsTypeParameter(
                     ) ||
                 mentionsTypeParameter(checker, signature.getReturnType(), seen),
         );
+}
+
+/** The generic declaration a type reference instantiates (`Promise` of `Promise<T>`). */
+function referenceTarget(type: ts.Type): ts.Type | undefined {
+    return isTypeReference(type) ? type.target : undefined;
 }
 
 /** Structural matching of a declared (parameterized) type against an instantiated one. */
@@ -245,6 +251,19 @@ class TypeUnifier {
             }
         }
         for (const member of generic) {
+            // `Promise<T>` against `A | B | Promise<X>`: the one actual member
+            // instantiating the same generic declaration is its counterpart.
+            const target = referenceTarget(member);
+            const instances = target
+                ? actualMembers.filter(
+                      (candidate) => referenceTarget(candidate) === target,
+                  )
+                : [];
+            if (instances.length === 1) {
+                actualMembers.splice(actualMembers.indexOf(instances[0]!), 1);
+                this.unify(member, instances[0]!);
+                continue;
+            }
             const fixed = this.checker
                 .getPropertiesOfType(member)
                 .filter(

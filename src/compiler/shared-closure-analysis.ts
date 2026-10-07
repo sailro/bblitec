@@ -11,6 +11,7 @@ import {
     type SupportedFunction,
 } from "./user-functions.js";
 import { rootIdentifier } from "./syntax.js";
+import { presentMembers } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
 
@@ -328,9 +329,38 @@ export class SharedClosureAnalysis {
     ): readonly SupportedFunction[] | "library" | "unnamed" {
         const bodies = this.context.evaluationOrder.callBodies(call);
         if (bodies === "library") return "library";
+        // A class method reached through a structural view of its object
+        // (`Pick<C, "m">`, a record type the class satisfies) is whatever
+        // function the viewed object holds.
+        const callee = this.context.unwrap(call.expression);
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            bodies?.some(
+                (body) =>
+                    ts.isMethodDeclaration(body) && ts.isClassLike(body.parent),
+            ) &&
+            !this.receivesClassInstance(callee.expression)
+        )
+            return "unnamed";
         return bodies !== undefined && bodies.every(isFixedBody)
             ? bodies
             : "unnamed";
+    }
+
+    /** Whether a receiver's type is a class's instance type (nullable included). */
+    private receivesClassInstance(receiver: ts.Expression): boolean {
+        const node = this.context.unwrap(receiver);
+        if (
+            node.kind === ts.SyntaxKind.ThisKeyword ||
+            node.kind === ts.SyntaxKind.SuperKeyword
+        )
+            return true;
+        return presentMembers(
+            this.context.checker.getTypeAtLocation(node),
+        ).every(
+            (member) =>
+                ((member.getSymbol()?.flags ?? 0) & ts.SymbolFlags.Class) !== 0,
+        );
     }
 
     @journaled private accessor nativeParticleProviderUse: boolean | undefined;

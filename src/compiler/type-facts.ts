@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { declaredSymbol } from "./symbols.js";
+import { unwrapExpression, wrappedParent } from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
@@ -66,11 +67,18 @@ export function slotHoldsOnlyNull(type: ts.Type): boolean {
  * both), so only the native representation can say.
  */
 export type Absence =
-    | "undefined"
-    | "null"
-    | "either"
-    | "unconstrained"
-    | { readonly slotFoundCpp: string };
+    AbsentValueKind | "unconstrained" | { readonly slotFoundCpp: string };
+
+/** Which JavaScript absent values a type admits: one of the two, or "either". */
+export type AbsentValueKind = "undefined" | "null" | "either";
+
+/** The absent values `absent` admits; undefined when it admits neither. */
+export function absentValueKind(
+    absent: Pick<Nullability, "null" | "undefined">,
+): AbsentValueKind | undefined {
+    if (absent.null) return absent.undefined ? "either" : "null";
+    return absent.undefined ? "undefined" : undefined;
+}
 
 /**
  * The one rule for which absent value `value`, read at `node`, is when it
@@ -113,10 +121,10 @@ export function absenceKind(
     }
     if (value.preserveUncheckedLookup)
         return absent.null ? "either" : "undefined";
-    if (absent.null) return absent.undefined ? "either" : "null";
-    if (absent.undefined) return "undefined";
-    if (presenceFlagCpp(value) !== undefined) return "undefined";
-    return "unconstrained";
+    return (
+        absentValueKind(absent) ??
+        (presenceFlagCpp(value) !== undefined ? "undefined" : "unconstrained")
+    );
 }
 
 /** Whether a type is a generic instantiation (`Map<K, V>`, `Array<T>`). */
@@ -163,6 +171,14 @@ export function nullability(type: ts.Type): Nullability {
     };
 }
 
+/** Whether a value of `type` may be `undefined`: it names it, or it is `unknown` or `any`. */
+export function admitsUndefined(type: ts.Type): boolean {
+    return (
+        nullability(type).undefined ||
+        (type.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !== 0
+    );
+}
+
 /**
  * Whether the type a position expects rules out a colour written as an
  * object of named channels (`{ r, g, b[, a] }`): the type is known (not
@@ -183,8 +199,54 @@ export function excludesObjectColour(expected: ts.Type | undefined): boolean {
     );
 }
 
+/**
+ * Whether every present value of a type is truthy: objects, non-empty string
+ * and non-zero number literals, and `true`. Its absent values are then its
+ * only falsy ones.
+ */
+export function presentValuesTruthy(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    return presentMembers(type).every((member) => {
+        if (member.isStringLiteral()) return member.value !== "";
+        if (member.isNumberLiteral()) return member.value !== 0;
+        if ((member.flags & ts.TypeFlags.BooleanLiteral) !== 0)
+            return member === checker.getTrueType();
+        return (
+            (member.flags &
+                (ts.TypeFlags.Object | ts.TypeFlags.NonPrimitive)) !==
+            0
+        );
+    });
+}
+
 /** Whether a type admits `null`, `undefined` or `void`. */
 export function isNullable(type: ts.Type): boolean {
     const absent = nullability(type);
     return absent.null || absent.undefined;
+}
+
+/**
+ * The type an expression's position declares for it: its contextual type,
+ * except as an argument of a generic call or construction, whose parameter
+ * type TypeScript inferred from the argument itself.
+ */
+export function declaredContextualType(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): ts.Type | undefined {
+    const parent = wrappedParent(expression);
+    const callee =
+        (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+        parent.arguments?.some(
+            (argument) => unwrapExpression(argument) === expression,
+        )
+            ? checker.getResolvedSignature(parent)?.getDeclaration()
+            : undefined;
+    // A constructor's signature carries its class's type parameters.
+    return callee &&
+        checker.getSignatureFromDeclaration(callee)?.typeParameters?.length
+        ? undefined
+        : checker.getContextualType(expression);
 }

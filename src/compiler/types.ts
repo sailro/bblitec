@@ -1354,6 +1354,11 @@ export type ValueKind =
      * nothing native and the assignment to `group.mask` is what emits.
      */
     | "animation-group-mask"
+    /**
+     * A typed array's `constructor`, read off a value whose storage kind
+     * fixes it; `new` and the static factories accept it as the class.
+     */
+    | "typed-array-constructor"
     | "animation-manager"
     | "asset-entity"
     | "asset-root"
@@ -1747,6 +1752,7 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
         // The mask a group is about to be given: names and a mode, both
         // known at generation.
         kind === "animation-group-mask" ||
+        kind === "typed-array-constructor" ||
         // A BSP solid. It never reaches the runtime: `createMeshFromCsg`
         // replays the plan it carries against the pin's own modules and
         // bakes the geometry, so the binding declares nothing native.
@@ -2131,6 +2137,12 @@ export interface ValueFields {
     nativeCollectionCppType?: string;
     /** The expression creates an owning data container at this read. */
     freshData?: true;
+    /**
+     * No JavaScript reference but this value holds the object it yields
+     * (`unaliasedValue`): `elements` for an array whose elements nothing
+     * else holds either.
+     */
+    unaliased?: "object" | "elements";
     dataStore?: TypedArrayKind | "numberindex";
     /**
      * A typed-array element's store through a slot that does not own the
@@ -2155,6 +2167,11 @@ export interface ValueFields {
      * the built one was already moved into storage of its own.
      */
     builtFrom?: { readonly node: ts.Expression; readonly cpp: string };
+    /**
+     * A compile-time record member only one arm of a conditional wrote
+     * (`...(c ? { a } : {})`): an own key exactly while its value is present.
+     */
+    conditionalOwnKey?: true;
     /** A pinned function retained as a compile-time alias of its intrinsic. */
     intrinsicName?: string;
     hostFunction?: "fetch" | "clipboard-write" | "gpu-request-adapter";

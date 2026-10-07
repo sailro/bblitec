@@ -1246,7 +1246,7 @@ test("runtime-dependent exits cannot silently corrupt resource composition count
             }
         `),
                 ),
-            /statically unrolled .*loop requires a generation-known condition/,
+            /Runtime resource construction requires a generation-known iteration count/,
         );
     }
 });

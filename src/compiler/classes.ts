@@ -21,10 +21,8 @@ import {
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import { sameCompiledValue } from "./types.js";
-import {
-    borrowsReferenceParameter,
-    parameterIsReadOnly,
-} from "./user-functions.js";
+import { borrowsReferenceParameter } from "./user-functions.js";
+import { parameterIsReadOnly } from "./parameter-effects.js";
 import { firstReturn } from "./loop-control.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import { sourceFunctionName } from "./syntax.js";

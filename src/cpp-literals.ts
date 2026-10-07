@@ -112,6 +112,14 @@ export function doubleLiteral(value: number): string {
     return text.includes(".") || /e/i.test(text) ? text : `${text}.0`;
 }
 
+/** A double as C++, NaN and the infinities included. */
+export function doubleCpp(value: number): string {
+    if (Number.isNaN(value)) return "std::numeric_limits<double>::quiet_NaN()";
+    if (Math.abs(value) === Infinity)
+        return `${value < 0 ? "-" : ""}std::numeric_limits<double>::infinity()`;
+    return doubleLiteral(value);
+}
+
 const VALUES_PER_LINE = 64;
 
 /**
@@ -225,6 +233,35 @@ export function lazyStaticAccessor(options: {
  * `[A-Za-z_][A-Za-z0-9_]*`.
  */
 export const cppIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const cppName = cppIdentifierPattern.source.slice(1, -1);
+
+/**
+ * A native variable or member path: a name, namespace-qualified or not,
+ * then the `.`/`->` fields read through it.
+ */
+const cppPathPattern = new RegExp(
+    `^${cppName}(?:::${cppName})*(?:(?:\\.|->)${cppName})*$`,
+);
+
+/** Whether `cpp` is a native variable or member path: it reads, and runs nothing. */
+export function isCppPath(cpp: string): boolean {
+    return cppPathPattern.test(cpp);
+}
+
+/** The names a member path reads, root first; undefined for any other spelling. */
+export function cppMemberPath(cpp: string): readonly string[] | undefined {
+    if (!cppPathPattern.test(cpp)) return undefined;
+    const names = cpp.split(/\.|->/);
+    return names.length > 1 ? names : undefined;
+}
+
+const cppRootPattern = new RegExp(`^${cppName}`);
+
+/** The variable a native spelling starts with, or the spelling itself. */
+export function cppRootName(cpp: string): string {
+    return cppRootPattern.exec(cpp)?.[0] ?? cpp;
+}
 
 /**
  * A string as a C++ literal.

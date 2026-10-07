@@ -29,6 +29,7 @@ export const containerKinds: DataKindOperations<
         byReference: false,
         tracedEdges: "always",
         opaqueReference: true,
+        reseats: true,
     },
     "weak-ref": {
         cpp: (type, context) => `bbl::js::Ref<${context.cppType(type.target)}>`,
@@ -38,6 +39,7 @@ export const containerKinds: DataKindOperations<
         byReference: false,
         tracedEdges: "children",
         opaqueReference: true,
+        reseats: true,
     },
     product: {
         cpp: (type, context) =>
@@ -51,6 +53,8 @@ export const containerKinds: DataKindOperations<
         children: (type) => type.elements,
         byReference: true,
         tracedEdges: "children",
+        sharesStorage: true,
+        reseats: true,
     },
     union: {
         cpp: (type, context) =>
@@ -64,6 +68,7 @@ export const containerKinds: DataKindOperations<
         children: (type) => type.members,
         byReference: false,
         tracedEdges: "children",
+        reseats: "children",
     },
     optional: {
         cpp: (type, context) =>
@@ -79,6 +84,7 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.inner],
         byReference: false,
         tracedEdges: "children",
+        reseats: "children",
     },
     vector: {
         cpp: (type, context) =>
@@ -88,6 +94,8 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "children",
+        sharesStorage: true,
+        reseats: true,
     },
     arguments: {
         cpp: (type, context) =>
@@ -97,6 +105,8 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.element],
         byReference: false,
         tracedEdges: "children",
+        sharesStorage: true,
+        reseats: true,
     },
     map: {
         cpp: (type, context) =>
@@ -113,6 +123,8 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.key, type.value],
         byReference: true,
         tracedEdges: "children",
+        sharesStorage: true,
+        reseats: true,
     },
     set: {
         cpp: (type, context) =>
@@ -122,6 +134,8 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "children",
+        sharesStorage: true,
+        reseats: true,
     },
     iterator: {
         cpp: (type, context) =>
@@ -135,6 +149,8 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "always",
+        sharesStorage: true,
+        reseats: true,
     },
     span: {
         cpp: (type, context) =>
@@ -152,6 +168,8 @@ export const containerKinds: DataKindOperations<
         children: () => [],
         byReference: true,
         tracedEdges: "never",
+        sharesStorage: true,
+        reseats: true,
     },
     enummap: {
         cpp: (type, context) => {

@@ -29,6 +29,7 @@ import ts from "typescript";
 import { storageValue } from "./web-storage.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import {
+    accessedPropertySymbol,
     CompilerSymbols,
     declaredSymbol,
     isGlobalUndefined,
@@ -38,7 +39,10 @@ import {
 import { compileMapInitializer } from "./collection-methods.js";
 import {
     absenceKind,
+    admitsUndefined,
     arrayElementType,
+    nullability,
+    presentValuesTruthy,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
@@ -48,6 +52,7 @@ import { compileWeakRefNew } from "./weak-refs.js";
 import {
     DynamicBindingStorageRequired,
     requireDynamicBindingStorage,
+    type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
@@ -65,15 +70,25 @@ import {
     renderClosure,
     type NativeCaptureBinding,
 } from "./closure-captures.js";
-import { cppIdentifierPattern } from "../cpp-literals.js";
+import {
+    cppIdentifierPattern,
+    cppMemberPath,
+    cppRootName,
+    doubleCpp,
+    isCppPath,
+} from "../cpp-literals.js";
 import { pinOperand } from "./evaluation-order.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { isObjectIdentityFunction } from "./static-evaluator.js";
+import {
+    isObjectIdentityFunction,
+    numberFromOptionalCpp,
+} from "./static-evaluator.js";
 import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
+    exponentiationCall,
     MATH_MEMBERS,
     mathMemberAccess,
     mathUnaryFold,
@@ -82,22 +97,24 @@ import {
     mathExtremeCall,
     mathExtremeCpp,
 } from "../lowering/pinned-operators.js";
-import {
-    ASSIGNMENT_OPERATORS,
-    COMPOUND_ASSIGNMENT_HELPERS,
-} from "./statements.js";
+import { ASSIGNMENT_OPERATORS, compoundAssignmentValue } from "./statements.js";
 import {
     dataTypesEqual,
     isUndefinedDataType,
     doubleLiteral,
+    isNumericSequenceType,
     isTypedArrayType,
     isOpaqueReference,
     isHandleKind,
     passesByReference,
+    reseatsOnAssignment,
+    sharesStorageKind,
     pinnedHandleKind,
     TYPED_ARRAY_KINDS,
+    typedArrayConstructorName,
     typedArrayStem,
     typedArrayStoreExpression,
+    tupleComponents,
     type DataIterationElement,
     type DataStructField,
     type DataType,
@@ -108,6 +125,7 @@ import {
     deleteRecordProperty,
     setRecordProperty,
     structOwnEntries,
+    type OwnEntry,
 } from "./object-statics.js";
 import {
     compileJsonStrictComparison,
@@ -118,28 +136,62 @@ import {
 } from "./json-bridge.js";
 import {
     compileDataMethodCall,
-    arrayCallbackReceiverPolicy,
+    declareWalkedReceiver,
+    receiverWalks,
+    removedIndexGuard,
+    type ReceiverWalkMethod,
 } from "./data-methods.js";
-import { resizingArrayMethods } from "./receiver-methods.js";
+import {
+    callbackTakesReceiver,
+    lengthPreservingArrayMethods,
+    readOnlyDataMethods,
+    resizingArrayMethods,
+} from "./receiver-methods.js";
 import { isTrsVectorName } from "./assignments.js";
+import { mappedElement } from "./fresh-records.js";
 import {
     isAssignmentExpression,
+    isAssignmentOperator,
+    expressionHasEffects,
     expressionMayRunCode,
+    hasNonNullAssertion,
     isUpdateExpression,
     iteratorMethodCall,
     rootExpression,
     rootIdentifier,
     argumentAt,
     identifierText,
+    literalMember,
     unwrapExpression,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
+import {
+    completeLiteralSelf,
+    homeObjectMembers,
+    homeReceiver,
+    literalSelf,
+} from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
 
-/** Container length mutations, isolated by checker and source file. */
-const resizedSymbolsByChecker = new EmissionWeakMap<
+/**
+ * Two member paths from one root, neither extending the other, name
+ * different fields of that object; other spellings may denote the same
+ * storage.
+ */
+function disjointMemberPaths(left: string, right: string): boolean {
+    const leftFields = cppMemberPath(left);
+    const rightFields = cppMemberPath(right);
+    if (!leftFields || !rightFields) return false;
+    const common = Math.min(leftFields.length, rightFields.length);
+    return leftFields
+        .slice(0, common)
+        .some((field, index) => field !== rightFields[index]);
+}
+
+/** Container length extents, isolated by checker and source file. */
+const lengthExtentsByChecker = new EmissionWeakMap<
     ts.TypeChecker,
-    WeakMap<ts.SourceFile, ReadonlySet<ts.Symbol>>
+    WeakMap<ts.SourceFile, ReadonlyMap<ts.Symbol, number>>
 >();
 
 /**
@@ -155,72 +207,238 @@ function namesStableOwner(owner: Value): boolean {
 }
 
 /**
- * Resizing methods, rebinding, length writes and call arguments invalidate a
- * binding's fixed length. Element writes preserve length. Symbols keep
- * unrelated same-named bindings independent.
+ * Whether `node` is written: an assignment, update or loop target, also
+ * as a leaf of a destructuring pattern.
  */
-function resizedSymbols(
+function isWriteTarget(node: ts.Expression): boolean {
+    let target: ts.Node = node;
+    while (
+        ts.isParenthesizedExpression(target.parent) ||
+        ts.isNonNullExpression(target.parent) ||
+        ts.isAsExpression(target.parent) ||
+        ts.isSatisfiesExpression(target.parent) ||
+        ts.isTypeAssertionExpression(target.parent) ||
+        ts.isSpreadElement(target.parent) ||
+        ts.isSpreadAssignment(target.parent) ||
+        ts.isArrayLiteralExpression(target.parent) ||
+        ts.isObjectLiteralExpression(target.parent) ||
+        (ts.isPropertyAssignment(target.parent) &&
+            target.parent.initializer === target)
+    )
+        target = target.parent;
+    const parent = target.parent;
+    return (
+        (isAssignmentExpression(parent) && parent.left === target) ||
+        (isUpdateExpression(parent) && parent.operand === target) ||
+        ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) &&
+            parent.initializer === target)
+    );
+}
+
+/**
+ * How one reference to an array binding can change its length: not at all
+ * (`0`), only up to an element count (an element write at a known index),
+ * without bound (`Infinity`: a resizing method, a length write, rebinding,
+ * a call argument, or reaching an owner the scan does not follow -- a
+ * field, an element, a return, an export), or as `alias`, the local whose
+ * declaration or assignment it initializes and whose extent it shares.
+ */
+function referenceLengthExtent(
+    checker: ts.TypeChecker,
+    reference: ts.Identifier,
+): number | { readonly alias: ts.Identifier } {
+    if (isWriteTarget(reference)) return Infinity;
+    // The value flows through wrappers, selections and the methods that
+    // return their receiver to the node that consumes it.
+    let value: ts.Expression = reference;
+    for (;;) {
+        const parent: ts.Node = value.parent;
+        if (
+            ts.isParenthesizedExpression(parent) ||
+            ts.isNonNullExpression(parent) ||
+            ts.isAsExpression(parent) ||
+            ts.isSatisfiesExpression(parent) ||
+            ts.isTypeAssertionExpression(parent) ||
+            (ts.isConditionalExpression(parent) &&
+                parent.condition !== value) ||
+            (ts.isBinaryExpression(parent) &&
+                (parent.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken ||
+                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                    parent.operatorToken.kind ===
+                        ts.SyntaxKind.AmpersandAmpersandToken ||
+                    (parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+                        parent.right === value)))
+        ) {
+            value = parent;
+            continue;
+        }
+        if (
+            ts.isPropertyAccessExpression(parent) &&
+            ts.isCallExpression(parent.parent) &&
+            parent.parent.expression === parent &&
+            lengthPreservingArrayMethods.has(parent.name.text)
+        ) {
+            value = parent.parent;
+            continue;
+        }
+        break;
+    }
+    const parent = value.parent;
+    if (ts.isVariableDeclaration(parent) && parent.initializer === value)
+        return ts.isIdentifier(parent.name) ? { alias: parent.name } : 0;
+    if (
+        ts.isBinaryExpression(parent) &&
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        parent.right === value
+    ) {
+        const target = unwrapExpression(parent.left);
+        if (ts.isIdentifier(target)) return { alias: target };
+        return ts.isArrayLiteralExpression(target) ||
+            ts.isObjectLiteralExpression(target)
+            ? 0
+            : Infinity;
+    }
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === value) {
+        const method = parent.name.text;
+        if (method === "length") return isWriteTarget(parent) ? Infinity : 0;
+        const call = parent.parent;
+        if (!ts.isCallExpression(call) || call.expression !== parent) return 0;
+        return resizingArrayMethods.has(method) ||
+            (readOnlyDataMethods.has(method) &&
+                callbackTakesReceiver(checker, method, call.arguments[0]))
+            ? Infinity
+            : 0;
+    }
+    if (ts.isElementAccessExpression(parent) && parent.expression === value) {
+        if (!isWriteTarget(parent)) return 0;
+        const index = checker.getTypeAtLocation(parent.argumentExpression);
+        return index.isNumberLiteral() &&
+            Number.isInteger(index.value) &&
+            index.value >= 0
+            ? index.value + 1
+            : Infinity;
+    }
+    if (
+        ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) &&
+            parent.expression === value) ||
+        ts.isSpreadElement(parent) ||
+        ts.isSpreadAssignment(parent) ||
+        ts.isExpressionStatement(parent) ||
+        (ts.isTemplateSpan(parent) &&
+            !ts.isTaggedTemplateExpression(parent.parent.parent)) ||
+        ts.isTypeOfExpression(parent) ||
+        ts.isVoidExpression(parent) ||
+        (ts.isPrefixUnaryExpression(parent) && !isUpdateExpression(parent)) ||
+        ts.isConditionalExpression(parent) ||
+        ts.isIfStatement(parent) ||
+        ts.isWhileStatement(parent) ||
+        ts.isDoStatement(parent) ||
+        ts.isSwitchStatement(parent) ||
+        ts.isCaseClause(parent) ||
+        (ts.isBinaryExpression(parent) &&
+            !isAssignmentOperator(parent.operatorToken.kind))
+    )
+        return 0;
+    return Infinity;
+}
+
+/**
+ * The least length every statement of the entry source keeps each array
+ * binding within (`Infinity` once one can resize it without bound),
+ * following local aliases: a binding shares the extent of every alias it
+ * initializes. Symbols keep unrelated same-named bindings independent.
+ */
+function lengthExtents(
     checker: ts.TypeChecker,
     file: ts.SourceFile,
-): ReadonlySet<ts.Symbol> {
-    let byFile = resizedSymbolsByChecker.get(checker);
+): ReadonlyMap<ts.Symbol, number> {
+    let byFile = lengthExtentsByChecker.get(checker);
     const cached = byFile?.get(file);
     if (cached) return cached;
     const symbols = new CompilerSymbols(checker);
-    const resized = new EmissionSet<ts.Symbol>();
-    const addIdentifier = (node: ts.Node): void => {
+    const extents = new EmissionMap<ts.Symbol, number>();
+    const aliasSources = new EmissionMap<ts.Symbol, EmissionSet<ts.Symbol>>();
+    const extend = (symbol: ts.Symbol, extent: number): boolean => {
+        if ((extents.get(symbol) ?? 0) >= extent) return false;
+        extents.set(symbol, extent);
+        return true;
+    };
+    const unbounded = (node: ts.Node): void => {
         if (!ts.isIdentifier(node)) return;
         const symbol = symbols.valueSymbol(node);
-        if (symbol) resized.add(symbol);
+        if (symbol) extend(symbol, Infinity);
     };
-    forEachAnalysisNode(file, (node) => {
-        if (ts.isCallExpression(node)) {
+    forEachAnalysisNode(
+        file,
+        (node) => {
+            if (ts.isCallExpression(node) || ts.isNewExpression(node))
+                for (const argument of node.arguments ?? [])
+                    forEachAnalysisNode(argument, unbounded);
             if (
-                ts.isPropertyAccessExpression(node.expression) &&
-                ts.isIdentifier(node.expression.expression) &&
-                (resizingArrayMethods.has(node.expression.name.text) ||
-                    arrayCallbackReceiverPolicy(node.expression.name.text)
-                        .invalidatesFacts)
-            ) {
-                addIdentifier(node.expression.expression);
+                !ts.isIdentifier(node) ||
+                (ts.isVariableDeclaration(node.parent) &&
+                    node.parent.name === node) ||
+                ((ts.isParameter(node.parent) ||
+                    ts.isBindingElement(node.parent) ||
+                    ts.isFunctionDeclaration(node.parent) ||
+                    ts.isFunctionExpression(node.parent) ||
+                    ts.isClassDeclaration(node.parent) ||
+                    ts.isClassExpression(node.parent)) &&
+                    node.parent.name === node)
+            )
+                return;
+            const symbol = symbols.valueSymbol(node);
+            if (!symbol) return;
+            const extent = referenceLengthExtent(checker, node);
+            if (typeof extent === "number") {
+                extend(symbol, extent);
+                return;
             }
-            for (const argument of node.arguments) {
-                forEachAnalysisNode(argument, addIdentifier);
+            const alias = symbols.valueSymbol(extent.alias);
+            if (!alias) {
+                extend(symbol, Infinity);
+                return;
             }
+            let sources = aliasSources.get(alias);
+            if (!sources)
+                aliasSources.set(alias, (sources = new EmissionSet()));
+            sources.add(symbol);
+        },
+        { types: "skip", memberNames: "skip" },
+    );
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const [alias, sources] of aliasSources) {
+            const extent = extents.get(alias);
+            if (extent === undefined) continue;
+            for (const source of sources)
+                if (extend(source, extent)) changed = true;
         }
-        if (
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        ) {
-            const left = node.left;
-            if (ts.isIdentifier(left)) {
-                addIdentifier(left);
-            } else if (ts.isArrayLiteralExpression(left)) {
-                forEachAnalysisNode(left, addIdentifier);
-            } else if (
-                ts.isPropertyAccessExpression(left) &&
-                ts.isIdentifier(left.expression) &&
-                left.name.text === "length"
-            ) {
-                addIdentifier(left.expression);
-            }
-        }
-    });
+    }
     byFile ??= new EmissionWeakMap();
-    byFile.set(file, resized);
-    resizedSymbolsByChecker.set(checker, byFile);
-    return resized;
+    byFile.set(file, extents);
+    lengthExtentsByChecker.set(checker, byFile);
+    return extents;
 }
 
-/** Whether nothing in the entry source can change `name`'s length. */
+/**
+ * Whether nothing in the entry source can change the length of `name`,
+ * which a literal declares with `length` elements: no exported binding,
+ * and no reference to it or to a local alias of it that can resize it.
+ */
 export function isNeverResized(
     checker: ts.TypeChecker,
     name: ts.Identifier,
+    length: number,
 ): boolean {
     const symbol = declaredSymbol(checker, name);
     return (
         symbol !== undefined &&
-        !resizedSymbols(checker, name.getSourceFile()).has(symbol)
+        new CompilerSymbols(checker).moduleExportReference(name) ===
+            undefined &&
+        (lengthExtents(checker, name.getSourceFile()).get(symbol) ?? 0) <=
+            length
     );
 }
 
@@ -231,6 +449,8 @@ interface DataLoweringContext extends Pick<
     | "options"
     | "expectArgumentCount"
     | "sourceFile"
+    | "program"
+    | "activeThis"
     | "admissions"
     | "asyncActivations"
     | "libraryGlobal"
@@ -252,6 +472,7 @@ interface DataLoweringContext extends Pick<
     | "classLowerer"
     | "compileValue"
     | "emitDiscardedValue"
+    | "emitExpressionAsStatement"
     | "compileNumber"
     | "castNumber"
     | "conditions"
@@ -282,6 +503,8 @@ interface DataLoweringContext extends Pick<
     | "resolveThisField"
     | "resolveRecordMember"
     | "resolveRecordValue"
+    | "compileClassParameterValue"
+    | "browserErasure"
     | "knownValueWithoutEvaluation"
     | "enterRuntimeControlFlow"
     | "leaveRuntimeControlFlow"
@@ -302,7 +525,13 @@ interface DataLoweringContext extends Pick<
     | "requireEngine"
     | "refuseBorrowedPlatformEventEscape"
     | "fail"
-> {}
+> {
+    /** Declarations a storage demand retyped, by declaration. */
+    readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
+}
 
 /**
  * `owned` — the local holds a value it constructed.
@@ -314,6 +543,58 @@ interface DataLoweringContext extends Pick<
  *   later use would read through a dangling reference.
  */
 type LocalOwnership = "owned" | "copy" | "escaped" | "alias" | "poisoned";
+
+/** What iterating a value yields (`DataLowerer.iteratedElements`). */
+type IteratedElements =
+    /** A compile-time tuple's own elements. */
+    | { readonly lanes: readonly Value[] }
+    /** A native range read in order; a numeric tuple's has its lane count. */
+    | {
+          readonly range: Value;
+          readonly element: DataType;
+          readonly arity?: number;
+      };
+
+/** Where a numeric read-modify-write stores its result. */
+type NumericUpdatePlace =
+    /** A native number lvalue: C++ `++`/`--`/`op=` apply directly. */
+    | { kind: "scalar"; cpp: string; target: Value }
+    /** An optional-number slot, absent until written. */
+    | {
+          kind: "optional";
+          target: Value & { dataType: DataType & { kind: "optional" } };
+      }
+    | EntryUpdatePlace;
+
+/** Two strict absence tests of one plain read, standing for a loose one. */
+interface PairedAbsence {
+    readonly reference: ts.Expression;
+    /** `x != null` rather than `x == null`. */
+    readonly present: boolean;
+}
+
+/** A Map/Record entry with a number value, absent until set. */
+interface EntryUpdatePlace {
+    kind: "entry";
+    owner: Value;
+    dataType: DataType & { kind: "map" };
+    keyCpp: string;
+}
+
+/**
+ * The right side of an assignment used as a value while its store lowers
+ * (`DataLowerer.assigned`): pending until a compile evaluates it, evaluating
+ * meanwhile, then the binding it was evaluated into.
+ */
+type AssignedRight = Value | "pending" | "evaluating";
+
+/** The new value of `++`/`--` from the old one, already ToNumeric. */
+function updateStepCpp(
+    expression: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
+    previous: string,
+): string {
+    return `${previous} ${expression.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-"} 1.0`;
+}
 
 /**
  * Lowers the plain-data subset: struct paths, dynamic arrays, static tables,
@@ -375,6 +656,18 @@ export class DataLowerer {
 
     public constructor(public readonly context: DataLoweringContext) {}
 
+    /**
+     * `if (a[i++] = v)`, `x = (o.p = v)`, `a.x = b.x = v`: an assignment
+     * used as a value evaluates its target and its right side once and
+     * yields the right side as stored, never the target read back, which a
+     * setter (a class's, an engine property's) may normalize. A plain number
+     * or boolean slot stores in place and yields the stored scalar; any
+     * other target stores through its statement, which binds the right
+     * side where it first consumes it, converted for that consumer
+     * (`assigned`), and the assignment yields that binding. Undefined for a
+     * compound operator, and for a browser-only assignment the browser
+     * lowering owns.
+     */
     public compileAssignmentValue(
         expression: ts.BinaryExpression,
     ): Value | undefined {
@@ -384,32 +677,316 @@ export class DataLowerer {
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
             return undefined;
         }
-        const left = this.context.unwrap(expression.left);
+        return this.withStoreKeysHeld(expression, () =>
+            this.compileStoredAssignmentValue(expression),
+        );
+    }
+
+    /**
+     * Lowers the member store `expression` with the keys of its target read
+     * first, as JavaScript reads them: each computed key of the target's
+     * access chain (`a[i++] = i`, `rows[k].x = f()`) that the right side
+     * could change or observe -- or that changes what the right side reads
+     * -- is held in a temporary every compile entry point reads back
+     * (`assigned`). A native store evaluates its right operand first and the
+     * right side's statements run before the store, so either would
+     * otherwise overtake the key. A key an enclosing store already holds
+     * stays held.
+     */
+    public withStoreKeysHeld<T>(
+        expression: ts.BinaryExpression,
+        lower: () => T,
+    ): T {
+        const keys: ts.Expression[] = [];
+        for (
+            let target = this.context.unwrap(expression.left);
+            ts.isPropertyAccessExpression(target) ||
+            ts.isElementAccessExpression(target);
+            target = this.context.unwrap(target.expression)
+        )
+            if (ts.isElementAccessExpression(target))
+                keys.unshift(target.argumentExpression);
         if (
+            keys.length === 0 ||
+            this.context.browserErasure.isBrowserOnlyExpression(expression.left)
+        )
+            return lower();
+        const pins = this.context.evaluationOrder.operandsToPin([
+            ...keys,
+            expression.right,
+        ]);
+        // A compound store reads its target before writing it, so a key
+        // with effects runs once for both.
+        const compound =
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken;
+        const held: ts.Expression[] = [];
+        try {
+            keys.forEach((key, index) => {
+                const node = this.context.unwrap(key);
+                if (
+                    !(pins[index] || (compound && expressionHasEffects(key))) ||
+                    this.assignedRights.has(node)
+                )
+                    return;
+                this.assignedRights.set(
+                    node,
+                    pinOperand(
+                        this.context,
+                        this.context.compileValue(key),
+                        key,
+                        "store_key",
+                    ),
+                );
+                held.push(node);
+            });
+            return lower();
+        } finally {
+            for (const node of held) this.assignedRights.delete(node);
+        }
+    }
+
+    /** Whether evaluating a store's target runs code beyond its held keys. */
+    private storeTargetRunsCode(target: ts.Expression): boolean {
+        return someAnalysisNode(
+            target,
+            (node) =>
+                ts.isCallExpression(node) ||
+                ts.isNewExpression(node) ||
+                ts.isAwaitExpression(node) ||
+                isUpdateExpression(node) ||
+                isAssignmentExpression(node),
+            {
+                skip: (node) =>
+                    ts.isExpression(node) && this.assignedRights.has(node),
+            },
+        );
+    }
+
+    /** `compileAssignmentValue` once its target's keys are read. */
+    private compileStoredAssignmentValue(
+        expression: ts.BinaryExpression,
+    ): Value | undefined {
+        const left = this.context.unwrap(expression.left);
+        const inPlace =
             ts.isPropertyAccessExpression(left) ||
             ts.isElementAccessExpression(left)
-        ) {
-            const target = this.compileDataPath(left, "write");
-            if (target?.kind === "number" && !target.dataStore) {
-                return {
-                    kind: "number",
-                    cpp: `(${target.cpp} = ${this.context.compileNumber(expression.right, "double")})`,
-                    dataType: { kind: "number" },
-                };
-            }
-            if (target?.kind === "boolean" && !target.dataStore) {
-                return {
-                    kind: "boolean",
-                    cpp: `(${target.cpp} = ${this.context.conditions.compileCondition(expression.right)})`,
-                    dataType: { kind: "boolean" },
-                    impure: true,
-                };
-            }
+                ? this.scalarMemberAssignmentValue(expression, left)
+                : ts.isIdentifier(left)
+                  ? this.localAssignmentValue(expression, left)
+                  : undefined;
+        if (inPlace) return inPlace;
+        if (this.context.browserErasure.isBrowserOnlyExpression(expression))
             return undefined;
+        const right = this.context.unwrap(expression.right);
+        this.assignedRights.set(right, "pending");
+        let stored: AssignedRight | undefined;
+        try {
+            this.context.emitExpressionAsStatement(expression);
+            stored = this.assignedRights.get(right);
+        } finally {
+            this.assignedRights.delete(right);
         }
-        if (!ts.isIdentifier(left)) {
-            return undefined;
+        const rightType = this.context.checker.getTypeAtLocation(right);
+        if (typeof stored === "object")
+            return this.narrowOptional(
+                stored,
+                expression,
+                this.context.checker.getNonNullableType(rightType) ===
+                    rightType,
+            );
+        // A store evaluating no right side at run time (a compile-time
+        // record's wiring, an erased browser write) leaves it in its
+        // target, which reads it back unless reading would run code again.
+        if (expressionHasEffects(left))
+            this.context.fail(
+                left,
+                "This store evaluates its right side at generation; used as a value, its target, which runs code, would run again.",
+            );
+        return this.context.compileValue(expression.left);
+    }
+
+    /**
+     * The right side of each assignment used as a value whose store is
+     * lowering, and each store key held ahead of its right side
+     * (`withStoreKeysHeld`), by its unwrapped expression. The compile entry
+     * points (`compileValue`, `compileNumber`, `compileBoolean`,
+     * `compileCondition`, `compileForSink`) answer it through `assigned`.
+     */
+    private readonly assignedRights = new EmissionMap<
+        ts.Expression,
+        AssignedRight
+    >();
+
+    /**
+     * `expression` as one consumer compiles it while it is the right side of
+     * an assignment used as a value (`compileAssignmentValue`): the first
+     * consumer evaluates it once, `compile`, into the binding `bind` makes;
+     * every consumer reads that binding through `fromValue`. Undefined for
+     * any other expression, which its consumer compiles as usual.
+     */
+    private assigned<T>(
+        expression: ts.Expression,
+        compile: () => T,
+        bind: (compiled: T) => Value,
+        fromValue: (value: Value) => T,
+    ): T | undefined {
+        const key = this.context.unwrap(expression);
+        let state = this.assignedRights.get(key);
+        if (state === undefined || state === "evaluating") return undefined;
+        if (state === "pending") {
+            this.assignedRights.set(key, "evaluating");
+            let compiled: T;
+            try {
+                compiled = compile();
+            } finally {
+                this.assignedRights.set(key, "pending");
+            }
+            state = bind(compiled);
+            this.assignedRights.set(key, state);
         }
+        this.context.useNativeValue(state);
+        return fromValue(state);
+    }
+
+    /** `compileValue` of an assigned right side (`assigned`), held once. */
+    public assignedValue(expression: ts.Expression): Value | undefined {
+        if (this.assignedRights.size === 0) return undefined;
+        return this.assigned(
+            expression,
+            () => this.context.compileValue(expression),
+            // A callback is a generation-time closure: reading it twice
+            // evaluates nothing.
+            (value) =>
+                value.kind === "callback"
+                    ? value
+                    : pinOperand(this.context, value, expression, "assigned"),
+            (value) => value,
+        );
+    }
+
+    /** `compileNumber` of an assigned right side (`assigned`). */
+    public assignedNumber(
+        expression: ts.Expression,
+        precision: "float" | "double",
+    ): string | undefined {
+        if (this.assignedRights.size === 0) return undefined;
+        return this.assigned(
+            expression,
+            () => this.context.compileNumber(expression, "double"),
+            (cpp) => this.bindAssigned(cpp, { kind: "number" }),
+            (value) => this.context.castNumber(value, precision),
+        );
+    }
+
+    /** `compileCondition` and `compileBoolean` of an assigned right side (`assigned`). */
+    public assignedCondition(
+        expression: ts.Expression,
+        compile: () => string,
+    ): string | undefined {
+        if (this.assignedRights.size === 0) return undefined;
+        return this.assigned(
+            expression,
+            compile,
+            (cpp) => this.bindAssigned(cpp, { kind: "boolean" }),
+            (value) =>
+                this.truthinessCondition(value) ??
+                this.context.fail(
+                    expression,
+                    "Assigned value has no represented truthiness.",
+                ),
+        );
+    }
+
+    /** A bound right side, declared once where its store first consumes it. */
+    private bindAssigned(initializer: string, dataType: DataType): Value {
+        const name = this.context.allocateTemporaryCppName("assigned");
+        const scalar = ["number", "boolean", "string", "enum"].includes(
+            dataType.kind,
+        );
+        this.context.emit({
+            kind: "declaration",
+            type: scalar
+                ? `const ${this.context.dataTypes.cppType(dataType)}`
+                : "auto",
+            name,
+            initializer,
+            attributes: "[[maybe_unused]] ",
+        });
+        return {
+            ...this.leafValue(name, dataType),
+            nativeBinding: true,
+            nativeCaptures: [
+                scalar
+                    ? this.context.registerNativeConstBinding(name)
+                    : this.context.registerNativeBinding(name),
+            ],
+        };
+    }
+
+    /** Whether `expression` is the right side of an assignment used as a value. */
+    private isAssignedRight(expression: ts.Expression): boolean {
+        return this.assignedRights.has(this.context.unwrap(expression));
+    }
+
+    /** Whether `expression` reads back a store key held ahead of its right side. */
+    public isHeldStoreKey(expression: ts.Expression): boolean {
+        return this.isAssignedRight(expression);
+    }
+
+    /** A plain number or boolean slot (no setter, no typed-array store). */
+    private scalarMemberAssignmentValue(
+        expression: ts.BinaryExpression,
+        left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): Value | undefined {
+        const ownerType = this.context.checker.getTypeAtLocation(
+            left.expression,
+        );
+        const property = ts.isPropertyAccessExpression(left)
+            ? declaredSymbol(this.context.checker, left.name)
+            : undefined;
+        const accessor =
+            resolvedSymbol(this.context.checker, left)?.declarations?.some(
+                (declaration) =>
+                    ts.isGetAccessorDeclaration(declaration) ||
+                    ts.isSetAccessorDeclaration(declaration),
+            ) ||
+            (property
+                ? this.context.dataTypes.isAccessorProperty(property, ownerType)
+                : ts.isElementAccessExpression(left) &&
+                  this.context.dataTypes.isAccessorRecordType(ownerType));
+        if (accessor) return undefined;
+        const scalar = (path: Value | undefined): boolean =>
+            (path?.kind === "number" || path?.kind === "boolean") &&
+            !path.dataStore;
+        const target = this.context.probeEmission(
+            () => this.compileDataPath(left, "write"),
+            scalar,
+        );
+        if (!target || !scalar(target)) return undefined;
+        // The store withdraws generation snapshots of the field's owner, as
+        // a statement store does.
+        const root = rootIdentifier(left, (node) => this.context.unwrap(node));
+        const owner = root && this.context.bindings.lookupOptional(root);
+        if (owner) this.context.bindings.invalidateRecordProperties(owner);
+        return target.kind === "number"
+            ? {
+                  kind: "number",
+                  cpp: `(${target.cpp} = ${this.context.compileNumber(expression.right, "double")})`,
+                  dataType: { kind: "number" },
+              }
+            : {
+                  kind: "boolean",
+                  cpp: `(${target.cpp} = ${this.context.conditions.compileCondition(expression.right)})`,
+                  dataType: { kind: "boolean" },
+                  impure: true,
+              };
+    }
+
+    /** `x = (y = v)` for a number, boolean, function or optional local. */
+    private localAssignmentValue(
+        expression: ts.BinaryExpression,
+        left: ts.Identifier,
+    ): Value | undefined {
         const scalar = this.context.bindings.lookupOptional(left);
         if (scalar?.kind === "number") {
             return {
@@ -726,6 +1303,19 @@ export class DataLowerer {
                 `${label} expects at most ${sourceParameterCount} arguments.`,
             );
         }
+        // `f(...lanes)` against fixed parameters: every argument in order,
+        // each numeric tuple spread expanded into its lanes.
+        const spreadSlots =
+            functionType.restParameter === undefined &&
+            erased.size === 0 &&
+            arguments_.some(ts.isSpreadElement)
+                ? this.spreadArgumentValues(arguments_, label)
+                : undefined;
+        if (spreadSlots && spreadSlots.length > sourceParameterCount)
+            this.context.fail(
+                call,
+                `${label} expects at most ${sourceParameterCount} arguments.`,
+            );
         const argumentsCpp: string[] = [];
         let runtimeIndex = 0;
         for (
@@ -733,7 +1323,18 @@ export class DataLowerer {
             sourceIndex < sourceParameterCount;
             sourceIndex += 1
         ) {
-            const argument = arguments_[sourceIndex];
+            const slot = spreadSlots?.[sourceIndex];
+            if (slot) {
+                argumentsCpp.push(
+                    this.compileKnownValueForSink(
+                        slot.value,
+                        functionType.parameters[runtimeIndex++]!,
+                        slot.node,
+                    ),
+                );
+                continue;
+            }
+            const argument = spreadSlots ? undefined : arguments_[sourceIndex];
             if (erased.has(sourceIndex)) {
                 if (argument) {
                     const argumentType =
@@ -772,24 +1373,9 @@ export class DataLowerer {
                 });
                 for (const argument of arguments_.slice(sourceIndex)) {
                     if (ts.isSpreadElement(argument)) {
-                        const source =
-                            this.context.allocateTemporaryCppName(
-                                "rest_source",
-                            );
-                        this.context.emit({
-                            kind: "declaration",
-                            type: "const auto",
-                            name: source,
-                            initializer: this.compileForSink(
-                                argument.expression,
-                                parameter,
-                            ),
-                        });
-                        const item =
-                            this.context.allocateTemporaryCppName("rest_item");
                         this.context.emit({
                             kind: "expression",
-                            code: `for (const auto& ${item} : ${source}) ${packed}.push_back(${item});`,
+                            code: `bbl::js::array_append(${packed}, ${this.spreadSource(argument, parameter).cpp});`,
                         });
                     } else {
                         this.context.emit({
@@ -834,8 +1420,47 @@ export class DataLowerer {
         return argumentsCpp;
     }
 
-    /** Container root each live alias refers into, for invalidation. */
-    private readonly aliasRoots = new EmissionMap<string, string>();
+    /**
+     * Call arguments with spreads, evaluated in source order and read
+     * once each: a numeric tuple spread supplies one argument per lane, a
+     * compile-time tuple's read here before the later arguments.
+     */
+    private spreadArgumentValues(
+        arguments_: readonly ts.Expression[],
+        label: string,
+    ): { value: Value; node: ts.Expression }[] {
+        return this.spreadLaneValues(
+            arguments_,
+            (argument) =>
+                this.context.bindings.pinValueToTemporary(
+                    this.context.compileValue(argument),
+                    "call_argument",
+                    argument,
+                ),
+            `${label} spread arguments expand a numeric tuple.`,
+            (lane, spread) =>
+                this.context.bindings.pinValueToTemporary(
+                    lane,
+                    "spread_lane",
+                    spread,
+                ),
+        );
+    }
+
+    /**
+     * Container path each alias refers into, and its root, for invalidation.
+     * A poisoned alias keeps its entry: a terminating branch's restore
+     * (`withPreservedAliasState`) can make it an alias again.
+     */
+    private readonly aliasContainers = new EmissionMap<
+        string,
+        { readonly root: string; readonly container: string }
+    >();
+    /** The aliases ever registered into each root, which a mutation of it scans. */
+    private readonly aliasesByRoot = new EmissionMap<
+        string,
+        EmissionSet<string>
+    >();
 
     /** Container locals whose length generation knows; see below. */
     private readonly fixedLengths = new EmissionMap<string, number>();
@@ -867,19 +1492,33 @@ export class DataLowerer {
      */
     public registerAlias(cppName: string, containerCpp: string): void {
         this.ownership.set(cppName, "alias");
-        this.aliasRoots.set(cppName, this.rootName(containerCpp));
+        const root = cppRootName(containerCpp);
+        this.aliasContainers.set(cppName, { root, container: containerCpp });
+        let aliases = this.aliasesByRoot.get(root);
+        if (!aliases) {
+            aliases = new EmissionSet();
+            this.aliasesByRoot.set(root, aliases);
+        }
+        aliases.add(cppName);
     }
 
     /**
      * Marks every alias into `containerCpp` unusable: growing or
      * shrinking the backing vector can move its elements, so a
      * reference taken before the mutation no longer denotes the same
-     * element (or any element at all).
+     * element (or any element at all). Distinct member paths of one
+     * object name disjoint fields, so resizing one leaves the others.
      */
     public invalidateAliases(containerCpp: string): void {
-        const root = this.rootName(containerCpp);
-        for (const [name, aliasRoot] of this.aliasRoots) {
-            if (aliasRoot === root && this.ownership.get(name) === "alias") {
+        const root = cppRootName(containerCpp);
+        for (const name of this.aliasesByRoot.get(root) ?? []) {
+            // A name registered again since may now alias another root.
+            const alias = this.aliasContainers.get(name);
+            if (
+                this.ownership.get(name) === "alias" &&
+                alias?.root === root &&
+                !disjointMemberPaths(alias.container, containerCpp)
+            ) {
                 this.ownership.set(name, "poisoned");
             }
         }
@@ -890,17 +1529,12 @@ export class DataLowerer {
         this.ownership.withRestoredChanges(work);
     }
 
-    private rootName(cpp: string): string {
-        const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(cpp);
-        return match ? match[0] : cpp;
-    }
-
     public markEscaped(value: Value): void {
         this.invalidateRecordArrayFacts(value);
         if (value.kind !== "data" || this.sharesObjectStorage(value.dataType)) {
             return;
         }
-        const root = this.rootName(value.cpp);
+        const root = cppRootName(value.cpp);
         if (this.ownership.get(root) === "owned") {
             this.ownership.set(root, "escaped");
         }
@@ -911,10 +1545,7 @@ export class DataLowerer {
         if (type.kind === "optional")
             return this.sharesObjectStorage(type.inner);
         return (
-            ["vector", "map", "set", "tuple", "product", "arguments"].includes(
-                type.kind,
-            ) ||
-            isTypedArrayType(type) ||
+            sharesStorageKind(type) ||
             (type.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(type.name))
         );
@@ -1055,7 +1686,7 @@ export class DataLowerer {
                 }
                 return undefined;
             }
-            const state = this.ownership.get(this.rootName(bound.cpp));
+            const state = this.ownership.get(cppRootName(bound.cpp));
             // A poisoned alias is unusable in either direction: its
             // container was structurally mutated after the binding, so
             // the reference no longer denotes the same element.
@@ -1475,11 +2106,23 @@ export class DataLowerer {
         );
         if (slot) {
             // The selection is evaluated before the value: C++ sequences a
-            // call's postfix expression before its arguments.
-            const keyCpp = this.compileEnumIndex(
+            // call's postfix expression before its arguments, and a bound
+            // value is declared ahead of the store, so the selection is too.
+            let keyCpp = this.compileEnumIndex(
                 left.argumentExpression,
                 keyData.name,
             );
+            if (this.isAssignedRight(right)) {
+                const key =
+                    this.context.allocateTemporaryCppName("property_key");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: key,
+                    initializer: keyCpp,
+                });
+                keyCpp = key;
+            }
             this.context.emit({
                 kind: "expression",
                 code: `${target}${slot}(${keyCpp}).set(${this.compileForSink(right, commonType)});`,
@@ -2236,6 +2879,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             case "vector":
             case "span":
+                // A numeric tuple is a number array with the same identity.
+                if (
+                    !staticOnly &&
+                    value.kind === "data" &&
+                    value.dataType?.kind === "tuple"
+                )
+                    return (
+                        sink.kind === "vector" && sink.element.kind === "number"
+                    );
                 return (
                     value.kind === "tuple" &&
                     (value.tupleElements ?? []).every((entry) =>
@@ -2566,6 +3218,72 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * A read every member of a data union answers, lowered once over each
+     * member's own storage and selected at run time by the member the union
+     * holds (`std::visit`), as JavaScript reads the property or element of
+     * whichever object the binding refers to. Every member's read must have
+     * one result type; a member without the read refuses through `read`.
+     */
+    private unionMemberRead(
+        owner: Value,
+        members: readonly DataType[],
+        node: ts.Node,
+        read: (member: Value) => Value,
+        captures: readonly NativeCaptureBinding[] = owner.nativeCaptures ?? [],
+    ): Value {
+        const parameter = this.context.allocateTemporaryCppName("union_member");
+        let resultType: DataType | undefined;
+        const arms = members.map((member) => {
+            let body = "";
+            const lines = this.context.captureEmittedLines(() => {
+                const result = read(this.leafValue(parameter, member));
+                const type =
+                    result.dataType ??
+                    (result.kind === "number" ||
+                    result.kind === "boolean" ||
+                    result.kind === "string"
+                        ? { kind: result.kind }
+                        : undefined);
+                if (
+                    !type ||
+                    result.optionalFoundCpp !== undefined ||
+                    result.slotFoundCpp !== undefined ||
+                    (resultType && !dataTypesEqual(resultType, type))
+                )
+                    this.context.fail(
+                        node,
+                        "A read through a data union requires one result " +
+                            "type across its members.",
+                    );
+                resultType = type;
+                body = `return ${this.compileKnownValueForSink(result, type, node)};`;
+            });
+            return { member, body: [...lines, body].join(" ") };
+        });
+        const resultCpp = this.context.dataTypes.cppType(resultType!);
+        const memberType = `${parameter}_type`;
+        const visitor =
+            new Set(arms.map((arm) => arm.body)).size === 1
+                ? arms[0]!.body
+                : `using ${memberType} = std::decay_t<decltype(${parameter})>; ` +
+                  arms
+                      .map((arm, index) =>
+                          index === arms.length - 1
+                              ? `{ ${arm.body} }`
+                              : `if constexpr (std::is_same_v<${memberType}, ` +
+                                `${this.context.dataTypes.cppType(arm.member)}>) { ${arm.body} } else `,
+                      )
+                      .join("");
+        return {
+            ...this.leafValue(
+                `std::visit([&](const auto& ${parameter}) -> ${resultCpp} { ${visitor} }, ${owner.cpp})`,
+                resultType!,
+            ),
+            nativeCaptures: captures,
+        };
+    }
+
+    /**
      * `left ?? right` over the data model — the general operator, taken
      * after the handle-collection concept and the static-record fold have
      * both declined.
@@ -2670,6 +3388,49 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             name,
             binding: this.context.registerNativeConstBinding(name),
         };
+    }
+
+    /**
+     * `a ?? b` over records of two types. JavaScript selects one of the two
+     * objects, so each operand is stored as the expression's own record type
+     * the way an assignment there would store it (one shared layout, or a
+     * refusal where only a copy could hold it). The result is absent exactly
+     * when the left operand is and the fallback is too.
+     */
+    private coalesceDistinctRecords(
+        expression: ts.BinaryExpression,
+        left: Value,
+        leftFound: string,
+        fallback: Value,
+        fallbackLines: readonly string[],
+    ): Value {
+        const declared = this.dataTypeAt(expression);
+        const record =
+            declared?.kind === "optional" ? declared.inner : declared;
+        if (record?.kind !== "struct")
+            this.context.fail(
+                expression,
+                "Coalescing records of two types requires one record type for the result.",
+            );
+        // The selected object is an existing one: reference storage.
+        const type = this.context.dataTypes.markStoredObjectReferences(record);
+        const present = this.compileKnownValueForSink(
+            { ...left, optionalFoundCpp: "true" },
+            type,
+            expression.left,
+        );
+        const arm = this.compileArm(() =>
+            this.compileKnownValueForSink(fallback, type, expression.right),
+        );
+        return this.context.bindings.pinValueToTemporary(
+            this.leafValue(
+                `(${leftFound} ? ${present} : ` +
+                    `${this.armExpression(expression.right, [...fallbackLines, ...arm.lines], arm.value, type)})`,
+                type,
+            ),
+            "nullish_record",
+            expression,
+        );
     }
 
     public compileNullishCoalesce(
@@ -2868,41 +3629,42 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             if (
                 left.kind === "data" &&
-                left.dataType?.kind === "struct" &&
-                fallback.kind === "record"
+                ((left.dataType?.kind === "struct" &&
+                    fallback.kind === "record") ||
+                    ((left.dataType?.kind === "tuple" ||
+                        left.dataType?.kind === "vector") &&
+                        fallback.kind === "tuple"))
             ) {
                 const type = left.dataType;
-                return {
-                    ...this.leafValue(
-                        `(${leftFound} ? ${left.cpp} : ` +
-                            `${fallbackArm(type, () => this.compileKnownValueForSink(fallback, type, expression.right))})`,
-                        type,
-                    ),
-                    freshData: true,
-                };
+                const selected = this.leafValue(
+                    `(${leftFound} ? ${left.cpp} : ` +
+                        `${fallbackArm(type, () => this.compileKnownValueForSink(fallback, type, expression.right))})`,
+                    type,
+                );
+                // A shared object or array keeps its identity through the
+                // select; an inline record would be a copy of the left one.
+                return type.kind === "struct" &&
+                    !this.context.dataTypes.isReferenceStruct(type.name)
+                    ? selected
+                    : { ...selected, freshData: true };
             }
+            // Records of two types are both stored as the result's record
+            // type; records of one type select below, keeping the presence
+            // a fallback that can itself be absent composes into the result.
             if (
                 left.kind === "data" &&
                 fallback.kind === "data" &&
                 left.dataType?.kind === "struct" &&
-                fallback.dataType?.kind === "struct"
-            ) {
-                const common = this.context.dataTypes.commonStruct(
-                    left.dataType,
-                    fallback.dataType,
+                fallback.dataType?.kind === "struct" &&
+                !dataTypesEqual(left.dataType, fallback.dataType)
+            )
+                return this.coalesceDistinctRecords(
+                    expression,
+                    left,
+                    leftFound,
+                    fallback,
+                    fallbackLines,
                 );
-                if (common) {
-                    return {
-                        ...this.leafValue(
-                            `(${leftFound} ? ` +
-                                `${this.compileKnownValueForSink(left, common, expression.left)} : ` +
-                                `${fallbackArm(common, () => this.compileKnownValueForSink(fallback, common, expression.right))})`,
-                            common,
-                        ),
-                        freshData: true,
-                    };
-                }
-            }
             if (fallback.kind !== left.kind) {
                 this.context.fail(
                     expression.right,
@@ -3102,6 +3864,63 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : value;
     }
 
+    /**
+     * A read of a property the record's type admits as absent (optional,
+     * or typed to include undefined) and its struct does not store: the
+     * record lacks it, so the read is `undefined`. The receiver is a path,
+     * so skipping its evaluation skips no effect.
+     */
+    private absentPropertyRead(
+        owner: Value,
+        dataType: DataType<"struct">,
+        access: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const property = access.name.text;
+        const symbol = accessedPropertySymbol(this.context.checker, access);
+        if (
+            !symbol ||
+            ((symbol.flags & ts.SymbolFlags.Optional) === 0 &&
+                !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol)))
+        )
+            return undefined;
+        if (owner.impure || !isCppPath(owner.cpp)) return undefined;
+        if (
+            !this.context.dataTypes.absentRecordProperty(
+                dataType.name,
+                property,
+                access,
+            )
+        )
+            return undefined;
+        return { kind: "json-null", cpp: "std::nullopt" };
+    }
+
+    /**
+     * A destructured identifier whose property the record's type admits as
+     * absent and its struct does not store: the binding is `undefined`, as
+     * the property's read is.
+     */
+    public absentBindingValue(
+        binding: ts.BindingElement,
+        structName: string,
+        property: string,
+    ): Value | undefined {
+        if (
+            !ts.isIdentifier(binding.name) ||
+            binding.initializer ||
+            !admitsUndefined(
+                this.context.checker.getTypeAtLocation(binding.name),
+            ) ||
+            !this.context.dataTypes.absentRecordProperty(
+                structName,
+                property,
+                binding,
+            )
+        )
+            return undefined;
+        return { kind: "json-null", cpp: "std::nullopt" };
+    }
+
     private propertyRead(
         ownerValue: Value,
         access: ts.PropertyAccessExpression,
@@ -3185,6 +4004,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `'${access.expression.getText()}' may be null here; narrow it before member access.`,
             );
         }
+        if (dataType.kind === "union") {
+            return this.unionMemberRead(
+                owner,
+                dataType.members,
+                access,
+                (member) =>
+                    this.propertyRead(member, access) ??
+                    this.context.fail(
+                        access,
+                        `Unsupported data property '${property}' on union member ${member.dataType?.kind}.`,
+                    ),
+            );
+        }
         if (dataType.kind === "struct") {
             if (
                 this.context.dataTypes.isClassStruct(dataType.name) &&
@@ -3198,12 +4030,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 // owns all three.
                 return undefined;
             }
-            const field = this.context.dataTypes.structField(
-                dataType.name,
-                property,
-                access,
-                "accessors",
-            );
+            const stored = this.context.dataTypes
+                .structFields(dataType.name, access, "accessors")
+                .find(
+                    (candidate) =>
+                        candidate.sourceName === property ||
+                        candidate.name === property,
+                );
+            // A property no field stores may be one the record lacks.
+            if (!stored) {
+                const absent = this.absentPropertyRead(owner, dataType, access);
+                if (absent) return absent;
+            }
+            const field =
+                stored ??
+                this.context.dataTypes.structField(
+                    dataType.name,
+                    property,
+                    access,
+                    "accessors",
+                );
             const slot = this.context.dataTypes.isReferenceStruct(dataType.name)
                 ? `${owner.cpp}->${field.name}`
                 : `${owner.cpp}.${field.name}`;
@@ -3254,7 +4100,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 owner.staticElementsOwner?.collectionCardinality;
             const fixed = cardinality?.untrackedAliases
                 ? undefined
-                : this.fixedLengths.get(this.rootName(owner.cpp));
+                : this.fixedLengths.get(cppRootName(owner.cpp));
             return {
                 kind: "number",
                 cpp: `bbl::js::array_length(${owner.cpp})`,
@@ -3331,6 +4177,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     dataType: { kind: "number" },
                 };
             }
+        }
+        // The storage kind fixes the class of every value it holds.
+        if (isTypedArrayType(dataType) && property === "constructor") {
+            if (expressionMayRunCode(access.expression))
+                this.context.emitDiscardedValue(owner);
+            return {
+                kind: "typed-array-constructor",
+                cpp: "",
+                typedArrayConstructor: dataType.kind,
+            };
         }
         if (dataType.kind === "arraybuffer" && property === "byteLength") {
             return {
@@ -3614,6 +4470,70 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     index.staticString,
                     access,
                 ) ?? { kind: "json-null", cpp: "std::nullopt" }
+            );
+        }
+        if (dataType.kind === "union") {
+            if (
+                !dataType.members.every(
+                    (member) =>
+                        isTypedArrayType(member) ||
+                        member.kind === "vector" ||
+                        member.kind === "span" ||
+                        member.kind === "tuple",
+                )
+            )
+                this.context.fail(
+                    access,
+                    "Element access is not supported on data union.",
+                );
+            if (mode === "write")
+                this.context.fail(
+                    access,
+                    "Element writes through a data union are not supported; narrow it to one member first.",
+                );
+            // The owner is read before the index, which may rebind it; the
+            // index is read once, whichever member reads it.
+            const receiver = this.indexMayChangeOwner(access)
+                ? this.context.bindings.retainedValue(owner, "indexed_union")
+                : owner;
+            const index =
+                preparedIndex ??
+                this.context.compileValue(access.argumentExpression);
+            let member = index;
+            if (index.staticNumber === undefined) {
+                const pinned =
+                    this.context.allocateTemporaryCppName("union_index");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const double",
+                    name: pinned,
+                    initializer: this.compileKnownValueForSink(
+                        index,
+                        { kind: "number" },
+                        access.argumentExpression,
+                    ),
+                });
+                member = {
+                    ...this.leafValue(pinned, { kind: "number" }),
+                    nativeCaptures: [
+                        this.context.registerNativeBinding(pinned),
+                    ],
+                };
+            }
+            return this.unionMemberRead(
+                receiver,
+                dataType.members,
+                access,
+                (value) =>
+                    this.elementRead(value, access, "read", member) ??
+                    this.context.fail(
+                        access,
+                        "Element access is not supported on data union.",
+                    ),
+                [
+                    ...(receiver.nativeCaptures ?? []),
+                    ...(member.nativeCaptures ?? []),
+                ],
             );
         }
         if (
@@ -4078,7 +4998,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : owner.cpp;
         this.context.reachJsData();
         // Only proven arms use it: a proven counter is a non-negative integer.
-        const counter = this.integerCounterIndex(access.argumentExpression);
+        // A held store key is the counter's value before the right side,
+        // which the live counter no longer is.
+        const counter = this.isHeldStoreKey(access.argumentExpression)
+            ? undefined
+            : this.integerCounterIndex(access.argumentExpression);
         const nativeIndex = counter
             ? `static_cast<std::size_t>(${counter})`
             : `bbl::js::array_index(${index})`;
@@ -4758,6 +5682,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 access,
             );
         });
+    }
+
+    /**
+     * A lane of a tuple whose elements share union storage, bound as the
+     * type its binding declares: the union member that lane holds.
+     */
+    public narrowBindingLane(value: Value, name: ts.BindingName): Value {
+        const type =
+            value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : value.dataType;
+        return value.kind === "data" &&
+            type?.kind === "union" &&
+            ts.isIdentifier(name)
+            ? this.narrowOptional(value, name)
+            : value;
     }
 
     /**
@@ -5663,26 +6603,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             const source = this.context.compileValue(argumentAt(call, 0));
             this.invalidateRecordArrayFacts(source);
-            if (
-                source.kind !== "data" ||
-                (source.dataType?.kind !== "vector" &&
-                    source.dataType?.kind !== "span" &&
-                    source.dataType?.kind !== "set" &&
-                    source.dataType?.kind !== "iterator")
-            ) {
-                this.context.fail(
-                    argumentAt(call, 0),
-                    "Array.from with one argument requires a native array, Set or stored iterator value.",
-                );
+            // A fresh array of what iterating the source yields: a
+            // compile-time tuple's lanes at the call's element type, a
+            // string's code points as built, any other range copied.
+            const iterated = this.iteratedElements(source);
+            const type =
+                iterated && "lanes" in iterated
+                    ? this.dataTypeAt(call)
+                    : undefined;
+            if (type?.kind === "vector") {
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: this.compileKnownValueForSink(source, type, call),
+                    dataType: type,
+                    freshData: true,
+                };
             }
-            // The enclosing value path materializes the returned vector, so
-            // this expression receives Array.from's shallow-copy identity
-            // while preserving the source element order.
-            return {
-                kind: "data",
-                cpp: `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(source.dataType.element)}>(${source.cpp})`,
-                dataType: { kind: "vector", element: source.dataType.element },
-            };
+            if (!iterated || "lanes" in iterated)
+                return this.context.fail(
+                    argumentAt(call, 0),
+                    "Array.from with one argument requires a native array, Set, stored iterator, numeric tuple, typed array or string value.",
+                );
+            this.context.reachJsData();
+            return iterated.range.freshData
+                ? iterated.range
+                : {
+                      kind: "data",
+                      cpp: `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(iterated.element)}>(${iterated.range.cpp})`,
+                      dataType: { kind: "vector", element: iterated.element },
+                      freshData: true,
+                  };
         }
         if (call.arguments.length !== 2) {
             this.context.fail(
@@ -5726,7 +6677,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (callee.name.text !== "from" && callee.name.text !== "of")
         )
             return undefined;
-        const name = this.context.libraryGlobal(callee.expression);
+        const name = this.typedArrayClass(callee.expression);
         const kind =
             name === undefined ? undefined : TYPED_ARRAY_KINDS.get(name);
         if (!kind) return undefined;
@@ -5771,12 +6722,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * Compiles JavaScript Math member calls with runtime arguments.
+     * `target` is the Math member the call reaches, when a `const` alias
+     * names it.
      */
-    public compileMathCall(call: ts.CallExpression): Value | undefined {
+    public compileMathCall(
+        call: ts.CallExpression,
+        target: ts.Expression = call.expression,
+    ): Value | undefined {
         // Resolved, not spelled: a scene's own binding named `Math` is not
         // the library object, however the compiler came to know it.
         const callee = mathMemberAccess(
-            this.context.unwrap(call.expression),
+            this.context.unwrap(target),
             (expression) => this.context.libraryGlobal(expression),
         );
         if (!callee) {
@@ -5823,6 +6779,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     `Math.${method} expects ${describeMathArity(member)}.`,
                 );
             }
+            if (method === "pow") {
+                const [base, exponent] = numbers();
+                const power = exponentiationCall(
+                    base!,
+                    exponent!,
+                    staticNumberValue(this.context, argumentAt(call, 1)),
+                );
+                if (power.jsData) this.context.reachJsData();
+                return {
+                    kind: "number",
+                    cpp: power.cpp,
+                    dataType: { kind: "number" },
+                };
+            }
             const cpp =
                 member.variadic &&
                 member.rangeCpp &&
@@ -5853,9 +6823,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const only =
                 call.arguments.length === 1 ? argumentAt(call, 0) : undefined;
             if (only && ts.isSpreadElement(only)) {
-                let spread = this.context.compileValue(only.expression);
-                if (spread.kind === "tuple") {
-                    const parts = (spread.tupleElements ?? []).map(
+                const spread = this.context.compileValue(only.expression);
+                const iterated = this.iteratedElements(spread);
+                let range: string | undefined;
+                if (iterated && "lanes" in iterated) {
+                    const parts = iterated.lanes.map(
                         (element) => element.staticNumber,
                     );
                     if (
@@ -5866,30 +6838,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         this.context.emitDiscardedValue(spread);
                         return numberConstantValue(Math[method](...parts));
                     }
-                    const type = {
-                        kind: "vector",
-                        element: { kind: "number" },
-                    } as const;
-                    spread = this.leafValue(
-                        this.compileKnownValueForSink(
-                            spread,
-                            type,
-                            only.expression,
-                        ),
-                        type,
+                    range = this.compileKnownValueForSink(
+                        spread,
+                        { kind: "vector", element: { kind: "number" } },
+                        only.expression,
                     );
-                }
-                if (
-                    spread.kind !== "data" ||
-                    (spread.dataType?.kind !== "vector" &&
-                        spread.dataType?.kind !== "span") ||
-                    spread.dataType.element.kind !== "number"
-                ) {
-                    this.context.fail(
+                } else if (iterated?.element.kind === "number")
+                    range = iterated.range.cpp;
+                if (range === undefined)
+                    return this.context.fail(
                         argumentAt(call, 0),
                         `Math.${method} spread requires an array of numbers.`,
                     );
-                }
                 const source = this.context.allocateTemporaryCppName(
                     `math_${method}_source`,
                 );
@@ -5897,7 +6857,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     kind: "declaration",
                     type: "auto&&",
                     name: source,
-                    initializer: spread.cpp,
+                    initializer: range,
                 });
                 this.context.reachJsData();
                 const result = this.context.allocateTemporaryCppName(
@@ -6054,13 +7014,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         element: DataType,
         method: "indexOf" | "includes" | "lastIndexOf",
     ): Value {
-        if (
-            call.arguments.length !== 1 &&
-            !(method === "lastIndexOf" && call.arguments.length === 2)
-        ) {
+        if (call.arguments.length < 1 || call.arguments.length > 2) {
             this.context.fail(
                 call,
-                `Array.${method} expects one argument; the fromIndex form is outside the supported subset.`,
+                `Array.${method} expects a search value and an optional fromIndex.`,
             );
         }
         if (
@@ -6107,7 +7064,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 { kind: "number" },
             );
         }
-        const index = `bbl::js::array_index_of(${owner.cpp}, ${value})`;
+        // A fromIndex is evaluated after the search value, which is read
+        // first into a named value.
+        let needle = value;
+        let from = "";
+        if (call.arguments[1]) {
+            needle = this.context.allocateTemporaryCppName("search_needle");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: needle,
+                initializer: value,
+            });
+            from = `, ${this.context.compileNumber(call.arguments[1], "double")}`;
+        }
+        const index = `bbl::js::array_index_of(${owner.cpp}, ${needle}${from})`;
         if (method === "indexOf")
             return { kind: "number", cpp: index, dataType: { kind: "number" } };
         // `includes` is SameValueZero, which differs from `indexOf`'s strict
@@ -6116,7 +7087,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "boolean",
             cpp:
                 element.kind === "number"
-                    ? `bbl::js::array_includes(${owner.cpp}, ${value})`
+                    ? `bbl::js::array_includes(${owner.cpp}, ${needle}${from})`
                     : `${index} >= 0.0`,
             dataType: { kind: "boolean" },
         };
@@ -6137,6 +7108,65 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             initializer: value,
         });
         return name;
+    }
+
+    /**
+     * A number argument whose absent `undefined` selects `undefinedReads`
+     * (an omitted search position or byte offset): ToNumber of anything
+     * else, an absent `null` reading 0.
+     */
+    public compileDefaultedNumberArgument(
+        argument: ts.Expression,
+        undefinedReads: number,
+    ): string {
+        const absent = nullability(
+            this.context.checker.getTypeAtLocation(argument),
+        );
+        if (!absent.null && !absent.undefined)
+            return this.context.compileNumber(argument, "double");
+        const value = this.context.compileValue(argument);
+        const ambiguous = (): never =>
+            this.context.fail(
+                argument,
+                "A number argument that may be null or undefined requires distinguishable null and undefined storage.",
+            );
+        if (value.kind === "json-null" || isUndefinedDataType(value.dataType)) {
+            this.context.emitDiscardedValue(value);
+            if (absent.null && absent.undefined && undefinedReads !== 0)
+                ambiguous();
+            return doubleCpp(absent.null ? 0 : undefinedReads);
+        }
+        if (value.kind === "data" && value.dataType?.kind === "json") {
+            // A dynamic value holds undefined apart from null: undefined
+            // takes the default, null and the rest read through ToNumber.
+            const held = this.context.bindings.pinValueToTemporary(
+                value,
+                "number_argument",
+                argument,
+            );
+            this.context.reachJsData();
+            return `(${held.cpp}.is_undefined() ? ${doubleCpp(undefinedReads)} : ${held.cpp}.to_number())`;
+        }
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "optional" ||
+            value.dataType.inner.kind !== "number" ||
+            presenceFlagCpp(value) !== undefined
+        )
+            return this.compileKnownValueForSink(
+                value,
+                { kind: "number" },
+                argument,
+            );
+        this.context.reachJsData();
+        return (
+            numberFromOptionalCpp(
+                this.context.checker,
+                value,
+                argument,
+                undefinedReads,
+            ) ?? ambiguous()
+        );
     }
 
     /** Promise-producing callbacks need retained invocation even inside a synchronous iterator. */
@@ -6204,23 +7234,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /** Emit the shared callback protocol for reached JavaScript array methods. */
     public emitArrayCallbackLoop(
         call: ts.CallExpression,
-        method:
-            | "find"
-            | "findIndex"
-            | "filter"
-            | "some"
-            | "every"
-            | "map"
-            | "flatMap"
-            | "forEach",
+        method: Exclude<ReceiverWalkMethod, "reduce" | "reduceRight">,
         narrowed: Value,
         dataType: DataType & { kind: "vector" | "span" },
         snapshotLength: boolean,
         initialize: (source: string) => void,
+        /** `element` is the visited element as a method keeps it. */
         emitBody: (
             result: Value,
             callback: ts.Expression,
-            source: string,
+            element: string,
             index: string,
         ) => void,
     ): void {
@@ -6241,17 +7264,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? callback
                 : undefined;
         const label = method === "forEach" ? "for_each" : method;
-        const receiverPolicy = arrayCallbackReceiverPolicy(method);
-        if (receiverPolicy.invalidatesFacts)
-            this.invalidateStaticElements(narrowed);
         const source = this.context.allocateTemporaryCppName(`${label}_source`);
         const index = this.context.allocateTemporaryCppName(`${label}_index`);
-        this.context.emit({
-            kind: "declaration",
-            type: receiverPolicy.snapshotIdentity ? "auto" : "auto&&",
-            name: source,
-            initializer: narrowed.cpp,
-        });
+        // A callback that may change the receiver walks the receiver and
+        // the length read at the call, checking each index against the
+        // live length.
+        const { writable, held } = declareWalkedReceiver(
+            this,
+            call,
+            callback,
+            narrowed,
+            source,
+        );
         const sourceType =
             narrowed.nativeCollectionCppType ??
             (dataType.kind === "vector" && !narrowed.nativeVectorData
@@ -6262,7 +7286,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             false,
             false,
             sourceType &&
-                `${!receiverPolicy.snapshotIdentity && narrowed.readOnly ? "const " : ""}${sourceType}`,
+                `${!held && narrowed.readOnly ? "const " : ""}${sourceType}`,
         );
         const storedCallback = identity
             ? undefined
@@ -6273,8 +7297,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Array.${method} requires a represented callback.`,
             );
         initialize(source);
+        // `findLast` and `findLastIndex` visit the length read at the call
+        // from its last index down.
+        const reverse = method === "findLast" || method === "findLastIndex";
         let bound = `${source}.size()`;
-        if (snapshotLength) {
+        if (snapshotLength || reverse || writable) {
             const count = this.context.allocateTemporaryCppName(
                 `${label}_count`,
             );
@@ -6288,7 +7315,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         this.context.emit({
             kind: "open",
-            code: `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
+            code: reverse
+                ? `for (std::size_t ${index} = ${bound}; ${index}-- > 0;) {`
+                : `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
             iteration: true,
         });
         this.context.increaseIndent();
@@ -6303,17 +7332,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
             try {
-                if (receiverPolicy.skipRemoved)
+                if (writable)
                     this.context.emit(
-                        `if (${index} >= ${source}.size()) continue;`,
+                        removedIndexGuard(this, method, index, source),
                     );
                 const elementValue = {
                     ...this.leafValue(`${source}[${index}]`, dataType.element),
                     nativeCaptures: [sourceCapture, indexCapture],
                 };
-                const booleanConstructor =
-                    this.context.libraryGlobal(callback) === "Boolean";
-                const snapshotCpp = `bbl::js::snapshot_value(${source}[${index}])`;
+                const kept =
+                    writable && receiverWalks.get(method)!.keepsElement
+                        ? this.context.allocateTemporaryCppName(
+                              `${label}_element`,
+                          )
+                        : undefined;
+                if (kept)
+                    this.context.emit({
+                        kind: "declaration",
+                        type: "auto",
+                        name: kept,
+                        initializer: `bbl::js::snapshot_value(${source}[${index}])`,
+                    });
+                // `Boolean` only tests the element's truthiness and keeps
+                // nothing, so it reads the slot in place.
+                const inPlace =
+                    !kept && this.context.libraryGlobal(callback) === "Boolean";
+                const snapshotCpp =
+                    kept ??
+                    (inPlace
+                        ? `${source}[${index}]`
+                        : `bbl::js::snapshot_value(${source}[${index}])`);
                 const callbackValue = this.leafValue(
                     snapshotCpp,
                     dataType.element,
@@ -6321,10 +7369,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const callbackArguments: Value[] = [
                     {
                         ...callbackValue,
-                        ...(callbackValue.cpp === snapshotCpp
+                        ...(!kept &&
+                        !inPlace &&
+                        callbackValue.cpp === snapshotCpp
                             ? { nativeOwnedRvalue: true as const }
                             : {}),
-                        nativeCaptures: elementValue.nativeCaptures,
+                        nativeCaptures: kept
+                            ? [this.context.registerNativeBinding(kept)]
+                            : elementValue.nativeCaptures,
                     },
                     {
                         kind: "number",
@@ -6343,6 +7395,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const predicateMethod = [
                     "find",
                     "findIndex",
+                    "findLast",
+                    "findLastIndex",
                     "filter",
                     "some",
                     "every",
@@ -6357,42 +7411,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             callbackArguments,
                             call,
                         )
-                      : booleanConstructor
-                        ? dataType.element.kind === "boolean"
-                            ? {
-                                  kind: "boolean" as const,
-                                  cpp: elementValue.cpp,
-                                  dataType: { kind: "boolean" as const },
-                              }
-                            : dataType.element.kind === "number"
-                              ? (this.context.reachJsData(),
-                                {
-                                    kind: "boolean" as const,
-                                    cpp: `bbl::js::number_truthy(${elementValue.cpp})`,
-                                    dataType: { kind: "boolean" as const },
-                                })
-                              : dataType.element.kind === "string"
-                                ? {
-                                      kind: "boolean" as const,
-                                      cpp: `!(${elementValue.cpp}).empty()`,
-                                      dataType: { kind: "boolean" as const },
-                                  }
-                                : this.context.fail(
-                                      callback,
-                                      `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
-                                  )
-                        : predicate
-                          ? this.context.compilePredicateWithValues(
-                                local!,
-                                callbackArguments,
-                                call,
-                            )
-                          : this.context.compileCallbackWithValues(
-                                local!,
-                                callbackArguments,
-                                call,
-                                method === "forEach",
-                            );
+                      : predicate
+                        ? this.context.compilePredicateWithValues(
+                              local!,
+                              callbackArguments,
+                              call,
+                          )
+                        : this.context.compileCallbackWithValues(
+                              local!,
+                              callbackArguments,
+                              call,
+                              method === "forEach",
+                          );
                 if (predicateMethod && result.kind !== "boolean")
                     result = {
                         kind: "boolean",
@@ -6404,7 +7434,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             ),
                         dataType: { kind: "boolean" },
                     };
-                emitBody(result, callback, source, index);
+                emitBody(
+                    result,
+                    callback,
+                    kept ?? `${source}[${index}]`,
+                    index,
+                );
             } finally {
                 this.context.leaveRuntimeIteration();
                 this.context.leaveRuntimeControlFlow();
@@ -6581,6 +7616,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const field = this.context.dataTypes.genericFunctionCall(
                 functionType.generic,
                 call,
+                (argument) =>
+                    this.context.bindings.lookupOptional(argument)?.dataType
+                        ?.kind === "error",
             );
             callable = `(${callable}).select(&bblscene::${functionType.generic}Data::${field.name})`;
             functionType = field.type;
@@ -7105,10 +8143,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /**
+     * The typed-array class a `new` or static-factory callee names: the
+     * global itself, or a value that is a typed array's `constructor` --
+     * a binding holding one, or the read itself (`new arr.constructor(n)`).
+     */
+    private typedArrayClass(callee: ts.Expression): string | undefined {
+        const name = this.context.libraryGlobal(callee);
+        if (name !== undefined)
+            return TYPED_ARRAY_KINDS.has(name) ? name : undefined;
+        const unwrapped = this.context.unwrap(callee);
+        const value = ts.isIdentifier(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
+            : ts.isPropertyAccessExpression(unwrapped) &&
+                unwrapped.name.text === "constructor"
+              ? this.context.compileValue(unwrapped)
+              : undefined;
+        return value?.kind === "typed-array-constructor" &&
+            value.typedArrayConstructor
+            ? typedArrayConstructorName(value.typedArrayConstructor)
+            : undefined;
+    }
+
     public compileTypedArrayNew(
         expression: ts.NewExpression,
     ): Value | undefined {
-        const name = this.context.libraryGlobal(expression.expression);
+        const name = this.typedArrayClass(expression.expression);
         const kind =
             name === undefined ? undefined : TYPED_ARRAY_KINDS.get(name);
         if (!kind) {
@@ -7198,8 +8258,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "view_buffer",
                 unwrapped,
             ).cpp;
-            const numericArgument = (argument: ts.Expression): string => {
-                const value = this.context.compileNumber(argument, "double");
+            const numericArgument = (
+                argument: ts.Expression,
+                value = this.context.compileNumber(argument, "double"),
+            ): string => {
                 const temporary =
                     this.context.allocateTemporaryCppName("view_index");
                 this.context.emit({
@@ -7212,8 +8274,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? `bbl::js::buffer_view_index(${temporary})`
                     : temporary;
             };
+            // ToIndex reads an absent byte offset (undefined, or null as
+            // ToNumber 0) as zero.
+            const offsetArgument = (argument: ts.Expression): string =>
+                numericArgument(
+                    argument,
+                    this.compileDefaultedNumberArgument(argument, 0),
+                );
             const offset = arguments_[1]
-                ? `, ${numericArgument(arguments_[1])}`
+                ? `, ${offsetArgument(arguments_[1])}`
                 : "";
             const length = arguments_[2]
                 ? `, ${numericArgument(arguments_[2])}`
@@ -7288,12 +8357,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (ts.isCallExpression(unwrapped)
                 ? this.context.compileValue(unwrapped)
                 : undefined);
-        const staticSource =
+        // Any other expression whose type is not a number is a sequence or
+        // nothing (`a ?? b`, a conditional, a constructed view); a number is
+        // the constructor's length.
+        const compiled =
             source ??
             (ts.isIdentifier(unwrapped) ||
-            ts.isPropertyAccessExpression(unwrapped)
+            ts.isPropertyAccessExpression(unwrapped) ||
+            (this.context.checker.getTypeAtLocation(unwrapped).flags &
+                ts.TypeFlags.NumberLike) ===
+                0
                 ? this.context.compileValue(unwrapped)
                 : undefined);
+        // A guarded optional or union reads as the member the checker
+        // narrowed it to, under any assertion the source wrote.
+        const staticSource =
+            compiled && this.narrowOptional(compiled, unwrapped);
         if (staticSource?.kind === "camera-world-matrix") {
             const engine = this.context.requireEngine(staticSource, unwrapped);
             return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, staticSource.cpp)}))`;
@@ -7337,15 +8416,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // already applies to a `number[]` -- so one arm serves them all. A
         // runtime tuple joins them because its lanes are doubles too: the
         // three components of a colour a scene computed.
-        if (
-            staticSource?.kind === "data" &&
-            (isTypedArrayType(staticSource.dataType) ||
-                staticSource.dataType?.kind === "tuple" ||
-                ((staticSource.dataType?.kind === "vector" ||
-                    staticSource.dataType?.kind === "span") &&
-                    staticSource.dataType.element.kind === "number"))
-        ) {
+        if (staticSource?.kind !== "data" || !staticSource.dataType)
+            return undefined;
+        const sourceType = staticSource.dataType;
+        if (isNumericSequenceType(sourceType)) {
             return `bbl::js::${prefix}_array_from(${staticSource.cpp})`;
+        }
+        // Any other range of numbers (a Set in insertion order, a stored
+        // iterator) is read as both the constructor and `from` read an
+        // iterable (`iteratedElements`).
+        const iterated = this.iteratedElements(staticSource);
+        if (
+            iterated &&
+            "range" in iterated &&
+            iterated.element.kind === "number"
+        )
+            return `bbl::js::${prefix}_array_from(bbl::js::array_from_iterable<double>(${iterated.range.cpp}))`;
+        // A union of sequences converts the member it holds at run time.
+        if (
+            sourceType.kind === "union" &&
+            sourceType.members.every(isNumericSequenceType)
+        ) {
+            const member = this.context.allocateTemporaryCppName("source");
+            return (
+                `std::visit([](const auto& ${member}) { ` +
+                `return bbl::js::${prefix}_array_from(${member}); }, ${staticSource.cpp})`
+            );
         }
         return undefined;
     }
@@ -7608,6 +8704,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.Expression,
         dataType: DataType,
     ): string {
+        const assigned =
+            this.assignedRights.size === 0
+                ? undefined
+                : this.assigned(
+                      expression,
+                      () => this.compileForSink(expression, dataType),
+                      (cpp) => this.bindAssigned(cpp, dataType),
+                      (value) =>
+                          this.compileKnownValueForSink(
+                              value,
+                              dataType,
+                              expression,
+                          ),
+                  );
+        if (assigned !== undefined) return assigned;
         if (
             this.context.options.workers &&
             ts.isAwaitExpression(unwrapExpression(expression))
@@ -7618,6 +8729,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression,
             );
         const unwrapped = this.context.unwrap(expression);
+        // `a.x = b.x = null`: the inner assignment's value
+        // (compileAssignmentValue), converted for this sink.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        )
+            return this.compileKnownValueForSink(
+                this.context.compileValue(unwrapped),
+                dataType,
+                unwrapped,
+            );
         if (ts.isBinaryExpression(unwrapped)) {
             const logical = this.compileRecordLogicalValue(unwrapped, dataType);
             if (logical)
@@ -7717,6 +8839,77 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
         }
         return compileDataExpressionSink(dataType, this, expression, unwrapped);
+    }
+
+    /**
+     * The member a sink is storing, read out of the value its node
+     * evaluates to: the node it converts at, the member's own expression
+     * where known, and the array expression an element was read out of.
+     *
+     * @unjournaled Set for one member conversion and restored by its finally.
+     */
+    private memberConversion:
+        | {
+              readonly node: ts.Node;
+              readonly expression: ts.Expression | undefined;
+              readonly elementOf: ts.Expression | undefined;
+          }
+        | undefined;
+
+    /**
+     * Stores `member` as `dataType`: a member read out of the value a sink
+     * at `node` converts -- the field `key`, the element at index `key`, or
+     * without a key an element of a stored array. Its freshness is its own,
+     * never its container's: where the container's syntax names the
+     * member's expression (`literalMember`, `mappedElement`) it converts at
+     * that expression, and otherwise at no known expression
+     * (`convertedExpression`).
+     */
+    public compileMemberForSink(
+        member: Value,
+        dataType: DataType,
+        node: ts.Node,
+        key?: string | number,
+    ): string {
+        const container = this.convertedExpression(node);
+        // An element of a stored array is the expression a `map` callback
+        // builds every element with, where there is one.
+        const expression =
+            container === undefined
+                ? undefined
+                : key === undefined
+                  ? mappedElement(this.context.checker, container)
+                  : literalMember(container, key);
+        const at = expression ?? node;
+        const previous = this.memberConversion;
+        this.memberConversion = {
+            node: at,
+            expression,
+            elementOf: typeof key === "string" ? undefined : container,
+        };
+        try {
+            return this.compileKnownValueForSink(member, dataType, at);
+        } finally {
+            this.memberConversion = previous;
+        }
+    }
+
+    /**
+     * The expression whose value a sink at `node` converts: `node` itself,
+     * unless the sink stores a member read out of node's value, whose own
+     * expression it is where known (`compileMemberForSink`). Freshness and
+     * argument positions are decided for this expression alone.
+     */
+    public convertedExpression(node: ts.Node): ts.Expression | undefined {
+        const member = this.memberConversion;
+        if (member?.node === node) return member.expression;
+        return ts.isExpression(node) ? node : undefined;
+    }
+
+    /** The array expression the element a sink at `node` stores was read out of. */
+    public convertedElementOf(node: ts.Node): ts.Expression | undefined {
+        const member = this.memberConversion;
+        return member?.node === node ? member.elementOf : undefined;
     }
 
     public compileKnownValueForSink(
@@ -7887,10 +9080,102 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * The lanes a numeric tuple spreads (`iteratedElements`): a
+     * compile-time tuple's own elements, or a native tuple's elements as
+     * they are where the spread is read, each read once into a temporary.
+     * Undefined for any other value, whose element count is not known.
+     */
+    private spreadTupleLanes(
+        spread: Value,
+        node: ts.Expression,
+    ): readonly Value[] | undefined {
+        const iterated = this.iteratedElements(spread);
+        if (!iterated) return undefined;
+        if ("lanes" in iterated) return iterated.lanes;
+        const arity = iterated.arity;
+        if (arity === undefined) return undefined;
+        const tuple = this.context.bindings.bindDataTuple(
+            spread,
+            arity,
+            "spread_tuple",
+        );
+        return tupleComponents(tuple, arity, "double").map((cpp) =>
+            this.context.bindings.pinValueToTemporary(
+                { kind: "number", cpp, dataType: { kind: "number" } },
+                "spread_lane",
+                node,
+            ),
+        );
+    }
+
+    /**
+     * The values an argument list or array literal supplies one at a time,
+     * in source order: a numeric tuple spread supplies its lanes
+     * (`spreadTupleLanes`, a native tuple's already read), any other
+     * element the value `read` gives it, and a compile-time tuple's lane
+     * the value `readLane` gives it. Any other spread refuses with
+     * `refusal`.
+     */
+    public spreadLaneValues(
+        elements: readonly ts.Expression[],
+        read: (element: ts.Expression) => Value,
+        refusal: string,
+        readLane: (lane: Value, spread: ts.SpreadElement) => Value = (lane) =>
+            lane,
+    ): { value: Value; node: ts.Expression }[] {
+        return elements.flatMap((element) => {
+            if (!ts.isSpreadElement(element))
+                return [{ value: read(element), node: element }];
+            const spread = this.context.compileValue(element.expression);
+            const lanes =
+                this.spreadTupleLanes(spread, element) ??
+                this.context.fail(element, refusal);
+            return lanes.map((lane) => ({
+                value: spread.kind === "tuple" ? readLane(lane, element) : lane,
+                node: element,
+            }));
+        });
+    }
+
     public spanLikeForSink(
         expression: ts.Expression,
         dataType: DataType,
     ): string {
+        // `[...head, tail]` into a fixed tuple: every lane in source order.
+        if (
+            dataType.kind === "tuple" &&
+            ts.isArrayLiteralExpression(expression) &&
+            expression.elements.length > 1 &&
+            expression.elements.some(ts.isSpreadElement)
+        ) {
+            const lanes = this.spreadLaneValues(
+                expression.elements,
+                (element) => this.context.compileValue(element),
+                "Tuple spread requires a numeric tuple.",
+            ).map(
+                ({ value, node }) =>
+                    this.context.bindings.pinValueToTemporary(
+                        this.leafValue(
+                            this.compileKnownValueForSink(
+                                value,
+                                { kind: "number" },
+                                node,
+                            ),
+                            { kind: "number" },
+                        ),
+                        "tuple_lane",
+                        node,
+                    ).cpp,
+            );
+            if (lanes.length !== dataType.arity)
+                this.context.fail(
+                    expression,
+                    `Expected ${dataType.arity} tuple elements.`,
+                );
+            this.context.reachJsData();
+            return `bbl::js::Tuple<${dataType.arity}>{${lanes.join(", ")}}`;
+        }
         if (
             dataType.kind === "tuple" &&
             ts.isArrayLiteralExpression(expression)
@@ -7975,6 +9260,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (this.spanCompatible(value.dataType, dataType)) {
             return value.cpp;
         }
+        // A numeric tuple is read through the readonly view of its storage.
+        if (
+            dataType.kind === "span" &&
+            dataType.element.kind === "number" &&
+            value.dataType.kind === "tuple"
+        )
+            return value.cpp;
         if (dataType.kind === "tuple" && value.dataType.kind === "vector")
             return this.compileKnownValueForSink(value, dataType, expression);
         if (
@@ -8047,15 +9339,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return false;
     }
 
+    /**
+     * The data value `expression` produces for a `dataType` sink. `source`
+     * is the expression as written, whose `!` asserts the value present.
+     */
     public requireDataValue(
         expression: ts.Expression,
         dataType: DataType,
+        source: ts.Expression = expression,
     ): Value {
         const raw =
             this.compileDataPath(expression, "read") ??
             this.context.compileValue(expression);
         const value =
-            raw.kind === "data" ? this.narrowOptional(raw, expression) : raw;
+            raw.kind === "data"
+                ? this.narrowOptional(
+                      raw,
+                      expression,
+                      hasNonNullAssertion(source),
+                  )
+                : raw;
         if (
             value.kind === "data" &&
             value.dataType &&
@@ -8211,43 +9514,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 initializer: source.cpp,
                             });
                             const entries = structOwnEntries(
-                                {
-                                    moduleNamespaces:
-                                        this.context.moduleNamespaces,
-                                    dataTypes: this.context.dataTypes,
-                                    dataLowerer: this,
-                                    fail: (node, message) =>
-                                        this.context.fail(node, message),
-                                },
+                                this.ownObjectContext(),
                                 { ...source, cpp: snapshot },
                                 source.dataType,
                                 property,
                             );
                             // A `?` field is copied while it is own.
-                            for (const { key, value, presentCpp } of entries) {
+                            for (const { key, value, presence } of entries) {
                                 const cpp = this.compileKnownValueForSink(
                                     value,
                                     dataType.value,
                                     property,
                                 );
-                                if (presentCpp) {
+                                this.emitWhileOwn(presence?.ownCpp, () =>
                                     this.context.emit({
-                                        kind: "open",
-                                        code: `if (${presentCpp}) {`,
-                                    });
-                                    this.context.increaseIndent();
-                                }
-                                this.context.emit({
-                                    kind: "expression",
-                                    code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
-                                });
-                                if (presentCpp) {
-                                    this.context.decreaseIndent();
-                                    this.context.emit({
-                                        kind: "close",
-                                        code: "}",
-                                    });
-                                }
+                                        kind: "expression",
+                                        code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
+                                    }),
+                                );
                             }
                             continue;
                         }
@@ -8454,6 +9738,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Struct literals support plain property assignments.",
             );
         }
+        const self = literalSelf(
+            this.context,
+            dataType,
+            homeObjectMembers(literal),
+            literal,
+        );
         const parts = fields.map((field) => {
             const initializer = provided.get(field.sourceName);
             if (!initializer) {
@@ -8487,6 +9777,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const callback = this.context.compileStoredDataFunction(
                     initializer,
                     field.type,
+                    undefined,
+                    false,
+                    homeReceiver(self, initializer),
                 );
                 return this.context.dataTypes.structFieldInitializerCpp(
                     field,
@@ -8502,6 +9795,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     field,
                     initializer,
                 );
+            const method = this.context.unwrap(initializer);
+            const receiver = homeReceiver(self, method);
+            if (
+                receiver &&
+                ts.isFunctionExpression(method) &&
+                field.type.kind === "function"
+            )
+                return this.context.dataTypes.structFieldInitializerCpp(
+                    field,
+                    this.context.compileStoredDataFunction(
+                        method,
+                        field.type,
+                        undefined,
+                        false,
+                        receiver,
+                    ),
+                );
             return this.context.dataTypes.structFieldInitializerCpp(
                 field,
                 this.compileForSink(initializer, field.type),
@@ -8513,6 +9823,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Struct literal has unknown field '${[...provided.keys()][0]}'.`,
             );
         }
+        if (self)
+            return completeLiteralSelf(
+                this.context,
+                self,
+                `bblscene::${dataType.name}Data{${parts.join(", ")}}`,
+                fields,
+            );
         return this.structAggregate(dataType, parts);
     }
 
@@ -8536,6 +9853,211 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return `bbl::js::make_ref<bblscene::${dataType.name}Data>(bblscene::${dataType.name}Data{${parts.join(", ")}})`;
         }
         return `${this.context.dataTypes.cppType(dataType)}{${parts.join(", ")}}`;
+    }
+
+    /**
+     * Emits `store` under the test that a key is own, or bare for a key that
+     * always is.
+     */
+    private emitWhileOwn(
+        presentCpp: string | undefined,
+        store: () => void,
+    ): void {
+        if (presentCpp === undefined) return store();
+        this.context.emit({ kind: "open", code: `if (${presentCpp}) {` });
+        this.context.increaseIndent();
+        store();
+        this.context.decreaseIndent();
+        this.context.emit({ kind: "close", code: "}" });
+    }
+
+    /**
+     * A compile-time record member's own entry: a member a conditional
+     * spread wrote (`Value.conditionalOwnKey`) is own while its storage holds
+     * a value, and then holds what that storage holds.
+     */
+    public recordMemberEntry(
+        key: string,
+        member: Value,
+        node: ts.Node,
+    ): OwnEntry {
+        if (!member.conditionalOwnKey) return { key, value: member };
+        this.context.useNativeValue(member);
+        const ownCpp =
+            presenceFlagCpp(member) ??
+            (member.dataType &&
+                this.context.dataTypes.slotPresentCpp(
+                    member.dataType,
+                    member.cpp,
+                ));
+        if (!ownCpp)
+            return this.context.fail(
+                node,
+                "A record key a conditional spread decides needs a represented absent value.",
+            );
+        return {
+            key,
+            value:
+                member.dataType?.kind === "optional"
+                    ? this.presentOptionalValue(member, member.dataType.inner)
+                    : member,
+            presence: { ownCpp },
+            slot: member,
+        };
+    }
+
+    /**
+     * Copies a struct's own properties into the fields of the struct
+     * `target` names, as an object spread, `Object.assign` and an object
+     * rest do. The source is read once (a local in place); a property
+     * whose storage decides whether it is own is copied while it is; and
+     * the copy is recorded as a conversion, so a property a record
+     * converted into the source carried is known to be possibly present in
+     * the target too. A field a shared layout holds for a wider record type
+     * (`sharedAbsent`) is carried that way when the source's own type (at
+     * `source`) lacks it, and present when that type declares it required.
+     * A `?` field that also admits null cannot say whether its empty
+     * storage is absent or null; into a target field still holding its
+     * absent default (`fresh`) the storage copies as it is, exact either
+     * way. Returns the target fields every run writes.
+     */
+    public copyStructOwnProperties(
+        target: { cpp: string; type: DataType<"struct"> },
+        sourceValue: Value,
+        sourceType: DataType<"struct">,
+        source: ts.Node,
+        operation: "spread" | "Object.assign" | "rest",
+        options: {
+            excludedKeys?: ReadonlySet<string>;
+            fresh?: (field: string) => boolean;
+        } = {},
+    ): ReadonlySet<string> {
+        this.context.dataTypes.noteRecordConversion(
+            target.type,
+            [],
+            sourceType,
+        );
+        // A local is read in place: no store into the target rebinds it.
+        const owner = cppIdentifierPattern.test(sourceValue.cpp)
+            ? sourceValue
+            : this.context.bindings.pinValueToTemporary(
+                  sourceValue,
+                  "copy_source",
+                  ts.isExpression(source) ? source : undefined,
+              );
+        const declaredType = this.context.checker.getTypeAtLocation(source);
+        const sourceFields = new EmissionMap(
+            this.context.dataTypes
+                .structFields(sourceType.name, source, "accessors")
+                .map((field) => [field.sourceName, field]),
+        );
+        const targetFields = new EmissionMap(
+            this.context.dataTypes
+                .structFields(target.type.name, source)
+                .map((field) => [field.sourceName, field]),
+        );
+        const member = this.context.dataTypes.isReferenceStruct(
+            target.type.name,
+        )
+            ? "->"
+            : ".";
+        const sourceMember = this.context.dataTypes.isReferenceStruct(
+            sourceType.name,
+        )
+            ? "->"
+            : ".";
+        const assigned = new EmissionSet<string>();
+        for (const entry of structOwnEntries(
+            this.ownObjectContext(),
+            owner,
+            sourceType,
+            source,
+            options.excludedKeys,
+        )) {
+            const sourceField = sourceFields.get(entry.key)!;
+            const targetField = targetFields.get(entry.key);
+            const declared = declaredType.getProperty(entry.key);
+            if (!targetField) {
+                if (sourceField.sharedAbsent && !declared) {
+                    this.context.dataTypes.noteRecordConversion(target.type, [
+                        entry.key,
+                    ]);
+                    continue;
+                }
+                this.context.fail(
+                    source,
+                    `${operation === "spread" ? "Spread" : operation === "rest" ? "Object rest" : operation} property '${entry.key}' cannot be retained in the narrower '${target.type.name}' storage.`,
+                );
+            }
+            this.context.refuseBorrowedPlatformEventEscape(
+                entry.value,
+                source,
+                operation === "Object.assign"
+                    ? operation
+                    : `object ${operation}`,
+            );
+            const raw =
+                entry.presence?.emptySlot === "ambiguous" &&
+                targetField.type.kind === "optional" &&
+                options.fresh?.(targetField.name) === true;
+            // A field a shared layout holds absent for other record types is
+            // present when the source's own type declares it required,
+            // unless that type's storage can hold such a record (a narrower
+            // record pushed through an array view, or asserted to it): then
+            // its slot says.
+            const presentCpp =
+                raw ||
+                (sourceField.sharedAbsent &&
+                    declared !== undefined &&
+                    (declared.flags & ts.SymbolFlags.Optional) === 0 &&
+                    !this.context.dataTypes.mayHoldNarrower(declaredType))
+                    ? undefined
+                    : entry.presence?.ownCpp;
+            // A copy that can lack a field its new object requires gives
+            // that object the source's layout, absent fields and all.
+            if (
+                sourceField.sharedAbsent &&
+                presentCpp !== undefined &&
+                !targetField.optionalProperty &&
+                targetField.type.kind !== "optional"
+            )
+                this.context.dataTypes.joinSpreadTarget(
+                    sourceType,
+                    target.type,
+                );
+            const value = raw
+                ? {
+                      ...this.leafValue(
+                          `${owner.cpp}${sourceMember}${sourceField.name}`,
+                          sourceField.type,
+                      ),
+                      nativeCaptures: owner.nativeCaptures ?? [],
+                  }
+                : entry.value;
+            this.emitWhileOwn(presentCpp, () =>
+                this.context.emit({
+                    kind: "expression",
+                    code: `${target.cpp}${member}${targetField.name} = ${this.compileKnownValueForSink(value, targetField.type, source)};`,
+                }),
+            );
+            // A possibly absent source property cannot by itself satisfy a
+            // required target field.
+            if (
+                (presentCpp === undefined && !raw) ||
+                targetField.type.kind === "optional"
+            )
+                assigned.add(targetField.name);
+        }
+        return assigned;
+    }
+
+    /** The own-object services the own-entry walks read. */
+    public ownObjectContext(): Parameters<typeof structOwnEntries>[0] {
+        return {
+            dataTypes: this.context.dataTypes,
+            dataLowerer: this,
+            fail: (node, message) => this.context.fail(node, message),
+        };
     }
 
     /**
@@ -8584,15 +10106,90 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
         for (const property of literal.properties) {
             if (ts.isSpreadAssignment(property)) {
-                const spread =
+                const source =
                     this.compileDataPath(property.expression, "read") ??
                     this.context.compileValue(property.expression);
+                // A union or optional source spreads the member its
+                // narrowing selects.
+                const spread =
+                    source.kind === "data"
+                        ? this.narrowOptional(source, property.expression)
+                        : source;
                 if (spread.kind === "record") {
                     declareDefault();
+                    // A spread reads each getter once; it copies the value.
+                    if (
+                        Object.keys(spread.recordGetters ?? {}).length ||
+                        Object.keys(spread.recordSetters ?? {}).length
+                    )
+                        this.context.fail(
+                            property,
+                            "A record with accessors spreads into a compile-time record, not a struct literal.",
+                        );
                     for (const [name, value] of Object.entries(
                         spread.recordProperties ?? {},
                     )) {
-                        assign(name, value, property);
+                        // A key a conditional spread decides is stored only
+                        // while it is own, keeping an earlier value
+                        // otherwise; an unwritten `?` field is already
+                        // absent, so its storage stores as it is.
+                        const field = this.context.dataTypes.structField(
+                            dataType.name,
+                            name,
+                            property,
+                        );
+                        if (!assigned.has(field.name)) {
+                            assign(name, value, property);
+                            continue;
+                        }
+                        const entry = this.recordMemberEntry(
+                            name,
+                            value.conditionalOwnKey
+                                ? this.context.bindings.pinValueToTemporary(
+                                      value,
+                                      "spread_member",
+                                      property.expression,
+                                  )
+                                : value,
+                            property,
+                        );
+                        this.emitWhileOwn(entry.presence?.ownCpp, () =>
+                            this.context.emit({
+                                kind: "expression",
+                                code: `${cppName}${member}${field.name} = ${this.compileKnownValueForSink(entry.value, field.type, property)};`,
+                            }),
+                        );
+                    }
+                    // Methods are own properties a spread copies too.
+                    for (const [name, method] of Object.entries(
+                        spread.recordMethods ?? {},
+                    )) {
+                        const field = this.context.dataTypes.structField(
+                            dataType.name,
+                            name,
+                            property,
+                        );
+                        if (field.type.kind !== "function")
+                            this.context.fail(
+                                property,
+                                `Method '${name}' requires a stored function field.`,
+                            );
+                        this.context.recordProxies.requireIndependentFunction(
+                            field,
+                            method,
+                        );
+                        const callback = this.context.compileStoredDataFunction(
+                            method,
+                            field.type,
+                            spread,
+                            ts.isMethodDeclaration(method) &&
+                                ts.isClassDeclaration(method.parent),
+                        );
+                        this.context.emit({
+                            kind: "expression",
+                            code: `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, callback)};`,
+                        });
+                        assigned.add(field.name);
                     }
                     continue;
                 }
@@ -8633,55 +10230,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     spread.dataType?.kind === "struct"
                 ) {
                     declareDefault();
-                    const sourceMember =
-                        this.context.dataTypes.isReferenceStruct(
-                            spread.dataType.name,
-                        )
-                            ? "->"
-                            : ".";
-                    const targetFields = new EmissionMap(
-                        this.context.dataTypes
-                            .structFields(dataType.name, property)
-                            .map((field) => [field.sourceName, field]),
-                    );
-                    for (const sourceField of this.context.dataTypes.structFields(
-                        spread.dataType.name,
-                        property,
-                    )) {
-                        const targetField = targetFields.get(
-                            sourceField.sourceName,
-                        );
-                        if (!targetField)
-                            this.context.fail(
-                                property,
-                                `Spread property '${sourceField.sourceName}' cannot be retained in the narrower '${dataType.name}' storage.`,
-                            );
-                        const sourceCpp = `${spread.cpp}${sourceMember}${sourceField.name}`;
-                        if (sourceField.type.kind === "optional") {
-                            this.context.emit({
-                                kind: "open",
-                                code: `if (${optionalPresentCpp(sourceCpp)}) {`,
-                            });
-                            this.context.increaseIndent();
-                            this.context.emit({
-                                kind: "expression",
-                                code: `${cppName}${member}${targetField.name} = ${this.compileKnownValueForSink(this.leafValue(`*${sourceCpp}`, sourceField.type.inner), targetField.type, property)};`,
-                            });
-                            this.context.decreaseIndent();
-                            this.context.emit({ kind: "close", code: "}" });
-                            // A possibly absent source property cannot by
-                            // itself satisfy a required target field.
-                            if (targetField.type.kind === "optional") {
-                                assigned.add(targetField.name);
-                            }
-                            continue;
-                        }
-                        this.context.emit({
-                            kind: "expression",
-                            code: `${cppName}${member}${targetField.name} = ${this.compileKnownValueForSink(this.leafValue(sourceCpp, sourceField.type), targetField.type, property)};`,
-                        });
-                        assigned.add(targetField.name);
-                    }
+                    for (const name of this.copyStructOwnProperties(
+                        { cpp: cppName, type: dataType },
+                        spread,
+                        spread.dataType,
+                        property.expression,
+                        "spread",
+                        { fresh: (field) => !assigned.has(field) },
+                    ))
+                        assigned.add(name);
                     continue;
                 }
                 this.context.fail(
@@ -8723,11 +10280,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         declareDefault();
+        // An absent optional field keeps the default the declaration
+        // stored, as a struct literal omitting it does.
         const missing = this.context.dataTypes
             .structFields(dataType.name, literal)
             .find(
+                // A `?` field holding a nullable reference or function is
+                // absent in its default storage.
                 (field) =>
-                    field.type.kind !== "optional" && !assigned.has(field.name),
+                    field.type.kind !== "optional" &&
+                    !field.optionalProperty &&
+                    !field.defaultWhenMissing &&
+                    !assigned.has(field.name),
             );
         if (missing) {
             this.context.fail(
@@ -8738,17 +10302,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * Emits assignments whose target is a data path. Returns false when the
-     * left side is not a data path.
-     */
-    /**
      * Assigns to a data-typed local by name (`currentMode = mode`).
      *
      * Scalars are native values. A vector is `js::Array`, whose copy
      * assignment copies its shared storage identity: aliases of the old
      * array keep the old object while the rebound name takes the right-hand
-     * array, exactly like JavaScript. Value-backed structs still cannot be
-     * rebound because their C++ assignment would copy fields instead. A
+     * array, exactly like JavaScript. Value-backed structs and borrowed views
+     * still cannot be rebound because their C++ assignment would copy
+     * instead; declarations select owning storage for rebound bindings. A
      * stored function is immutable after creation, so copying its
      * `std::function` target preserves JavaScript's observable semantics.
      */
@@ -8779,73 +10340,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "a reassigned local",
             );
         }
-        const referenceRebind =
-            isOpaqueReference(target.dataType) ||
-            ["vector", "tuple", "product", "iterator", "map", "set"].includes(
-                kind,
-            );
-        // An array, map or set copies its reference, and a reference
-        // struct its handle, so rebinding a nullable local to another one
-        // aliases exactly as JavaScript does.
-        const referenceInner =
+        // An empty optional slot filled from a literal or an absence takes
+        // fresh storage that no alias names.
+        const right = this.context.unwrap(expression.right);
+        const freshOptional =
             target.dataType.kind === "optional" &&
-            (isOpaqueReference(target.dataType.inner) ||
-                ["vector", "tuple", "product", "iterator"].includes(
-                    target.dataType.inner.kind,
-                ) ||
-                target.dataType.inner.kind === "map" ||
-                target.dataType.inner.kind === "set" ||
-                (target.dataType.inner.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(
-                        target.dataType.inner.name,
-                    )));
-        const optionalRebind =
-            referenceInner ||
-            (target.dataType.kind === "optional" &&
-                (target.dataType.inner.kind === "number" ||
-                    target.dataType.inner.kind === "boolean" ||
-                    target.dataType.inner.kind === "string" ||
-                    target.dataType.inner.kind === "enum" ||
-                    target.dataType.inner.kind === "handle" ||
-                    target.dataType.inner.kind === "event-target" ||
-                    // Owned typed arrays and byte-backed views both copy shared
-                    // wrappers, including a view returned by a helper.
-                    isTypedArrayType(target.dataType.inner) ||
-                    ((target.dataType.inner.kind === "map" ||
-                        target.dataType.inner.kind === "set") &&
-                        ts.isNewExpression(
-                            this.context.unwrap(expression.right),
-                        )) ||
-                    ts.isObjectLiteralExpression(
-                        this.context.unwrap(expression.right),
-                    ) ||
-                    ts.isArrayLiteralExpression(
-                        this.context.unwrap(expression.right),
-                    ) ||
-                    this.context.unwrap(expression.right).kind ===
-                        ts.SyntaxKind.NullKeyword ||
-                    identifierText(this.context.unwrap(expression.right)) ===
-                        "undefined"));
+            (ts.isObjectLiteralExpression(right) ||
+                ts.isArrayLiteralExpression(right) ||
+                right.kind === ts.SyntaxKind.NullKeyword ||
+                identifierText(right) === "undefined");
         if (
-            kind !== "number" &&
-            kind !== "boolean" &&
-            kind !== "string" &&
-            kind !== "enum" &&
-            kind !== "handle" &&
-            kind !== "event-target" &&
             kind !== "function" &&
-            !isTypedArrayType(target.dataType) &&
-            // JsonValue copies its array/object storage by shared pointer, so
-            // assigning a freshly parsed dynamic document preserves the
-            // JavaScript object identity of that value rather than deep-copying
-            // the graph.
-            kind !== "json" &&
-            !(
-                kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(target.dataType.name)
+            !reseatsOnAssignment(target.dataType, (name) =>
+                this.context.dataTypes.isReferenceStruct(name),
             ) &&
-            !optionalRebind &&
-            !referenceRebind
+            !freshOptional
         ) {
             this.context.fail(
                 expression,
@@ -8980,6 +10489,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.bindings.invalidateRecordProperties(narrowed);
                 return;
             }
+            // A key generation knows (a literal, or a specialized key
+            // parameter) names one optional struct field.
+            const keyType = this.context.checker.getTypeAtLocation(
+                target.argumentExpression,
+            );
+            const staticKey =
+                key.staticString ??
+                (keyType.isStringLiteral() ? keyType.value : undefined);
+            if (
+                staticKey !== undefined &&
+                narrowed?.dataType?.kind === "struct"
+            ) {
+                this.context.emitDiscardedValue(key);
+                this.deleteStructField(
+                    narrowed,
+                    narrowed.dataType,
+                    staticKey,
+                    target,
+                );
+                return;
+            }
         }
         if (ts.isPropertyAccessExpression(target)) {
             const recordOwner = this.context.resolveRecordValue(
@@ -9001,50 +10531,92 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 deleteRecordProperty(recordOwner, target.name.text);
                 return;
             }
-            const field = this.compileDataPath(target, "write");
+            // Deleting a property the record lacks changes nothing.
+            const owner = this.compileDataPath(target.expression, "read");
             if (
-                field?.dataType?.kind === "function" ||
-                (field?.dataType?.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(
-                        field.dataType.name,
-                    ))
-            ) {
+                owner?.kind === "data" &&
+                owner.dataType?.kind === "struct" &&
+                !owner.impure &&
+                isCppPath(owner.cpp) &&
+                this.context.dataTypes.lacksRecordProperty(
+                    owner.dataType.name,
+                    target.name.text,
+                )
+            )
+                return;
+            const field = this.compileDataPath(target, "write");
+            if (field) {
                 const property = this.context.checker.getPropertyOfType(
                     this.context.checker.getTypeAtLocation(target.expression),
                     target.name.text,
                 );
-                if (
-                    property &&
-                    (property.flags & ts.SymbolFlags.Optional) !== 0
-                ) {
-                    this.context.emit({
-                        kind: "expression",
-                        code: `${field.cpp} = {};`,
-                    });
-                    this.invalidateStaticElements(field);
-                    return;
-                }
-            }
-            if (field?.kind === "data" && field.dataType?.kind === "optional") {
-                this.context.reachJsData();
-                this.context.emit({
-                    kind: "expression",
-                    code: `${field.cpp} = std::nullopt;`,
-                });
-                this.invalidateStaticElements(field);
-                return;
-            }
-            if (field) {
-                this.context.fail(
+                this.deleteSlot(
+                    field,
+                    property !== undefined &&
+                        (property.flags & ts.SymbolFlags.Optional) !== 0,
+                    target.name.text,
                     target,
-                    `'${target.name.text}' is a required field of its type; only an optional field can be deleted.`,
                 );
+                return;
             }
         }
         this.context.fail(
             expression,
             "delete is lowered for dictionary entries, optional struct fields and compile-time record properties.",
         );
+    }
+
+    /** `delete owner[key]` for a key generation knows: the `?` field's storage empties. */
+    private deleteStructField(
+        owner: Value,
+        type: DataType<"struct">,
+        key: string,
+        node: ts.Node,
+    ): void {
+        const field = this.context.dataTypes.structField(type.name, key, node);
+        this.deleteSlot(
+            this.leafValue(
+                `${owner.cpp}${this.context.dataTypes.isReferenceStruct(type.name) ? "->" : "."}${field.name}`,
+                field.type,
+            ),
+            field.optionalProperty === true,
+            key,
+            node,
+        );
+        this.context.bindings.invalidateRecordProperties(owner);
+    }
+
+    /**
+     * Empties the slot of a deleted property, which is then absent: optional
+     * storage empties, and a `?` property's shared object or function becomes
+     * its null. Storage with no absent state for the property refuses.
+     */
+    private deleteSlot(
+        slot: Value,
+        optionalProperty: boolean,
+        key: string,
+        node: ts.Node,
+    ): void {
+        const type = slot.dataType;
+        if (
+            type?.kind !== "optional" &&
+            !(
+                optionalProperty &&
+                (type?.kind === "function" ||
+                    (type?.kind === "struct" &&
+                        this.context.dataTypes.isReferenceStruct(type.name)))
+            )
+        )
+            return this.context.fail(
+                node,
+                `'${key}' is a required field of its type; only an optional field can be deleted.`,
+            );
+        if (type.kind === "optional") this.context.reachJsData();
+        this.context.emit({
+            kind: "expression",
+            code: `${slot.cpp} = ${this.context.dataTypes.absentValue(type)};`,
+        });
+        this.invalidateStaticElements(slot);
     }
 
     /** `key in object` as a condition. */
@@ -9176,17 +10748,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ].flatMap((fields) => Object.keys(fields ?? {})),
                 ),
             ];
+            // A key a conditional spread wrote is own while its value is.
+            const ownWhile = (key: string): string | undefined => {
+                const property = narrowed.recordProperties?.[key];
+                return property
+                    ? this.recordMemberEntry(key, property, ownerNode).presence
+                          ?.ownCpp
+                    : undefined;
+            };
+            const inherited = (key: string): boolean =>
+                operator === "in" && Object.hasOwn(Object.prototype, key);
             if (key.staticString !== undefined) {
-                if (keys.includes(key.staticString)) return "true";
+                if (
+                    keys.includes(key.staticString) &&
+                    !inherited(key.staticString)
+                )
+                    return ownWhile(key.staticString) ?? "true";
                 return String(
-                    operator === "in" &&
-                        Object.hasOwn(Object.prototype, key.staticString),
+                    keys.includes(key.staticString) ||
+                        inherited(key.staticString),
                 );
             }
             const name = this.membershipStringKeyCpp(key, keyNode);
-            const tests = keys.map(
-                (key) => `${name} == ${this.context.cppString(key)}`,
-            );
+            const tests = keys.map((key) => {
+                const test = `${name} == ${this.context.cppString(key)}`;
+                const present = ownWhile(key);
+                return present ? `(${test} && ${present})` : test;
+            });
             if (operator === "in") {
                 this.context.reachJsData();
                 tests.push(`bbl::js::object_prototype_has_property(${name})`);
@@ -9286,36 +10874,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         field: DataStructField,
         node: ts.Node,
     ): string {
-        const access = this.context.dataTypes.isReferenceStruct(structName)
-            ? "->"
-            : ".";
-        const slot = `${ownerCpp}${access}${field.name}`;
-        // A union arm's field is narrowed by its tag, not its storage.
+        // A union arm's field is own when the record's tags select an arm
+        // declaring it.
         if (field.presentForTags && field.type.kind === "undefined")
             this.context.fail(
                 node,
                 "A tagged undefined field requires its discriminant for own-property membership.",
             );
-        if (
-            field.presentForTags &&
-            !(
-                field.optionalProperty &&
-                field.type.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(field.type.name)
-            )
-        )
-            return field.type.kind === "optional"
-                ? optionalPresentCpp(slot)
-                : "true";
-        const present = this.context.dataTypes.ownPropertyPresentCpp(
+        const presence = this.context.dataTypes.ownPresence(
             structName,
             field,
-            slot,
+            ownerCpp,
+            this.context.dataTypes.isReferenceStruct(structName) ? "->" : ".",
             node,
         );
-        if (present === undefined) return "true";
+        if (presence === undefined) return "true";
         this.context.reachJsData();
-        return present;
+        return presence.ownCpp;
     }
 
     /**
@@ -9589,17 +11164,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const type = this.dataTypeAt(expression);
         if (type?.kind !== "optional" || type.inner.kind !== "boolean")
             return undefined;
-        const left = this.context.bindings.pinValueToTemporary(
-            this.context.compileValue(expression.left),
-            "logical_left",
-            expression.left,
-        );
-        const condition = this.truthinessCondition(left);
-        if (condition === undefined)
-            this.context.fail(
-                expression.left,
-                "Logical boolean selection requires a truth-testable left operand.",
-            );
         // An object contributes only its absent state to `object && bool`;
         // its present value belongs to the unselected arm, not the bool sink.
         const absentObject =
@@ -9609,68 +11173,142 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ).flags &
                 ts.TypeFlags.Object) !==
                 0;
-        const result = this.context.allocateTemporaryCppName("logical_boolean");
-        this.context.emit({
-            kind: "declaration",
-            type: this.context.dataTypes.cppType(type),
-            name: result,
-            initializer: absentObject
-                ? this.context.dataTypes.absentValue(type)
-                : this.compileKnownValueForSink(left, type, expression.left),
-        });
-        this.context.registerNativeBinding(result);
-        this.emitGuardedStore(
-            operator === ts.SyntaxKind.AmpersandAmpersandToken
-                ? condition
-                : `!(${condition})`,
-            () => {
-                const right = this.compileForSink(expression.right, type);
-                this.context.emit({
-                    kind: "expression",
-                    code: `${result} = ${right};`,
-                });
-            },
+        return this.leafValue(
+            this.compileLogicalSelection(
+                expression,
+                type,
+                "logical_boolean",
+                (left) =>
+                    absentObject
+                        ? this.context.dataTypes.absentValue(type)
+                        : this.compileKnownValueForSink(
+                              left,
+                              type,
+                              expression.left,
+                          ),
+            ),
+            type,
         );
-        return this.leafValue(result, type);
     }
 
-    /** String-valued logical operators keep the selected value and a lazy RHS. */
-    public compileStringLogicalValue(expression: ts.BinaryExpression): Value {
+    /**
+     * `left && right` / `left || right` as a value of represented storage:
+     * the left operand, pinned and truth-tested once, is the value unless
+     * its truthiness selects the right one, which is evaluated only then.
+     * `unselected` spells the value when the right one is not selected.
+     */
+    private compileLogicalSelection(
+        expression: ts.BinaryExpression,
+        type: DataType,
+        label: string,
+        unselected: (left: Value, condition: string) => string,
+    ): string {
         const left = this.context.bindings.pinValueToTemporary(
             this.context.compileValue(expression.left),
             "logical_left",
             expression.left,
         );
-        const condition = this.truthinessCondition(left);
-        if (condition === undefined)
+        const condition =
+            this.truthinessCondition(left) ??
             this.context.fail(
                 expression.left,
-                "Logical string selection requires a truth-testable left operand.",
+                "Logical value selection requires a truth-testable left operand.",
             );
+        const result = this.context.allocateTemporaryCppName(label);
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(type),
+            name: result,
+            initializer: unselected(left, condition),
+        });
+        this.context.registerNativeBinding(result);
         const isAnd =
             expression.operatorToken.kind ===
             ts.SyntaxKind.AmpersandAmpersandToken;
-        const result = this.context.allocateTemporaryCppName("logical_string");
-        const selected = this.compileKnownValueForSink(
-            this.narrowOptional(left, expression.left, true),
-            { kind: "string" },
-            expression.left,
-        );
-        this.context.emit({
-            kind: "declaration",
-            type: "std::string",
-            name: result,
-            initializer: `${condition} ? ${selected} : std::string{}`,
-        });
         this.emitGuardedStore(isAnd ? condition : `!(${condition})`, () => {
-            const right = this.compileForSink(expression.right, {
-                kind: "string",
-            });
+            const right = this.compileForSink(expression.right, type);
             this.context.emit({
                 kind: "expression",
                 code: `${result} = ${right};`,
             });
         });
+        return result;
+    }
+
+    /**
+     * `left && right` as a value of represented storage: the right operand,
+     * evaluated only when the left is truthy, else the left itself. A left
+     * whose present values are all truthy (an object, a non-empty literal)
+     * contributes only its absent value; a nullable result whose storage
+     * tells `null` from `undefined` needs the left to say which.
+     */
+    public compileLogicalAndValue(
+        expression: ts.BinaryExpression,
+    ): Value | undefined {
+        if (
+            expression.operatorToken.kind !==
+            ts.SyntaxKind.AmpersandAmpersandToken
+        )
+            return undefined;
+        const type = this.dataTypeAt(expression);
+        if (!type) return undefined;
+        const leftType = this.context.checker.getTypeAtLocation(
+            expression.left,
+        );
+        return this.leafValue(
+            this.compileLogicalSelection(
+                expression,
+                type,
+                "logical_value",
+                (left) => {
+                    let falsy: Value = left;
+                    if (
+                        !isJsonValue(left) &&
+                        presentValuesTruthy(this.context.checker, leftType)
+                    ) {
+                        const absent = nullability(leftType);
+                        if (
+                            absent.null &&
+                            absent.undefined &&
+                            type.kind === "json"
+                        )
+                            this.context.fail(
+                                expression.left,
+                                "A short circuit whose left operand may be null or undefined selects a value only where its storage tells them apart.",
+                            );
+                        falsy = {
+                            kind: "json-null",
+                            cpp:
+                                absent.null && !absent.undefined
+                                    ? ""
+                                    : "std::nullopt",
+                        };
+                    }
+                    return this.compileKnownValueForSink(
+                        falsy,
+                        type,
+                        expression.left,
+                    );
+                },
+            ),
+            type,
+        );
+    }
+
+    /** String-valued logical operators keep the selected value and a lazy RHS. */
+    public compileStringLogicalValue(expression: ts.BinaryExpression): Value {
+        // A falsy string left is "", the one value a falsy string has.
+        const result = this.compileLogicalSelection(
+            expression,
+            { kind: "string" },
+            "logical_string",
+            (left, condition) =>
+                `${condition} ? ${this.compileKnownValueForSink(
+                    this.narrowOptional(left, expression.left, true),
+                    { kind: "string" },
+                    expression.left,
+                )} : std::string{}`,
+        );
         return { kind: "string", cpp: result };
     }
 
@@ -9877,6 +11515,69 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return { owner: owner.cpp, key };
     }
 
+    /**
+     * `document === other` for a document already bound to `documentCpp`:
+     * strict, so it holds only a value of that very type, and null and
+     * undefined only themselves.
+     */
+    public jsonStrictEquality(
+        documentCpp: string,
+        other: ts.Expression,
+    ): string | undefined {
+        return compileJsonStrictComparison(
+            this.context,
+            documentCpp,
+            other,
+            isNullishLiteral(this.context.checker, other),
+            (value) => this.compileForSink(value, { kind: "string" }),
+            (value, node) =>
+                this.compileKnownValueForSink(value, { kind: "json" }, node),
+        );
+    }
+
+    /**
+     * The Map an indexed write `owner[key]` stores an entry of. This first
+     * resolution only asks whether the target is a Map. Resolving a
+     * call-shaped owner emits its call, so the speculative emission is
+     * discarded when the answer is no and the normal element-target path
+     * performs the source's one evaluation.
+     */
+    private indexedMapOwner(
+        left: ts.ElementAccessExpression,
+    ): (Value & { dataType: DataType & { kind: "map" } }) | undefined {
+        return this.context.probeEmission(() => {
+            const owner = this.compileDataPath(left.expression, "read");
+            const candidate =
+                owner?.kind === "data"
+                    ? this.narrowOptional(owner, left.expression)
+                    : undefined;
+            return candidate?.dataType?.kind === "map"
+                ? { ...candidate, dataType: candidate.dataType }
+                : undefined;
+        });
+    }
+
+    /**
+     * A direct write to `root.field` invalidates that field's static fact,
+     * not unrelated fields on the same object. The property snapshot object
+     * is shared by aliases, so deleting in place updates every view while
+     * preserving immutable dimensions/constants.
+     */
+    private invalidateRecordFieldSnapshot(left: ts.Expression): void {
+        if (!ts.isPropertyAccessExpression(left)) return;
+        const owner = this.context.unwrap(left.expression);
+        if (!ts.isIdentifier(owner)) return;
+        const root = this.context.bindings.lookupOptional(owner);
+        if (root?.dataType?.kind === "struct" && root.recordProperties) {
+            delete writable(root.recordProperties)[left.name.text];
+        }
+    }
+
+    /**
+     * `target = value` / `target op= value` into data storage. The right
+     * side compiles into the store; an assignment used as a value has it
+     * bound where the store first consumes it (`compileAssignmentValue`).
+     */
     public emitAssignment(expression: ts.BinaryExpression): boolean {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);
@@ -9890,6 +11591,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!operator) {
             return false;
         }
+        const staticRight = (): number | undefined =>
+            staticNumberValue(this.context, expression.right);
+        // The number `target op= right` stores, from the old value.
+        const compoundNext = (previous: string): string => {
+            const next = compoundAssignmentValue(
+                operator,
+                previous,
+                this.context.compileNumber(expression.right, "double"),
+                staticRight(),
+            );
+            if (next.jsData) this.context.reachJsData();
+            return next.cpp;
+        };
         const left = this.context.unwrap(expression.left);
         if (ts.isArrayLiteralExpression(left) && operator === "=") {
             return (
@@ -9991,13 +11705,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (owner?.kind === "data") {
                 const narrowed = this.narrowOptional(owner, left.expression);
                 if (narrowed.dataType?.kind === "vector") {
-                    if (operator !== "=") {
-                        this.context.fail(
-                            expression,
-                            "Array length supports plain assignment only.",
-                        );
-                    }
                     this.context.reachJsData();
+                    if (operator !== "=") {
+                        // `xs.length -= n` reads the length before the
+                        // right side runs, then stores the combined length.
+                        const previous =
+                            this.context.allocateTemporaryCppName(
+                                "length_previous",
+                            );
+                        this.context.emit({
+                            kind: "declaration",
+                            type: "const double",
+                            name: previous,
+                            initializer: `static_cast<double>(${narrowed.cpp}.size())`,
+                        });
+                        const length = compoundNext(previous);
+                        this.invalidateStaticElements(narrowed);
+                        this.invalidateAliases(narrowed.cpp);
+                        this.context.emit(
+                            `bbl::js::array_truncate(${narrowed.cpp}, ${length});`,
+                        );
+                        return true;
+                    }
                     // Truncation shrinks the array, so the exact
                     // element snapshot no longer describes it — and the
                     // static in-bounds proof over the snapshot's length
@@ -10077,30 +11806,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 return true;
             }
-            // This first resolution only asks whether the target is a Map.
-            // Resolving a call-shaped owner emits its call, so discard that
-            // speculative emission when the answer is no and let the normal
-            // element-target path below perform the source's one evaluation.
-            const narrowed = this.context.probeEmission(() => {
-                const owner = this.compileDataPath(left.expression, "read");
-                const candidate =
-                    owner?.kind === "data"
-                        ? this.narrowOptional(owner, left.expression)
-                        : undefined;
-                return candidate?.dataType?.kind === "map"
-                    ? {
-                          ...candidate,
-                          dataType: candidate.dataType,
-                      }
-                    : undefined;
-            });
+        }
+        // `entries[key] += n`, `dictionary.name -= n`: a numeric update of
+        // the entry.
+        if (operator !== "=") {
+            const entry = this.entryUpdatePlace(left);
+            if (entry === "not-number")
+                this.context.fail(
+                    expression,
+                    "Compound assignment to an indexed Record entry requires a number value.",
+                );
+            if (entry) {
+                this.emitNumericUpdate(entry, left, compoundNext);
+                return true;
+            }
+        }
+        if (ts.isElementAccessExpression(left)) {
+            const narrowed = this.indexedMapOwner(left);
             if (narrowed) {
-                if (operator !== "=") {
-                    this.context.fail(
-                        expression,
-                        "Indexed Record entries support plain assignment only.",
-                    );
-                }
                 const keyValue = this.context.compileValue(
                     left.argumentExpression,
                 );
@@ -10175,15 +11898,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // `dictionary.name = value`: the named member is an entry.
             const entry = this.dictionaryEntry(left);
             if (entry) {
-                if (operator !== "=") {
+                // A number member updated above.
+                if (operator !== "=")
                     this.context.fail(
                         expression,
-                        "Dictionary members support plain assignment only.",
+                        "Compound assignment to a dictionary member requires a number value.",
                     );
-                }
-                const assigned = this.context.compileValue(expression.right);
                 const value = this.compileKnownValueForSink(
-                    assigned,
+                    this.context.compileValue(expression.right),
                     entry.dataType.value,
                     expression.right,
                 );
@@ -10227,30 +11949,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const targetRoot = rootExpression(left, (chain) =>
             this.context.unwrap(chain),
         );
-        const invalidateRootRecordSnapshot = (): void => {
-            if (
-                !ts.isPropertyAccessExpression(left) ||
-                !ts.isIdentifier(targetRoot) ||
-                !ts.isIdentifier(this.context.unwrap(left.expression))
-            ) {
-                return;
-            }
-            const root = this.context.bindings.lookupOptional(targetRoot);
-            if (root?.dataType?.kind === "struct" && root.recordProperties) {
-                // A direct write invalidates that field's static fact, not
-                // unrelated fields on the same object. The property snapshot
-                // object is shared by aliases, so deleting in place updates
-                // every view while preserving immutable dimensions/constants.
-                delete writable(root.recordProperties)[left.name.text];
-            }
-        };
+        const invalidateRootRecordSnapshot = (): void =>
+            this.invalidateRecordFieldSnapshot(left);
         if (
             target.dataType &&
             this.context.dataTypes.carriesBorrowedPlatformEvent(target.dataType)
         ) {
-            const value = this.context.compileValue(expression.right);
             this.context.refuseBorrowedPlatformEventEscape(
-                value,
+                this.context.compileValue(expression.right),
                 expression.right,
                 ts.isElementAccessExpression(left)
                     ? "container element assignment"
@@ -10287,48 +11993,53 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         initializer: `static_cast<double>(${targetCpp})`,
                     });
                 }
+            } else if (
+                operator !== "=" &&
+                !this.storeTargetRunsCode(left) &&
+                this.context.evaluationOrder.operandsToPin([
+                    left,
+                    expression.right,
+                ])[0]
+            ) {
+                // `a[i] += f()` reads the old value before the right side,
+                // which may write it.
+                previous =
+                    this.context.allocateTemporaryCppName("compound_previous");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const double",
+                    name: previous,
+                    initializer: target.cpp,
+                });
             }
             const right = this.context.compileNumber(
                 expression.right,
                 "double",
             );
-            const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
-            const assigned = helper
-                ? `bbl::js::${helper}(${previous}, ${right})`
-                : undefined;
-            if (helper) {
-                this.context.reachJsData();
-            }
+            const compound =
+                operator === "="
+                    ? undefined
+                    : compoundAssignmentValue(
+                          operator,
+                          previous,
+                          right,
+                          staticRight(),
+                      );
+            if (compound?.jsData) this.context.reachJsData();
             if (target.dataStore) {
-                const arithmetic = new EmissionMap([
-                    ["+=", "+"],
-                    ["-=", "-"],
-                    ["*=", "*"],
-                    ["/=", "/"],
-                ]).get(operator);
-                if (operator !== "=" && !assigned && !arithmetic) {
-                    this.context.fail(
-                        expression,
-                        "This typed-array compound assignment is not supported.",
-                    );
-                }
-                const stored =
-                    assigned ??
-                    (arithmetic
-                        ? `(${previous} ${arithmetic} ${right})`
-                        : right);
                 this.context.emit({
                     kind: "expression",
-                    code: `${targetCpp} = ${typedArrayStoreExpression(target.dataStore, stored)};`,
+                    code: `${targetCpp} = ${typedArrayStoreExpression(target.dataStore, compound?.cpp ?? right)};`,
                 });
                 invalidateRootRecordSnapshot();
                 return true;
             }
             this.context.emit({
                 kind: "expression",
-                code: assigned
-                    ? `${target.cpp} = ${assigned};`
-                    : `${target.cpp} ${operator} ${right};`,
+                code:
+                    compound && (!compound.native || previous !== target.cpp)
+                        ? `${target.cpp} = ${compound.cpp};`
+                        : `${target.cpp} ${operator} ${right};`,
             });
             invalidateRootRecordSnapshot();
             return true;
@@ -10354,6 +12065,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (operator === "+=" && target.dataType.kind === "string") {
                 emitStringAppend(this.context, target.cpp, expression.right);
                 invalidateRootRecordSnapshot();
+                return true;
+            }
+            const optionalNumber =
+                operator === "=" ? undefined : this.optionalNumberPlace(target);
+            if (optionalNumber) {
+                this.emitNumericUpdate(optionalNumber, left, compoundNext);
                 return true;
             }
             if (operator !== "=") {
@@ -11161,101 +12878,234 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     public emitPostfixUnary(expression: ts.PostfixUnaryExpression): boolean {
         if (this.compileJsonUpdate(expression)) return true;
-        if (
-            !ts.isPropertyAccessExpression(
-                this.context.unwrap(expression.operand),
-            ) &&
-            !ts.isElementAccessExpression(
-                this.context.unwrap(expression.operand),
-            ) &&
-            !ts.isIdentifier(this.context.unwrap(expression.operand))
-        ) {
-            return false;
+        const place = this.numericUpdatePlace(expression.operand, true);
+        if (!place) return false;
+        if (place.kind === "scalar") {
+            this.context.emit(
+                `${place.cpp}${
+                    expression.operator === ts.SyntaxKind.PlusPlusToken
+                        ? "++"
+                        : "--"
+                };`,
+            );
+            return true;
         }
-        const operand = this.context.unwrap(expression.operand);
-        const rawTarget =
-            this.compileDataPath(expression.operand, "write") ??
-            (ts.isIdentifier(operand)
-                ? this.context.bindings.lookupOptional(operand)
-                : undefined);
-        const target = rawTarget
-            ? this.narrowOptional(rawTarget, expression.operand)
-            : undefined;
-        if (target?.kind !== "number") {
-            return false;
-        }
-        this.context.emit(
-            `${target.cpp}${
-                expression.operator === ts.SyntaxKind.PlusPlusToken
-                    ? "++"
-                    : "--"
-            };`,
+        this.emitNumericUpdate(place, expression.operand, (previous) =>
+            updateStepCpp(expression, previous),
         );
         return true;
     }
 
-    /** Post-increment/decrement where the expression's old value is used. */
-    public compilePostfixValue(
-        expression: ts.PostfixUnaryExpression,
+    /**
+     * `x++`, `x--`, `++x` and `--x` where the expression's value is used:
+     * the old value after ToNumeric for a postfix form, the new one for a
+     * prefix form. The operand's place is resolved once.
+     */
+    public compileUpdateValue(
+        expression: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
     ): Value | undefined {
-        if (
-            expression.operator !== ts.SyntaxKind.PlusPlusToken &&
-            expression.operator !== ts.SyntaxKind.MinusMinusToken
-        ) {
-            return undefined;
-        }
+        if (!isUpdateExpression(expression)) return undefined;
         const json = this.compileJsonUpdate(expression);
         if (json) return json;
-        const operand = this.context.unwrap(expression.operand);
-        const target =
-            this.compileDataPath(expression.operand, "write") ??
-            (ts.isIdentifier(operand)
-                ? this.context.bindings.lookupOptional(operand)
-                : undefined);
-        if (target?.kind !== "number") {
-            return undefined;
-        }
-        const value: Value = {
-            ...target,
-            cpp: `(${target.cpp}${
+        const place = this.numericUpdatePlace(expression.operand, false);
+        if (!place) return undefined;
+        const postfix = ts.isPostfixUnaryExpression(expression);
+        if (place.kind === "scalar") {
+            const operator =
                 expression.operator === ts.SyntaxKind.PlusPlusToken
                     ? "++"
-                    : "--"
-            })`,
+                    : "--";
+            const value: Value = {
+                ...place.target,
+                cpp: postfix
+                    ? `(${place.cpp}${operator})`
+                    : `(${operator}${place.cpp})`,
+                impure: true,
+            };
+            delete writable(value).staticNumber;
+            return value;
+        }
+        const update = this.emitNumericUpdate(
+            place,
+            expression.operand,
+            (previous) => updateStepCpp(expression, previous),
+        );
+        return {
+            kind: "number",
+            cpp: postfix ? update.previous : update.next,
+            dataType: { kind: "number" },
             impure: true,
         };
-        delete writable(value).staticNumber;
-        return value;
     }
 
-    /** Pre-increment/decrement where the expression's new value is used. */
-    public compilePrefixValue(
-        expression: ts.PrefixUnaryExpression,
-    ): Value | undefined {
-        if (
-            expression.operator !== ts.SyntaxKind.PlusPlusToken &&
-            expression.operator !== ts.SyntaxKind.MinusMinusToken
+    /**
+     * The entry a numeric update or compound assignment of `operand` writes,
+     * resolved in one probe: a Record entry (a Map entry, as the assignment
+     * lowering writes it) or a dictionary member with a number value.
+     * "not-number" for a Record entry of another value type, which is no
+     * numeric place; undefined, with nothing emitted, for any other operand.
+     */
+    private entryUpdatePlace(
+        operand: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): EntryUpdatePlace | "not-number" | undefined {
+        return this.context.probeEmission(
+            (): EntryUpdatePlace | "not-number" | undefined => {
+                if (ts.isPropertyAccessExpression(operand)) {
+                    const found = this.dictionaryEntry(operand);
+                    return found?.dataType.value.kind === "number"
+                        ? { kind: "entry", ...found }
+                        : undefined;
+                }
+                const owner = this.indexedMapOwner(operand);
+                if (!owner) return undefined;
+                if (owner.dataType.value.kind !== "number") return "not-number";
+                return {
+                    kind: "entry",
+                    owner,
+                    dataType: owner.dataType,
+                    keyCpp: this.compileKnownValueForSink(
+                        this.context.compileValue(operand.argumentExpression),
+                        owner.dataType.key,
+                        operand.argumentExpression,
+                    ),
+                };
+            },
+            (place) => typeof place === "object",
+        );
+    }
+
+    /**
+     * The storage a numeric update writes, resolved once: a native number
+     * (`x++` applies directly), an optional number slot, or a dictionary
+     * entry. Undefined, with nothing emitted, for any other operand.
+     */
+    private numericUpdatePlace(
+        operandExpression: ts.Expression,
+        narrowScalar: boolean,
+    ): NumericUpdatePlace | undefined {
+        const operand = this.context.unwrap(operandExpression);
+        if (ts.isIdentifier(operand)) {
+            // A number local applies `++` in place: nothing to probe.
+            const bound = this.context.bindings.lookupOptional(operand);
+            if (bound?.kind === "number")
+                return { kind: "scalar", cpp: bound.cpp, target: bound };
+        } else if (
+            ts.isPropertyAccessExpression(operand) ||
+            ts.isElementAccessExpression(operand)
         ) {
-            return undefined;
+            const entry = this.entryUpdatePlace(operand);
+            if (entry === "not-number") return undefined;
+            if (entry) return entry;
+        } else return undefined;
+        return this.context.probeEmission(
+            (): NumericUpdatePlace | undefined => {
+                const rawTarget =
+                    this.compileDataPath(operandExpression, "write") ??
+                    (ts.isIdentifier(operand)
+                        ? this.context.bindings.lookupOptional(operand)
+                        : undefined);
+                if (!rawTarget) return undefined;
+                const target = narrowScalar
+                    ? this.narrowOptional(rawTarget, operandExpression)
+                    : rawTarget;
+                if (target.kind === "number")
+                    return { kind: "scalar", cpp: target.cpp, target };
+                return this.optionalNumberPlace(target);
+            },
+        );
+    }
+
+    /** A written optional-number slot, the place a numeric update stores. */
+    private optionalNumberPlace(
+        target: Value,
+    ): Extract<NumericUpdatePlace, { kind: "optional" }> | undefined {
+        return target.kind === "data" &&
+            !target.freshData &&
+            target.dataType?.kind === "optional" &&
+            target.dataType.inner.kind === "number"
+            ? {
+                  kind: "optional",
+                  target: { ...target, dataType: target.dataType },
+              }
+            : undefined;
+    }
+
+    /**
+     * Reads, updates and stores one optional-number slot or dictionary
+     * entry, in JavaScript's order: the place, its old value (ToNumeric: an
+     * absent undefined reads NaN, an absent null 0), then whatever `next`
+     * evaluates, then the store.
+     */
+    private emitNumericUpdate(
+        place: Exclude<NumericUpdatePlace, { kind: "scalar" }>,
+        operand: ts.Expression,
+        next: (previous: string) => string,
+    ): { previous: string; next: string } {
+        const previous =
+            this.context.allocateTemporaryCppName("update_previous");
+        const stored = this.context.allocateTemporaryCppName("update_next");
+        let read: string;
+        let store: (value: string) => string;
+        if (place.kind === "entry") {
+            const owner = this.context.allocateTemporaryCppName("update_owner");
+            const key = this.context.allocateTemporaryCppName("update_key");
+            this.context.emit({
+                kind: "declaration",
+                type: "auto&&",
+                name: owner,
+                initializer: place.owner.cpp,
+            });
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: key,
+                initializer: place.keyCpp,
+            });
+            read = `bbl::js::number_from_optional(${owner}.get(${key}))`;
+            store = (value) => `${owner}.set(${key}, ${value});`;
+        } else {
+            const slot = this.context.allocateTemporaryCppName("update_slot");
+            this.context.emit({
+                kind: "declaration",
+                type: "auto&&",
+                name: slot,
+                initializer: place.target.cpp,
+            });
+            read =
+                numberFromOptionalCpp(
+                    this.context.checker,
+                    { ...place.target, cpp: slot },
+                    this.context.unwrap(operand),
+                ) ??
+                this.context.fail(
+                    operand,
+                    "A numeric update requires distinguishable null and undefined storage.",
+                );
+            store = (value) =>
+                `${slot} = ${this.compileKnownValueForSink(
+                    this.leafValue(value, { kind: "number" }),
+                    place.target.dataType,
+                    operand,
+                )};`;
         }
-        const json = this.compileJsonUpdate(expression);
-        if (json) return json;
-        const operand = this.context.unwrap(expression.operand);
-        const target =
-            this.compileDataPath(expression.operand, "write") ??
-            (ts.isIdentifier(operand)
-                ? this.context.bindings.lookupOptional(operand)
-                : undefined);
-        if (target?.kind !== "number") {
-            return undefined;
-        }
-        const value: Value = {
-            ...target,
-            cpp: `(${expression.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"}${target.cpp})`,
-            impure: true,
-        };
-        delete writable(value).staticNumber;
-        return value;
+        this.context.reachJsData();
+        this.context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: previous,
+            initializer: read,
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: stored,
+            initializer: next(previous),
+        });
+        this.context.emit({ kind: "expression", code: store(stored) });
+        if (place.kind === "entry")
+            this.context.bindings.invalidateRecordProperties(place.owner);
+        else this.invalidateRecordFieldSnapshot(this.context.unwrap(operand));
+        return { previous, next: stored };
     }
 
     private compileJsonUpdate(
@@ -11589,6 +13439,105 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return negated ? "true" : "false";
         }
         return undefined;
+    }
+
+    /**
+     * `x !== null && x !== undefined` (or `x === null || x === undefined`)
+     * over one reference read without effects: the loose test `x != null`
+     * (`x == null`), which one native absent state answers exactly whichever
+     * absence `x` holds. Undefined for any other expression.
+     */
+    public pairedAbsence(
+        expression: ts.BinaryExpression,
+    ): PairedAbsence | undefined {
+        return this.pairedAbsenceOf(
+            expression.left,
+            expression.right,
+            expression.operatorToken.kind,
+        );
+    }
+
+    /**
+     * {@link pairedAbsence} of two operands joined by `operator`, wherever a
+     * chain nests them (`ready && x !== null && x !== undefined`).
+     */
+    public pairedAbsenceOf(
+        leftOperand: ts.Expression,
+        rightOperand: ts.Expression,
+        operator: ts.SyntaxKind,
+    ): PairedAbsence | undefined {
+        const isAnd = operator === ts.SyntaxKind.AmpersandAmpersandToken;
+        if (!isAnd && operator !== ts.SyntaxKind.BarBarToken) return undefined;
+        const comparison = isAnd
+            ? ts.SyntaxKind.ExclamationEqualsEqualsToken
+            : ts.SyntaxKind.EqualsEqualsEqualsToken;
+        const tested = (
+            node: ts.Expression,
+        ):
+            | { reference: ts.Expression; literal: "null" | "undefined" }
+            | undefined => {
+            const binary = this.context.unwrap(node);
+            if (
+                !ts.isBinaryExpression(binary) ||
+                binary.operatorToken.kind !== comparison
+            )
+                return undefined;
+            const right = this.absentLiteral(binary.right);
+            const left = this.absentLiteral(binary.left);
+            return right && !left
+                ? {
+                      reference: this.context.unwrap(binary.left),
+                      literal: right,
+                  }
+                : left && !right
+                  ? {
+                        reference: this.context.unwrap(binary.right),
+                        literal: left,
+                    }
+                  : undefined;
+        };
+        const first = tested(leftOperand);
+        const second = tested(rightOperand);
+        // Each operand reads the same storage: a name or a chain of data
+        // fields, none of them an accessor.
+        const plainRead = (node: ts.Expression): boolean =>
+            ts.isIdentifier(node) ||
+            node.kind === ts.SyntaxKind.ThisKeyword ||
+            (ts.isPropertyAccessExpression(node) &&
+                !accessedPropertySymbol(
+                    this.context.checker,
+                    node,
+                )?.declarations?.some(ts.isGetAccessorDeclaration) &&
+                plainRead(this.context.unwrap(node.expression)));
+        return first &&
+            second &&
+            first.literal !== second.literal &&
+            plainRead(first.reference) &&
+            this.sameSimplePath(first.reference, second.reference)
+            ? { reference: first.reference, present: isAnd }
+            : undefined;
+    }
+
+    /** {@link pairedAbsence} as a condition. */
+    public pairedAbsenceComparison(
+        expression: ts.BinaryExpression,
+    ): string | undefined {
+        const paired = this.pairedAbsence(expression);
+        return paired && this.pairedAbsenceCondition(paired);
+    }
+
+    /** The loose absence test a {@link PairedAbsence} stands for. */
+    public pairedAbsenceCondition(paired: PairedAbsence): string | undefined {
+        const value =
+            this.compileDataPath(paired.reference, "read") ??
+            this.context.compileValue(paired.reference);
+        return this.absentComparison(
+            value,
+            paired.reference,
+            undefined,
+            paired.present,
+            true,
+        );
     }
 
     public equalityComparison(
@@ -12270,8 +14219,78 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * A typed array's elements as the numbers they hold
+     * (`bbl::js::TypedArrayNumbers`), each read when it is visited, through
+     * a view's bytes as through owned storage: the range array methods,
+     * spreads and copies read off a typed array.
+     */
+    public typedArrayNumbersValue(
+        cpp: string,
+        dataType: DataType<TypedArrayKind>,
+    ): Value {
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: `bbl::js::typed_array_numbers(${cpp})`,
+            dataType: { kind: "span", element: { kind: "number" } },
+            nativeCollectionCppType: `bbl::js::TypedArrayNumbers<${this.context.dataTypes.cppType(dataType)}>`,
+        };
+    }
+
+    /**
+     * What iterating a value yields to a spread, `Array.from` or a typed
+     * array's construction, by the iteration protocol `for...of` reads
+     * (`iterationTarget`): a compile-time tuple's own elements; otherwise a
+     * native range and the element each step yields -- a string's code
+     * points, a typed array's numbers, a numeric tuple's lanes, the
+     * elements of an array, Set or stored iterator. Undefined for a value
+     * that is none of these.
+     */
+    public iteratedElements(value: Value): IteratedElements | undefined {
+        if (value.kind === "tuple") return { lanes: value.tupleElements ?? [] };
+        if (isStringValue(value)) {
+            return {
+                range: this.stringCharacters(value),
+                element: { kind: "string" },
+            };
+        }
+        const dataType = value.kind === "data" ? value.dataType : undefined;
+        if (isTypedArrayType(dataType))
+            return {
+                range: this.typedArrayNumbersValue(value.cpp, dataType),
+                element: { kind: "number" },
+            };
+        if (dataType?.kind === "tuple")
+            return {
+                range: value,
+                element: { kind: "number" },
+                arity: dataType.arity,
+            };
+        return dataType?.kind === "vector" ||
+            dataType?.kind === "span" ||
+            dataType?.kind === "iterator" ||
+            dataType?.kind === "set"
+            ? { range: value, element: dataType.element }
+            : undefined;
+    }
+
+    /** A string's code points, each a string, as iteration yields them. */
+    private stringCharacters(value: Value): Value {
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_characters(${value.cpp})`,
+            dataType: { kind: "vector", element: { kind: "string" } },
+            freshData: true,
+        };
+    }
+
+    /**
      * Resolves a runtime for-of iteration target: vectors, spans, and table
-     * rows. Returns the container value plus its element data type.
+     * rows. Returns the container value plus its element data type. A
+     * string, array, Set or iterator iterates as `iteratedElements` reads
+     * it; a typed array is ranged over in place, each element read as a
+     * number where the loop binds it.
      */
     public iterationTarget(
         expression: ts.Expression,
@@ -12283,11 +14302,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
               template?: Value;
           }
         | undefined {
-        const iterated = knownTuple
+        const iteratorRange = knownTuple
             ? undefined
             : this.iteratorMethodTarget(expression);
-        if (iterated) {
-            return iterated;
+        if (iteratorRange) {
+            return iteratorRange;
         }
         const rawValue =
             knownTuple && !ts.isIdentifier(this.context.unwrap(expression))
@@ -12298,6 +14317,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   this.callSpanValue(expression) ??
                   this.selectedIterationValue(expression) ??
                   this.runtimeArrayLiteral(expression) ??
+                  this.constructedCollection(expression) ??
                   this.nullishArrayValue(expression) ??
                   (knownTuple
                       ? this.materializeKnownTuple(expression, knownTuple)
@@ -12309,21 +14329,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             rawValue?.kind === "data"
                 ? this.narrowOptional(rawValue, expression)
                 : rawValue;
-        if (value && isStringValue(value)) {
-            const dataType: DataType = {
-                kind: "vector",
+        if (value && isStringValue(value))
+            return {
+                container: this.stringCharacters(value),
                 element: { kind: "string" },
             };
-            this.context.reachJsData();
-            return {
-                container: {
-                    kind: "data",
-                    cpp: `bbl::js::string_characters(${value.cpp})`,
-                    dataType,
-                },
-                element: dataType.element,
-            };
-        }
         if (value?.kind !== "data" || !value.dataType) {
             return undefined;
         }
@@ -12342,12 +14352,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 element: { kind: "json" },
             };
         }
-        if (
-            dataType.kind === "vector" ||
-            dataType.kind === "span" ||
-            dataType.kind === "iterator" ||
-            dataType.kind === "set"
-        ) {
+        if (isTypedArrayType(dataType)) {
+            // A typed array iterates its lanes as numbers; the native view
+            // is a range over its element storage.
+            return { container: value, element: { kind: "number" } };
+        }
+        // An array, Set or iterator ranges over its own elements; a numeric
+        // tuple is not ranged over here.
+        const iterated = this.iteratedElements(value);
+        if (iterated && "range" in iterated && iterated.arity === undefined) {
+            const element = iterated.element;
             this.invalidateRecordArrayFacts(value);
             const elements =
                 value.staticElementsOwner?.staticElements ??
@@ -12355,10 +14369,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const template =
                 value.staticElementsOwner?.runtimeElementTemplate ??
                 value.runtimeElementTemplate ??
-                (dataType.element.kind === "handle" && elements?.length
+                (element.kind === "handle" && elements?.length
                     ? commonResourceValue(
                           withNativeMetadata(
-                              this.leafValue("", dataType.element),
+                              this.leafValue("", element),
                               elements[0],
                           ),
                           elements,
@@ -12366,14 +14380,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : undefined);
             return {
                 container: value,
-                element: dataType.element,
+                element,
                 ...(template ? { template } : {}),
             };
-        }
-        if (isTypedArrayType(dataType)) {
-            // A typed array iterates its lanes as numbers; the native view
-            // is a range over its element storage.
-            return { container: value, element: { kind: "number" } };
         }
         if (dataType.kind === "map") {
             return {
@@ -12522,6 +14531,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataType,
             freshData: true,
         };
+    }
+
+    /** `new Set(...)`, `new Map(...)`: a fresh collection the loop ranges over. */
+    private constructedCollection(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const constructed = this.context.unwrap(expression);
+        if (
+            !ts.isNewExpression(constructed) ||
+            !["Set", "Map", "Array"].includes(
+                this.context.libraryGlobal(constructed.expression) ?? "",
+            )
+        )
+            return undefined;
+        return this.context.probeEmission(() => {
+            const value = this.context.compileValue(constructed);
+            const kind = value.dataType?.kind;
+            return value.kind === "data" &&
+                (kind === "set" || kind === "map" || kind === "vector")
+                ? { ...value, freshData: true }
+                : undefined;
+        });
     }
 
     /** A nullish/conditional container is materialized before range iteration. */
@@ -12768,6 +14799,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ).tupleElements!;
             name.elements.forEach((binding, index) => {
                 if (ts.isOmittedExpression(binding)) return;
+                // A struct value destructures by its fields, as a for...of
+                // over struct elements does.
+                const structValue = pair[index]?.dataType;
+                if (
+                    ts.isObjectBindingPattern(binding.name) &&
+                    !binding.initializer &&
+                    !binding.dotDotDotToken &&
+                    structValue?.kind === "struct"
+                ) {
+                    const owner =
+                        this.context.allocateTemporaryCppName("entry_binding");
+                    this.context.emit({
+                        kind: "declaration",
+                        type: "const auto&",
+                        name: owner,
+                        initializer: pair[index]!.cpp,
+                    });
+                    this.bindIterationVariable(
+                        binding.name,
+                        owner,
+                        structValue,
+                        template,
+                        define,
+                    );
+                    return;
+                }
                 if (
                     !ts.isIdentifier(binding.name) ||
                     binding.initializer ||
@@ -12776,7 +14833,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ) {
                     this.context.fail(
                         binding,
-                        "Entry destructuring supports plain identifiers.",
+                        "Entry destructuring supports plain identifiers and struct patterns.",
                     );
                 }
                 if (binding.dotDotDotToken) {
@@ -12812,7 +14869,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 };
                 define(binding.name, value);
                 if (value.kind === "data") {
-                    this.registerLocal(this.rootName(value.cpp), "copy");
+                    this.registerLocal(cppRootName(value.cpp), "copy");
                 }
             });
             return;
@@ -12877,7 +14934,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 defineItem(
                     element_.name,
                     element.kind === "vector"
-                        ? this.readVectorBindingElement(source, index, element_)
+                        ? this.narrowBindingLane(
+                              this.readVectorBindingElement(
+                                  source,
+                                  index,
+                                  element_,
+                              ),
+                              element_.name,
+                          )
                         : this.fixedTupleElement(source, index, element_)!,
                 );
             });
@@ -12907,6 +14971,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         "Struct destructuring supports plain and renamed identifiers.",
                     );
                 }
+                const absent = this.absentBindingValue(
+                    binding,
+                    element.name,
+                    property,
+                );
+                if (absent) {
+                    define(binding.name, absent);
+                    continue;
+                }
                 const field = this.context.dataTypes.structField(
                     element.name,
                     property,
@@ -12928,7 +15001,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 define(binding.name, value);
                 if (value.kind === "data") {
-                    this.registerLocal(this.rootName(value.cpp), "copy");
+                    this.registerLocal(cppRootName(value.cpp), "copy");
                 }
             }
             return;
@@ -13130,6 +15203,170 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return result;
     }
 
+    /**
+     * What a spread element appends to an array of `dataType` (an array
+     * literal's, `push`'s), read as `iteratedElements` iterates it: a fresh
+     * array where the spread builds one (a compile-time tuple, a projection
+     * at the element type, Map/Set entries, a string's code points, elements
+     * of another spelling), otherwise the iterated range itself; a parsed
+     * document's elements for an array of documents.
+     */
+    public spreadSource(
+        spread: ts.SpreadElement,
+        dataType: DataType<"vector">,
+    ): Value & { freshSpread?: true } {
+        const expression = this.context.unwrap(spread.expression);
+        if (ts.isConditionalExpression(expression)) {
+            // Fresh branches inherit the destination element type before
+            // their tuples choose narrower native storage independently.
+            return this.leafValue(
+                this.compileForSink(expression, dataType),
+                dataType,
+            );
+        }
+        const projected =
+            ts.isCallExpression(expression) &&
+            ts.isPropertyAccessExpression(expression.expression)
+                ? ["map", "flatMap"].includes(expression.expression.name.text)
+                    ? this.compileDataMethodCall(expression, dataType)
+                    : expression.arguments.length === 2
+                      ? this.compileArrayFrom(expression, dataType)
+                      : undefined
+                : undefined;
+        // Only a Map or Set source iterates entries; an array, tuple or
+        // string is lowered once, below.
+        const sourceKind = projected
+            ? undefined
+            : this.dataTypeAt(spread.expression)?.kind;
+        const mapRange =
+            projected ||
+            sourceKind === "vector" ||
+            sourceKind === "span" ||
+            sourceKind === "tuple" ||
+            sourceKind === "string"
+                ? undefined
+                : this.context.probeEmission(() => {
+                      const range = this.iterationTarget(spread.expression);
+                      return range?.element.kind === "map-entry" ||
+                          range?.element.kind === "set-entry"
+                          ? range
+                          : undefined;
+                  });
+        if (mapRange) {
+            return {
+                kind: "data",
+                cpp: this.materializeEntryRange(mapRange, dataType, spread),
+                dataType,
+                freshSpread: true,
+            };
+        }
+        const rawIterable =
+            projected ??
+            (ts.isIdentifier(expression)
+                ? this.materializeConstantArray(expression)
+                : undefined) ??
+            this.compileDataPath(spread.expression, "read") ??
+            this.context.compileValue(spread.expression);
+        const iterable = this.narrowOptional(
+            rawIterable,
+            spread.expression,
+            true,
+        );
+        this.invalidateRecordArrayFacts(iterable);
+        if (
+            this.context.dataTypes.carriesBorrowedPlatformEvent(
+                dataType.element,
+            )
+        ) {
+            this.context.refuseBorrowedPlatformEventEscape(
+                iterable,
+                spread,
+                "Array spread",
+            );
+        }
+        if (
+            iterable.kind === "handle-collection" &&
+            iterable.handleCollection &&
+            dataType.element.kind === "handle" &&
+            iterable.handleCollection.elementKind === dataType.element.handle
+        ) {
+            return {
+                kind: "data",
+                cpp: iterable.handleCollection.containerCpp,
+                dataType: { kind: "span", element: dataType.element },
+                borrowedData: true,
+            };
+        }
+        if (isJsonValue(iterable) && dataType.element.kind === "json")
+            return {
+                kind: "data",
+                cpp: `${iterable.cpp}.elements()`,
+                dataType: { kind: "span", element: dataType.element },
+            };
+        const iterated = this.iteratedElements(iterable);
+        if (iterated && "lanes" in iterated) {
+            return {
+                kind: "data",
+                freshSpread: true,
+                cpp: `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}>{${iterated.lanes
+                    .map((element) =>
+                        this.compileKnownValueForSink(
+                            element,
+                            dataType.element,
+                            spread,
+                        ),
+                    )
+                    .join(", ")}}`,
+                dataType: { kind: "vector", element: dataType.element },
+            };
+        }
+        const sourceElement = iterated?.element;
+        // Lanes of another scalar spelling, or records seen through the
+        // target's record type (projected as a readonly view's elements
+        // are), convert one by one.
+        if (
+            iterated &&
+            sourceElement &&
+            !dataTypesEqual(sourceElement, dataType.element) &&
+            ((["string", "enum"].includes(sourceElement.kind) &&
+                ["string", "enum"].includes(dataType.element.kind)) ||
+                (sourceElement.kind === "struct" &&
+                    dataType.element.kind === "struct"))
+        ) {
+            const item = this.context.allocateTemporaryCppName("spread_item");
+            let converted = "";
+            const prepared = this.context.captureEmittedLines(() => {
+                converted = this.compileKnownValueForSink(
+                    this.leafValue(item, sourceElement),
+                    dataType.element,
+                    spread,
+                );
+            });
+            if (prepared.length > 0)
+                this.context.fail(
+                    spread,
+                    "Array spread converts each element in place; this element conversion needs statements.",
+                );
+            return {
+                ...this.leafValue(
+                    `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +
+                        `${iterated.range.cpp}, [](const auto& ${item}) { return ${converted}; })`,
+                    dataType,
+                ),
+                freshSpread: true,
+            };
+        }
+        if (!iterated || !dataTypesEqual(iterated.element, dataType.element)) {
+            return this.context.fail(
+                spread,
+                `Array spread requires a native Set, Array, or readonly array with the same element type (source=${JSON.stringify((iterated?.range ?? iterable).dataType)}, element=${JSON.stringify(dataType.element)}).`,
+            );
+        }
+        return projected?.freshData || iterated.range.freshData
+            ? { ...iterated.range, freshSpread: true }
+            : iterated.range;
+    }
+
     public compileVectorSink(
         unwrapped: ts.Expression,
         dataType: DataType & {
@@ -13140,182 +15377,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.reachJsData();
             const spreads = unwrapped.elements.filter(ts.isSpreadElement);
             if (spreads.length > 0) {
-                const spreadValue = (
-                    spread: ts.SpreadElement,
-                ): Value & { freshSpread?: true } => {
-                    const expression = this.context.unwrap(spread.expression);
-                    if (ts.isConditionalExpression(expression)) {
-                        // Fresh branches inherit the destination element type before
-                        // their tuples choose narrower native storage independently.
-                        return this.leafValue(
-                            this.compileForSink(expression, dataType),
-                            dataType,
-                        );
-                    }
-                    const projected =
-                        ts.isCallExpression(expression) &&
-                        ts.isPropertyAccessExpression(expression.expression)
-                            ? ["map", "flatMap"].includes(
-                                  expression.expression.name.text,
-                              )
-                                ? this.compileDataMethodCall(
-                                      expression,
-                                      dataType,
-                                  )
-                                : expression.arguments.length === 2
-                                  ? this.compileArrayFrom(expression, dataType)
-                                  : undefined
-                            : undefined;
-                    const mapRange = projected
-                        ? undefined
-                        : this.context.probeEmission(() => {
-                              const range = this.iterationTarget(
-                                  spread.expression,
-                              );
-                              return range?.element.kind === "map-entry" ||
-                                  range?.element.kind === "set-entry"
-                                  ? range
-                                  : undefined;
-                          });
-                    if (mapRange) {
-                        return {
-                            kind: "data",
-                            cpp: this.materializeEntryRange(
-                                mapRange,
-                                dataType,
-                                spread,
-                            ),
-                            dataType,
-                            freshSpread: true,
-                        };
-                    }
-                    const rawIterable =
-                        projected ??
-                        (ts.isIdentifier(expression)
-                            ? this.materializeConstantArray(expression)
-                            : undefined) ??
-                        this.compileDataPath(spread.expression, "read") ??
-                        this.context.compileValue(spread.expression);
-                    const iterable = this.narrowOptional(
-                        rawIterable,
-                        spread.expression,
-                        true,
-                    );
-                    this.invalidateRecordArrayFacts(iterable);
-                    if (
-                        this.context.dataTypes.carriesBorrowedPlatformEvent(
-                            dataType.element,
-                        )
-                    ) {
-                        this.context.refuseBorrowedPlatformEventEscape(
-                            iterable,
-                            spread,
-                            "Array spread",
-                        );
-                    }
-                    if (iterable.kind === "tuple") {
-                        return {
-                            kind: "data",
-                            freshSpread: true,
-                            cpp: `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}>{${(
-                                iterable.tupleElements ?? []
-                            )
-                                .map((element) =>
-                                    this.compileKnownValueForSink(
-                                        element,
-                                        dataType.element,
-                                        spread,
-                                    ),
-                                )
-                                .join(", ")}}`,
-                            dataType: {
-                                kind: "vector",
-                                element: dataType.element,
-                            },
-                        };
-                    }
-                    if (
-                        iterable.kind === "handle-collection" &&
-                        iterable.handleCollection &&
-                        dataType.element.kind === "handle" &&
-                        iterable.handleCollection.elementKind ===
-                            dataType.element.handle
-                    ) {
-                        return {
-                            kind: "data",
-                            cpp: iterable.handleCollection.containerCpp,
-                            dataType: {
-                                kind: "span",
-                                element: dataType.element,
-                            },
-                            borrowedData: true,
-                        };
-                    }
-                    const sourceElement =
-                        iterable.dataType?.kind === "set" ||
-                        iterable.dataType?.kind === "iterator" ||
-                        iterable.dataType?.kind === "vector" ||
-                        iterable.dataType?.kind === "span"
-                            ? iterable.dataType.element
-                            : undefined;
-                    // Lanes of another scalar spelling, or records seen
-                    // through the target's record type (projected as a
-                    // readonly view's elements are), convert one by one.
-                    if (
-                        iterable.kind === "data" &&
-                        sourceElement &&
-                        !dataTypesEqual(sourceElement, dataType.element) &&
-                        ((["string", "enum"].includes(sourceElement.kind) &&
-                            ["string", "enum"].includes(
-                                dataType.element.kind,
-                            )) ||
-                            (sourceElement.kind === "struct" &&
-                                dataType.element.kind === "struct"))
-                    ) {
-                        const item =
-                            this.context.allocateTemporaryCppName(
-                                "spread_item",
-                            );
-                        let converted = "";
-                        const prepared = this.context.captureEmittedLines(
-                            () => {
-                                converted = this.compileKnownValueForSink(
-                                    this.leafValue(item, sourceElement),
-                                    dataType.element,
-                                    spread,
-                                );
-                            },
-                        );
-                        if (prepared.length > 0)
-                            this.context.fail(
-                                spread,
-                                "Array spread converts each element in place; this element conversion needs statements.",
-                            );
-                        return {
-                            ...this.leafValue(
-                                `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +
-                                    `${iterable.cpp}, [](const auto& ${item}) { return ${converted}; })`,
-                                dataType,
-                            ),
-                            freshSpread: true,
-                        };
-                    }
-                    if (
-                        iterable.kind !== "data" ||
-                        !sourceElement ||
-                        !dataTypesEqual(sourceElement, dataType.element)
-                    ) {
-                        this.context.fail(
-                            spread,
-                            `Array spread requires a native Set, Array, or readonly array with the same element type (source=${JSON.stringify(iterable.dataType)}, element=${JSON.stringify(dataType.element)}).`,
-                        );
-                    }
-                    return projected?.freshData
-                        ? { ...iterable, freshSpread: true }
-                        : iterable;
-                };
                 if (spreads.length === 1 && unwrapped.elements.length === 1) {
-                    const iterable = spreadValue(spreads[0]!);
+                    const iterable = this.spreadSource(spreads[0]!, dataType);
                     if (iterable.freshSpread) return iterable.cpp;
                     return `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${iterable.cpp})`;
                 }
@@ -13334,7 +15397,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 for (const element of unwrapped.elements) {
                     let statement: string;
                     if (ts.isSpreadElement(element)) {
-                        const iterable = spreadValue(element);
+                        const iterable = this.spreadSource(element, dataType);
                         statement = `bbl::js::array_append(${result}, ${iterable.cpp});`;
                     } else {
                         statement = `${result}.push_back(${this.compileForRetainedSink(element, dataType.element, "Array literal")});`;

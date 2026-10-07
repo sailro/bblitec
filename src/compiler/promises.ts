@@ -162,6 +162,9 @@ export function compileImmediatePromise(
     if (method === "catch") {
         return compileImmediateCatch(context, call);
     }
+    // Cleanup that waits for a settlement needs an owned promise.
+    if (method === "finally" && !context.options.workers)
+        throw new ApplicationRealmRequired();
     if (method !== "then") return undefined;
     if (call.arguments.length < 1 || call.arguments.length > 2) {
         context.fail(
@@ -179,12 +182,11 @@ export function compileImmediatePromise(
     }
     if (
         callback.parameters.length > 1 ||
-        (callback.parameters.length === 1 &&
-            !ts.isIdentifier(callback.parameters[0]!.name))
+        callback.parameters[0]?.dotDotDotToken
     ) {
         context.fail(
             callback,
-            "Immediate promise callback accepts zero parameters or one identifier parameter.",
+            "Immediate promise callback accepts zero parameters or one parameter binding.",
         );
     }
     const rejection = call.arguments[1];

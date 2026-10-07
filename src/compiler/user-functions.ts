@@ -22,7 +22,6 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
-import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import { CompileError } from "./compile-error.js";
 import { nullability, typeCanCarryReference } from "./type-facts.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
@@ -50,11 +49,11 @@ import {
     renderAsyncClosure,
     type CapturedClosure,
 } from "./closure-captures.js";
+import { readOnlyDataMethods } from "./receiver-methods.js";
 import {
-    readOnlyDataMethods,
-    storingDataMethods,
-    isStoringDataCall,
-} from "./data-methods.js";
+    callArgumentIsReadOnly,
+    parameterIsReadOnly,
+} from "./parameter-effects.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { hasUndefinedCompletion } from "./undefined-values.js";
 import {
@@ -63,8 +62,8 @@ import {
 } from "./option-helpers.js";
 import {
     CompilerSymbols,
-    declarationInDefaultLibrary,
     declaredSymbol,
+    isGlobalUndefined,
     libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
@@ -81,6 +80,7 @@ import {
 import {
     firstReturn,
     forEachReturn,
+    returnsNever,
     emitReachableStatements,
 } from "./loop-control.js";
 import {
@@ -280,22 +280,33 @@ export function requiresDefaultParameterBinding(
 }
 
 type Fail = (node: ts.Node, message: string) => never;
+
+/** A syntactic fact of each declaration, so it outlives any emission transaction. */
+const dynamicThisUses = new WeakMap<
+    SupportedFunction | ts.AccessorDeclaration,
+    boolean
+>();
+
 /** Dynamic `this` belongs to the nearest non-arrow function. */
 export function functionUsesDynamicThis(
-    declaration: SupportedFunction,
+    declaration: SupportedFunction | ts.AccessorDeclaration,
 ): boolean {
-    return (
-        !ts.isArrowFunction(declaration) &&
-        !!declaration.body &&
-        someAnalysisNode(
-            declaration.body,
-            (node) => node.kind === ts.SyntaxKind.ThisKeyword,
-            {
-                skip: (node) =>
-                    ts.isFunctionLike(node) && !ts.isArrowFunction(node),
-            },
-        )
-    );
+    let uses = dynamicThisUses.get(declaration);
+    if (uses === undefined) {
+        uses =
+            !ts.isArrowFunction(declaration) &&
+            !!declaration.body &&
+            someAnalysisNode(
+                declaration.body,
+                (node) => node.kind === ts.SyntaxKind.ThisKeyword,
+                {
+                    skip: (node) =>
+                        ts.isFunctionLike(node) && !ts.isArrowFunction(node),
+                },
+            );
+        dynamicThisUses.set(declaration, uses);
+    }
+    return uses;
 }
 
 export type SupportedFunction =
@@ -360,62 +371,6 @@ function writesThroughRoot(
 
 /** `writesThroughRoot`, for a caller outside this module. */
 export const writesThroughTrackedRoot = writesThroughRoot;
-
-const parameterReadOnlyCache = new EmissionWeakMap<
-    ts.TypeChecker,
-    WeakMap<SupportedFunction, WeakMap<ts.Symbol, boolean>>
->();
-
-/**
- * Whether one call provably leaves the argument at `index` unchanged.
- *
- * Resolved through the checker's own signature rather than through
- * `resolveFunctionDeclaration`, which refuses a generator, a generic or a
- * rest parameter by throwing: right where a call is being LOWERED, wrong
- * for a question asked speculatively over a whole file including calls the
- * scene never reaches. `parameterIsReadOnly` asks it of its own nested
- * calls and `constArrayIsWritten` of every call in a file, so the
- * resolution lives here rather than in each.
- */
-export function callArgumentIsReadOnly(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression,
-    index: number,
-    active?: Set<ts.Symbol>,
-): boolean {
-    const argument = call.arguments[index];
-    // `Math.hypot(a[0] - b[0], ...)` mentions the composite and hands the
-    // callee a number, so there is nothing to write through and nothing to
-    // escape into -- which the resolution below could never say, since a
-    // builtin has no declaration to prove read-only against. Treating
-    // every one of them as a writer made both callers wrong: every
-    // arithmetic helper's tuple parameter became mutable, and every
-    // module-level constant array read inside one stopped folding.
-    if (
-        argument !== undefined &&
-        !typeCanCarryReference(checker.getTypeAtLocation(argument))
-    ) {
-        return true;
-    }
-    const callee = unwrapExpression(call.expression);
-    if (
-        index === 0 &&
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "keys" &&
-        libraryGlobal(checker, callee.expression) === "Object"
-    )
-        return true;
-    const called = checker.getResolvedSignature(call)?.declaration;
-    const parameter = called?.parameters[index]?.name;
-    return (
-        isSupportedFunction(called) &&
-        parameter !== undefined &&
-        ts.isIdentifier(parameter) &&
-        (active === undefined
-            ? parameterIsReadOnly(checker, called, parameter)
-            : parameterIsReadOnly(checker, called, parameter, active))
-    );
-}
 
 /** The tracked-alias queries a mutation walk's per-kind clauses consult. */
 export interface AliasedMutationScan {
@@ -503,261 +458,6 @@ export function aliasedMutationScan(
         if (mutated) return true;
     }
     return false;
-}
-
-const parameterMutationCache = new EmissionWeakMap<
-    ts.TypeChecker,
-    WeakMap<ts.Symbol, boolean>
->();
-
-/** Scalar results copy their value rather than retaining a referenced owner. */
-function containsReferenceTo(
-    checker: ts.TypeChecker,
-    node: ts.Node,
-    names: (node: ts.Node) => boolean,
-): boolean {
-    return someAnalysisNode(node, names, {
-        skip: (candidate) =>
-            ts.isExpression(candidate) &&
-            !typeCanCarryReference(checker.getTypeAtLocation(candidate)),
-    });
-}
-
-/** Whether a supported function actually writes through one parameter. */
-export function parameterIsMutated(
-    checker: ts.TypeChecker,
-    declaration: SupportedFunction,
-    parameter: ts.Identifier,
-    active = new EmissionSet<ts.Symbol>(),
-): boolean {
-    const symbol = declaredSymbol(checker, parameter);
-    if (!symbol || !declaration.body) return false;
-    const rootQuery = active.size === 0;
-    let checkerCache: WeakMap<ts.Symbol, boolean> | undefined;
-    if (rootQuery) {
-        checkerCache = parameterMutationCache.get(checker);
-        const cached = checkerCache?.get(symbol);
-        if (cached !== undefined) return cached;
-    }
-    if (active.has(symbol)) return false;
-    active.add(symbol);
-    const symbols = new CompilerSymbols(checker);
-    const mutated = aliasedMutationScan(
-        parameter,
-        (name) => declaredSymbol(checker, name),
-        {
-            aliasingInitializer: (initializer, scan) => {
-                const root = rootIdentifier(unwrapExpression(initializer));
-                return (
-                    root !== undefined &&
-                    scan.namesAlias(root) &&
-                    typeCanCarryReference(
-                        checker.getTypeAtLocation(initializer),
-                    )
-                );
-            },
-            mutates: (node, scan) => {
-                const containsReference = (expression: ts.Node): boolean =>
-                    containsReferenceTo(checker, expression, scan.namesAlias);
-                const rootNamesAlias = (expression: ts.Expression): boolean => {
-                    const root = rootIdentifier(unwrapExpression(expression));
-                    return root !== undefined && scan.namesAlias(root);
-                };
-                if (writesThroughRoot(node, rootNamesAlias, undefined, checker))
-                    return true;
-                const retainedTarget = retainedNativeMutationTarget(
-                    symbols,
-                    node,
-                );
-                if (retainedTarget && rootNamesAlias(retainedTarget))
-                    return true;
-                if (
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                    (ts.isPropertyAccessExpression(node.left) ||
-                        ts.isElementAccessExpression(node.left)) &&
-                    containsReference(node.right)
-                ) {
-                    return true;
-                }
-                if (
-                    (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
-                    node.arguments?.some(containsReference) &&
-                    isStoringDataCall(node, checker)
-                )
-                    return true;
-                if (!ts.isCallExpression(node)) return false;
-                const called = checker.getResolvedSignature(node)?.declaration;
-                if (!isSupportedFunction(called) || !called.body)
-                    return node.arguments.some(
-                        (argument, index) =>
-                            containsReference(argument) &&
-                            engineCallMutatesArgument(checker, node, index),
-                    );
-                for (const [index, argument] of node.arguments.entries()) {
-                    if (!containsReference(argument)) continue;
-                    const nested = called.parameters[index]?.name;
-                    if (
-                        nested !== undefined &&
-                        ts.isIdentifier(nested) &&
-                        parameterIsMutated(checker, called, nested, active)
-                    ) {
-                        return true;
-                    }
-                }
-                return false;
-            },
-        },
-    );
-    active.delete(symbol);
-    if (rootQuery) {
-        checkerCache ??= new EmissionWeakMap<ts.Symbol, boolean>();
-        checkerCache.set(symbol, mutated);
-        parameterMutationCache.set(checker, checkerCache);
-    }
-    return mutated;
-}
-
-/**
- * Whether an engine call writes through the object it is handed at
- * `index`: a pinned body behind its typing (`engine-bodies.ts`) mutates
- * that parameter, as `normalizeVec3ToRef(v, out)` does `out`. Both
- * analyses must allow the write: one follows every store the parameter
- * reaches, the other proves a parameter it only reads unchanged.
- */
-const engineParameterMutations = new WeakMap<
-    ts.FunctionLikeDeclaration,
-    Map<number, boolean>
->();
-
-export function engineCallMutatesArgument(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression,
-    index: number,
-): boolean {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    if (!declaration || !isEngineDeclaration(declaration)) return false;
-    const engine = engineBodies();
-    return (engine.bodies(declaration) ?? []).some((body) => {
-        let mutations = engineParameterMutations.get(body);
-        const cached = mutations?.get(index);
-        if (cached !== undefined) return cached;
-        const parameter = body.parameters[index]?.name;
-        const bodyChecker = engine.checkerFor(body);
-        const mutated =
-            isSupportedFunction(body) &&
-            parameter !== undefined &&
-            ts.isIdentifier(parameter) &&
-            parameterIsMutated(bodyChecker, body, parameter) &&
-            !parameterIsReadOnly(bodyChecker, body, parameter);
-        if (!mutations) {
-            mutations = new Map();
-            engineParameterMutations.set(body, mutations);
-        }
-        mutations.set(index, mutated);
-        return mutated;
-    });
-}
-
-/** Conservatively determines whether a function leaves a parameter unchanged. */
-export function parameterIsReadOnly(
-    checker: ts.TypeChecker,
-    declaration: SupportedFunction,
-    parameter: ts.Identifier,
-    active: Set<ts.Symbol> = new EmissionSet<ts.Symbol>(),
-): boolean {
-    const symbol = declaredSymbol(checker, parameter);
-    if (!symbol || !declaration.body) return false;
-    const rootQuery = active.size === 0;
-    let checkerCache: WeakMap<ts.Symbol, boolean> | undefined;
-    if (rootQuery) {
-        checkerCache = parameterReadOnlyCache.get(checker)?.get(declaration);
-        const cached = checkerCache?.get(symbol);
-        if (cached !== undefined) return cached;
-    }
-    if (active.has(symbol)) return true;
-    active.add(symbol);
-    const aliases = new EmissionSet<ts.Symbol>([symbol]);
-    const namesParameter = (node: ts.Node): boolean =>
-        ts.isIdentifier(node) && aliases.has(declaredSymbol(checker, node)!);
-    const containsParameter = (node: ts.Node): boolean =>
-        someAnalysisNode(node, namesParameter);
-    const rootNamesParameter = (expression: ts.Expression): boolean => {
-        const root = rootIdentifier(expression);
-        return root !== undefined && namesParameter(root);
-    };
-    const containsAliasingParameter = (node: ts.Node): boolean =>
-        containsReferenceTo(checker, node, namesParameter);
-    const parameterCanAlias = typeCanCarryReference(
-        checker.getTypeAtLocation(parameter),
-    );
-    const readOnly = !someAnalysisNode(declaration.body, (node) => {
-        if (
-            writesThroughRoot(
-                node,
-                rootNamesParameter,
-                (method) =>
-                    parameterCanAlias && !readOnlyDataMethods.has(method),
-                checker,
-            )
-        ) {
-            return true;
-        }
-        if (ts.isCallExpression(node) && parameterCanAlias) {
-            for (const [index, argument] of node.arguments.entries()) {
-                if (!containsParameter(argument)) continue;
-                if (
-                    ts.isPropertyAccessExpression(node.expression) &&
-                    !rootNamesParameter(node.expression.expression) &&
-                    storingDataMethods.has(node.expression.name.text)
-                ) {
-                    const called =
-                        checker.getResolvedSignature(node)?.declaration;
-                    if (called && declarationInDefaultLibrary(called)) continue;
-                }
-                if (!callArgumentIsReadOnly(checker, node, index, active)) {
-                    return true;
-                }
-            }
-        }
-        if (
-            ts.isVariableDeclaration(node) &&
-            node.initializer &&
-            ts.isIdentifier(node.name) &&
-            rootNamesParameter(node.initializer) &&
-            typeCanCarryReference(checker.getTypeAtLocation(node.initializer))
-        ) {
-            const alias = declaredSymbol(checker, node.name);
-            if (alias) aliases.add(alias);
-            return "skip";
-        }
-        if (
-            ts.isVariableDeclaration(node) &&
-            node.initializer &&
-            containsAliasingParameter(node.initializer) &&
-            (checker.getTypeAtLocation(node.initializer).flags &
-                ts.TypeFlags.Object) !==
-                0
-        ) {
-            // A composite wrapper can retain the parameter and expose a
-            // second mutation path that this local alias set cannot follow.
-            return true;
-        }
-        return false;
-    });
-    active.delete(symbol);
-    if (rootQuery) {
-        checkerCache ??= new EmissionWeakMap<ts.Symbol, boolean>();
-        checkerCache.set(symbol, readOnly);
-        let declarations = parameterReadOnlyCache.get(checker);
-        if (!declarations)
-            parameterReadOnlyCache.set(
-                checker,
-                (declarations = new EmissionWeakMap()),
-            );
-        declarations.set(declaration, checkerCache);
-    }
-    return readOnly;
 }
 
 /**
@@ -1303,8 +1003,7 @@ export interface UserFunctionContext
             | "enterRuntimeControlFlow"
             | "leaveRuntimeControlFlow"
             | "emitNativeCallbackStorage"
-            | "beginInlineFrame"
-            | "endInlineFrame"
+            | "emitInlinedBody"
             | "beginNativeFunctionBody"
             | "endNativeFunctionBody"
             | "registerNativeBinding"
@@ -1461,6 +1160,8 @@ export class UserFunctionLowerer {
         }
     >();
     private readonly active = new EmissionSet<SupportedFunction>();
+    /** Call sites whose inlined bodies are being lowered. */
+    private readonly activeCallSites = new EmissionSet<ts.Node>();
     private readonly scalarResults = new FunctionSpecializations<
         Pick<Value, "staticNumber" | "staticBoolean" | "staticString">
     >();
@@ -1635,7 +1336,10 @@ export class UserFunctionLowerer {
                     "Array-bound callback parameter reads beyond the supplied tuple.",
                 );
             }
-            context.bindings.bindParameterValue(element.name, lane!);
+            context.bindings.bindParameterValue(
+                element.name,
+                context.dataLowerer.narrowBindingLane(lane!, element.name),
+            );
         });
     }
 
@@ -4093,6 +3797,41 @@ export class UserFunctionLowerer {
         return this.declarationIdentifier(declaration).text;
     }
 
+    /**
+     * The global `Boolean` passed as a callback (`filter(Boolean)`):
+     * ToBoolean of its first argument.
+     */
+    private booleanCallback(
+        context: UserFunctionContext,
+        declaration: ts.Node,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value | undefined {
+        if (
+            !ts.isIdentifier(declaration) ||
+            context.bindings.lookupOptional(declaration) !== undefined ||
+            libraryGlobal(this.checker, declaration) !== "Boolean"
+        )
+            return undefined;
+        const argument = arguments_[0];
+        const condition = argument
+            ? context.dataLowerer.truthinessCondition(argument)
+            : "false";
+        if (condition === undefined)
+            context.fail(
+                callNode,
+                "Boolean as a callback requires an argument with native truthiness.",
+            );
+        return {
+            kind: "boolean",
+            cpp: condition,
+            dataType: { kind: "boolean" },
+            ...(condition === "true" || condition === "false"
+                ? { staticBoolean: condition === "true" }
+                : {}),
+        };
+    }
+
     /** Invokes a callback over values supplied by a lowering operation. */
     public compileCallbackWithValues(
         context: UserFunctionContext,
@@ -4106,6 +3845,13 @@ export class UserFunctionLowerer {
         discardReturn = false,
         body?: CallbackInvocationOptions,
     ): Value {
+        const truth = this.booleanCallback(
+            context,
+            declaration,
+            arguments_,
+            callNode,
+        );
+        if (truth) return truth;
         const bound = ts.isIdentifier(declaration)
             ? context.bindings.lookupOptional(declaration)
             : undefined;
@@ -4261,13 +4007,17 @@ export class UserFunctionLowerer {
         return this.lower(context, ir, values, callNode, discardReturn, body);
     }
 
-    /** Materializes a read-only closure as a copyable native function value. */
+    /**
+     * Materializes a read-only closure as a copyable native function value.
+     * `receiver` is the home object a literal's method reads as `this`.
+     */
     public compileStoredDataFunction(
         context: UserFunctionContext,
         expression: ts.Identifier | SupportedFunction,
         dataType: DataType & { kind: "function" },
         owner?: Value,
         identityCpp?: string,
+        receiver?: Value,
     ): string {
         const unwrapped =
             ts.isFunctionDeclaration(expression) ||
@@ -4313,6 +4063,7 @@ export class UserFunctionLowerer {
                 dataType,
                 owner,
                 identityCpp,
+                receiver,
             );
         } finally {
             this.loweringStoredDataFunctions.delete(declaration);
@@ -4325,6 +4076,7 @@ export class UserFunctionLowerer {
         dataType: DataType & { kind: "function" },
         owner?: Value,
         identityCpp?: string,
+        receiver?: Value,
     ): string {
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (
@@ -4484,6 +4236,9 @@ export class UserFunctionLowerer {
         try {
             const compileBody = () =>
                 context.captureManagedClosureLines(() => {
+                    // A literal method's `this` is the object its literal creates.
+                    if (receiver && functionUsesDynamicThis(declaration))
+                        context.useNativeValue(receiver);
                     this.bindArgumentsObject(
                         context,
                         ir,
@@ -4749,6 +4504,13 @@ export class UserFunctionLowerer {
         const bound = ts.isIdentifier(declaration)
             ? context.bindings.lookupOptional(declaration)
             : undefined;
+        const truth = this.booleanCallback(
+            context,
+            declaration,
+            arguments_,
+            callNode,
+        );
+        if (truth) return truth;
         if (
             bound?.kind === "callback" ||
             bound?.dataType?.kind === "function"
@@ -5134,13 +4896,20 @@ export class UserFunctionLowerer {
             ir.declaration.asteriskToken
         )
             return this.lowerGenerator(context, ir, arguments_, callNode);
-        if (this.active.has(ir.declaration)) {
+        // A function re-entered through a callback its caller passed lowers
+        // again at another call site; re-entering a call site that is still
+        // being lowered is recursion inlining cannot bound.
+        const outermost = !this.active.has(ir.declaration);
+        if (!outermost && this.activeCallSites.has(callNode)) {
             context.fail(
                 callNode,
                 `Recursive call to '${refusalName(ir)}' is not supported.`,
             );
         }
+        const site = !this.activeCallSites.has(callNode);
         this.active.add(ir.declaration);
+        this.activeCallSites.add(callNode);
+        const enclosingInvocation = this.invocations.get(ir.declaration);
         if (ts.isCallExpression(callNode))
             this.invocations.set(ir.declaration, {
                 call: callNode,
@@ -5210,9 +4979,9 @@ export class UserFunctionLowerer {
                 if (this.documentReturnStorage(returnType)) {
                     try {
                         return context.probeEmission(() =>
-                            this.lowerValueLambda(
+                            this.emitValueLambda(
                                 context,
-                                ir,
+                                ir.statements,
                                 returnType,
                                 discardReturn,
                             ),
@@ -5221,40 +4990,38 @@ export class UserFunctionLowerer {
                         if (!(error instanceof DynamicReturnRequiresStorage))
                             throw error;
                     }
-                    return this.lowerValueLambda(
+                    return this.emitValueLambda(
                         context,
-                        ir,
+                        ir.statements,
                         { kind: "json" },
                         discardReturn,
                     );
                 }
-                return this.lowerValueLambda(
+                return this.emitValueLambda(
                     context,
-                    ir,
+                    ir.statements,
                     returnType,
                     discardReturn,
                 );
             }
-            if (ir.needsWrapper) {
-                context.emit({ kind: "open", code: "do {", breaks: true });
-                context.increaseIndent();
-            }
-            context.beginInlineFrame(ir.needsWrapper);
-            let terminated = false;
-            try {
-                terminated = emitReachableStatements(context, ir.statements);
-            } finally {
-                context.endInlineFrame();
-            }
-            if (ir.needsWrapper) {
-                context.decreaseIndent();
-                context.emit({ kind: "close", code: "} while (false);" });
-            }
+            // Bare early returns break out of a wrapper around the body; ones
+            // inside loops or switches leave a void body by a jump to the end
+            // of its own scope.
+            const returns = ir.needsWrapper
+                ? "break"
+                : ir.needsLocalNative && !ir.returnExpression
+                  ? "label"
+                  : undefined;
+            const terminated = context.emitInlinedBody(
+                ir.declaration,
+                returns,
+                () => emitReachableStatements(context, ir.statements),
+            );
             if (terminated || !ir.returnExpression)
                 return {
                     kind: "void",
                     cpp: "",
-                    ...(terminated && !ir.needsWrapper
+                    ...(terminated && !returns
                         ? { abruptCompletion: true }
                         : {}),
                 };
@@ -5265,14 +5032,21 @@ export class UserFunctionLowerer {
             return this.lowerReturnedValue(context, ir, ir.returnExpression);
         } finally {
             context.bindings.popScope();
-            this.active.delete(ir.declaration);
-            this.invocations.delete(ir.declaration);
+            if (site) this.activeCallSites.delete(callNode);
+            if (outermost) this.active.delete(ir.declaration);
+            if (enclosingInvocation)
+                this.invocations.set(ir.declaration, enclosingInvocation);
+            else this.invocations.delete(ir.declaration);
         }
     }
 
-    private lowerValueLambda(
+    /**
+     * A body with early value returns as an immediately-invoked native
+     * lambda of the returned type; a body that can fall through throws.
+     */
+    public emitValueLambda(
         context: UserFunctionContext,
-        ir: UserFunctionIr,
+        statements: readonly ts.Statement[],
         returnType: DataType | undefined,
         discardReturn: boolean,
     ): Value {
@@ -5299,7 +5073,7 @@ export class UserFunctionLowerer {
                 : {},
         );
         try {
-            const terminated = emitReachableStatements(context, ir.statements);
+            const terminated = emitReachableStatements(context, statements);
             if (!terminated && returnType) {
                 context.emit({
                     kind: "control",
@@ -5875,8 +5649,14 @@ export class UserFunctionLowerer {
         return { statements: [], returnExpression: shape.returned };
     }
 
+    /** A value return; one of a never-typed expression only throws. */
     private containsValueReturn(statements: readonly ts.Statement[]): boolean {
-        return firstReturn(statements, { valued: true }) !== undefined;
+        let found = false;
+        forEachReturn(statements, (node) => {
+            if (node.expression && !returnsNever(this.checker, node))
+                found = true;
+        });
+        return found;
     }
 
     private valueLambdaReturnType(
@@ -5970,6 +5750,8 @@ export class UserFunctionLowerer {
         let found = false;
         let needsNative = false;
         forEachReturn(statements, (node, insideBreakable) => {
+            // It throws where it stands, as the statement lowering emits it.
+            if (returnsNever(this.checker, node)) return;
             if (node.expression) {
                 fail(
                     node,
@@ -6290,7 +6072,11 @@ export class UserFunctionLowerer {
             (argument.kind === "json-null" && argument.cpp === "std::nullopt")
         ) {
             if (argument?.kind === "void") context.emitDiscardedValue(argument);
-            return context.compileValue(initializer);
+            return this.defaultParameterValue(
+                context,
+                parameter,
+                context.compileValue(initializer),
+            );
         }
         const storage = argument.dataType;
         if (!storage) return argument;
@@ -6305,8 +6091,21 @@ export class UserFunctionLowerer {
                 (storage.kind === "struct" &&
                     context.dataTypes.isReferenceStruct(storage.name)));
         if (storage.kind !== "optional" && !referenceAbsence) return argument;
+        // A default of `undefined` keeps an optional argument as passed,
+        // absent or not.
+        if (
+            storage.kind === "optional" &&
+            isGlobalUndefined(this.checker, initializer)
+        )
+            return argument;
         if (absent.null) {
             if (!mayBeUndefined) return argument;
+            // A default of `null` gives an undefined argument the value a
+            // null one already has: the one empty slot answers both.
+            if (
+                unwrapExpression(initializer).kind === ts.SyntaxKind.NullKeyword
+            )
+                return argument;
             return context.fail(
                 source ?? parameter.declaration,
                 "A default parameter requires a distinct undefined state when its argument can also be null.",
@@ -6349,6 +6148,43 @@ ${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
         });
         context.registerNativeConstBinding(result);
         return context.dataValue(result, type);
+    }
+
+    /**
+     * A default array literal is a fresh array per call. A parameter the
+     * body writes through (`out[0] = x`) holds it in the parameter's own
+     * native array storage, as a declared mutable local does.
+     */
+    private defaultParameterValue(
+        context: UserFunctionContext,
+        parameter: UserFunctionParameterIr,
+        value: Value,
+    ): Value {
+        const declaration = parameter.declaration.parent;
+        if (
+            value.kind !== "tuple" ||
+            !ts.isIdentifier(parameter.name) ||
+            !isSupportedFunction(declaration) ||
+            parameterIsReadOnly(this.checker, declaration, parameter.name)
+        )
+            return value;
+        const storage = context.dataTypes.fromStoredTsType(
+            parameter.type,
+            parameter.declaration,
+        );
+        if (storage?.kind !== "tuple" && storage?.kind !== "vector")
+            return value;
+        return context.bindings.pinValueToTemporary(
+            context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    storage,
+                    parameter.declaration,
+                ),
+                storage,
+            ),
+            "default_argument",
+        );
     }
 
     /** Runs `work` with the type parameters a generic call binds in force. */

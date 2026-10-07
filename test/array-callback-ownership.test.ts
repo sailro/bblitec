@@ -146,3 +146,46 @@ int main() {
 `,
     );
 });
+
+test("array callbacks refuse at run time an element they removed before visiting it", (t) => {
+    // JavaScript reads such an index as undefined (find*) or leaves a hole
+    // in the result (map); neither the element type nor a dense array
+    // holds that, so the walk throws where it would read it.
+    const result = compileSource(`
+        const refused: string[] = [];
+        function attempt(run: () => number): void {
+            try { run(); } catch (error) { refused.push((error as Error).message); }
+        }
+        attempt(() => { const xs: number[] = [1, 2, 3]; return xs.map((value, _index, array) => { array.pop(); return value; }).length; });
+        attempt(() => { const xs: number[] = [1, 2, 3]; return xs.find((value, _index, array) => { array.pop(); return value > 5; }) ?? 0; });
+        attempt(() => { const xs: number[] = [1, 2, 3]; return xs.findIndex((value, _index, array) => { array.pop(); return value > 5; }); });
+        attempt(() => { const xs: number[] = [1, 2, 3]; return xs.findLast((value, _index, array) => { array.shift(); array.shift(); return value > 5; }) ?? 0; });
+        attempt(() => { const xs: number[] = [1, 2, 3]; return xs.findLastIndex((value, _index, array) => { array.length = 1; return value > 5; }); });
+        const expected = ["map", "find", "findIndex", "findLast", "findLastIndex"]
+            .map((method) => "Array." + method + " callback removed an element it has not visited.");
+        if (refused.join("|") !== expected.join("|")) throw new Error(refused.join("|"));
+    `);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(native, "array-callback-removed-elements", result.cpp);
+});
+
+test("array callbacks that cannot write the receiver walk it unchecked", () => {
+    const result = compileSource(`
+        const values: number[] = [3, 1, 4];
+        let total = 0;
+        values.forEach((value, index) => { total += value * index; });
+        const doubled = values.map((value) => value * 2);
+        const big = values.filter((value) => value > 1);
+        const sum = values.reduce((acc, value) => acc + value);
+        const fromRight = values.reduceRight((acc, value) => acc - value);
+        const last = values.findLast((value) => value < 4);
+        const flat = values.flatMap((value) => [value, value]);
+        const sorted = values.sort((a, b) => a - b);
+        if (total + doubled.length + big.length + sum + fromRight + (last ?? 0) + flat.length + sorted.length === 0)
+            throw new Error("unreachable");
+    `);
+    assert.doesNotMatch(result.cpp, /\.size\(\)\) (?:continue|throw)/);
+    assert.doesNotMatch(result.cpp, /auto v_bblite_\w+_source_\d+ = /);
+    assert.doesNotMatch(result.cpp, /sort_receiver/);
+});

@@ -38,11 +38,14 @@ import {
     bindingIsOnlyCalledDirectly,
     borrowsReferenceParameter,
     isSupportedFunction,
-    parameterIsReadOnly,
     requiresDefaultParameterBinding,
     resolveFunctionDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
+import {
+    fixedLengthParameterWrites,
+    parameterIsReadOnly,
+} from "./parameter-effects.js";
 
 export interface NativeFunctionContext extends Pick<
     LoweringServices,
@@ -995,6 +998,18 @@ export class NativeFunctionLowerer {
                         );
                     return path.cpp;
                 }
+                // A tuple lends its storage to a callee proven to keep it;
+                // one the callee may retain needs growable storage.
+                const lent =
+                    path &&
+                    this.adaptedReferenceArgument(
+                        path,
+                        parameter,
+                        dataType,
+                        expression,
+                        directKernel,
+                    );
+                if (lent !== undefined) return lent;
                 return this.context.dataLowerer.compileForSink(
                     expression,
                     dataType,
@@ -1013,6 +1028,39 @@ export class NativeFunctionLowerer {
                           expression,
                       )
                     : rawValue;
+            const adapted = this.adaptedReferenceArgument(
+                value,
+                parameter,
+                dataType,
+                expression,
+                directKernel,
+            );
+            if (adapted !== undefined) return adapted;
+            // A record, or an array of records, passed as another record
+            // type: the sink keeps one object in a shared layout, or copies
+            // it where nothing can tell the copy apart (a callee that only
+            // reads it borrows the copy for the call).
+            const recordElement = (type: DataType): DataType =>
+                type.kind === "vector" ? type.element : type;
+            if (
+                value?.kind === "data" &&
+                value.dataType &&
+                !dataTypesEqual(value.dataType, dataType) &&
+                value.dataType.kind === dataType.kind &&
+                recordElement(value.dataType).kind === "struct" &&
+                recordElement(dataType).kind === "struct"
+            )
+                return this.context.bindings.pinValueToTemporary(
+                    this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            value,
+                            dataType,
+                            expression,
+                        ),
+                        dataType,
+                    ),
+                    "record_argument",
+                ).cpp;
             if (
                 value?.kind !== "data" ||
                 !value.dataType ||
@@ -1033,6 +1081,72 @@ export class NativeFunctionLowerer {
         // narrowed stored object. Both arms decline such calls before
         // reaching here (argumentPreservesObjectIdentity).
         return this.context.dataLowerer.compileForSink(expression, dataType);
+    }
+
+    /**
+     * An array value a mutable array parameter can still alias: a fresh
+     * array literal is materialized as the argument's own array, and a
+     * numeric tuple lends its storage when the callee provably keeps the
+     * parameter's length and writes only lanes the tuple has
+     * (`fixedLengthParameterWrites`), so the caller's tuple sees the
+     * callee's writes. A callee that may grow it needs growable storage,
+     * as storing the tuple as a number array does: a tuple binding takes
+     * array storage, a fresh tuple is adopted, any other refuses.
+     */
+    private adaptedReferenceArgument(
+        value: Value,
+        parameter: NativeFunctionSignature["parameters"][number],
+        dataType: DataType,
+        expression: ts.Expression,
+        callee: SupportedFunction | undefined,
+    ): string | undefined {
+        const name = (cpp: string, type: DataType): string =>
+            this.context.bindings.pinValueToTemporary(
+                this.context.dataLowerer.leafValue(cpp, type),
+                "array_argument",
+            ).cpp;
+        if (
+            value.kind === "tuple" &&
+            ts.isArrayLiteralExpression(this.context.unwrap(expression)) &&
+            (dataType.kind === "vector" || dataType.kind === "tuple")
+        )
+            return name(
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    dataType,
+                    expression,
+                ),
+                dataType,
+            );
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "tuple" ||
+            dataType.kind !== "vector" ||
+            dataType.element.kind !== "number"
+        )
+            return undefined;
+        const written =
+            callee &&
+            fixedLengthParameterWrites(
+                this.context.checker,
+                callee,
+                parameter.name,
+            );
+        if (written === undefined || written > value.dataType.arity)
+            return name(
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    dataType,
+                    expression,
+                ),
+                dataType,
+            );
+        this.context.dataLowerer.invalidateEscapingCollection(value);
+        this.context.reachJsData();
+        return name(
+            `bbl::js::Array<double>{(${value.cpp}).retained_storage()}`,
+            dataType,
+        );
     }
 
     /**
@@ -1355,11 +1469,10 @@ export class NativeFunctionLowerer {
                 parameter,
             );
             if (parameterType)
-                parameterType =
-                    this.context.dataTypes.ownReadonlyArrayParameter(
-                        parameterType,
-                        parameterTsType,
-                    );
+                parameterType = this.context.dataTypes.ownReadonlyArray(
+                    parameterType,
+                    parameterTsType,
+                );
             const freshMatchingArray =
                 arrayStorage === "fresh" &&
                 parameterType?.kind === "span" &&

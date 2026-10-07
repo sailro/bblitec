@@ -119,7 +119,7 @@ test("record union storage refuses widening a mutable scalar field", () => {
     );
 });
 
-test("retained aliases refuse conflicting union storage layouts", () => {
+test("retained aliases refuse conflicting shared storage layouts", () => {
     assert.throws(
         () =>
             compileSource(`
@@ -133,7 +133,7 @@ test("retained aliases refuse conflicting union storage layouts", () => {
             const result1=read1('a'),result2=read2('a');
             if(result1.values[0]+result2.values[0]<0)throw new Error('value');
         `),
-        /conflicting union storage layouts/,
+        /conflicting shared storage layouts/,
     );
 });
 

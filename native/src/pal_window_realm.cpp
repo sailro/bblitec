@@ -1041,8 +1041,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         },
                         [&] {
                             dispatch_page_lifecycle(
-                                window_document_engine(),
-                                [&](auto& callback, const auto& payload) {
+                                window_document_engine(), [&](auto& callback, const auto& payload) {
                                     loop.dispatch_callback([&] { callback(payload); });
                                 });
                         });

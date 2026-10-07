@@ -54,6 +54,12 @@ interface Storage {
     any: boolean;
     /** Properties and elements of objects that existed before the evaluation. */
     heap: boolean;
+    /**
+     * Part of `heap`: an object that may be an array or typed array -- its
+     * type admits one (`mayHoldArray`) -- through a property, an element or
+     * a mutating method.
+     */
+    arrays: boolean;
     /** Variables by symbol, and the state behind `Math.random`. */
     variables: Set<ts.Symbol | typeof randomState>;
 }
@@ -66,6 +72,18 @@ interface Access {
 /** What one function body touches itself, and the functions it runs. */
 interface DirectAccess extends Access {
     readonly callees: Set<Unit>;
+    /**
+     * It runs program code the analysis cannot follow (a function value it
+     * cannot name, an overridable accessor, an `await`), not only an engine
+     * body that does.
+     */
+    opaque: boolean;
+}
+
+/** Record program code the analysis cannot follow. */
+function cannotFollow(access: DirectAccess): void {
+    touchEverything(access);
+    access.opaque = true;
 }
 
 /** Code a call runs: a function body, or a class field's initializer. */
@@ -100,7 +118,7 @@ const argumentAnsweringGlobals = new Set([
 ]);
 
 function emptyStorage(): Storage {
-    return { any: false, heap: false, variables: new Set() };
+    return { any: false, heap: false, arrays: false, variables: new Set() };
 }
 
 function touchesAnything(storage: Storage): boolean {
@@ -125,6 +143,7 @@ function touchEverything(access: Access): void {
 function merge(into: Storage, from: Storage): void {
     into.any ||= from.any;
     into.heap ||= from.heap;
+    into.arrays ||= from.arrays;
     from.variables.forEach((variable) => into.variables.add(variable));
 }
 
@@ -189,6 +208,8 @@ export class EvaluationOrder {
     private readonly moduleEffects = new WeakMap<ts.Node, boolean>();
     /** @unjournaled Different initializers share the effects of their checked callees. */
     private readonly moduleUnitEffects = new WeakMap<Unit, boolean>();
+    /** @unjournaled The library's `any[]` (`mayHoldArray`), null without one. */
+    private anyArray: ts.Type | null | undefined;
 
     public constructor(
         private readonly checker: ts.TypeChecker,
@@ -224,6 +245,36 @@ export class EvaluationOrder {
     /** Whether evaluating `node` can write any variable or object state. */
     public writesStorage(node: ts.Node): boolean {
         return touchesAnything(this.access(node).writes);
+    }
+
+    /**
+     * Whether calling the function `callback` denotes can write an array or
+     * `variable`: a function literal or a named function answers from its
+     * body and everything it reaches, a function of the language's library
+     * writes neither, and any other function value may write anything. A
+     * write to an object no array can be (a record's field, a Map) is no
+     * array's.
+     */
+    public callbackMayWrite(
+        callback: ts.Expression,
+        variable: ts.Symbol | undefined,
+    ): boolean {
+        const expression = unwrapExpression(callback);
+        const unit =
+            ts.isArrowFunction(expression) ||
+            ts.isFunctionExpression(expression)
+                ? expression
+                : this.namedFunction(expression);
+        if (!unit)
+            return !declaredInDefaultLibrary(
+                resolvedSymbol(this.checker, expression),
+            );
+        const writes = this.summary(unit).writes;
+        return (
+            writes.any ||
+            writes.arrays ||
+            (variable !== undefined && writes.variables.has(variable))
+        );
     }
 
     /**
@@ -661,6 +712,34 @@ export class EvaluationOrder {
     }
 
     /**
+     * The program code evaluating `node` runs, transitively: the function
+     * bodies of its calls and constructions (every override a method
+     * dispatches to, a class's field initializers), the accessors its
+     * property reads and writes run, and the callbacks it hands library
+     * functions. `opaque` when it runs program code the analysis cannot
+     * follow (a function value it cannot name, an overridable accessor, an
+     * `await`), which may write anything. An engine call is not followed:
+     * what it writes of the program's objects is what it is handed.
+     */
+    public reachedCode(node: ts.Node): {
+        readonly units: ReadonlySet<ts.Node>;
+        readonly opaque: boolean;
+    } {
+        const direct = this.walk([node], undefined);
+        let opaque = direct.opaque;
+        const units = new Set<ts.Node>();
+        const pending = [...direct.callees];
+        for (let next = pending.pop(); next; next = pending.pop()) {
+            if (units.has(next)) continue;
+            units.add(next);
+            const access = this.directAccess(next);
+            opaque ||= access.opaque;
+            pending.push(...access.callees);
+        }
+        return { units, opaque };
+    }
+
+    /**
      * Whether a value built from `built` must be read before a call to
      * `callee` runs, rather than where the callee reads it: building it has
      * an effect, or the callee (with everything it reaches) writes storage
@@ -781,6 +860,7 @@ export class EvaluationOrder {
             reads: emptyStorage(),
             writes: emptyStorage(),
             callees: new Set(),
+            opaque: false,
         };
         const visit = (current: ts.Node): "skip" | void => {
             const targets = isAssignmentExpression(current)
@@ -796,7 +876,7 @@ export class EvaluationOrder {
                 ts.isAwaitExpression(current) ||
                 ts.isTaggedTemplateExpression(current)
             ) {
-                touchEverything(access);
+                cannotFollow(access);
             } else if (
                 ts.isCallExpression(current) ||
                 ts.isNewExpression(current)
@@ -811,6 +891,12 @@ export class EvaluationOrder {
                 const symbol = resolvedSymbol(this.checker, current);
                 if (symbol && this.isWrittenVariable(symbol))
                     access.reads.variables.add(symbol);
+            } else if (
+                ts.isSpreadElement(current) &&
+                !this.isFresh(current.expression, unit)
+            ) {
+                // An iterable spread reads the elements it copies.
+                access.reads.heap = true;
             }
         };
         roots.forEach((root) =>
@@ -865,13 +951,15 @@ export class EvaluationOrder {
             else access.writes.any = true;
             return;
         }
-        if (
+        const member =
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node)
-        ) {
+                ? node
+                : undefined;
+        if (member) {
             const setter = resolvedSymbol(
                 this.checker,
-                node,
+                member,
             )?.declarations?.find(
                 (declaration): declaration is ts.SetAccessorDeclaration =>
                     ts.isSetAccessorDeclaration(declaration) &&
@@ -879,7 +967,70 @@ export class EvaluationOrder {
             );
             if (setter) this.runs(access, setter);
         }
-        if (!this.isFresh(node, unit)) access.writes.heap = true;
+        if (this.isFresh(node, unit)) return;
+        access.writes.heap = true;
+        if (
+            !member ||
+            this.mayHoldArray(this.checker.getTypeAtLocation(member.expression))
+        )
+            access.writes.arrays = true;
+    }
+
+    /**
+     * Whether an object of `type` may be an array or a typed array: one of
+     * those, `any`, `unknown`, `object`, a type parameter whose constraint
+     * admits one, or another type an array can be assigned to
+     * (`{ length: number }`, `Iterable<T>`).
+     */
+    private mayHoldArray(type: ts.Type): boolean {
+        if (
+            type.flags &
+            (ts.TypeFlags.Any |
+                ts.TypeFlags.Unknown |
+                ts.TypeFlags.NonPrimitive)
+        )
+            return true;
+        if (type.flags & ts.TypeFlags.InstantiableNonPrimitive) {
+            // A class's `this` is a type parameter constrained by the class.
+            const constraint = this.checker.getBaseConstraintOfType(type);
+            return (
+                !constraint ||
+                constraint === type ||
+                this.mayHoldArray(constraint)
+            );
+        }
+        if (type.isUnionOrIntersection())
+            return type.types.some((member) => this.mayHoldArray(member));
+        if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+        const name = type.getSymbol()?.name;
+        if (
+            this.checker.isArrayLikeType(type) ||
+            (name !== undefined && TYPED_ARRAY_KINDS.has(name))
+        )
+            return true;
+        this.anyArray ??= this.libraryAnyArray() ?? null;
+        return (
+            this.anyArray === null ||
+            this.checker.isTypeAssignableTo(this.anyArray, type)
+        );
+    }
+
+    /** `any[]`, the type `Array.isArray` asserts, from the language's library. */
+    private libraryAnyArray(): ts.Type | undefined {
+        const array = this.checker.resolveName(
+            "Array",
+            undefined,
+            ts.SymbolFlags.Value,
+            false,
+        );
+        const isArray =
+            array && this.checker.getTypeOfSymbol(array).getProperty("isArray");
+        const signature =
+            isArray &&
+            this.checker.getTypeOfSymbol(isArray).getCallSignatures()[0];
+        return (
+            signature && this.checker.getTypePredicateOfSignature(signature)
+        )?.type;
     }
 
     /** Record that `access` runs an accessor, or anything when an override may run instead. */
@@ -889,7 +1040,7 @@ export class EvaluationOrder {
             (ts.isClassDeclaration(accessor.parent) &&
                 this.hierarchy.subclasses(accessor.parent).length > 0)
         ) {
-            touchEverything(access);
+            cannotFollow(access);
             return;
         }
         access.callees.add(accessor);
@@ -916,7 +1067,7 @@ export class EvaluationOrder {
             this.libraryCall(access, call, unit);
             return;
         }
-        if (!units) touchEverything(access);
+        if (!units) cannotFollow(access);
         else units.forEach((callee) => access.callees.add(callee));
     }
 
@@ -951,6 +1102,7 @@ export class EvaluationOrder {
         const asScene = (storage: Storage): Storage => ({
             any: storage.any,
             heap: storage.heap || storage.variables.size > 0,
+            arrays: storage.arrays,
             variables: new Set(),
         });
         return {
@@ -977,8 +1129,15 @@ export class EvaluationOrder {
             !this.isFresh(callee.expression, unit)
         ) {
             access.reads.heap = true;
-            if (receiverWritingMethods.has(callee.name.text))
+            if (receiverWritingMethods.has(callee.name.text)) {
                 access.writes.heap = true;
+                if (
+                    this.mayHoldArray(
+                        this.checker.getTypeAtLocation(callee.expression),
+                    )
+                )
+                    access.writes.arrays = true;
+            }
         }
         for (const argument of call.arguments ?? []) {
             const expression = unwrapExpression(argument);
@@ -1011,7 +1170,7 @@ export class EvaluationOrder {
                     continue;
                 const declaration = this.namedFunction(expression);
                 if (declaration) access.callees.add(declaration);
-                else touchEverything(access);
+                else cannotFollow(access);
                 continue;
             }
             if (

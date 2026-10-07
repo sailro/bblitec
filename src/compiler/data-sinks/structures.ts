@@ -16,6 +16,15 @@ import {
 import { isJsonValue } from "../json-bridge.js";
 import { isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
+import { recordPropertyKeys } from "../object-statics.js";
+import {
+    completeLiteralSelf,
+    homeReceiver,
+    literalSelf,
+    type LiteralSelf,
+} from "../home-object-methods.js";
+import { unaliasedValue } from "./aliasing.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -79,7 +88,7 @@ function expressionEnum(
 function expressionStruct(
     dataType: DataType<"struct">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
     if (
@@ -142,7 +151,7 @@ function expressionStruct(
             return lowerer.compileKnownValueForSink(known, dataType, unwrapped);
         }
     }
-    const value = lowerer.requireDataValue(unwrapped, dataType);
+    const value = lowerer.requireDataValue(unwrapped, dataType, expression);
     lowerer.markEscaped(value);
     return value.ownedCpp ?? value.cpp;
 }
@@ -150,13 +159,13 @@ function expressionStruct(
 function expressionEnummap(
     dataType: DataType<"enummap">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
     if (ts.isObjectLiteralExpression(unwrapped)) {
         return lowerer.enumMapLiteral(unwrapped, dataType);
     }
-    const value = lowerer.requireDataValue(unwrapped, dataType);
+    const value = lowerer.requireDataValue(unwrapped, dataType, expression);
     lowerer.markEscaped(value);
     return value.cpp;
 }
@@ -330,16 +339,52 @@ function valueStruct(
                 value,
                 node,
             );
+            // A binding already given its own storage is still a record
+            // only when lowering its initializer into that storage refused.
+            if (
+                declaration &&
+                lowerer.context.dynamicBindings.get(declaration) !== undefined
+            )
+                lowerer.context.fail(
+                    node,
+                    `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,
+                );
             if (declaration)
                 throw new DynamicBindingStorageRequired(declaration, "source");
         }
         lowerer.context.dataTypes.cppType(dataType);
+        const stored = new Set(fields.map((field) => field.sourceName));
+        lowerer.context.dataTypes.noteRecordConversion(
+            dataType,
+            recordPropertyKeys(value).filter(
+                (property) => !stored.has(property),
+            ),
+        );
+        // The members lowered into function slots, and the accessors of
+        // slots without a receiver, may read `this` as the object the
+        // literal creates.
+        const self = literalSelf(
+            lowerer.context,
+            dataType,
+            fields.flatMap((field) => [
+                ...(field.type.kind === "function"
+                    ? [value.recordMethods?.[field.sourceName]]
+                    : []),
+                ...(field.accessor && !field.accessorReceiver
+                    ? [
+                          value.recordGetters?.[field.sourceName],
+                          value.recordSetters?.[field.sourceName],
+                      ]
+                    : []),
+            ]),
+            node,
+        );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const getter = value.recordGetters?.[field.sourceName];
                 const setter = value.recordSetters?.[field.sourceName];
                 if (getter || setter)
-                    return accessorSlot(lowerer, field, value, node);
+                    return accessorSlot(lowerer, field, value, node, self);
                 if (field.type.kind === "function") {
                     const method =
                         value.recordMethods?.[field.sourceName] ??
@@ -360,6 +405,7 @@ function valueStruct(
                                 value,
                                 ts.isMethodDeclaration(method) &&
                                     ts.isClassDeclaration(method.parent),
+                                homeReceiver(self, method),
                             );
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
                             field,
@@ -374,10 +420,11 @@ function valueStruct(
                         property.callbackDeclaration,
                     );
                 const stored = property
-                    ? lowerer.compileKnownValueForSink(
+                    ? lowerer.compileMemberForSink(
                           property,
                           field.type,
                           node,
+                          field.sourceName,
                       )
                     : field.defaultWhenMissing
                       ? "{}"
@@ -385,7 +432,7 @@ function valueStruct(
                         ? "std::nullopt"
                         : lowerer.context.fail(
                               node,
-                              `Compile-time record is missing required field '${field.sourceName}'.`,
+                              `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
                           );
                 return lowerer.context.dataTypes.structFieldInitializerCpp(
                     field,
@@ -393,17 +440,30 @@ function valueStruct(
                 );
             })
             .join(", ")}}`;
+        if (self)
+            return completeLiteralSelf(
+                lowerer.context,
+                self,
+                aggregate,
+                fields,
+            );
         return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
             ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate})`
             : aggregate;
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
         const sourceType = value.dataType;
-        if (lowerer.context.dataTypes.isReferenceStruct(sourceType.name))
-            lowerer.context.dataTypes.requireRecordUnionStorage(
+        // JavaScript stores the same object under the other type. A record
+        // nothing else reaches, or one whose copy nothing can tell apart, is
+        // copied; any other source shares one layout with the target or
+        // refuses.
+        if (!unaliasedValue(lowerer, value, node))
+            lowerer.context.dataTypes.storeRecordAs(
                 sourceType,
                 dataType,
                 node,
+                lowerer.context,
+                { argument: recordExpression(lowerer, value, node) },
             );
         const sourceFields = new EmissionMap(
             lowerer.context.dataTypes
@@ -417,6 +477,14 @@ function valueStruct(
             dataType.name,
             node,
             "accessors",
+        );
+        const stored = new Set(fields.map((field) => field.sourceName));
+        lowerer.context.dataTypes.noteRecordConversion(
+            dataType,
+            [...sourceFields.keys()].filter(
+                (property) => !stored.has(property),
+            ),
+            sourceType,
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
@@ -447,10 +515,11 @@ function valueStruct(
                         );
                     return sourceCpp;
                 }
-                return lowerer.compileKnownValueForSink(
+                return lowerer.compileMemberForSink(
                     lowerer.leafValue(sourceCpp, source.type),
                     field.type,
                     node,
+                    field.sourceName,
                 );
             })
             .join(", ")}}`;
@@ -469,6 +538,9 @@ function valueStruct(
             node,
             "accessors",
         );
+        lowerer.context.dataTypes.noteRecordConversion(dataType, [
+            UNKNOWN_PROPERTIES,
+        ]);
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const key = lowerer.context.cppString(field.sourceName);
@@ -498,6 +570,31 @@ function valueStruct(
     return undefined;
 }
 
+/**
+ * The expression a converted struct value is the value of, or the array an
+ * element was read out of: a copy handed to a callee that only reads that
+ * argument lives for the call.
+ */
+function recordExpression(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): ts.Expression | undefined {
+    if (value.dataType?.kind !== "struct") return undefined;
+    const name = value.dataType.name;
+    const record = (type: DataType | undefined): boolean =>
+        isRecordNamed(type, name);
+    const array = lowerer.convertedElementOf(node);
+    const elements = array && lowerer.dataTypeAt(array);
+    if (elements?.kind === "vector" && record(elements.element)) return array;
+    const expression = lowerer.convertedExpression(node);
+    if (!expression) return undefined;
+    const own = lowerer.dataTypeAt(expression);
+    return record(own?.kind === "vector" ? own.element : own)
+        ? expression
+        : undefined;
+}
+
 function accessorGetter(
     lowerer: DataSinkHost,
     field: DataStructField,
@@ -518,32 +615,38 @@ function accessorGetter(
     return getter;
 }
 
-/** A record's accessor property: its getter and setter in the field's accessor slot. */
+/**
+ * A record's accessor property: its getter and setter in the field's
+ * accessor slot, reading `this` as the slot's receiver or as the object the
+ * literal creates (`self`).
+ */
 function accessorSlot(
     lowerer: DataSinkHost,
     field: DataStructField,
     record: Value,
     node: ts.Node,
+    self: LiteralSelf | undefined,
 ): string {
     const getter = accessorGetter(lowerer, field, record, node);
     const setter = record.recordSetters?.[field.sourceName];
+    const receiver: DataType<"struct"> | undefined = field.accessorReceiver
+        ? { kind: "struct", name: field.accessorReceiver }
+        : undefined;
     const set = setter
         ? lowerer.context.compileStoredAccessor(
               record,
               setter,
               field.type,
-              field.accessorReceiver
-                  ? { kind: "struct", name: field.accessorReceiver }
-                  : undefined,
+              receiver,
+              homeReceiver(self, setter),
           )
         : "{}";
     return `${lowerer.context.dataTypes.structFieldCppType(field)}(${lowerer.context.compileStoredAccessor(
         record,
         getter,
         field.type,
-        field.accessorReceiver
-            ? { kind: "struct", name: field.accessorReceiver }
-            : undefined,
+        receiver,
+        homeReceiver(self, getter),
     )}, ${set})`;
 }
 
@@ -569,10 +672,11 @@ function valueEnummap(
         const compiled = new EmissionMap(
             written.map((name) => [
                 name,
-                lowerer.compileKnownValueForSink(
+                lowerer.compileMemberForSink(
                     properties[name]!,
                     dataType.element,
                     node,
+                    name,
                 ),
             ]),
         );
@@ -619,3 +723,9 @@ export const structuresSinks: DataSinkOperations<
     struct: { expression: expressionStruct, value: valueStruct },
     enummap: { expression: expressionEnummap, value: valueEnummap },
 };
+
+/** Whether `type`, read through an optional, is the record type `name`. */
+function isRecordNamed(type: DataType | undefined, name: string): boolean {
+    const inner = type?.kind === "optional" ? type.inner : type;
+    return inner?.kind === "struct" && inner.name === name;
+}

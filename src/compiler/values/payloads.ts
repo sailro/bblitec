@@ -3,6 +3,7 @@ import type { TextFontSource } from "../../pinned-text-data.js";
 import type { CsgSolidPlan } from "../../pinned-csg.js";
 import type { Csg2SolidPlan } from "../../pinned-csg2.js";
 import type { Value } from "./model.js";
+import type { TypedArrayKind } from "../data-types/model.js";
 
 interface GenerationValuePayloads {
     /** An emitted body cannot complete normally; coroutine returns retain their represented result. */
@@ -30,6 +31,7 @@ interface GenerationValuePayloads {
             readonly include: boolean;
         };
     };
+    "typed-array-constructor": { typedArrayConstructor?: TypedArrayKind };
 }
 
 export type ValuePayloads = GenerationValuePayloads & ValueMetadataPayloads;
@@ -42,6 +44,7 @@ export const generationPayloadFields = {
     "csg2-solid": ["csg2Solid"],
     "executed-url": ["executedUrl"],
     "animation-group-mask": ["animationGroupMask"],
+    "typed-array-constructor": ["typedArrayConstructor"],
 } as const satisfies {
     [
         K in keyof GenerationValuePayloads

@@ -62,7 +62,48 @@ export function nativeReturnTsType(
         if (!promised) break;
         resolved = promised;
     }
+    resolved = settledUnion(promiseChecker, resolved);
     return (resolved.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0
         ? undefined
         : resolved;
+}
+
+/**
+ * The value a union settles to once awaited: `T | PromiseLike<T>` (what an
+ * async function returns, what a resolver takes) settles to `T`, so a
+ * promise-like member is dropped where the union already holds every type
+ * it promises. Any other union stays as it is.
+ */
+function settledUnion(
+    checker: ts.TypeChecker & {
+        getPromisedTypeOfPromise(candidate: ts.Type): ts.Type | undefined;
+    },
+    type: ts.Type,
+): ts.Type {
+    if (!type.isUnion()) return type;
+    const settled = type.types.filter(
+        (member) => !checker.getPromisedTypeOfPromise(member),
+    );
+    if (
+        settled.length === type.types.length ||
+        settled.length === 0 ||
+        !type.types.every((member) => {
+            const promised = checker.getPromisedTypeOfPromise(member);
+            return (
+                !promised ||
+                (promised.isUnion() ? promised.types : [promised]).every(
+                    (each) => settled.includes(each),
+                )
+            );
+        })
+    )
+        return type;
+    if (settled.length === 1) return settled[0]!;
+    // The awaited union of the remaining members is the checker's own.
+    const awaited = checker.getAwaitedType(type);
+    return awaited?.isUnion() &&
+        awaited.types.length === settled.length &&
+        awaited.types.every((member) => settled.includes(member))
+        ? awaited
+        : type;
 }

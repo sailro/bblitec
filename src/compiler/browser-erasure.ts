@@ -420,8 +420,8 @@ function lookupText(context: PrimaryCanvasContext, argument: ts.Expression) {
  * The initializer a `const` binding was declared with, read from its
  * declaration alone: the program scan above runs outside any scope.
  */
-function constInitializer(
-    context: PrimaryCanvasContext,
+export function constInitializer(
+    context: Pick<LoweringServices, "symbols" | "unwrap">,
     identifier: ts.Identifier,
 ): ts.Expression | undefined {
     const declaration =

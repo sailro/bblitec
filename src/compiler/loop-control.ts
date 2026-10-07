@@ -22,6 +22,7 @@ import {
     findAnalysisNode,
     findAnalysisNodeWithState,
 } from "./analysis-walk.js";
+import { unwrapExpression } from "./syntax.js";
 
 /** Emit one body until its lowered control flow proves the remainder unreachable. */
 export function emitReachableStatements(
@@ -120,4 +121,35 @@ export function firstReturn(
         if (found) return found;
     }
     return undefined;
+}
+
+/**
+ * A call that cannot return: TypeScript's own rule, a callee whose declared
+ * return type is written `never`. A call typed never only because an argument
+ * narrowed to never (`appendChild<T>(node: T)` over a narrowed `T`) still
+ * returns: that narrowing assumes property reads that run time can change.
+ */
+export function callsNever(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    const call = unwrapExpression(expression, { await: true });
+    if (!ts.isCallExpression(call)) return false;
+    const declaration = checker.getResolvedSignature(call)?.getDeclaration();
+    return (
+        declaration !== undefined &&
+        "type" in declaration &&
+        declaration.type?.kind === ts.SyntaxKind.NeverKeyword
+    );
+}
+
+/** A `return` of a never-typed call: it throws where it stands. */
+export function returnsNever(
+    checker: ts.TypeChecker,
+    statement: ts.ReturnStatement,
+): boolean {
+    return (
+        statement.expression !== undefined &&
+        callsNever(checker, statement.expression)
+    );
 }

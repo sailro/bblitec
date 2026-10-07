@@ -53,6 +53,25 @@ export function isOpaqueReference(type: DataType | undefined): boolean {
     return type !== undefined && kinds[type.kind].opaqueReference === true;
 }
 
+/** Whether native copies of this kind share storage (`sharesStorage`). */
+export function sharesStorageKind(type: DataType): boolean {
+    return kinds[type.kind].sharesStorage === true;
+}
+
+/** Whether assigning to storage of this type reseats the name (`reseats`). */
+export function reseatsOnAssignment(
+    type: DataType,
+    isReferenceStruct: (name: string) => boolean,
+): boolean {
+    if (type.kind === "struct") return isReferenceStruct(type.name);
+    const reseats = kinds[type.kind].reseats;
+    return reseats === "children"
+        ? children(type, () => [], false).every((child) =>
+              reseatsOnAssignment(child, isReferenceStruct),
+          )
+        : reseats === true;
+}
+
 /** Walk stored members, optionally including the types in a function signature. */
 export function containsDataKind(
     type: DataType,

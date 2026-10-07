@@ -39,6 +39,22 @@ export function expressionMayRunCode(expression: ts.Expression): boolean {
     );
 }
 
+/**
+ * Whether evaluating `expression` twice could repeat an effect: it calls,
+ * constructs, awaits, updates or assigns. Property reads count as none.
+ */
+export function expressionHasEffects(expression: ts.Expression): boolean {
+    return someAnalysisNode(
+        expression,
+        (node) =>
+            ts.isCallExpression(node) ||
+            ts.isNewExpression(node) ||
+            ts.isAwaitExpression(node) ||
+            isUpdateExpression(node) ||
+            isAssignmentExpression(node),
+    );
+}
+
 interface UnwrapOptions {
     /**
      * Strip `await` as well. Only a reader that already knows the awaited
@@ -86,6 +102,13 @@ export function unwrapExpression(
         current = current.expression;
     }
     return current;
+}
+
+/** The node that consumes an expression, past the wrappers around it. */
+export function wrappedParent(expression: ts.Expression): ts.Node {
+    let current: ts.Node = expression;
+    while (isExpressionWrapper(current.parent)) current = current.parent;
+    return current.parent;
 }
 
 /**
@@ -368,6 +391,48 @@ export function objectProperty(
         ) {
             found = property.name;
         }
+    }
+    return found;
+}
+
+/**
+ * The expression a literal's member takes its value from: the last plain
+ * or shorthand property of an object literal writing `key`, with no spread
+ * or computed key after it that may write it too, or an array literal's
+ * element at index `key` when no spread shifts the indices. Undefined where
+ * the syntax does not name one.
+ */
+export function literalMember(
+    expression: ts.Expression,
+    key: string | number,
+): ts.Expression | undefined {
+    const literal = unwrapExpression(expression);
+    if (typeof key === "number") {
+        if (
+            !ts.isArrayLiteralExpression(literal) ||
+            literal.elements.some(ts.isSpreadElement)
+        )
+            return undefined;
+        const element = literal.elements[key];
+        return element && !ts.isOmittedExpression(element)
+            ? element
+            : undefined;
+    }
+    if (!ts.isObjectLiteralExpression(literal)) return undefined;
+    let found: ts.Expression | undefined;
+    for (const property of literal.properties) {
+        const name =
+            property.name === undefined
+                ? undefined
+                : propertyNameText(property.name);
+        if (ts.isSpreadAssignment(property) || name === undefined)
+            found = undefined;
+        else if (name === key)
+            found = ts.isPropertyAssignment(property)
+                ? property.initializer
+                : ts.isShorthandPropertyAssignment(property)
+                  ? property.name
+                  : undefined;
     }
     return found;
 }

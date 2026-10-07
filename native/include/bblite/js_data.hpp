@@ -1202,9 +1202,10 @@ template <typename T>
     return target[index];
 }
 
-/** JavaScript refuses a read through null or undefined. */
-[[noreturn]] inline void throw_nullish_access() {
-    throw std::runtime_error("Cannot access a nullish value.");
+/** A read through null or undefined: JavaScript's TypeError. */
+[[noreturn]] inline void
+throw_nullish_access(const char* message = "Cannot read properties of null or undefined") {
+    throw NamedError("TypeError", message);
 }
 
 template <typename T> class Nullable {
@@ -2421,35 +2422,155 @@ std::string macos_time_zone();
     return make_ref<double>(date_time_clip(milliseconds));
 }
 
+/** The calendar and clock fields a Date getter reads from a time value. */
+enum class DateField { year, month, date, weekday, hours, minutes, seconds, milliseconds };
+
+namespace date_detail {
+constexpr double milliseconds_per_day = 86400000.0;
+
+/** Proleptic Gregorian days since 1970-01-01 (Hinnant's days_from_civil). */
+[[nodiscard]] constexpr std::int64_t days_from_civil(std::int64_t year, unsigned month,
+                                                     unsigned day) {
+    year -= month <= 2 ? 1 : 0;
+    const std::int64_t era = (year >= 0 ? year : year - 399) / 400;
+    const auto year_of_era = static_cast<unsigned>(year - era * 400);
+    const unsigned day_of_year = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1;
+    const unsigned day_of_era =
+        year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    return era * 146097 + static_cast<std::int64_t>(day_of_era) - 719468;
+}
+
+struct CivilDate {
+    std::int64_t year;
+    unsigned month; // 1..12
+    unsigned day;   // 1..31
+};
+
+/** The civil date of a day count since 1970-01-01 (Hinnant's civil_from_days). */
+[[nodiscard]] constexpr CivilDate civil_from_days(std::int64_t days) {
+    days += 719468;
+    const std::int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+    const auto day_of_era = static_cast<unsigned>(days - era * 146097);
+    const unsigned year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+    const unsigned day_of_year =
+        day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    const unsigned shifted_month = (5 * day_of_year + 2) / 153;
+    const unsigned day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    const unsigned month = shifted_month < 10 ? shifted_month + 3 : shifted_month - 9;
+    return {static_cast<std::int64_t>(year_of_era) + era * 400 + (month <= 2 ? 1 : 0), month, day};
+}
+
+/** ToIntegerOrInfinity over a finite number. */
+[[nodiscard]] inline double integer(double value) { return std::trunc(value) + 0.0; }
+
+/** A clipped time value as whole days since 1970-01-01 and milliseconds into that day. */
+struct DayTime {
+    std::int64_t day;
+    std::int64_t within_day;
+};
+
+[[nodiscard]] inline DayTime day_time(double time) {
+    // A clipped time value is an integer within 8.64e15, exact in 64 bits.
+    constexpr std::int64_t day_length = 86400000;
+    const auto milliseconds = static_cast<std::int64_t>(time);
+    std::int64_t day = milliseconds / day_length, within_day = milliseconds % day_length;
+    if (within_day < 0) {
+        within_day += day_length;
+        --day;
+    }
+    return {day, within_day};
+}
+} // namespace date_detail
+
+/** One field of an integral time value read as UTC: NaN for an invalid date. */
+[[nodiscard]] inline double date_time_field(double time, DateField field) {
+    using namespace date_detail;
+    if (std::isnan(time))
+        return time;
+    const auto [day, within_day] = day_time(time);
+    switch (field) {
+    case DateField::year:
+        return static_cast<double>(civil_from_days(day).year);
+    case DateField::month:
+        return static_cast<double>(civil_from_days(day).month - 1);
+    case DateField::date:
+        return static_cast<double>(civil_from_days(day).day);
+    case DateField::weekday:
+        return static_cast<double>(((day + 4) % 7 + 7) % 7);
+    case DateField::hours: {
+        const std::int64_t hours = within_day / 3600000;
+        return static_cast<double>(hours);
+    }
+    case DateField::minutes:
+        return static_cast<double>(within_day / 60000 % 60);
+    case DateField::seconds:
+        return static_cast<double>(within_day / 1000 % 60);
+    case DateField::milliseconds:
+        return static_cast<double>(within_day % 1000);
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+[[nodiscard]] inline double date_utc_field(const Date& date, DateField field) {
+    return date_time_field(*date, field);
+}
+
+/**
+ * `Date.UTC`: MakeDate(MakeDay(year, month, date), MakeTime(...)) clipped,
+ * a year 0..99 meaning 1900..1999. Years and months beyond V8's ranges are NaN.
+ */
+[[nodiscard]] inline double date_utc(double year, double month, double date, double hours,
+                                     double minutes, double seconds, double milliseconds) {
+    using namespace date_detail;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    if (!std::isnan(year)) {
+        const double truncated = integer(year);
+        if (truncated >= 0.0 && truncated <= 99.0)
+            year = 1900.0 + truncated;
+    }
+    if (!std::isfinite(hours) || !std::isfinite(minutes) || !std::isfinite(seconds) ||
+        !std::isfinite(milliseconds))
+        return nan;
+    const double time = integer(hours) * 3600000.0 + integer(minutes) * 60000.0 +
+                        integer(seconds) * 1000.0 + integer(milliseconds);
+    if (!std::isfinite(year) || !std::isfinite(month) || !std::isfinite(date) ||
+        std::abs(year) > 1000000.0 || std::abs(month) > 10000000.0)
+        return nan;
+    const double whole_month = integer(month);
+    const double year_month = integer(year) + std::floor(whole_month / 12.0);
+    const double month_in_year = whole_month - std::floor(whole_month / 12.0) * 12.0;
+    const auto first = static_cast<double>(days_from_civil(
+        static_cast<std::int64_t>(year_month), static_cast<unsigned>(month_in_year) + 1, 1));
+    const double day = first + integer(date) - 1.0;
+    const double value = day * milliseconds_per_day + time;
+    return std::isfinite(value) ? date_time_clip(value) : nan;
+}
+
 [[nodiscard]] inline std::string date_iso_string(const Date& date) {
     if (!std::isfinite(*date))
         throw std::runtime_error("Invalid time value");
-    using namespace std::chrono;
-    const auto time = sys_time<milliseconds>{milliseconds{static_cast<std::int64_t>(*date)}};
-    const auto day = floor<days>(time);
-    // Gregorian calendars repeat every 400 years. Reduce into 2000..2399
-    // before using chrono::year, whose range is smaller than JavaScript's.
-    constexpr auto base = sys_days{year{2000} / January / 1};
-    const auto offset = (day - base).count();
-    constexpr std::int64_t cycle_days = 146097;
-    const auto cycles = offset >= 0 ? offset / cycle_days : (offset - cycle_days + 1) / cycle_days;
-    const year_month_day calendar{base + days{offset - cycles * cycle_days}};
-    const auto full_year = static_cast<int>(calendar.year()) + cycles * 400;
-    const hh_mm_ss clock{time - day};
+    using namespace date_detail;
+    const auto [day, within_day] = day_time(*date);
+    const auto civil = civil_from_days(day);
     const auto digits = [](std::int64_t value, std::size_t width) {
         auto text = std::to_string(value);
         if (text.size() < width)
             text.insert(0, width - text.size(), '0');
         return text;
     };
-    const auto year_text = full_year >= 0 && full_year <= 9999
-                               ? digits(full_year, 4)
-                               : std::string(full_year < 0 ? "-" : "+") +
-                                     digits(full_year < 0 ? -full_year : full_year, 6);
-    return year_text + "-" + digits(static_cast<unsigned>(calendar.month()), 2) + "-" +
-           digits(static_cast<unsigned>(calendar.day()), 2) + "T" +
-           digits(clock.hours().count(), 2) + ":" + digits(clock.minutes().count(), 2) + ":" +
-           digits(clock.seconds().count(), 2) + "." + digits(clock.subseconds().count(), 3) + "Z";
+    const auto year_text = civil.year >= 0 && civil.year <= 9999
+                               ? digits(civil.year, 4)
+                               : std::string(civil.year < 0 ? "-" : "+") +
+                                     digits(civil.year < 0 ? -civil.year : civil.year, 6);
+    return year_text + "-" + digits(civil.month, 2) + "-" + digits(civil.day, 2) + "T" +
+           digits(within_day / 3600000, 2) + ":" + digits(within_day / 60000 % 60, 2) + ":" +
+           digits(within_day / 1000 % 60, 2) + "." + digits(within_day % 1000, 3) + "Z";
+}
+
+/** A property read of null or undefined, typed as the read's result. */
+template <typename T> [[nodiscard]] T absent_receiver_read(const char* message) {
+    throw_nullish_access(message);
 }
 
 /**
@@ -2596,7 +2717,7 @@ public:
             value_ = pull_();
             return *this;
         }
-        bool operator!=(std::default_sentinel_t) const { return value_.has_value(); }
+        bool operator==(std::default_sentinel_t) const { return !value_.has_value(); }
 
     private:
         Callback<Nullable<T>()> pull_;
@@ -2760,6 +2881,7 @@ template <typename T> using Span = std::span<T>;
  */
 template <std::size_t N> class Tuple {
 public:
+    using value_type = double;
     using Storage = std::array<double, N>;
     using RetainedStorage = std::vector<double>;
     using iterator = typename RetainedStorage::iterator;
@@ -2791,6 +2913,7 @@ public:
     [[nodiscard]] double& operator[](std::size_t index) { return (*values_)[index]; }
     [[nodiscard]] const double& operator[](std::size_t index) const { return (*values_)[index]; }
     [[nodiscard]] constexpr std::size_t size() const { return N; }
+    [[nodiscard]] constexpr bool empty() const { return N == 0; }
     [[nodiscard]] const void* identity() const { return values_.get(); }
     [[nodiscard]] bool operator==(const Tuple& other) const { return values_ == other.values_; }
     [[nodiscard]] bool operator==(const Array<double>& other) const {
@@ -3413,9 +3536,15 @@ infinity_at(std::string_view value, std::size_t index) {
     return result;
 }
 
-[[nodiscard]] inline double string_index_of(const std::string& value, const std::string& search) {
-    const auto index = value.find(search);
-    return index == std::string::npos ? -1.0 : static_cast<double>(index);
+/** The bytes of the encoded sequence starting at `offset`, cut at the end of `value`. */
+[[nodiscard]] inline std::size_t string_sequence_size(std::string_view value, std::size_t offset) {
+    const auto lead = static_cast<unsigned char>(value[offset]);
+    const std::size_t count = lead < 0x80u              ? 1u
+                              : (lead & 0xe0u) == 0xc0u ? 2u
+                              : (lead & 0xf0u) == 0xe0u ? 3u
+                              : (lead & 0xf8u) == 0xf0u ? 4u
+                                                        : 1u;
+    return std::min(count, value.size() - offset);
 }
 
 // JavaScript string iteration yields one Unicode code point as a string.
@@ -3423,13 +3552,7 @@ infinity_at(std::string_view value, std::size_t index) {
 [[nodiscard]] inline Array<std::string> string_characters(const std::string& value) {
     Array<std::string> result;
     for (std::size_t offset = 0; offset < value.size();) {
-        const auto lead = static_cast<unsigned char>(value[offset]);
-        std::size_t count = lead < 0x80u              ? 1u
-                            : (lead & 0xe0u) == 0xc0u ? 2u
-                            : (lead & 0xf0u) == 0xe0u ? 3u
-                            : (lead & 0xf8u) == 0xf0u ? 4u
-                                                      : 1u;
-        count = std::min(count, value.size() - offset);
+        const std::size_t count = string_sequence_size(value, offset);
         result.push_back(value.substr(offset, count));
         offset += count;
     }
@@ -3451,14 +3574,6 @@ infinity_at(std::string_view value, std::size_t index) {
         result.push_back(value.substr(begin, end - begin));
         begin = end + separator.size();
     }
-}
-
-[[nodiscard]] inline bool string_starts_with(const std::string& value, const std::string& prefix) {
-    return value.starts_with(prefix);
-}
-
-[[nodiscard]] inline bool string_ends_with(const std::string& value, const std::string& suffix) {
-    return value.ends_with(suffix);
 }
 
 // UTF-16 indexing over native UTF-8 strings. Lone surrogates use WTF-8 so
@@ -3523,6 +3638,166 @@ private:
     return units;
 }
 
+/** UTF-16 code units in canonical WTF-8 text: one per sequence, two per four-byte one. */
+[[nodiscard]] inline std::size_t string_unit_count(std::string_view value) {
+    std::size_t count = 0;
+    for (const char byte : value) {
+        const auto bits = static_cast<unsigned char>(byte);
+        if ((bits & 0xc0u) != 0x80u)
+            count += bits >= 0xf0u ? 2u : 1u;
+    }
+    return count;
+}
+
+// The UTF-16 position searches over canonical WTF-8 storage, where a pair is
+// one four-byte sequence and a lone surrogate three bytes. A needle holding
+// no lone surrogate can neither begin nor end inside a pair of the receiver,
+// so its byte matches are exactly its UTF-16 matches: the search runs over
+// bytes and converts only a position (walking the prefix up to it) or a
+// found offset. A needle holding a lone surrogate searches UTF-16 units.
+namespace string_search_detail {
+/**
+ * Where a position lands: the clamped UTF-16 position (ToIntegerOrInfinity,
+ * NaN and negatives 0, at most the length) and the byte offset of the code
+ * point it starts, or of the pair it falls inside.
+ */
+struct Landing {
+    std::size_t position;
+    std::size_t offset;
+    bool inside_pair;
+};
+
+[[nodiscard]] inline Landing land(std::string_view value, double position) {
+    const double target = position > 0.0 ? std::trunc(position) : 0.0;
+    std::size_t index = 0, offset = 0;
+    while (offset < value.size() && static_cast<double>(index) < target) {
+        const std::size_t size = string_sequence_size(value, offset);
+        if (size == 4 && static_cast<double>(index + 1) == target)
+            return {index + 1, offset, true};
+        index += size == 4 ? 2u : 1u;
+        offset += size;
+    }
+    return {index, offset, false};
+}
+
+[[nodiscard]] inline bool holds_lone_surrogate(std::string_view search) {
+    for (std::size_t at = 0; at + 1 < search.size(); ++at)
+        if (static_cast<unsigned char>(search[at]) == 0xedu &&
+            static_cast<unsigned char>(search[at + 1]) >= 0xa0u)
+            return true;
+    return false;
+}
+
+/** A position over UTF-16 units, clamped as `land` clamps it. */
+[[nodiscard]] inline std::size_t unit_position(std::size_t length, double position) {
+    return relative_index(length, position > 0.0 ? position : 0.0);
+}
+
+[[nodiscard]] inline double found_index(std::size_t index) {
+    return index == std::string::npos ? -1.0 : static_cast<double>(index);
+}
+} // namespace string_search_detail
+
+/** `String.prototype.indexOf`: the first UTF-16 index at or after the position. */
+[[nodiscard]] inline double string_index_of(const std::string& value, const std::string& search,
+                                            double position = 0.0) {
+    using namespace string_search_detail;
+    if (holds_lone_surrogate(search)) {
+        const auto units = string_code_units(value);
+        return found_index(
+            units.find(string_code_units(search), unit_position(units.size(), position)));
+    }
+    const auto at = land(value, position);
+    // The empty needle is found at the position itself; any other cannot
+    // begin at a pair's second half, so the search starts after the pair.
+    if (search.empty())
+        return static_cast<double>(at.position);
+    const std::size_t from = at.offset + (at.inside_pair ? 4u : 0u);
+    const std::size_t found = value.find(search, from);
+    return found == std::string::npos
+               ? -1.0
+               : static_cast<double>(
+                     at.position + (at.inside_pair ? 1u : 0u) +
+                     string_unit_count(std::string_view(value).substr(from, found - from)));
+}
+
+/** `String.prototype.includes`: whether the needle occurs at or after the position. */
+[[nodiscard]] inline bool string_includes(const std::string& value, const std::string& search,
+                                          double position = 0.0) {
+    using namespace string_search_detail;
+    if (search.empty())
+        return true;
+    if (holds_lone_surrogate(search))
+        return string_index_of(value, search, position) >= 0.0;
+    const auto at = land(value, position);
+    return value.find(search, at.offset + (at.inside_pair ? 4u : 0u)) != std::string::npos;
+}
+
+/** `String.prototype.lastIndexOf`: the last UTF-16 index at or before the position (NaN is +∞). */
+[[nodiscard]] inline double
+string_last_index_of(const std::string& value, const std::string& search,
+                     double position = std::numeric_limits<double>::infinity()) {
+    using namespace string_search_detail;
+    const double from = std::isnan(position) ? std::numeric_limits<double>::infinity() : position;
+    if (holds_lone_surrogate(search)) {
+        const auto units = string_code_units(value);
+        return found_index(
+            units.rfind(string_code_units(search), unit_position(units.size(), from)));
+    }
+    // A position at or past the byte length is past the UTF-16 length too.
+    if (from >= static_cast<double>(value.size())) {
+        if (search.empty())
+            return static_cast<double>(string_unit_count(value));
+        const std::size_t found = value.rfind(search);
+        return found == std::string::npos ? -1.0
+                                          : static_cast<double>(string_unit_count(
+                                                std::string_view(value).substr(0, found)));
+    }
+    const auto at = land(value, from);
+    if (search.empty())
+        return static_cast<double>(at.position);
+    // Inside a pair the latest start is the pair's own.
+    const std::size_t found = value.rfind(search, at.offset);
+    return found == std::string::npos
+               ? -1.0
+               : static_cast<double>(string_unit_count(std::string_view(value).substr(0, found)));
+}
+
+/** `String.prototype.startsWith` with a UTF-16 start position. */
+[[nodiscard]] inline bool string_starts_with(const std::string& value, const std::string& prefix,
+                                             double position = 0.0) {
+    using namespace string_search_detail;
+    if (holds_lone_surrogate(prefix)) {
+        const auto units = string_code_units(value);
+        return std::u16string_view(units)
+            .substr(unit_position(units.size(), position))
+            .starts_with(string_code_units(prefix));
+    }
+    const auto at = land(value, position);
+    // A pair's second half begins only the empty prefix.
+    return at.inside_pair ? prefix.empty()
+                          : std::string_view(value).substr(at.offset).starts_with(prefix);
+}
+
+/** `String.prototype.endsWith` with a UTF-16 end position (an absent one is the length). */
+[[nodiscard]] inline bool
+string_ends_with(const std::string& value, const std::string& suffix,
+                 double end_position = std::numeric_limits<double>::infinity()) {
+    using namespace string_search_detail;
+    if (holds_lone_surrogate(suffix)) {
+        const auto units = string_code_units(value);
+        return std::u16string_view(units)
+            .substr(0, unit_position(units.size(), end_position))
+            .ends_with(string_code_units(suffix));
+    }
+    if (end_position >= static_cast<double>(value.size()))
+        return value.ends_with(suffix);
+    const auto at = land(value, end_position);
+    // A pair's first half ends only the empty suffix.
+    return at.inside_pair ? suffix.empty()
+                          : std::string_view(value).substr(0, at.offset).ends_with(suffix);
+}
+
 [[nodiscard]] inline std::string string_from_code_units(const std::u16string& units) {
     std::string result;
     for (std::size_t index = 0; index < units.size(); ++index) {
@@ -3545,14 +3820,7 @@ private:
 }
 
 [[nodiscard]] inline double string_length(const std::string& value) {
-    // A continuation byte contributes no code unit; a four-byte UTF-8
-    // sequence contributes the two code units of its surrogate pair.
-    std::size_t length = 0;
-    for (const unsigned char byte : value) {
-        if ((byte & 0xc0u) != 0x80u)
-            length += byte >= 0xf0u ? 2u : 1u;
-    }
-    return static_cast<double>(length);
+    return static_cast<double>(string_unit_count(value));
 }
 
 [[nodiscard]] inline std::string string_substring(const std::string& value, double start,
@@ -3784,13 +4052,37 @@ template <typename Replacement>
     return string_from_code_units(std::u16string(1, static_cast<char16_t>(code)));
 }
 
-[[nodiscard]] inline std::string string_from_char_codes(std::initializer_list<double> values) {
+/** `String.fromCharCode` over its code units: an argument list or a spread sequence. */
+template <typename Range>
+[[nodiscard]] inline std::string string_from_char_codes(const Range& values) {
     std::string result;
     result.reserve(values.size());
     for (const double value : values) {
         concat_append(result, string_from_char_code(value));
     }
     return result;
+}
+
+[[nodiscard]] inline std::string string_from_char_codes(std::initializer_list<double> values) {
+    return string_from_char_codes<std::initializer_list<double>>(values);
+}
+
+/** `String.fromCodePoint`: each value must be an integer code point; adjacent surrogates pair. */
+[[nodiscard]] inline std::string string_from_code_points(std::initializer_list<double> values) {
+    std::u16string units;
+    units.reserve(values.size());
+    for (const double value : values) {
+        if (!(value >= 0.0 && value <= 1114111.0) || std::trunc(value) != value)
+            throw NamedError("RangeError", "Invalid code point " + number_to_string(value));
+        auto point = static_cast<std::uint32_t>(value);
+        if (point > 0xffffu) {
+            point -= 0x10000u;
+            units.push_back(static_cast<char16_t>(0xd800u + (point >> 10u)));
+            units.push_back(static_cast<char16_t>(0xdc00u + (point & 0x3ffu)));
+        } else
+            units.push_back(static_cast<char16_t>(point));
+    }
+    return string_from_code_units(units);
 }
 
 // The padding `padStart`/`padEnd` adds: none once the value reaches the
@@ -3874,6 +4166,14 @@ template <typename T>
     return Array<T>(values.begin() + begin, values.begin() + end);
 }
 
+/** A slice of a readonly view is a new array the caller owns. */
+template <typename T>
+[[nodiscard]] inline Array<std::remove_const_t<T>> array_slice(Span<T> values, double begin_value,
+                                                               double end_value) {
+    const auto [begin, end] = relative_slice_bounds(values.size(), begin_value, end_value);
+    return Array<std::remove_const_t<T>>(values.begin() + begin, values.begin() + end);
+}
+
 /** JavaScript Array.join with an explicit element-to-string projection. */
 template <typename Range, typename Projection>
 [[nodiscard]] inline std::string array_join(const Range& values, const std::string& separator,
@@ -3927,6 +4227,35 @@ template <typename Values>
         return Values(values.begin() + begin, values.begin() + end);
 }
 
+/** `subarray` and `slice` of the Uint8Array view, whose storage is its own class. */
+[[nodiscard]] inline U8Array typed_array_subarray(const U8Array& values, double begin_value,
+                                                  double end_value) {
+    const auto [begin, end] = relative_slice_bounds(values.size(), begin_value, end_value);
+    return values.subarray(begin, end);
+}
+[[nodiscard]] inline U8Array typed_array_slice(const U8Array& values, double begin_value,
+                                               double end_value) {
+    const auto [begin, end] = relative_slice_bounds(values.size(), begin_value, end_value);
+    return values.slice(begin, end);
+}
+
+/** `%TypedArray%.prototype.reverse`: the elements reversed in place; the result is the receiver. */
+template <typename Values> inline Values typed_array_reverse(Values values) {
+    for (std::size_t low = 0, high = values.size(); low + 1 < high; ++low, --high) {
+        const auto first = values.load(low);
+        values.store(low, values.load(high - 1));
+        values.store(high - 1, first);
+    }
+    return values;
+}
+
+/** `ArrayBuffer.prototype.slice`: a new buffer holding a copy of the relative byte range. */
+[[nodiscard]] inline ArrayBuffer array_buffer_slice(const ArrayBuffer& buffer, double begin_value,
+                                                    double end_value) {
+    const auto [begin, end] = relative_slice_bounds(buffer.byte_length(), begin_value, end_value);
+    return ArrayBuffer(std::vector<std::uint8_t>(buffer.data() + begin, buffer.data() + end));
+}
+
 // `array.indexOf(value)` — the first strictly-equal element, or -1.
 // JavaScript compares primitives by value and objects by identity, and
 // every element type reaching here is a scalar or a handle id, so a
@@ -3962,6 +4291,35 @@ template <typename Values, typename T>
     requires std::is_enum_v<T>
 [[nodiscard]] inline double array_index_of(const Values& values, const Nullable<T>& value) {
     return value ? array_index_of(values, *value) : -1.0;
+}
+
+/** `indexOf(value, fromIndex)`: the search starts at the relative index. */
+template <typename Values>
+[[nodiscard]] inline double array_index_of(const Values& values,
+                                           const typename Values::value_type& value, double from) {
+    for (std::size_t index = relative_index(values.size(), from); index < values.size(); ++index) {
+        if (values[index] == value)
+            return static_cast<double>(index);
+    }
+    return -1.0;
+}
+
+/** `includes(value, fromIndex)`: SameValueZero from the relative index. */
+template <typename Values>
+[[nodiscard]] inline bool array_includes(const Values& values,
+                                         const typename Values::value_type& value, double from) {
+    for (std::size_t index = relative_index(values.size(), from); index < values.size(); ++index) {
+        if (detail::same_value_zero(static_cast<typename Values::value_type>(values[index]), value))
+            return true;
+    }
+    return false;
+}
+
+template <typename Values, typename T>
+    requires std::is_enum_v<T>
+[[nodiscard]] inline double array_index_of(const Values& values, const Nullable<T>& value,
+                                           double from) {
+    return value ? array_index_of(values, *value, from) : -1.0;
 }
 
 // `array.pop()!` — the non-null assertion states the array is not empty. A
@@ -4060,6 +4418,37 @@ template <typename T> inline Array<T>& array_reverse(Array<T>& values) {
 template <typename T> inline Array<T> array_reverse(Array<T>&& values) {
     array_reverse(values);
     return std::move(values);
+}
+
+/** `array.toReversed()`: a fresh array of the receiver's elements in reverse order. */
+template <typename Values>
+[[nodiscard]] inline Array<std::remove_cv_t<typename Values::value_type>>
+array_to_reversed(const Values& values) {
+    Array<std::remove_cv_t<typename Values::value_type>> result;
+    result.reserve(values.size());
+    for (std::size_t index = values.size(); index > 0; --index)
+        result.push_back(values[index - 1]);
+    return result;
+}
+
+/** `array.with(index, value)`: a fresh copy with one relative index replaced. */
+template <typename Values, typename T>
+[[nodiscard]] inline Array<std::remove_cv_t<typename Values::value_type>>
+array_with(const Values& values, double index, const T& value) {
+    const double length = static_cast<double>(values.size());
+    double relative = std::isnan(index) ? 0.0 : std::trunc(index);
+    if (relative < 0.0)
+        relative += length;
+    if (!(relative >= 0.0 && relative < length))
+        throw NamedError("RangeError", "Invalid index : " + number_to_string(index));
+    Array<std::remove_cv_t<typename Values::value_type>> result(values.begin(), values.end());
+    result[static_cast<std::size_t>(relative)] = value;
+    return result;
+}
+
+/** `reduce`/`reduceRight` without an initial value over an empty array. */
+[[noreturn]] inline void throw_empty_reduce() {
+    throw NamedError("TypeError", "Reduce of empty array with no initial value");
 }
 
 /**
@@ -4408,6 +4797,14 @@ template <typename T>
     return std::fmod(left, right);
 }
 
+// JavaScript `**`: a NaN exponent, or a base of magnitude 1 under an infinite
+// exponent, is NaN where C pow answers 1.
+[[nodiscard]] inline double power_js(double base, double exponent) {
+    if (std::isnan(exponent) || (std::isinf(exponent) && std::fabs(base) == 1.0))
+        return std::numeric_limits<double>::quiet_NaN();
+    return std::pow(base, exponent);
+}
+
 // Numeric `a || b`: 0 and NaN fall through to the fallback.
 [[nodiscard]] inline double or_number(double value, double fallback) {
     return (value != 0.0 && !std::isnan(value)) ? value : fallback;
@@ -4670,7 +5067,7 @@ struct NumberArgument {
 template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Values& values) {
     U8Array result(values.size());
     for (std::size_t index = 0; index < values.size(); ++index) {
-        result[index] = to_uint8(values[index]);
+        result[index] = to_uint8(static_cast<double>(typed_array_load(values, index)));
     }
     return result;
 }

@@ -1891,13 +1891,16 @@ test("self-referential struct callbacks capture the initialized binding", () => 
         const value = states[0]!.read();
     `);
 
+    // The literal allocates the object its binding names before the method
+    // closure captures it, then stores its fields into that object.
     const declaration = result.cpp.match(
-        /auto (v_fn\d+_state) = bbl::js::make_gc_shared<bblscene::State>\(\);/,
+        /auto (v_fn\d+_state) = bbl::js::make_ref<bblscene::StateData>\(\);/,
     );
     assert.ok(declaration);
     const name = declaration[1]!;
-    assert.match(result.cpp, new RegExp(`\\(\\*${name}\\) = `));
-    assert.match(result.cpp, new RegExp(`\\(\\*${name}\\)->values`));
+    assert.match(result.cpp, new RegExp(`\\*${name} = bblscene::StateData\\{`));
+    assert.match(result.cpp, new RegExp(`${name}->values`));
+    assert.doesNotMatch(result.cpp, /make_gc_shared<bblscene::State>/);
 });
 
 test("lowers optional data property and element chains generically", () => {
@@ -2743,10 +2746,11 @@ test("spreads a native partial struct into a wider struct", () => {
         }
         const options: Options = { label: "ready" };
         const item: Item = { id: 3, ...options };
+        options.enabled = item.label !== undefined;
     `);
 
     assert.match(result.cpp, /if \(v_options\.label\.has_value\(\)\) \{/);
-    assert.match(result.cpp, /v_item\.label = \*v_options\.label;/);
+    assert.match(result.cpp, /v_item\.label = \(\*v_options\.label\);/);
     assert.match(result.cpp, /if \(v_options\.enabled\.has_value\(\)\) \{/);
 });
 
@@ -3994,7 +3998,7 @@ test("keeps an early return inside the invoked setter", () => {
     );
 });
 
-test("record getters admit local statements before their final return", () => {
+test("record getters admit local statements and early returns", () => {
     assert.doesNotThrow(() =>
         compileSource(`
                 const api = {
@@ -4006,12 +4010,10 @@ test("record getters admit local statements before their final return", () => {
                 const read = api.total;
             `),
     );
-    assert.throws(
-        () =>
-            compileSource(
-                `const api={get value(){if(Math.random()>0.5)return 1;return 2;}};const read=api.value;`,
-            ),
-        /early returns requires a represented result flow/,
+    assert.doesNotThrow(() =>
+        compileSource(
+            `const api={get value(){if(Math.random()>0.5)return 1;return 2;}};const read=api.value;`,
+        ),
     );
 });
 
@@ -5127,11 +5129,11 @@ test("defaults omitted Uint8Array slice and subarray bounds", () => {
 
     assert.match(
         result.cpp,
-        /v_source\.slice\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(v_source\.size\(\)\)\)\)/,
+        /bbl::js::typed_array_slice\(v_source, 0\.0, static_cast<double>\(v_source\.size\(\)\)\)/,
     );
     assert.match(
         result.cpp,
-        /v_source\.subarray\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(v_source\.size\(\)\)\)\)/,
+        /bbl::js::typed_array_subarray\(v_source, 0\.0, static_cast<double>\(v_source\.size\(\)\)\)/,
     );
     assert.match(
         result.cpp,
@@ -5144,7 +5146,7 @@ test("defaults omitted Uint8Array slice and subarray bounds", () => {
     );
     assert.match(
         result.cpp,
-        /const double (v_bblite_view_index_\d+) = 1\.0;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\), bbl::js::buffer_view_index\(\2\)\);\s+\[\[maybe_unused\]\] bbl::js::U8Array v_middle = \3\.slice\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(\3\.size\(\)\)\)\);/,
+        /const double (v_bblite_view_index_\d+) = 1\.0;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\), bbl::js::buffer_view_index\(\2\)\);\s+\[\[maybe_unused\]\] bbl::js::U8Array v_middle = bbl::js::typed_array_slice\(\3, 0\.0, static_cast<double>\(\3\.size\(\)\)\);/,
     );
 });
 
@@ -5175,7 +5177,7 @@ test("rebinds optional typed arrays from fresh constructors", () => {
 
     assert.match(
         result.cpp,
-        /auto (v_bblite_constructed_receiver_\d+) = bbl::js::u8_array_sized\(4\.0\);\s+v_bytes = bbl::js::Nullable<bbl::js::U8Array>\{\1\.slice/,
+        /auto (v_bblite_constructed_receiver_\d+) = bbl::js::u8_array_sized\(4\.0\);\s+v_bytes = bbl::js::Nullable<bbl::js::U8Array>\{bbl::js::typed_array_slice\(\1, /,
     );
     assert.match(
         result.cpp,
@@ -6922,24 +6924,26 @@ test("lowers numeric switch statements to native branches", () => {
     assert.match(result.cpp, /\} else \{/);
 });
 
-test("rejects switch cases that fall through with statements", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                function pick(value: number): number {
-                    switch (value) {
-                        case 1:
-                            value += 1;
-                        case 2:
-                            return value;
-                        default:
-                            return 0;
-                    }
-                }
-                const picked = pick(1);
-            `),
-        /Non-empty switch cases must end with break or return/,
+test("selects a falling-through switch clause by index", () => {
+    const result = compileSource(`
+        function pick(value: number): number {
+            switch (value) {
+                case 1:
+                    value += 1;
+                case 2:
+                    return value;
+                default:
+                    return 0;
+            }
+        }
+        const picks: Array<typeof pick> = [pick];
+        const picked = picks[0]!(1);
+    `);
+    assert.match(
+        result.cpp,
+        /const int v_bblite_switch_\d+_selected = \(v_bblite_switch_\d+ == 1\.0\) \? 0 : \(v_bblite_switch_\d+ == 2\.0\) \? 1 : 2;/,
     );
+    assert.match(result.cpp, /if \(v_bblite_switch_\d+_selected <= 1\) \{/);
 });
 
 test("keeps for-of over static arrays native", () => {
@@ -7199,7 +7203,7 @@ test("spreads a runtime numeric tuple into a numeric array", () => {
 
     assert.match(
         result.cpp,
-        /\.insert\([^,]+\.end\(\), [^.]+\.begin\(\), [^.]+\.end\(\)\)/,
+        /auto (v_bblite_push_spread_\d+) = bbl::js::array_from_iterable<double>\([^;]+\);\s*[^;]*bbl::js::array_append\(v_values, \1\)/,
     );
 });
 
@@ -8477,11 +8481,11 @@ test("folds browser query predicates inside a runtime condition", () => {
     assert.match(queried.cpp, /\.position\.x = 3\.0/);
 });
 
-test("an assignment used as a value constructs once and reads the target", () => {
+test("an assignment used as a value constructs once and yields what it stored", () => {
     // `const camera = (scene.camera = createArcRotateCamera(...))` is an
     // assignment in expression position. Compiling the right-hand side a
     // second time to produce the value would construct a second camera, so
-    // the value comes from reading the target back.
+    // the store binds the camera it constructs and the value is that binding.
     const result = compileSource(`
         import {
             createArcRotateCamera,
@@ -8507,9 +8511,126 @@ test("an assignment used as a value constructs once and reads the target", () =>
         1,
         "the camera factory must be emitted exactly once",
     );
-    assert.match(result.cpp, /\.camera = bbl::create_arc_rotate_camera\(/);
-    assert.match(result.cpp, /auto v_camera = v_scene\.camera;/);
+    assert.match(
+        result.cpp,
+        /auto (v_bblite_assigned_\d+) = bbl::create_arc_rotate_camera\([^;]*;\s*v_scene\.camera = \1;\s*\[\[maybe_unused\]\] auto& v_camera = \1;/,
+    );
     assertCameraScalarWrite(result.cpp, "radius", /6\.0/);
+});
+
+test("an engine-property assignment used as a value evaluates its target once and yields the assigned value", () => {
+    // The store runs as its statement and binds the right side it consumes;
+    // the value is that binding, never the property read back, and the
+    // owner `boxes[index++]` is read once for every lane the store writes.
+    const result = compileSource(`
+        import { createBox, createEngine, createHemisphericLight } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const boxes = [createBox(engine), createBox(engine)];
+            let index = 0;
+            const x = (boxes[index++]!.position.x = 3);
+            boxes[1]!.position.y = x + index;
+            const light = createHemisphericLight([0, 1, 0], 1);
+            const intensity = (light.intensity = 0.25);
+            boxes[1]!.position.z = intensity;
+        }
+    `);
+    assert.equal(result.cpp.match(/v_index\+\+/g)?.length, 1);
+    assert.match(
+        result.cpp,
+        /auto (v_bblite_transform_owner_\d+) = [^;]*\(v_index\+\+\)[^;]*;\s*\[\[maybe_unused\]\] const double (v_bblite_assigned_\d+) = 3\.0;\s*[^;]*\1\)\.position\.x = \2;\s*bbl::mark_mesh_dirty\(v_engine, \1\);\s*\[\[maybe_unused\]\] auto& v_x = \2;/,
+    );
+    assert.match(
+        result.cpp,
+        /const double (v_bblite_assigned_\d+) = 0\.25;\s*[^;]*\.intensity = \1;\s*\[\[maybe_unused\]\] auto& v_intensity = \1;/,
+    );
+});
+
+test("an engine-handle list index with effects runs once, before the right side, on every camera store", () => {
+    // A list of handles selects its element by comparing the index with
+    // each lane: a single lane compares nothing, three lanes compare twice,
+    // and a store's right side may read what the index writes.
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+            type ArcRotateCamera,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const one: ArcRotateCamera[] = [];
+            one.push(createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 }));
+            const three: ArcRotateCamera[] = [];
+            three.push(createArcRotateCamera(1, 1, 6, { x: 0, y: 0, z: 0 }));
+            three.push(createArcRotateCamera(1, 1, 7, { x: 0, y: 0, z: 0 }));
+            three.push(createArcRotateCamera(1, 1, 8, { x: 0, y: 0, z: 0 }));
+            scene.camera = one[0]!;
+            let i = 0;
+            one[i++]!.radius = 9;
+            let j = 0;
+            one[j++]!.fov = j;
+            let k = 0;
+            three[k++ % 3]!.alpha += 1;
+            let m = 0;
+            const picked = one[m++]!;
+            picked.beta = i + j + k + m;
+        }
+    `);
+    assert.equal(result.cpp.match(/create_arc_rotate_camera\(/g)?.length, 4);
+    for (const name of ["v_i", "v_j", "v_k", "v_m"])
+        assert.equal(
+            result.cpp.split(`${name}++`).length - 1,
+            1,
+            `${name} is incremented once`,
+        );
+    assert.match(
+        result.cpp,
+        /const double (v_bblite_store_key_\d+) = \(v_j\+\+\);[^]*?\.fov = v_j;/,
+    );
+});
+
+test("material stores through an effectful owner evaluate it once", () => {
+    // `uvOffset`/`uvScale` write two record fields and `diffuseColor` binds
+    // its owner for the setter: every statement names the owner, so an
+    // index with effects is read once ahead of them.
+    const result = compileSource(`
+        import { createEngine, createStandardMaterial, type StandardMaterial } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const first = createStandardMaterial();
+            const second = createStandardMaterial();
+            const third = createStandardMaterial();
+            interface Holder { mat: StandardMaterial }
+            const holders: Holder[] = [{ mat: first }, { mat: second }, { mat: third }];
+            let h = 0;
+            holders[h++]!.mat.uvOffset = [5, 6];
+            let d = 0;
+            holders[d++]!.mat.diffuseColor = [0, 0, 1];
+            let u = 0;
+            holders[u++]!.mat.uvScale = [2, 2];
+            const rig = { materials: [first, second, third] };
+            let r = 0;
+            rig.materials[r++]!.uvOffset = [r, r];
+            let s = 0;
+            rig.materials[s++ % 3]!.specularPower = 8;
+            void engine;
+        }
+    `);
+    for (const name of ["v_h", "v_d", "v_u", "v_r", "v_s"])
+        assert.equal(
+            result.cpp.split(`${name}++`).length - 1,
+            1,
+            `${name} is incremented once`,
+        );
+    assert.match(
+        result.cpp,
+        /const double (v_bblite_store_key_\d+) = \(v_r\+\+\);[^]*?standard_uv_offset_x = v_r;[^]*?standard_uv_offset_y = v_r;/,
+    );
 });
 
 test("folds a nullish-coalescing browser query default", () => {
@@ -8864,6 +8985,23 @@ test("lowers scene-created DOM controls to the retained native UI IR", () => {
     assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"click"/);
     assert.match(result.cpp, /bbl::ui_append_to_root/);
     assert.doesNotMatch(result.cpp, /document|createElement|textContent/);
+});
+
+test("UI text reads the string a record type declares where a shared layout may hold it absent", () => {
+    // `{ x, y }` records coalesced with a city share the city layout, whose
+    // `name` storage they leave empty; a city's own name is still a string.
+    const result = compileSource(`
+        interface City { x: number; y: number; size: number; name: string }
+        const cities: City[] = [{ x: 1, y: 2, size: 5, name: "Rome" }];
+        const tiles: { x: number; y: number }[] = [{ x: 3, y: 4 }];
+        const visited = new Set<{ x: number; y: number }>();
+        const start = cities[1] ?? tiles[0]!;
+        visited.add(start);
+        const label = document.createElement("span");
+        label.textContent = cities[0]!.name;
+        document.body.appendChild(label);
+    `);
+    assert.match(result.cpp, /bbl::ui_set_text\([^;]*\(\*[^;]*->name\)\)/);
 });
 
 test("lowers retained UI properties, append, removal, and dynamic attributes", () => {

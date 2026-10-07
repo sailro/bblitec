@@ -1172,4 +1172,24 @@ template <std::size_t N> [[nodiscard]] inline Tuple<N> json_tuple(const JsonValu
     return result;
 }
 
+/**
+ * The first `count` values array destructuring iterates: an array (its
+ * elements are shared), a string's code points; any other parsed value is
+ * not iterable.
+ */
+[[nodiscard]] inline JsonValue json_iterated(const JsonValue& value, std::size_t count) {
+    if (value.is_array())
+        return value;
+    if (!value.is_string())
+        throw NamedError("TypeError", "The destructured value is not iterable");
+    const std::string& text = value.string_value();
+    JsonValue::Array points;
+    for (std::size_t offset = 0; offset < text.size() && points.size() < count;) {
+        const std::size_t size = string_sequence_size(text, offset);
+        points.push_back(JsonValue::from_string(text.substr(offset, size)));
+        offset += size;
+    }
+    return JsonValue::from_array(std::move(points));
+}
+
 } // namespace bbl::js

@@ -83,8 +83,16 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ["asin", { arity: 1, cpp: shared("asin") }],
     ["log", { arity: 1, cpp: shared("log") }],
     ["log2", { arity: 1, cpp: shared("log2") }],
+    ["log10", { arity: 1, cpp: compilerOnly("log10") }],
+    ["log1p", { arity: 1, cpp: compilerOnly("log1p") }],
+    ["expm1", { arity: 1, cpp: compilerOnly("expm1") }],
     ["cbrt", { arity: 1, cpp: compilerOnly("cbrt") }],
     ["sinh", { arity: 1, cpp: compilerOnly("sinh") }],
+    ["cosh", { arity: 1, cpp: compilerOnly("cosh") }],
+    ["tanh", { arity: 1, cpp: compilerOnly("tanh") }],
+    ["asinh", { arity: 1, cpp: compilerOnly("asinh") }],
+    ["acosh", { arity: 1, cpp: compilerOnly("acosh") }],
+    ["atanh", { arity: 1, cpp: compilerOnly("atanh") }],
     [
         "fround",
         {
@@ -105,6 +113,8 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ],
     ["exp", { arity: 1, cpp: compilerOnly("exp") }],
     ["trunc", { arity: 1, cpp: compilerOnly("trunc"), fold: Math.trunc }],
+    // The pinned layer's `<cmath>` spelling; scene code lowers `Math.pow`
+    // through `exponentiationCall`, as it lowers `**`.
     ["pow", { arity: 2, cpp: shared("pow") }],
     ["atan2", { arity: 2, cpp: shared("atan2") }],
     // Not `std::round`: JavaScript rounds a tie toward +Infinity and C
@@ -158,6 +168,25 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ],
 ]);
 
+/**
+ * JavaScript exponentiation, `**` and `Math.pow` alike: `<cmath>`'s pow
+ * except that a NaN exponent, or an infinite one over a base of magnitude
+ * 1, is NaN (`power_js`). A statically finite exponent meets neither case
+ * and spells `std::pow` without the runtime.
+ */
+export function exponentiationCall(
+    base: string,
+    exponent: string,
+    staticExponent: number | undefined,
+): { readonly cpp: string; readonly jsData: boolean } {
+    return staticExponent !== undefined && Number.isFinite(staticExponent)
+        ? {
+              cpp: `${pinnedMathSpelling("pow")}(${base}, ${exponent})`,
+              jsData: false,
+          }
+        : { cpp: `bbl::js::power_js(${base}, ${exponent})`, jsData: true };
+}
+
 /** Numeric call spelling, including the extrema whose spread/fold paths are separate. */
 export function mathCallSpelling(name: string): MathMember["cpp"] | undefined {
     return name === "min" || name === "max"
@@ -195,14 +224,27 @@ interface MathConstant {
     readonly floatCpp?: string;
 }
 
-/** The `Math` constants a numeric reader folds, and how a float sink spells them. */
+/** Every `Math` constant: a numeric reader folds it, and a float sink spells it. */
 export const MATH_CONSTANTS: ReadonlyMap<string, MathConstant> =
     new EmissionMap<string, MathConstant>([
         ["PI", { value: Math.PI, floatCpp: "bbl::pi" }],
         ["E", { value: Math.E }],
+        ["LN2", { value: Math.LN2 }],
+        ["LN10", { value: Math.LN10 }],
+        ["LOG2E", { value: Math.LOG2E }],
+        ["LOG10E", { value: Math.LOG10E }],
         ["SQRT2", { value: Math.SQRT2, floatCpp: "std::sqrt(2.0f)" }],
         ["SQRT1_2", { value: Math.SQRT1_2, floatCpp: "std::sqrt(0.5f)" }],
     ]);
+
+/** `Math.<constant>` where `Math` is the library's object, or undefined. */
+export function mathConstantAccess(
+    expression: ts.Expression,
+    libraryGlobal: LibraryGlobal,
+): MathConstant | undefined {
+    const access = mathMemberAccess(expression, libraryGlobal);
+    return access && MATH_CONSTANTS.get(access.name.text);
+}
 
 /**
  * The transcendental members a reader evaluates only when JavaScript
@@ -282,6 +324,8 @@ export function mathFunctionValue(
         ? mathExtremeCpp(access.name.text, "argument_0")
         : variadic
           ? member!.rangeCpp!("argument_0")
-          : member!.cpp(parameters);
+          : access.name.text === "pow"
+            ? exponentiationCall(parameters[0]!, parameters[1]!, undefined).cpp
+            : member!.cpp(parameters);
     return nativeFunctionValue(context, access, type, `return ${body};`);
 }

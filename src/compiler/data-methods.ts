@@ -9,7 +9,9 @@ import {
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import {
+    callbackTakesReceiver,
     mutatingArrayMethods,
+    readOnlyDataMethods,
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
@@ -18,6 +20,7 @@ import {
     argumentAt,
     expressionMayRunCode,
     regularExpressionParts,
+    rootIdentifier,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isObjectIdentityFunction } from "./static-evaluator.js";
@@ -37,6 +40,7 @@ import {
     RuntimeSearchParamsRequired,
 } from "./search-params.js";
 import { compileCollectionForEach } from "./collection-methods.js";
+import { pinOperand } from "./evaluation-order.js";
 
 import {
     dataTypesEqual,
@@ -50,12 +54,13 @@ import {
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
+import { resolvedSymbol } from "./symbols.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import {
     arrayElementType,
+    declaredContextualType,
     isTypeReference,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
@@ -169,109 +174,114 @@ function relativeRangeArguments(
     ];
 }
 
-/** Data-container methods whose receiver is not mutated. */
-export const readOnlyDataMethods: ReadonlySet<string> = new EmissionSet([
-    "at",
-    "concat",
-    "entries",
-    "every",
-    "filter",
-    "flat",
-    "flatMap",
-    "find",
-    "findIndex",
-    "findLast",
-    "findLastIndex",
-    "forEach",
-    "get",
-    "has",
-    "includes",
-    "indexOf",
-    "join",
-    "keys",
-    "lastIndexOf",
-    "map",
-    "reduce",
-    "reduceRight",
-    "slice",
-    "some",
-    "values",
-]);
+/** The observing methods a numeric tuple shares with a readonly number array. */
+const tupleReadingMethods: ReadonlySet<string> = new EmissionSet(
+    [...readOnlyDataMethods].filter(
+        (method) => !["entries", "keys", "slice", "values"].includes(method),
+    ),
+);
 
-interface ArrayCallbackReceiverPolicy {
-    readonly snapshotIdentity: boolean;
-    readonly skipRemoved: boolean;
-    readonly invalidatesFacts: boolean;
-}
-
-const existingCallbackReceiver: ArrayCallbackReceiverPolicy = {
-    snapshotIdentity: false,
-    skipRemoved: false,
-    invalidatesFacts: false,
-};
-const mutableCallbackReceiver: ArrayCallbackReceiverPolicy = {
-    snapshotIdentity: true,
-    skipRemoved: true,
-    invalidatesFacts: true,
-};
-
-/** Receiver rules shared by callback emission and source-level fact analysis. */
-export function arrayCallbackReceiverPolicy(
-    method: string,
-): ArrayCallbackReceiverPolicy {
-    return method === "flatMap"
-        ? mutableCallbackReceiver
-        : existingCallbackReceiver;
-}
-
-/** Methods that retain argument identity without mutating the argument itself. */
-export const storingDataMethods: ReadonlySet<string> = new EmissionSet([
-    "add",
-    "concat",
-    "fill",
-    "of",
-    "push",
-    "resolve",
-    "set",
-    "splice",
-    "unshift",
-]);
-
-/** Syntactic retention proof used conservatively by the alias analyses. */
-export function isStoringDataCall(
-    node: ts.Node,
-    checker: ts.TypeChecker,
-): node is ts.CallExpression | ts.NewExpression {
-    if (ts.isCallExpression(node)) {
-        const signature = checker.getResolvedSignature(node)?.declaration;
-        // Resolver signatures originate in the default library constructor,
-        // including when the source renames or forwards its executor parameter.
-        const parameter = signature?.parent;
-        const executor = parameter?.parent?.parent;
-        const constructor = executor?.parent;
-        if (
-            signature &&
-            declarationInDefaultLibrary(signature) &&
-            parameter &&
-            ts.isParameter(parameter) &&
-            executor &&
-            ts.isParameter(executor) &&
-            constructor &&
-            ts.isConstructSignatureDeclaration(constructor) &&
-            ts.isInterfaceDeclaration(constructor.parent) &&
-            constructor.parent.name.text === "PromiseConstructor"
-        )
-            return true;
-    }
-    return (
-        (ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            storingDataMethods.has(node.expression.name.text)) ||
-        (ts.isNewExpression(node) &&
-            ["Map", "Set"].includes(
-                libraryGlobal(checker, node.expression) ?? "",
-            ))
+/**
+ * Whether an array method's callback may change the receiver while the
+ * method walks it: write its elements or length, or rebind the variable the
+ * receiver was read from (`EvaluationOrder.callbackMayWrite`). JavaScript
+ * fixes the receiver and its length when the walk starts and visits only
+ * the indices still present, so such a walk holds the receiver, counts the
+ * length read at the call and checks each index against the live length.
+ * A callback that cannot change the receiver needs none of that.
+ */
+function callbackMayWriteReceiver(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    callback: ts.Expression,
+): boolean {
+    const callee = lowerer.context.unwrap(call.expression);
+    const root = ts.isPropertyAccessExpression(callee)
+        ? rootIdentifier(callee.expression)
+        : undefined;
+    return lowerer.context.evaluationOrder.callbackMayWrite(
+        callback,
+        root && resolvedSymbol(lowerer.context.checker, root),
     );
+}
+
+/** The array methods that walk their receiver with a callback. */
+export type ReceiverWalkMethod =
+    | "find"
+    | "findIndex"
+    | "findLast"
+    | "findLastIndex"
+    | "filter"
+    | "some"
+    | "every"
+    | "map"
+    | "flatMap"
+    | "forEach"
+    | "reduce"
+    | "reduceRight";
+
+/**
+ * How each walk treats a receiver its callback may change
+ * (`callbackMayWriteReceiver`): an index the callback removed is skipped as
+ * JavaScript skips an absent element, or refuses at run time where `find*`
+ * would read it as undefined and `map` would leave a hole, which the element
+ * type and a dense result cannot hold; a method that keeps the visited
+ * element keeps the value its callback was given, read before it ran.
+ */
+export const receiverWalks: ReadonlyMap<
+    ReceiverWalkMethod,
+    { readonly removed: "skip" | "throw"; readonly keepsElement: boolean }
+> = new EmissionMap([
+    ["forEach", { removed: "skip", keepsElement: false }],
+    ["some", { removed: "skip", keepsElement: false }],
+    ["every", { removed: "skip", keepsElement: false }],
+    ["filter", { removed: "skip", keepsElement: true }],
+    ["flatMap", { removed: "skip", keepsElement: false }],
+    ["reduce", { removed: "skip", keepsElement: false }],
+    ["reduceRight", { removed: "skip", keepsElement: false }],
+    ["find", { removed: "throw", keepsElement: true }],
+    ["findLast", { removed: "throw", keepsElement: true }],
+    ["findIndex", { removed: "throw", keepsElement: false }],
+    ["findLastIndex", { removed: "throw", keepsElement: false }],
+    ["map", { removed: "throw", keepsElement: false }],
+]);
+
+/**
+ * Declares `source`, the receiver an array method walks with `callback`.
+ * JavaScript fixes the receiver when the walk starts: one the callback may
+ * change (`callbackMayWriteReceiver`) is held by value, so rebinding its
+ * variable cannot move the walk, and loses its static element snapshot;
+ * any other is referenced. Native vector data is already a held view.
+ */
+export function declareWalkedReceiver(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    callback: ts.Expression,
+    narrowed: Value,
+    source: string,
+): { readonly writable: boolean; readonly held: boolean } {
+    const writable = callbackMayWriteReceiver(lowerer, call, callback);
+    if (writable) lowerer.invalidateStaticElements(narrowed);
+    const held = writable && !narrowed.nativeVectorData;
+    lowerer.context.emit({
+        kind: "declaration",
+        type: held ? "auto" : "auto&&",
+        name: source,
+        initializer: narrowed.cpp,
+    });
+    return { writable, held };
+}
+
+/** What a walk over a receiver its callback may shrink checks before visiting `index`. */
+export function removedIndexGuard(
+    lowerer: DataLowerer,
+    method: ReceiverWalkMethod,
+    index: string,
+    source: string,
+): string {
+    return receiverWalks.get(method)!.removed === "skip"
+        ? `if (${index} >= ${source}.size()) continue;`
+        : `if (${index} >= ${source}.size()) throw std::runtime_error(${lowerer.context.cppString(`Array.${method} callback removed an element it has not visited.`)});`;
 }
 
 const constantArrayMethods: ReadonlySet<string> = new EmissionSet([
@@ -284,13 +294,19 @@ const constantArrayMethods: ReadonlySet<string> = new EmissionSet([
     "includes",
     "find",
     "findIndex",
+    "findLast",
+    "findLastIndex",
     "filter",
     "reduce",
+    "reduceRight",
     "some",
     "every",
     "map",
     "forEach",
     "join",
+    "toReversed",
+    "toSorted",
+    "with",
 ]);
 
 const snapshotInvalidatingMethods: ReadonlySet<string> = new EmissionSet([
@@ -325,6 +341,16 @@ export function mayCompileDataMethodCall(
         (owner.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike)) ===
             0
     );
+}
+
+/** `this` when it is a native plain record (a literal method's home object), not a class instance. */
+function plainRecordReceiver(lowerer: DataLowerer): Value | undefined {
+    const receiver = lowerer.context.activeThis();
+    return receiver?.kind === "data" &&
+        receiver.dataType?.kind === "struct" &&
+        !lowerer.context.dataTypes.isClassStruct(receiver.dataType.name)
+        ? receiver
+        : undefined;
 }
 
 export function compileDataMethodCall(
@@ -443,7 +469,9 @@ export function compileDataMethodCall(
                 : ts.isStringLiteralLike(ownerExpression) ||
                     ts.isTemplateExpression(ownerExpression)
                   ? lowerer.context.compileValue(ownerExpression)
-                  : undefined;
+                  : ownerExpression.kind === ts.SyntaxKind.ThisKeyword
+                    ? plainRecordReceiver(lowerer)
+                    : undefined;
     if (dynamicOwner && !ts.isOptionalChain(callee)) {
         dynamicOwner = lowerer.narrowOptional(
             dynamicOwner,
@@ -938,11 +966,11 @@ function compileKnownDataMethod(
         };
     } else if (
         narrowedOwner.dataType?.kind === "tuple" &&
-        (method === "some" || method === "every")
+        tupleReadingMethods.has(method)
     ) {
         narrowed = {
             ...narrowedOwner,
-            // A numeric tuple's observing predicates use the same indexed
+            // A numeric tuple's observing methods use the same indexed
             // range loop as a readonly numeric array.
             dataType: { kind: "span", element: { kind: "number" } },
         };
@@ -1186,33 +1214,7 @@ function compileKnownDataMethod(
         return lowerer.compileTypedArraySet(call, narrowed, dataType.kind);
     }
     if (
-        dataType?.kind === "u8array" &&
-        (method === "slice" || method === "subarray")
-    ) {
-        if (call.arguments.length > 2) {
-            lowerer.context.fail(
-                call,
-                `Uint8Array.${method} expects up to two arguments.`,
-            );
-        }
-        const begin = call.arguments[0]
-            ? lowerer.context.compileNumber(call.arguments[0], "double")
-            : "0.0";
-        const end = call.arguments[1]
-            ? lowerer.context.compileNumber(call.arguments[1], "double")
-            : `static_cast<double>(${narrowed.cpp}.size())`;
-        return {
-            kind: "data",
-            cpp:
-                `${narrowed.cpp}.${method}(` +
-                `bbl::js::array_index(${begin}), ` +
-                `bbl::js::array_index(${end}))`,
-            dataType: { kind: "u8array" },
-        };
-    }
-    if (
         isTypedArrayType(dataType) &&
-        dataType.kind !== "u8array" &&
         (method === "slice" || method === "subarray")
     ) {
         if (call.arguments.length > 2) {
@@ -1229,12 +1231,32 @@ function compileKnownDataMethod(
             : `static_cast<double>(${narrowed.cpp}.size())`;
         lowerer.context.reachJsData();
         // `slice` copies the range; `subarray` is a view sharing the
-        // receiver's bytes, so writes through it reach the source.
+        // receiver's bytes, so writes through it reach the source. Both
+        // endpoints are relative indices.
         return {
             kind: "data",
             cpp:
                 `bbl::js::typed_array_${method}(${narrowed.cpp}, ` +
                 `${begin}, ${end})`,
+            dataType,
+        };
+    }
+    if (dataType?.kind === "arraybuffer" && method === "slice") {
+        if (call.arguments.length > 2)
+            lowerer.context.fail(
+                call,
+                "ArrayBuffer.slice expects up to two arguments.",
+            );
+        const begin = call.arguments[0]
+            ? lowerer.context.compileNumber(call.arguments[0], "double")
+            : "0.0";
+        const end = call.arguments[1]
+            ? lowerer.context.compileNumber(call.arguments[1], "double")
+            : "std::numeric_limits<double>::infinity()";
+        lowerer.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: `bbl::js::array_buffer_slice(${narrowed.cpp}, ${begin}, ${end})`,
             dataType,
         };
     }
@@ -1253,25 +1275,57 @@ function compileKnownDataMethod(
     if (isTypedArrayType(dataType)) {
         if (method === "sort")
             return compileTypedArraySort(lowerer, call, narrowed, dataType);
+        if (method === "reverse") {
+            if (call.arguments.length !== 0)
+                lowerer.context.fail(
+                    call,
+                    "TypedArray.reverse expects no arguments.",
+                );
+            lowerer.context.reachJsData();
+            return {
+                kind: "data",
+                cpp: `bbl::js::typed_array_reverse(${narrowed.cpp})`,
+                dataType,
+            };
+        }
         if (!typedArrayReadMethods.has(method)) return undefined;
+        const numbers = typedArrayReader(
+            lowerer,
+            call,
+            method,
+            narrowed,
+            dataType,
+        );
         return compileArrayMethodTail(
             {
                 lowerer,
                 call,
-                narrowed: typedArrayReader(
-                    lowerer,
-                    call,
-                    method,
-                    narrowed,
-                    dataType,
-                ),
-                dataType: typedArrayNumbers,
+                narrowed: numbers,
+                dataType: { kind: "span", element: { kind: "number" } },
                 dynamicOwner,
                 expectedResult: undefined,
                 typedResult: dataType,
             },
             method,
         );
+    }
+    // A numeric tuple's length-preserving writers act on its own storage
+    // and return the same tuple.
+    if (
+        dataType?.kind === "tuple" &&
+        (method === "fill" || method === "copyWithin")
+    ) {
+        const written = compileArrayValueMethod(
+            lowerer,
+            call,
+            method,
+            narrowed,
+            {
+                kind: "vector",
+                element: { kind: "number" },
+            },
+        );
+        return written && { ...written, dataType };
     }
     if (dataType?.kind !== "vector" && dataType?.kind !== "span") {
         return undefined;
@@ -1369,11 +1423,6 @@ function collectedArray(
     return { kind: "data", cpp: typed, dataType: state.typedResult };
 }
 
-const typedArrayNumbers: DataType<"span"> = {
-    kind: "span",
-    element: { kind: "number" },
-};
-
 /** The array methods a typed array shares, read through `TypedArrayNumbers`. */
 const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
     "at",
@@ -1381,6 +1430,8 @@ const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
     "filter",
     "find",
     "findIndex",
+    "findLast",
+    "findLastIndex",
     "forEach",
     "includes",
     "indexOf",
@@ -1388,15 +1439,15 @@ const typedArrayReadMethods: ReadonlySet<string> = new EmissionSet([
     "lastIndexOf",
     "map",
     "reduce",
+    "reduceRight",
     "some",
 ]);
 
 /**
  * A typed array as the array-method tail reads it: its elements as numbers
- * (`bbl::js::TypedArrayNumbers`), each read the element at that moment,
- * through a view's bytes as through owned storage. `map` and `filter` fill
- * the receiver's own kind (`typedResult`), converting each number as a
- * store does.
+ * (`DataLowerer.typedArrayNumbersValue`). `map` and `filter` fill the
+ * receiver's own kind (`typedResult`), converting each number as a store
+ * does.
  */
 function typedArrayReader(
     lowerer: DataLowerer,
@@ -1406,26 +1457,12 @@ function typedArrayReader(
     dataType: DataType<TypedArrayKind>,
 ): Value {
     const callback = call.arguments[0];
-    const arrayParameter = method === "reduce" ? 3 : 2;
-    if (
-        callback &&
-        lowerer.context.checker
-            .getTypeAtLocation(callback)
-            .getCallSignatures()
-            .some((signature) => signature.parameters.length > arrayParameter)
-    )
+    if (callbackTakesReceiver(lowerer.context.checker, method, callback))
         lowerer.context.fail(
             callback,
             `A typed array's ${method} callback takes no array parameter here.`,
         );
-    lowerer.context.reachJsData();
-    const cppType = lowerer.context.dataTypes.cppType(dataType);
-    return {
-        kind: "data",
-        cpp: `bbl::js::typed_array_numbers(${narrowed.cpp})`,
-        dataType: typedArrayNumbers,
-        nativeCollectionCppType: `bbl::js::TypedArrayNumbers<${cppType}>`,
-    };
+    return lowerer.typedArrayNumbersValue(narrowed.cpp, dataType);
 }
 
 function compileTypedArraySort(
@@ -1615,32 +1652,57 @@ function compileArraySlice(state: ArrayMethodState): Value {
     const end = call.arguments[1]
         ? lowerer.context.compileNumber(call.arguments[1], "double")
         : `static_cast<double>(${narrowed.cpp}.size())`;
+    // The copy is a new array the program owns, even of a readonly view.
     return {
         kind: "data",
         cpp: `bbl::js::array_slice(${narrowed.cpp}, ${begin}, ${end})`,
-        dataType,
+        dataType: { kind: "vector", element: dataType.element },
     };
 }
 
-function compileArraySort(state: ArrayMethodState): Value {
+/**
+ * `sort` orders the receiver in place; `toSorted` orders a fresh copy of
+ * the elements it holds once the comparator argument is evaluated.
+ */
+function compileArraySort(
+    state: ArrayMethodState,
+    method: "sort" | "toSorted" = "sort",
+): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
     if (call.arguments.length > 1) {
         lowerer.context.fail(
             call,
-            "Array.sort expects at most one comparator callback.",
+            `Array.${method} expects at most one comparator callback.`,
         );
     }
-    const result = lowerer.context.allocateTemporaryCppName("sort_result");
-    lowerer.context.emit({
-        kind: "declaration",
-        type: "auto",
-        name: result,
-        initializer: narrowed.cpp,
-    });
+    const copy = method === "toSorted";
     const argument = call.arguments[0]
         ? lowerer.context.unwrap(call.arguments[0])
         : undefined;
+    // JavaScript sorts the values it collects before comparing and writes
+    // them back, so a comparator that may change the receiver
+    // (`callbackMayWriteReceiver`) sorts a copy of them.
+    const collected =
+        !copy &&
+        dataType.kind === "vector" &&
+        argument !== undefined &&
+        callbackMayWriteReceiver(lowerer, call, argument);
+    const resultType: DataType<"vector"> | typeof dataType =
+        copy || collected
+            ? { kind: "vector", element: dataType.element }
+            : dataType;
+    const result = lowerer.context.allocateTemporaryCppName("sort_result");
+    const receiver =
+        copy || collected
+            ? lowerer.context.allocateTemporaryCppName("sort_receiver")
+            : result;
+    lowerer.context.emit({
+        kind: "declaration",
+        type: copy ? "auto&&" : "auto",
+        name: receiver,
+        initializer: narrowed.cpp,
+    });
     // Another comparator expression (a class field, a property, a call
     // result) is evaluated once, before the sort: a compile-time callback
     // keeps its owner's scopes, a function value is held in a temporary.
@@ -1660,7 +1722,7 @@ function compileArraySort(state: ArrayMethodState): Value {
     ) {
         lowerer.context.fail(
             argument!,
-            "Array.sort requires a function comparator.",
+            `Array.${method} requires a function comparator.`,
         );
     }
     const comparatorValue =
@@ -1670,6 +1732,14 @@ function compileArraySort(state: ArrayMethodState): Value {
                   "sort_comparator",
               )
             : undefined;
+    if (copy || collected)
+        lowerer.context.emit({
+            kind: "declaration",
+            type: lowerer.context.dataTypes.cppType(resultType),
+            name: result,
+            initializer: `${receiver}.begin(), ${receiver}.end()`,
+            initialization: "direct",
+        });
     const callback =
         argument &&
         (ts.isIdentifier(argument) ||
@@ -1697,7 +1767,7 @@ function compileArraySort(state: ArrayMethodState): Value {
                     )
                         return lowerer.context.fail(
                             call,
-                            "Default Array.sort requires scalar string, number, boolean or enum elements.",
+                            `Default Array.${method} requires scalar string, number, boolean or enum elements.`,
                         );
                     return `bbl::js::concat(${stringConcatPart(lowerer.context, lowerer.leafValue(name, dataType.element), call)})`;
                 };
@@ -1745,7 +1815,7 @@ function compileArraySort(state: ArrayMethodState): Value {
                 if (compared.kind !== "number") {
                     lowerer.context.fail(
                         argument!,
-                        "Array.sort comparator must return a number.",
+                        `Array.${method} comparator must return a number.`,
                     );
                 }
                 lowerer.context.emit({
@@ -1762,22 +1832,44 @@ function compileArraySort(state: ArrayMethodState): Value {
         lowerer.context.decreaseIndent();
     }
     lowerer.context.emit("});");
-    lowerer.invalidateStaticElements(narrowed, true);
-    lowerer.registerLocal(result, "owned");
-    return { kind: "data", cpp: result, dataType };
+    if (collected) {
+        // Every sorted value lands back at its index, regrowing a receiver
+        // the comparator shrank; elements it appended stay after them.
+        lowerer.context.emit(
+            `if (${receiver}.size() < ${result}.size()) ${receiver}.resize(${result}.size());`,
+        );
+        lowerer.context.emit({
+            kind: "expression",
+            code: `std::move(${result}.begin(), ${result}.end(), ${receiver}.begin());`,
+        });
+    }
+    if (!copy) lowerer.invalidateStaticElements(narrowed, true);
+    const sorted = collected ? receiver : result;
+    lowerer.registerLocal(sorted, "owned");
+    return {
+        kind: "data",
+        cpp: sorted,
+        dataType: collected ? dataType : resultType,
+    };
 }
 
-function compileArrayFind(state: ArrayMethodState): Value {
+function compileArrayFind(
+    state: ArrayMethodState,
+    method: "find" | "findLast",
+): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    const resultType = lowerer.dataTypeAt(call) ?? {
-        kind: "optional" as const,
-        inner: dataType.element,
-    };
+    // The checked program's ES2022 library does not declare `findLast`:
+    // its result is the receiver's element or undefined.
+    const resultType =
+        (method === "find" ? lowerer.dataTypeAt(call) : undefined) ??
+        (method === "findLast"
+            ? lowerer.context.dataTypes.nullableType(dataType.element, true)
+            : { kind: "optional" as const, inner: dataType.element });
     const result = lowerer.context.allocateTemporaryCppName("find_result");
     lowerer.emitArrayCallbackLoop(
         call,
-        "find",
+        method,
         narrowed,
         dataType,
         false,
@@ -1789,11 +1881,11 @@ function compileArrayFind(state: ArrayMethodState): Value {
                 initializer: "",
                 initialization: "default",
             }),
-        (matched, callback, source, index) => {
+        (matched, callback, element) => {
             if (matched.kind !== "boolean") {
                 lowerer.context.fail(
                     callback,
-                    "Array.find callback must return a boolean value.",
+                    `Array.${method} callback must return a boolean value.`,
                 );
             }
             lowerer.context.emit({
@@ -1801,10 +1893,7 @@ function compileArrayFind(state: ArrayMethodState): Value {
                 code: `if (${matched.cpp}) {`,
             });
             lowerer.context.increaseIndent();
-            const selected = lowerer.leafValue(
-                `${source}[${index}]`,
-                dataType.element,
-            );
+            const selected = lowerer.leafValue(element, dataType.element);
             const stored = lowerer.compileKnownValueForSink(
                 selected,
                 resultType,
@@ -1828,14 +1917,17 @@ function compileArrayFind(state: ArrayMethodState): Value {
     return lowerer.leafValue(result, resultType);
 }
 
-function compileArrayFindIndex(state: ArrayMethodState): Value {
+function compileArrayFindIndex(
+    state: ArrayMethodState,
+    method: "findIndex" | "findLastIndex",
+): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
     const result =
         lowerer.context.allocateTemporaryCppName("find_index_result");
     lowerer.emitArrayCallbackLoop(
         call,
-        "findIndex",
+        method,
         narrowed,
         dataType,
         false,
@@ -1846,11 +1938,11 @@ function compileArrayFindIndex(state: ArrayMethodState): Value {
                 name: result,
                 initializer: "-1.0",
             }),
-        (matched, callback, _source, index) => {
+        (matched, callback, _element, index) => {
             if (matched.kind !== "boolean") {
                 lowerer.context.fail(
                     callback,
-                    "Array.findIndex callback must return a boolean value.",
+                    `Array.${method} callback must return a boolean value.`,
                 );
             }
             lowerer.context.emit({
@@ -1908,13 +2000,53 @@ function arrayResultType(
         : result;
 }
 
+/**
+ * A type predicate narrowing string tags (`(f: Failure) => f is Candidate`)
+ * makes the filtered array one of the narrower tags: each element it keeps
+ * converts to that tag, which refuses at run time if the predicate lied.
+ */
+function narrowedTagFilter(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    element: DataType,
+): DataType<"vector"> | undefined {
+    const result = lowerer.dataTypeAt(call);
+    if (
+        element.kind !== "enum" ||
+        result?.kind !== "vector" ||
+        result.element.kind !== "enum" ||
+        result.element.name === element.name
+    )
+        return undefined;
+    // Only a destination expecting the narrower tags takes them: the
+    // contextual type, unless a generic call inferred it from this very
+    // argument (`Object.freeze(tags.filter(isCandidate))`), which then names
+    // no destination.
+    const contextual = declaredContextualType(lowerer.context.checker, call);
+    const destination =
+        contextual && lowerer.context.dataTypes.fromTsType(contextual, call);
+    if (
+        (destination?.kind !== "vector" && destination?.kind !== "span") ||
+        !dataTypesEqual(destination.element, result.element)
+    )
+        return undefined;
+    const members = lowerer.context.dataTypes.enumMembers(element.name);
+    return lowerer.context.dataTypes
+        .enumMembers(result.element.name)
+        .every((member) => members.includes(member))
+        ? result
+        : undefined;
+}
+
 function compileArrayFilter(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    const filteredType = arrayResultType(lowerer, call, {
-        kind: "vector" as const,
-        element: dataType.element,
-    })!;
+    const filteredType =
+        narrowedTagFilter(lowerer, call, dataType.element) ??
+        arrayResultType(lowerer, call, {
+            kind: "vector" as const,
+            element: dataType.element,
+        })!;
     const output = lowerer.context.allocateTemporaryCppName("filter_result");
     lowerer.emitArrayCallbackLoop(
         call,
@@ -1931,7 +2063,7 @@ function compileArrayFilter(state: ArrayMethodState): Value {
                 code: `${output}.reserve(${source}.size());`,
             });
         },
-        (matched, callback, source, index) => {
+        (matched, callback, element) => {
             if (matched.kind !== "boolean") {
                 lowerer.context.fail(
                     callback,
@@ -1943,12 +2075,11 @@ function compileArrayFilter(state: ArrayMethodState): Value {
                 code: `if (${matched.cpp}) {`,
             });
             lowerer.context.increaseIndent();
-            const cpp = `${source}[${index}]`;
             const selected =
                 dataType.element.kind === "optional" &&
                 filteredType.element.kind !== "optional"
-                    ? lowerer.leafValue(`(*${cpp})`, dataType.element.inner)
-                    : lowerer.leafValue(cpp, dataType.element);
+                    ? lowerer.leafValue(`(*${element})`, dataType.element.inner)
+                    : lowerer.leafValue(element, dataType.element);
             lowerer.context.emit({
                 kind: "expression",
                 code: `${output}.push_back(${lowerer.compileKnownValueForSink(selected, filteredType.element, call)});`,
@@ -1960,13 +2091,22 @@ function compileArrayFilter(state: ArrayMethodState): Value {
     return collectedArray(state, output, filteredType);
 }
 
-function compileArrayReduce(state: ArrayMethodState): Value {
+/**
+ * `reduce`/`reduceRight` walk the length read at the call; an index the
+ * callback removed is skipped as JavaScript skips an absent element.
+ * Without an initial value the first visited element seeds the
+ * accumulator, and an empty receiver throws.
+ */
+function compileArrayReduce(
+    state: ArrayMethodState,
+    method: "reduce" | "reduceRight" = "reduce",
+): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    if (call.arguments.length !== 2) {
+    if (call.arguments.length !== 1 && call.arguments.length !== 2) {
         lowerer.context.fail(
             call,
-            "Array.reduce currently requires a callback and an initial value.",
+            `Array.${method} requires a callback and an optional initial value.`,
         );
     }
     const callback = lowerer.context.unwrap(argumentAt(call, 0));
@@ -1977,27 +2117,30 @@ function compileArrayReduce(state: ArrayMethodState): Value {
     ) {
         lowerer.context.fail(
             callback,
-            "Array.reduce requires a local function or function literal callback.",
+            `Array.${method} requires a local function or function literal callback.`,
         );
     }
     const resultType = lowerer.dataTypeAt(call);
     if (!resultType) {
         lowerer.context.fail(
             call,
-            "Array.reduce accumulator must belong to the native data model.",
+            `Array.${method} accumulator must belong to the native data model.`,
         );
     }
+    const initial = call.arguments[1];
+    const right = method === "reduceRight";
     const source = lowerer.context.allocateTemporaryCppName("reduce_source");
     const count = lowerer.context.allocateTemporaryCppName("reduce_count");
     const index = lowerer.context.allocateTemporaryCppName("reduce_index");
     const accumulator =
         lowerer.context.allocateTemporaryCppName("reduce_result");
-    lowerer.context.emit({
-        kind: "declaration",
-        type: "auto&&",
-        name: source,
-        initializer: narrowed.cpp,
-    });
+    const { writable } = declareWalkedReceiver(
+        lowerer,
+        call,
+        callback,
+        narrowed,
+        source,
+    );
     const storedCallback = lowerer.prepareCallbackValue(callback, "reduce");
     lowerer.context.emit({
         kind: "declaration",
@@ -2005,18 +2148,36 @@ function compileArrayReduce(state: ArrayMethodState): Value {
         name: count,
         initializer: `${source}.size()`,
     });
+    if (!initial)
+        lowerer.context.emit(
+            `if (${count} == 0) bbl::js::throw_empty_reduce();`,
+        );
     lowerer.context.emit({
         kind: "declaration",
         type: lowerer.context.dataTypes.cppType(resultType),
         name: accumulator,
-        initializer: lowerer.compileForSink(argumentAt(call, 1), resultType),
+        initializer: initial
+            ? lowerer.compileForSink(initial, resultType)
+            : lowerer.compileKnownValueForSink(
+                  lowerer.leafValue(
+                      `${source}[${right ? `${count} - 1` : "0"}]`,
+                      dataType.element,
+                  ),
+                  resultType,
+                  call,
+              ),
     });
+    const first = initial ? count : `${count} - 1`;
     lowerer.context.emit({
         kind: "open",
-        code: `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
+        code: right
+            ? `for (std::size_t ${index} = ${first}; ${index}-- > 0;) {`
+            : `for (std::size_t ${index} = ${initial ? "0" : "1"}; ${index} < ${count}; ++${index}) {`,
         iteration: true,
     });
     lowerer.context.increaseIndent();
+    if (writable)
+        lowerer.context.emit(removedIndexGuard(lowerer, method, index, source));
     lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
         lowerer.context.enterRuntimeIteration();
@@ -2029,8 +2190,12 @@ function compileArrayReduce(state: ArrayMethodState): Value {
                     ],
                 },
                 {
+                    // The callback may replace or remove the element it
+                    // is given: it receives the value read before it ran.
                     ...lowerer.leafValue(
-                        `${source}[${index}]`,
+                        writable
+                            ? `bbl::js::snapshot_value(${source}[${index}])`
+                            : `${source}[${index}]`,
                         dataType.element,
                     ),
                     nativeCaptures: [
@@ -2557,74 +2722,24 @@ function compileArrayPush(state: ArrayMethodState): Value {
     }
     const pushes = call.arguments.map((argument, index) => {
         if (ts.isSpreadElement(argument)) {
-            const spread = lowerer.context.compileValue(argument.expression);
-            if (
-                lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                    dataType.element,
-                )
-            ) {
-                lowerer.context.refuseBorrowedPlatformEventEscape(
-                    spread,
-                    argument,
-                    "Array.push spread",
-                );
-            }
-            if (spread.kind === "tuple" && spread.tupleElements) {
-                const values = spread.tupleElements.map((value) =>
-                    lowerer.compileKnownValueForSink(
-                        value,
-                        dataType.element,
-                        argument,
-                    ),
-                );
-                const source =
-                    lowerer.context.allocateTemporaryCppName("push_spread");
-                lowerer.context.emit({
-                    kind: "declaration",
-                    type: lowerer.context.dataTypes.cppType(dataType),
-                    name: source,
-                    initializer: values.join(", "),
-                    initialization: "direct",
-                });
-                return `${receiver}.insert(${receiver}.end(), ${source}.begin(), ${source}.end())`;
-            }
-            let source: string;
-            if (isJsonValue(spread) && dataType.element.kind === "json") {
-                source = `${spread.cpp}.elements()`;
-            } else if (
-                spread.kind === "handle-collection" &&
-                spread.handleCollection &&
-                dataType.element.kind === "handle" &&
-                spread.handleCollection.elementKind === dataType.element.handle
-            ) {
-                source = spread.handleCollection.containerCpp;
-            } else if (
-                spread.kind === "data" &&
-                (((spread.dataType?.kind === "vector" ||
-                    spread.dataType?.kind === "span") &&
-                    dataTypesEqual(
-                        spread.dataType.element,
-                        dataType.element,
-                    )) ||
-                    (spread.dataType?.kind === "tuple" &&
-                        dataType.element.kind === "number"))
-            ) {
-                source = spread.cpp;
-            } else {
-                lowerer.context.fail(
-                    argument,
-                    `Array.push spread must contain values of the destination element type ${JSON.stringify(dataType.element)}; received ${spread.kind} ${spread.dataType ? JSON.stringify(spread.dataType) : "without a data type"}.`,
-                );
-            }
+            // What `[...x]` appends, copied before any element is pushed:
+            // JavaScript reads every argument first, the receiver's own
+            // elements included.
+            const source = lowerer.spreadSource(argument, {
+                kind: "vector",
+                element: dataType.element,
+            });
             const copy =
                 lowerer.context.allocateTemporaryCppName("push_spread");
             lowerer.context.emit({
                 kind: "declaration",
                 type: "auto",
                 name: copy,
-                initializer: `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${source})`,
+                initializer: source.freshSpread
+                    ? source.cpp
+                    : `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${source.cpp})`,
             });
-            return `${receiver}.insert(${receiver}.end(), ${copy}.begin(), ${copy}.end())`;
+            return `bbl::js::array_append(${receiver}, ${copy})`;
         }
         if (
             pushedValues &&
@@ -2792,6 +2907,38 @@ function compileArrayReverse(state: ArrayMethodState): Value {
         kind: "data",
         cpp: `bbl::js::array_reverse(${narrowed.cpp})`,
         dataType,
+    };
+}
+
+function compileArrayToReversed(state: ArrayMethodState): Value {
+    const { lowerer, call, narrowed, dataType } = state;
+    if (call.arguments.length !== 0)
+        lowerer.context.fail(call, "Array.toReversed expects no arguments.");
+    return {
+        kind: "data",
+        cpp: `bbl::js::array_to_reversed(${narrowed.cpp})`,
+        dataType: { kind: "vector", element: dataType.element },
+        freshData: true,
+    };
+}
+
+/** `with(index, value)`: the receiver, then each argument, evaluated once. */
+function compileArrayWith(state: ArrayMethodState): Value {
+    const { lowerer, call, narrowed, dataType } = state;
+    if (call.arguments.length !== 2)
+        lowerer.context.fail(call, "Array.with expects an index and a value.");
+    const receiver = captureArrayReceiver(lowerer, narrowed);
+    const index = lowerer.compileNumberArgument(call.arguments[0], "0.0");
+    const value = lowerer.compileForRetainedSink(
+        argumentAt(call, 1),
+        dataType.element,
+        "Array.with",
+    );
+    return {
+        kind: "data",
+        cpp: `bbl::js::array_with(${receiver}, ${index}, ${value})`,
+        dataType: { kind: "vector", element: dataType.element },
+        freshData: true,
     };
 }
 
@@ -3116,6 +3263,120 @@ function compileSetDataMethod(
     );
 }
 
+/**
+ * The string searches that take a UTF-16 position, at every arity: the
+ * runtime helper, its result, the position an absent (undefined) argument
+ * stands for -- also the helper's default when the call passes none -- and,
+ * where one exists, the generation-time answer over a known receiver and
+ * needle with no position.
+ */
+interface StringPositionSearch {
+    readonly helper: string;
+    readonly result: "number" | "boolean";
+    readonly absent: "start" | "end";
+    readonly fold?: (receiver: string, search: string) => boolean;
+}
+
+const STRING_POSITION_SEARCHES: ReadonlyMap<string, StringPositionSearch> =
+    new EmissionMap<string, StringPositionSearch>([
+        [
+            "indexOf",
+            { helper: "string_index_of", result: "number", absent: "start" },
+        ],
+        [
+            "includes",
+            { helper: "string_includes", result: "boolean", absent: "start" },
+        ],
+        [
+            "lastIndexOf",
+            { helper: "string_last_index_of", result: "number", absent: "end" },
+        ],
+        [
+            "startsWith",
+            {
+                helper: "string_starts_with",
+                result: "boolean",
+                absent: "start",
+                fold: (receiver, search) => receiver.startsWith(search),
+            },
+        ],
+        [
+            "endsWith",
+            { helper: "string_ends_with", result: "boolean", absent: "end" },
+        ],
+    ]);
+
+/**
+ * `s.indexOf(search, position)` and its siblings: the receiver, the search
+ * string and the position evaluate once, in order. The position is a UTF-16
+ * index read through ToNumber (`null` is 0); undefined reads as the absent
+ * position, which for `lastIndexOf`/`endsWith` is the end and so needs
+ * storage telling it from `null`.
+ */
+function compileStringPositionSearch(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    method: string,
+    search: StringPositionSearch,
+    narrowed: Value,
+): Value {
+    const context = lowerer.context;
+    if (call.arguments.length < 1 || call.arguments.length > 2)
+        context.fail(
+            call,
+            `String.${method} expects a search string and an optional position.`,
+        );
+    const callee = context.unwrap(call.expression);
+    const operands = [
+        ts.isPropertyAccessExpression(callee) ? callee.expression : callee,
+        ...call.arguments,
+    ];
+    const pins = context.evaluationOrder.operandsToPin(operands);
+    const receiver = pins[0]
+        ? pinOperand(context, narrowed, operands[0]!, "search_receiver")
+        : narrowed;
+    const searchNode = argumentAt(call, 0);
+    const searchValue = context.compileValue(searchNode);
+    const positionNode = call.arguments[1];
+    if (
+        search.fold &&
+        !positionNode &&
+        narrowed.staticString !== undefined &&
+        searchValue.staticString !== undefined
+    ) {
+        const value = search.fold(
+            narrowed.staticString,
+            searchValue.staticString,
+        );
+        return {
+            kind: "boolean",
+            cpp: value ? "true" : "false",
+            staticBoolean: value,
+            dataType: { kind: "boolean" },
+        };
+    }
+    const searchText = lowerer.compileKnownValueForSink(
+        pins[1]
+            ? pinOperand(context, searchValue, searchNode, "search_text")
+            : searchValue,
+        { kind: "string" },
+        searchNode,
+    );
+    // An omitted or undefined position is the search's own start; `null`
+    // is ToNumber 0.
+    const position = positionNode
+        ? lowerer.compileDefaultedNumberArgument(
+              positionNode,
+              search.absent === "start" ? 0 : Infinity,
+          )
+        : undefined;
+    context.reachJsData();
+    return lowerer.leafValue(
+        `bbl::js::${search.helper}(${receiver.cpp}, ${searchText}${position === undefined ? "" : `, ${position}`})`,
+        { kind: search.result },
+    );
+}
+
 function compileStringDataMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -3167,29 +3428,15 @@ function compileStringDataMethod(
                   freshData: true,
               };
     }
-    if (method === "indexOf" || method === "includes") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                `String.${method} expects one argument; the fromIndex form is outside the supported subset.`,
-            );
-        }
-        const search = lowerer.compileForSink(argumentAt(call, 0), {
-            kind: "string",
-        });
-        const index = `bbl::js::string_index_of(${narrowed.cpp}, ${search})`;
-        return method === "indexOf"
-            ? {
-                  kind: "number",
-                  cpp: index,
-                  dataType: { kind: "number" },
-              }
-            : {
-                  kind: "boolean",
-                  cpp: `${index} >= 0.0`,
-                  dataType: { kind: "boolean" },
-              };
-    }
+    const positionedSearch = STRING_POSITION_SEARCHES.get(method);
+    if (positionedSearch)
+        return compileStringPositionSearch(
+            lowerer,
+            call,
+            method,
+            positionedSearch,
+            narrowed,
+        );
     if (method === "toUpperCase") {
         if (call.arguments.length !== 0) {
             lowerer.context.fail(
@@ -3460,52 +3707,6 @@ function compileStringDataMethod(
             dataType: { kind: "string" },
         };
     }
-    if (method === "startsWith") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                "String.startsWith expects one argument.",
-            );
-        }
-        const prefixValue = lowerer.context.compileValue(argumentAt(call, 0));
-        if (
-            narrowed.staticString !== undefined &&
-            prefixValue.staticString !== undefined
-        ) {
-            const value = narrowed.staticString.startsWith(
-                prefixValue.staticString,
-            );
-            return {
-                kind: "boolean",
-                cpp: value ? "true" : "false",
-                staticBoolean: value,
-                dataType: { kind: "boolean" },
-            };
-        }
-        if (!isStringValue(prefixValue)) {
-            lowerer.context.fail(
-                argumentAt(call, 0),
-                "String.startsWith expects a string argument.",
-            );
-        }
-        const prefix = prefixValue.cpp;
-        return {
-            kind: "boolean",
-            cpp: `bbl::js::string_starts_with(${narrowed.cpp}, ${prefix})`,
-        };
-    }
-    if (method === "endsWith") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(call, "String.endsWith expects one argument.");
-        }
-        const suffix = lowerer.compileForSink(argumentAt(call, 0), {
-            kind: "string",
-        });
-        return {
-            kind: "boolean",
-            cpp: `bbl::js::string_ends_with(${narrowed.cpp}, ${suffix})`,
-        };
-    }
     if (method === "charCodeAt") {
         if (call.arguments.length !== 1) {
             lowerer.context.fail(
@@ -3663,11 +3864,17 @@ const arrayMethodHandlers = new EmissionMap<
     ["flat", compileArrayFlat],
     ["join", compileArrayJoin],
     ["slice", compileArraySlice],
-    ["sort", compileArraySort],
-    ["find", compileArrayFind],
-    ["findIndex", compileArrayFindIndex],
+    ["sort", (state) => compileArraySort(state, "sort")],
+    ["toSorted", (state) => compileArraySort(state, "toSorted")],
+    ["toReversed", compileArrayToReversed],
+    ["with", compileArrayWith],
+    ["find", (state) => compileArrayFind(state, "find")],
+    ["findIndex", (state) => compileArrayFindIndex(state, "findIndex")],
+    ["findLast", (state) => compileArrayFind(state, "findLast")],
+    ["findLastIndex", (state) => compileArrayFindIndex(state, "findLastIndex")],
     ["filter", compileArrayFilter],
-    ["reduce", compileArrayReduce],
+    ["reduce", (state) => compileArrayReduce(state, "reduce")],
+    ["reduceRight", (state) => compileArrayReduce(state, "reduceRight")],
     ["some", compileArraySome],
     ["every", compileArrayEvery],
     ["map", (state) => compileArrayMap(state, "map")],

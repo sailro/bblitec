@@ -52,9 +52,11 @@ import {
 import {
     functionOfDeclaration,
     isSupportedFunction,
+} from "./user-functions.js";
+import {
     parameterIsMutated,
     parameterIsReadOnly,
-} from "./user-functions.js";
+} from "./parameter-effects.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
@@ -281,6 +283,24 @@ export class BindingScopes {
                 return binding.value;
             }
         }
+        return undefined;
+    }
+
+    /** The innermost initialized variable declaration whose live binding is spelled `cpp`. */
+    public variableDeclarationOf(
+        cpp: string,
+    ): ts.VariableDeclaration | undefined {
+        for (let index = this.variableScopes.length - 1; index >= 0; index--)
+            for (const [symbol, binding] of this.variableScopes[index]!) {
+                const declaration = symbol.valueDeclaration;
+                if (
+                    binding.value.cpp === cpp &&
+                    declaration &&
+                    ts.isVariableDeclaration(declaration) &&
+                    declaration.initializer
+                )
+                    return declaration;
+            }
         return undefined;
     }
 

@@ -53,6 +53,7 @@ import {
 } from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
+    doubleCpp,
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
@@ -87,9 +88,9 @@ import {
     jsBitwiseCall,
 } from "../lowering/pinned-operators.js";
 import {
-    MATH_CONSTANTS,
+    exponentiationCall,
     MATH_MEMBERS,
-    mathMemberAccess,
+    mathConstantAccess,
     mathMemberCall,
 } from "./math-intrinsics.js";
 
@@ -193,6 +194,36 @@ function isNumericValue(value: Value | undefined): boolean {
         (value?.kind === "data" && value.dataType?.kind === "number") ||
         isJsonValue(value)
     );
+}
+
+/**
+ * ToNumber of an optional number, read at `node`, through
+ * `bbl::js::number_from_optional`: a present value reads itself, an absent
+ * `null` reads 0 and an absent `undefined` reads `undefinedReads` -- NaN in
+ * arithmetic, an omitted argument's default where one is defaulted.
+ * Undefined when the storage cannot say which absence it holds and the two
+ * read differently; the caller refuses. The caller reaches JS data.
+ */
+export function numberFromOptionalCpp(
+    checker: ts.TypeChecker,
+    value: Value,
+    node: ts.Node,
+    undefinedReads = NaN,
+): string | undefined {
+    const absence = absenceKind(checker, value, node);
+    const fallback =
+        absence === "null" ||
+        (absence === "either" && Object.is(undefinedReads, 0))
+            ? "0.0"
+            : absence === "either"
+              ? undefined
+              : typeof absence === "object"
+                ? `(${absence.slotFoundCpp} ? 0.0 : ${doubleCpp(undefinedReads)})`
+                : Number.isNaN(undefinedReads)
+                  ? ""
+                  : doubleCpp(undefinedReads);
+    if (fallback === undefined) return undefined;
+    return `bbl::js::number_from_optional(${value.cpp}${fallback ? `, ${fallback}` : ""})`;
 }
 
 export class StaticEvaluator {
@@ -612,23 +643,16 @@ export class StaticEvaluator {
                 return undefined;
             }
             this.onJsData();
-            const absence = absenceKind(
-                this.checker,
-                value,
-                unwrapExpression(expression),
-            );
-            if (absence === "either")
+            const compiled =
+                numberFromOptionalCpp(
+                    this.checker,
+                    value,
+                    unwrapExpression(expression),
+                ) ??
                 this.fail(
                     expression,
                     "Numeric coercion requires distinguishable null and undefined storage.",
                 );
-            const fallback =
-                absence === "null"
-                    ? ", 0.0"
-                    : typeof absence === "object"
-                      ? `, (${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
-                      : "";
-            const compiled = `bbl::js::number_from_optional(${value.cpp}${fallback})`;
             return precision === "float"
                 ? `static_cast<float>(${compiled})`
                 : compiled;
@@ -756,12 +780,14 @@ export class StaticEvaluator {
                     unwrapped.operand,
                     `Unary numeric input requires a number or string, received ${operand.kind}.`,
                 );
-            return `(${operator}${this.castNumber(operand, precision)})`;
+            const cast = this.castNumber(operand, precision);
+            // `-` before a negative spelling must not read as a decrement.
+            return `(${operator}${cast.startsWith(operator) ? " " : ""}${cast})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
                 const value = this.resolveValue(unwrapped);
-                if (value.kind === "number") {
+                if (isNumericValue(value)) {
                     return this.castNumber(value, precision);
                 }
                 this.fail(
@@ -828,10 +854,15 @@ export class StaticEvaluator {
                 ts.SyntaxKind.AsteriskAsteriskToken
             ) {
                 const [left, right] = this.numericOperands(unwrapped);
-                const compiled = `std::pow(${left}, ${right})`;
+                const power = exponentiationCall(
+                    left,
+                    right,
+                    this.staticNumberValue(unwrapped.right),
+                );
+                if (power.jsData) this.onJsData();
                 return precision === "float"
-                    ? `static_cast<float>(${compiled})`
-                    : compiled;
+                    ? `static_cast<float>(${power.cpp})`
+                    : power.cpp;
             }
             if (JS_BITWISE_FUNCTIONS.has(unwrapped.operatorToken.kind)) {
                 const [left, right] = this.numericOperands(unwrapped);
@@ -860,20 +891,17 @@ export class StaticEvaluator {
                 ? `static_cast<float>(${compiled})`
                 : compiled;
         }
-        // The constants a float sink has a single-precision spelling for
-        // are spelled that way; every other `Math` constant reads at
-        // double width through the property arm below.
-        const mathConstant = mathMemberAccess(unwrapped, this.libraryGlobal);
+        // A `Math` constant is its double; a float sink takes the
+        // single-precision spelling where the runtime has one.
         const numericConstant = numberConstant(unwrapped, this.libraryGlobal);
         if (numericConstant !== undefined) {
             const cpp = numberConstantValue(numericConstant).cpp;
             return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
         }
-        const constant =
-            mathConstant && MATH_CONSTANTS.get(mathConstant.name.text);
-        if (constant?.floatCpp !== undefined) {
+        const constant = mathConstantAccess(unwrapped, this.libraryGlobal);
+        if (constant) {
             return precision === "float"
-                ? constant.floatCpp
+                ? (constant.floatCpp ?? cppFloatLiteral(constant.value))
                 : cppDoubleLiteral(constant.value);
         }
         const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
@@ -1061,7 +1089,6 @@ export class StaticEvaluator {
         ) {
             return false;
         }
-        const mathConstant = mathMemberAccess(unwrapped, this.libraryGlobal);
         const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
         return (
             ts.isNumericLiteral(unwrapped) ||
@@ -1091,9 +1118,7 @@ export class StaticEvaluator {
                     ts.SyntaxKind.BarBarToken,
                 ].includes(unwrapped.operatorToken.kind) &&
                 !this.isBooleanExpression(unwrapped)) ||
-            (mathConstant !== undefined &&
-                (mathConstant.name.text === "PI" ||
-                    mathConstant.name.text === "SQRT1_2")) ||
+            mathConstantAccess(unwrapped, this.libraryGlobal) !== undefined ||
             (mathCall?.name === "sqrt" && mathCall.call.arguments.length === 1)
         );
     }

@@ -95,7 +95,9 @@ export interface ShaderMaterialContext
             | "compileShaderSource"
             | "compileStringLiteral"
             | "bindings"
+            | "dataLowerer"
             | "emit"
+            | "fail"
         > {}
 
 export function compileShaderMaterialOptions(
@@ -722,12 +724,15 @@ function compileShaderUniformSignatures(
             const candidates = ts.isArrayLiteralExpression(resolvedDefault)
                 ? [...resolvedDefault.elements]
                 : [resolvedDefault];
-            const staticValues = candidates.map((entry) =>
-                staticNumber(context, entry),
-            );
-            if (
+            // Only a literal of the uniform's own lanes can fold; a spread
+            // or another value is compiled once, below.
+            const staticValues =
                 candidates.length === componentCount &&
-                staticValues.every(
+                !candidates.some(ts.isSpreadElement)
+                    ? candidates.map((entry) => staticNumber(context, entry))
+                    : undefined;
+            if (
+                staticValues?.every(
                     (value): value is number => value !== undefined,
                 )
             ) {
@@ -981,11 +986,35 @@ export function compileShaderUniformComponents(
     const resolved = context.resolveStaticExpression(expression);
     if (
         ts.isArrayLiteralExpression(resolved) &&
-        resolved.elements.length === count
+        resolved.elements.length === count &&
+        !resolved.elements.some(ts.isSpreadElement)
     ) {
         return resolved.elements.map((element) =>
             context.compileNumber(element),
         );
+    }
+    // `[...rgb, 1]`: each element in order, a numeric tuple spread as its
+    // lanes.
+    if (
+        ts.isArrayLiteralExpression(resolved) &&
+        resolved.elements.some(ts.isSpreadElement)
+    ) {
+        const lanes = context.dataLowerer.spreadLaneValues(
+            resolved.elements,
+            (element) =>
+                context.bindings.pinValueToTemporary(
+                    context.compileValue(element),
+                    "uniform_lane",
+                    element,
+                ),
+            "A shader uniform value spreads a numeric tuple.",
+        );
+        if (lanes.length !== count)
+            context.fail(
+                expression,
+                `Expected a ${count}-component array value.`,
+            );
+        return lanes.map(({ value }) => context.castNumber(value, "float"));
     }
     // A tuple's lanes are double values -- a `?? [0.7, 0.82, 0.92]` default
     // lowers each literal as one -- while the setter takes floats, and the

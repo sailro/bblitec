@@ -65,7 +65,10 @@ import {
     type SurveyReport,
 } from "./compiler/survey.js";
 import { isJsonValue } from "./compiler/json-bridge.js";
-import type { DynamicBindingStorage } from "./compiler/dynamic-binding-storage.js";
+import {
+    requireDynamicBindingStorage,
+    type DynamicBindingStorage,
+} from "./compiler/dynamic-binding-storage.js";
 import {
     mergeNativeRecordStorage,
     type NativeRecordStorageDemand,
@@ -222,9 +225,7 @@ import { HandleCollections } from "./compiler/handle-collections.js";
 import {
     UserFunctionLowerer,
     aliasedMutationScan,
-    callArgumentIsReadOnly,
     isSupportedFunction,
-    parameterIsReadOnly,
     resolveFunctionDeclaration,
     retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
@@ -232,7 +233,13 @@ import {
     type AliasedMutationScan,
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
-import { libraryArgumentIsReadOnly } from "./compiler/library-call-effects.js";
+import {
+    callArgumentIsReadOnly,
+    libraryArgumentIsReadOnly,
+    parameterIsReadOnly,
+} from "./compiler/parameter-effects.js";
+import { recordComponents } from "./compiler/record-components.js";
+import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
     bindingNameIdentifiers,
@@ -620,7 +627,8 @@ function compileSourceApplication(
                 if (
                     previous &&
                     previous.proxy === merged.proxy &&
-                    previous.unionStorage === merged.unionStorage
+                    (previous.joins?.length ?? 0) ===
+                        (merged.joins?.length ?? 0)
                 )
                     return false;
                 ownedRecords.set(request.demand.identity, merged);
@@ -797,7 +805,10 @@ class Compiler implements LoweringServices {
               contextualVoid?: boolean;
               engineScopeDepth: number;
           } & NativeFunctionBodyOptions)
-        | { kind: "inline"; wrapped: boolean; engineScopeDepth: number }
+        | {
+              kind: "inline";
+              engineScopeDepth: number;
+          }
     > = emissionArray([]);
     private readonly synchronousCleanupFrames: Array<object | undefined> =
         emissionArray([]);
@@ -1215,7 +1226,18 @@ class Compiler implements LoweringServices {
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
-        this.dataTypes.prepareRecordLayouts(this.ownedRecords.values());
+        this.dataTypes.prepareRecordComponents(
+            recordComponents(
+                this.checker,
+                [...this.ownedRecords.values()].flatMap((demand) =>
+                    (demand.joins ?? []).map((join) => ({
+                        ...join,
+                        source: demand.type,
+                    })),
+                ),
+            ),
+            this.ownedRecords.values(),
+        );
         for (const demand of this.ownedRecords.values())
             this.dataTypes.predeclareOwnedRecord(demand);
         for (const declaration of this.dynamicBindings.keys()) {
@@ -1306,6 +1328,19 @@ class Compiler implements LoweringServices {
                     if (dataType) {
                         this.dataTypes.markStoredObjectReferences(dataType);
                     }
+                } else if (
+                    ts.isObjectLiteralExpression(node) &&
+                    homeObjectMembers(node).size > 0
+                ) {
+                    // A method's or accessor's `this` is the object the
+                    // literal creates.
+                    const dataType = this.dataTypes.fromTsType(
+                        this.checker.getContextualType(node) ??
+                            this.checker.getTypeAtLocation(node),
+                        node,
+                    );
+                    if (dataType?.kind === "struct")
+                        this.dataTypes.markStoredObjectReferences(dataType);
                 }
             });
         for (const source of this.sourceFiles()) {
@@ -2123,6 +2158,13 @@ class Compiler implements LoweringServices {
 
     public emitAssignment(expression: ts.BinaryExpression): void {
         traceSourceNode(expression.left);
+        this.dataLowerer.withStoreKeysHeld(expression, () =>
+            this.emitStore(expression),
+        );
+    }
+
+    /** `emitAssignment` once its target's keys are read. */
+    private emitStore(expression: ts.BinaryExpression): void {
         if (emitWindowLocationAssignment(this.dataLowerer, expression)) return;
         this.checkNodeGeometryMutation(expression);
         const input = this.compileNodeInputMutation(expression);
@@ -2211,6 +2253,9 @@ class Compiler implements LoweringServices {
             return;
         }
         if (sourceValue?.kind === "tuple" && !fresh) {
+            // A named literal array takes one native array, which the alias shares.
+            if (ts.isIdentifier(right))
+                requireDynamicBindingStorage(this.checker, right, "array");
             this.fail(
                 source,
                 "Assigning an array alias requires native collection storage.",
@@ -2443,6 +2488,8 @@ class Compiler implements LoweringServices {
     }
 
     public compileValue(expression: ts.Expression): Value {
+        const assigned = this.dataLowerer.assignedValue(expression);
+        if (assigned) return assigned;
         traceSourceNode(expression);
         this.asyncActivations.requirePendingActivationRealm(expression);
         this.checkNodeGeometryMutation(expression);
@@ -3327,7 +3374,11 @@ class Compiler implements LoweringServices {
     }
 
     public compileBoolean(expression: ts.Expression): string {
-        return this.evaluator.compileBoolean(expression);
+        return (
+            this.dataLowerer.assignedCondition(expression, () =>
+                this.compileBoolean(expression),
+            ) ?? this.evaluator.compileBoolean(expression)
+        );
     }
 
     /** Nonzero while a frame callback's statements are being lowered. */
@@ -3361,7 +3412,10 @@ class Compiler implements LoweringServices {
         expression: ts.Expression,
         precision: "float" | "double" = "float",
     ): string {
-        return this.evaluator.compileNumber(expression, precision);
+        return (
+            this.dataLowerer.assignedNumber(expression, precision) ??
+            this.evaluator.compileNumber(expression, precision)
+        );
     }
 
     public compileEnumSwitchLabel(
@@ -5033,11 +5087,24 @@ class Compiler implements LoweringServices {
         const expression = only.expression;
         const leading = statements.slice(0, -1);
         const earlyReturn = firstReturn(leading);
-        if (earlyReturn)
-            this.fail(
-                earlyReturn,
-                "A getter with early returns requires a represented result flow.",
-            );
+        let resultType: DataType | undefined;
+        if (earlyReturn) {
+            // Early returns are function control flow: the body runs as a
+            // native lambda of the getter's represented result type.
+            const signature =
+                this.checker.getSignatureFromDeclaration(accessor);
+            resultType = signature
+                ? this.dataTypes.fromTsType(
+                      this.checker.getReturnTypeOfSignature(signature),
+                      accessor,
+                  )
+                : undefined;
+            if (!resultType)
+                this.fail(
+                    earlyReturn,
+                    "A getter with early returns requires a represented result flow.",
+                );
+        }
         return this.withRecordScopes(owner, () => {
             if (leading.length)
                 this.bindings.pushScope(this.allocateUserFunctionPrefix());
@@ -5048,10 +5115,20 @@ class Compiler implements LoweringServices {
             // identity in classInstances is not a reliable dispatch guard.
             this.defineThis(receiver ?? owner);
             try {
-                emitReachableStatements(this, leading);
                 // A getter is an evaluation, even when its return happens
                 // to lower to a field read. Optional chains must consume it
                 // once and keep any nested method calls behind their guard.
+                if (resultType)
+                    return {
+                        ...this.userFunctions.emitValueLambda(
+                            this,
+                            statements,
+                            this.dataTypes.ownReturnedArray(resultType),
+                            false,
+                        ),
+                        impure: true,
+                    };
+                emitReachableStatements(this, leading);
                 return { ...this.compileValue(expression), impure: true };
             } finally {
                 this.defineThis(previousThis);
@@ -6160,16 +6237,27 @@ class Compiler implements LoweringServices {
         if (binding) this.useNativeBinding(binding);
     }
 
-    public beginInlineFrame(wrapped: boolean): void {
+    public emitInlinedBody<T>(
+        declaration: ts.SignatureDeclaration,
+        returns: "break" | "label" | undefined,
+        emitBody: () => T,
+    ): T {
         this.returnFrames.push({
             kind: "inline",
-            wrapped,
             engineScopeDepth: this.bindings.variableScopes.length,
         });
-    }
-
-    public endInlineFrame(): void {
-        this.validateResourceLoopReturn(this.returnFrames.pop());
+        try {
+            return returns
+                ? this.statements.emitInlinedBody(
+                      this,
+                      declaration,
+                      returns,
+                      emitBody,
+                  )
+                : emitBody();
+        } finally {
+            this.validateResourceLoopReturn(this.returnFrames.pop());
+        }
     }
 
     private checkpointResourceConstruction(): ResourceConstructionCheckpoint {
@@ -6238,11 +6326,6 @@ class Compiler implements LoweringServices {
     public activeNativeReturnType(): DataType | "void" | undefined {
         const top = this.returnFrames.at(-1);
         return top?.kind === "native" ? top.type : undefined;
-    }
-
-    public activeInlineWrapper(): boolean {
-        const top = this.returnFrames.at(-1);
-        return top?.kind === "inline" && top.wrapped;
     }
 
     public emitNativeReturn(statement: ts.ReturnStatement): void {
@@ -6486,7 +6569,8 @@ class Compiler implements LoweringServices {
                 code: `co_return [&]() -> ${type} { ${statement} }();`,
                 transfer: "suspend",
             });
-        } else this.emit(statement);
+        } else
+            this.emit({ kind: "control", code: statement, transfer: "throw" });
     }
 
     public emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean {
@@ -7490,6 +7574,7 @@ class Compiler implements LoweringServices {
         dataType: DataType & { kind: "function" },
         owner?: Value,
         prototypeMethod = false,
+        receiver?: Value,
     ): string {
         if (prototypeMethod && owner?.kind !== "record")
             this.fail(
@@ -7616,6 +7701,7 @@ class Compiler implements LoweringServices {
                 dataType,
                 effectiveOwner,
                 identityCpp,
+                receiver,
             );
             this.registerNativeBinding(cpp);
             return cpp;
@@ -7624,7 +7710,7 @@ class Compiler implements LoweringServices {
             return compile();
         }
         return this.withRecordScopes(effectiveOwner, () => {
-            if (!effectiveOwner.recordProperties) {
+            if (!effectiveOwner.recordProperties && !receiver) {
                 // A scope-only owner carries the captured variables of an
                 // inline literal and no receiver; `this` stays whatever the
                 // literal was written under.
@@ -7636,7 +7722,7 @@ class Compiler implements LoweringServices {
             // body would resolve its fields against whichever receiver the
             // enclosing inlined method happened to leave bound.
             const previousThis = this.thisInstance;
-            this.defineThis(effectiveOwner);
+            this.defineThis(receiver ?? effectiveOwner);
             try {
                 return compile();
             } finally {
@@ -7650,6 +7736,7 @@ class Compiler implements LoweringServices {
         accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
         valueType: DataType,
         receiverType?: DataType<"struct">,
+        home?: Value,
     ): string {
         const getter = ts.isGetAccessorDeclaration(accessor);
         const valueCpp = this.dataTypes.cppType(valueType);
@@ -7672,7 +7759,7 @@ class Compiler implements LoweringServices {
                           ),
                       ],
                   }
-                : undefined;
+                : home;
             if (getter) {
                 const value = this.compileRecordGetter(
                     owner,

@@ -441,11 +441,17 @@ export interface LoweringServices {
         emitBody: () => void,
         byReference?: ClosureBorrowing,
     ): CapturedClosure;
-    beginInlineFrame(wrapped: boolean): void;
-    endInlineFrame(): void;
+    /**
+     * An inlined body, in its own return frame, whose bare early returns
+     * break out of it or jump past it; `undefined` when it has none.
+     */
+    emitInlinedBody<T>(
+        declaration: ts.SignatureDeclaration,
+        returns: "break" | "label" | undefined,
+        emitBody: () => T,
+    ): T;
     trackResourceLoopEarlyReturn(condition: ts.Expression): void;
     activeNativeReturnType(): DataType | "void" | undefined;
-    activeInlineWrapper(): boolean;
     emitNativeReturn(statement: ts.ReturnStatement): void;
     emitNativeYield(expression: ts.YieldExpression): void;
     activeGeneratorType(): DataType<"iterator"> | undefined;
@@ -568,16 +574,20 @@ export interface LoweringServices {
         },
         owner?: Value,
         prototypeMethod?: boolean,
+        /** What a non-arrow method's `this` reads, when not the owner record itself. */
+        receiver?: Value,
     ): string;
     /**
      * A record accessor as the stored callback of an accessor-backed field:
-     * a getter returns `valueType`, a setter takes it.
+     * a getter returns `valueType`, a setter takes it. Its `this` is the
+     * slot's receiver (`receiverType`), else `home`, else the owner record.
      */
     compileStoredAccessor(
         owner: Value,
         accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
         valueType: DataType,
         receiverType?: DataType<"struct">,
+        home?: Value,
     ): string;
     compilePredicateWithValues(
         declaration:
