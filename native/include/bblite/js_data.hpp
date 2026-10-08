@@ -1463,18 +1463,26 @@ struct RegExpReplacement {
  */
 class RegExp {
 public:
+    RegExp() = default;
     RegExp(std::string source, bool global, bool ignore_case, bool unicode = false)
         : state_(std::make_shared<State>(source, global, ignore_case, unicode)) {}
 
-    [[nodiscard]] double& last_index() const { return state_->last_index; }
+    [[nodiscard]] explicit operator bool() const { return static_cast<bool>(state_); }
+    [[nodiscard]] const void* get() const { return state_.get(); }
+    [[nodiscard]] const void* identity() const { return state_.get(); }
+    friend bool operator==(const RegExp& left, const RegExp& right) {
+        return left.state_ == right.state_;
+    }
 
-    [[nodiscard]] Nullable<Array<std::string>> exec(const std::string& input) {
+    [[nodiscard]] double& last_index() const { return state().last_index; }
+
+    [[nodiscard]] Nullable<Array<std::string>> exec(const std::string& input) const {
         const auto units = wide(input);
-        const auto requested = state_->global && !std::isnan(last_index())
+        const auto requested = state().global && !std::isnan(last_index())
                                    ? std::max(0.0, std::trunc(last_index()))
                                    : 0.0;
         if (requested > static_cast<double>(units.size())) {
-            if (state_->global)
+            if (state().global)
                 last_index() = 0.0;
             return std::nullopt;
         }
@@ -1482,7 +1490,7 @@ public:
         std::wsmatch match;
         const auto position = search(units, start, match);
         if (!position) {
-            if (state_->global)
+            if (state().global)
                 last_index() = 0.0;
             return std::nullopt;
         }
@@ -1491,7 +1499,7 @@ public:
         for (const auto& group : match) {
             groups.push_back(group.matched ? narrow(group.str()) : std::string{});
         }
-        if (state_->global) {
+        if (state().global) {
             last_index() = static_cast<double>(*position + match.length());
         }
         return groups;
@@ -1500,7 +1508,7 @@ public:
     [[nodiscard]] Array<std::string> split(const std::string& input) const {
         Array<std::string> result;
         const auto units = wide(input);
-        if (state_->unicode) {
+        if (state().unicode) {
             // String.prototype[Symbol.split]: a sticky match at each code point.
             std::wsmatch match;
             if (units.empty()) {
@@ -1527,7 +1535,7 @@ public:
             result.push_back(narrow(units.substr(previous)));
             return result;
         }
-        std::wsregex_token_iterator part(units.begin(), units.end(), state_->expression, -1);
+        std::wsregex_token_iterator part(units.begin(), units.end(), state().expression, -1);
         const std::wsregex_token_iterator end;
         for (; part != end; ++part)
             result.push_back(narrow(part->str()));
@@ -1537,7 +1545,7 @@ public:
     [[nodiscard]] Nullable<Array<std::string>> match(const std::string& input) const {
         Array<std::string> result;
         const auto units = wide(input);
-        if (state_->global)
+        if (state().global)
             last_index() = 0.0;
         std::size_t start = 0;
         std::wsmatch found;
@@ -1545,7 +1553,7 @@ public:
             const auto position = search(units, start, found);
             if (!position)
                 break;
-            if (state_->global)
+            if (state().global)
                 result.push_back(narrow(found.str()));
             else {
                 result.reserve(found.size());
@@ -1562,7 +1570,7 @@ public:
     }
 
     [[nodiscard]] Array<Array<std::string>> match_all(const std::string& input) const {
-        if (!state_->global) {
+        if (!state().global) {
             throw std::runtime_error("String.matchAll requires a global RegExp.");
         }
         Array<Array<std::string>> result;
@@ -1592,22 +1600,22 @@ public:
 
     [[nodiscard]] std::string replace(const std::string& input,
                                       const std::string& replacement) const {
-        if (state_->unicode)
+        if (state().unicode)
             return replace_with(input, [&replacement](const RegExpReplacement& match) {
                 return substitution(match, replacement);
             });
         const auto units = wide(input);
-        if (state_->global)
+        if (state().global)
             last_index() = 0.0;
-        return narrow(std::regex_replace(units, state_->expression, wide(replacement),
-                                         state_->global ? std::regex_constants::format_default
+        return narrow(std::regex_replace(units, state().expression, wide(replacement),
+                                         state().global ? std::regex_constants::format_default
                                                         : std::regex_constants::format_first_only));
     }
 
     template <typename Callback>
     [[nodiscard]] std::string replace_with(const std::string& input, Callback&& callback,
                                            bool require_global = false) const {
-        if (require_global && !state_->global)
+        if (require_global && !state().global)
             throw std::runtime_error("String.replaceAll requires a global RegExp.");
         // Collect before invoking any callback: callback effects cannot change the match list.
         const auto matches = replacements(input);
@@ -1624,7 +1632,7 @@ public:
         return string_from_code_units(output);
     }
 
-    [[nodiscard]] bool test(const std::string& input) { return exec(input).has_value(); }
+    [[nodiscard]] bool test(const std::string& input) const { return exec(input).has_value(); }
 
 private:
     static std::wstring wide(const std::string& input) {
@@ -1649,9 +1657,15 @@ private:
     };
     std::shared_ptr<State> state_;
 
+    [[nodiscard]] State& state() const {
+        if (!state_)
+            throw_nullish_access();
+        return *state_;
+    }
+
     /** AdvanceStringIndex: one code point in unicode mode, one unit otherwise. */
     std::size_t advance(const std::wstring& input, std::size_t index) const {
-        return state_->unicode && index + 1 < input.size() && lead_surrogate(input[index]) &&
+        return state().unicode && index + 1 < input.size() && lead_surrogate(input[index]) &&
                        trail_surrogate(input[index + 1])
                    ? index + 2
                    : index + 1;
@@ -1663,17 +1677,17 @@ private:
                                           : std::regex_constants::match_prev_avail) |
                            std::regex_constants::match_continuous;
         return std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(position),
-                                 input.cend(), match, state_->expression, flags);
+                                 input.cend(), match, state().expression, flags);
     }
 
     /** The first match at or after `start`, as its UTF-16 index. */
     std::optional<std::size_t> search(const std::wstring& input, std::size_t start,
                                       std::wsmatch& match) const {
-        if (!state_->unicode) {
+        if (!state().unicode) {
             const auto flags = start == 0 ? std::regex_constants::match_default
                                           : std::regex_constants::match_prev_avail;
             if (!std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(start),
-                                   input.cend(), match, state_->expression, flags))
+                                   input.cend(), match, state().expression, flags))
                 return std::nullopt;
             return start + static_cast<std::size_t>(match.position());
         }
@@ -1741,7 +1755,7 @@ private:
     std::vector<RegExpReplacement> replacements(const std::string& input) const {
         std::vector<RegExpReplacement> results;
         const auto units = wide(input);
-        if (state_->global)
+        if (state().global)
             last_index() = 0.0;
         std::size_t start = 0;
         std::wsmatch match;
@@ -1755,7 +1769,7 @@ private:
                 result.groups.push_back(group.matched ? Nullable<std::string>(narrow(group.str()))
                                                       : std::nullopt);
             results.push_back(std::move(result));
-            if (!state_->global)
+            if (!state().global)
                 break;
             start = *position + static_cast<std::size_t>(match.length());
             if (match.length() == 0)

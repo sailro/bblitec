@@ -353,6 +353,7 @@ export const scalarsSinks: DataSinkOperations<
     | "promise"
     | "storage"
     | "date"
+    | "regexp"
     | "date-time-format"
     | "text-decoder"
     | "text-encoder"
@@ -548,6 +549,7 @@ export const scalarsSinks: DataSinkOperations<
     "list-format": opaqueSink,
     "weak-ref": opaqueSink,
     date: opaqueSink,
+    regexp: opaqueSink,
     number: { expression: expressionNumber, value: valueNumber },
     symbol: sameKindSink("symbol"),
     bigint: sameKindSink("bigint"),

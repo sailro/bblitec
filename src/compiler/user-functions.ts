@@ -3713,8 +3713,13 @@ export class UserFunctionLowerer {
                                         });
                                 } else {
                                     if (!entry.returnType) {
-                                        context.emitExpressionAsStatement(body);
+                                        context.asyncActivations.emitDiscardedReturn(
+                                            body,
+                                        );
                                     } else {
+                                        context.asyncActivations.refuseThenableReturn(
+                                            body,
+                                        );
                                         context.emit({
                                             kind: "control",
                                             code: `return ${compileReturn ? compileReturn(body, entry.returnType) : context.compileForDataSink(body, entry.returnType)};`,
@@ -4625,10 +4630,13 @@ export class UserFunctionLowerer {
                                 transfer: "suspend",
                             });
                         } else if (!bodyResult) {
-                            context.emitExpressionAsStatement(
+                            context.asyncActivations.emitDiscardedReturn(
                                 ir.returnExpression,
                             );
                         } else {
+                            context.asyncActivations.refuseThenableReturn(
+                                ir.returnExpression,
+                            );
                             context.emit({
                                 kind: "control",
                                 code: `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
@@ -5346,7 +5354,9 @@ export class UserFunctionLowerer {
                         : {}),
                 };
             if (discardReturn) {
-                context.emitExpressionAsStatement(ir.returnExpression);
+                context.asyncActivations.emitDiscardedReturn(
+                    ir.returnExpression,
+                );
                 return { kind: "void", cpp: "" };
             }
             return this.lowerReturnedValue(
@@ -5534,7 +5544,9 @@ export class UserFunctionLowerer {
                 if (ts.isReturnStatement(statement)) {
                     if (!statement.expression) return { kind: "dynamic" };
                     if (discardReturn) {
-                        context.emitExpressionAsStatement(statement.expression);
+                        context.asyncActivations.emitDiscardedReturn(
+                            statement.expression,
+                        );
                         return {
                             kind: "returned",
                             value: { kind: "void", cpp: "" },

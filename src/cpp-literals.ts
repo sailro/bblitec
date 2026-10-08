@@ -108,7 +108,7 @@ export function doubleLiteral(value: number): string {
             )}).`,
         );
     }
-    const text = String(value);
+    const text = Object.is(value, -0) ? "-0" : String(value);
     return text.includes(".") || /e/i.test(text) ? text : `${text}.0`;
 }
 

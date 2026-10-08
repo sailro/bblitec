@@ -1582,7 +1582,6 @@ export type ValueKind =
     | "render-target-texture"
     | "render-texture"
     | "record"
-    | "regexp"
     | "scene"
     | "surface"
     | "frame-graph-context"
@@ -2181,8 +2180,8 @@ export interface ValueFields {
     requiresApplicationRealm?: true;
     /** Known RegExp grammar determines the positional replacement callback arguments. */
     regexpCaptureCount?: number;
-    /** A `u`-flag RegExp, whose runtime pattern matches whole code points. */
-    regexpUnicode?: true;
+    /** Known `u` flag; absent when storage erased the pattern's grammar. */
+    regexpUnicode?: boolean;
     callbackDeclaration?:
         | ts.Identifier
         | ts.FunctionDeclaration

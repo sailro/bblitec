@@ -31,6 +31,8 @@ interface AsyncActivationContext extends Pick<
     | "decreaseIndent"
     | "emit"
     | "emitCapturedStatements"
+    | "emitDiscardedValue"
+    | "emitExpressionAsStatement"
     | "fail"
     | "increaseIndent"
     | "isRuntimeResourceConstruction"
@@ -198,8 +200,34 @@ export class AsyncActivations {
     }
 
     /** Refuses a custom thenable before an async result converts. */
-    public refuseThenable(value: Value, node: ts.Node): void {
+    public refuseThenable(value: Value | undefined, node: ts.Node): void {
         this.context.asyncLowerer.refuseThenable(value, node);
+    }
+
+    private isAsyncReturn(expression: ts.Expression): boolean {
+        const owner = ts.findAncestor(expression.parent, ts.isFunctionLike);
+        return (
+            owner !== undefined &&
+            (ts.getCombinedModifierFlags(owner) & ts.ModifierFlags.Async) !== 0
+        );
+    }
+
+    /** Refuse source thenables before a typed return sink erases their shape. */
+    public refuseThenableReturn(expression: ts.Expression): void {
+        if (this.isAsyncReturn(expression))
+            this.refuseThenable(undefined, expression);
+    }
+
+    /** An ignored async result still passes through promise resolution. */
+    public emitDiscardedReturn(expression: ts.Expression): void {
+        if (!this.isAsyncReturn(expression)) {
+            this.context.emitExpressionAsStatement(expression);
+            return;
+        }
+        this.refuseThenable(undefined, expression);
+        const value = this.context.compileValue(expression);
+        this.refuseThenable(value, expression);
+        this.context.emitDiscardedValue(value);
     }
 
     public compileAsyncReturn(

@@ -872,7 +872,7 @@ export class ExpressionLowerer {
                         declaration,
                         value,
                     );
-                return value.kind === "regexp"
+                return value.dataType?.kind === "regexp"
                     ? this.context.nativeEmission.materializeStaticNativeValue(
                           unwrapped,
                           value,
@@ -1100,7 +1100,9 @@ export class ExpressionLowerer {
                 }
                 this.context.reachJsData();
                 return {
-                    kind: "regexp",
+                    kind: "data",
+                    dataType: { kind: "regexp" },
+                    regexpUnicode: false,
                     ...(patternValue.staticString !== undefined
                         ? {
                               regexpCaptureCount: regexpCaptureCount(
@@ -6276,9 +6278,10 @@ export class ExpressionLowerer {
             return this.context.fail(node, translated.refusal);
         this.context.reachJsData();
         return {
-            kind: "regexp",
+            kind: "data",
+            dataType: { kind: "regexp" },
             regexpCaptureCount: regexpCaptureCount(translated.pattern),
-            ...(unicode ? { regexpUnicode: true as const } : {}),
+            regexpUnicode: unicode,
             cpp:
                 `bbl::js::RegExp(${this.context.cppString(translated.pattern)}, ` +
                 `${flags.includes("g") ? "true" : "false"}, ` +
@@ -6705,20 +6708,25 @@ export class ExpressionLowerer {
         );
         if (staticContainerMethod) return staticContainerMethod;
         const regexpExpression = this.context.unwrap(callee.expression);
-        const regexpType =
-            this.context.checker.getTypeAtLocation(regexpExpression);
+        const regexpType = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(callee.expression),
+        );
         const boundRegexp = ts.isIdentifier(regexpExpression)
             ? this.context.bindings.lookupOptional(regexpExpression)
             : undefined;
         const regexpOwner =
-            boundRegexp?.kind === "regexp"
+            boundRegexp?.dataType?.kind === "regexp"
                 ? boundRegexp
                 : regexpType.symbol?.name === "RegExp" ||
                     regexpExpression.kind ===
                         ts.SyntaxKind.RegularExpressionLiteral
-                  ? this.compileValue(regexpExpression)
+                  ? this.context.dataLowerer.narrowOptional(
+                        this.compileValue(callee.expression),
+                        callee.expression,
+                        true,
+                    )
                   : undefined;
-        if (regexpOwner?.kind === "regexp") {
+        if (regexpOwner?.dataType?.kind === "regexp") {
             if (callee.name.text !== "exec" && callee.name.text !== "test") {
                 this.context.fail(
                     callee.name,
@@ -6726,6 +6734,13 @@ export class ExpressionLowerer {
                 );
             }
             this.context.expectArgumentCount(call, 1, 1);
+            const owner = ts.isRegularExpressionLiteral(regexpExpression)
+                ? regexpOwner
+                : this.context.bindings.pinValueToTemporary(
+                      regexpOwner,
+                      "regexp_owner",
+                      callee.expression,
+                  );
             const inputValue = this.compileValue(argumentAt(call, 0));
             const input = this.context.dataLowerer.compileKnownValueForSink(
                 inputValue,
@@ -6750,12 +6765,12 @@ export class ExpressionLowerer {
                 }
                 return {
                     kind: "boolean",
-                    cpp: `${regexpOwner.cpp}.test(${input})`,
+                    cpp: `${owner.cpp}.test(${input})`,
                 };
             }
             return {
                 kind: "data",
-                cpp: `${regexpOwner.cpp}.exec(${input})`,
+                cpp: `${owner.cpp}.exec(${input})`,
                 dataType: {
                     kind: "optional",
                     inner: {
