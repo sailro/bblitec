@@ -14333,11 +14333,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return undefined;
             const cpp =
                 this.context.allocateTemporaryCppName("destructure_record");
+            this.context.reachJsData();
             this.context.emit({
                 kind: "declaration",
                 type: "const auto",
                 name: cpp,
-                initializer: owner.cpp,
+                initializer: `bbl::js::snapshot_value(${owner.cpp})`,
             });
             const retained = {
                 ...owner,

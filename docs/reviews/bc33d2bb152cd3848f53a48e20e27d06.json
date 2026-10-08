@@ -41,6 +41,10 @@
     {
       "summary": "Await and async return adoption share the existing wrapper traversal and one contextual-storage boundary.",
       "applied": true
+    },
+    {
+      "summary": "Property-assignment receiver retention uses the existing snapshot_value helper to state its intentional owning copy or move.",
+      "applied": true
     }
   ]
 }

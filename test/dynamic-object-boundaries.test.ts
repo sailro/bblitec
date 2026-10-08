@@ -319,6 +319,12 @@ check(
     host.child.count += mutate();
     if (reads !== 2 || previous.count !== 107 || rows[0]!.count !== 200)
         throw new Error('compound value before right side');
+    function update(target: { count: number }): void { target.count = mutate(); }
+    const writers: Array<typeof update> = [update];
+    const borrowed = rows[0]!;
+    writers[0]!(borrowed);
+    if (borrowed.count !== 7 || rows[0] === borrowed || rows[0]!.count !== 200)
+        throw new Error('borrowed receiver before right side');
 `,
 );
 
