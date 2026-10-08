@@ -1,0 +1,50 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Promise identity activation uses the shared default-library provenance classifier.",
+      "applied": true
+    },
+    {
+      "summary": "Runtime delete key selection reuses its literal-union proof without a redundant filter.",
+      "applied": true
+    },
+    {
+      "summary": "Owned JSON assignment and rest copy ordered entries directly; native getter views retain key snapshots and presence checks.",
+      "applied": true
+    },
+    {
+      "summary": "Identity comparison observations reuse validated operand types without repeated checker queries or union walks.",
+      "applied": true
+    },
+    {
+      "summary": "Length-property provenance uses the shared named symbol reader.",
+      "applied": true
+    },
+    {
+      "summary": "Reached Promise observations reuse the program index; obsolete producer scans and unused context dependencies are removed.",
+      "applied": true
+    },
+    {
+      "summary": "Promise consumer checks iterate the existing Set without allocating an array per expression.",
+      "applied": true
+    },
+    {
+      "summary": "Iterator result absence uses the existing null-only slot proof and one owned-present Nullable factory.",
+      "applied": true
+    },
+    {
+      "summary": "Await and async return adoption share the existing wrapper traversal and one contextual-storage boundary.",
+      "applied": true
+    },
+    {
+      "summary": "Property-assignment receiver retention uses the existing snapshot_value helper to state its intentional owning copy or move.",
+      "applied": true
+    }
+  ]
+}

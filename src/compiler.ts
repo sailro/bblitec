@@ -2190,9 +2190,14 @@ class Compiler implements LoweringServices {
         if (
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
             ts.isPropertyAccessExpression(left) &&
-            this.resolveRecordValue(left.expression)?.recordSetters?.[
-                left.name.text
-            ]
+            this.probeEmission(
+                // The selected property writer evaluates this receiver.
+                () =>
+                    this.resolveRecordValue(left.expression)?.recordSetters?.[
+                        left.name.text
+                    ],
+                () => false,
+            )
         ) {
             emitPropertyAssignment(this, expression);
             return;
@@ -6747,7 +6752,10 @@ class Compiler implements LoweringServices {
         ) {
             const owner = this.unwrap(left.expression);
             if (
-                this.resolveRecordValue(owner)?.cameraVector ||
+                this.probeEmission(
+                    () => this.resolveRecordValue(owner)?.cameraVector,
+                    () => false,
+                ) ||
                 isCameraExpression(this, owner) ||
                 (ts.isPropertyAccessExpression(owner) &&
                     ["target", "position", "upVector"].includes(

@@ -4121,7 +4121,8 @@ export class DeclarationLowerer {
     /**
      * An object pattern over a parsed document: the document is read once,
      * and each binding is the member its key names, itself a document; a
-     * default stands in for an undefined member. A rest element refuses.
+     * default stands in for an undefined member. Rest copies the remaining
+     * own enumerable keys into a fresh document, retaining nested values.
      */
     private bindDocumentPattern(
         pattern: ts.ObjectBindingPattern,
@@ -4133,13 +4134,18 @@ export class DeclarationLowerer {
         );
         const documentType: DataType = { kind: "json" };
         this.context.reachJson();
+        const excluded: string[] = [];
         for (const element of pattern.elements) {
-            if (element.dotDotDotToken)
-                this.context.fail(
-                    element,
-                    "Object rest over a parsed document is not represented.",
+            if (element.dotDotDotToken) {
+                this.bindCopiedDefault(
+                    element.name,
+                    documentType,
+                    `${owner.cpp}.object_rest({${excluded.map(stringLiteral).join(", ")}})`,
                 );
+                continue;
+            }
             const { name, property } = this.bindingProperty(element);
+            excluded.push(property);
             const member = `${owner.cpp}.get(${stringLiteral(property)})`;
             if (element.initializer) {
                 const held =

@@ -206,13 +206,6 @@ test("erased void completion and unrepresented undefined containers refuse", () 
     assert.throws(
         () =>
             compileSource(
-                `const records:Array<{value:undefined}>=[{value:undefined}];delete records[0]!.value;`,
-            ),
-        /delete.*optional|optional.*delete/i,
-    );
-    assert.throws(
-        () =>
-            compileSource(
                 `const records:Array<{value:undefined}>=[{value:undefined}];if(JSON.stringify([records[0]!.value])!=='[null]')throw new Error('array');`,
             ),
         /JSON.stringify serializes a plain-data value/,

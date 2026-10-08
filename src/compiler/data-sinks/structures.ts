@@ -292,10 +292,13 @@ function valueStruct(
         );
     }
     if (
-        value.kind === "json-null" &&
+        (value.kind === "json-null" || value.dataType?.kind === "null") &&
         lowerer.context.dataTypes.isReferenceStruct(dataType.name)
     ) {
-        return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
+        const absent = `${lowerer.context.dataTypes.cppType(dataType)}{}`;
+        return value.dataType?.kind === "null"
+            ? `(static_cast<void>(${value.cpp}), ${absent})`
+            : absent;
     }
     if (
         value.kind === "data" &&

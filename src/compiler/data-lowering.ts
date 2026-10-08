@@ -31,6 +31,7 @@ import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import {
     accessedPropertySymbol,
     CompilerSymbols,
+    declarationInDefaultLibrary,
     declaredSymbol,
     isGlobalUndefined,
     isNullishLiteral,
@@ -38,6 +39,7 @@ import {
     symbolPropertyKey,
 } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
+import { requireObservedPromise } from "./promise-observations.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import {
     absenceKind,
@@ -1989,6 +1991,14 @@ export class DataLowerer {
         const unwrapped = this.context.options.workers
             ? unwrapExpression(expression)
             : this.context.unwrap(expression);
+        // Await creates an owned result temporary. A member read or write
+        // through that result uses its settled storage, never the promise.
+        if (
+            this.context.options.workers &&
+            ts.isAwaitExpression(unwrapped) &&
+            (mode === "read" || throughReceiver)
+        )
+            return this.context.compileValue(unwrapped);
         if (ts.isIdentifier(unwrapped)) {
             const bound =
                 this.context.bindings.lookupOptional(unwrapped) ??
@@ -6764,7 +6774,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private objectIdentityRead(
         expression: ts.Expression,
     ): { readonly cpp: string; readonly read?: Value } | undefined {
-        const unwrapped = this.context.unwrap(expression);
+        const unwrapped = this.context.options.workers
+            ? unwrapExpression(expression)
+            : this.context.unwrap(expression);
         if (isNullishLiteral(this.context.checker, unwrapped)) {
             return { cpp: "nullptr" };
         }
@@ -8795,6 +8807,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.NewExpression,
         expectedType?: DataType,
     ): Value | undefined {
+        requireObservedPromise(this.context, expression);
         const constructor = this.context.libraryGlobal(expression.expression);
         if (
             constructor === undefined ||
@@ -9546,6 +9559,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.Expression,
         dataType: DataType,
     ): string {
+        requireObservedPromise(this.context, expression);
         const assigned =
             this.assignedRights.size === 0
                 ? undefined
@@ -11772,8 +11786,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const recordOwner = ts.isIdentifier(target.expression)
                 ? this.context.bindings.lookupOptional(target.expression)
                 : undefined;
-            const key = this.context.compileValue(target.argumentExpression);
             if (recordOwner?.kind === "record") {
+                const key = this.context.compileValue(
+                    target.argumentExpression,
+                );
                 if (recordOwner.moduleNamespace)
                     this.context.fail(
                         expression,
@@ -11796,9 +11812,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 deleteRecordProperty(recordOwner, key.staticString);
                 return;
             }
-            const owner = this.compileDataPath(target.expression, "read");
+            let owner =
+                this.compileDataPath(target.expression, "read") ??
+                this.context.compileValue(target.expression);
+            if (owner.kind === "data") {
+                if (owner.dataType?.kind === "struct")
+                    this.context.dataTypes.markStoredObjectReferences(
+                        owner.dataType,
+                    );
+                owner = this.context.bindings.pinValueToTemporary(
+                    owner,
+                    "delete_owner",
+                    target.expression,
+                );
+            }
+            const key = pinOperand(
+                this.context,
+                this.context.compileValue(target.argumentExpression),
+                target.argumentExpression,
+                "delete_key",
+            );
             const narrowed =
-                owner?.kind === "data"
+                owner.kind === "data"
                     ? this.narrowOptional(owner, target.expression)
                     : undefined;
             if (narrowed?.dataType?.kind === "map") {
@@ -11854,10 +11889,46 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 return;
             }
+            if (narrowed?.dataType?.kind === "struct") {
+                const receiver = narrowed;
+                const type = narrowed.dataType;
+                const possibleKeys =
+                    keyType.isUnion() &&
+                    keyType.types.every((member) => member.isStringLiteral())
+                        ? new Set(keyType.types.map((member) => member.value))
+                        : undefined;
+                const fields = this.context.dataTypes
+                    .structFields(type.name, target, "accessors")
+                    .filter(
+                        (field) =>
+                            !possibleKeys || possibleKeys.has(field.sourceName),
+                    );
+                const keyCpp = this.compileKnownValueForSink(
+                    key,
+                    { kind: "string" },
+                    target.argumentExpression,
+                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `static_cast<void>(*(${receiver.cpp}));`,
+                });
+                for (const field of fields)
+                    this.emitGuardedStore(
+                        `${keyCpp} == ${this.context.cppString(field.sourceName)}`,
+                        () =>
+                            this.deleteStructField(
+                                receiver,
+                                type,
+                                field.sourceName,
+                                target,
+                            ),
+                    );
+                return;
+            }
         }
         if (ts.isPropertyAccessExpression(target)) {
-            const recordOwner = this.context.resolveRecordValue(
-                target.expression,
+            const recordOwner = this.context.probeEmission(() =>
+                this.context.resolveRecordValue(target.expression),
             );
             if (recordOwner?.kind === "record") {
                 if (recordOwner.moduleNamespace)
@@ -11875,25 +11946,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 deleteRecordProperty(recordOwner, target.name.text);
                 return;
             }
-            // Deleting a property the record lacks changes nothing.
-            const owner = this.compileDataPath(target.expression, "read");
-            if (
-                owner?.kind === "data" &&
-                owner.dataType?.kind === "struct" &&
-                !owner.impure &&
-                isCppPath(owner.cpp) &&
-                this.context.dataTypes.lacksRecordProperty(
-                    owner.dataType.name,
-                    target.name.text,
-                )
-            )
-                return;
+            const owner =
+                this.compileDataPath(target.expression, "read") ??
+                this.context.compileValue(target.expression);
             if (owner?.kind === "data" && isJsonValue(owner)) {
                 this.context.reachJson();
                 this.context.emit({
                     kind: "expression",
                     code: `${owner.cpp}.remove(${this.context.cppString(target.name.text)});`,
                 });
+                return;
+            }
+            if (owner?.dataType?.kind === "struct") {
+                this.deleteStructField(
+                    owner,
+                    owner.dataType,
+                    target.name.text,
+                    target,
+                );
                 return;
             }
             const field = this.compileDataPath(target, "write");
@@ -11925,7 +11995,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         key: string,
         node: ts.Node,
     ): void {
+        if (this.context.dataTypes.lacksRecordProperty(type.name, key)) {
+            if (this.context.dataTypes.isReferenceStruct(type.name))
+                this.context.emit({
+                    kind: "expression",
+                    code: `static_cast<void>(*(${owner.cpp}));`,
+                });
+            else this.context.emitDiscardedValue(owner);
+            return;
+        }
         const field = this.context.dataTypes.structField(type.name, key, node);
+        if (field.accessor)
+            this.context.fail(
+                node,
+                "Deleting an accessor property requires dynamic property descriptors.",
+            );
+        if (!field.optionalProperty) {
+            const demand = this.context.dataTypes.documentRecordDemand(
+                type.name,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
+            this.context.fail(
+                node,
+                `'${key}' is a required field of its type; only an optional field can be deleted.`,
+            );
+        }
         this.deleteSlot(
             this.leafValue(
                 `${owner.cpp}${this.context.dataTypes.isReferenceStruct(type.name) ? "->" : "."}${field.name}`,
@@ -11951,10 +12045,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): void {
         const type = slot.dataType;
         if (
+            optionalProperty &&
+            slot.absenceTagType &&
+            slot.absenceTagStorageCpp
+        ) {
+            this.context.emit({
+                kind: "expression",
+                code: `${slot.absenceTagStorageCpp} = ${this.context.dataTypes.cppType(slot.absenceTagType)}{};`,
+            });
+            this.invalidateStaticElements(slot);
+            return;
+        }
+        if (
             type?.kind !== "optional" &&
             !(
                 optionalProperty &&
                 (type?.kind === "function" ||
+                    type?.kind === "json" ||
                     (type?.kind === "struct" &&
                         this.context.dataTypes.isReferenceStruct(type.name)))
             )
@@ -12295,22 +12402,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             "accessors",
         );
         const common = fields[0]?.type;
-        if (
-            !common ||
-            common.kind === "optional" ||
-            common.kind === "json" ||
-            fields.some((field) => !dataTypesEqual(field.type, common))
-        )
-            this.context.fail(
-                access,
-                "A fixed-field dictionary view requires one common non-nullable field type.",
-            );
         this.context.dataTypes.markStoredObjectReferences(dataType);
         const receiver = this.context.bindings.pinValueToTemporary(
             owner,
             "dictionary_view",
             access.expression,
         );
+        if (
+            !common ||
+            common.kind === "optional" ||
+            common.kind === "json" ||
+            fields.some((field) => !dataTypesEqual(field.type, common))
+        ) {
+            const cpp = this.compileKnownValueForSink(
+                receiver,
+                { kind: "json" },
+                access.expression,
+            );
+            return compileJsonElementRead(
+                this.context,
+                this.leafValue(cpp, { kind: "json" }),
+                access.argumentExpression,
+            );
+        }
         const key = this.compileForSink(access.argumentExpression, {
             kind: "string",
         });
@@ -12618,22 +12732,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             !["boolean", "number", "string", "enum"].includes(type.inner.kind)
         )
             return undefined;
-        // An object contributes only its absent state to `object && bool`;
-        // its present value belongs to the unselected arm, not the bool sink.
-        const absentObject =
+        // A truthy present value contributes only its absent state to `&&`;
+        // this includes unions of object shapes and nonempty literal types.
+        const absentOnly =
             operator === ts.SyntaxKind.AmpersandAmpersandToken &&
-            (this.context.checker.getNonNullableType(
+            presentValuesTruthy(
+                this.context.checker,
                 this.context.checker.getTypeAtLocation(expression.left),
-            ).flags &
-                ts.TypeFlags.Object) !==
-                0;
+            );
         return this.leafValue(
             this.compileLogicalSelection(
                 expression,
                 type,
                 "logical_value",
                 (left) =>
-                    absentObject
+                    absentOnly
                         ? this.context.dataTypes.absentValue(type)
                         : this.compileKnownValueForSink(
                               left,
@@ -13152,50 +13265,65 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ts.isPropertyAccessExpression(left) &&
             left.name.text === "length"
         ) {
-            const owner =
-                this.compileDataPath(left.expression, "write", true) ??
-                (ts.isPropertyAccessExpression(left.expression) &&
-                this.plainDataOwnerChain(left.expression)
-                    ? this.context.compileValue(left.expression)
-                    : undefined);
-            if (owner?.kind === "data") {
-                const narrowed = this.narrowOptional(owner, left.expression);
-                if (narrowed.dataType?.kind === "vector") {
-                    this.context.reachJsData();
-                    if (operator !== "=") {
-                        // `xs.length -= n` reads the length before the
-                        // right side runs, then stores the combined length.
-                        const previous =
-                            this.context.allocateTemporaryCppName(
-                                "length_previous",
+            const truncated = this.context.probeEmission(() => {
+                const owner =
+                    this.compileDataPath(left.expression, "write", true) ??
+                    (ts.isPropertyAccessExpression(left.expression) &&
+                    this.plainDataOwnerChain(left.expression)
+                        ? this.context.compileValue(left.expression)
+                        : undefined);
+                if (owner?.kind === "data") {
+                    const narrowed = this.narrowOptional(
+                        owner,
+                        left.expression,
+                    );
+                    if (narrowed.dataType?.kind === "vector") {
+                        this.context.reachJsData();
+                        if (operator !== "=") {
+                            // `xs.length -= n` reads the length before the
+                            // right side runs, then stores the combined length.
+                            const previous =
+                                this.context.allocateTemporaryCppName(
+                                    "length_previous",
+                                );
+                            this.context.emit({
+                                kind: "declaration",
+                                type: "const double",
+                                name: previous,
+                                initializer: `static_cast<double>(${narrowed.cpp}.size())`,
+                            });
+                            const length = compoundNext(previous);
+                            this.invalidateStaticElements(narrowed);
+                            this.invalidateAliases(narrowed.cpp);
+                            this.context.emit(
+                                `bbl::js::array_truncate(${narrowed.cpp}, ${length});`,
                             );
-                        this.context.emit({
-                            kind: "declaration",
-                            type: "const double",
-                            name: previous,
-                            initializer: `static_cast<double>(${narrowed.cpp}.size())`,
-                        });
-                        const length = compoundNext(previous);
+                            return true;
+                        }
+                        // Truncation shrinks the array, so the exact
+                        // element snapshot no longer describes it — and the
+                        // static in-bounds proof over the snapshot's length
+                        // must stop applying from here on.
                         this.invalidateStaticElements(narrowed);
-                        this.invalidateAliases(narrowed.cpp);
                         this.context.emit(
-                            `bbl::js::array_truncate(${narrowed.cpp}, ${length});`,
+                            (this.invalidateAliases(narrowed.cpp),
+                            `bbl::js::array_truncate(${narrowed.cpp}, ${this.context.compileNumber(expression.right, "double")});`),
                         );
                         return true;
                     }
-                    // Truncation shrinks the array, so the exact
-                    // element snapshot no longer describes it — and the
-                    // static in-bounds proof over the snapshot's length
-                    // must stop applying from here on.
-                    this.invalidateStaticElements(narrowed);
-                    this.context.emit(
-                        (this.invalidateAliases(narrowed.cpp),
-                        `bbl::js::array_truncate(${narrowed.cpp}, ${this.context.compileNumber(expression.right, "double")});`),
-                    );
-                    return true;
                 }
-            }
-            return false;
+                return undefined;
+            });
+            if (truncated) return true;
+            // Declining the sequence path rolls back receiver evaluation.
+            // An ordinary field named `length` then uses the normal writer.
+            const property = declaredSymbol(this.context.checker, left.name);
+            if (
+                !property?.declarations?.some(
+                    (declaration) => !declarationInDefaultLibrary(declaration),
+                )
+            )
+                return false;
         }
         if (ts.isElementAccessExpression(left)) {
             const recordOwner = ts.isIdentifier(left.expression)
@@ -13384,13 +13512,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const target = this.context.probeEmission(() => {
             const type = this.dataTypeAt(left);
             const stored = type?.kind === "optional" ? type.inner : type;
-            const retainOwner =
-                stored?.kind === "handle" &&
-                stored.handle === "render-target" &&
-                this.context.evaluationOrder.writesStorage(expression.right);
+            const retainOwner = this.context.evaluationOrder.writesStorage(
+                expression.right,
+            );
             const prepared = retainOwner
                 ? (this.preparePropertyAssignmentTarget(left) ??
-                  (ts.isElementAccessExpression(left)
+                  (stored?.kind === "handle" &&
+                  stored.handle === "render-target" &&
+                  ts.isElementAccessExpression(left)
                       ? this.prepareArrayAssignmentTarget(left)
                       : undefined))
                 : undefined;
@@ -14188,6 +14317,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     ): Value | undefined {
         return this.context.probeEmission(() => {
+            // Intrinsic receivers have their own write dispatch. Only an
+            // owned record needs a snapshot before evaluating the right side.
+            const type = this.dataTypeAt(access.expression);
+            if (
+                type?.kind !== "struct" ||
+                !this.context.dataTypes.isReferenceStruct(type.name)
+            )
+                return undefined;
             const owner = this.context.compileValue(access.expression);
             if (
                 owner.dataType?.kind !== "struct" ||
@@ -14196,11 +14333,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return undefined;
             const cpp =
                 this.context.allocateTemporaryCppName("destructure_record");
+            this.context.reachJsData();
             this.context.emit({
                 kind: "declaration",
                 type: "const auto",
                 name: cpp,
-                initializer: owner.cpp,
+                initializer: `bbl::js::snapshot_value(${owner.cpp})`,
             });
             const retained = {
                 ...owner,
@@ -15337,6 +15475,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public equalityComparison(
         expression: ts.BinaryExpression,
     ): string | undefined {
+        requireObservedPromise(this.context, expression);
         const negated =
             expression.operatorToken.kind ===
                 ts.SyntaxKind.ExclamationEqualsEqualsToken ||
@@ -15360,6 +15499,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const right = this.context.options.workers
             ? unwrapExpression(expression.right)
             : this.context.unwrap(expression.right);
+        if (!loose && this.context.options.workers) {
+            const primitive =
+                ts.TypeFlags.NumberLike |
+                ts.TypeFlags.StringLike |
+                ts.TypeFlags.BooleanLike |
+                ts.TypeFlags.BigIntLike |
+                ts.TypeFlags.ESSymbolLike;
+            if (
+                ((this.context.checker.getTypeAtLocation(right).flags &
+                    primitive) !==
+                    0 &&
+                    this.dataTypeAt(left)?.kind === "promise") ||
+                ((this.context.checker.getTypeAtLocation(left).flags &
+                    primitive) !==
+                    0 &&
+                    this.dataTypeAt(right)?.kind === "promise")
+            )
+                return this.context.fail(
+                    expression,
+                    "Strict Promise-to-primitive comparison has no represented lowering.",
+                );
+        }
         const isNullish = (candidate: ts.Expression): boolean =>
             isNullishLiteral(this.context.checker, candidate) ||
             (ts.isIdentifier(candidate) &&
@@ -17379,7 +17540,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ((["string", "enum"].includes(sourceElement.kind) &&
                 ["string", "enum"].includes(dataType.element.kind)) ||
                 (sourceElement.kind === "struct" &&
-                    dataType.element.kind === "struct"))
+                    dataType.element.kind === "struct") ||
+                (sourceElement.kind === "promise" &&
+                    dataType.element.kind === "promise"))
         ) {
             const item = this.context.allocateTemporaryCppName("spread_item");
             let converted = "";

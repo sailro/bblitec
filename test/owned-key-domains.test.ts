@@ -156,14 +156,6 @@ test("unrepresented dictionary mutations and weak keys refuse", () => {
     assert.throws(
         () =>
             compileSource(`
-        type Table={small:number|null;large:number|null};const table:Table={small:null,large:2};
-        function read(value:Record<string,number|null>,key:string){return value[key];}read(table,'small');
-    `),
-        /one common non-nullable field type/,
-    );
-    assert.throws(
-        () =>
-            compileSource(`
         const values=new WeakMap<object,number>([[{value:1},2]]);values.has({value:1});
     `),
         /Erased-key WeakMap construction requires an empty initializer/,

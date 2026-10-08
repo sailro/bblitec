@@ -207,6 +207,30 @@ function valuePromise(
         )
     )
         return rejectionOnlyPromiseCpp(value.cpp, expected);
+    const payload = value.promiseResult;
+    const source =
+        payload?.dataType ??
+        (payload?.kind === "number" ||
+        payload?.kind === "string" ||
+        payload?.kind === "boolean"
+            ? { kind: payload.kind }
+            : undefined);
+    if (!converted && result && source) {
+        // A result view reads the original settlement; ordinary storage
+        // conversion must therefore keep every retained object's identity.
+        const lines = lowerer.context.captureEmittedLines(() => {
+            converted = lowerer.compileKnownValueForSink(
+                lowerer.leafValue("value", source),
+                result,
+                node,
+            );
+        });
+        if (lines.length > 0)
+            return lowerer.context.fail(
+                node,
+                "A Promise result view requires an in-place storage conversion.",
+            );
+    }
     if (!converted)
         return lowerer.context.fail(
             node,

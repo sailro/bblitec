@@ -98,6 +98,19 @@ test("write-only dataset instrumentation retains the browser erasure boundary", 
     );
 });
 
+test("record receiver retention leaves browser instrumentation dispatch unchanged", () => {
+    const result = compileDataset(`
+        let calls = 0;
+        function label(): string { calls++; return "diagnostic"; }
+        canvas.dataset.label = label();
+    `);
+    assert.equal(result.manifest.canvasReadyGate, undefined);
+    assert.doesNotMatch(
+        result.cpp,
+        /(?:set_canvas_dataset|defer_capture_until)/,
+    );
+});
+
 test("retained host canvas keeps unobserved asset instrumentation outside native UI lowering", () => {
     const source = `
         import { createEngine } from "@babylonjs/lite";

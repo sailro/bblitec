@@ -1,5 +1,6 @@
 import { requireWindowHost } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { requireObservedPromise } from "./promise-observations.js";
 import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
@@ -566,6 +567,7 @@ export class ExpressionLowerer {
 
     public compileValue(expression: ts.Expression): Value {
         traceSourceNode(expression);
+        requireObservedPromise(this.context, expression);
         // An operand already evaluated once (an assigned right side, a held
         // store key) reads back wherever the lowering reaches it.
         const held = this.context.dataLowerer.assignedValue(expression);

@@ -779,6 +779,43 @@ function compileObjectAssign(
                 );
         return pairs;
     };
+    if (isJsonValue(target)) {
+        const owner = context.bindings.pinValueToTemporary(
+            target,
+            "assign_target",
+            targetExpression,
+        );
+        // Every argument is evaluated before the first source's keys are read.
+        const values = sources.map((source) => {
+            const value = context.compileValue(source);
+            if (value.kind === "record") {
+                const declaration = context.bindings.recordDeclaration(
+                    value,
+                    source,
+                );
+                if (declaration)
+                    throw new DynamicBindingStorageRequired(
+                        declaration,
+                        "source",
+                    );
+            }
+            const cpp = context.dataLowerer.compileKnownValueForSink(
+                value,
+                { kind: "json" },
+                source,
+            );
+            return context.bindings.pinValueToTemporary(
+                context.dataLowerer.leafValue(cpp, { kind: "json" }),
+                "assign_source",
+                source,
+            ).cpp;
+        });
+        context.emit({
+            kind: "expression",
+            code: `${owner.cpp}.assign({${values.join(", ")}});`,
+        });
+        return owner;
+    }
     if (target.kind === "ui-element" && target.uiDataset) {
         const owner = context.bindings.pinValueToTemporary(
             target,

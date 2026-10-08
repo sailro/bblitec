@@ -1044,7 +1044,6 @@ function compileKnownDataMethod(
     const missing = compileMissingPrimitiveMethod(lowerer, call, callee, owner);
     if (missing) return missing;
     const method = callee.name.text;
-    const ownerExpression = lowerer.context.unwrap(callee.expression);
     let narrowedOwner = lowerer.stringReceiver(
         lowerer.narrowOptional(
             owner,
@@ -1213,18 +1212,28 @@ function compileKnownDataMethod(
             );
         const result =
             lowerer.context.allocateTemporaryCppName("iterator_result");
+        const resultValueType =
+            lowerer.context.dataTypes.markStoredObjectReferences({
+                kind: "optional",
+                inner: dataType.element,
+                undefinedOnly: true,
+            });
+        const resultValueCpp =
+            resultValueType.kind === "struct"
+                ? `${result}.value.value_or(${lowerer.context.dataTypes.cppType(resultValueType)}{})`
+                : `${result}.value`;
         if (dataType.asynchronous) {
             const output = lowerer.context.dataTypes.ownedRecordType([
                 { sourceName: "done", type: { kind: "boolean" } },
                 {
                     sourceName: "value",
-                    type: { kind: "optional", inner: dataType.element },
+                    type: resultValueType,
                 },
             ]);
             const cppType = lowerer.context.dataTypes.cppType(output);
             return {
                 kind: "promise",
-                cpp: `bbl::js::Promise<${cppType}>::view(${narrowed.cpp}.${method === "return" ? "return_" : "next"}(), [](const auto& ${result}) { return bbl::js::make_ref<bblscene::${output.name}Data>(bblscene::${output.name}Data{${result}.done, ${result}.value}); })`,
+                cpp: `bbl::js::Promise<${cppType}>::view(${narrowed.cpp}.${method === "return" ? "return_" : "next"}(), [](const auto& ${result}) { return bbl::js::make_ref<bblscene::${output.name}Data>(bblscene::${output.name}Data{${result}.done, ${resultValueCpp}}); })`,
                 promiseResult: lowerer.leafValue("", output),
                 promiseType: cppType,
                 dataType: { kind: "promise", result: output },
@@ -1237,6 +1246,21 @@ function compileKnownDataMethod(
             initializer: `${narrowed.cpp}.${method === "return" ? "return_" : "next"}()`,
         });
         const nativeCaptures = [lowerer.context.registerNativeBinding(result)];
+        const iteratorType = lowerer.context.checker.getNonNullableType(
+            lowerer.context.dataTypes.resolveTypeParameter(
+                lowerer.context.checker.getTypeAtLocation(callee.expression),
+            ),
+        );
+        const yieldedType = isTypeReference(iteratorType)
+            ? lowerer.context.checker.getTypeArguments(iteratorType)[0]
+            : undefined;
+        // Completion supplies undefined; an absent yielded reference is null
+        // only when its element type rules out a yielded undefined.
+        const nullYield =
+            yieldedType &&
+            slotHoldsOnlyNull(
+                lowerer.context.dataTypes.resolveTypeParameter(yieldedType),
+            );
         return {
             kind: "record",
             cpp: "",
@@ -1246,10 +1270,8 @@ function compileKnownDataMethod(
                     nativeCaptures,
                 },
                 value: {
-                    ...lowerer.leafValue(`${result}.value`, {
-                        kind: "optional",
-                        inner: dataType.element,
-                    }),
+                    ...lowerer.leafValue(resultValueCpp, resultValueType),
+                    ...(nullYield ? { slotFoundCpp: `!${result}.done` } : {}),
                     nativeCaptures,
                 },
             },
@@ -1278,46 +1300,6 @@ function compileKnownDataMethod(
     if (dataType?.kind === "string") {
         const result = compileStringDataMethod(lowerer, call, method, narrowed);
         if (result) return result;
-    }
-    if (
-        dataType?.kind === "vector" &&
-        method === "next" &&
-        narrowed.freshData &&
-        ts.isCallExpression(ownerExpression)
-    ) {
-        if (call.arguments.length !== 0) {
-            lowerer.context.fail(
-                call,
-                "Map iterator next expects no arguments.",
-            );
-        }
-        const values = lowerer.context.allocateTemporaryCppName(
-            "map_iterator_values",
-        );
-        lowerer.context.emit({
-            kind: "declaration",
-            type: "auto",
-            name: values,
-            initializer: narrowed.cpp,
-        });
-        lowerer.registerLocal(values, "owned");
-        const found = `!${values}.empty()`;
-        const first = `bbl::js::array_at_or_default(${values}, 0.0)`;
-        return {
-            kind: "record",
-            cpp: "",
-            recordProperties: {
-                value: {
-                    ...lowerer.leafValue(first, dataType.element),
-                    optionalFoundCpp: found,
-                },
-                done: {
-                    kind: "boolean",
-                    cpp: `!(${found})`,
-                    dataType: { kind: "boolean" },
-                },
-            },
-        };
     }
     // A constant numeric array is a one-dimensional table; arrays and
     // readonly spans search in the array-method tail below.
@@ -2196,14 +2178,15 @@ function narrowedFilterResult(
     const callType = lowerer.dataTypeAt(call);
     const result = callType?.kind === "optional" ? callType.inner : callType;
     if (result?.kind !== "vector") return undefined;
-    if (element.kind === "union") {
+    const present = element.kind === "optional" ? element.inner : element;
+    if (present.kind === "union") {
         const selected =
             result.element.kind === "union"
                 ? result.element.members
                 : [result.element];
         if (
             selected.every((target) =>
-                element.members.some((member) =>
+                present.members.some((member) =>
                     dataTypesEqual(member, target),
                 ),
             )
@@ -3350,42 +3333,22 @@ function compileMapDataMethod(
                 : {}),
         };
     }
-    if (method === "entries") {
-        if (call.arguments.length !== 0) {
-            lowerer.context.fail(call, "Map.entries expects no arguments.");
-        }
-        // The entry iterator yields the map's own [key, value] pairs in
-        // insertion order, which is what iterating the map yields.
-        return narrowed;
-    }
-    if (method === "values" || method === "keys") {
-        if (call.arguments.length !== 0) {
-            lowerer.context.fail(call, `Map.${method} expects no arguments.`);
-        }
-        // An iterator kept past the call (`values: () => map.values()`) is
-        // live over the map, as JavaScript's is.
-        const contextual = lowerer.context.checker.getContextualType(call);
-        if (
-            contextual &&
-            lowerer.context.dataTypes.fromTsType(contextual, call)?.kind ===
-                "iterator"
-        ) {
-            const element = method === "values" ? dataType.value : dataType.key;
-            lowerer.context.reachJsData();
-            return lowerer.leafValue(
-                `bbl::js::map_iterator<${lowerer.context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${narrowed.cpp})`,
-                { kind: "iterator", element, traced: true },
-            );
-        }
-        return {
-            kind: "data",
-            cpp: `bbl::js::map_${method}(${narrowed.cpp})`,
-            dataType: {
-                kind: "vector",
-                element: method === "values" ? dataType.value : dataType.key,
-            },
-            freshData: true,
-        };
+    if (method === "entries" || method === "values" || method === "keys") {
+        lowerer.context.expectArgumentCount(call, 0, 0);
+        const element =
+            method === "entries"
+                ? lowerer.context.dataTypes.tupleStorage([
+                      dataType.key,
+                      dataType.value,
+                  ])
+                : method === "values"
+                  ? dataType.value
+                  : dataType.key;
+        lowerer.context.reachJsData();
+        return lowerer.leafValue(
+            `bbl::js::map_iterator<${lowerer.context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${narrowed.cpp})`,
+            { kind: "iterator", element, traced: true },
+        );
     }
     lowerer.context.fail(
         callee.name,

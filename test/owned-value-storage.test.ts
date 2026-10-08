@@ -157,6 +157,7 @@ test("imported mixed catalog retains optional undefined fields", (t) => {
         `import {entries} from './catalog.mjs';
         const names=entries.map(entry=>entry.name);
         if(names.join()!=='one,two')throw new Error('catalog map');
+        if(JSON.stringify(entries)!=='[{"name":"one","options":{"enabled":true}},{"name":"two"}]')throw new Error('catalog JSON presence');
         function select(name:string){return entries.find(entry=>entry.name===name);}
         const first=select('one'), second=select('two');
         if(first?.options?.enabled!==true||second?.options!==undefined||select('absent')!==undefined)throw new Error('catalog find');
@@ -174,14 +175,6 @@ test("imported mixed catalog retains optional undefined fields", (t) => {
         tools,
         "owned-value-storage/imported-catalog",
         result.cpp,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                `import {entries} from './catalog.mjs';JSON.stringify(entries);`,
-                { fileName: join(directory, "json.ts") },
-            ),
-        /Own-property presence of 'options' is not represented/,
     );
 });
 

@@ -4066,15 +4066,19 @@ checkInRealm(
 `,
 );
 
-test("promise combinator literal spreads refuse mixed settlement types", () => {
-    for (const source of [
-        "async function n(): Promise<number> { return 1; } async function s(): Promise<string> { return ''; } const xs = [s()]; void Promise.all([n(), ...xs]);",
-        "async function n(): Promise<number> { return 1; } const xs = [1, 2]; void Promise.all([n(), ...xs]);",
-    ])
-        assert.throws(
-            () => compileSource(source),
-            /Promise\.all literal spreads require promises and arrays of promises of one settlement type/,
-        );
+test("promise combinator literal spreads join settlement types and refuse raw values", () => {
+    assert.doesNotThrow(() =>
+        compileSource(
+            "async function n(): Promise<number> { return 1; } async function s(): Promise<string> { return ''; } const xs = [s()]; void Promise.all([n(), ...xs]);",
+        ),
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "async function n(): Promise<number> { return 1; } const xs = [1, 2]; void Promise.all([n(), ...xs]);",
+            ),
+        /Promise\.all literal spreads require promises and represented synchronous iterables of promises/,
+    );
 });
 
 checkInRealm(
@@ -4765,17 +4769,23 @@ check(
 `,
 );
 
-test("callback-returned arrays without a typed collection keep their refusal", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                `const keys = ["x", "y"];
-                const grid = keys.map((row) => keys.map((column) => ({ key: row + column, pending: null })));
-                if (grid.length !== 2) throw new Error("grid");`,
-            ),
-        /Array\.map callback results must belong to the native data model/,
-    );
-});
+check(
+    "callback-returned arrays infer null-only record fields without a typed collection",
+    `
+    const keys = ["x", "y"];
+    const grid = keys.map((row) => keys.map((column) => ({ key: row + column, pending: null })));
+    if (grid.map((row) => row.map((cell) => cell.key).join()).join("|") !== "xx,xy|yx,yy")
+        throw new Error("grid values");
+    if (grid[0] === grid[1] || grid[0]![0] === grid[0]![1] || grid[0]![0] === grid[1]![0])
+        throw new Error("fresh arrays and records");
+    const cell = grid[0]![1]!;
+    if (cell.pending !== null || !Object.hasOwn(cell, "pending"))
+        throw new Error("null-only field");
+    cell.key = "changed";
+    if (grid[0]![1]!.key !== "changed" || grid[1]![0]!.key !== "yx")
+        throw new Error("record aliases");
+`,
+);
 
 check(
     "fresh-array-results-take-mutating-methods",
@@ -5219,10 +5229,6 @@ test("unsupported language shapes refuse explicitly", () => {
         [
             'function f(n: number): boolean { return "x" in n; } f(1);',
             /'in' is decided/,
-        ],
-        [
-            "interface R { a: number } const rs: R[] = [{ a: 1 }]; rs.push({ a: 2 }); function f(r: R): void { delete (r as { a?: number }).a; } f(rs[0]!);",
-            /required field/,
         ],
         [
             "function f(xs: number[]): void { xs[Math.trunc(Math.random())] ??= 2; } f([1]);",
@@ -10205,22 +10211,6 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
             const i = (s[0]! as unknown as { indexOf(a: string, b: number, c: number): number }).indexOf("b", 0, 1);
             console.log(i);`,
             /String\.indexOf expects a search string and an optional position/,
-        ],
-        [
-            `interface S { size: number; tint?: number }
-            const clear = <T extends object, K extends keyof T>(t: T, k: K): void => { delete t[k]; };
-            const s: S = { size: 1, tint: 2 };
-            clear(s, "size");
-            console.log(s.size);`,
-            /'size' is a required field of its type; only an optional field can be deleted/,
-        ],
-        [
-            `const doc = JSON.parse("{}") as unknown;
-            if (doc && typeof doc === "object") {
-                const { a, ...rest } = doc as { a?: unknown; b?: unknown };
-                console.log(a, rest);
-            }`,
-            /Object rest over a parsed document is not represented/,
         ],
         [
             `interface M { a?: number; b?: string }

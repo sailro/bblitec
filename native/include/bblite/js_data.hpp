@@ -1278,6 +1278,12 @@ public:
         result.reference_ = &value;
         return result;
     }
+    /** An iterator yield is present even when its value is an empty reference. */
+    [[nodiscard]] static Nullable yielded(T value) {
+        Nullable result;
+        result.owned_.emplace(std::move(value));
+        return result;
+    }
 
     [[nodiscard]] bool has_value() const { return reference_ != nullptr || owned_.has_value(); }
     [[nodiscard]] T& value() {
@@ -2941,6 +2947,8 @@ public:
         return {!value.has_value(), std::move(value)};
     }
     Result return_() const {
+        if (!close_)
+            throw NamedError("TypeError", "Iterator has no return method.");
         close();
         return {true, {}};
     }
@@ -3104,9 +3112,9 @@ template <typename Yield, typename T, bool Entries> struct SetCursor {
         }
         const T value = **cursor;
         if constexpr (Entries)
-            return Yield{value, value};
+            return Nullable<Yield>::yielded(Yield{value, value});
         else
-            return value;
+            return Nullable<Yield>::yielded(value);
     }
     void gc_trace(const TraceVisitor& visitor) const {
         visitor(values);
@@ -3141,11 +3149,11 @@ template <typename Yield, typename K, typename V, MapPart Part> struct MapCursor
         }
         const auto& entry = **cursor;
         if constexpr (Part == MapPart::keys)
-            return entry.first;
+            return Nullable<Yield>::yielded(entry.first);
         else if constexpr (Part == MapPart::values)
-            return entry.second;
+            return Nullable<Yield>::yielded(entry.second);
         else
-            return Yield{entry.first, entry.second};
+            return Nullable<Yield>::yielded(Yield{entry.first, entry.second});
     }
     void gc_trace(const TraceVisitor& visitor) const {
         visitor(values);

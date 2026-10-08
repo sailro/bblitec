@@ -118,6 +118,12 @@ export function compileImmediatePromise(
                     : { kind: "void", cpp: "" };
             }
             if (iterable.kind !== "tuple" || !iterable.tupleElements) {
+                if (
+                    iterable.dataType?.kind === "set" ||
+                    iterable.dataType?.kind === "iterator" ||
+                    iterable.dataType?.kind === "span"
+                )
+                    throw new ApplicationRealmRequired();
                 context.fail(
                     argument,
                     "Promise.all requires an array literal or compile-time tuple.",
