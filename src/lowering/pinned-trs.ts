@@ -21,6 +21,7 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
  */
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
@@ -244,6 +245,62 @@ export function pinnedTrsComposition(
             storeRename,
         )};\n`;
     }
+    const composeLocal = context.functionDeclaration(
+        "src/scene/world-matrix-state.ts",
+        "composeTrsLocalMatrixIntoBuffer",
+    );
+    const compositionCall = context.callExpression(
+        composeLocal.declaration,
+        "composeMat4IntoBuffer",
+    );
+    context.assertExpressionShape(
+        compositionCall,
+        "composeMat4IntoBuffer(local, 0, position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)",
+        "Local TRS composition arguments",
+    );
+    const localBody = lowerPinnedBody(
+        composeLocal.file,
+        composeLocal.declaration.body!.statements,
+        {
+            bindings: new Map<string, PinnedBinding>([
+                ["local", { cpp: "local", type: "f64-buffer", mutable: true }],
+                ...["x", "y", "z"].flatMap(
+                    (axis): Array<[string, PinnedBinding]> => [
+                        [
+                            `position.${axis}`,
+                            {
+                                cpp: `${record}.position.${axis}`,
+                                type: "scalar",
+                            },
+                        ],
+                        [
+                            `scaling.${axis}`,
+                            { cpp: `scale_${axis}`, type: "scalar" },
+                        ],
+                    ],
+                ),
+                ...["x", "y", "z", "w"].map((axis): [string, PinnedBinding] => [
+                    `rotation.${axis}`,
+                    { cpp: `q${axis}`, type: "scalar" },
+                ]),
+            ]),
+            calls: new Map(),
+            methods: new Map([
+                [
+                    "fill",
+                    (receiver, args) => `${receiver}.fill(${args.join(", ")})`,
+                ],
+            ]),
+            statement: (statement, _numeric, indent) =>
+                ts.isExpressionStatement(statement) &&
+                statement.expression === compositionCall
+                    ? (basisLocals + basisStores)
+                          .trimEnd()
+                          .split("\n")
+                          .map((line) => indent + line.slice(4))
+                    : undefined,
+        },
+    );
     const composeLocalBody = `    double qx = 0.0;
     double qy = 0.0;
     double qz = 0.0;
@@ -263,9 +320,8 @@ ${quaternionProducts}\
     const double scale_x = ${record}.scaling.x;
     const double scale_y = ${record}.scaling.y;
     const double scale_z = ${record}.scaling.z;
-${basisLocals}\
     std::array<double, 16> local{};
-${basisStores}`;
+${localBody}\n`;
     return {
         composeLocalBody,
         composeWorldBody: `${composeLocalBody}    std::array<float, 16> world{};

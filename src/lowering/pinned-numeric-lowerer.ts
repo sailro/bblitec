@@ -3228,7 +3228,8 @@ export class PinnedNumericLowerer {
             const target = unwrapExpression(value.left);
             if (
                 !ts.isElementAccessExpression(target) ||
-                !this.elementType(target)
+                (!this.elementType(target) &&
+                    this.elementOwner(target)?.type !== "f64-buffer")
             )
                 return undefined;
             targets.push(target);
