@@ -1322,18 +1322,18 @@ template <typename T> [[nodiscard]] T json_entry_as(const JsonValue& value) {
  * reads convert the entry (an absent one reads as undefined), writes store
  * the value as a parsed entry. */
 template <typename T>
-[[nodiscard]] Accessor<T> json_entry_accessor(Map<std::string, JsonValue> record, std::string key) {
+[[nodiscard]] auto json_entry_accessor(Map<std::string, JsonValue> record, std::string key) {
     using Entry = std::tuple<Map<std::string, JsonValue>, std::string>;
     auto entry = Entry{std::move(record), std::move(key)};
-    return Accessor<T>(make_closure(entry,
-                                    [](Entry& view) -> T {
-                                        const auto found = std::get<0>(view).get(std::get<1>(view));
-                                        return json_entry_as<T>(found.has_value() ? *found
-                                                                                  : JsonValue{});
-                                    }),
-                       make_closure(entry, [](Entry& view, T value) {
-                           std::get<0>(view).set(std::get<1>(view), json_value(value));
-                       }));
+    return AccessorClosures{
+        make_closure(entry,
+                     [](Entry& view) -> T {
+                         const auto found = std::get<0>(view).get(std::get<1>(view));
+                         return json_entry_as<T>(found.has_value() ? *found : JsonValue{});
+                     }),
+        make_closure(entry, [](Entry& view, T value) {
+            std::get<0>(view).set(std::get<1>(view), json_value(value));
+        })};
 }
 
 } // namespace bbl::js
