@@ -120,6 +120,8 @@ capture types place shared bodies in their owning source unit; unresolved captur
 Generator calls own initially suspended coroutine frames; iterator aliases share their pull position.
 Asynchronous cleanup carries pending return, exception and loop-exit completions across suspension.
 Explicit iterator close runs source cleanup; abandoning a suspended frame only releases its storage.
+Reached Promise identity uses and escapes into erased storage require the application realm before
+their object representation is lost.
 
 Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
 Parameters retain mutable callers' argument values while object and container mutations preserve shared identity.

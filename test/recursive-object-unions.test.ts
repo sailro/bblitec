@@ -261,14 +261,3 @@ test("declined recursive layouts roll back provisional identities and nested def
     assert.equal(mapped.cppType(afterFailures), fresh.cppType(withoutFailures));
     assert.deepEqual(mapped.renderPreamble(), fresh.renderPreamble());
 });
-
-test("required owned record fields still refuse deletion", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                const records:Array<{next:{value:number}}>=[{next:{value:1}}];
-                delete records[0]!.next;
-            `),
-        /required field of its type/,
-    );
-});

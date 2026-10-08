@@ -1246,6 +1246,21 @@ function compileKnownDataMethod(
             initializer: `${narrowed.cpp}.${method === "return" ? "return_" : "next"}()`,
         });
         const nativeCaptures = [lowerer.context.registerNativeBinding(result)];
+        const iteratorType = lowerer.context.checker.getNonNullableType(
+            lowerer.context.dataTypes.resolveTypeParameter(
+                lowerer.context.checker.getTypeAtLocation(callee.expression),
+            ),
+        );
+        const yieldedType = isTypeReference(iteratorType)
+            ? lowerer.context.checker.getTypeArguments(iteratorType)[0]
+            : undefined;
+        // Completion supplies undefined; an absent yielded reference is null
+        // only when its element type rules out a yielded undefined.
+        const nullYield =
+            yieldedType &&
+            slotHoldsOnlyNull(
+                lowerer.context.dataTypes.resolveTypeParameter(yieldedType),
+            );
         return {
             kind: "record",
             cpp: "",
@@ -1256,7 +1271,7 @@ function compileKnownDataMethod(
                 },
                 value: {
                     ...lowerer.leafValue(resultValueCpp, resultValueType),
-                    slotFoundCpp: `!${result}.done`,
+                    ...(nullYield ? { slotFoundCpp: `!${result}.done` } : {}),
                     nativeCaptures,
                 },
             },

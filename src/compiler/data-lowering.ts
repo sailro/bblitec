@@ -39,6 +39,7 @@ import {
     symbolPropertyKey,
 } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
+import { requireObservedPromise } from "./promise-observations.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import {
     absenceKind,
@@ -8806,6 +8807,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.NewExpression,
         expectedType?: DataType,
     ): Value | undefined {
+        requireObservedPromise(this.context, expression);
         const constructor = this.context.libraryGlobal(expression.expression);
         if (
             constructor === undefined ||
@@ -9557,6 +9559,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.Expression,
         dataType: DataType,
     ): string {
+        requireObservedPromise(this.context, expression);
         const assigned =
             this.assignedRights.size === 0
                 ? undefined
@@ -13314,9 +13317,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (truncated) return true;
             // Declining the sequence path rolls back receiver evaluation.
             // An ordinary field named `length` then uses the normal writer.
-            const property = this.context.checker.getSymbolAtLocation(
-                left.name,
-            );
+            const property = declaredSymbol(this.context.checker, left.name);
             if (
                 !property?.declarations?.some(
                     (declaration) => !declarationInDefaultLibrary(declaration),
@@ -14316,6 +14317,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     ): Value | undefined {
         return this.context.probeEmission(() => {
+            // Intrinsic receivers have their own write dispatch. Only an
+            // owned record needs a snapshot before evaluating the right side.
+            const type = this.dataTypeAt(access.expression);
+            if (
+                type?.kind !== "struct" ||
+                !this.context.dataTypes.isReferenceStruct(type.name)
+            )
+                return undefined;
             const owner = this.context.compileValue(access.expression);
             if (
                 owner.dataType?.kind !== "struct" ||
@@ -15465,6 +15474,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public equalityComparison(
         expression: ts.BinaryExpression,
     ): string | undefined {
+        requireObservedPromise(this.context, expression);
         const negated =
             expression.operatorToken.kind ===
                 ts.SyntaxKind.ExclamationEqualsEqualsToken ||
@@ -15488,6 +15498,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const right = this.context.options.workers
             ? unwrapExpression(expression.right)
             : this.context.unwrap(expression.right);
+        if (!loose && this.context.options.workers) {
+            const primitive =
+                ts.TypeFlags.NumberLike |
+                ts.TypeFlags.StringLike |
+                ts.TypeFlags.BooleanLike |
+                ts.TypeFlags.BigIntLike |
+                ts.TypeFlags.ESSymbolLike;
+            if (
+                ((this.context.checker.getTypeAtLocation(right).flags &
+                    primitive) !==
+                    0 &&
+                    this.dataTypeAt(left)?.kind === "promise") ||
+                ((this.context.checker.getTypeAtLocation(left).flags &
+                    primitive) !==
+                    0 &&
+                    this.dataTypeAt(right)?.kind === "promise")
+            )
+                return this.context.fail(
+                    expression,
+                    "Strict Promise-to-primitive comparison has no represented lowering.",
+                );
+        }
         const isNullish = (candidate: ts.Expression): boolean =>
             isNullishLiteral(this.context.checker, candidate) ||
             (ts.isIdentifier(candidate) &&

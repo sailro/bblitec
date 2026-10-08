@@ -168,8 +168,9 @@ test("temporary ray-point formals own their result without duplicate Ref snapsho
         const hit = cast(target());
     `);
 
-    const parameter = result.cpp.match(/auto&& (v_fn\d+_point) = [^;]+;/);
+    const parameter = result.cpp.match(/auto (v_fn\d+_point) = [^;]+;/);
     assert.ok(parameter);
+    assert.doesNotMatch(parameter[0], /snapshot_value/);
     assert.match(
         result.cpp,
         new RegExp(

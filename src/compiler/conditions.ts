@@ -4,6 +4,7 @@
 // lowerer's `truthinessCondition`.
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
+import { requireObservedPromise } from "./promise-observations.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
     compileClassInstanceOf,
@@ -62,6 +63,7 @@ interface ConditionContext
             | "leaveRuntimeControlFlow"
             | "libraryGlobal"
             | "options"
+            | "program"
             | "reachFeature"
             | "reachJsData"
             | "registerNativeBinding"
@@ -131,6 +133,7 @@ export class ConditionLowerer {
      * where generation settles it.
      */
     public compileCondition(expression: ts.Expression): string {
+        requireObservedPromise(this.context, expression);
         const assigned = this.context.dataLowerer.assignedCondition(
             expression,
             () => this.compileCondition(expression),

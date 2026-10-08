@@ -65,6 +65,8 @@ export interface ProgramObservations {
     readonly writes: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
     readonly arrayWrites: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
     readonly identities: ReadonlySet<ts.Type>;
+    /** Operand/key types at identity, typeof or truthiness uses, consulted only when reached. */
+    readonly identityConsumers: ReadonlyMap<ts.Node, ReadonlySet<ts.Type>>;
     readonly enumerations: ReadonlySet<ts.Type>;
     readonly assertions: readonly {
         readonly asserted: ts.Type;
@@ -190,6 +192,7 @@ function observe(program: ts.Program): ProgramObservations {
     const writes = new Map<ts.Type, ObservedWrite[]>();
     const arrayWrites = new Map<ts.Type, ObservedWrite[]>();
     const identities = new Set<ts.Type>();
+    const identityConsumers = new Map<ts.Node, Set<ts.Type>>();
     const enumerations = new Set<ts.Type>();
     const assertions: { asserted: ts.Type; open: boolean }[] = [];
     const widenedArrays: {
@@ -233,16 +236,51 @@ function observe(program: ts.Program): ProgramObservations {
                       ts.TypeFlags.Conditional |
                       ts.TypeFlags.Substitution)) !==
               0;
+    const addConsumer = (type: ts.Type, consumer: ts.Node): void => {
+        if (ts.isExpression(consumer)) consumer = unwrapExpression(consumer);
+        const types = identityConsumers.get(consumer);
+        if (types) types.add(type);
+        else identityConsumers.set(consumer, new Set([type]));
+    };
+    const addIdentity = (type: ts.Type, consumer: ts.Node): void => {
+        identities.add(type);
+        addConsumer(type, consumer);
+    };
+    const observesObject = (
+        node: ts.Expression,
+        consumer = node.parent,
+    ): void => {
+        const type = typeOf(node);
+        if (objectLike(type)) {
+            addConsumer(type, node);
+            addConsumer(type, consumer);
+        }
+    };
     const identity = (node: ts.Node): void => {
         const type = typeOf(node);
-        if (objectLike(type)) identities.add(type);
+        if (objectLike(type)) {
+            addIdentity(type, node);
+            addIdentity(type, node.parent);
+        }
     };
     const identityComparison = (left: ts.Node, right: ts.Node): void => {
         const leftType = typeOf(left),
             rightType = typeOf(right);
-        if (!objectLike(leftType) || !objectLike(rightType)) return;
-        identities.add(leftType);
-        identities.add(rightType);
+        if (!objectLike(leftType) || !objectLike(rightType)) {
+            if (objectLike(leftType)) {
+                addConsumer(leftType, left);
+                addConsumer(leftType, left.parent);
+            }
+            if (objectLike(rightType)) {
+                addConsumer(rightType, right);
+                addConsumer(rightType, right.parent);
+            }
+            return;
+        }
+        addIdentity(leftType, left.parent);
+        addIdentity(rightType, right.parent);
+        addIdentity(leftType, left);
+        addIdentity(rightType, right);
     };
     const enumerated = (node: ts.Node): void => {
         const type = typeOf(node);
@@ -304,6 +342,21 @@ function observe(program: ts.Program): ProgramObservations {
             : yieldsNewArray(checker, unwrapped);
     };
     const visit = (node: ts.Node): void => {
+        if (
+            ts.isIfStatement(node) ||
+            ts.isWhileStatement(node) ||
+            ts.isDoStatement(node)
+        )
+            observesObject(node.expression, node.expression);
+        else if (ts.isForStatement(node) && node.condition)
+            observesObject(node.condition, node.condition);
+        else if (ts.isConditionalExpression(node))
+            observesObject(node.condition, node.condition);
+        else if (
+            ts.isPrefixUnaryExpression(node) &&
+            node.operator === ts.SyntaxKind.ExclamationToken
+        )
+            observesObject(node.operand, node);
         // A new array is created with the type it is read as.
         if (ts.isExpression(node) && !newArrayValue(node)) {
             const own = mutableElement(typeOf(node));
@@ -417,6 +470,13 @@ function observe(program: ts.Program): ProgramObservations {
                 }
             } else if (operator === ts.SyntaxKind.InKeyword)
                 enumerated(node.right);
+            else if (
+                operator === ts.SyntaxKind.AmpersandAmpersandToken ||
+                operator === ts.SyntaxKind.BarBarToken
+            )
+                observesObject(node.left, node.left);
+        } else if (ts.isTypeOfExpression(node)) {
+            observesObject(node.expression, node);
         } else if (ts.isSwitchStatement(node)) identity(node.expression);
         else if (ts.isForInStatement(node)) enumerated(node.expression);
         else if (ts.isSpreadAssignment(node)) {
@@ -435,7 +495,7 @@ function observe(program: ts.Program): ProgramObservations {
                     (keys.flags & ts.TypeFlags.Object) !== 0
                         ? checker.getTypeArguments(keys as ts.TypeReference)[0]
                         : undefined;
-                identities.add(key ?? checker.getAnyType());
+                addIdentity(key ?? checker.getAnyType(), node);
             }
         } else if (ts.isCallExpression(node)) call(node);
         if (
@@ -449,6 +509,8 @@ function observe(program: ts.Program): ProgramObservations {
     const call = (node: ts.CallExpression): void => {
         const callee = unwrapExpression(node.expression);
         const first = node.arguments[0];
+        if (first && libraryGlobal(checker, callee) === "Boolean")
+            observesObject(first, node);
         if (!ts.isPropertyAccessExpression(callee)) return;
         const method = callee.name.text;
         const owner = libraryGlobal(checker, callee.expression);
@@ -518,6 +580,7 @@ function observe(program: ts.Program): ProgramObservations {
         writes,
         arrayWrites,
         identities,
+        identityConsumers,
         enumerations,
         assertions,
         widenedArrays,
