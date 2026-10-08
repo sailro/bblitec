@@ -931,6 +931,22 @@ export class BindingScopes {
         // callee could change was read before it ran.
         if (!ts.isParameter(identifier.parent))
             value = this.settleBuiltValue(value);
+        const storedType =
+            value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : value.dataType;
+        if (
+            storedType?.kind === "regexp" &&
+            ts.isIdentifier(identifier) &&
+            this.context.sharedClosures.identifierIsRebound(identifier)
+        ) {
+            // A later assignment may change the grammar even through a
+            // closure or loop; the initializer's captures and flags no
+            // longer describe this binding's runtime value.
+            value = { ...value };
+            delete writable(value).regexpCaptureCount;
+            delete writable(value).regexpUnicode;
+        }
         if (value.kind === "engine" && !value.engineIdentity)
             value = { ...value, engineIdentity: Symbol() };
         // A resource whose native value has one type declares it for the
@@ -1077,10 +1093,17 @@ export class BindingScopes {
                 identifier,
             )
         ) {
-            const represented = this.context.dataTypes.fromStoredTsType(
+            const declared = this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(identifier),
                 identifier,
             );
+            const represented =
+                declared &&
+                this.context.dataLowerer.retainedResultType(
+                    narrowed,
+                    declared,
+                    identifier,
+                );
             if (
                 represented?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(represented.name)

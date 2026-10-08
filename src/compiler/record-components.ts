@@ -282,8 +282,12 @@ export function recordComponents(
                     right,
                     property.name,
                 )) {
-                    const fieldPair = heldRecords(checker, held, field);
-                    if (fieldPair) join(fieldPair[0], fieldPair[1]);
+                    for (const [source, target] of heldRecords(
+                        checker,
+                        held,
+                        field,
+                    ))
+                        join(source, target);
                 }
     };
     for (const { source, target, targetInstantiation } of joins)
@@ -370,27 +374,71 @@ export function recordComponents(
 }
 
 /**
- * The record types two field types hold in the same place, if both hold
- * plain records or unions of them.
+ * The paired record types two fields hold, including array elements and
+ * stored callable parameters/results. Their layouts share every such slot.
  */
 function heldRecords(
     checker: ts.TypeChecker,
     left: ts.Type,
     right: ts.Type,
-): [ts.Type, ts.Type] | undefined {
+    seen = new Map<ts.Type, Set<ts.Type>>(),
+): [ts.Type, ts.Type][] {
     const a = checker.getNonNullableType(left);
     const b = checker.getNonNullableType(right);
-    if (a === b) return undefined;
+    if (a === b) return [];
+    let compared = seen.get(a);
+    if (!compared) seen.set(a, (compared = new Set()));
+    if (compared.has(b)) return [];
+    compared.add(b);
     if (checker.isArrayLikeType(a) && checker.isArrayLikeType(b)) {
         const elementA = checker.getIndexTypeOfType(a, ts.IndexKind.Number);
         const elementB = checker.getIndexTypeOfType(b, ts.IndexKind.Number);
         return elementA && elementB
-            ? heldRecords(checker, elementA, elementB)
-            : undefined;
+            ? heldRecords(checker, elementA, elementB, seen)
+            : [];
+    }
+    const signatures = compatibleSignatures(checker, a, b);
+    if (signatures) {
+        const [signatureA, signatureB] = signatures;
+        return [
+            ...signatureA.parameters.flatMap((parameter, index) =>
+                heldRecords(
+                    checker,
+                    checker.getTypeOfSymbol(parameter),
+                    checker.getTypeOfSymbol(signatureB.parameters[index]!),
+                    seen,
+                ),
+            ),
+            ...heldRecords(
+                checker,
+                signatureA.getReturnType(),
+                signatureB.getReturnType(),
+                seen,
+            ),
+        ];
     }
     return isRecordLike(checker, a) &&
         isRecordLike(checker, b) &&
         recordIdentity(checker, a) !== recordIdentity(checker, b)
+        ? [[a, b]]
+        : [];
+}
+
+/** One assignable stored signature on each side, with corresponding slots. */
+function compatibleSignatures(
+    checker: ts.TypeChecker,
+    left: ts.Type,
+    right: ts.Type,
+): [ts.Signature, ts.Signature] | undefined {
+    const [a, ...overloadsA] = left.getCallSignatures();
+    const [b, ...overloadsB] = right.getCallSignatures();
+    return a &&
+        b &&
+        overloadsA.length === 0 &&
+        overloadsB.length === 0 &&
+        a.parameters.length === b.parameters.length &&
+        (checker.isTypeAssignableTo(left, right) ||
+            checker.isTypeAssignableTo(right, left))
         ? [a, b]
         : undefined;
 }
@@ -480,16 +528,9 @@ function layoutsHoldBoth(
     }
     // A function of one signature is a value of the other: one field holds
     // both where their parameters and results are held alike.
-    const [signatureA, ...overloadsA] = a.getCallSignatures();
-    const [signatureB, ...overloadsB] = b.getCallSignatures();
-    if (
-        signatureA &&
-        signatureB &&
-        overloadsA.length === 0 &&
-        overloadsB.length === 0 &&
-        signatureA.parameters.length === signatureB.parameters.length &&
-        (checker.isTypeAssignableTo(a, b) || checker.isTypeAssignableTo(b, a))
-    )
+    const signatures = compatibleSignatures(checker, a, b);
+    if (signatures) {
+        const [signatureA, signatureB] = signatures;
         return (
             signatureA.parameters.every((parameter, index) =>
                 layoutsHoldBoth(
@@ -506,5 +547,6 @@ function layoutsHoldBoth(
                 seen,
             )
         );
+    }
     return checker.isTypeAssignableTo(a, b) && checker.isTypeAssignableTo(b, a);
 }

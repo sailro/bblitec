@@ -563,6 +563,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
         | "http-response"
         | "search-params"
         | "date"
+        | "regexp"
         | "date-time-format"
         | "text-decoder"
         | "text-encoder"
@@ -581,6 +582,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["Response", "dom", "http-response"],
     ["URLSearchParams", "dom", "search-params"],
     ["Date", "default", "date"],
+    ["RegExp", "default", "regexp"],
     ["DateTimeFormat", "default", "date-time-format"],
     ["TextDecoder", "dom", "text-decoder"],
     ["TextEncoder", "dom", "text-encoder"],
@@ -1639,13 +1641,13 @@ export class DataTypeRegistry {
                 this.withRecordDemand(demand, () =>
                     this.recordViews.add(this.structIdentity(demand.type)),
                 );
-            for (const { name, setter } of demand.accessors ?? [])
+            for (const { name, setter, own } of demand.accessors ?? [])
                 for (const declaration of this.checker.getPropertyOfType(
                     demand.type,
                     name,
                 )?.declarations ?? []) {
                     this.getterProperties.add(declaration);
-                    this.prototypeAccessors.add(declaration);
+                    if (!own) this.prototypeAccessors.add(declaration);
                     if (setter) this.setterProperties.add(declaration);
                 }
             if (demand.document)
@@ -1744,6 +1746,7 @@ export class DataTypeRegistry {
         name: string,
         setter: boolean,
         node: ts.Node,
+        own?: "own",
     ): never {
         const source = this.nativeRecordSources.get(type.name);
         const declarations =
@@ -1764,7 +1767,7 @@ export class DataTypeRegistry {
             );
         throw new NativeRecordStorageRequired({
             ...source,
-            accessors: [{ name, setter }],
+            accessors: [{ name, setter, ...(own ? { own: true } : {}) }],
         });
     }
 
@@ -3435,6 +3438,29 @@ export class DataTypeRegistry {
         }
     }
 
+    /** Stored callbacks retain record arguments; ArrayLike parameters remain borrowed views. */
+    private ownFunctionRecord(type: DataType): DataType {
+        switch (type.kind) {
+            case "struct":
+                return this.markStoredObjectReferences(type);
+            case "optional": {
+                const inner = this.ownFunctionRecord(type.inner);
+                return inner.kind === "struct" ? inner : { ...type, inner };
+            }
+            case "tagged":
+                return { ...type, inner: this.ownFunctionRecord(type.inner) };
+            case "union":
+                return {
+                    ...type,
+                    members: type.members.map((member) =>
+                        this.ownFunctionRecord(member),
+                    ),
+                };
+            default:
+                return type;
+        }
+    }
+
     /** A stored JavaScript function with a fully native data signature. */
     private fromFunctionType(
         type: ts.Type,
@@ -3581,7 +3607,9 @@ export class DataTypeRegistry {
                 // call boundary so an eventual Array/Map/Set comparison can observe it.
                 if (!mapped) return [undefined];
                 const owned = markIdentityFunctions(
-                    this.ownReadonlyArray(mapped, parameterType),
+                    this.ownFunctionRecord(
+                        this.ownReadonlyArray(mapped, parameterType),
+                    ),
                 );
                 return [
                     this.absenceTaggedStorage(
@@ -3691,6 +3719,7 @@ export class DataTypeRegistry {
         const declaration = signature.declaration;
         if (!declaration || ts.isJSDocSignature(declaration)) return undefined;
         const family = this.storage.genericFunctions.family(
+            this.checker,
             signature,
             this.typeArgumentFrames(),
         );

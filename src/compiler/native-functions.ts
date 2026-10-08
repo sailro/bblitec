@@ -887,8 +887,29 @@ export class NativeFunctionLowerer {
             carries(argument, (type) => type?.kind === "struct")
         )
             return false;
-        if (target.kind === "struct" && carries(argument, isOpaqueReference))
-            return false;
+        if (target.kind === "struct") {
+            if (carries(argument, isOpaqueReference)) return false;
+            const path = this.context.unwrap(argument);
+            if (
+                (ts.isPropertyAccessExpression(path) ||
+                    ts.isElementAccessExpression(path)) &&
+                this.context.probeEmission(
+                    () => {
+                        // A stored record can retain an opaque child whose
+                        // concrete type differs from its structural annotation.
+                        const type = this.context.dataLowerer.compileDataPath(
+                            argument,
+                            "read",
+                        )?.dataType;
+                        return isOpaqueReference(
+                            type?.kind === "optional" ? type.inner : type,
+                        );
+                    },
+                    () => false,
+                )
+            )
+                return false;
+        }
         if (
             carries(argument, (type) => type?.kind === "json") &&
             parameter.type.kind !== "json"

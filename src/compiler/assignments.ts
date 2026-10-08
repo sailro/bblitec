@@ -1159,14 +1159,13 @@ export function emitPropertyAssignment(
 
     const operator = assignmentOperator(context, expression);
     const left = expression.left;
-    const regexpOwner = ts.isIdentifier(left.expression)
-        ? (context.bindings.lookupOptional(left.expression) ??
-          (context.checker.getTypeAtLocation(left.expression).symbol?.name ===
-          "RegExp"
-              ? context.compileValue(left.expression)
-              : undefined))
-        : undefined;
-    if (regexpOwner?.kind === "regexp") {
+    const regexpType = context.checker.getTypeAtLocation(left.expression);
+    const regexpOwner =
+        regexpType.symbol?.name === "RegExp" &&
+        declaredInDefaultLibrary(regexpType.symbol)
+            ? context.compileValue(left.expression)
+            : undefined;
+    if (regexpOwner?.dataType?.kind === "regexp") {
         if (left.name.text !== "lastIndex") {
             context.fail(
                 left.name,
@@ -1179,9 +1178,14 @@ export function emitPropertyAssignment(
                 "RegExp.lastIndex requires a simple assignment.",
             );
         }
+        const owner = context.bindings.pinValueToTemporary(
+            regexpOwner,
+            "regexp_owner",
+            left.expression,
+        );
         context.emit({
             kind: "expression",
-            code: `${regexpOwner.cpp}.last_index() = ${context.compileNumber(expression.right, "double")};`,
+            code: `${owner.cpp}.last_index() = ${context.compileNumber(expression.right, "double")};`,
         });
         return;
     }
@@ -2306,7 +2310,7 @@ import { staticNumberValue } from "./option-helpers.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
-import { isGlobalUndefined } from "./symbols.js";
+import { declaredInDefaultLibrary, isGlobalUndefined } from "./symbols.js";
 import {
     emitDeterministicRandomInstall,
     type DeterministicRandomContext,

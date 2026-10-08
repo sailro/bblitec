@@ -1,0 +1,42 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "RegExp semantic fixtures use the shared runGeneratedProgram native harness.",
+      "applied": true
+    },
+    {
+      "summary": "RegExp lastIndex reads have one owner in native data property lowering.",
+      "applied": true
+    },
+    {
+      "summary": "Descriptor callbacks use the shared isSupportedFunction predicate.",
+      "applied": true
+    },
+    {
+      "summary": "Validated descriptor members use a discriminated union, so emission requires no repeated AST validation.",
+      "applied": true
+    },
+    {
+      "summary": "Void and undefined comparisons share operand normalization and absence comparison, preserving evaluation order.",
+      "applied": true
+    },
+    {
+      "summary": "Discarded async returns share a value-aware completion boundary before effects are emitted.",
+      "applied": true
+    },
+    {
+      "summary": "Generic signature equivalence uses the shared isTypeReference guard.",
+      "applied": true
+    },
+    {
+      "summary": "Concrete native field probing is restricted to property and element paths and rolls back speculative emission.",
+      "applied": true
+    }
+  ]
+}

@@ -47,6 +47,8 @@ export interface NativeRecordStorageDemand {
 export interface RecordAccessorDemand {
     readonly name: string;
     readonly setter: boolean;
+    /** A property definition installs an own accessor, not a class prototype accessor. */
+    readonly own?: true;
 }
 
 /** The demand flags a replay strengthens, never weakens. */
@@ -79,17 +81,29 @@ export function mergeNativeRecordStorage(
             ),
     );
     const joins = [...(previous?.joins ?? []), ...added];
-    const accessors = new Map<string, boolean>();
-    for (const { name, setter } of previous?.accessors ?? [])
-        accessors.set(name, setter || accessors.get(name) === true);
+    const accessors = new Map(
+        (previous?.accessors ?? []).map((accessor) => [
+            accessor.name,
+            accessor,
+        ]),
+    );
     let changed =
         previous === undefined ||
         added.length > 0 ||
         RECORD_STORAGE_FLAGS.some((flag) => next[flag] && !previous[flag]);
-    for (const { name, setter } of next.accessors ?? []) {
+    for (const { name, setter, own } of next.accessors ?? []) {
         const known = accessors.get(name);
-        if (known === undefined || (setter && !known)) changed = true;
-        accessors.set(name, setter || known === true);
+        if (
+            known === undefined ||
+            (setter && !known.setter) ||
+            (!own && known.own)
+        )
+            changed = true;
+        accessors.set(name, {
+            name,
+            setter: setter || known?.setter === true,
+            ...(own && (!known || known.own) ? { own: true } : {}),
+        });
     }
     if (!changed) return undefined;
     return {
@@ -98,10 +112,7 @@ export function mergeNativeRecordStorage(
         ...(joins.length ? { joins } : {}),
         ...(accessors.size
             ? {
-                  accessors: [...accessors].map(([name, setter]) => ({
-                      name,
-                      setter,
-                  })),
+                  accessors: [...accessors.values()],
               }
             : {}),
     };

@@ -1,12 +1,18 @@
 import { writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { argumentAt, expressionMayRunCode } from "./syntax.js";
+import { argumentAt, propertyNameText } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
-import { callMember, type DataType, type OwnPresence } from "./data-types.js";
+import {
+    callMember,
+    type DataStructField,
+    type DataType,
+    type OwnPresence,
+} from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { refuseErrorReflection } from "./error-values.js";
+import { isSupportedFunction } from "./user-functions.js";
 import { isSymbolPropertyKey } from "./symbols.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
@@ -19,6 +25,7 @@ type ObjectStaticContext = Pick<
     LoweringServices,
     | "checker"
     | "compileValue"
+    | "compileStoredDataFunction"
     | "moduleNamespaces"
     | "captureEmittedLines"
     | "probeEmission"
@@ -958,85 +965,316 @@ function compileObjectCreate(
     };
 }
 
-/**
- * `Object.defineProperty(object, key, descriptor)` with a writable,
- * enumerable and configurable data descriptor: the own data property an
- * assignment creates, stored in a struct's field. Other attributes,
- * accessors and targets are not represented.
- */
-function compileObjectDefineProperty(
+/** A literal descriptor's expressions, in their source evaluation order. */
+interface PropertyDefinition {
+    key: string;
+    node: ts.Node;
+    members: Array<
+        | { name: "value"; expression: ts.Expression }
+        | {
+              name: "get" | "set";
+              callback:
+                  | ts.ArrowFunction
+                  | ts.FunctionExpression
+                  | ts.MethodDeclaration;
+          }
+    >;
+    accessor: boolean;
+    setter: boolean;
+}
+
+type DefinitionOperation = "defineProperty" | "defineProperties";
+
+function propertyDefinition(
     context: ObjectStaticContext,
-    call: ts.CallExpression,
-): Value {
-    context.expectArgumentCount(call, 3, 3);
-    const descriptor = context.unwrap(argumentAt(call, 2));
+    operation: DefinitionOperation,
+    key: string,
+    expression: ts.Expression,
+): PropertyDefinition {
     const refuse = (message: string): never =>
-        context.fail(call, `Object.defineProperty ${message}`);
-    if (!ts.isObjectLiteralExpression(descriptor))
-        return refuse("needs a literal data descriptor.");
-    let valueNode: ts.Expression | undefined;
+        context.fail(expression, `Object.${operation} ${message}`);
+    const literal = context.unwrap(expression);
+    if (!ts.isObjectLiteralExpression(literal))
+        return refuse("needs literal property descriptors.");
+    const members: PropertyDefinition["members"] = [];
     const attributes = new Set<string>();
-    for (const property of descriptor.properties) {
+    const names = new Set<string>();
+    for (const property of literal.properties) {
         if (
-            !ts.isPropertyAssignment(property) ||
-            !ts.isIdentifier(property.name)
+            !ts.isPropertyAssignment(property) &&
+            !ts.isMethodDeclaration(property)
         )
-            return refuse("needs a literal data descriptor.");
-        const name = property.name.text;
-        if (name === "value") valueNode = property.initializer;
-        else if (
+            return refuse(
+                "needs literal descriptors without spreads or descriptor accessors.",
+            );
+        const name = propertyNameText(property.name);
+        if (name === undefined || names.has(name))
+            return refuse("needs distinct, non-computed descriptor members.");
+        names.add(name);
+        if (name === "value") {
+            if (ts.isMethodDeclaration(property))
+                return refuse(
+                    "needs a value expression for a data descriptor.",
+                );
+            members.push({ name, expression: property.initializer });
+        } else if (name === "get" || name === "set") {
+            const callback = ts.isMethodDeclaration(property)
+                ? property
+                : context.unwrap(property.initializer);
+            if (!isSupportedFunction(callback))
+                return refuse("requires literal getter and setter functions.");
+            members.push({ name, callback });
+        } else if (
             ["writable", "enumerable", "configurable"].includes(name) &&
+            ts.isPropertyAssignment(property) &&
             property.initializer.kind === ts.SyntaxKind.TrueKeyword
         )
             attributes.add(name);
         else
             return refuse(
-                `represents writable, enumerable and configurable data properties only, not '${name}: ${property.initializer.getText()}'.`,
+                `does not represent descriptor attribute '${name}' unless it is literally true.`,
             );
     }
-    if (!valueNode || attributes.size !== 3)
+    const accessor = names.has("get") || names.has("set");
+    if (accessor) {
+        if (names.has("value") || names.has("writable"))
+            return refuse(
+                "cannot combine data and accessor descriptor members.",
+            );
+        if (!names.has("get"))
+            return refuse(
+                "requires an accessor getter; setter-only descriptors are not represented.",
+            );
+        if (!attributes.has("enumerable") || !attributes.has("configurable"))
+            return refuse(
+                "requires accessor enumerable and configurable attributes to be explicitly true.",
+            );
+    } else if (!names.has("value") || attributes.size !== 3)
         return refuse(
             "represents a value with writable, enumerable and configurable all true only.",
         );
-    const keyNode = argumentAt(call, 1);
-    const key = context.compileValue(keyNode).staticString;
-    if (key === undefined)
-        return refuse("needs a property key known at generation.");
-    const targetNode = argumentAt(call, 0);
-    const target = context.compileValue(targetNode);
+    return {
+        key,
+        node: expression,
+        members,
+        accessor,
+        setter: names.has("set"),
+    };
+}
+
+/** Hold the target before descriptor expressions can rebind its source name. */
+function definitionTarget(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+    operation: DefinitionOperation,
+): Value & { dataType: DataType<"struct"> } {
+    const expression = argumentAt(call, 0);
+    const target = context.compileValue(expression);
+    if (target.kind === "record") {
+        const declaration = context.bindings.recordDeclaration(
+            target,
+            expression,
+        );
+        if (declaration)
+            throw new DynamicBindingStorageRequired(declaration, "source");
+    }
     if (target.kind !== "data" || target.dataType?.kind !== "struct")
-        return refuse(
-            `writes a struct's field; a ${target.kind} target is not represented.`,
+        return context.fail(
+            call,
+            `Object.${operation} requires a stored record target.`,
         );
-    const structType = target.dataType;
-    // A shared object is held while the value runs; a value struct is written
-    // where it is stored, which a value that runs code could replace first.
-    const reference = context.dataTypes.isReferenceStruct(structType.name);
-    if (!reference && expressionMayRunCode(valueNode))
-        return refuse(
-            "with a value that runs code writes a struct that value could replace.",
+    context.dataTypes.markStoredObjectReferences(target.dataType);
+    return {
+        ...context.bindings.pinValueToTemporary(
+            target,
+            "defined_object",
+            expression,
+        ),
+        dataType: target.dataType,
+    };
+}
+
+/** Evaluate all descriptors before applying any definition to the held object. */
+function applyPropertyDefinitions(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+    operation: DefinitionOperation,
+    target: Value & { dataType: DataType<"struct"> },
+    definitions: readonly PropertyDefinition[],
+): Value {
+    const collected = new Map<
+        string,
+        { field: DataStructField; cpp: string }
+    >();
+    for (const definition of definitions) {
+        const field = context.dataTypes.structField(
+            target.dataType.name,
+            definition.key,
+            definition.node,
+            "accessors",
         );
-    const owner = reference
-        ? context.bindings.pinValueToTemporary(
-              target,
-              "defined_object",
-              targetNode,
-          )
-        : target;
-    const field = context.dataTypes.structField(structType.name, key, keyNode);
-    const stored = context.dataLowerer.compileForSink(valueNode, field.type);
-    const access = reference ? "->" : ".";
-    context.emit({
-        kind: "expression",
-        code: `${owner.cpp}${access}${field.name} = ${stored};`,
-    });
+        if (
+            field.accessorReceiver ||
+            (field.accessor &&
+                context.dataTypes.holdsPrototypeAccessors(target.dataType.name))
+        )
+            context.fail(
+                definition.node,
+                `Object.${operation} does not redefine proxy or prototype accessor fields.`,
+            );
+        if (definition.accessor) {
+            if (context.dataTypes.isClassStruct(target.dataType.name))
+                context.fail(
+                    definition.node,
+                    `Object.${operation} does not define class instance accessors.`,
+                );
+            if (
+                field.optionalProperty ||
+                field.sharedAbsent ||
+                field.uncheckedProperty ||
+                field.presentForTags
+            )
+                context.fail(
+                    definition.node,
+                    `Object.${operation} requires an accessor property that is always own.`,
+                );
+            if (
+                !field.accessor ||
+                (definition.setter && field.accessor !== "get-set")
+            )
+                context.dataTypes.requireAccessorSlot(
+                    target.dataType,
+                    definition.key,
+                    definition.setter,
+                    definition.node,
+                    "own",
+                );
+            // An omitted setter preserves a previous accessor's setter in
+            // JavaScript. Replacing the native pair would erase it.
+            if (!definition.setter && field.accessor === "get-set")
+                context.fail(
+                    definition.node,
+                    `Object.${operation} requires an explicit setter when the property can already hold one.`,
+                );
+        }
+        const values = new Map<string, string>();
+        for (const member of definition.members) {
+            let initializer: string;
+            if (member.name === "value") {
+                initializer = context.dataLowerer.compileForSink(
+                    member.expression,
+                    field.type,
+                );
+            } else {
+                const { callback } = member;
+                initializer = context.compileStoredDataFunction(
+                    callback,
+                    member.name === "get"
+                        ? {
+                              kind: "function",
+                              parameters: [],
+                              result: field.type,
+                          }
+                        : { kind: "function", parameters: [field.type] },
+                    undefined,
+                    false,
+                    ts.isArrowFunction(callback) ? undefined : target,
+                );
+            }
+            const name = context.allocateTemporaryCppName("defined_property");
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name,
+                initializer,
+            });
+            values.set(member.name, name);
+        }
+        const cpp = definition.accessor
+            ? `${context.dataTypes.structFieldCppType(field)}(${values.get("get")!}, ${values.get("set") ?? "{}"})`
+            : context.dataTypes.structFieldInitializerCpp(
+                  field,
+                  values.get("value")!,
+              );
+        collected.set(definition.key, { field, cpp });
+    }
+    // Object.keys also places integer-index keys before other string keys.
+    for (const key of Object.keys(Object.fromEntries(collected))) {
+        const { field, cpp } = collected.get(key)!;
+        context.emit({
+            kind: "expression",
+            code: `${target.cpp}->${field.name} = ${cpp};`,
+        });
+    }
     context.bindings.invalidateRecordProperties(target);
-    const targetName = context.unwrap(targetNode);
-    const bound = ts.isIdentifier(targetName)
-        ? context.bindings.lookupOptional(targetName)
+    const expression = context.unwrap(argumentAt(call, 0));
+    const bound = ts.isIdentifier(expression)
+        ? context.bindings.lookupOptional(expression)
         : undefined;
     if (bound) context.bindings.invalidateRecordProperties(bound);
-    return owner;
+    return target;
+}
+
+function compileObjectDefineProperty(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 3, 3);
+    const target = definitionTarget(context, call, "defineProperty");
+    const key = context.compileValue(argumentAt(call, 1)).staticString;
+    if (key === undefined)
+        return context.fail(
+            call,
+            "Object.defineProperty needs a property key known at generation.",
+        );
+    return applyPropertyDefinitions(context, call, "defineProperty", target, [
+        propertyDefinition(context, "defineProperty", key, argumentAt(call, 2)),
+    ]);
+}
+
+function compileObjectDefineProperties(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const target = definitionTarget(context, call, "defineProperties");
+    const descriptors = context.unwrap(argumentAt(call, 1));
+    if (!ts.isObjectLiteralExpression(descriptors))
+        return context.fail(
+            descriptors,
+            "Object.defineProperties needs a literal descriptor map.",
+        );
+    const definitions: PropertyDefinition[] = [];
+    const keys = new Set<string>();
+    for (const property of descriptors.properties) {
+        const key = property.name && propertyNameText(property.name);
+        if (
+            !ts.isPropertyAssignment(property) ||
+            key === undefined ||
+            keys.has(key) ||
+            key === "__proto__"
+        )
+            return context.fail(
+                property,
+                "Object.defineProperties needs distinct literal property keys without spreads, methods or accessors.",
+            );
+        keys.add(key);
+        definitions.push(
+            propertyDefinition(
+                context,
+                "defineProperties",
+                key,
+                property.initializer,
+            ),
+        );
+    }
+    return applyPropertyDefinitions(
+        context,
+        call,
+        "defineProperties",
+        target,
+        definitions,
+    );
 }
 
 /**
@@ -1051,6 +1289,7 @@ export const OBJECT_STATIC_HANDLERS: ReadonlyMap<
     ["assign", compileObjectAssign],
     ["create", compileObjectCreate],
     ["defineProperty", compileObjectDefineProperty],
+    ["defineProperties", compileObjectDefineProperties],
     ["entries", compileObjectEntries],
     ["fromEntries", compileObjectFromEntries],
     ["hasOwn", compileObjectHasOwn],

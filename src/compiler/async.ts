@@ -16,7 +16,11 @@ import {
     type SupportedFunction,
 } from "./user-functions.js";
 import { unwrapExpression, argumentAt } from "./syntax.js";
-import { declaredSymbol } from "./symbols.js";
+import {
+    declarationInDefaultLibrary,
+    declaredInDefaultLibrary,
+    declaredSymbol,
+} from "./symbols.js";
 import {
     optionalPresentCpp,
     presenceFlagCpp,
@@ -1947,23 +1951,104 @@ export class AsyncLowerer {
      * getter, callable property or accessor field) and calls it when
      * callable. A data `then` that is not a function is read unobservably.
      */
-    refuseThenable(value: Value, node: ts.Node): void {
-        const property = value.recordProperties?.then;
-        const field =
-            value.dataType?.kind === "struct"
-                ? this.context.dataTypes.findStructField(
-                      value.dataType.name,
-                      "then",
-                      node,
-                  )
-                : undefined;
+    refuseThenable(value: Value | undefined, node: ts.Node): void {
+        const property = value?.recordProperties?.then;
+        const somePresentStorage = (
+            type: DataType | undefined,
+            matches: (member: DataType) => boolean,
+        ): boolean => {
+            if (!type) return false;
+            if (type.kind === "optional" || type.kind === "tagged")
+                return somePresentStorage(type.inner, matches);
+            if (type.kind === "union")
+                return type.members.some((member) =>
+                    somePresentStorage(member, matches),
+                );
+            return matches(type);
+        };
+        const storedCallable = (type: DataType | undefined): boolean =>
+            somePresentStorage(
+                type,
+                (member) =>
+                    member.kind === "function" ||
+                    (member.kind === "struct" &&
+                        this.context.dataTypes.structCall(member.name) !==
+                            undefined),
+            );
+        const storedThenable = somePresentStorage(value?.dataType, (member) => {
+            if (member.kind !== "struct") return false;
+            const field = this.context.dataTypes.findStructField(
+                member.name,
+                "then",
+                node,
+            );
+            return !!field?.accessor || storedCallable(field?.type);
+        });
+        const customThen = (type: ts.Type): boolean => {
+            const resolved = this.context.dataTypes.resolveTypeParameter(type);
+            if (resolved.isUnion()) return resolved.types.some(customThen);
+            const then = resolved.getProperty("then");
+            if (!then) return false;
+            const parts = resolved.isIntersection()
+                ? resolved.types
+                : [resolved];
+            if (
+                parts.some(
+                    (part) =>
+                        part.symbol?.name === "Promise" &&
+                        declaredInDefaultLibrary(part.symbol),
+                ) &&
+                then.declarations?.every(declarationInDefaultLibrary)
+            )
+                return false;
+            const propertyType = this.context.checker.getNonNullableType(
+                this.context.checker.getTypeOfSymbolAtLocation(then, node),
+            );
+            return (
+                then.declarations?.some((declaration) =>
+                    ts.isGetAccessorDeclaration(declaration),
+                ) === true ||
+                (propertyType.isUnion()
+                    ? propertyType.types
+                    : [propertyType]
+                ).some((member) => member.getCallSignatures().length > 0)
+            );
+        };
+        const customResult = (source: ts.Node): boolean => {
+            if (!ts.isExpression(source))
+                return customThen(
+                    this.context.checker.getTypeAtLocation(source),
+                );
+            const expression = unwrapExpression(source);
+            if (ts.isConditionalExpression(expression))
+                return (
+                    customResult(expression.whenTrue) ||
+                    customResult(expression.whenFalse)
+                );
+            if (ts.isBinaryExpression(expression)) {
+                switch (expression.operatorToken.kind) {
+                    case ts.SyntaxKind.CommaToken:
+                    case ts.SyntaxKind.AmpersandAmpersandToken:
+                        return customResult(expression.right);
+                    case ts.SyntaxKind.BarBarToken:
+                    case ts.SyntaxKind.QuestionQuestionToken:
+                        return (
+                            customResult(expression.left) ||
+                            customResult(expression.right)
+                        );
+                }
+            }
+            return customThen(
+                this.context.checker.getTypeAtLocation(expression),
+            );
+        };
         if (
-            value.recordMethods?.then ||
-            value.recordGetters?.then ||
+            value?.recordMethods?.then ||
+            value?.recordGetters?.then ||
             property?.kind === "callback" ||
-            property?.dataType?.kind === "function" ||
-            field?.type.kind === "function" ||
-            field?.accessor
+            storedCallable(property?.dataType) ||
+            storedThenable ||
+            customResult(node)
         )
             this.context.fail(
                 node,

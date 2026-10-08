@@ -6380,6 +6380,8 @@ class Compiler implements LoweringServices {
         if (returnType === undefined) {
             this.fail(statement, "Return outside a native function.");
         }
+        if (returnType !== "void" && statement.expression)
+            this.asyncActivations.refuseThenableReturn(statement.expression);
         if (coroutine && statement.expression) {
             const emitResult = (expression: ts.Expression): void => {
                 const selected = this.unwrap(expression);
@@ -6439,7 +6441,7 @@ class Compiler implements LoweringServices {
                 // expression's value but not its side effects. Preserve the
                 // same boundary for `return stopEngine(engine)` and for
                 // value-returning expressions accepted by a void callback.
-                this.emitExpressionAsStatement(statement.expression);
+                this.asyncActivations.emitDiscardedReturn(statement.expression);
             }
             this.emit(
                 coroutine

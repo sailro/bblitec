@@ -4296,7 +4296,7 @@ test("Object.create, defineProperty and getPrototypeOf refuse unrepresented form
         ],
         [
             "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { get: () => 3, enumerable: true, configurable: true });",
-            /Object\.defineProperty represents writable, enumerable and configurable data properties only/,
+            /Object\.defineProperty requires an accessor property that is always own/,
         ],
         [
             "class A {} class B extends A {} const a = new A(); const r = Object.getPrototypeOf(a) === A.prototype;",

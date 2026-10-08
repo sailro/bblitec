@@ -56,6 +56,7 @@ export const scalarKinds: DataKindOperations<
     | "gpu-adapter-info"
     | "storage"
     | "date"
+    | "regexp"
     | "date-time-format"
     | "text-decoder"
     | "text-encoder"
@@ -124,6 +125,10 @@ export const scalarKinds: DataKindOperations<
     "search-params": opaqueLeaf("bbl::js::SearchParams", "search-params"),
     storage: opaqueLeaf("bbl::js::Storage", "storage"),
     date: opaqueLeaf("bbl::js::Date", "date"),
+    regexp: {
+        ...reseatingLeaf("bbl::js::RegExp", "regexp", true),
+        opaqueReference: true,
+    },
     "date-time-format": opaqueLeaf("bbl::js::DateTimeFormat", "dateformat"),
     "text-decoder": opaqueLeaf("bbl::js::TextDecoder", "textdecoder"),
     "text-encoder": opaqueLeaf("bbl::js::TextEncoder", "textencoder"),

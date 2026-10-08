@@ -2184,19 +2184,47 @@ function arrayResultType(
 }
 
 /**
- * A type predicate narrowing string tags (`(f: Failure) => f is Candidate`)
- * makes the filtered array one of the narrower tags: each element it keeps
- * converts to that tag, which refuses at run time if the predicate lied.
+ * A filter predicate selects the result's represented element type. Union
+ * members and parsed values convert only after the predicate succeeds;
+ * narrowed string tags use their destination's enum storage.
  */
-function narrowedTagFilter(
+function narrowedFilterResult(
     lowerer: DataLowerer,
     call: ts.CallExpression,
     element: DataType,
 ): DataType<"vector"> | undefined {
-    const result = lowerer.dataTypeAt(call);
+    const callType = lowerer.dataTypeAt(call);
+    const result = callType?.kind === "optional" ? callType.inner : callType;
+    if (result?.kind !== "vector") return undefined;
+    if (element.kind === "union") {
+        const selected =
+            result.element.kind === "union"
+                ? result.element.members
+                : [result.element];
+        if (
+            selected.every((target) =>
+                element.members.some((member) =>
+                    dataTypesEqual(member, target),
+                ),
+            )
+        )
+            return result;
+    }
+    if (element.kind === "json" && result.element.kind !== "json") {
+        const predicate = call.arguments[0];
+        const signature =
+            predicate &&
+            lowerer.context.checker
+                .getTypeAtLocation(predicate)
+                .getCallSignatures()[0];
+        if (
+            signature &&
+            lowerer.context.checker.getTypePredicateOfSignature(signature)
+        )
+            return result;
+    }
     if (
         element.kind !== "enum" ||
-        result?.kind !== "vector" ||
         result.element.kind !== "enum" ||
         result.element.name === element.name
     )
@@ -2225,7 +2253,7 @@ function compileArrayFilter(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
     const filteredType =
-        narrowedTagFilter(lowerer, call, dataType.element) ??
+        narrowedFilterResult(lowerer, call, dataType.element) ??
         arrayResultType(lowerer, call, {
             kind: "vector" as const,
             element: dataType.element,
@@ -3600,7 +3628,7 @@ function compileStringDataMethod(
             );
         }
         const pattern = lowerer.context.compileValue(argumentAt(call, 0));
-        if (pattern.kind !== "regexp") {
+        if (pattern.dataType?.kind !== "regexp") {
             lowerer.context.fail(
                 argumentAt(call, 0),
                 `Reached String.${method} uses a RegExp pattern.`,
@@ -3723,7 +3751,15 @@ function compileStringDataMethod(
         const separatorValue = lowerer.context.compileValue(
             argumentAt(call, 0),
         );
-        if (separatorValue.kind === "regexp") {
+        if (separatorValue.dataType?.kind === "regexp") {
+            if (
+                separatorValue.regexpCaptureCount === undefined &&
+                separatorValue.regexpUnicode !== false
+            )
+                lowerer.context.fail(
+                    argumentAt(call, 0),
+                    "String.split by a stored RegExp requires a known capture layout.",
+                );
             // Split pushes each capture, an unmatched one as undefined, which
             // a string list cannot hold; the code point split takes none.
             if (
@@ -3848,7 +3884,7 @@ function compileStringDataMethod(
                 { kind: "string" },
             );
         }
-        if (pattern.kind !== "regexp") {
+        if (pattern.dataType?.kind !== "regexp") {
             lowerer.context.fail(
                 argumentAt(call, 0),
                 "Reached String.replace uses a RegExp pattern.",

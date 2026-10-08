@@ -3069,12 +3069,6 @@ export class PropertyAccessLowerer {
         }
         const fetchedProperty = staticFetchProperty(owner, property);
         if (fetchedProperty) return fetchedProperty;
-        if (owner.kind === "regexp" && property === "lastIndex") {
-            return {
-                kind: "number",
-                cpp: `${owner.cpp}.last_index()`,
-            };
-        }
         if (
             owner.kind === "texture" &&
             (property === "width" || property === "height")

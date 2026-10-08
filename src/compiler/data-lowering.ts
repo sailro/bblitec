@@ -2171,6 +2171,8 @@ export class DataLowerer {
                 owner.dataType?.kind === "optional"
                     ? owner.dataType.inner
                     : owner.dataType;
+            if (mode === "write" && ownerType?.kind === "regexp")
+                return undefined;
             if (mode === "write" && ownerType?.kind === "arguments")
                 this.context.fail(
                     unwrapped,
@@ -4539,6 +4541,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (dataType.kind === "symbol")
             return symbolProperty(this, owner, property);
+        if (dataType.kind === "regexp" && property === "lastIndex")
+            return this.leafValue(`${owner.cpp}.last_index()`, {
+                kind: "number",
+            });
         // The kind fixes every instance's element size; an owner that runs
         // code still runs, in place.
         if (
@@ -6395,6 +6401,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "event-target",
                 "struct",
                 "date",
+                "regexp",
                 "date-time-format",
                 "storage",
                 "vector",
@@ -15353,6 +15360,54 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const right = this.context.options.workers
             ? unwrapExpression(expression.right)
             : this.context.unwrap(expression.right);
+        const isNullish = (candidate: ts.Expression): boolean =>
+            isNullishLiteral(this.context.checker, candidate) ||
+            (ts.isIdentifier(candidate) &&
+                this.context.bindings.lookupOptional(candidate)?.kind ===
+                    "json-null");
+        const completionFlags =
+            this.context.checker.getTypeAtLocation(left).flags |
+            this.context.checker.getTypeAtLocation(right).flags;
+        if (
+            (completionFlags & ts.TypeFlags.Void) !== 0 ||
+            (!isNullish(left) &&
+                !isNullish(right) &&
+                (completionFlags & ts.TypeFlags.Undefined) !== 0)
+        ) {
+            const undefinedResult = this.context.probeEmission(() => {
+                const operand = (node: ts.Expression): Value => {
+                    const value = this.context.compileValue(node);
+                    // A void annotation is not proof of undefined completion:
+                    // the sink checks the callable body and preserves effects.
+                    if (value.kind === "void")
+                        return this.leafValue(
+                            this.compileKnownValueForSink(
+                                value,
+                                { kind: "undefined" },
+                                node,
+                            ),
+                            { kind: "undefined" },
+                        );
+                    return pinSlotFound(
+                        this,
+                        pinOperand(this.context, value, node, "comparison"),
+                    );
+                };
+                const a = operand(left);
+                const b = operand(right);
+                const aUndefined = isUndefinedDataType(a.dataType);
+                if (!aUndefined && !isUndefinedDataType(b.dataType))
+                    return undefined;
+                return this.absentComparison(
+                    aUndefined ? b : a,
+                    aUndefined ? right : left,
+                    "undefined",
+                    negated,
+                    loose,
+                );
+            });
+            if (undefinedResult !== undefined) return undefinedResult;
+        }
         if (ts.isTypeOfExpression(left) || ts.isTypeOfExpression(right)) {
             const leftValue = this.context.compileValue(left);
             const rightValue = this.context.compileValue(right);
@@ -15434,50 +15489,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : undefined;
             });
             if (identity) return identity;
-        }
-        const isNullish = (candidate: ts.Expression): boolean =>
-            isNullishLiteral(this.context.checker, candidate) ||
-            (ts.isIdentifier(candidate) &&
-                this.context.bindings.lookupOptional(candidate)?.kind ===
-                    "json-null");
-        if (
-            !isNullish(left) &&
-            !isNullish(right) &&
-            [left, right].some(
-                (operand) =>
-                    (this.context.checker.getTypeAtLocation(operand).flags &
-                        (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !==
-                    0,
-            )
-        ) {
-            const undefinedResult = this.context.probeEmission(() => {
-                const a = this.context.bindings.pinValueToTemporary(
-                    this.context.compileValue(left),
-                    "comparison_left",
-                );
-                const b = this.context.bindings.pinValueToTemporary(
-                    this.context.compileValue(right),
-                    "comparison_right",
-                );
-                const aUndefined = isUndefinedDataType(a.dataType);
-                if (!aUndefined && !isUndefinedDataType(b.dataType))
-                    return undefined;
-                const other = aUndefined ? b : a,
-                    node = aUndefined ? right : left;
-                if (!other.cpp)
-                    this.context.fail(
-                        node,
-                        "Undefined comparison requires a represented operand.",
-                    );
-                return this.absentComparison(
-                    other,
-                    node,
-                    "undefined",
-                    negated,
-                    loose,
-                );
-            });
-            if (undefinedResult !== undefined) return undefinedResult;
         }
         // An operand that reads undefined (a property no prototype of a
         // primitive defines) is strictly equal only to an operand that can

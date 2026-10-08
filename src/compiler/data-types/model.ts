@@ -126,6 +126,7 @@ interface DataKinds {
     "weak-ref": { kind: "weak-ref"; target: DataType };
     storage: { kind: "storage" };
     date: { kind: "date" };
+    regexp: { kind: "regexp" };
     "date-time-format": { kind: "date-time-format" };
     "text-decoder": { kind: "text-decoder" };
     "text-encoder": { kind: "text-encoder" };
