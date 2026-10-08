@@ -337,3 +337,22 @@ check(
         throw Error('method assignment alias');
 `,
 );
+
+check(
+    "document entries preserve present null and undefined lanes",
+    `
+    function names(value:unknown):string {
+        if(!value || typeof value!=='object' || Array.isArray(value)) return 'none';
+        const out:string[]=[];
+        for(const [name,raw] of Object.entries(value as Record<string,unknown>)) {
+            const clip=raw as {from?:number}|null;
+            out.push(name+'='+String(clip?.from)+'/'+String(clip));
+        }
+        return out.join(',');
+    }
+    const doc=JSON.parse('{"walk":{"from":2},"7":{"from":1},"idle":null}') as unknown;
+    (doc as Record<string,unknown>).missing=undefined;
+    if(names(doc)!=='7=1/[object Object],walk=2/[object Object],idle=undefined/null,missing=undefined/undefined' || names(JSON.parse('[1]'))!=='none')
+        throw Error('present document entry');
+`,
+);

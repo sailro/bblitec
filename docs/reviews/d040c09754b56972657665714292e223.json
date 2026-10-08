@@ -1,5 +1,10 @@
 {
-  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
   "findings": [
     {
       "summary": "Date string admission uses the shared isStringValue classifier.",
@@ -31,6 +36,10 @@
     },
     {
       "summary": "Callback contract union roots compress parent paths through the existing emission journal.",
+      "applied": true
+    },
+    {
+      "summary": "Record absence proof skips source-shape scans for open record and proxy views that already cannot prove absence.",
       "applied": true
     }
   ]

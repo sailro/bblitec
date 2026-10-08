@@ -386,7 +386,10 @@ export class AsyncLowerer {
                         : cpp,
                 };
             }
-            const settlement = this.settlementType(node);
+            const settlement =
+                rejection || node.arguments.length === 2
+                    ? this.settlementType(node)
+                    : undefined;
             const first = this.compileReaction(
                 argumentAt(node, 0),
                 promise,
@@ -1341,6 +1344,14 @@ export class AsyncLowerer {
             .getCallSignatures()[0];
         const returnType =
             signature && context.checker.getReturnTypeOfSignature(signature);
+        // A single fulfillment callback determines its own settlement. The
+        // call's context may widen its generic result to a constructor input
+        // union that the callback never produces.
+        if (!cleanup && !rejection && !settlement && returnType) {
+            settlement = this.settlementType(node, returnType);
+            // A null-only callback still needs the result's contextual carrier.
+            if (!settlement) settlement = this.settlementType(node);
+        }
         // A reporting function value still installs a reaction: only its
         // browser instrumentation is erased, not rejection handling or timing.
         const reportingOnly =
@@ -1559,14 +1570,13 @@ export class AsyncLowerer {
         };
     }
 
-    /** One owned settlement for both reactions, including a catch's fulfillment pass-through. */
+    /** Owned settlement storage, shared by both outcomes when a reaction can recover. */
     private settlementType(
         node: ts.Expression,
+        source = this.context.checker.getTypeAtLocation(node),
     ): DataType<"promise"> | undefined {
         const context = this.context;
-        const awaited = context.checker.getAwaitedType(
-            context.checker.getTypeAtLocation(node),
-        );
+        const awaited = context.checker.getAwaitedType(source);
         if (!awaited) return undefined;
         if (hasNoValueCompletion(awaited)) return { kind: "promise" };
         const result = context.dataTypes.fromPromiseResultType(awaited, node);
@@ -1807,12 +1817,14 @@ export class AsyncLowerer {
     private resolvedValue(node: ts.CallExpression): Value {
         const context = this.context;
         const argument = node.arguments[0];
-        const value = argument
+        let value = argument
             ? context.compileValue(argument)
             : { kind: "void" as const, cpp: "" };
+        value = this.adoptPromiseUnion(value, argument ?? node) ?? value;
         // Existing promises keep their identity and settlement; only a raw
         // payload needs conversion to its contextual result representation.
         if (value.kind === "promise") return value;
+        this.refuseThenable(value, argument ?? node);
         const own =
             value.dataType ??
             (value.kind === "string" ||

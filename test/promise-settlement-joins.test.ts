@@ -38,6 +38,11 @@ test("Promise reactions join owned results without changing scheduling or aliase
             if(record.value!==7)throw new Error('result alias');
             const empty:Promise<{value:number}|null>=Promise.resolve(null);
             if(await empty!==null)throw new Error('contextual null');
+            const bytes=new Uint8Array(await Promise.resolve(1).then(()=>new ArrayBuffer(3)));
+            if(bytes.length!==3||bytes[0]!==0)throw new Error('concrete fulfillment');
+            const nullable=await Promise.resolve(1).then<number|null>(()=>null);
+            const contextual:Promise<number|null>=Promise.resolve(1).then(()=>null);
+            if(nullable!==null||await contextual!==null)throw new Error('null fulfillment carrier');
             let order='';
             const converted=Promise.resolve(1).catch(()=> 'unused').then(()=>{order+='a';});
             const competitor=Promise.resolve().then(()=>{}).then(()=>{order+='b';});

@@ -7468,11 +7468,20 @@ export class DataTypeRegistry {
         )
             return false;
         const source = this.nativeRecordSources.get(structName);
-        return !(
-            source &&
-            (this.recordViews.has(source.identity) ||
-                this.proxyRecords.has(source.identity))
-        );
+        if (!source) return true;
+        if (
+            this.recordViews.has(source.identity) ||
+            this.proxyRecords.has(source.identity)
+        )
+            return false;
+        // Union layouts can start with common fields only. A declared arm
+        // field needs layout replay instead of an assumed absent value.
+        return !this.withRecordDemand(source, () => {
+            const shapes =
+                this.recordComponentOf(source.type)?.shapes ??
+                (source.type.isUnion() ? source.type.types : [source.type]);
+            return shapes.some((shape) => shape.getProperty(property));
+        });
     }
 
     /**

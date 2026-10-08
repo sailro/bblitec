@@ -14200,19 +14200,27 @@ check(
 `,
 );
 
-test("one object without one native layout refuses where it is stored or compared", () => {
-    // The constant keeps its compile-time value; a comparison needing the
-    // one object refuses at the comparison.
-    assert.throws(
-        () =>
-            compileSource(
-                `interface Entry { id: number; view?: unknown }
-                const NO_ENTRIES: readonly Entry[] = Object.freeze([]);
-                const OTHER: readonly Entry[] = Object.freeze([]);
-                if (NO_ENTRIES === OTHER) throw new Error("distinct");`,
-            ),
-        /Comparison requires represented operands, received tuple and tuple\./,
-    );
+check(
+    "empty-record-arrays-retain-independent-owners-and-mutable-aliases",
+    `
+    interface Entry { id:number; view?:unknown; }
+    const NO_ENTRIES:readonly Entry[]=Object.freeze([]);
+    const OTHER:readonly Entry[]=Object.freeze([]);
+    const alias=NO_ENTRIES;
+    const saved:ReadonlyArray<readonly Entry[]>=[NO_ENTRIES,OTHER,alias];
+    if(saved[0]!==saved[2]||saved[0]===saved[1]||alias!==NO_ENTRIES)
+        throw Error('array identity');
+    const mutable:Entry[]=[],mutableAlias=mutable;
+    const item:Entry={id:1,view:{value:3}};
+    mutableAlias.push(item);
+    if(mutable!==mutableAlias||mutable.length!==1||mutable[0]!==item)
+        throw Error('mutable array owner');
+    mutable[0]!.id=8;
+    if(item.id!==8)throw Error('entry mutation');
+`,
+);
+
+test("incompatible nested dictionary record views refuse stored identity", () => {
     // A union of literals whose arm declares a field as a record, stored as
     // a type holding that field as a dictionary, has no one layout.
     assert.throws(

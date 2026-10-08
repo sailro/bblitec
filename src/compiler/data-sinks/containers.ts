@@ -197,7 +197,12 @@ function valueOptional(
     // A value that is always undefined is evaluated, then stored absent.
     if (isUndefinedDataType(value.dataType))
         return `(static_cast<void>(${value.cpp}), ${absent})`;
-    if (isJsonValue(value)) {
+    // A present JSON lane keeps its own null/undefined tags when the inner
+    // storage accepts it; only typed payload conversion needs absence.
+    if (
+        isJsonValue(value) &&
+        !lowerer.knownValueFitsSink(value, dataType.inner, node)
+    ) {
         const source =
             lowerer.context.allocateTemporaryCppName("optional_document");
         let converted = "";

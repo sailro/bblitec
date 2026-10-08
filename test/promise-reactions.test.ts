@@ -105,12 +105,11 @@ test("two-callback Promise.then selects the original outcome and adopts returned
     `;
     const fileName = join(directory, "entry.ts");
     const result = compileSource(source, { fileName });
-    assert.throws(
-        () =>
-            compileSource(source.replace("() => 29", '() => "different"'), {
-                fileName,
-            }),
-        /same admitted result type/,
+    const widened = compileSource(
+        source
+            .replace("() => 29", '() => "different"')
+            .replace("value !== 29", 'value !== "different"'),
+        { fileName },
     );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
@@ -142,4 +141,9 @@ test("two-callback Promise.then selects the original outcome and adopts returned
         }),
         "",
     );
+    runGeneratedProgram(tools, "promise-reactions/mixed-results", widened.cpp, {
+        defines: ["BBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
 });
