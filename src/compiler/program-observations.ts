@@ -1,7 +1,8 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineArgumentWritten } from "./parameter-effects.js";
-import { declarationOrigin, libraryGlobal } from "./symbols.js";
+import { yieldsNewArray } from "./fresh-records.js";
+import { declarationOrigin, declaredSymbol, libraryGlobal } from "./symbols.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
@@ -50,6 +51,8 @@ export interface NamedRead {
  *   `getOwnPropertyDescriptors`/`hasOwn`, `Object.assign` sources, object
  *   spreads and rests, `for...in`, `in`, `hasOwnProperty`, `JSON.stringify`
  *   and `structuredClone`;
+ * - widened arrays: the element types of mutable arrays read where a
+ *   mutable array of another element type is expected, and that type;
  * - assertions: the types `as`/`<T>` retype a value to, and whether the
  *   operand was untyped (an assertion to `any` or `unknown` retypes nothing
  *   the open holders of the index do not already count);
@@ -66,6 +69,19 @@ export interface ProgramObservations {
         readonly asserted: ts.Type;
         readonly open: boolean;
     }[];
+    /**
+     * Mutable arrays the program hands to a mutable array of another element
+     * type (`const wide: string[] = tags`), which array covariance permits:
+     * one object then has both element types, `own` and `wide`.
+     */
+    readonly widenedArrays: readonly {
+        readonly own: ts.Type;
+        readonly wide: ts.Type;
+        /** A local array the checker reads as still empty (`never[]`) there. */
+        readonly evolving?: ts.Symbol;
+    }[];
+    /** The element types each array local is read with, over the program. */
+    readonly arrayLocalElements: ReadonlyMap<ts.Symbol, readonly ts.Type[]>;
     readonly namedReads: ReadonlyMap<string, readonly NamedRead[]>;
     readonly wholesaleReads: readonly ts.Node[];
 }
@@ -175,6 +191,16 @@ function observe(program: ts.Program): ProgramObservations {
     const identities = new Set<ts.Type>();
     const enumerations = new Set<ts.Type>();
     const assertions: { asserted: ts.Type; open: boolean }[] = [];
+    const widenedArrays: {
+        own: ts.Type;
+        wide: ts.Type;
+        evolving?: ts.Symbol;
+    }[] = [];
+    const arrayLocalElements = new Map<ts.Symbol, ts.Type[]>();
+    const mutableElement = (type: ts.Type): ts.Type | undefined =>
+        checker.isArrayType(type) && type.getSymbol()?.name === "Array"
+            ? checker.getTypeArguments(type as ts.TypeReference)[0]
+            : undefined;
     const namedReads = new Map<string, NamedRead[]>();
     const wholesaleReads: ts.Node[] = [];
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
@@ -260,7 +286,42 @@ function observe(program: ts.Program): ProgramObservations {
             ts.isVoidExpression(unwrapped)
         );
     };
+    // A new array, or an assignment of one (`bucket = []`), is that array.
+    const newArrayValue = (node: ts.Expression): boolean => {
+        const unwrapped = unwrapExpression(node);
+        return ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            ? newArrayValue(unwrapped.right)
+            : yieldsNewArray(checker, unwrapped);
+    };
     const visit = (node: ts.Node): void => {
+        // A new array is created with the type it is read as.
+        if (ts.isExpression(node) && !newArrayValue(node)) {
+            const own = mutableElement(typeOf(node));
+            const contextual = own && checker.getContextualType(node);
+            const symbol = ts.isIdentifier(node)
+                ? declaredSymbol(checker, node)
+                : undefined;
+            if (own && symbol) {
+                const elements = arrayLocalElements.get(symbol);
+                if (elements) elements.push(own);
+                else arrayLocalElements.set(symbol, [own]);
+            }
+            if (own && contextual)
+                for (const member of contextual.isUnion()
+                    ? contextual.types
+                    : [contextual]) {
+                    const wide = mutableElement(member);
+                    if (wide !== undefined && wide !== own)
+                        widenedArrays.push({
+                            own,
+                            wide,
+                            ...((own.flags & ts.TypeFlags.Never) !== 0 && symbol
+                                ? { evolving: symbol }
+                                : {}),
+                        });
+                }
+        }
         if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
             const asserted = typeOf(node);
             if (
@@ -442,6 +503,8 @@ function observe(program: ts.Program): ProgramObservations {
         identities,
         enumerations,
         assertions,
+        widenedArrays,
+        arrayLocalElements,
         namedReads,
         wholesaleReads,
     };

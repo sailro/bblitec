@@ -8,6 +8,8 @@ import {
 // mutation walk consults, and the dispatcher that lowers a data-method
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
+import { compileSymbolMethod } from "./symbol-values.js";
+import { compileBigIntMethod } from "./bigint-values.js";
 import {
     callbackTakesReceiver,
     mutatingArrayMethods,
@@ -32,7 +34,7 @@ import { compileStringValueMethod } from "./string-methods.js";
 import { compileDateMethod, compileDateTimeFormatMethod } from "./dates.js";
 import { compileHttpResponseMethod } from "./http.js";
 import { compileTextCodecMethod } from "./text-codecs.js";
-import { compileCollatorMethod } from "./locale.js";
+import { compileIntlMethod } from "./locale.js";
 import { compileWeakRefMethod } from "./weak-refs.js";
 import {
     compileSearchParamsMethod,
@@ -53,8 +55,14 @@ import {
 } from "./data-types.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
-import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
-import { resolvedSymbol } from "./symbols.js";
+import {
+    commonResourceValue,
+    presenceCpp,
+    runtimeMeshValue,
+    type Value,
+} from "./types.js";
+import { libraryGlobal, resolvedSymbol } from "./symbols.js";
+import { callsFreshArrayBuiltin } from "./fresh-records.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
@@ -287,6 +295,7 @@ export function removedIndexGuard(
 const constantArrayMethods: ReadonlySet<string> = new EmissionSet([
     "at",
     "concat",
+    "keys",
     "lastIndexOf",
     "flatMap",
     "slice",
@@ -336,10 +345,27 @@ export function mayCompileDataMethodCall(
     // Handle methods belong to their platform adapter. Plain records may
     // contain stored callbacks and still need the data-method dispatcher.
     return (
+        !staticMemberReceiver(checker, callee.expression) &&
         !pinnedHandleKind(owner) &&
         !platformHandleKind(owner) &&
         (owner.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike)) ===
             0
+    );
+}
+
+/**
+ * A class, namespace or built-in global receiver (`Object.keys(o)`) makes a
+ * static member call: it is never data, and its own lowering owns the call.
+ */
+function staticMemberReceiver(
+    checker: ts.TypeChecker,
+    receiver: ts.Expression,
+): boolean {
+    const symbol = resolvedSymbol(checker, receiver);
+    return (
+        ((symbol?.flags ?? 0) &
+            (ts.SymbolFlags.Class | ts.SymbolFlags.ValueModule)) !==
+            0 || libraryGlobal(checker, receiver) !== undefined
     );
 }
 
@@ -364,8 +390,9 @@ export function compileDataMethodCall(
     }
     const method = callee.name.text;
     if (
-        ts.isPropertyAccessExpression(callee.expression) &&
-        callee.expression.name.text === "classList"
+        (ts.isPropertyAccessExpression(callee.expression) &&
+            callee.expression.name.text === "classList") ||
+        staticMemberReceiver(lowerer.context.checker, callee.expression)
     ) {
         return undefined;
     }
@@ -455,11 +482,11 @@ export function compileDataMethodCall(
             ? lowerer.context.compileValue(ownerExpression)
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.bindings.lookupOptional(ownerExpression) ??
-                // A module string or query bag without a runtime binding
-                // is its value at the use site.
+                // A module string, query bag or typed array without a
+                // runtime binding in this scope is its value at the use site.
                 (["string", "search-params"].includes(
                     lowerer.dataTypeAt(ownerExpression)?.kind ?? "",
-                )
+                ) || isTypedArrayType(lowerer.dataTypeAt(ownerExpression))
                     ? lowerer.context.compileValue(ownerExpression)
                     : lowerer.compileStaticContainer(ownerExpression)))
               : (ts.isPropertyAccessExpression(ownerExpression) ||
@@ -493,6 +520,10 @@ export function compileDataMethodCall(
     }
     if (dynamicOwner?.dataType?.kind === "date")
         return compileDateMethod(lowerer, call, dynamicOwner, method);
+    if (dynamicOwner?.dataType?.kind === "symbol")
+        return compileSymbolMethod(lowerer, call, dynamicOwner, method);
+    if (dynamicOwner?.dataType?.kind === "bigint")
+        return compileBigIntMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "http-response")
         return compileHttpResponseMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "search-params")
@@ -504,8 +535,22 @@ export function compileDataMethodCall(
         dynamicOwner?.dataType?.kind === "text-encoder"
     )
         return compileTextCodecMethod(lowerer, call, dynamicOwner, method);
-    if (dynamicOwner?.dataType?.kind === "collator")
-        return compileCollatorMethod(lowerer, call, dynamicOwner, method);
+    const intlOwner =
+        dynamicOwner?.dataType?.kind === "optional"
+            ? dynamicOwner.dataType.inner.kind
+            : dynamicOwner?.dataType?.kind;
+    if (
+        dynamicOwner &&
+        (intlOwner === "collator" ||
+            intlOwner === "number-format" ||
+            intlOwner === "plural-rules" ||
+            intlOwner === "list-format")
+    )
+        return dynamicOwner.dataType?.kind === "optional"
+            ? lowerer.optionalAccess(dynamicOwner, call, (present) =>
+                  compileIntlMethod(lowerer, call, present, method),
+              )
+            : compileIntlMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "weak-ref")
         return compileWeakRefMethod(lowerer, call, dynamicOwner, method);
     if (
@@ -827,18 +872,24 @@ export function compileDataMethodCall(
             ownerExpression,
         );
     }
-    // An array literal receiver is a fresh array only this call sees: a
-    // method that changes it (`[a, b].pop()`) runs on a native copy of its
-    // elements, as it would on the array JavaScript builds.
+    // An array literal receiver, or the array a built-in just created
+    // (`entries.map(f).sort()`), is a fresh array only this call sees: a
+    // method that changes it runs on a native copy of its elements, as it
+    // would on the array JavaScript builds.
+    const freshElement =
+        callsFreshArrayBuiltin(lowerer.context.checker, ownerExpression) &&
+        dynamicOwner?.kind === "tuple" &&
+        receiverWritingMethods.has(method)
+            ? lowerer.knownTupleElement(callee.expression, dynamicOwner)
+            : undefined;
     if (
-        ts.isArrayLiteralExpression(ownerExpression) &&
+        (ts.isArrayLiteralExpression(ownerExpression) || freshElement) &&
         dynamicOwner?.kind === "tuple" &&
         receiverWritingMethods.has(method)
     ) {
-        const element = lowerer.knownTupleElement(
-            callee.expression,
-            dynamicOwner,
-        );
+        const element =
+            freshElement ??
+            lowerer.knownTupleElement(callee.expression, dynamicOwner);
         if (!element) {
             lowerer.context.fail(
                 ownerExpression,
@@ -919,6 +970,69 @@ export function compileDataMethodCall(
     );
 }
 
+/**
+ * A method the receiver's primitive lacks (`text.map(...)`), called on
+ * storage holding only that primitive or nothing: JavaScript reads
+ * `undefined` (or throws reading from an absent receiver), then the
+ * call throws TypeError. A branch its storage cannot take, such as the
+ * array arm of `typeof value === "string" ? ... : value.map(...)` over a
+ * dictionary of strings, throws as JavaScript would. Arguments must be
+ * effect-free: a present receiver evaluates them before throwing.
+ */
+function compileMissingPrimitiveMethod(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    callee: ts.PropertyAccessExpression,
+    receiver: Value,
+): Value | undefined {
+    const { checker, evaluationOrder } = lowerer.context;
+    const stored =
+        receiver.dataType?.kind === "optional"
+            ? receiver.dataType.inner
+            : receiver.dataType;
+    const primitive =
+        stored?.kind === "string" || stored?.kind === "enum"
+            ? checker.getStringType()
+            : stored?.kind === "number"
+              ? checker.getNumberType()
+              : stored?.kind === "boolean"
+                ? checker.getBooleanType()
+                : undefined;
+    const name = callee.name.text;
+    if (
+        receiver.kind !== "data" ||
+        !primitive ||
+        ts.isOptionalChain(callee) ||
+        !ts.isIdentifier(callee.name) ||
+        checker.getPropertyOfType(checker.getApparentType(primitive), name) ||
+        !call.arguments.every(
+            (argument) =>
+                ts.isArrowFunction(argument) ||
+                ts.isFunctionExpression(argument) ||
+                evaluationOrder.isPureExpression(argument),
+        )
+    )
+        return undefined;
+    const result = lowerer.dataTypeAt(call);
+    if (!result) return undefined;
+    lowerer.context.reachJsData();
+    const thrown = (message: string): string =>
+        `bbl::js::absent_receiver_read<${lowerer.context.dataTypes.cppType(result)}>(${lowerer.context.cppString(message)})`;
+    const notCallable = thrown(`${callee.getText()} is not a function`);
+    const present = presenceCpp(receiver);
+    const absent =
+        receiver.dataType?.kind === "optional" &&
+        receiver.dataType.undefinedOnly
+            ? "undefined"
+            : "null or undefined";
+    return lowerer.leafValue(
+        present === undefined
+            ? `(static_cast<void>(${receiver.cpp}), ${notCallable})`
+            : `(${present} ? ${notCallable} : ${thrown(`Cannot read properties of ${absent} (reading '${name}')`)})`,
+        result,
+    );
+}
+
 function compileKnownDataMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -927,6 +1041,8 @@ function compileKnownDataMethod(
     dynamicOwner: Value | undefined,
     expectedResult?: DataType<"vector">,
 ): Value | undefined {
+    const missing = compileMissingPrimitiveMethod(lowerer, call, callee, owner);
+    if (missing) return missing;
     const method = callee.name.text;
     const ownerExpression = lowerer.context.unwrap(callee.expression);
     let narrowedOwner = lowerer.stringReceiver(
@@ -994,10 +1110,74 @@ function compileKnownDataMethod(
     const recordType =
         dataType?.kind === "optional" ? dataType.inner : dataType;
     if (recordType?.kind === "struct") {
-        const field = lowerer.context.dataTypes
-            .structFields(recordType.name, callee.name, "accessors")
-            .find((candidate) => candidate.sourceName === method);
+        const field = lowerer.context.dataTypes.findStructField(
+            recordType.name,
+            method,
+            callee.name,
+        );
         const functionType = field?.type;
+        if (
+            field &&
+            functionType?.kind === "union" &&
+            dataType?.kind !== "optional" &&
+            !field.accessor
+        ) {
+            const referenceReceiver =
+                lowerer.context.dataTypes.isReferenceStruct(recordType.name);
+            const receiver =
+                lowerer.context.allocateTemporaryCppName("callback_receiver");
+            const member = lowerer.unionFunctionMember(
+                lowerer.leafValue(
+                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    functionType,
+                ),
+                callee,
+            );
+            if (member) {
+                lowerer.context.emit({
+                    kind: "declaration",
+                    type: "const auto&",
+                    name: receiver,
+                    initializer: narrowed.cpp,
+                });
+                return lowerer.compileStoredCall(
+                    call,
+                    member.cpp,
+                    member.dataType,
+                    referenceReceiver ? receiver : undefined,
+                );
+            }
+        }
+        if (
+            field &&
+            functionType?.kind === "struct" &&
+            dataType?.kind !== "optional" &&
+            !field.accessor &&
+            lowerer.context.dataTypes.structCall(functionType.name)
+        ) {
+            const receiver =
+                lowerer.context.allocateTemporaryCppName("callback_receiver");
+            lowerer.context.emit({
+                kind: "declaration",
+                type: "const auto&",
+                name: receiver,
+                initializer: narrowed.cpp,
+            });
+            const referenceReceiver =
+                lowerer.context.dataTypes.isReferenceStruct(recordType.name);
+            if (referenceReceiver)
+                lowerer.context.emit({
+                    kind: "expression",
+                    code: `if (!(${receiver})) throw std::runtime_error("Cannot call a method on a nullish receiver.");`,
+                });
+            return lowerer.compileCallableRecordCall(
+                call,
+                lowerer.leafValue(
+                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    functionType,
+                ),
+            );
+        }
         if (functionType?.kind === "function") {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
@@ -1861,7 +2041,10 @@ function compileArrayFind(
     const { call, narrowed, dataType } = state;
     // The checked program's ES2022 library does not declare `findLast`:
     // its result is the receiver's element or undefined.
+    // A parsed array's element is found as itself, whatever record type
+    // the source reads it as; its absence is the document's undefined.
     const resultType =
+        (dataType.element.kind === "json" ? dataType.element : undefined) ??
         (method === "find" ? lowerer.dataTypeAt(call) : undefined) ??
         (method === "findLast"
             ? lowerer.context.dataTypes.nullableType(dataType.element, true)
@@ -2459,8 +2642,10 @@ function compileArrayMap(
                             callback,
                             "Array.flatMap result",
                         );
+                    // flatMap reads the returned array's elements once and
+                    // keeps none of the array itself.
                     const values = lowerer.compileKnownValueForSink(
-                        result,
+                        { ...result, unaliased: result.unaliased ?? "object" },
                         mappedType,
                         callback,
                     );
@@ -2509,6 +2694,7 @@ function compileArrayMap(
                     code: `${output}.push_back(${value});`,
                 });
             },
+            method === "map" ? requested.element : undefined,
         ),
     );
     lowerer.context.emit(`${collectorCppType(state, mappedType)} ${output};`);
@@ -3148,6 +3334,21 @@ function compileMapDataMethod(
         if (call.arguments.length !== 0) {
             lowerer.context.fail(call, `Map.${method} expects no arguments.`);
         }
+        // An iterator kept past the call (`values: () => map.values()`) is
+        // live over the map, as JavaScript's is.
+        const contextual = lowerer.context.checker.getContextualType(call);
+        if (
+            contextual &&
+            lowerer.context.dataTypes.fromTsType(contextual, call)?.kind ===
+                "iterator"
+        ) {
+            const element = method === "values" ? dataType.value : dataType.key;
+            lowerer.context.reachJsData();
+            return lowerer.leafValue(
+                `bbl::js::map_iterator<${lowerer.context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${narrowed.cpp})`,
+                { kind: "iterator", element, traced: true },
+            );
+        }
         return {
             kind: "data",
             cpp: `bbl::js::map_${method}(${narrowed.cpp})`,
@@ -3523,6 +3724,16 @@ function compileStringDataMethod(
             argumentAt(call, 0),
         );
         if (separatorValue.kind === "regexp") {
+            // Split pushes each capture, an unmatched one as undefined, which
+            // a string list cannot hold; the code point split takes none.
+            if (
+                separatorValue.regexpUnicode &&
+                separatorValue.regexpCaptureCount !== 0
+            )
+                lowerer.context.fail(
+                    argumentAt(call, 0),
+                    "String.split by a u-flag RegExp with capture groups is not lowered.",
+                );
             return {
                 kind: "data",
                 cpp: `${separatorValue.cpp}.split(${narrowed.cpp})`,

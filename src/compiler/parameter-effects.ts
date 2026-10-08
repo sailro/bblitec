@@ -1910,6 +1910,19 @@ export function callArgumentIsReadOnly(
 }
 
 /**
+ * Whether a function only reads the object its parameter `binding` holds
+ * (`onlyRead`): a borrowed view or a lent copy of it cannot be told from
+ * the object while the call runs.
+ */
+export function parameterOnlyRead(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+): boolean {
+    return onlyRead(checker, fn, binding);
+}
+
+/**
  * Whether the callee a value is handed to as argument `index` of `call`
  * only reads it (`onlyRead`): a copy handed there lives for the call, and
  * cannot grow or outlive it through the callee.

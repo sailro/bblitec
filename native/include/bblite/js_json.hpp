@@ -217,6 +217,8 @@ inline void json_write(JsonWriter& writer, bool value) { writer.boolean(value); 
 
 inline void json_write(JsonWriter& writer, Undefined) { writer.null_value(); }
 
+inline void json_write(JsonWriter& writer, Null) { writer.null_value(); }
+
 inline void json_write(JsonWriter& writer, const std::string& value) { writer.string(value); }
 
 inline void json_write(JsonWriter& writer, const JsonValue& value);
@@ -484,6 +486,9 @@ public:
         return native_ && native_->type() == typeid(T);
     }
 
+    /** The class instance this value holds, asserted to be one. */
+    template <typename T> [[nodiscard]] const T& asserted_instance() const;
+
     void gc_trace(const TraceVisitor& visitor) const {
         visitor(array_);
         visitor(object_);
@@ -516,6 +521,39 @@ public:
 
     [[nodiscard]] friend bool operator==(const JsonValue& left, const JsonValue& right) {
         return left.strict_equals(right);
+    }
+
+    /** SameValueZero, the key equality of Map and Set: NaN is one key. */
+    [[nodiscard]] bool same_value_zero(const JsonValue& other) const {
+        return strict_equals(other) || (kind_ == Kind::number && other.kind_ == Kind::number &&
+                                        std::isnan(number_) && std::isnan(other.number_));
+    }
+
+    /** The hash a Map or Set files this key under, consistent with `same_value_zero`. */
+    [[nodiscard]] std::size_t key_hash() const noexcept {
+        switch (kind_) {
+        case Kind::undefined:
+            return 1;
+        case Kind::null:
+            return 2;
+        case Kind::boolean:
+            return boolean_ ? 4 : 3;
+        case Kind::number:
+            return detail::number_key_hash(number_);
+        case Kind::string:
+            return static_cast<std::size_t>(hash_bytes(string_.data(), string_.size()));
+        case Kind::array:
+            return reinterpret_cast<std::uintptr_t>(array_identity());
+        case Kind::object:
+            return reinterpret_cast<std::uintptr_t>(
+                native_ ? native_->identity() : static_cast<const void*>(object_.get()));
+        }
+        return 0;
+    }
+
+    /** The key Map.prototype.set and Set.prototype.add store: -0 becomes +0. */
+    [[nodiscard]] JsonValue stored_key() const {
+        return kind_ == Kind::number && number_ == 0.0 ? from_number(0.0) : *this;
     }
 
     [[nodiscard]] Kind kind() const { return kind_; }
@@ -633,6 +671,13 @@ public:
         if (kind_ != Kind::object || native_)
             throw std::runtime_error("Dynamic property assignment requires an owned object.");
         set_entry(*object_, key, std::move(value));
+    }
+
+    /** Deletes an owned object's own property. */
+    void remove(std::string_view key) const {
+        if (kind_ != Kind::object || native_)
+            throw std::runtime_error("Dynamic property deletion requires an owned object.");
+        std::erase_if(*object_, [&](const Entry& entry) { return entry.first == key; });
     }
 
     [[nodiscard]] JsonArrayView elements() const;
@@ -894,6 +939,8 @@ inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue
 
 [[nodiscard]] inline JsonValue json_value(const JsonValue& value) { return value; }
 [[nodiscard]] inline JsonValue json_value(Undefined) { return {}; }
+
+[[nodiscard]] inline JsonValue json_value(Null) { return JsonValue::null_value(); }
 [[nodiscard]] inline JsonValue json_value(double value) { return JsonValue::from_number(value); }
 [[nodiscard]] inline JsonValue json_value(bool value) { return JsonValue::from_boolean(value); }
 [[nodiscard]] inline JsonValue json_value(const std::string& value) {
@@ -1000,6 +1047,16 @@ template <typename T> JsonValue JsonValue::from_native(T source) {
     value.kind_ = Kind::object;
     value.native_ = make_gc_shared<JsonNativeBox<T>>(std::move(source));
     return value;
+}
+
+/**
+ * Any other value has no storage as that instance and throws TypeError here,
+ * where JavaScript throws only once a private member of the class is read.
+ */
+template <typename T> const T& JsonValue::asserted_instance() const {
+    if (!instance_of<T>())
+        throw NamedError("TypeError", "Value is not an instance of the asserted class");
+    return static_cast<const JsonNativeBox<T>&>(*native_).value;
 }
 
 template <typename Getter> struct JsonRecordView final : JsonNativeObject {
@@ -1139,6 +1196,46 @@ public:
 }
 
 /**
+ * `JSON.parse(text, reviver)`: InternalizeJSONProperty over the parsed
+ * document, each value's members revived before the value, the root under
+ * the key "". An undefined result deletes an object member; deleting an
+ * array element would leave a hole, which is not represented.
+ */
+template <typename Reviver>
+[[nodiscard]] JsonValue json_parse_revived(const std::string& text, const Reviver& reviver) {
+    const auto internalize = [&reviver](const auto& self, const JsonValue& holder) -> void {
+        const auto revive = [&](const std::string& key) {
+            const JsonValue value = holder.get(key);
+            self(self, value);
+            return reviver(key, value);
+        };
+        if (holder.is_array()) {
+            const auto count = static_cast<std::size_t>(holder.length());
+            for (std::size_t index = 0; index < count; ++index) {
+                const auto key = std::to_string(index);
+                JsonValue revived = revive(key);
+                if (revived.is_undefined())
+                    throw std::runtime_error(
+                        "A JSON.parse reviver deleting an array element leaves a hole, which is "
+                        "not represented.");
+                holder.set(key, std::move(revived));
+            }
+        } else if (holder.is_object()) {
+            for (const auto& key : holder.own_keys()) {
+                JsonValue revived = revive(key);
+                if (revived.is_undefined())
+                    holder.remove(key);
+                else
+                    holder.set(key, std::move(revived));
+            }
+        }
+    };
+    const JsonValue root = json_parse(text);
+    internalize(internalize, root);
+    return reviver(std::string{}, root);
+}
+
+/**
  * A document's leading N elements as a fixed numeric tuple -- the lowering
  * of a `[number, number, number]` assertion over a parsed array. Each lane
  * is `Number(element)`, so a lane the document does not carry is NaN
@@ -1190,6 +1287,53 @@ template <std::size_t N> [[nodiscard]] inline Tuple<N> json_tuple(const JsonValu
         offset += size;
     }
     return JsonValue::from_array(std::move(points));
+}
+
+template <typename T> struct JsonEntryNullable;
+template <typename T> struct JsonEntryNullable<Nullable<T>> {
+    using Value = T;
+};
+
+/** A parsed entry read as the field type a closed record declares; an entry
+ * holding another type throws TypeError rather than reading as a coercion. */
+template <typename T> [[nodiscard]] T json_entry_as(const JsonValue& value) {
+    if constexpr (IsNullable<T>::value) {
+        if (value.is_null() || value.is_undefined())
+            return T{};
+        return T{json_entry_as<typename JsonEntryNullable<T>::Value>(value)};
+    } else {
+        if constexpr (std::is_same_v<T, bool>) {
+            if (value.is_boolean())
+                return value.truthy();
+        } else if constexpr (std::is_same_v<T, double>) {
+            if (value.is_number())
+                return value.to_number();
+        } else {
+            static_assert(std::is_same_v<T, std::string>, "Unsupported typed entry.");
+            if (value.is_string())
+                return value.string_value();
+        }
+        std::rethrow_exception(
+            make_error("TypeError", "Record entry does not hold its field's declared type."));
+    }
+}
+
+/** A closed record's field viewed through an open record of parsed values:
+ * reads convert the entry (an absent one reads as undefined), writes store
+ * the value as a parsed entry. */
+template <typename T>
+[[nodiscard]] auto json_entry_accessor(Map<std::string, JsonValue> record, std::string key) {
+    using Entry = std::tuple<Map<std::string, JsonValue>, std::string>;
+    auto entry = Entry{std::move(record), std::move(key)};
+    return AccessorClosures{
+        make_closure(entry,
+                     [](Entry& view) -> T {
+                         const auto found = std::get<0>(view).get(std::get<1>(view));
+                         return json_entry_as<T>(found.has_value() ? *found : JsonValue{});
+                     }),
+        make_closure(entry, [](Entry& view, T value) {
+            std::get<0>(view).set(std::get<1>(view), json_value(value));
+        })};
 }
 
 } // namespace bbl::js

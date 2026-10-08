@@ -4,6 +4,7 @@ import type { Value } from "./types.js";
 import type { DataType } from "./data-types/model.js";
 import { aliasTarget, declaredIn, declaredSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
+import { staticNumberValue } from "./option-helpers.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import { EmissionMap } from "./emission-transaction.js";
 import { emitReachableStatements } from "./loop-control.js";
@@ -305,8 +306,23 @@ export class ModuleNamespaces {
                 ts.isEnumDeclaration(declaration)) &&
             declaration.name &&
             ts.isIdentifier(declaration.name)
-        )
-            return this.context.compileValue(declaration.name);
+        ) {
+            const value = this.context.compileValue(declaration.name);
+            // A constant export computed from constants (`A * 4`) reads as
+            // the number it folds to, so comparing two reads of it decides
+            // at generation as a literal export's reads do.
+            const staticNumber =
+                value.kind === "number" &&
+                value.staticNumber === undefined &&
+                ts.isVariableDeclaration(declaration) &&
+                (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !==
+                    0
+                    ? staticNumberValue(this.context, declaration.name)
+                    : undefined;
+            return staticNumber !== undefined && Number.isFinite(staticNumber)
+                ? { ...value, staticNumber }
+                : value;
+        }
         return this.context.fail(
             node,
             `Module namespace export '${name}' has no supported value declaration.`,

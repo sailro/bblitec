@@ -323,16 +323,16 @@ test("JSON.parse answers a dynamic document the source's guards decide over", ()
     assert.match(result.cpp, /\.get\("sh"\)\.strict_equals\(1\.0\)/);
 });
 
-test("JSON.parse refuses a reviver rather than ignoring one", () => {
+test("JSON.parse refuses a reviver reading its holder rather than ignoring it", () => {
     assert.throws(
         () =>
             compilePersistence(`
-                const parsed = JSON.parse("{}", (k: string, v: number) => v);
+                const parsed = JSON.parse("{}", function (this: unknown, k: string, v: number) { return this === undefined ? 0 : v; });
                 engine.canvas.height = parsed ? 1 : 0;
             `),
         (error: unknown) =>
             error instanceof CompileError &&
-            /JSON\.parse lowers with no reviver/.test(error.message),
+            /A JSON\.parse reviver reading its holder/.test(error.message),
     );
 });
 

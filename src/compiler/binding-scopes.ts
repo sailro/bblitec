@@ -309,12 +309,35 @@ export class BindingScopes {
         value: Value,
         expression: ts.Expression,
     ): ts.VariableDeclaration | undefined {
-        if (!value.recordProperties) return undefined;
+        return this.aggregateDeclaration(
+            value.recordProperties,
+            (bound) => bound.recordProperties,
+            expression,
+        );
+    }
+
+    /** The earliest live declaration sharing this compile-time tuple, before any lexical aliases. */
+    public tupleDeclaration(
+        value: Value,
+        expression: ts.Expression,
+    ): ts.VariableDeclaration | undefined {
+        return this.aggregateDeclaration(
+            value.tupleElements,
+            (bound) => bound.tupleElements,
+            expression,
+        );
+    }
+
+    private aggregateDeclaration(
+        members: object | undefined,
+        membersOf: (value: Value) => object | undefined,
+        expression: ts.Expression,
+    ): ts.VariableDeclaration | undefined {
+        if (!members) return undefined;
         let origin: ts.Declaration | undefined;
         for (const scope of this.variableScopes) {
             for (const [symbol, binding] of scope) {
-                if (binding.value.recordProperties !== value.recordProperties)
-                    continue;
+                if (membersOf(binding.value) !== members) continue;
                 const declaration = symbol.valueDeclaration;
                 if (
                     declaration &&
@@ -1717,6 +1740,10 @@ export class BindingScopes {
                     "enummap",
                     "event-target",
                     "module-namespace",
+                    "bigint",
+                    "symbol",
+                    "i64array",
+                    "u64array",
                 ].includes(value.dataType.kind));
         if (isJsonValue(value) || snapshotsData) {
             const cpp = this.context.allocateTemporaryCppName(label);

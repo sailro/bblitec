@@ -1,6 +1,8 @@
 import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
-import { nullability } from "../type-facts.js";
+import { absenceKind } from "../type-facts.js";
+import { hasNonNullAssertion, unwrapExpression } from "../syntax.js";
+import { ownEntries } from "../object-statics.js";
 
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
@@ -8,6 +10,7 @@ import { isJsonValue } from "../json-bridge.js";
 import { eventTargetCpp } from "../dom-targets.js";
 import { authoredErrorValue, thrownMessage } from "../error-values.js";
 import { provenUndefinedValue } from "../undefined-values.js";
+import { rejectionOnlyPromiseCpp, settlesNever } from "../promises.js";
 import {
     compileJsonRecordView,
     compileJsonTupleView,
@@ -52,10 +55,14 @@ function expressionBorrowedPlatformEvent(
 function expressionString(
     dataType: DataType<"string">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
-    return lowerer.compileStringSink(unwrapped, dataType);
+    return lowerer.compileStringSink(
+        unwrapped,
+        dataType,
+        hasNonNullAssertion(expression),
+    );
 }
 
 function expressionJson(
@@ -71,6 +78,37 @@ function expressionJson(
     );
 }
 
+/**
+ * An object literal stored straight into a document slot is the document
+ * itself: an owned object of its own keys, in creation order, each member
+ * stored as a document value (a key a conditional spread wrote only while
+ * it is own). Undefined for a record with methods or accessors, or one
+ * other code can still reach as a compile-time record.
+ */
+function ownedDocument(
+    lowerer: DataSinkHost,
+    record: Value,
+    node: ts.Node,
+): string | undefined {
+    const literal = lowerer.convertedExpression(node);
+    if (
+        !literal ||
+        !ts.isObjectLiteralExpression(unwrapExpression(literal)) ||
+        Object.keys(record.recordMethods ?? {}).length ||
+        Object.keys(record.recordGetters ?? {}).length ||
+        Object.keys(record.recordSetters ?? {}).length
+    )
+        return undefined;
+    const entries = ownEntries(lowerer.ownObjectContext(), record, node);
+    if (!entries) return undefined;
+    const stores = entries.map(({ key, value, presence }) => {
+        const stored = `own.emplace_back(${lowerer.context.cppString(key)}, ${lowerer.compileMemberForSink(value, { kind: "json" }, node, key)});`;
+        return presence ? `if (${presence.ownCpp}) ${stored}` : stored;
+    });
+    lowerer.context.reachJson();
+    return `([&]() { bbl::js::JsonValue::Object own; ${stores.join(" ")} return bbl::js::JsonValue::from_object(std::move(own)); }())`;
+}
+
 function valueJson(
     _dataType: DataType<"json">,
     lowerer: DataSinkHost,
@@ -82,26 +120,37 @@ function valueJson(
         lowerer.markEscaped(value);
         return value.cpp;
     }
-    if (value.dataType?.kind === "optional" && !value.dataType.undefinedOnly) {
-        const absent = nullability(
-            lowerer.context.checker.getTypeAtLocation(node),
-        );
-        if (
-            absent.null &&
-            !absent.undefined &&
-            lowerer.context.dataTypes.jsonValueCpp(
-                value.dataType.inner,
-                "value",
-                node,
-            ) !== undefined
-        )
+    // An optional's one absent state is the absence its read admits:
+    // `undefined` or `null`, or the run-time answer of a read that records
+    // whether its slot existed (the read runs first).
+    if (
+        value.dataType?.kind === "optional" &&
+        lowerer.context.dataTypes.jsonValueCpp(
+            value.dataType.inner,
+            "value",
+            node,
+        ) !== undefined
+    ) {
+        const expression = lowerer.convertedExpression(node);
+        const absence = expression
+            ? absenceKind(lowerer.context.checker, value, expression)
+            : value.slotFoundCpp !== undefined
+              ? { slotFoundCpp: value.slotFoundCpp }
+              : undefined;
+        if (typeof absence === "object")
+            return `([&]() { const auto slot = ${value.cpp}; return ${absence.slotFoundCpp} ? bbl::js::json_value_or_null(slot) : bbl::js::JsonValue{}; }())`;
+        if (absence === "null")
             return `bbl::js::json_value_or_null(${value.cpp})`;
+        if (absence === "undefined" || value.dataType.undefinedOnly)
+            return `bbl::js::json_value(${value.cpp})`;
     }
     if (value.kind === "json-null")
         return value.cpp === "std::nullopt"
             ? "bbl::js::JsonValue{}"
             : "bbl::js::JsonValue::null_value()";
     if (value.kind === "record" && !value.cpp) {
+        const owned = ownedDocument(lowerer, value, node);
+        if (owned !== undefined) return owned;
         const view = compileJsonRecordView(lowerer, value, node);
         if (view !== undefined) return view;
     }
@@ -150,6 +199,14 @@ function valuePromise(
     ) {
         converted = `${expected}{value}`;
     }
+    if (
+        !converted &&
+        settlesNever(
+            lowerer.context.checker,
+            lowerer.context.checker.getTypeAtLocation(node),
+        )
+    )
+        return rejectionOnlyPromiseCpp(value.cpp, expected);
     if (!converted)
         return lowerer.context.fail(
             node,
@@ -262,10 +319,27 @@ const opaqueSink = {
             : undefined,
 };
 
+/** A leaf only a value of its own kind converts to. */
+function sameKindSink<K extends "symbol" | "bigint" | "i64array" | "u64array">(
+    kind: K,
+): DataSinkOperations<K>[K] {
+    return {
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(unwrapped),
+                type,
+                unwrapped,
+            ),
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === kind ? value.cpp : undefined,
+    };
+}
+
 export const scalarsSinks: DataSinkOperations<
     | "module-namespace"
     | "weak-key"
     | "undefined"
+    | "null"
     | "error"
     | "file"
     | "blob"
@@ -283,8 +357,15 @@ export const scalarsSinks: DataSinkOperations<
     | "text-decoder"
     | "text-encoder"
     | "collator"
+    | "number-format"
+    | "plural-rules"
+    | "list-format"
     | "weak-ref"
     | "number"
+    | "symbol"
+    | "bigint"
+    | "i64array"
+    | "u64array"
     | "boolean"
     | "string"
     | "json"
@@ -334,6 +415,22 @@ export const scalarsSinks: DataSinkOperations<
                 node,
                 "A weak object key requires an owned record or represented DOM target.",
             );
+        },
+    },
+    null: {
+        expression: (type, lowerer, expression) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(expression),
+                type,
+                expression,
+            ),
+        value: (_type, lowerer, value) => {
+            if (value.dataType?.kind === "null")
+                return `(static_cast<void>(${value.cpp}), bbl::js::Null{})`;
+            if (value.kind !== "json-null" || value.cpp === "std::nullopt")
+                return undefined;
+            lowerer.context.emitDiscardedValue(value);
+            return "bbl::js::Null{}";
         },
     },
     undefined: {
@@ -446,9 +543,16 @@ export const scalarsSinks: DataSinkOperations<
     "text-decoder": opaqueSink,
     "text-encoder": opaqueSink,
     collator: opaqueSink,
+    "number-format": opaqueSink,
+    "plural-rules": opaqueSink,
+    "list-format": opaqueSink,
     "weak-ref": opaqueSink,
     date: opaqueSink,
     number: { expression: expressionNumber, value: valueNumber },
+    symbol: sameKindSink("symbol"),
+    bigint: sameKindSink("bigint"),
+    i64array: sameKindSink("i64array"),
+    u64array: sameKindSink("u64array"),
     boolean: { expression: expressionBoolean, value: valueBoolean },
     string: { expression: expressionString, value: valueString },
     json: { expression: expressionJson, value: valueJson },

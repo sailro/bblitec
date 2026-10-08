@@ -99,6 +99,8 @@ export interface LoweringServices {
     readonly recordProxies: import("./proxies.js").RecordProxies;
     moduleContainerIsMutated(name: ts.Identifier): boolean;
     readonly checker: ts.TypeChecker;
+    /** Source storages that keep `null` and `undefined` apart (`DataType<"tagged">`). */
+    readonly absenceTags: ReadonlySet<ts.Declaration>;
     readonly options: ResolvedCompileOptions;
     readonly symbols: CompilerSymbols;
     readonly evaluator: StaticEvaluator;
@@ -376,6 +378,7 @@ export interface LoweringServices {
     bindUninitializedClassDataField(
         name: ts.MemberName,
         declared?: DataType,
+        assignedBeforeRead?: boolean,
     ): Value | undefined;
     bindOptionalResourceValue(name: ts.Identifier): Value | undefined;
     bindClassDataField(
@@ -388,9 +391,9 @@ export interface LoweringServices {
     activeThis(): Value | undefined;
     registerClassInstance(
         instance: Value,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
     ): void;
-    classOf(instance: Value): ts.ClassDeclaration | undefined;
+    classOf(instance: Value): ts.ClassLikeDeclaration | undefined;
     callbackIdentity(declaration: ts.Node, owner: Value | undefined): number;
     defaultEngine(): string | undefined;
     reachJsRandom(): void;

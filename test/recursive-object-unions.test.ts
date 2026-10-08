@@ -227,8 +227,8 @@ test("property union admission does not conflate absent keys with empty payloads
 test("declined recursive layouts roll back provisional identities and nested definitions", () => {
     const frontend = createCompilerProgram(
         `
-        type Tagged={kind:'done';value:number}|{kind:'next';read:()=>Promise<Tagged>;payload:symbol};
-        type Common={next:()=>Common;payload:symbol;left:number}|{next:()=>Common;payload:symbol;right:boolean};
+        type Tagged={kind:'done';value:number}|{kind:'next';read:()=>Promise<Tagged>;payload:FinalizationRegistry<number>};
+        type Common={next:()=>Common;payload:FinalizationRegistry<number>;left:number}|{next:()=>Common;payload:FinalizationRegistry<number>;right:boolean};
         interface Good {value:number;next?:Good;}
         `,
         resolve("recursive-layout-rollback.ts"),

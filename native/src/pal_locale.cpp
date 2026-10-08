@@ -11,11 +11,16 @@
 #else
 #include <unicode/ucal.h>
 #include <unicode/ucol.h>
+#include <unicode/udat.h>
+#include <unicode/udatpg.h>
 #include <unicode/uloc.h>
+#include <unicode/ulistformatter.h>
 #include <unicode/unorm2.h>
 #include <unicode/uenum.h>
 #include <unicode/unum.h>
+#include <unicode/unumberformatter.h>
 #include <unicode/unumsys.h>
+#include <unicode/upluralrules.h>
 #include <unicode/ustring.h>
 #endif
 
@@ -33,14 +38,21 @@ int32_t icu_length(std::size_t size) {
     return static_cast<int32_t>(size);
 }
 
-template <typename Fill> std::string icu_string(Fill fill) {
+/**
+ * ICU's buffer protocol: `fill(output, capacity, status)` writes into a first
+ * buffer of `capacity` units and, when ICU reports an overflow, into one sized
+ * from the length it returned.
+ */
+template <typename Char, typename Fill>
+std::basic_string<Char> icu_buffer(Fill fill, std::size_t capacity = 64) {
+    std::basic_string<Char> result(capacity, Char{});
     UErrorCode status = U_ZERO_ERROR;
-    const auto length = fill(nullptr, 0, &status);
-    if (status != U_BUFFER_OVERFLOW_ERROR)
-        check_icu(status);
-    std::string result(static_cast<std::size_t>(length) + 1, '\0');
-    status = U_ZERO_ERROR;
-    fill(result.data(), icu_length(result.size()), &status);
+    auto length = fill(result.data(), icu_length(result.size()), &status);
+    if (status == U_BUFFER_OVERFLOW_ERROR) {
+        result.resize(static_cast<std::size_t>(length) + 1);
+        status = U_ZERO_ERROR;
+        length = fill(result.data(), icu_length(result.size()), &status);
+    }
     check_icu(status);
     result.resize(static_cast<std::size_t>(length));
     return result;
@@ -88,7 +100,7 @@ std::string locale_id(const std::string& locale) {
         throw std::runtime_error("Invalid language tag.");
     const auto length = icu_length(locale.size());
     int32_t parsed = 0;
-    auto result = icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+    auto result = icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* status) {
         return uloc_forLanguageTag(locale.c_str(), output, capacity, &parsed, status);
     });
     if (length == 0 || parsed != length)
@@ -100,7 +112,7 @@ using IcuCollator = std::unique_ptr<UCollator, decltype(&ucol_close)>;
 using Enumeration = std::unique_ptr<UEnumeration, decltype(&uenum_close)>;
 
 std::string keyword(const std::string& id, const char* key) {
-    return icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+    return icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* status) {
         return uloc_getKeywordValue(id.c_str(), key, output, capacity, status);
     });
 }
@@ -126,7 +138,7 @@ const std::vector<const char*>& available_locales() {
 
 std::string match_locale(const std::string& requested, bool lookup) {
     const auto& available = available_locales();
-    auto base = icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+    auto base = icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* status) {
         return uloc_getBaseName(requested.c_str(), output, capacity, status);
     });
     if (lookup) {
@@ -147,7 +159,7 @@ std::string match_locale(const std::string& requested, bool lookup) {
     check_icu(status);
     UAcceptResult accepted = ULOC_ACCEPT_FAILED;
     const char* input = base.c_str();
-    auto matched = icu_string([&](char* output, int32_t capacity, UErrorCode* error) {
+    auto matched = icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* error) {
         uenum_reset(choices.get(), error);
         return uloc_acceptLanguage(output, capacity, &accepted, &input, 1, choices.get(), error);
     });
@@ -290,6 +302,51 @@ bool simple_numbering_system(const std::string& name) {
     return U_SUCCESS(status) && system && !unumsys_isAlgorithmic(system.get());
 }
 
+/** SetNumberFormatDigitOptions with roundingPriority "auto" and standard notation. */
+struct DigitSettings {
+    int32_t minimum_integer = 1;
+    bool significant = false;
+    int32_t minimum = 0;
+    int32_t maximum = 3;
+};
+
+DigitSettings digit_settings(const std::optional<double>& minimum_integer_digits,
+                             const std::optional<double>& minimum_fraction_digits,
+                             const std::optional<double>& maximum_fraction_digits,
+                             const std::optional<double>& minimum_significant_digits,
+                             const std::optional<double>& maximum_significant_digits,
+                             int32_t default_maximum_fraction) {
+    DigitSettings digits;
+    digits.minimum_integer = digit_option(minimum_integer_digits, 1, 21, 1);
+    digits.significant = minimum_significant_digits || maximum_significant_digits;
+    digits.maximum = default_maximum_fraction;
+    if (digits.significant) {
+        digits.minimum = digit_option(minimum_significant_digits, 1, 21, 1);
+        digits.maximum = digit_option(maximum_significant_digits, digits.minimum, 21, 21);
+    } else if (minimum_fraction_digits || maximum_fraction_digits) {
+        const auto fraction = [](const std::optional<double>& value) -> std::optional<int32_t> {
+            if (!value)
+                return std::nullopt;
+            return digit_option(value, 0, 100, 0);
+        };
+        const auto lower = fraction(minimum_fraction_digits);
+        const auto upper = fraction(maximum_fraction_digits);
+        if (!lower) {
+            digits.minimum = std::min(digits.minimum, *upper);
+            digits.maximum = *upper;
+        } else if (!upper) {
+            digits.minimum = *lower;
+            digits.maximum = std::max(digits.maximum, *lower);
+        } else if (*lower > *upper) {
+            throw std::runtime_error("Number format fraction digits are out of range.");
+        } else {
+            digits.minimum = *lower;
+            digits.maximum = *upper;
+        }
+    }
+    return digits;
+}
+
 IcuNumberFormat open_number_format(const std::vector<std::string>& locales,
                                    const NumberFormatOptions& options) {
     auto [id, selected] = resolve_locale(locales, options.locale_matcher);
@@ -302,35 +359,13 @@ IcuNumberFormat open_number_format(const std::vector<std::string>& locales,
         throw std::runtime_error("Number format style '" + style + "' is not supported natively.");
     if (style != "decimal" && style != "percent")
         throw std::runtime_error("Invalid number format style.");
-    // SetNumberFormatDigitOptions with roundingPriority "auto" and standard notation.
-    const auto minimum_integer = digit_option(options.minimum_integer_digits, 1, 21, 1);
-    const bool significant =
-        options.minimum_significant_digits || options.maximum_significant_digits;
-    int32_t minimum = 0, maximum = style == "percent" ? 0 : 3;
-    if (significant) {
-        minimum = digit_option(options.minimum_significant_digits, 1, 21, 1);
-        maximum = digit_option(options.maximum_significant_digits, minimum, 21, 21);
-    } else if (options.minimum_fraction_digits || options.maximum_fraction_digits) {
-        const auto fraction = [](const std::optional<double>& value) -> std::optional<int32_t> {
-            if (!value)
-                return std::nullopt;
-            return digit_option(value, 0, 100, 0);
-        };
-        const auto lower = fraction(options.minimum_fraction_digits);
-        const auto upper = fraction(options.maximum_fraction_digits);
-        if (!lower) {
-            minimum = std::min(minimum, *upper);
-            maximum = *upper;
-        } else if (!upper) {
-            minimum = *lower;
-            maximum = std::max(maximum, *lower);
-        } else if (*lower > *upper) {
-            throw std::runtime_error("Number format fraction digits are out of range.");
-        } else {
-            minimum = *lower;
-            maximum = *upper;
-        }
-    }
+    const auto digits =
+        digit_settings(options.minimum_integer_digits, options.minimum_fraction_digits,
+                       options.maximum_fraction_digits, options.minimum_significant_digits,
+                       options.maximum_significant_digits, style == "percent" ? 0 : 3);
+    const auto minimum_integer = digits.minimum_integer;
+    const bool significant = digits.significant;
+    const auto minimum = digits.minimum, maximum = digits.maximum;
     // GetBooleanOrStringNumberFormatOption: "true"/"false" strings select the default.
     auto grouping = options.use_grouping.value_or("auto");
     if (grouping == "true" || grouping == "false")
@@ -393,24 +428,252 @@ UCollator* cached_collator(const std::vector<std::string>& locales,
     return cache.get(locales, options, open_collator);
 }
 
+std::string format_double(const UNumberFormat* format, double value) {
+    return js::string_from_code_units(
+        icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* status) {
+            return unum_formatDouble(format, value, output, capacity, nullptr, status);
+        }));
+}
+
 } // namespace
 
 std::string format_number(double value, const std::vector<std::string>& locales,
                           const NumberFormatOptions& options) {
     thread_local LocaleCache<NumberFormatOptions, IcuNumberFormat> cache;
-    const auto* format = cache.get(locales, options, open_number_format);
+    return format_double(cache.get(locales, options, open_number_format), value);
+}
+
+NumberFormat make_number_format(const std::vector<std::string>& locales,
+                                const NumberFormatOptions& options) {
+    auto format = open_number_format(locales, options);
+    return js::make_ref<NumberFormatState>(std::shared_ptr<void>(
+        format.release(), [](void* value) { unum_close(static_cast<UNumberFormat*>(value)); }));
+}
+
+std::string number_format_format(const NumberFormat& format, double value) {
+    return format_double(static_cast<const UNumberFormat*>(format->get()), value);
+}
+
+PluralRules make_plural_rules(const std::vector<std::string>& locales,
+                              const PluralRulesOptions& options) {
+    const auto id = resolve_locale(locales, options.locale_matcher).id;
+    const auto type = options.type.value_or("cardinal");
+    if (type != "cardinal" && type != "ordinal")
+        throw std::runtime_error("Invalid plural rules type.");
+    const auto digits =
+        digit_settings(options.minimum_integer_digits, options.minimum_fraction_digits,
+                       options.maximum_fraction_digits, options.minimum_significant_digits,
+                       options.maximum_significant_digits, 3);
+    // ResolvePlural selects over the number its digit options format, rounding half away from zero.
+    std::string skeleton = "rounding-mode-half-up";
+    if (digits.minimum_integer > 1)
+        skeleton +=
+            " integer-width/*" + std::string(static_cast<std::size_t>(digits.minimum_integer), '0');
+    if (digits.significant)
+        skeleton += " " + std::string(static_cast<std::size_t>(digits.minimum), '@') +
+                    std::string(static_cast<std::size_t>(digits.maximum - digits.minimum), '#');
+    else if (digits.maximum == 0)
+        skeleton += " precision-integer";
+    else
+        skeleton += " ." + std::string(static_cast<std::size_t>(digits.minimum), '0') +
+                    std::string(static_cast<std::size_t>(digits.maximum - digits.minimum), '#');
+    const std::u16string skeleton_units(skeleton.begin(), skeleton.end());
     UErrorCode status = U_ZERO_ERROR;
-    std::u16string output(32, u'\0');
-    auto length = unum_formatDouble(format, value, output.data(), icu_length(output.size()),
-                                    nullptr, &status);
-    if (status == U_BUFFER_OVERFLOW_ERROR) {
-        output.resize(static_cast<std::size_t>(length));
-        status = U_ZERO_ERROR;
-        length = unum_formatDouble(format, value, output.data(), length, nullptr, &status);
-    }
+    std::shared_ptr<void> rules(
+        uplrules_openForType(
+            id.c_str(), type == "ordinal" ? UPLURAL_TYPE_ORDINAL : UPLURAL_TYPE_CARDINAL, &status),
+        [](void* value) { uplrules_close(static_cast<UPluralRules*>(value)); });
     check_icu(status);
-    output.resize(static_cast<std::size_t>(length));
-    return js::string_from_code_units(output);
+    std::shared_ptr<void> numbers(
+        unumf_openForSkeletonAndLocale(skeleton_units.data(), icu_length(skeleton_units.size()),
+                                       id.c_str(), &status),
+        [](void* value) { unumf_close(static_cast<UNumberFormatter*>(value)); });
+    check_icu(status);
+    return js::make_ref<PluralRulesState>(std::move(rules), std::move(numbers));
+}
+
+std::string plural_rules_select(const PluralRules& rules, double value) {
+    if (!std::isfinite(value))
+        return "other";
+    UErrorCode status = U_ZERO_ERROR;
+    const std::unique_ptr<UFormattedNumber, decltype(&unumf_closeResult)> formatted(
+        unumf_openResult(&status), &unumf_closeResult);
+    check_icu(status);
+    unumf_formatDouble(static_cast<const UNumberFormatter*>(rules->numbers()), value,
+                       formatted.get(), &status);
+    check_icu(status);
+    return js::string_from_code_units(
+        icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* error) {
+            return uplrules_selectFormatted(static_cast<const UPluralRules*>(rules->get()),
+                                            formatted.get(), output, capacity, error);
+        }));
+}
+
+ListFormat make_list_format(const std::vector<std::string>& locales,
+                            const ListFormatOptions& options) {
+    const auto id = resolve_locale(locales, options.locale_matcher).id;
+    const auto type = options.type.value_or("conjunction");
+    const auto style = options.style.value_or("long");
+    if (type != "conjunction" && type != "disjunction" && type != "unit")
+        throw std::runtime_error("Invalid list format type.");
+    if (style != "long" && style != "short" && style != "narrow")
+        throw std::runtime_error("Invalid list format style.");
+    UErrorCode status = U_ZERO_ERROR;
+    std::shared_ptr<void> format(
+        ulistfmt_openForType(id.c_str(),
+                             type == "conjunction"   ? ULISTFMT_TYPE_AND
+                             : type == "disjunction" ? ULISTFMT_TYPE_OR
+                                                     : ULISTFMT_TYPE_UNITS,
+                             style == "long"    ? ULISTFMT_WIDTH_WIDE
+                             : style == "short" ? ULISTFMT_WIDTH_SHORT
+                                                : ULISTFMT_WIDTH_NARROW,
+                             &status),
+        [](void* value) { ulistfmt_close(static_cast<UListFormatter*>(value)); });
+    check_icu(status);
+    return js::make_ref<ListFormatState>(std::move(format));
+}
+
+std::string list_format_format(const ListFormat& format, const js::Array<std::string>& values) {
+    std::vector<std::u16string> units;
+    units.reserve(values.size());
+    for (const auto& value : values)
+        units.push_back(js::string_code_units(value));
+    std::vector<const UChar*> strings;
+    std::vector<int32_t> lengths;
+    for (const auto& text : units) {
+        strings.push_back(text.data());
+        lengths.push_back(icu_length(text.size()));
+    }
+    const auto* list = static_cast<const UListFormatter*>(format->get());
+    return js::string_from_code_units(
+        icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* status) {
+            return ulistfmt_format(list, strings.data(), lengths.data(), icu_length(units.size()),
+                                   output, capacity, status);
+        }));
+}
+
+namespace {
+
+/** One component option: its value's skeleton letters, or a throw for a value outside `allowed`. */
+std::string component_skeleton(const std::optional<std::string>& value, const char* name,
+                               std::initializer_list<std::pair<const char*, const char*>> allowed) {
+    if (!value)
+        return {};
+    for (const auto& [option, letters] : allowed)
+        if (*value == option)
+            return letters;
+    throw std::runtime_error(std::string("Invalid date-time option ") + name + ".");
+}
+
+using IcuDateFormat = std::unique_ptr<UDateFormat, decltype(&udat_close)>;
+
+struct DateFormatKey {
+    DateTimeFormatOptions options;
+    DateTimeComponents components;
+    bool operator==(const DateFormatKey&) const = default;
+};
+
+/**
+ * The pattern format the options select, in the requested zone (the host's
+ * by default) and the proleptic Gregorian calendar; throws on invalid options.
+ */
+IcuDateFormat open_date_format(const std::vector<std::string>& locales,
+                               const DateFormatKey& format_key) {
+    const auto& [options, components] = format_key;
+    auto [id, selected] = resolve_locale(locales, options.locale_matcher);
+    // ECMA-402 reads the calendar and numbering system extension keys.
+    for (const auto* key : {"calendar", "numbers"}) {
+        const auto value = keyword(selected, key);
+        if (!value.empty())
+            set_keyword(id, key, value);
+    }
+    auto weekday = component_skeleton(options.weekday, "weekday",
+                                      {{"narrow", "EEEEE"}, {"short", "EEE"}, {"long", "EEEE"}});
+    const auto era = component_skeleton(options.era, "era",
+                                        {{"narrow", "GGGGG"}, {"short", "G"}, {"long", "GGGG"}});
+    auto year = component_skeleton(options.year, "year", {{"numeric", "y"}, {"2-digit", "yy"}});
+    auto month = component_skeleton(options.month, "month",
+                                    {{"numeric", "M"},
+                                     {"2-digit", "MM"},
+                                     {"narrow", "MMMMM"},
+                                     {"short", "MMM"},
+                                     {"long", "MMMM"}});
+    auto day = component_skeleton(options.day, "day", {{"numeric", "d"}, {"2-digit", "dd"}});
+    const char* hour_letter = !options.hour12 ? "j" : *options.hour12 ? "h" : "H";
+    auto hour = component_skeleton(options.hour, "hour", {{"numeric", "1"}, {"2-digit", "2"}});
+    auto minute =
+        component_skeleton(options.minute, "minute", {{"numeric", "m"}, {"2-digit", "mm"}});
+    auto second =
+        component_skeleton(options.second, "second", {{"numeric", "s"}, {"2-digit", "ss"}});
+    // ToDateTimeOptions: with none of the required components, add the defaults.
+    const bool has_date = !weekday.empty() || !year.empty() || !month.empty() || !day.empty();
+    const bool has_time = !hour.empty() || !minute.empty() || !second.empty();
+    const bool needs_defaults = components == DateTimeComponents::date   ? !has_date
+                                : components == DateTimeComponents::time ? !has_time
+                                                                         : !has_date && !has_time;
+    if (needs_defaults && components != DateTimeComponents::time)
+        year = "y", month = "M", day = "d";
+    if (needs_defaults && components != DateTimeComponents::date)
+        hour = "1", minute = "m", second = "s";
+    if (!hour.empty())
+        hour = std::string(hour == "2" ? 2 : 1, hour_letter[0]);
+    const auto skeleton = era + year + month + weekday + day + hour + minute + second;
+    const std::u16string skeleton_units(skeleton.begin(), skeleton.end());
+    UErrorCode status = U_ZERO_ERROR;
+    const std::unique_ptr<UDateTimePatternGenerator, decltype(&udatpg_close)> generator(
+        udatpg_open(id.c_str(), &status), &udatpg_close);
+    check_icu(status);
+    auto pattern = icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* error) {
+        return udatpg_getBestPatternWithOptions(
+            generator.get(), skeleton_units.data(), icu_length(skeleton_units.size()),
+            UDATPG_MATCH_HOUR_FIELD_LENGTH, output, capacity, error);
+    });
+    // V8 spells CLDR's narrow no-break space before a day period as a space.
+    std::replace(pattern.begin(), pattern.end(), static_cast<char16_t>(0x202F), u' ');
+    std::u16string zone;
+    if (options.time_zone) {
+        const auto requested = js::string_code_units(*options.time_zone);
+        // This ICU call takes no preflight: a zone ID fits a fixed buffer.
+        UBool system = false;
+        zone.assign(128, u'\0');
+        const auto length =
+            ucal_getCanonicalTimeZoneID(requested.data(), icu_length(requested.size()), zone.data(),
+                                        icu_length(zone.size()), &system, &status);
+        if (U_FAILURE(status) || !system)
+            throw std::runtime_error("Invalid time zone specified.");
+        zone.resize(static_cast<std::size_t>(length));
+    } else
+        zone = js::string_code_units(*js::make_date_time_format());
+    IcuDateFormat format(udat_open(UDAT_PATTERN, UDAT_PATTERN, id.c_str(), zone.data(),
+                                   icu_length(zone.size()), pattern.data(),
+                                   icu_length(pattern.size()), &status),
+                         &udat_close);
+    check_icu(status);
+    // ECMA-402 time values use the proleptic Gregorian calendar.
+    const std::unique_ptr<UCalendar, decltype(&ucal_close)> calendar(
+        ucal_clone(udat_getCalendar(format.get()), &status), &ucal_close);
+    check_icu(status);
+    UErrorCode change = U_ZERO_ERROR;
+    ucal_setGregorianChange(calendar.get(), -8.64e15, &change);
+    if (U_SUCCESS(change))
+        udat_setCalendar(format.get(), calendar.get());
+    return format;
+}
+
+} // namespace
+
+std::string format_date_time(const js::Date& date, const std::vector<std::string>& locales,
+                             const DateTimeFormatOptions& options, DateTimeComponents components) {
+    const double time = *date;
+    if (std::isnan(time))
+        return "Invalid Date";
+    // A cached format keeps the host zone it opened in, as local time does.
+    thread_local LocaleCache<DateFormatKey, IcuDateFormat> cache;
+    const auto* format = cache.get(locales, DateFormatKey{options, components}, open_date_format);
+    return js::string_from_code_units(
+        icu_buffer<char16_t>([&](UChar* output, int32_t capacity, UErrorCode* status) {
+            return udat_format(format, time, output, capacity, nullptr, status);
+        }));
 }
 
 std::string locale_string_case(const std::string& value, const std::vector<std::string>& locales,
@@ -419,23 +682,17 @@ std::string locale_string_case(const std::string& value, const std::vector<std::
     // passes its primary language to ICU, without region or extension keywords.
     const auto requested =
         locales.empty() ? std::string(uloc_getDefault()) : locale_id(locales.front());
-    const auto locale = icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+    const auto locale = icu_buffer<char>([&](char* output, int32_t capacity, UErrorCode* status) {
         return uloc_getLanguage(requested.c_str(), output, capacity, status);
     });
     const auto input = js::string_code_units(value);
     const auto length = icu_length(input.size());
     const auto convert = upper ? &u_strToUpper : &u_strToLower;
-    UErrorCode status = U_ZERO_ERROR;
-    std::u16string output(input.size(), u'\0');
-    const auto size = convert(output.data(), length, input.data(), length, locale.c_str(), &status);
-    if (status == U_BUFFER_OVERFLOW_ERROR) {
-        output.resize(static_cast<std::size_t>(size));
-        status = U_ZERO_ERROR;
-        convert(output.data(), size, input.data(), length, locale.c_str(), &status);
-    }
-    check_icu(status);
-    output.resize(static_cast<std::size_t>(size));
-    return js::string_from_code_units(output);
+    return js::string_from_code_units(icu_buffer<char16_t>(
+        [&](UChar* output, int32_t capacity, UErrorCode* status) {
+            return convert(output, capacity, input.data(), length, locale.c_str(), status);
+        },
+        input.size()));
 }
 
 std::string normalize_string(const std::string& value, const std::string& form) {
@@ -450,17 +707,11 @@ std::string normalize_string(const std::string& value, const std::string& form) 
     check_icu(status);
     const auto input = js::string_code_units(value);
     const auto length = icu_length(input.size());
-    std::u16string output(input.size(), u'\0');
-    const auto size =
-        unorm2_normalize(normalizer, input.data(), length, output.data(), length, &status);
-    if (status == U_BUFFER_OVERFLOW_ERROR) {
-        output.resize(static_cast<std::size_t>(size));
-        status = U_ZERO_ERROR;
-        unorm2_normalize(normalizer, input.data(), length, output.data(), size, &status);
-    }
-    check_icu(status);
-    output.resize(static_cast<std::size_t>(size));
-    return js::string_from_code_units(output);
+    return js::string_from_code_units(icu_buffer<char16_t>(
+        [&](UChar* output, int32_t capacity, UErrorCode* error) {
+            return unorm2_normalize(normalizer, input.data(), length, output, capacity, error);
+        },
+        input.size()));
 }
 
 double local_time_zone_offset(double utc_milliseconds) {

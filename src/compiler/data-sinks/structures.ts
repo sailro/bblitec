@@ -3,6 +3,7 @@ import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
     isOpaqueReference,
+    propertyIsReadOnly,
     type DataStructField,
     type DataType,
 } from "../data-types.js";
@@ -14,7 +15,7 @@ import {
     type Value,
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
-import { isNullishLiteral } from "../symbols.js";
+import { declaredSymbol, isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 import { recordPropertyKeys } from "../object-statics.js";
@@ -329,7 +330,7 @@ function valueStruct(
                 value.recordGetters?.[field.sourceName] ||
                 value.recordSetters?.[field.sourceName]
             )
-                accessorGetter(lowerer, field, value, node);
+                accessorGetter(lowerer, dataType, field, value, node);
         if (
             lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
             !lowerer.context.bindings.containsPlatformEvent(value) &&
@@ -384,7 +385,14 @@ function valueStruct(
                 const getter = value.recordGetters?.[field.sourceName];
                 const setter = value.recordSetters?.[field.sourceName];
                 if (getter || setter)
-                    return accessorSlot(lowerer, field, value, node, self);
+                    return accessorSlot(
+                        lowerer,
+                        dataType,
+                        field,
+                        value,
+                        node,
+                        self,
+                    );
                 if (field.type.kind === "function") {
                     const method =
                         value.recordMethods?.[field.sourceName] ??
@@ -404,7 +412,7 @@ function valueStruct(
                                 field.type,
                                 value,
                                 ts.isMethodDeclaration(method) &&
-                                    ts.isClassDeclaration(method.parent),
+                                    ts.isClassLike(method.parent),
                                 homeReceiver(self, method),
                             );
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
@@ -420,12 +428,16 @@ function valueStruct(
                         property.callbackDeclaration,
                     );
                 const stored = property
-                    ? lowerer.compileMemberForSink(
-                          property,
-                          field.type,
-                          node,
-                          field.sourceName,
-                      )
+                    ? field.defaultWhenMissing &&
+                      property.dataType?.kind === "optional" &&
+                      field.type.kind !== "optional"
+                        ? armFieldOrDefault(lowerer, property, field, node)
+                        : lowerer.compileMemberForSink(
+                              property,
+                              field.type,
+                              node,
+                              field.sourceName,
+                          )
                     : field.defaultWhenMissing
                       ? "{}"
                       : field.type.kind === "optional"
@@ -463,7 +475,10 @@ function valueStruct(
                 dataType,
                 node,
                 lowerer.context,
-                { argument: recordExpression(lowerer, value, node) },
+                {
+                    argument: recordExpression(lowerer, value, node),
+                    stored: lowerer.convertedExpression(node),
+                },
             );
         const sourceFields = new EmissionMap(
             lowerer.context.dataTypes
@@ -541,12 +556,46 @@ function valueStruct(
         lowerer.context.dataTypes.noteRecordConversion(dataType, [
             UNKNOWN_PROPERTIES,
         ]);
+        // A parsed entry converts, checked, to a scalar field type.
+        const parsedEntry = (field: DataStructField): boolean => {
+            const stored =
+                field.type.kind === "optional" ? field.type.inner : field.type;
+            return (
+                sourceMap.value.kind === "json" &&
+                (stored.kind === "number" ||
+                    stored.kind === "boolean" ||
+                    stored.kind === "string")
+            );
+        };
+        const entryType = (field: DataStructField): boolean =>
+            dataTypesEqual(sourceMap.value, field.type) ||
+            (field.type.kind === "optional" &&
+                dataTypesEqual(sourceMap.value, field.type.inner)) ||
+            parsedEntry(field);
+        const unprojected = (field: DataStructField): string =>
+            `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must hold its entry type.`;
+        const incompatible = fields.find((field) => !entryType(field));
+        if (incompatible) lowerer.context.fail(node, unprojected(incompatible));
+        // A destination field storing an entry as data would be a copy of
+        // the one object JavaScript keeps: the destination type becomes a
+        // view of the open record, whose slots read and write its entries.
+        const copied = fields.find((field) => !field.accessor);
+        if (copied)
+            lowerer.context.dataTypes.requireRecordView(
+                dataType.name,
+                node,
+                unprojected(copied),
+            );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
                 const key = lowerer.context.cppString(field.sourceName);
                 const optional =
                     field.type.kind === "optional" &&
                     dataTypesEqual(sourceMap.value, field.type.inner);
+                if (field.accessor && parsedEntry(field)) {
+                    lowerer.context.reachJson();
+                    return `bbl::js::json_entry_accessor<${lowerer.context.dataTypes.cppType(field.type)}>(${value.cpp}, ${key})`;
+                }
                 // A closed record asserted from the open one is a view of
                 // it: reads and writes reach its entries, and a read of an
                 // absent entry refuses there, as an asserted read does.
@@ -555,12 +604,7 @@ function valueStruct(
                     (optional || dataTypesEqual(sourceMap.value, field.type))
                 )
                     return `bbl::js::${optional ? "optional_entry_accessor" : "entry_accessor"}<${lowerer.context.dataTypes.cppType(field.type)}>(${value.cpp}, ${key})`;
-                if (!field.accessor && optional)
-                    return `${value.cpp}.get(${key})`;
-                return lowerer.context.fail(
-                    node,
-                    `Open string record cannot project field '${field.sourceName}' into ${dataType.name}; destination fields must be compatible optionals.`,
-                );
+                return lowerer.context.fail(node, unprojected(field));
             })
             .join(", ")}}`;
         return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
@@ -575,6 +619,44 @@ function valueStruct(
  * element was read out of: a copy handed to a callee that only reads that
  * argument lives for the call.
  */
+/**
+ * A field only some union arms hold, from a record whose selected arm may
+ * lack it (a conditional between two arms' literals): the value where the
+ * arm holds it, else the field's default storage, which its tags keep
+ * from being own.
+ */
+function armFieldOrDefault(
+    lowerer: DataSinkHost,
+    property: Value,
+    field: DataStructField,
+    node: ts.Node,
+): string {
+    const type = property.dataType;
+    if (type?.kind !== "optional")
+        return lowerer.compileMemberForSink(
+            property,
+            field.type,
+            node,
+            field.sourceName,
+        );
+    const slot = lowerer.context.allocateTemporaryCppName("arm_field");
+    let converted = "";
+    const lines = lowerer.context.captureEmittedLines(() => {
+        converted = lowerer.compileMemberForSink(
+            lowerer.leafValue(optionalValueCpp(slot), type.inner),
+            field.type,
+            node,
+            field.sourceName,
+        );
+    });
+    const cppType = lowerer.context.dataTypes.cppType(field.type);
+    return (
+        `([&](const auto& ${slot}) -> ${cppType} { ` +
+        `if (!${optionalPresentCpp(slot)}) return ${cppType}{}; ` +
+        `${lines.join(" ")} return ${converted}; }(${property.cpp}))`
+    );
+}
+
 function recordExpression(
     lowerer: DataSinkHost,
     value: Value,
@@ -597,6 +679,7 @@ function recordExpression(
 
 function accessorGetter(
     lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
     field: DataStructField,
     record: Value,
     node: ts.Node,
@@ -607,12 +690,52 @@ function accessorGetter(
             node,
             `Property '${field.sourceName}' has a setter without a getter; a native record reads every property it stores.`,
         );
-    if (!field.accessor)
-        lowerer.context.fail(
+    if (!field.accessor) {
+        refuseClassFieldCopy(lowerer, dataType, record, node);
+        lowerer.context.dataTypes.requireAccessorSlot(
+            dataType,
+            field.sourceName,
+            record.recordSetters?.[field.sourceName] !== undefined,
             node,
-            `Property '${field.sourceName}' is an accessor; the native record stores it as data.`,
         );
+    }
     return getter;
+}
+
+/**
+ * A class instance stored as a record type is one object: its accessors
+ * and methods stay bound to it, but a mutable field the record stores as
+ * data would be a copy.
+ */
+function refuseClassFieldCopy(
+    lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
+    record: Value,
+    node: ts.Node,
+): void {
+    const declaration = record.classDeclaration;
+    const symbol = declaration?.name
+        ? declaredSymbol(lowerer.context.checker, declaration.name)
+        : undefined;
+    if (!symbol) return;
+    const instance = lowerer.context.checker.getDeclaredTypeOfSymbol(symbol);
+    for (const field of lowerer.context.dataTypes.structFields(
+        dataType.name,
+        node,
+        "accessors",
+    )) {
+        const property = instance.getProperty(field.sourceName);
+        if (
+            field.type.kind !== "function" &&
+            record.recordProperties?.[field.sourceName] &&
+            property &&
+            !propertyIsReadOnly(property)
+        )
+            lowerer.context.fail(
+                node,
+                `A '${symbol.name}' instance stored as '${dataType.name}' would copy its mutable field '${field.sourceName}'; JavaScript keeps one object.`,
+            );
+    }
 }
 
 /**
@@ -622,12 +745,13 @@ function accessorGetter(
  */
 function accessorSlot(
     lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
     field: DataStructField,
     record: Value,
     node: ts.Node,
     self: LiteralSelf | undefined,
 ): string {
-    const getter = accessorGetter(lowerer, field, record, node);
+    const getter = accessorGetter(lowerer, dataType, field, record, node);
     const setter = record.recordSetters?.[field.sourceName];
     const receiver: DataType<"struct"> | undefined = field.accessorReceiver
         ? { kind: "struct", name: field.accessorReceiver }
@@ -680,6 +804,7 @@ function valueEnummap(
                 ),
             ]),
         );
+        lowerer.context.dataTypes.observeEnumMapKeys(dataType, written, node);
         const reordered = members.some(
             (member, index) => written[index] !== member,
         );

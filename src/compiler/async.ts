@@ -25,12 +25,17 @@ import {
 } from "./types.js";
 import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
+    dataTypesEqual,
     propertyIsReadOnly,
     type DataType,
     type DataStructField,
 } from "./data-types.js";
 import { errorValue } from "./error-values.js";
-import { isPromiseResultUsed } from "./promises.js";
+import {
+    isPromiseResultUsed,
+    rejectionOnlyPromiseCpp,
+    settlesNever,
+} from "./promises.js";
 import { isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
@@ -119,12 +124,19 @@ export class AsyncLowerer {
                     node,
                 ));
         const raw = context.compileValue(expression);
-        const value = this.adoptOptionalPromise(raw, expression) ?? raw;
+        const value = this.adoptPromiseUnion(raw, expression) ?? raw;
         if (value.kind === "promise") {
             const expected = type
                 ? context.dataTypes.cppType(type)
                 : "bbl::js::PromiseVoid";
             if (value.promiseType === expected) return value.cpp;
+            if (
+                settlesNever(
+                    context.checker,
+                    context.checker.getTypeAtLocation(expression),
+                )
+            )
+                return rejectionOnlyPromiseCpp(value.cpp, expected);
             const name = context.allocateTemporaryCppName("adopted_result");
             const conversion = context.captureManagedClosureLines(() => {
                 const binding = context.registerNativeBinding(name);
@@ -143,6 +155,7 @@ export class AsyncLowerer {
             });
             return `bbl::js::adopt_promise(${value.cpp}, ${renderClosure(conversion, `[[maybe_unused]] const ${value.promiseType}& ${name}`, expected)})`;
         }
+        this.refuseThenable(value, expression);
         if (!type) {
             context.emitDiscardedValue(value);
             return "bbl::js::PromiseVoid{}";
@@ -289,9 +302,9 @@ export class AsyncLowerer {
         if (
             ts.isPropertyAccessExpression(callee) &&
             context.libraryGlobal(callee.expression) === "Promise" &&
-            callee.name.text === "race"
+            (callee.name.text === "race" || callee.name.text === "any")
         )
-            return this.compileRace(node);
+            return this.compileRace(node, callee.name.text);
         if (this.isPromiseMethod(callee)) {
             const rejection = callee.name.text === "catch";
             const cleanup = callee.name.text === "finally";
@@ -905,12 +918,20 @@ export class AsyncLowerer {
         };
     }
 
-    private compileRace(call: ts.CallExpression): Value {
+    /**
+     * `Promise.race`, and `Promise.any`, which settles with the first
+     * fulfillment instead and rejects with an AggregateError of every
+     * reason, in input order, once all inputs reject.
+     */
+    private compileRace(
+        call: ts.CallExpression,
+        operation: "race" | "any",
+    ): Value {
         const context = this.context;
         if (call.arguments.length !== 1)
             context.fail(
                 call,
-                "Promise.race requires one represented iterable.",
+                `Promise.${operation} requires one represented iterable.`,
             );
         const argument = unwrapExpression(argumentAt(call, 0));
         const pin = (value: Value, source: ts.Node = call): Value =>
@@ -920,22 +941,26 @@ export class AsyncLowerer {
                 source,
             );
         let promises: Value[];
-        if (ts.isArrayLiteralExpression(argument))
-            promises = argument.elements.map((element) => {
-                if (ts.isSpreadElement(element))
-                    return context.fail(
-                        element,
-                        "Promise.race literal spreads require a represented array first.",
-                    );
-                return pin(
+        // An input that only rejects joins any settlement type: the others
+        // name the result.
+        const argumentType = context.checker.getTypeAtLocation(argument);
+        const onlyRejects = (index: number): boolean =>
+            settlesNever(
+                context.checker,
+                this.elementType(argumentType, index),
+            );
+        const spread = this.spreadLiteralInput(argument, operation);
+        if (ts.isArrayLiteralExpression(argument) && !spread)
+            promises = argument.elements.map((element) =>
+                pin(
                     ts.isOmittedExpression(element)
                         ? { kind: "void", cpp: "" }
                         : context.compileValue(element),
                     element,
-                );
-            });
+                ),
+            );
         else {
-            const value = context.compileValue(argument);
+            const value = spread ?? context.compileValue(argument);
             if (value.kind === "tuple")
                 promises = (value.tupleElements ?? []).map((value) =>
                     pin(value),
@@ -944,11 +969,11 @@ export class AsyncLowerer {
                 if (value.dataType?.kind !== "vector")
                     return context.fail(
                         argument,
-                        "Promise.race requires an array or a represented tuple.",
+                        `Promise.${operation} requires an array or a represented tuple.`,
                     );
                 const element = value.dataType.element;
                 return context.dataLowerer.leafValue(
-                    `bbl::js::promise_race(${value.cpp})`,
+                    `bbl::js::promise_${operation}(${value.cpp})`,
                     element.kind === "promise"
                         ? element
                         : { kind: "promise", result: element },
@@ -956,22 +981,83 @@ export class AsyncLowerer {
             }
         }
         const output = this.withoutConstants(
-            promises[0]?.promiseResult ?? { kind: "void", cpp: "" },
+            promises.find((_, index) => !onlyRejects(index))?.promiseResult ??
+                promises[0]?.promiseResult ?? { kind: "void", cpp: "" },
         );
         const cppType = this.cppType(output, call);
-        if (promises.some((promise) => promise.promiseType !== cppType))
-            return context.fail(
-                call,
-                "Promise.race inputs require a common represented settlement type.",
-            );
+        const inputs = promises.map((promise, index) => {
+            if (promise.promiseType === cppType) return promise.cpp;
+            if (!onlyRejects(index))
+                return context.fail(
+                    call,
+                    `Promise.${operation} inputs require a common represented settlement type.`,
+                );
+            return rejectionOnlyPromiseCpp(promise.cpp, cppType);
+        });
         return {
             kind: "promise",
-            cpp: `bbl::js::promise_race_tuple<${cppType}>(std::tuple{${promises.map((value) => value.cpp).join(", ")}})`,
+            cpp: `bbl::js::promise_${operation}_tuple<${cppType}>(std::tuple{${inputs.join(", ")}})`,
             promiseType: cppType,
             promiseResult: output,
             nativeCaptures: promises.flatMap(
                 (value) => value.nativeCaptures ?? [],
             ),
+        };
+    }
+
+    /**
+     * An array literal with spreads (`[p, ...ps]`) holds a count known only
+     * at run time: it is the fresh array JavaScript builds first, element by
+     * element in source order, which the combinator then reads as a stored
+     * array. Its elements must be promises of one settlement type; one that
+     * only rejects joins it.
+     */
+    private spreadLiteralInput(
+        argument: ts.Expression,
+        operation: string,
+    ): Value | undefined {
+        if (
+            !ts.isArrayLiteralExpression(argument) ||
+            !argument.elements.some(ts.isSpreadElement)
+        )
+            return undefined;
+        const lowerer = this.context.dataLowerer;
+        let element: DataType | undefined;
+        for (const item of argument.elements) {
+            const declared = lowerer.dataTypeAt(
+                ts.isSpreadElement(item) ? item.expression : item,
+            );
+            const type = !ts.isSpreadElement(item)
+                ? declared
+                : declared?.kind === "vector" || declared?.kind === "span"
+                  ? declared.element
+                  : undefined;
+            if (
+                !ts.isSpreadElement(item) &&
+                type?.kind === "promise" &&
+                settlesNever(
+                    this.context.checker,
+                    this.context.checker.getTypeAtLocation(item),
+                )
+            )
+                continue;
+            if (
+                type?.kind !== "promise" ||
+                (element !== undefined && !dataTypesEqual(element, type))
+            )
+                return this.context.fail(
+                    item,
+                    `Promise.${operation} literal spreads require promises and arrays of promises of one settlement type.`,
+                );
+            element = type;
+        }
+        const array: DataType = { kind: "vector", element: element! };
+        return {
+            ...lowerer.leafValue(
+                lowerer.compileForSink(argument, array),
+                array,
+            ),
+            freshData: true,
         };
     }
 
@@ -1086,22 +1172,24 @@ export class AsyncLowerer {
             );
         };
         let promises: Value[];
-        if (ts.isArrayLiteralExpression(argument)) {
-            promises = argument.elements.map((element) => {
-                if (ts.isSpreadElement(element))
-                    context.fail(
-                        element,
-                        `Promise.${operation} literal spreads require a represented array first.`,
-                    );
-                return pin(
+        const spread = settled
+            ? this.spreadLiteralInput(argument, operation)
+            : context.asyncActivations.withOrderedAggregateInput(
+                  call,
+                  argument,
+                  () => this.spreadLiteralInput(argument, operation),
+              );
+        if (ts.isArrayLiteralExpression(argument) && !spread) {
+            promises = argument.elements.map((element) =>
+                pin(
                     ts.isOmittedExpression(element)
                         ? { kind: "void", cpp: "" }
                         : compileInput(element),
                     element,
-                );
-            });
+                ),
+            );
         } else {
-            const value = compileInput(argument);
+            const value = spread ?? compileInput(argument);
             if (value.kind === "tuple") {
                 const type = context.checker.getTypeAtLocation(argument);
                 promises = (value.tupleElements ?? []).map((element, index) =>
@@ -1130,14 +1218,16 @@ export class AsyncLowerer {
                         },
                     );
                 }
-                if (!element)
-                    return context.fail(
-                        argument,
-                        "Promise.all stored void arrays need an undefined element representation.",
-                    );
+                // A void fulfillment is undefined in the aggregate array.
                 return context.dataLowerer.leafValue(
                     `bbl::js::promise_all(${value.cpp})`,
-                    { kind: "promise", result: { kind: "vector", element } },
+                    {
+                        kind: "promise",
+                        result: {
+                            kind: "vector",
+                            element: element ?? { kind: "undefined" },
+                        },
+                    },
                 );
             }
         }
@@ -1573,15 +1663,20 @@ export class AsyncLowerer {
             expected,
         );
     }
-    /** An absent promise settles to absence; a present promise adopts its payload. */
-    private adoptOptionalPromise(
+    /**
+     * A union holding a promise, as resolution adopts it: an absent promise
+     * settles to absence and a present one adopts its payload; a
+     * value-or-promise union (`T | Promise<T>`) is its promise arm itself,
+     * or its value arm resolved.
+     */
+    private adoptPromiseUnion(
         value: Value,
         node: ts.Node,
         source = this.context.checker.getTypeAtLocation(node),
     ): Value | undefined {
         const type = value.dataType;
         if (type?.kind !== "optional" || type.inner.kind !== "promise")
-            return undefined;
+            return this.adoptValueOrPromise(value);
         const context = this.context;
         const awaited = context.checker.getAwaitedType(source);
         const mapped = awaited && context.dataTypes.fromTsType(awaited, node);
@@ -1625,7 +1720,7 @@ export class AsyncLowerer {
         source = this.context.checker.getTypeAtLocation(node),
     ): Value {
         if (value.kind === "promise") return value;
-        const adopted = this.adoptOptionalPromise(value, node, source);
+        const adopted = this.adoptPromiseUnion(value, node, source);
         if (adopted) return adopted;
         value = this.normalizeUndefined(
             value,
@@ -1705,7 +1800,7 @@ export class AsyncLowerer {
         node: ts.Node,
         source: ts.Type | undefined,
     ): Value {
-        const adopted = this.adoptOptionalPromise(value, node, source);
+        const adopted = this.adoptPromiseUnion(value, node, source);
         if (adopted) return adopted;
         const awaited =
             source && (this.context.checker.getAwaitedType(source) ?? source);
@@ -1822,13 +1917,45 @@ export class AsyncLowerer {
             owned,
         );
     }
-    private refuseThenable(value: Value, node: ts.Node): void {
+    private adoptValueOrPromise(value: Value): Value | undefined {
+        const type = value.dataType;
+        if (value.kind !== "data" || type?.kind !== "union") return undefined;
+        const promiseIndex = type.members.findIndex(
+            (member) => member.kind === "promise",
+        );
+        const promise = type.members[promiseIndex];
+        const settled = type.members[1 - promiseIndex];
+        if (
+            type.members.length !== 2 ||
+            promise?.kind !== "promise" ||
+            !promise.result ||
+            !settled ||
+            !dataTypesEqual(promise.result, settled)
+        )
+            return undefined;
+        this.context.useNativeValue(value);
+        const cppType = this.context.dataTypes.cppType(promise);
+        return this.context.dataLowerer.leafValue(
+            `([](const auto& settled) -> ${cppType} { return settled.index() == ${promiseIndex} ? std::get<${promiseIndex}>(settled) : ${cppType}::resolved(std::get<${1 - promiseIndex}>(settled)); }(${value.cpp}))`,
+            promise,
+        );
+    }
+
+    /**
+     * The one resolution entry point every settled value passes before its
+     * conversion: resolution reads a custom thenable's `then` (a method,
+     * getter, callable property or accessor field) and calls it when
+     * callable. A data `then` that is not a function is read unobservably.
+     */
+    refuseThenable(value: Value, node: ts.Node): void {
         const property = value.recordProperties?.then;
         const field =
             value.dataType?.kind === "struct"
-                ? this.context.dataTypes
-                      .structFields(value.dataType.name, node, "accessors")
-                      .find((field) => field.sourceName === "then")
+                ? this.context.dataTypes.findStructField(
+                      value.dataType.name,
+                      "then",
+                      node,
+                  )
                 : undefined;
         if (
             value.recordMethods?.then ||

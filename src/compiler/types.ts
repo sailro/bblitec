@@ -2181,6 +2181,8 @@ export interface ValueFields {
     requiresApplicationRealm?: true;
     /** Known RegExp grammar determines the positional replacement callback arguments. */
     regexpCaptureCount?: number;
+    /** A `u`-flag RegExp, whose runtime pattern matches whole code points. */
+    regexpUnicode?: true;
     callbackDeclaration?:
         | ts.Identifier
         | ts.FunctionDeclaration
@@ -2213,14 +2215,14 @@ export interface ValueFields {
     /** JavaScript function identity retained by a materialized native callback. */
     platformCallbackIdentity?: number;
     /** Constructed class identity, retained when an inlined return wraps Value. */
-    classDeclaration?: ts.ClassDeclaration;
+    classDeclaration?: ts.ClassLikeDeclaration;
     /**
      * The concrete classes a stored instance read as `classDeclaration` can
      * be at run time, when there are several; absent when its class is exact.
      */
-    classCandidates?: readonly ts.ClassDeclaration[];
+    classCandidates?: readonly ts.ClassLikeDeclaration[];
     /** The class whose static fields this record holds: the value of a class name. */
-    classStatics?: ts.ClassDeclaration;
+    classStatics?: ts.ClassLikeDeclaration;
     /** A resolved builtin constructor retained through generation-known aliases. */
     builtinConstructor?: "ResizeObserver" | "MutationObserver";
     /**
@@ -2465,6 +2467,19 @@ export interface ValueFields {
      * and spells them apart.
      */
     slotFoundCpp?: string;
+    /**
+     * The tagged storage (`DataType<"tagged">`) a value was read from, whose
+     * `cpp` is a const view of the value: a store into the slot writes the
+     * value and its defined state together through this.
+     */
+    absenceTagStorageCpp?: string;
+    absenceTagType?: DataType<"tagged">;
+    /**
+     * The declarations of the record slot a value was read from: the
+     * storage a use the slot's representation cannot serve demands retyped
+     * (tagged absence, growable tuple lanes).
+     */
+    slotDeclarations?: readonly ts.Declaration[];
     /** JavaScript truthiness when it differs from mere optional presence. */
     truthinessCpp?: string;
     /** An Error delivered by native device recovery, with the Error message contract. */
@@ -3091,6 +3106,12 @@ export type Feature =
      */
     | "data:json"
     | "data:locale"
+    /** BigInt values and BigInt64/BigUint64 arrays: brings js_bigint.hpp. */
+    | "data:bigint"
+    /** Symbol values: brings js_symbol.hpp. */
+    | "data:symbol"
+    /** Tagged template string arrays: brings js_template.hpp. */
+    | "data:tagged-template"
     /** Web Storage: the durable per-user key/value store behind `localStorage`. */
     | "storage:local"
     | "platform:workers"

@@ -151,8 +151,8 @@ void prepared_invocation_retains_once() {
     bool failed = false;
     try {
         Function{static_cast<int (*)(int)>(nullptr)}.snapshot()(0);
-    } catch (const std::bad_function_call&) {
-        failed = true;
+    } catch (const bbl::js::NamedError& error) {
+        failed = error.name == "TypeError";
     }
     assert(failed);
 }
@@ -169,8 +169,8 @@ void native_invocation_snapshot() {
     bool failed = false;
     try {
         (void)absent(0);
-    } catch (const std::bad_function_call&) {
-        failed = true;
+    } catch (const bbl::js::NamedError& error) {
+        failed = error.name == "TypeError";
     }
     assert(failed);
     int value = 1;
@@ -235,8 +235,8 @@ void native_function_storage_snapshot() {
     bool failed = false;
     try {
         absent();
-    } catch (const std::bad_function_call&) {
-        failed = true;
+    } catch (const bbl::js::NamedError& error) {
+        failed = error.name == "TypeError";
     }
     assert(failed);
 

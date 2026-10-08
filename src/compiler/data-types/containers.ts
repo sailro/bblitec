@@ -4,6 +4,7 @@ export const containerKinds: DataKindOperations<
     | "promise"
     | "weak-ref"
     | "optional"
+    | "tagged"
     | "union"
     | "vector"
     | "arguments"
@@ -86,6 +87,16 @@ export const containerKinds: DataKindOperations<
         tracedEdges: "children",
         reseats: "children",
     },
+    tagged: {
+        cpp: (type, context) =>
+            `bbl::js::Tagged<${context.cppType(type.inner)}>`,
+        key: (type, key) => `tagged(${key(type.inner)})`,
+        equal: (left, right, equal) => equal(left.inner, right.inner),
+        children: (type) => [type.inner],
+        byReference: false,
+        tracedEdges: "children",
+        reseats: "children",
+    },
     vector: {
         cpp: (type, context) =>
             `bbl::js::Array<${context.cppType(type.element)}>`,
@@ -129,8 +140,10 @@ export const containerKinds: DataKindOperations<
     set: {
         cpp: (type, context) =>
             `bbl::js::Set<${context.cppType(type.element)}>`,
-        key: (type, key) => `set(${key(type.element)})`,
-        equal: (left, right, equal) => equal(left.element, right.element),
+        key: (type, key) =>
+            `${type.weak ? "weak-set" : "set"}(${key(type.element)})`,
+        equal: (left, right, equal) =>
+            left.weak === right.weak && equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "children",

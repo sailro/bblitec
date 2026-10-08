@@ -3790,8 +3790,11 @@ test("narrows an optional string-union key before Record lookup", () => {
         const normal = picker.read();
     `);
 
-    assert.match(result.cpp, /property_key/);
-    assert.match(result.cpp, /Face::left/);
+    // A read-only record is the record it wraps: one slot per tag.
+    assert.match(
+        result.cpp,
+        /enum_map_at\(v_normals, \(\*\(\*v_bblite_class_field_face_\d+\)\)\)/,
+    );
 });
 
 test("narrows an optional string-union key passed to Map.get", () => {
@@ -8725,15 +8728,15 @@ test("a tagged union arm with an unrepresented field refuses at that field", () 
     assert.throws(
         () =>
             compileSource(`
-                type Outcome = { kind: "hit"; token: symbol } | { kind: "miss" };
+                type Outcome = { kind: "hit"; token: FinalizationRegistry<number> } | { kind: "miss" };
                 function outcome(hit: boolean): Outcome {
-                    return hit ? { kind: "hit", token: Symbol("hit") } : { kind: "miss" };
+                    return hit ? { kind: "hit", token: new FinalizationRegistry<number>(() => {}) } : { kind: "miss" };
                 }
                 const first = outcome(Date.now() > 0);
                 if (first.kind !== "hit") throw new Error("outcome");
             `),
         (error: Error) =>
-            /Symbol/.test(error.message) &&
+            /Unsupported constructor expression/.test(error.message) &&
             !/unknown field/.test(error.message),
     );
 });
@@ -14143,9 +14146,14 @@ test("projects open string records into optional struct parameters", () => {
         const count = spawn(entities);
     `);
 
+    // Each struct views its record's entries: reads see later writes, and
+    // an absent entry reads as undefined.
     assert.match(result.cpp, /project_result/);
-    assert.match(result.cpp, /\.get\("classname"\)/);
-    assert.match(result.cpp, /\.get\("origin"\)/);
+    assert.match(
+        result.cpp,
+        /optional_entry_accessor<.+>\([^,]+, "classname"\)/,
+    );
+    assert.match(result.cpp, /optional_entry_accessor<.+>\([^,]+, "origin"\)/);
 });
 
 test("runs data cleanup in finally across an early return", () => {
@@ -17012,6 +17020,63 @@ test("reads the pin's wgsl tag as the identity over a shader source", () => {
     ]);
     assert.match(program?.fragmentSource ?? "", /return vec4<f32>\(0\.5\);/);
     assert.ok(!(program?.fragmentSource ?? "").includes("wgsl"));
+});
+
+// A module's constant tuple the engine takes as a uniform default stays
+// the compile-time value the engine reads, even where the program compares
+// open values by identity: the engine keeps its own copy.
+test("keeps an imported constant uniform default tuple handed to the engine", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bblite-uniform-tuple-"));
+    try {
+        writeFileSync(
+            join(directory, "tint.ts"),
+            `export const DEFAULT_TINT: [number, number, number] = [0.25, 0.5, 0.75];`,
+        );
+        const result = compileSource(
+            `
+            import { createEngine, createShaderMaterial } from "babylon-lite";
+            import { DEFAULT_TINT } from "./tint.js";
+
+            const vertexSource = \`struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+            };
+            @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+                var out: VertexOutput;
+                out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+                return out;
+            }\`;
+            const fragmentSource = \`@fragment fn mainFragment() -> @location(0) vec4<f32> {
+                return vec4<f32>(shaderUniforms.tint, 1.0);
+            }\`;
+            function same(left: unknown, right: unknown): boolean {
+                return left === right;
+            }
+            function tinted(options: { tint?: [number, number, number] }): void {
+                const color = options.tint ?? DEFAULT_TINT;
+                createShaderMaterial({
+                    name: "tinted",
+                    vertexSource,
+                    fragmentSource,
+                    attributes: ["position"],
+                    uniforms: [
+                        "worldViewProjection",
+                        { name: "tint", type: "vec3<f32>", defaultValue: color },
+                    ],
+                });
+            }
+
+            async function main() {
+                await createEngine({});
+                tinted({});
+                if (same(1, 2)) throw new Error("same");
+            }
+            `,
+            { fileName: join(directory, "entry.ts") },
+        );
+        assert.deepEqual(result.manifest.shaderVariants, ["tinted"]);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
 });
 
 test("preserves shader-material identity through a typed class field", () => {

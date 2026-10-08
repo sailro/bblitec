@@ -197,6 +197,11 @@ export class AsyncActivations {
         }
     }
 
+    /** Refuses a custom thenable before an async result converts. */
+    public refuseThenable(value: Value, node: ts.Node): void {
+        this.context.asyncLowerer.refuseThenable(value, node);
+    }
+
     public compileAsyncReturn(
         expression: ts.Expression,
         type: DataType | undefined,

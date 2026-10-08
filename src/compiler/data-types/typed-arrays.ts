@@ -6,6 +6,8 @@ interface TypedArrayRecord {
     readonly constructor: string;
     readonly stem: string;
     readonly cppType: string;
+    /** `BYTES_PER_ELEMENT` of the class and of each instance. */
+    readonly bytesPerElement: number;
     /** The C++ type of one element, which a constant table stores. */
     readonly elementCppType: string;
     readonly store: (value: string) => string;
@@ -23,6 +25,7 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         constructor: "Int8Array",
         stem: "i8",
         cppType: "bbl::js::I8Array",
+        bytesPerElement: 1,
         elementCppType: "std::int8_t",
         store: (value) => `bbl::js::to_int8(${value})`,
         storeLiteral: (value) => `${Int8Array.of(value)[0]!}`,
@@ -31,6 +34,7 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         constructor: "Uint8Array",
         stem: "u8",
         cppType: "bbl::js::U8Array",
+        bytesPerElement: 1,
         elementCppType: "std::uint8_t",
         store: (value) => `bbl::js::to_uint8(${value})`,
         storeLiteral: (value) => `${Uint8Array.of(value)[0]!}u`,
@@ -39,6 +43,7 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         constructor: "Float64Array",
         stem: "f64",
         cppType: "bbl::js::F64Array",
+        bytesPerElement: 8,
         elementCppType: "double",
         store: (value) => value,
     },
@@ -46,6 +51,7 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         constructor: "Float32Array",
         stem: "f32",
         cppType: "bbl::js::F32Array",
+        bytesPerElement: 4,
         elementCppType: "float",
         store: (value) => `static_cast<float>(${value})`,
         storeLiteral: float32TableLiteral,
@@ -54,6 +60,7 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         constructor: "Uint16Array",
         stem: "u16",
         cppType: "bbl::js::U16Array",
+        bytesPerElement: 2,
         elementCppType: "std::uint16_t",
         store: (value) => `bbl::js::to_uint16(${value})`,
         storeLiteral: (value) => `${Uint16Array.of(value)[0]!}u`,
@@ -62,6 +69,7 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         constructor: "Int16Array",
         stem: "i16",
         cppType: "bbl::js::I16Array",
+        bytesPerElement: 2,
         elementCppType: "std::int16_t",
         store: (value) => `bbl::js::to_int16(${value})`,
         storeLiteral: (value) => `${Int16Array.of(value)[0]!}`,
@@ -70,14 +78,26 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         constructor: "Uint32Array",
         stem: "u32",
         cppType: "bbl::js::U32Array",
+        bytesPerElement: 4,
         elementCppType: "std::uint32_t",
         store: (value) => `bbl::js::to_uint32(${value})`,
         storeLiteral: (value) => `${Uint32Array.of(value)[0]!}u`,
+    },
+    u8clampedarray: {
+        constructor: "Uint8ClampedArray",
+        stem: "u8c",
+        cppType: "bbl::js::U8CArray",
+        bytesPerElement: 1,
+        elementCppType: "bbl::js::ClampedByte",
+        store: (value) => `bbl::js::to_uint8_clamp(${value})`,
+        storeLiteral: (value) =>
+            `bbl::js::ClampedByte{${Uint8ClampedArray.of(value)[0]!}u}`,
     },
     i32array: {
         constructor: "Int32Array",
         stem: "i32",
         cppType: "bbl::js::I32Array",
+        bytesPerElement: 4,
         elementCppType: "std::int32_t",
         store: (value) => `bbl::js::to_int32(${value})`,
         storeLiteral: (value) => `${Int32Array.of(value)[0]!}`,
@@ -90,6 +110,33 @@ export const TYPED_ARRAY_KINDS: ReadonlyMap<string, TypedArrayKind> =
             Object.entries(TYPED_ARRAYS) as [TypedArrayKind, TypedArrayRecord][]
         ).map(([kind, record]) => [record.constructor, kind]),
     );
+
+/** BigInt64Array and BigUint64Array, by constructor name. */
+export const BIGINT_ARRAY_KINDS: ReadonlyMap<string, "i64array" | "u64array"> =
+    new EmissionMap([
+        ["BigInt64Array", "i64array"],
+        ["BigUint64Array", "u64array"],
+    ]);
+
+/** `BYTES_PER_ELEMENT` of a typed-array kind, the BigInt kinds included. */
+export function typedArrayBytesPerElement(
+    kind: TypedArrayKind | "i64array" | "u64array",
+): number {
+    return kind === "i64array" || kind === "u64array"
+        ? 8
+        : TYPED_ARRAYS[kind].bytesPerElement;
+}
+
+/**
+ * `BYTES_PER_ELEMENT` of the typed-array class a library global names
+ * (`Float32Array`), or undefined for any other global.
+ */
+export function typedArrayClassBytesPerElement(
+    name: string,
+): number | undefined {
+    const kind = TYPED_ARRAY_KINDS.get(name) ?? BIGINT_ARRAY_KINDS.get(name);
+    return kind === undefined ? undefined : typedArrayBytesPerElement(kind);
+}
 
 export const BUFFER_VIEW_KINDS: ReadonlyMap<
     string,

@@ -5,6 +5,11 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { ClassHierarchy } from "../src/compiler/class-members.js";
+import { DataTypeRegistry } from "../src/compiler/data-types.js";
+import { GenericFunctionStorageRequired } from "../src/compiler/generic-function-storage.js";
+import { ReplayStorage } from "../src/compiler/replay-storage.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -391,6 +396,74 @@ test("stored polymorphic recursion and detached receivers refuse", () => {
         ${setup}state.read(3);
     `),
         /An object literal method reading `this` requires shared native object storage/,
+    );
+});
+
+test("a stored generic call keeps one signature across replays and refuses one that never converges", () => {
+    const frontend = createCompilerProgram(
+        `
+        type Twin = { h: number };
+        function count(raw: unknown): number { return raw === undefined ? 0 : 1; }
+        count({ h: 1 });
+        `,
+        resolve("stored-generic-convergence.ts"),
+    );
+    const { checker, sourceFile } = frontend;
+    const [twin, count, statement] = sourceFile.statements;
+    assert.ok(twin && ts.isTypeAliasDeclaration(twin));
+    assert.ok(count && ts.isFunctionDeclaration(count) && count.name);
+    assert.ok(
+        statement &&
+            ts.isExpressionStatement(statement) &&
+            ts.isCallExpression(statement.expression),
+    );
+    const call = statement.expression;
+    const functionType = checker.getTypeAtLocation(count.name);
+    const replay = (storage: ReplayStorage) => {
+        const registry = new DataTypeRegistry(
+            checker,
+            (_node, message) => {
+                throw new Error(message);
+            },
+            new ClassHierarchy(checker, frontend.program),
+            false,
+            storage,
+        );
+        const stored = registry.fromStoredTsType(functionType, count);
+        assert.ok(stored?.kind === "function" && stored.generic);
+        const name = stored.generic;
+        return () => registry.genericFunctionCall(name, call, () => false);
+    };
+    const demand = (storage: ReplayStorage) => {
+        try {
+            replay(storage)();
+        } catch (error) {
+            if (error instanceof GenericFunctionStorageRequired)
+                return error.demand;
+            throw error;
+        }
+        assert.fail("an unrepresented signature demands storage");
+    };
+    // The checker types an object literal afresh at every request; each
+    // replay must still reach the signature the previous one stored.
+    const converging = new ReplayStorage(checker);
+    assert.ok(converging.add({ kind: "generic", demand: demand(converging) }));
+    assert.equal(replay(converging)().name, "call_0");
+    assert.equal(replay(converging)().name, "call_0");
+    // A site whose stored signature differs only by type identity would
+    // demand another signature at every replay.
+    const diverging = new ReplayStorage(checker);
+    const first = demand(diverging);
+    diverging.add({
+        kind: "generic",
+        demand: {
+            ...first,
+            parameters: [checker.getTypeAtLocation(twin.name)],
+        },
+    });
+    assert.throws(
+        replay(diverging),
+        /Stored generic function instantiation does not converge: this call's argument types change identity at every emission\./,
     );
 });
 

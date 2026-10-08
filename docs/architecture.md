@@ -51,10 +51,20 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `intrinsic-options.ts`, `asset-registry.ts`, `admissions.ts` | Per-intrinsic option objects; asset registration and its recorded facts; capability admissions deferred until the program reaches the capability |
 | `native-emission-registry.ts` | Namespace-level native definitions, shared bodies, environment structs and static tables |
 
-Repeated storage demands trigger one bounded, discarded discovery pass before fresh strict emission.
-Discovery continues only past independent generic calls and stops at ordinary refusals, possible writes
-or dependencies on rolled-back declarations. Its limits are checked at statement boundaries; coverage
+Repeated storage demands trigger a bounded, discarded discovery pass before fresh strict emission, again
+after further demands, to a fixed point. Discovery continues past independent generic calls and
+declaration storage demands (absence tags, tuple and numeric slots, enum elements), losing the
+rolled-back statement's written names, and past record joins, lowered as copies; it stops at ownership
+demands, untracked writes, dependencies on lost names and refusals (a survey's plan rolls these back). Its limits are checked at statement boundaries; coverage
 and surveys retain only strict attempts. Earlier aliases and initializers use the selected representation.
+A record join that only appears once an earlier join reshaped a component still costs one strict attempt:
+layouts are fixed when the compiler is built, so discovery cannot see it (one measured program: 66 of its
+73 attempts). Removing the cascade needs every join decided before lowering, by comparing each stored
+expression's record type with its contextual type over the memoized layout compatibility.
+Calls rewrite a namespace member (`N.f`) to its declaration once, in `compileCall`; reads of class statics
+and `import * as M` receivers stay with their own lowerers. A rewrite in the shared `unwrap` would also
+reach write targets, turning a refused namespace-member write into a silent one, and would rewrite library
+namespaces (`Intl.*`) that `libraryGlobal` resolves by qualified name.
 Immutable storage-demand and lexical-dependency indexes
 are shared by the checked program. Scoped collection facts use a derived alias graph that observes
 mutations and rollback. Equivalent definitions share code; invocations retain

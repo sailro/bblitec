@@ -235,7 +235,7 @@ function compileCollation(
 }
 
 /** The `Intl.NumberFormat` options lowered, in `bbl::pal::NumberFormatOptions` order. */
-const numberFormatOptions = [
+const numberFormatOptionNames = [
     ["localeMatcher", "string"],
     ["style", "string"],
     ["minimumIntegerDigits", "number"],
@@ -247,9 +247,49 @@ const numberFormatOptions = [
 ] as const;
 
 /**
+ * The `bbl::pal::NumberFormatOptions` an options record names, its fields
+ * in that struct's order. Currency and unit styles refuse.
+ */
+function numberFormatOptions(
+    lowerer: DataLowerer,
+    api: string,
+    fields: Readonly<Record<string, Value>>,
+    site: ts.Node,
+): string {
+    const style = fields.style?.staticString;
+    if (style === "currency" || style === "unit")
+        lowerer.context.fail(site, `${api} style '${style}' is not lowered.`);
+    const options = numberFormatOptionNames.map(([key, kind]) => {
+        const field = fields[key];
+        if (kind !== "grouping")
+            return optionalArgument(
+                lowerer,
+                field,
+                { kind },
+                site,
+                `number_format_${key}`,
+            );
+        // A boolean selects "always" or no grouping; a string names a strategy.
+        const type =
+            field?.dataType?.kind === "optional"
+                ? field.dataType.inner
+                : field?.dataType;
+        const boolean = field?.kind === "boolean" || type?.kind === "boolean";
+        return `bbl::pal::grouping_option(${optionalArgument(
+            lowerer,
+            field,
+            { kind: boolean ? "boolean" : "string" },
+            site,
+            `number_format_${key}`,
+        )})`;
+    });
+    return `bbl::pal::NumberFormatOptions{${options.join(", ")}}`;
+}
+
+/**
  * `number.toLocaleString(locales?, options?)`: the number as the platform's
  * ICU number format renders it once `Intl.NumberFormat` resolves the locales
- * and options. Currency and unit styles refuse.
+ * and options.
  */
 export function compileNumberLocaleString(
     lowerer: DataLowerer,
@@ -266,48 +306,124 @@ export function compileNumberLocaleString(
         call.expression,
         "formatted_number",
     );
-    const optionsNode = call.arguments[1];
     const { locales, fields } = compileLocalesAndOptions(
         lowerer,
         "Number.toLocaleString",
         "number format options",
         call.arguments[0],
-        optionsNode,
-        numberFormatOptions.map(([name]) => name),
+        call.arguments[1],
+        numberFormatOptionNames.map(([name]) => name),
         call,
     );
-    const style = fields.style?.staticString;
-    if (style === "currency" || style === "unit")
-        context.fail(
-            optionsNode ?? call,
-            `Number.toLocaleString style '${style}' is not lowered.`,
-        );
-    const options = numberFormatOptions.map(([key, kind]) => {
-        const field = fields[key];
-        if (kind !== "grouping")
-            return optionalArgument(
-                lowerer,
-                field,
-                { kind },
-                optionsNode ?? call,
-                `number_format_${key}`,
-            );
-        // A boolean selects "always" or no grouping; a string names a strategy.
-        const type =
-            field?.dataType?.kind === "optional"
-                ? field.dataType.inner
-                : field?.dataType;
-        const boolean = field?.kind === "boolean" || type?.kind === "boolean";
-        return `bbl::pal::grouping_option(${optionalArgument(
-            lowerer,
-            field,
-            { kind: boolean ? "boolean" : "string" },
-            optionsNode ?? call,
-            `number_format_${key}`,
-        )})`;
-    });
+    const options = numberFormatOptions(
+        lowerer,
+        "Number.toLocaleString",
+        fields,
+        call.arguments[1] ?? call,
+    );
     return lowerer.leafValue(
-        `bbl::pal::format_number(${value}, ${locales}, bbl::pal::NumberFormatOptions{${options.join(", ")}})`,
+        `bbl::pal::format_number(${value}, ${locales}, ${options})`,
+        { kind: "string" },
+    );
+}
+
+/** The `Intl.PluralRules` options lowered, in `bbl::pal::PluralRulesOptions` order. */
+const pluralRulesOptionNames = [
+    ["localeMatcher", "string"],
+    ["type", "string"],
+    ["minimumIntegerDigits", "number"],
+    ["minimumFractionDigits", "number"],
+    ["maximumFractionDigits", "number"],
+    ["minimumSignificantDigits", "number"],
+    ["maximumSignificantDigits", "number"],
+] as const;
+
+/** The `Intl.ListFormat` options, in `bbl::pal::ListFormatOptions` order. */
+const listFormatOptionNames = ["localeMatcher", "type", "style"] as const;
+
+/** The date-time component options, in `bbl::pal::DateTimeFormatOptions` order. */
+const dateTimeOptionNames = [
+    ["localeMatcher", "string"],
+    ["weekday", "string"],
+    ["era", "string"],
+    ["year", "string"],
+    ["month", "string"],
+    ["day", "string"],
+    ["hour", "string"],
+    ["minute", "string"],
+    ["second", "string"],
+    ["hour12", "boolean"],
+    ["timeZone", "string"],
+] as const;
+
+/** Each option field as the `std::optional` its PAL struct holds. */
+function optionFields(
+    lowerer: DataLowerer,
+    fields: Readonly<Record<string, Value>>,
+    names: readonly (readonly [string, "string" | "number" | "boolean"])[],
+    site: ts.Node,
+    prefix: string,
+): string {
+    return names
+        .map(([key, kind]) =>
+            optionalArgument(
+                lowerer,
+                fields[key],
+                { kind },
+                site,
+                `${prefix}_${key}`,
+            ),
+        )
+        .join(", ");
+}
+
+/** Date's locale methods: the components each requires and adds when none is given. */
+const DATE_LOCALE_METHODS: Readonly<Record<string, string>> = {
+    toLocaleDateString: "date",
+    toLocaleTimeString: "time",
+    toLocaleString: "all",
+};
+
+/**
+ * `date.toLocaleDateString/toLocaleTimeString/toLocaleString(locales?,
+ * options?)`: the platform ICU's pattern for the requested components.
+ */
+export function compileDateLocaleString(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    owner: Value,
+    method: string,
+): Value | undefined {
+    const components = DATE_LOCALE_METHODS[method];
+    if (!components) return undefined;
+    const context = lowerer.context;
+    context.expectArgumentCount(call, 0, 2);
+    context.reachFeature("data:locale", call);
+    const date = snapshot(
+        lowerer,
+        owner,
+        { kind: "date" },
+        call.expression,
+        "formatted_date",
+    );
+    const { locales, fields } = compileLocalesAndOptions(
+        lowerer,
+        `Date.${method}`,
+        "date-time format options",
+        call.arguments[0],
+        call.arguments[1],
+        dateTimeOptionNames.map(([name]) => name),
+        call,
+    );
+    const options = optionFields(
+        lowerer,
+        fields,
+        dateTimeOptionNames,
+        call.arguments[1] ?? call,
+        "date_time",
+    );
+    return lowerer.leafValue(
+        `bbl::pal::format_date_time(${date}, ${locales}, bbl::pal::DateTimeFormatOptions{${options}}, bbl::pal::DateTimeComponents::${components})`,
         { kind: "string" },
     );
 }
@@ -392,11 +508,29 @@ export function compileLocaleStringMethod(
     );
 }
 
+/** The Intl constructors lowered: their data kind and PAL factory. */
+const INTL_CONSTRUCTORS: Readonly<
+    Record<
+        string,
+        {
+            kind: "collator" | "number-format" | "plural-rules" | "list-format";
+            factory: string;
+        }
+    >
+> = {
+    Collator: { kind: "collator", factory: "make_collator" },
+    NumberFormat: { kind: "number-format", factory: "make_number_format" },
+    PluralRules: { kind: "plural-rules", factory: "make_plural_rules" },
+    ListFormat: { kind: "list-format", factory: "make_list_format" },
+};
+
 /**
- * `new Intl.Collator(locales?, options?)` (or without `new`): the locales
- * and options `localeCompare` takes, held for its `compare` calls.
+ * `new Intl.Collator/NumberFormat/PluralRules/ListFormat(locales?, options?)`
+ * (Collator and NumberFormat also without `new`): the platform ICU object its
+ * locales and options resolve to, opened once and throwing where they are
+ * invalid.
  */
-export function compileCollatorConstruction(
+export function compileIntlConstruction(
     lowerer: DataLowerer,
     expression: ts.CallExpression | ts.NewExpression,
 ): Value | undefined {
@@ -404,32 +538,126 @@ export function compileCollatorConstruction(
     const callee = context.unwrap(expression.expression);
     if (
         !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "Collator" ||
         context.libraryGlobal(callee.expression) !== "Intl"
+    )
+        return undefined;
+    const name = callee.name.text;
+    const constructor = Object.hasOwn(INTL_CONSTRUCTORS, name)
+        ? INTL_CONSTRUCTORS[name]
+        : undefined;
+    // PluralRules and ListFormat throw a TypeError when called without new.
+    if (
+        !constructor ||
+        (ts.isCallExpression(expression) &&
+            (name === "PluralRules" || name === "ListFormat"))
     )
         return undefined;
     const arguments_ = expression.arguments ?? [];
     if (arguments_.length > 2)
-        context.fail(expression, "Intl.Collator takes locales and options.");
+        context.fail(expression, `Intl.${name} takes locales and options.`);
     context.reachJsData();
     context.reachFeature("data:locale", expression);
-    const { locales, options } = compileCollation(
-        lowerer,
-        "Intl.Collator",
-        arguments_[0],
-        arguments_[1],
-        expression,
-    );
+    const site = arguments_[1] ?? expression;
+    let locales: string;
+    let options: string;
+    if (name === "Collator")
+        ({ locales, options } = compileCollation(
+            lowerer,
+            "Intl.Collator",
+            arguments_[0],
+            arguments_[1],
+            expression,
+        ));
+    else {
+        const names =
+            name === "NumberFormat"
+                ? numberFormatOptionNames.map(([key]) => key)
+                : name === "PluralRules"
+                  ? pluralRulesOptionNames.map(([key]) => key)
+                  : listFormatOptionNames;
+        const compiled = compileLocalesAndOptions(
+            lowerer,
+            `Intl.${name}`,
+            `${name} options`,
+            arguments_[0],
+            arguments_[1],
+            names,
+            expression,
+        );
+        locales = compiled.locales;
+        options =
+            name === "NumberFormat"
+                ? numberFormatOptions(
+                      lowerer,
+                      "Intl.NumberFormat",
+                      compiled.fields,
+                      site,
+                  )
+                : name === "PluralRules"
+                  ? `bbl::pal::PluralRulesOptions{${optionFields(lowerer, compiled.fields, pluralRulesOptionNames, site, "plural_rules")}}`
+                  : `bbl::pal::ListFormatOptions{${optionFields(
+                        lowerer,
+                        compiled.fields,
+                        listFormatOptionNames.map(
+                            (key) => [key, "string"] as const,
+                        ),
+                        site,
+                        "list_format",
+                    )}}`;
+    }
     return {
         kind: "data",
-        cpp: `bbl::pal::make_collator(${locales}, ${options})`,
-        dataType: { kind: "collator" },
+        cpp: `bbl::pal::${constructor.factory}(${locales}, ${options})`,
+        dataType: { kind: constructor.kind },
         impure: true,
     };
 }
 
+/**
+ * A method of a constructed Intl object: `compare` (as `localeCompare`
+ * makes it), `format` of a NumberFormat or a ListFormat, `select` of a
+ * PluralRules.
+ */
+export function compileIntlMethod(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    owner: Value,
+    method: string,
+): Value {
+    const context = lowerer.context;
+    const kind = owner.dataType?.kind;
+    if (kind === "collator")
+        return compileCollatorMethod(lowerer, call, owner, method);
+    const api =
+        kind === "number-format"
+            ? "Intl.NumberFormat"
+            : kind === "plural-rules"
+              ? "Intl.PluralRules"
+              : "Intl.ListFormat";
+    if (method !== (kind === "plural-rules" ? "select" : "format"))
+        return context.fail(call, `${api}.${method} is not lowered.`);
+    context.expectArgumentCount(call, 1, 1);
+    const receiver = context.bindings.pinValueToTemporary(
+        owner,
+        "intl_receiver",
+    );
+    const argument = argumentAt(call, 0);
+    if (kind === "list-format")
+        return lowerer.leafValue(
+            `bbl::pal::list_format_format(${receiver.cpp}, ${lowerer.compileForSink(argument, { kind: "vector", element: { kind: "string" } })})`,
+            { kind: "string" },
+        );
+    const number = context.compileNumber(argument, "double");
+    return lowerer.leafValue(
+        kind === "number-format"
+            ? `bbl::pal::number_format_format(${receiver.cpp}, ${number})`
+            : `bbl::pal::plural_rules_select(${receiver.cpp}, ${number})`,
+        { kind: "string" },
+    );
+}
+
 /** `collator.compare(left, right)`, the comparison `localeCompare` makes. */
-export function compileCollatorMethod(
+function compileCollatorMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
     owner: Value,

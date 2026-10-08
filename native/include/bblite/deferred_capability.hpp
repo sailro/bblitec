@@ -36,12 +36,6 @@ class DeferredCompressionStream final {
 class DeferredDecompressionStream final {
     DeferredDecompressionStream() = delete;
 };
-class DeferredListFormat final {
-    DeferredListFormat() = delete;
-};
-class DeferredPluralRules final {
-    DeferredPluralRules() = delete;
-};
 
 class DeferredCapabilityError final : public std::runtime_error {
 public:

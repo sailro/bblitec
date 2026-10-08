@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
+import { isJsonValue } from "../json-bridge.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
 function unionValue(
@@ -33,7 +34,13 @@ function unionValue(
             `switch (${source}.index()) { ${arms.join(" ")} default: throw std::runtime_error("Value is outside the destination union."); } }())`
         );
     }
+    // A parsed value is stored as the member its expression's (narrowed)
+    // type names: `typeof v === "number"` selects the number member.
+    const expression = lowerer.convertedExpression(node);
     const source =
+        (isJsonValue(value) && expression
+            ? lowerer.dataTypeAt(expression)
+            : undefined) ??
         value.dataType ??
         (value.kind === "number" ||
         value.kind === "boolean" ||
@@ -55,6 +62,22 @@ function unionValue(
         memberIndex = type.members.findIndex((member) =>
             lowerer.knownValueFitsSink(value, member, node),
         );
+    // A function is the union's one function arm, lowered into its storage.
+    if (
+        memberIndex < 0 &&
+        ((value.kind === "callback" && value.callbackDeclaration) ||
+            value.dataType?.kind === "function")
+    ) {
+        const functions = type.members.flatMap((member, index) =>
+            member.kind === "function" ? [index] : [],
+        );
+        if (functions.length === 1) memberIndex = functions[0]!;
+    }
+    // A record stored as the union's one record type converts through
+    // the record sink, which decides how the two types share the object.
+    const records = type.members.filter((member) => member.kind === "struct");
+    if (memberIndex < 0 && source?.kind === "struct" && records.length === 1)
+        memberIndex = type.members.indexOf(records[0]!);
     if (memberIndex < 0) return undefined;
     const cpp = lowerer.compileKnownValueForSink(
         value,

@@ -101,20 +101,18 @@ check(
 `,
 );
 
-test("fixed spread storage refuses loss of additional owned fields", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            interface Narrow { value:number; }
-            interface Wide extends Narrow { extra:number; }
-            const sources:Wide[]=[{value:1,extra:2}];
-            const targets:{item:Narrow}[]=[{item:{value:0}}];
-            targets[0]!.item={...sources[0]!};
-            if(Object.keys(targets[0]!.item).length!==2) throw new Error('lost key');
-        `),
-        /Spread property 'extra' cannot be retained in the narrower 'Narrow' storage/,
-    );
-});
+check(
+    "fixed spread storage retains additional owned fields",
+    `
+    interface Narrow { value:number; }
+    interface Wide extends Narrow { extra:number; }
+    const sources:Wide[]=[{value:1,extra:2}];
+    const targets:{item:Narrow}[]=[{item:{value:0}}];
+    targets[0]!.item={...sources[0]!};
+    const item = targets[0]!.item;
+    if(Object.keys(item).sort().join()!=='extra,value' || item.value!==1 || !('extra' in item)) throw new Error('lost key');
+`,
+);
 
 check(
     "contextual spreads evaluate extra getters once before later overrides",

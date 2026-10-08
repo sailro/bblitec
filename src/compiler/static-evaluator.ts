@@ -631,6 +631,7 @@ export class StaticEvaluator {
         const castOptionalNumber = (
             value: Value,
             uncheckedElement = false,
+            node: ts.Expression = unwrapExpression(expression),
         ): string | undefined => {
             if (
                 value.kind !== "data" ||
@@ -644,11 +645,7 @@ export class StaticEvaluator {
             }
             this.onJsData();
             const compiled =
-                numberFromOptionalCpp(
-                    this.checker,
-                    value,
-                    unwrapExpression(expression),
-                ) ??
+                numberFromOptionalCpp(this.checker, value, node) ??
                 this.fail(
                     expression,
                     "Numeric coercion requires distinguishable null and undefined storage.",
@@ -657,18 +654,36 @@ export class StaticEvaluator {
                 ? `static_cast<float>(${compiled})`
                 : compiled;
         };
+        let assertion: ts.Expression = expression;
+        while (ts.isParenthesizedExpression(assertion))
+            assertion = assertion.expression;
         if (
-            ts.isAsExpression(expression) ||
-            ts.isTypeAssertionExpression(expression)
+            ts.isAsExpression(assertion) ||
+            ts.isTypeAssertionExpression(assertion)
         ) {
-            const asserted = this.resolveValue(expression);
+            // JavaScript erases the assertion: a value that may be absent
+            // reads as ToNumber reads it, NaN for undefined and 0 for null.
             if (
-                asserted.kind === "number" ||
-                (asserted.kind === "data" &&
-                    asserted.dataType?.kind === "number")
+                isNullable(this.checker.getTypeAtLocation(assertion.expression))
             ) {
-                return this.castNumber(asserted, precision);
+                const value = this.resolveValue(assertion.expression);
+                const optional = castOptionalNumber(value, true);
+                if (optional !== undefined) return optional;
+                if (!isNumericValue(value))
+                    this.fail(
+                        assertion,
+                        `Expected number, received ${value.kind}.`,
+                    );
+                return this.castNumber(value, precision);
             }
+            // A number or a parsed document, which the numeric sink coerces.
+            const asserted = this.resolveValue(assertion);
+            if (isNumericValue(asserted))
+                return this.castNumber(asserted, precision);
+            // An optional number slot behind a type the checker cannot see
+            // through (`unknown`) reads as ToNumber reads it too.
+            const slot = castOptionalNumber(asserted, true);
+            if (slot !== undefined) return slot;
         }
         const awaited = unwrapExpression(expression);
         if (ts.isAwaitExpression(awaited)) {
@@ -773,14 +788,39 @@ export class StaticEvaluator {
                 const converted = `bbl::js::number_from_string(${operand.cpp})`;
                 return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
             }
+            // An optional number's absence reads NaN for undefined, 0 for null.
+            if (
+                operand.kind === "data" &&
+                operand.dataType?.kind === "optional" &&
+                operand.dataType.inner.kind === "number"
+            ) {
+                this.onJsData();
+                const converted =
+                    numberFromOptionalCpp(
+                        this.checker,
+                        operand,
+                        unwrapExpression(unwrapped.operand),
+                    ) ??
+                    this.fail(
+                        unwrapped.operand,
+                        "Numeric coercion requires distinguishable null and undefined storage.",
+                    );
+                return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
+            }
             // Unary plus and minus apply ToNumber, which `castNumber` is for
-            // typed numeric data and dynamic JSON alike.
-            if (!isNumericValue(operand))
+            // typed numeric data and dynamic JSON alike; an unchecked lookup
+            // that misses reads NaN.
+            const unchecked = castOptionalNumber(
+                operand,
+                false,
+                unwrapped.operand,
+            );
+            if (unchecked === undefined && !isNumericValue(operand))
                 this.fail(
                     unwrapped.operand,
                     `Unary numeric input requires a number or string, received ${operand.kind}.`,
                 );
-            const cast = this.castNumber(operand, precision);
+            const cast = unchecked ?? this.castNumber(operand, precision);
             // `-` before a negative spelling must not read as a decrement.
             return `(${operator}${cast.startsWith(operator) ? " " : ""}${cast})`;
         }

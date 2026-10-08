@@ -25,16 +25,17 @@ import {
 } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { unwrapExpression } from "./syntax.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
-import { isStringValue, sameCompiledValue, type Value } from "./types.js";
-
-function hasBorrowedArrayIdentity(type: DataType | undefined): boolean {
-    if (type?.kind === "optional") return hasBorrowedArrayIdentity(type.inner);
-    if (type?.kind === "union")
-        return type.members.some(hasBorrowedArrayIdentity);
-    return type?.kind === "span" || type?.kind === "table";
-}
+import { isBigIntTyped } from "./bigint-values.js";
+import { pinSlotFound, strictEqualsCpp } from "./data-comparisons.js";
+import {
+    isStringValue,
+    optionalPresentCpp,
+    sameCompiledValue,
+    type Value,
+} from "./types.js";
 
 /** What condition lowering reads of the compiler. */
 interface ConditionContext
@@ -70,8 +71,50 @@ interface ConditionContext
             | "unwrap"
         > {}
 
+/** The collection classes `instanceof` names, by their storage. */
+const COLLECTION_CLASSES: ReadonlyMap<
+    string,
+    { kind: "map" | "set"; weak: boolean }
+> = new Map([
+    ["Map", { kind: "map", weak: false }],
+    ["WeakMap", { kind: "map", weak: true }],
+    ["Set", { kind: "set", weak: false }],
+    ["WeakSet", { kind: "set", weak: true }],
+]);
+
 export class ConditionLowerer {
     constructor(private readonly context: ConditionContext) {}
+
+    /**
+     * `value instanceof Map` (and Set, WeakMap, WeakSet): whether the
+     * storage holding the value is that collection. A union answers by the
+     * member it holds, an optional by its presence; a dictionary, a parsed
+     * document or any other storage is not one.
+     */
+    private collectionInstanceOf(
+        operand: ts.Expression,
+        collection: { kind: "map" | "set"; weak: boolean },
+    ): string {
+        const value = this.context.bindings.pinValueToTemporary(
+            this.context.compileValue(operand),
+            "instance_operand",
+            operand,
+        );
+        const holds = (type: DataType): boolean =>
+            type.kind === collection.kind &&
+            !(type.kind === "map" && type.dictionary) &&
+            (type.weak === true) === collection.weak;
+        const type = value.dataType;
+        if (type?.kind === "optional")
+            return holds(type.inner) ? optionalPresentCpp(value.cpp) : "false";
+        if (type?.kind === "union") {
+            const tests = type.members.flatMap((member, index) =>
+                holds(member) ? [`(${value.cpp}).index() == ${index}`] : [],
+            );
+            return tests.length ? `(${tests.join(" || ")})` : "false";
+        }
+        return type && holds(type) ? "true" : "false";
+    }
 
     /**
      * An `instanceof` operand naming a global or a class: no local binds
@@ -97,6 +140,13 @@ export class ConditionLowerer {
         const unwrapped = this.context.options.workers
             ? unwrapExpression(expression)
             : this.context.unwrap(expression);
+        // A BigInt is truthy unless it is zero.
+        if (isBigIntTyped(this.context.checker, unwrapped)) {
+            const condition = this.context.dataLowerer.truthinessCondition(
+                this.context.compileValue(unwrapped),
+            );
+            if (condition !== undefined) return condition;
+        }
         if (this.context.options.workers && ts.isAwaitExpression(unwrapped)) {
             const value = this.context.compileValue(unwrapped);
             if (value.kind === "void") {
@@ -307,6 +357,19 @@ export class ConditionLowerer {
                       ),
                   )
                 : [];
+            // A member the program gives the global object is realm state.
+            if (
+                !this.context.options.workers &&
+                someAnalysisNode(
+                    unwrapped,
+                    (node) =>
+                        ts.isPropertyAccessExpression(node) &&
+                        this.context.browserErasure.isGlobalObjectExtension(
+                            node,
+                        ),
+                )
+            )
+                throw new ApplicationRealmRequired();
             this.context.fail(
                 unwrapped,
                 "Browser-dependent condition cannot be determined for native AOT lowering " +
@@ -349,11 +412,21 @@ export class ConditionLowerer {
                     unwrapped.right,
                 );
                 if (classInstance !== undefined) return classInstance;
+                const collection = COLLECTION_CLASSES.get(global);
+                if (collection)
+                    return this.collectionInstanceOf(
+                        unwrapped.left,
+                        collection,
+                    );
                 // The two buffer views answer `instanceof` beside the
                 // typed arrays; neither table alone names every binary kind.
-                const expected: string | undefined =
-                    BUFFER_VIEW_KINDS.get(global) ??
-                    TYPED_ARRAY_KINDS.get(global);
+                // A SharedArrayBuffer is a buffer branded shared; the brand
+                // tells it from an ArrayBuffer at run time.
+                const shared = global === "SharedArrayBuffer";
+                const expected: string | undefined = shared
+                    ? "arraybuffer"
+                    : (BUFFER_VIEW_KINDS.get(global) ??
+                      TYPED_ARRAY_KINDS.get(global));
                 if (expected) {
                     const value = this.context.compileValue(unwrapped.left);
                     // The member a value holds answers the test: a union by
@@ -377,12 +450,21 @@ export class ConditionLowerer {
                     const index = members.findIndex(
                         (member) => member.kind === expected,
                     );
+                    const brand =
+                        expected === "arraybuffer"
+                            ? (buffer: string): string =>
+                                  `${shared ? "" : "!"}${buffer}.shared()`
+                            : undefined;
                     if (members.length)
                         return index < 0
                             ? "false"
                             : union
-                              ? `((${value.cpp}).index() == ${index})`
-                              : "true";
+                              ? brand
+                                  ? `([](const auto& candidate) { return candidate.index() == ${index} && ${brand(`std::get<${index}>(candidate)`)}; }(${value.cpp}))`
+                                  : `((${value.cpp}).index() == ${index})`
+                              : brand
+                                ? brand(`(${value.cpp})`)
+                                : "true";
                 }
             }
             // Engine-handle identity first: `group === sadPose` is
@@ -465,11 +547,14 @@ export class ConditionLowerer {
                     unwrapped.right,
                 ])[0]
             )
-                leftValue = pinOperand(
-                    this.context,
-                    leftValue,
-                    unwrapped.left,
-                    "comparison_left",
+                leftValue = pinSlotFound(
+                    this.context.dataLowerer,
+                    pinOperand(
+                        this.context,
+                        leftValue,
+                        unwrapped.left,
+                        "comparison_left",
+                    ),
                 );
             const textKind = (value: Value) =>
                 ["text-data", "text-renderable", "text-vector"].includes(
@@ -591,15 +676,16 @@ export class ConditionLowerer {
                 rightValue,
                 unwrapped.right,
             );
-            if (
-                equality &&
-                (hasBorrowedArrayIdentity(leftValue.dataType) ||
-                    hasBorrowedArrayIdentity(rightValue.dataType))
-            )
-                this.context.fail(
-                    unwrapped,
-                    "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
-                );
+            const strict = equality
+                ? strictEqualsCpp(
+                      this.context.dataLowerer,
+                      unwrapped,
+                      leftValue,
+                      rightValue,
+                      operator === "!=",
+                  )
+                : undefined;
+            if (strict !== undefined) return strict;
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
         if (

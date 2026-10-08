@@ -1,15 +1,18 @@
 #pragma once
 
+#include <bblite/js_error.hpp>
 #include <bblite/js_gc.hpp>
 #include <bblite/js_realm_state.hpp>
 
 #include <cstddef>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 namespace bbl::js {
 
@@ -103,6 +106,11 @@ template <typename... Functions> [[nodiscard]] auto make_recursive_group(Functio
 
 inline std::size_t next_callback_identity() { return realm_state.callback_identity++; }
 
+/** Calling an absent function value is JavaScript's TypeError. */
+[[noreturn]] inline void throw_not_a_function() {
+    throw NamedError("TypeError", "Value is not a function");
+}
+
 /** A JavaScript function object: copies share identity and mutable captures. */
 template <typename R, typename... Args> class Callback<R(Args...)> {
     struct Body {
@@ -116,7 +124,7 @@ template <typename R, typename... Args> class Callback<R(Args...)> {
         R call(Args... args) override {
             if constexpr (std::is_pointer_v<F>) {
                 if (!function)
-                    throw std::bad_function_call();
+                    throw_not_a_function();
             }
             return function(std::forward<Args>(args)...);
         }
@@ -144,7 +152,7 @@ public:
             : body_(callback.body_), recursive_owner_(callback.recursive_owner_) {}
         R operator()(Args... args) const {
             if (!body_)
-                throw std::bad_function_call();
+                throw_not_a_function();
             return body_->call(std::forward<Args>(args)...);
         }
         explicit operator bool() const { return body_ && body_->present(); }
@@ -209,19 +217,43 @@ template <typename R, typename... Args>
     return callback.snapshot();
 }
 
-/** Native stored functions already own their lexical receiver. A bound function
- * has fresh identity and retains the supplied thisArg as a JavaScript bound function does. */
+/** Native stored functions already own their lexical receiver. A bound function has fresh
+ * identity; the caller evaluates thisArg at the bind site, and the target never reads it, so
+ * it is not kept (no collection is observable: WeakRef targets are retained strongly). */
 template <typename R, typename... Args, typename Receiver>
-[[nodiscard]] Callback<R(Args...)> bind_callback(Callback<R(Args...)> target, Receiver receiver) {
-    return make_closure(std::tuple{std::move(target), std::move(receiver)},
-                        [](auto& captures, Args... args) -> R {
-                            return std::get<0>(captures)(std::forward<Args>(args)...);
-                        });
+[[nodiscard]] Callback<R(Args...)> bind_callback(Callback<R(Args...)> target, const Receiver&) {
+    return make_closure(std::tuple{std::move(target)}, [](auto& captures, Args... args) -> R {
+        return std::get<0>(captures)(std::forward<Args>(args)...);
+    });
 }
 template <typename R, typename... Args, typename Receiver>
 [[nodiscard]] Callback<R(Args...)> bind_callback(std::function<R(Args...)> target,
-                                                 Receiver receiver) {
-    return bind_callback(Callback<R(Args...)>(std::move(target)), std::move(receiver));
+                                                 const Receiver& receiver) {
+    return bind_callback(Callback<R(Args...)>(std::move(target)), receiver);
+}
+
+/** A bound function with leading arguments: fresh identity, the target and the bound
+ * arguments as they were when `bind` ran, then the call's own arguments; thisArg as above. */
+template <typename Target, typename Function, typename Receiver, typename... Bound>
+[[nodiscard]] Target bind_callback_arguments(Function target, const Receiver&, Bound... bound) {
+    return make_closure(
+        std::tuple{std::move(target), std::move(bound)...},
+        [](auto& captures, auto&&... arguments) {
+            return std::apply(
+                [&](auto& function, auto&... leading) {
+                    return function(leading..., std::forward<decltype(arguments)>(arguments)...);
+                },
+                captures);
+        });
+}
+
+/** The function arm a call reads from a union slot; any other arm is not callable. */
+template <std::size_t Index, typename... Members>
+[[nodiscard]] const std::variant_alternative_t<Index, std::variant<Members...>>&
+function_member(const std::variant<Members...>& slot) {
+    if (slot.index() != Index)
+        throw_not_a_function();
+    return std::get<Index>(slot);
 }
 
 template <typename Function> class NativeInvocation {
@@ -230,7 +262,7 @@ public:
     template <typename... Args>
     std::invoke_result_t<Function, Args...> operator()(Args&&... args) const {
         if (!function_)
-            throw std::bad_function_call();
+            throw_not_a_function();
         return function_(std::forward<Args>(args)...);
     }
     explicit operator bool() const { return function_ != nullptr; }

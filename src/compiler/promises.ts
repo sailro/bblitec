@@ -81,6 +81,13 @@ export function compileImmediatePromise(
             throw new ApplicationRealmRequired();
         return value;
     }
+    // The other combinators settle in later microtasks: the realm's queue.
+    if (
+        ts.isPropertyAccessExpression(call.expression) &&
+        context.libraryGlobal(call.expression.expression) === "Promise" &&
+        ["race", "allSettled", "any"].includes(call.expression.name.text)
+    )
+        throw new ApplicationRealmRequired();
     if (
         ts.isPropertyAccessExpression(call.expression) &&
         context.libraryGlobal(call.expression.expression) === "Promise" &&
@@ -90,6 +97,13 @@ export function compileImmediatePromise(
             context.fail(call, "Promise.all requires one static iterable.");
         }
         const argument = argumentAt(call, 0);
+        // A spread's count is known only at run time: the realm's owned
+        // promises aggregate it.
+        if (
+            ts.isArrayLiteralExpression(argument) &&
+            argument.elements.some(ts.isSpreadElement)
+        )
+            throw new ApplicationRealmRequired();
         if (!ts.isArrayLiteralExpression(argument)) {
             const iterable = context.compileValue(argument);
             if (
@@ -349,4 +363,21 @@ function emitValue(context: PromiseLoweringContext, value: Value): void {
     if (value.kind !== "engine" && value.cpp.length > 0) {
         context.emit({ kind: "expression", code: `${value.cpp};` });
     }
+}
+
+/**
+ * Whether a promise of `type` only rejects: it settles `never`, the bottom
+ * type, so it joins any settlement type.
+ */
+export function settlesNever(
+    checker: ts.TypeChecker,
+    type: ts.Type | undefined,
+): boolean {
+    const awaited = type && checker.getAwaitedType(type);
+    return ((awaited?.flags ?? 0) & ts.TypeFlags.Never) !== 0;
+}
+
+/** A promise that only rejects, viewed as a promise settling `cppType`. */
+export function rejectionOnlyPromiseCpp(cpp: string, cppType: string): string {
+    return `bbl::js::Promise<${cppType}>::view(${cpp}, [](const auto&) -> ${cppType} { throw std::logic_error("A Promise<never> fulfilled."); })`;
 }

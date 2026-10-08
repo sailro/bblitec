@@ -15,6 +15,7 @@ import type { LoweringServices } from "./lowering-services.js";
 // sink (a number, a string, a condition) exactly where JavaScript coerces.
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import { functionUsesDynamicThis } from "./user-functions.js";
 import { isNullishLiteral } from "./symbols.js";
 
 import type { DataType } from "./data-types.js";
@@ -222,35 +223,54 @@ function compileStringify(
         dataType,
         argument,
     );
+    // A closed Record is written by its own helper, keys in its union's order.
+    const writer = indent > 0 ? `writer(${indent})` : "writer";
     return {
         kind: "data",
         cpp:
-            indent > 0
-                ? `bbl::js::json_stringify(${value}, ${indent})`
-                : `bbl::js::json_stringify(${value})`,
+            dataType.kind === "enummap"
+                ? `[](const auto& record) { bbl::js::JsonWriter ${writer}; ${context.dataTypes.jsonWriteCpp(dataType, "record")} return writer.take(); }(${value})`
+                : indent > 0
+                  ? `bbl::js::json_stringify(${value}, ${indent})`
+                  : `bbl::js::json_stringify(${value})`,
         dataType: { kind: "string" },
     };
 }
 
-/** `JSON.parse(text)`: the parser owns the grammar and throws on a bad one. */
+/**
+ * `JSON.parse(text, reviver?)`: the parser owns the grammar and throws on a
+ * bad one. A reviver runs over the parsed document, children before their
+ * holder (`bbl::js::json_parse_revived`); its `this` (the holder) and the
+ * source-text context argument are not represented.
+ */
 function compileParse(
     context: JsonBridgeContext,
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 1, 2);
-    if (call.arguments[1] !== undefined) {
-        context.fail(
-            call.arguments[1],
-            "JSON.parse lowers with no reviver; a reviver rewrites the " +
-                "document as it is read and is not reached.",
-        );
-    }
     context.reachJson();
     context.reachJsData();
     const text = context.dataLowerer.compileForSink(argumentAt(call, 0), {
         kind: "string",
     });
-    return jsonValue(`bbl::js::json_parse(${text})`);
+    const reviverNode = call.arguments[1];
+    if (reviverNode === undefined)
+        return jsonValue(`bbl::js::json_parse(${text})`);
+    const reviver = context.unwrap(reviverNode);
+    if (
+        (ts.isArrowFunction(reviver) || ts.isFunctionExpression(reviver)) &&
+        (reviver.parameters.length > 2 || functionUsesDynamicThis(reviver))
+    )
+        context.fail(
+            reviverNode,
+            "A JSON.parse reviver reading its holder (`this`) or the source-text context is not lowered.",
+        );
+    const callback = context.dataLowerer.compileForSink(reviverNode, {
+        kind: "function",
+        parameters: [{ kind: "string" }, jsonType],
+        result: jsonType,
+    });
+    return jsonValue(`bbl::js::json_parse_revived(${text}, ${callback})`);
 }
 
 /** The two `JSON` methods, recognized by the global they are read from. */
@@ -317,9 +337,8 @@ export function isJsonRootedExpression(
                   ? source.argumentExpression.text
                   : undefined;
             return parent?.kind === "struct" && key !== undefined
-                ? context.dataTypes
-                      .structFields(parent.name, source, "accessors")
-                      .find((field) => field.sourceName === key)?.type
+                ? context.dataTypes.findStructField(parent.name, key, source)
+                      ?.type
                 : parent?.kind === "json"
                   ? parent
                   : undefined;

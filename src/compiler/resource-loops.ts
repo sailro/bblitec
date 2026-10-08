@@ -429,20 +429,11 @@ export function walkReachedLoopNodes(
                         const declaration =
                             context.checker.getTypeAtLocation(callee).symbol
                                 ?.valueDeclaration;
-                        if (
-                            declaration &&
-                            (ts.isClassDeclaration(declaration) ||
-                                ts.isClassExpression(declaration))
-                        ) {
+                        if (declaration && ts.isClassLike(declaration)) {
                             // Base class field initializers run too.
-                            const owners = ts.isClassDeclaration(declaration)
-                                ? classChain(
-                                      classMemberTable(
-                                          context.checker,
-                                          declaration,
-                                      ),
-                                  ).map((link) => link.declaration)
-                                : [declaration];
+                            const owners = classChain(
+                                classMemberTable(context.checker, declaration),
+                            ).map((link) => link.declaration);
                             for (const member of owners.flatMap(
                                 (owner) => owner.members,
                             )) {

@@ -675,12 +675,11 @@ test("refuses every store of a borrowed event at the store", () => {
             pattern: /through a destructuring source/,
         },
         {
-            // Object destructuring into existing bindings refuses whole.
             name: "object-destructuring",
             declarations: ["let saved: MouseEvent | null = null;"],
             body: "({ saved } = { saved: event });",
             read: "if (saved) reads += 1;",
-            pattern: /Only property assignments are supported/,
+            pattern: /through a destructuring assignment/,
         },
         {
             name: "element-assignment",

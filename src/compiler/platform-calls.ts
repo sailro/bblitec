@@ -30,6 +30,7 @@ import {
     pinDetached,
 } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
 import type { DataType } from "./data-types.js";
 import { compileBooleanOptions } from "./option-helpers.js";
@@ -367,9 +368,12 @@ export class PlatformCalls {
                 const engine = this.context.requireDefaultEngine(call);
                 return {
                     kind: "void",
-                    cpp:
-                        `bbl::clear_interval(${engine}, ` +
-                        `${this.context.compileNumber(argumentAt(call, 0), "double")})`,
+                    cpp: timerCancellation(
+                        this.context,
+                        argumentAt(call, 0),
+                        (identifier) =>
+                            `bbl::clear_interval(${engine}, ${identifier})`,
+                    ),
                 };
             }
             if (global === "clearTimeout") {
@@ -377,9 +381,12 @@ export class PlatformCalls {
                 const engine = this.context.requireDefaultEngine(call);
                 return {
                     kind: "void",
-                    cpp:
-                        `bbl::clear_timeout(${engine}, ` +
-                        `${this.context.compileNumber(argumentAt(call, 0), "double")})`,
+                    cpp: timerCancellation(
+                        this.context,
+                        argumentAt(call, 0),
+                        (identifier) =>
+                            `bbl::clear_timeout(${engine}, ${identifier})`,
+                    ),
                 };
             }
         }

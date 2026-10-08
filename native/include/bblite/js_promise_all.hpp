@@ -72,12 +72,31 @@ Promise<std::tuple<T...>> promise_all_tuple(const std::tuple<Promise<T>...>& inp
     return promise_detail::all_tuple(inputs, std::index_sequence_for<T...>{});
 }
 
-template <typename T> Promise<Array<T>> promise_all(const Array<Promise<T>>& inputs) {
-    using PendingValues = std::vector<std::optional<T>>;
-    auto state = make_gc_shared<promise_detail::AllState<PendingValues, Array<T>>>(inputs.size());
+namespace promise_detail {
+
+/** What an aggregate array holds for one fulfillment: a void fulfillment is undefined. */
+template <typename T> struct AllElement {
+    using type = T;
+    static T from(const T& value) { return value; }
+};
+template <> struct AllElement<PromiseVoid> {
+    using type = Undefined;
+    static Undefined from(const PromiseVoid&) { return {}; }
+};
+
+} // namespace promise_detail
+
+template <typename T>
+Promise<Array<typename promise_detail::AllElement<T>::type>>
+promise_all(const Array<Promise<T>>& inputs) {
+    using Element = promise_detail::AllElement<T>;
+    using Stored = typename Element::type;
+    using PendingValues = std::vector<std::optional<Stored>>;
+    auto state =
+        make_gc_shared<promise_detail::AllState<PendingValues, Array<Stored>>>(inputs.size());
     state->values.resize(inputs.size());
     if (inputs.empty())
-        state->result.resolve(Array<T>{});
+        state->result.resolve(Array<Stored>{});
     for (std::size_t index = 0; index < inputs.size(); ++index)
         inputs[index].observe(
             make_closure(std::tuple{state, index},
@@ -87,9 +106,9 @@ template <typename T> Promise<Array<T>> promise_all(const Array<Promise<T>>& inp
                              if (owned.settled)
                                  return;
                              try {
-                                 owned.values[position] = value;
+                                 owned.values[position] = Element::from(value);
                                  owned.ready([](const PendingValues& values) {
-                                     Array<T> result;
+                                     Array<Stored> result;
                                      result.reserve(values.size());
                                      for (const auto& item : values)
                                          result.push_back(*item);
@@ -146,6 +165,73 @@ template <typename T> Promise<T> promise_race(const Array<T>& inputs) {
     for (const auto& input : inputs)
         observe_race(Promise<T>::resolved(input), result);
     return result;
+}
+
+namespace promise_detail {
+
+template <typename T> struct AnyState {
+    Promise<T> result;
+    std::vector<std::exception_ptr> errors;
+    std::size_t remaining;
+    explicit AnyState(std::size_t count) : errors(count), remaining(count) {}
+    void gc_trace(const TraceVisitor& visitor) const { visitor(result); }
+    /** Every input rejected: an AggregateError of their reasons in input order. */
+    void rejected(std::size_t index, std::exception_ptr error) {
+        errors[index] = error;
+        if (--remaining == 0)
+            result.reject(
+                std::make_exception_ptr(AggregateError(errors, "All promises were rejected")));
+    }
+};
+
+template <typename T, typename State>
+void observe_any(const Promise<T>& input, const State& state, std::size_t index) {
+    input.observe(
+        make_closure(std::tuple{state},
+                     [](auto& environment, const T& value) {
+                         std::get<0>(environment)->result.resolve(value);
+                     }),
+        make_closure(std::tuple{state, index}, [](auto& environment, std::exception_ptr error) {
+            auto& [retained, position] = environment;
+            retained->rejected(position, error);
+        }));
+}
+
+} // namespace promise_detail
+
+/** The first fulfillment wins; an empty input or one whose inputs all reject rejects. */
+template <typename T, typename... Inputs>
+Promise<T> promise_any_tuple(const std::tuple<Inputs...>& inputs) {
+    auto state = make_gc_shared<promise_detail::AnyState<T>>(sizeof...(Inputs));
+    if constexpr (sizeof...(Inputs) == 0)
+        state->result.reject(
+            std::make_exception_ptr(AggregateError({}, "All promises were rejected")));
+    else
+        std::apply(
+            [&](const auto&... input) {
+                std::size_t index = 0;
+                (promise_detail::observe_any(input, state, index++), ...);
+            },
+            inputs);
+    return state->result;
+}
+
+template <typename T> Promise<T> promise_any(const Array<Promise<T>>& inputs) {
+    auto state = make_gc_shared<promise_detail::AnyState<T>>(inputs.size());
+    if (inputs.empty())
+        state->result.reject(
+            std::make_exception_ptr(AggregateError({}, "All promises were rejected")));
+    for (std::size_t index = 0; index < inputs.size(); ++index)
+        promise_detail::observe_any(inputs[index], state, index);
+    return state->result;
+}
+
+template <typename T> Promise<T> promise_any(const Array<T>& inputs) {
+    Array<Promise<T>> promises;
+    promises.reserve(inputs.size());
+    for (const auto& input : inputs)
+        promises.push_back(Promise<T>::resolved(input));
+    return promise_any(promises);
 }
 
 } // namespace bbl::js

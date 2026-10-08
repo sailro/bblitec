@@ -44,6 +44,7 @@ function typedArray(kind: TypedArrayKind) {
 export const scalarKinds: DataKindOperations<
     | "module-namespace"
     | "undefined"
+    | "null"
     | "weak-key"
     | "error"
     | "file"
@@ -59,7 +60,14 @@ export const scalarKinds: DataKindOperations<
     | "text-decoder"
     | "text-encoder"
     | "collator"
+    | "number-format"
+    | "plural-rules"
+    | "list-format"
     | "number"
+    | "symbol"
+    | "bigint"
+    | "i64array"
+    | "u64array"
     | "boolean"
     | "string"
     | "arraybuffer"
@@ -78,7 +86,10 @@ export const scalarKinds: DataKindOperations<
         key: (type) => `module(${type.module})`,
         equal: (left, right) => left.module === right.module,
     },
-    undefined: leaf("bbl::js::Undefined", "undefined"),
+    // A unit value: rebinding it aliases nothing.
+    undefined: reseatingLeaf("bbl::js::Undefined", "undefined"),
+    // A property only null fills (`houseArc: null`).
+    null: reseatingLeaf("bbl::js::Null", "null"),
     "weak-key": leaf("bbl::js::WeakIdentity", "weak-key"),
     error: leaf("bbl::js::Error", "error", false, true),
     file: {
@@ -117,13 +128,49 @@ export const scalarKinds: DataKindOperations<
     "text-decoder": opaqueLeaf("bbl::js::TextDecoder", "textdecoder"),
     "text-encoder": opaqueLeaf("bbl::js::TextEncoder", "textencoder"),
     collator: opaqueLeaf("bbl::pal::Collator", "collator"),
+    "number-format": opaqueLeaf("bbl::pal::NumberFormat", "numberformat"),
+    "plural-rules": opaqueLeaf("bbl::pal::PluralRules", "pluralrules"),
+    "list-format": opaqueLeaf("bbl::pal::ListFormat", "listformat"),
     number: reseatingLeaf(CPP_SCALAR.number, "n"),
+    symbol: {
+        ...reseatingLeaf("bbl::js::Symbol", "sym", true),
+        // Every symbol is truthy; its text is its description's, read only
+        // explicitly.
+        primitive: {
+            typeofTag: "symbol",
+            truthyCpp: (cpp) => `(static_cast<void>(${cpp}), true)`,
+            stringCpp: (cpp) => `(${cpp}).to_string()`,
+            implicitString: false,
+        },
+    },
+    bigint: {
+        ...reseatingLeaf("bbl::js::BigInt", "big"),
+        // A BigInt is truthy unless it is zero.
+        primitive: {
+            typeofTag: "bigint",
+            truthyCpp: (cpp) => `!(${cpp}).is_zero()`,
+            stringCpp: (cpp) => `(${cpp}).to_string(10)`,
+            implicitString: true,
+        },
+    },
+    i64array: {
+        ...reseatingLeaf("bbl::js::I64Array", "i64", true),
+        sharesStorage: true,
+    },
+    u64array: {
+        ...reseatingLeaf("bbl::js::U64Array", "u64", true),
+        sharesStorage: true,
+    },
     boolean: reseatingLeaf(CPP_SCALAR.boolean, "b"),
     string: reseatingLeaf(CPP_SCALAR.string, "str"),
     arraybuffer: reseatingLeaf("bbl::js::ArrayBuffer", "ab", true),
     dataview: reseatingLeaf("bbl::js::DataView", "dv", true),
     bufferview: reseatingLeaf("bbl::js::ArrayBufferView", "bv", true),
-    numberindex: leaf("bbl::js::NumericArrayView", "ni", false),
+    // A view's copies share the array it views.
+    numberindex: {
+        ...reseatingLeaf("bbl::js::NumericArrayView", "ni"),
+        sharesStorage: true,
+    },
     json: reseatingLeaf("bbl::js::JsonValue", "json", false, true),
     "borrowed-platform-event": {
         cpp: (type) =>
@@ -156,4 +203,5 @@ export const scalarKinds: DataKindOperations<
     i16array: typedArray("i16array"),
     u32array: typedArray("u32array"),
     i32array: typedArray("i32array"),
+    u8clampedarray: typedArray("u8clampedarray"),
 };

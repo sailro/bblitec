@@ -33,8 +33,18 @@ import ts from "typescript";
 import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
-import { isHandleKind, isUndefinedDataType } from "./data-types.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import {
+    isHandleKind,
+    isUndefinedDataType,
+    primitiveTraits,
+    TYPED_ARRAY_KINDS,
+    typeofTag,
+} from "./data-types.js";
+import {
+    DynamicBindingStorageRequired,
+    requireOneObject,
+} from "./dynamic-binding-storage.js";
+import { refuseEitherAbsence } from "./absence-tag-storage.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
@@ -75,6 +85,7 @@ import {
     isUpdateExpression,
     expressionHasEffects,
     expressionMayRunCode,
+    outermostWrapper,
     regularExpressionParts,
     unwrapExpression,
     wrappedParent,
@@ -96,7 +107,7 @@ import {
 import { compileWindowIdentity } from "./window-events.js";
 import { compileDateTimeFormat } from "./dates.js";
 import {
-    compileCollatorConstruction,
+    compileIntlConstruction,
     compileNumberLocaleString,
 } from "./locale.js";
 import { compileSearchParams } from "./search-params.js";
@@ -105,6 +116,16 @@ import { compileWindowServiceCall } from "./window-events.js";
 import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
 import { regexpCaptureCount } from "./string-replacement.js";
+import { compileAtomicsCall } from "./atomics.js";
+import { compileEnumElementAccess, enumObjectSymbol } from "./enum-objects.js";
+import {
+    namespaceMemberName,
+    namespaceSymbol,
+} from "./namespace-declarations.js";
+import { templateParts } from "./tagged-templates.js";
+import { compileSymbolCall } from "./symbol-values.js";
+import { compileBigIntUpdate, compileBigIntValue } from "./bigint-values.js";
+import { unicodeUnitPattern } from "./regexp-unicode.js";
 import {
     FORMATTED_MATH_FOLDS,
     mathConstantAccess,
@@ -177,12 +198,14 @@ export const PURE_NUMBER_FORMATTERS = new EmissionSet([
     "toExponential",
 ]);
 
-/** The global URI codecs, each a runtime function of its argument's ToString. */
+/** The global URI and base64 codecs, each a runtime function of its argument's ToString. */
 const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
     ["encodeURIComponent", "encode_uri_component"],
     ["encodeURI", "encode_uri"],
     ["decodeURIComponent", "decode_uri_component"],
     ["decodeURI", "decode_uri"],
+    ["btoa", "string_to_base64"],
+    ["atob", "string_from_base64"],
 ]);
 
 /**
@@ -222,6 +245,8 @@ export interface ExpressionContext
             | "compileWorkerValue"
             | "audioSessionCpp"
             | "checker"
+            | "program"
+            | "sourceFile"
             | "evaluationOrder"
             | "hasStableNativeBinding"
             | "options"
@@ -246,6 +271,7 @@ export interface ExpressionContext
             | "expectKind"
             | "expectSameEngine"
             | "activeThis"
+            | "defineThis"
             | "resolveThisField"
             | "resolveStaticExpression"
             | "canvasSizeValue"
@@ -367,6 +393,7 @@ function staticStringCoercion(value: Value): string | undefined {
 export function emitStringAppend(
     context: Pick<
         LoweringServices,
+        | "absenceTags"
         | "checker"
         | "compileValue"
         | "cppString"
@@ -389,7 +416,7 @@ export function emitStringAppend(
 export function stringConcatPart(
     context: Pick<
         LoweringServices,
-        "checker" | "cppString" | "dataTypes" | "fail"
+        "checker" | "cppString" | "dataTypes" | "fail" | "absenceTags"
     >,
     value: Value,
     node: ts.Node,
@@ -434,6 +461,14 @@ export function stringConcatPart(
     if (value.kind === "data" && value.dataType?.kind === "string") {
         return value.cpp;
     }
+    const primitive =
+        value.kind === "data" ? primitiveTraits(value.dataType) : undefined;
+    if (primitive?.implicitString) return primitive.stringCpp(value.cpp);
+    if (primitive)
+        return context.fail(
+            node,
+            `A ${primitive.typeofTag} converts to text only through String(${primitive.typeofTag}) or its toString(); an implicit conversion throws a TypeError.`,
+        );
     if (value.dataType?.kind === "optional") {
         const inner = value.dataType.inner;
         const present = stringConcatPart(
@@ -452,8 +487,10 @@ export function stringConcatPart(
         );
         const absence = absenceKind(context.checker, value, node);
         if (absence === "either")
-            return context.fail(
+            refuseEitherAbsence(
+                context,
                 node,
+                value,
                 'A value that may be null or undefined is spelled only once one of them is ruled out (`value ?? "undefined"`).',
             );
         // A read that knows whether its slot existed spells a stored `null`
@@ -495,6 +532,25 @@ export function stringConcatPart(
         "String concatenation supports string, number, boolean, enum and null values, and absent ones of those kinds.",
     );
 }
+
+/** The properties Number.prototype, Boolean.prototype and Object.prototype define. */
+const PRIMITIVE_PROTOTYPE_MEMBERS: ReadonlySet<string> = new Set([
+    "constructor",
+    "toExponential",
+    "toFixed",
+    "toPrecision",
+    "toString",
+    "toLocaleString",
+    "valueOf",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "__proto__",
+    "__defineGetter__",
+    "__defineSetter__",
+    "__lookupGetter__",
+    "__lookupSetter__",
+]);
 
 export class ExpressionLowerer {
     public constructor(private readonly context: ExpressionContext) {}
@@ -586,7 +642,7 @@ export class ExpressionLowerer {
                 unwrapped,
             );
             if (formatter) return formatter;
-            const collator = compileCollatorConstruction(
+            const collator = compileIntlConstruction(
                 this.context.dataLowerer,
                 unwrapped,
             );
@@ -630,8 +686,21 @@ export class ExpressionLowerer {
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
             return { kind: "json-null", cpp: "" };
         }
+        const bigint = compileBigIntValue(this.context, unwrapped);
+        if (bigint) return bigint;
 
         if (ts.isVoidExpression(unwrapped)) {
+            // Reading a name or a literal (`void 0`) observes nothing.
+            const inert = this.context.unwrap(unwrapped.expression);
+            if (
+                ts.isIdentifier(inert) ||
+                inert.kind === ts.SyntaxKind.ThisKeyword ||
+                ts.isLiteralExpression(inert) ||
+                inert.kind === ts.SyntaxKind.TrueKeyword ||
+                inert.kind === ts.SyntaxKind.FalseKeyword ||
+                inert.kind === ts.SyntaxKind.NullKeyword
+            )
+                return { kind: "void", cpp: "" };
             const operand = this.compileValue(unwrapped.expression);
             return {
                 kind: "void",
@@ -778,9 +847,31 @@ export class ExpressionLowerer {
                     cpp: this.context.compileNumber(unwrapped, "double"),
                 };
             }
+            // A typed-array class as a value: what its instances' `constructor` reads.
+            const typedArrayClass =
+                numeric === undefined
+                    ? undefined
+                    : TYPED_ARRAY_KINDS.get(numeric);
+            if (typedArrayClass)
+                return {
+                    kind: "typed-array-constructor",
+                    cpp: "",
+                    typedArrayConstructor: typedArrayClass,
+                };
             const resolved = this.context.resolveStaticExpression(unwrapped);
             if (resolved !== unwrapped) {
                 const value = this.compileValue(resolved);
+                const initializer = outermostWrapper(resolved);
+                const declaration = initializer.parent;
+                if (
+                    ts.isVariableDeclaration(declaration) &&
+                    declaration.initializer === initializer
+                )
+                    requireOneObject(
+                        this.context.dataLowerer.context,
+                        declaration,
+                        value,
+                    );
                 return value.kind === "regexp"
                     ? this.context.nativeEmission.materializeStaticNativeValue(
                           unwrapped,
@@ -829,9 +920,24 @@ export class ExpressionLowerer {
             }
             const namespace = this.compileModuleNamespace(unwrapped);
             if (namespace) return namespace;
+            if (enumObjectSymbol(this.context.checker, unwrapped))
+                this.context.fail(
+                    unwrapped,
+                    `Enum object '${unwrapped.text}' is a value only as the receiver of a member or computed-key read.`,
+                );
+            if (namespaceSymbol(this.context.checker, unwrapped))
+                this.context.fail(
+                    unwrapped,
+                    `Namespace object '${unwrapped.text}' is a value only as the receiver of a member read.`,
+                );
             return this.context.bindings.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const namespaceMember = namespaceMemberName(
+                this.context.checker,
+                unwrapped,
+            );
+            if (namespaceMember) return this.compileValue(namespaceMember);
             if (
                 unwrapped.name.text === "url" &&
                 ts.isMetaProperty(unwrapped.expression) &&
@@ -971,11 +1077,24 @@ export class ExpressionLowerer {
                         "Reached RegExp constructor flags must be static.",
                     );
                 }
+                if (flags.includes("u")) {
+                    if (patternValue.staticString === undefined)
+                        this.context.fail(
+                            arguments_[0]!,
+                            "A u-flag RegExp constructor needs a pattern known at generation.",
+                        );
+                    return this.compileRegExp(
+                        patternValue.staticString,
+                        flags,
+                        arguments_[1] ?? unwrapped,
+                        "constructors",
+                    );
+                }
                 for (const flag of flags) {
                     if (flag !== "g" && flag !== "i") {
                         this.context.fail(
                             arguments_[1] ?? unwrapped,
-                            `Reached RegExp constructors support the g and i flags, not '${flag}'.`,
+                            `Reached RegExp constructors support the g, i and u flags, not '${flag}'.`,
                         );
                     }
                 }
@@ -1057,6 +1176,18 @@ export class ExpressionLowerer {
                     this.context.cppString(text),
                 );
             if (typeof member === "number") return numberConstantValue(member);
+            const enumLookup = compileEnumElementAccess(
+                this.context,
+                unwrapped,
+            );
+            if (enumLookup)
+                return assertedNonNull
+                    ? this.context.dataLowerer.narrowOptional(
+                          enumLookup,
+                          expression,
+                          true,
+                      )
+                    : enumLookup;
             const value = this.compileIndexedValue(
                 unwrapped,
                 expression,
@@ -1185,6 +1316,8 @@ export class ExpressionLowerer {
             if (value) return value;
         }
         if (isUpdateExpression(unwrapped)) {
+            const bigintUpdate = compileBigIntUpdate(this.context, unwrapped);
+            if (bigintUpdate) return bigintUpdate;
             const updated =
                 this.context.dataLowerer.compileUpdateValue(unwrapped);
             if (updated) return updated;
@@ -1205,23 +1338,7 @@ export class ExpressionLowerer {
                     unwrapped,
                     "Malformed regular expression literal.",
                 );
-            for (const flag of flags) {
-                if (flag !== "g" && flag !== "i") {
-                    this.context.fail(
-                        unwrapped,
-                        `Reached RegExp literals support the g and i flags, not '${flag}'.`,
-                    );
-                }
-            }
-            this.context.reachJsData();
-            return {
-                kind: "regexp",
-                regexpCaptureCount: regexpCaptureCount(pattern),
-                cpp:
-                    `bbl::js::RegExp(${this.context.cppString(pattern)}, ` +
-                    `${flags.includes("g") ? "true" : "false"}, ` +
-                    `${flags.includes("i") ? "true" : "false"})`,
-            };
+            return this.compileRegExp(pattern, flags, unwrapped, "literals");
         }
         if (
             ts.isStringLiteral(unwrapped) ||
@@ -1339,7 +1456,7 @@ export class ExpressionLowerer {
                     ts.SyntaxKind.AmpersandAmpersandToken)
         ) {
             const logical =
-                this.context.dataLowerer.compileOptionalBooleanLogicalValue(
+                this.context.dataLowerer.compileOptionalScalarLogicalValue(
                     unwrapped,
                 );
             if (logical) return logical;
@@ -1440,8 +1557,10 @@ export class ExpressionLowerer {
                     expression,
                 );
                 if (absence === "either")
-                    return this.context.fail(
+                    refuseEitherAbsence(
+                        this.context,
                         expression,
+                        operand,
                         "typeof a value that may be null or undefined answers only once one of them is ruled out (narrow the type).",
                     );
                 return typeof absence === "object"
@@ -1462,15 +1581,7 @@ export class ExpressionLowerer {
                     : operand.dataType;
             if (unionType?.kind === "union") {
                 const names = unionType.members.map((member) =>
-                    this.context.cppString(
-                        member.kind === "number" || member.kind === "boolean"
-                            ? member.kind
-                            : member.kind === "string" || member.kind === "enum"
-                              ? "string"
-                              : member.kind === "function"
-                                ? "function"
-                                : "object",
-                    ),
+                    this.context.cppString(typeofTag(member)),
                 );
                 const table = `std::array<const char*, ${names.length}>{${names.join(", ")}}`;
                 const absent =
@@ -1493,21 +1604,21 @@ export class ExpressionLowerer {
                     ? operand.dataType.inner
                     : operand.dataType;
             const type =
-                operand.kind === "number"
-                    ? "number"
-                    : operand.kind === "boolean"
-                      ? "boolean"
-                      : operand.kind === "string" ||
-                          dataType?.kind === "string" ||
-                          dataType?.kind === "enum"
-                        ? "string"
-                        : operand.kind === "callback" ||
-                            operand.builtinConstructor !== undefined ||
-                            dataType?.kind === "function"
-                          ? "function"
-                          : operand.kind === "void"
-                            ? "undefined"
-                            : "object";
+                operand.kind === "number" ||
+                operand.kind === "boolean" ||
+                operand.kind === "string"
+                    ? operand.kind
+                    : operand.kind === "callback" ||
+                        operand.builtinConstructor !== undefined ||
+                        (dataType?.kind === "struct" &&
+                            this.context.dataTypes.structCall(dataType.name) !==
+                                undefined)
+                      ? "function"
+                      : operand.kind === "void"
+                        ? "undefined"
+                        : dataType
+                          ? typeofTag(dataType)
+                          : "object";
             let present = presenceCpp(operand);
             if (operand.dataType?.kind === "function") {
                 const callable = `static_cast<bool>(${operand.cpp})`;
@@ -1594,9 +1705,127 @@ export class ExpressionLowerer {
             if (selected) return selected;
         }
 
+        if (ts.isTaggedTemplateExpression(unwrapped))
+            return this.compileTaggedTemplate(unwrapped);
+        if (ts.isClassExpression(unwrapped))
+            this.context.fail(
+                unwrapped,
+                "A class expression is lowered as the initializer of a const it names.",
+            );
+
         this.context.fail(
             unwrapped,
             `Unsupported value expression: ${syntaxKindName(unwrapped.kind)}.`,
+        );
+    }
+
+    /** One strings-array accessor per tagged template site. */
+    private readonly templateSites = new EmissionMap<
+        ts.TaggedTemplateExpression,
+        string
+    >();
+
+    /**
+     * `tag\`...\`` calls the tag with the site's strings array, then the
+     * substitutions; `String.raw` joins the raw strings and substitutions.
+     */
+    private compileTaggedTemplate(
+        expression: ts.TaggedTemplateExpression,
+    ): Value {
+        const parts =
+            templateParts(expression.template) ??
+            this.context.fail(
+                expression.template,
+                "A template escape without a cooked value leaves an undefined string, which the strings array does not store.",
+            );
+        const tag = this.context.unwrap(expression.tag);
+        if (
+            ts.isPropertyAccessExpression(tag) &&
+            tag.name.text === "raw" &&
+            this.context.libraryGlobal(tag.expression) === "String"
+        )
+            return this.compileTemplateText(
+                parts.raw[0]!,
+                parts.substitutions.map((substitution, index) => ({
+                    expression: substitution,
+                    text: parts.raw[index + 1]!,
+                })),
+            );
+        const callee = namespaceMemberName(this.context.checker, tag) ?? tag;
+        if (!ts.isIdentifier(callee))
+            this.context.fail(
+                expression.tag,
+                "A template tag is a function named by an identifier.",
+            );
+        this.context.reachFeature("data:tagged-template", expression);
+        let accessor = this.templateSites.get(expression);
+        if (!accessor) {
+            const strings = (texts: readonly string[]): string =>
+                `{${texts.map((text) => `std::string(${this.context.cppString(text)})`).join(", ")}}`;
+            accessor =
+                this.context.allocateTemporaryCppName("template_strings");
+            this.context.nativeEmission.registerNativeTemplate(
+                accessor,
+                [
+                    `inline bbl::js::Array<std::string>& ${accessor}() {`,
+                    `    static thread_local bbl::js::Array<std::string> ${accessor}_value = bbl::js::template_strings(${strings(parts.cooked)}, ${strings(parts.raw)});`,
+                    `    return ${accessor}_value;`,
+                    "}",
+                ],
+                `inline bbl::js::Array<std::string>& ${accessor}();`,
+            );
+            this.templateSites.set(expression, accessor);
+        }
+        this.context.reachJsData();
+        const stringsValue = this.context.dataValue(`bblscene::${accessor}()`, {
+            kind: "vector",
+            element: { kind: "string" },
+        });
+        // Substitutions run left to right before the call; one a later
+        // substitution may change is read where it stands.
+        let lastEffect = parts.substitutions.length - 1;
+        while (
+            lastEffect >= 0 &&
+            !expressionMayRunCode(parts.substitutions[lastEffect]!)
+        )
+            lastEffect--;
+        const substitutions = parts.substitutions.map((substitution, index) => {
+            const value = this.compileValue(substitution);
+            return index < lastEffect
+                ? this.context.bindings.pinValueToTemporary(
+                      value,
+                      "template_substitution",
+                      substitution,
+                  )
+                : value;
+        });
+        // A rest parameter takes the substitutions from its position on.
+        const signature = this.context.checker.getResolvedSignature(expression);
+        const parameters = signature?.getDeclaration()?.parameters ?? [];
+        const rest = parameters.findIndex(
+            (parameter) => parameter.dotDotDotToken !== undefined,
+        );
+        const arguments_: Value[] = [stringsValue, ...substitutions];
+        const values =
+            rest > 0
+                ? [
+                      ...arguments_.slice(0, rest),
+                      ...(arguments_.length >= rest
+                          ? [
+                                {
+                                    kind: "tuple" as const,
+                                    cpp: "",
+                                    tupleElements: arguments_.slice(rest),
+                                },
+                            ]
+                          : []),
+                  ]
+                : arguments_;
+        return this.context.userFunctions.compileCallbackWithValues(
+            this.context,
+            callee,
+            values,
+            expression,
         );
     }
 
@@ -1677,19 +1906,31 @@ export class ExpressionLowerer {
     }
 
     private compileTemplate(expression: ts.TemplateExpression): Value {
-        const parts: string[] = [this.context.cppString(expression.head.text)];
-        let compiledStaticText = expression.head.text;
+        return this.compileTemplateText(
+            expression.head.text,
+            expression.templateSpans.map((span) => ({
+                expression: span.expression,
+                text: span.literal.text,
+            })),
+        );
+    }
+
+    /** A template's text: each substitution's string between the literal parts. */
+    private compileTemplateText(
+        head: string,
+        spans: readonly { expression: ts.Expression; text: string }[],
+    ): Value {
+        const parts: string[] = [this.context.cppString(head)];
+        let compiledStaticText = head;
         let allCompiledValuesAreStatic = true;
-        let lastEffect = expression.templateSpans.length - 1;
+        let lastEffect = spans.length - 1;
         while (
             lastEffect >= 0 &&
-            !expressionMayRunCode(
-                expression.templateSpans[lastEffect]!.expression,
-            )
+            !expressionMayRunCode(spans[lastEffect]!.expression)
         ) {
             lastEffect--;
         }
-        expression.templateSpans.forEach((span, index) => {
+        spans.forEach((span, index) => {
             // Resolve each substitution after its predecessors' effects. A
             // closed numeric expression keeps its fact alongside helper results.
             const known = this.context.evaluator.staticTextValue(
@@ -1716,8 +1957,8 @@ export class ExpressionLowerer {
                 compiledStaticText += staticText;
             }
             parts.push(stringConcatPart(this.context, value, span.expression));
-            parts.push(this.context.cppString(span.literal.text));
-            compiledStaticText += span.literal.text;
+            parts.push(this.context.cppString(span.text));
+            compiledStaticText += span.text;
         });
         if (allCompiledValuesAreStatic) {
             return {
@@ -2472,6 +2713,15 @@ export class ExpressionLowerer {
                     continue;
                 }
                 const present = trueValue ?? falseValue!;
+                // The record holds the array a compile-time member builds,
+                // so a readonly one owns its storage as a returned one does.
+                const memberType =
+                    present.dataType === undefined &&
+                    present.kind !== "number" &&
+                    present.kind !== "boolean" &&
+                    present.kind !== "string"
+                        ? this.selectedDataType(node, [...path, name], true)
+                        : undefined;
                 const inner =
                     present.dataType ??
                     (present.kind === "number"
@@ -2480,10 +2730,9 @@ export class ExpressionLowerer {
                           ? { kind: "boolean" as const }
                           : present.kind === "string"
                             ? { kind: "string" as const }
-                            : this.selectedDataType(
-                                  node,
-                                  [...path, name],
-                                  true,
+                            : memberType &&
+                              this.context.dataTypes.ownReturnedArray(
+                                  memberType,
                               ));
                 if (!inner) {
                     this.context.fail(
@@ -2799,8 +3048,9 @@ export class ExpressionLowerer {
      * The storage of what the conditional `node` selects at `path` (a
      * member or element of its result): its type where the conditional is
      * expected (a spread into a typed record), else in the conditional or
-     * one of its arms. `present` drops the absence an arm without the
-     * member adds.
+     * one of its arms. `present` asks for the member one arm's record
+     * holds: without the absence the other arm adds, and owning its array
+     * even where the type is readonly.
      */
     private selectedDataType(
         node: ts.Node,
@@ -2832,7 +3082,10 @@ export class ExpressionLowerer {
             const type = at(owner);
             const mapped =
                 type && this.context.dataTypes.fromStoredTsType(type, node);
-            if (mapped) return mapped;
+            if (mapped)
+                return present
+                    ? this.context.dataTypes.ownReadonlyArray(mapped, type)
+                    : mapped;
         }
         return undefined;
     }
@@ -3089,7 +3342,23 @@ export class ExpressionLowerer {
                 staticString: moduleAsset,
             };
         }
-        const callee = this.context.unwrap(call.expression);
+        const symbol = compileSymbolCall(this.context, call);
+        if (symbol) return symbol;
+        // `N.f()` calls the namespace member `f` as its body does.
+        const callee =
+            namespaceMemberName(
+                this.context.checker,
+                this.context.unwrap(call.expression),
+            ) ?? this.context.unwrap(call.expression);
+        // A microtask runs after the current task: the realm's event loop.
+        // Structured cloning uses the realm's message codecs.
+        const realmGlobal = this.context.libraryGlobal(callee);
+        if (
+            !this.context.options.workers &&
+            (realmGlobal === "queueMicrotask" ||
+                realmGlobal === "structuredClone")
+        )
+            throw new ApplicationRealmRequired();
         if (
             ts.isIdentifier(callee) &&
             this.context.libraryGlobal(callee) === "createImageBitmap"
@@ -3339,6 +3608,15 @@ export class ExpressionLowerer {
                     (text) => this.context.cppString(text),
                 );
             }
+            // `String(symbol)` is its description text, as `toString()`.
+            const primitive =
+                value.kind === "data"
+                    ? primitiveTraits(value.dataType)
+                    : undefined;
+            if (primitive)
+                return this.context.dataValue(primitive.stringCpp(value.cpp), {
+                    kind: "string",
+                });
             if (
                 value.dataType?.kind === "union" &&
                 value.dataType.members.every(
@@ -3467,6 +3745,25 @@ export class ExpressionLowerer {
                 bound.dataType,
             );
         }
+        const unionMember =
+            bound?.kind === "data"
+                ? this.context.dataLowerer.unionFunctionMember(bound, callee)
+                : undefined;
+        if (unionMember) {
+            return this.context.dataLowerer.compileStoredCall(
+                call,
+                unionMember.cpp,
+                unionMember.dataType,
+            );
+        }
+        const callableRecord =
+            bound?.kind === "data"
+                ? this.context.dataLowerer.compileCallableRecordCall(
+                      call,
+                      bound,
+                  )
+                : undefined;
+        if (callableRecord) return callableRecord;
         if (!bound) {
             const aliased = this.compileConstAliasCall(call, callee);
             if (aliased) return aliased;
@@ -3668,7 +3965,10 @@ export class ExpressionLowerer {
                 callable.cpp,
                 callable.dataType,
             );
-        return undefined;
+        return this.context.dataLowerer.compileCallableRecordCall(
+            call,
+            callable,
+        );
     }
 
     /**
@@ -3794,37 +4094,56 @@ export class ExpressionLowerer {
         }
         const value = this.compileValue(unwrapped);
         if (value.kind === "number") return value;
-        if (isStringValue(value)) {
+        const present = (cpp: string, type: DataType | undefined) =>
+            type?.kind === "number"
+                ? `static_cast<double>(${cpp})`
+                : type?.kind === "string"
+                  ? `bbl::js::number_from_string(${cpp})`
+                  : type?.kind === "boolean"
+                    ? `(${cpp} ? 1.0 : 0.0)`
+                    : type?.kind === "json" || type?.kind === "bigint"
+                      ? `(${cpp}).to_number()`
+                      : undefined;
+        const number = (cpp: string): Value => {
             this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::number_from_string(${value.cpp})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "optional" &&
-            (value.dataType.inner.kind === "string" ||
-                value.dataType.inner.kind === "number")
-        ) {
-            const present =
-                value.dataType.inner.kind === "string"
-                    ? "bbl::js::number_from_string(*v)"
-                    : "static_cast<double>(*v)";
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp:
-                    `([&]() { const auto& v = ${value.cpp}; ` +
-                    `return v.has_value() ? ${present} : ` +
-                    `std::numeric_limits<double>::quiet_NaN(); }())`,
-                dataType: { kind: "number" },
-            };
+            return { kind: "number", cpp, dataType: { kind: "number" } };
+        };
+        if (isStringValue(value))
+            return number(present(value.cpp, { kind: "string" })!);
+        if (value.kind === "boolean")
+            return number(present(value.cpp, { kind: "boolean" })!);
+        const direct =
+            value.kind === "data" && present(value.cpp, value.dataType);
+        if (direct) return number(direct);
+        // An absent operand is NaN when it is `undefined` and 0 when it is
+        // `null`, so the storage must say which one it holds.
+        const inner =
+            value.kind === "data" && value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : undefined;
+        if (inner && present("*v", inner)) {
+            const absence = absenceKind(this.context.checker, value, unwrapped);
+            const absent =
+                absence === "null"
+                    ? "0.0"
+                    : absence === "either"
+                      ? refuseEitherAbsence(
+                            this.context,
+                            expression,
+                            value,
+                            "Number() of a value that may be null or undefined requires storage telling them apart.",
+                        )
+                      : typeof absence === "object"
+                        ? `(${absence.slotFoundCpp} ? 0.0 : std::numeric_limits<double>::quiet_NaN())`
+                        : "std::numeric_limits<double>::quiet_NaN()";
+            return number(
+                `([&]() { const auto& v = ${value.cpp}; ` +
+                    `return v.has_value() ? ${present("*v", inner)} : ${absent}; }())`,
+            );
         }
         this.context.fail(
             expression,
-            `Number() supports number and string values, received ${value.kind}.`,
+            `Number() supports numbers, strings, booleans, BigInts, parsed documents and their optionals, received ${value.kind}.`,
         );
     }
 
@@ -4504,6 +4823,34 @@ export class ExpressionLowerer {
                 }
                 const indexedType =
                     this.context.dataLowerer.dataTypeAt(unwrapped);
+                // A record read as `Record<string, unknown>` by a key known
+                // only at run time reads a parsed view of the record: the
+                // property the key names, or undefined.
+                if (
+                    !indexedType &&
+                    (this.context.checker.getTypeAtLocation(unwrapped).flags &
+                        (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !==
+                        0 &&
+                    (key.kind === "number" ||
+                        key.kind === "string" ||
+                        key.dataType?.kind === "string")
+                ) {
+                    const view =
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            owner,
+                            { kind: "json" },
+                            unwrapped.expression,
+                        );
+                    const name =
+                        key.kind === "number"
+                            ? `bbl::js::number_to_string(${this.context.castNumber(key, "double")})`
+                            : key.cpp;
+                    this.context.reachJsData();
+                    return this.context.dataLowerer.leafValue(
+                        `${view}.get(${name})`,
+                        { kind: "json" },
+                    );
+                }
                 if (!indexedType) {
                     this.context.fail(
                         unwrapped,
@@ -4716,6 +5063,21 @@ export class ExpressionLowerer {
                 );
             }
             return value;
+        }
+        // A property no prototype of a number or boolean defines reads
+        // undefined (`(42)["format"]`).
+        if (owner.kind === "number" || owner.kind === "boolean") {
+            const key = this.compileValue(unwrapped.argumentExpression);
+            const name =
+                key.staticString ??
+                (key.staticNumber !== undefined
+                    ? String(key.staticNumber)
+                    : undefined);
+            if (name !== undefined && !PRIMITIVE_PROTOTYPE_MEMBERS.has(name)) {
+                this.context.emitDiscardedValue(owner);
+                this.context.emitDiscardedValue(key);
+                return { kind: "json-null", cpp: "std::nullopt" };
+            }
         }
         if (owner.kind !== "tuple") {
             this.context.fail(
@@ -5229,6 +5591,21 @@ export class ExpressionLowerer {
                 ts.isSpreadAssignment(property) &&
                 this.spreadsOptionalOwnKeys(property.expression),
         );
+        // A computed key a run-time value selects writes the record of the
+        // position's type; no compile-time record can name it.
+        const runtimeKeyed = unwrapped.properties.some((property) => {
+            const key = this.context.dataLowerer.runtimeKey(property);
+            return (
+                key !== undefined &&
+                this.context.probeEmission(
+                    () => {
+                        const value = this.compileValue(key);
+                        return value.staticString ?? value.staticNumber;
+                    },
+                    () => false,
+                ) === undefined
+            );
+        });
         if (
             unwrapped.properties.some((property) => {
                 if (!ts.isSpreadAssignment(property)) return false;
@@ -5243,13 +5620,16 @@ export class ExpressionLowerer {
                 );
             }) ||
             dynamicSpread ||
-            optionalKeysSpread
+            optionalKeysSpread ||
+            runtimeKeyed
         ) {
             // The expression creates its own properties. A contextual interface
             // can be narrower, or open-ended, without changing those properties.
-            const record = this.context.probeEmission(() =>
-                this.compileStaticObjectValue(unwrapped, true),
-            );
+            const record = runtimeKeyed
+                ? undefined
+                : this.context.probeEmission(() =>
+                      this.compileStaticObjectValue(unwrapped, true),
+                  );
             if (record) return record;
             const contextual =
                 this.context.checker.getContextualType(unwrapped);
@@ -5268,6 +5648,10 @@ export class ExpressionLowerer {
                         contextualType?.kind === "map" &&
                         contextualType.dictionary
                     )
+                        return contextualType;
+                    // A run-time key selects one of the position's fields;
+                    // the literal's own type is an index signature.
+                    if (runtimeKeyed && contextualType?.kind === "struct")
                         return contextualType;
                     return (
                         this.context.dataLowerer.dataTypeAt(unwrapped) ??
@@ -5679,6 +6063,152 @@ export class ExpressionLowerer {
             : record;
     }
 
+    /**
+     * `f.bind(thisArg, a, b)`: a fresh function of the parameters after the
+     * bound ones. The bound arguments are read once, in order after the
+     * target and thisArg, when `bind` runs; each call passes them before its
+     * own arguments. Bound arguments past the parameters are read and
+     * ignored, as the target ignores them.
+     */
+    private compilePartialBind(
+        call: ts.CallExpression,
+        target: string,
+        type: DataType<"function">,
+        receiverCpp: string,
+    ): Value {
+        const bound = call.arguments.slice(1);
+        if (type.erasedParameters?.length || type.generic)
+            this.context.fail(
+                call,
+                "Function.bind with arguments requires represented parameter lanes.",
+            );
+        if (
+            type.restParameter !== undefined &&
+            bound.length > type.restParameter
+        )
+            this.context.fail(
+                call,
+                "Function.bind cannot bind arguments into a rest parameter.",
+            );
+        const spread = bound.find(ts.isSpreadElement);
+        if (spread)
+            this.context.fail(
+                spread,
+                "Function.bind takes its bound arguments separately.",
+            );
+        if (bound.length > type.parameters.length)
+            this.context.dataLowerer.noteArgumentsPastSignature(
+                type,
+                "passes",
+                call,
+            );
+        const receiver =
+            this.context.allocateTemporaryCppName("bound_receiver");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: receiver,
+            initializer: receiverCpp,
+        });
+        const boundCpp: string[] = [];
+        bound.forEach((argument, index) => {
+            const parameter = type.parameters[index];
+            if (!parameter) {
+                this.context.emitDiscardedValue(this.compileValue(argument));
+                return;
+            }
+            const name =
+                this.context.allocateTemporaryCppName("bound_argument");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name,
+                initializer: this.context.dataLowerer.compileForSink(
+                    argument,
+                    parameter,
+                ),
+            });
+            boundCpp.push(name);
+        });
+        const count = Math.min(bound.length, type.parameters.length);
+        const optionalParameters = (type.optionalParameters ?? [])
+            .filter((index) => index >= count)
+            .map((index) => index - count);
+        const { optionalParameters: _optional, restParameter, ...rest } = type;
+        void _optional;
+        const result: DataType<"function"> = {
+            ...rest,
+            parameters: type.parameters.slice(count),
+            identity: true,
+            ...(restParameter === undefined
+                ? {}
+                : { restParameter: restParameter - count }),
+            ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
+        };
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            dataType: result,
+            freshData: true,
+            cpp: `bbl::js::bind_callback_arguments<${this.context.dataTypes.cppType(result)}>(${[target, receiver, ...boundCpp].join(", ")})`,
+        };
+    }
+
+    /**
+     * `f.call(thisArg, ...args)` on a named function that declares or reads
+     * its `this`: the function runs with `this` bound to thisArg, which is
+     * read before the arguments, as each argument is read before the next.
+     */
+    private compileReceiverCall(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const target = this.context.unwrap(callee.expression);
+        if (
+            !ts.isIdentifier(target) ||
+            this.context.bindings.lookupOptional(target) !== undefined
+        )
+            return undefined;
+        const declaration = tryResolveFunctionDeclaration(
+            this.context.checker,
+            target,
+        );
+        if (
+            !declaration ||
+            !(
+                ts.isFunctionDeclaration(declaration) ||
+                ts.isFunctionExpression(declaration)
+            ) ||
+            !(
+                functionUsesDynamicThis(declaration) ||
+                this.context.checker.getSignatureFromDeclaration(declaration)
+                    ?.thisParameter
+            ) ||
+            call.arguments.length === 0 ||
+            call.arguments.some(ts.isSpreadElement)
+        )
+            return undefined;
+        const pins = this.context.evaluationOrder.operandsToPin(call.arguments);
+        const values = call.arguments.map((argument, index) => {
+            const value = this.compileValue(argument);
+            return pins[index]
+                ? pinOperand(this.context, value, argument, "call_argument")
+                : value;
+        });
+        const previous = this.context.activeThis();
+        this.context.defineThis(values[0]);
+        try {
+            return this.context.userFunctions.compileCallbackWithValues(
+                this.context,
+                target,
+                values.slice(1),
+                call,
+            );
+        } finally {
+            this.context.defineThis(previous);
+        }
+    }
+
     /** Function call adapters consume the function object before their arguments run. */
     private compileFunctionObject(expression: ts.Expression): Value {
         if (
@@ -5719,6 +6249,44 @@ export class ExpressionLowerer {
         );
     }
 
+    /**
+     * A RegExp of a known pattern. A `u` pattern is rewritten over UTF-16
+     * units (`unicodeUnitPattern`), its case folding included.
+     */
+    private compileRegExp(
+        pattern: string,
+        flags: string,
+        node: ts.Node,
+        site: "literals" | "constructors",
+    ): Value {
+        for (const flag of flags) {
+            if (flag !== "g" && flag !== "i" && flag !== "u") {
+                this.context.fail(
+                    node,
+                    `Reached RegExp ${site} support the g, i and u flags, not '${flag}'.`,
+                );
+            }
+        }
+        const unicode = flags.includes("u");
+        const ignoreCase = flags.includes("i");
+        const translated = unicode
+            ? unicodeUnitPattern(pattern, ignoreCase)
+            : { pattern };
+        if ("refusal" in translated)
+            return this.context.fail(node, translated.refusal);
+        this.context.reachJsData();
+        return {
+            kind: "regexp",
+            regexpCaptureCount: regexpCaptureCount(translated.pattern),
+            ...(unicode ? { regexpUnicode: true as const } : {}),
+            cpp:
+                `bbl::js::RegExp(${this.context.cppString(translated.pattern)}, ` +
+                `${flags.includes("g") ? "true" : "false"}, ` +
+                `${ignoreCase && !unicode ? "true" : "false"}` +
+                `${unicode ? ", true" : ""})`,
+        };
+    }
+
     private compilePropertyCall(
         callee: ts.PropertyAccessExpression,
         call: ts.CallExpression,
@@ -5735,7 +6303,8 @@ export class ExpressionLowerer {
                 callee.expression,
             );
             if (collection) return collection;
-            this.context.expectArgumentCount(call, 1, 1);
+            if (call.arguments.length === 0)
+                this.context.expectArgumentCount(call, 1, 1);
             const callable = this.compileFunctionObject(callee.expression);
             if (
                 callable.dataType?.kind === "function" &&
@@ -5772,7 +6341,22 @@ export class ExpressionLowerer {
             if (receiver.kind !== "json-null" && !receiverType)
                 return this.context.fail(
                     call,
-                    "Function.bind requires a retained native thisArg.",
+                    "Function.bind requires a represented native thisArg.",
+                );
+            const receiverCpp =
+                receiver.kind === "json-null"
+                    ? "std::monostate{}"
+                    : this.context.dataLowerer.compileKnownValueForSink(
+                          receiver,
+                          receiverType!,
+                          argumentAt(call, 0),
+                      );
+            if (call.arguments.length > 1)
+                return this.compilePartialBind(
+                    call,
+                    target,
+                    callable.dataType,
+                    receiverCpp,
                 );
             const type: DataType<"function"> = {
                 ...callable.dataType,
@@ -5782,7 +6366,7 @@ export class ExpressionLowerer {
                 kind: "data",
                 dataType: type,
                 freshData: true,
-                cpp: `bbl::js::bind_callback(${target}, ${receiver.kind === "json-null" ? "std::monostate{}" : this.context.dataLowerer.compileKnownValueForSink(receiver, receiverType!, argumentAt(call, 0))})`,
+                cpp: `bbl::js::bind_callback(${target}, ${receiverCpp})`,
             };
         }
         // `renderer._beforeUpdate.push(hook)`: sprite-renderer.ts keeps
@@ -5816,6 +6400,10 @@ export class ExpressionLowerer {
                     `${this.context.callbacks.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
                 engineCpp,
             };
+        }
+        if (callee.name.text === "call") {
+            const receiverCall = this.compileReceiverCall(call, callee);
+            if (receiverCall) return receiverCall;
         }
         if (callee.name.text === "call" || callee.name.text === "apply") {
             const functionCall = this.context.probeEmission(() => {
@@ -5859,6 +6447,8 @@ export class ExpressionLowerer {
         if (objectStatic) {
             return objectStatic(this.context, call);
         }
+        if (staticOwner === "Atomics")
+            return compileAtomicsCall(this.context, call, callee.name.text);
         if (staticOwner === "String" && callee.name.text === "fromCharCode") {
             this.context.reachJsData();
             // Spread arguments pack, in order with the others, into one list.
@@ -6507,7 +7097,7 @@ export class ExpressionLowerer {
         call: ts.CallExpression,
         method: string,
         instance: Value,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
         found: string,
     ): Value {
         const type = this.context.dataLowerer.dataTypeAt(call);

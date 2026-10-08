@@ -95,6 +95,35 @@ export function declarationOrigin(declaration: ts.Node): DeclarationOrigin {
 }
 
 /**
+ * A storage declaration a replay can retype: a variable or parameter named
+ * by an identifier, a record property or a method signature, in one of the
+ * program's own sources (a declaration file describes storage its producer
+ * owns).
+ */
+export type RetypableDeclaration =
+    | ts.VariableDeclaration
+    | ts.ParameterDeclaration
+    | ts.PropertySignature
+    | ts.PropertyDeclaration
+    | ts.MethodSignature;
+
+/** See {@link RetypableDeclaration}. */
+export function isRetypableDeclaration(
+    declaration: ts.Node | undefined,
+): declaration is RetypableDeclaration {
+    return (
+        declaration !== undefined &&
+        !declaration.getSourceFile().isDeclarationFile &&
+        (((ts.isVariableDeclaration(declaration) ||
+            ts.isParameter(declaration)) &&
+            ts.isIdentifier(declaration.name)) ||
+            ts.isPropertySignature(declaration) ||
+            ts.isPropertyDeclaration(declaration) ||
+            ts.isMethodSignature(declaration))
+    );
+}
+
+/**
  * Whether any declaration of a symbol has one of `origins`. Any, because a
  * program may reopen a library interface (`interface Window { ... }`) and
  * the merged symbol is still the library's.
@@ -106,6 +135,37 @@ export function declaredIn(
     return (symbol?.declarations ?? []).some((declaration) =>
         origins.includes(declarationOrigin(declaration)),
     );
+}
+
+/**
+ * `typeof` of a global only the ECMAScript library declares. Every realm has
+ * the language's intrinsics, so the answer is the declared value's kind:
+ * a callable or constructible value is a function, a number a number, a
+ * namespace or any other value an object.
+ */
+export function ecmascriptGlobalTypeof(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): "function" | "number" | "object" | undefined {
+    const node = unwrapExpression(expression);
+    if (!ts.isIdentifier(node)) return undefined;
+    const symbol = resolvedSymbol(checker, node);
+    const declarations = symbol?.declarations ?? [];
+    if (
+        declarations.length === 0 ||
+        declarations.some(
+            (declaration) => declarationOrigin(declaration) !== "default-lib",
+        ) ||
+        (symbol!.flags &
+            (ts.SymbolFlags.Value | ts.SymbolFlags.ValueModule)) ===
+            0
+    )
+        return undefined;
+    if ((symbol!.flags & ts.SymbolFlags.Variable) === 0) return "object";
+    const type = checker.getTypeOfSymbolAtLocation(symbol!, node);
+    if (type.getCallSignatures().length || type.getConstructSignatures().length)
+        return "function";
+    return type.flags & ts.TypeFlags.NumberLike ? "number" : "object";
 }
 
 /** Whether a symbol is declared by the browser document's library files. */
@@ -295,6 +355,32 @@ export function enumMemberConstant(
     return member && ts.isEnumMember(member)
         ? checker.getConstantValue(member)
         : checker.getConstantValue(access);
+}
+
+/**
+ * The property key a `unique symbol` names (`[brand]`): the checker's name
+ * of the property it keys, which no string key spells.
+ */
+export function symbolPropertyKey(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): string | undefined {
+    const type = checker.getTypeAtLocation(expression);
+    return (type.flags & ts.TypeFlags.UniqueESSymbol) !== 0
+        ? ts.unescapeLeadingUnderscores(
+              (type as ts.UniqueESSymbolType).escapedName,
+          )
+        : undefined;
+}
+
+/** Whether a property key is a symbol's: no string-keyed enumeration lists it. */
+export function isSymbolPropertyKey(key: string): boolean {
+    return key.startsWith("__@");
+}
+
+/** A symbol-keyed struct field's C++ name. */
+export function symbolFieldName(key: string): string {
+    return `symbol_${key.slice(3)}`;
 }
 
 /** The names the library binds the global object itself to. */

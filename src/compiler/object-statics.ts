@@ -1,13 +1,15 @@
 import { writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, expressionMayRunCode } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
-import type { DataType, OwnPresence } from "./data-types.js";
+import { callMember, type DataType, type OwnPresence } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { refuseErrorReflection } from "./error-values.js";
+import { isSymbolPropertyKey } from "./symbols.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { functionUsesDynamicThis } from "./user-functions.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -15,6 +17,7 @@ import {
 
 type ObjectStaticContext = Pick<
     LoweringServices,
+    | "checker"
     | "compileValue"
     | "moduleNamespaces"
     | "captureEmittedLines"
@@ -133,10 +136,12 @@ export function structOwnEntries(
     const fields = excludedKeys?.size
         ? sourceFields.filter((field) => !excludedKeys.has(field.sourceName))
         : sourceFields;
+    // Accessor slots are own and enumerable (a getter runs as its key is
+    // read) unless they may hold a class's prototype accessor.
     const accessor = fields.find(
         (field) => field.accessor && !field.accessorReceiver,
     );
-    if (accessor)
+    if (accessor && context.dataTypes.holdsPrototypeAccessors(dataType.name))
         context.dataTypes.structField(dataType.name, accessor.sourceName, node);
     return fields.map((field) => {
         const key = field.sourceName;
@@ -172,6 +177,9 @@ export function structOwnEntries(
                           field.type.inner,
                       )
                     : value),
+                ...(field.declarations
+                    ? { slotDeclarations: field.declarations }
+                    : {}),
                 nativeCaptures: owner.nativeCaptures ?? [],
             },
             ...(presence ? { presence } : {}),
@@ -188,9 +196,9 @@ export function structOwnEntries(
 }
 
 /**
- * The own entries of a compile-time record or a struct, in key order;
- * undefined for another owner. A record's methods and accessors are not
- * among them.
+ * The string-keyed own entries of a compile-time record or a struct, in key
+ * order; undefined for another owner. A record's methods and accessors are
+ * not among them, nor are symbol-keyed properties.
  */
 export function ownEntries(
     context: OwnEntryContext,
@@ -198,12 +206,15 @@ export function ownEntries(
     node: ts.Node,
 ): OwnEntry[] | undefined {
     if (owner.kind === "record")
-        return Object.entries(owner.recordProperties ?? {}).map(
-            ([key, member]) =>
+        return Object.entries(owner.recordProperties ?? {})
+            .filter(([key]) => !isSymbolPropertyKey(key))
+            .map(([key, member]) =>
                 context.dataLowerer.recordMemberEntry(key, member, node),
-        );
+            );
     if (owner.kind === "data" && owner.dataType?.kind === "struct")
-        return structOwnEntries(context, owner, owner.dataType, node);
+        return structOwnEntries(context, owner, owner.dataType, node).filter(
+            (entry) => !isSymbolPropertyKey(entry.key),
+        );
     return undefined;
 }
 
@@ -657,41 +668,101 @@ function compileObjectAssign(
     const targetExpression = context.unwrap(argumentAt(call, 0));
     // A bound record is written in place, so its later reads see the
     // stores; reading it as a value would write into a copy.
-    const target =
+    let target =
         context.probeEmission(() =>
             context.resolveRecordValue(targetExpression),
         ) ?? context.compileValue(targetExpression);
     const sources = call.arguments.slice(1);
+    // A function given properties is a callable record: a fresh record
+    // whose call is that function, filled below as a struct target is. It
+    // is built as the callable type its result is stored as, when it has
+    // one, so the record needs no conversion there.
+    const contextual = context.checker.getContextualType(call);
+    const callable = context.dataTypes.fromStoredTsType(
+        contextual &&
+            context.checker.getNonNullableType(contextual).getCallSignatures()
+                .length === 1
+            ? context.checker.getNonNullableType(contextual)
+            : context.checker.getTypeAtLocation(call),
+        call,
+    );
+    const callType =
+        callable?.kind === "struct"
+            ? context.dataTypes.structCall(callable.name)
+            : undefined;
+    if (
+        callable?.kind === "struct" &&
+        callType &&
+        (target.kind === "callback" || target.dataType?.kind === "function")
+    ) {
+        const record = context.allocateTemporaryCppName("callable_record");
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: record,
+            initializer: `bbl::js::make_ref<bblscene::${callable.name}Data>()`,
+        });
+        context.emit({
+            kind: "expression",
+            code: `${record}->${callMember} = ${context.dataLowerer.compileKnownValueForSink(target, callType, targetExpression)};`,
+        });
+        target = {
+            ...context.dataLowerer.leafValue(record, callable),
+            freshData: true,
+        };
+    }
     const fresh = ts.isObjectLiteralExpression(targetExpression);
     const readPairs = (
         source: ts.Expression,
         value = context.compileValue(source),
+        functions = false,
     ): Array<[string, Value]> => {
-        if (value.kind === "record") {
-            if (
-                Object.keys(value.recordMethods ?? {}).length > 0 ||
-                Object.keys(value.recordGetters ?? {}).length > 0
-            ) {
-                context.fail(
-                    source,
-                    "Object.assign copies plain properties; a source with methods or accessors is not represented.",
-                );
-            }
+        // A method is an own property holding its function; one reading
+        // `this` would read whichever object it is later called on. Only a
+        // target storing functions takes it.
+        const methods = Object.entries(value.recordMethods ?? {});
+        if (
+            value.kind === "record" &&
+            (Object.keys(value.recordGetters ?? {}).length > 0 ||
+                methods.some(
+                    ([, method]) =>
+                        !functions ||
+                        (!ts.isIdentifier(method) &&
+                            functionUsesDynamicThis(method)),
+                ))
+        ) {
+            context.fail(
+                source,
+                "Object.assign copies plain properties, and methods without `this` into a target storing functions; this source's accessors or methods are not represented.",
+            );
         }
-        return (
+        const pairs =
             fixedOwnEntries(context, value, source) ??
             context.fail(
                 source,
                 "Object.assign sources are compile-time records, object literals or structs.",
-            )
-        );
+            );
+        return value.kind === "record"
+            ? [
+                  ...pairs,
+                  ...methods.map(([name, method]): [string, Value] => [
+                      name,
+                      {
+                          kind: "callback",
+                          cpp: "",
+                          callbackDeclaration: method,
+                          callbackRecordOwner: value,
+                      },
+                  ]),
+              ]
+            : pairs;
     };
     // An existing target keeps what it receives, as a field store does.
     const sourcePairs = (
         source: ts.Expression,
         value?: Value,
     ): Array<[string, Value]> => {
-        const pairs = readPairs(source, value);
+        const pairs = readPairs(source, value, true);
         if (!fresh)
             for (const [, value] of pairs)
                 context.refuseBorrowedPlatformEventEscape(
@@ -854,6 +925,121 @@ function compileObjectAssign(
 }
 
 /**
+ * `Object.create(null)` where a dictionary is expected: a dictionary has no
+ * prototype chain in its representation, so it is exactly an object with a
+ * null prototype. Any other prototype refuses.
+ */
+function compileObjectCreate(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const prototype = context.unwrap(argumentAt(call, 0));
+    if (prototype.kind !== ts.SyntaxKind.NullKeyword)
+        return context.fail(
+            call,
+            "Object.create lowers with a null prototype only; other prototypes are not represented.",
+        );
+    const contextual = context.checker.getContextualType(call);
+    const type = contextual
+        ? context.dataTypes.fromTsType(contextual, call)
+        : undefined;
+    if (type?.kind !== "map" || !type.dictionary)
+        return context.fail(
+            call,
+            "Object.create(null) needs a contextual string-keyed dictionary type.",
+        );
+    context.reachJsData();
+    return {
+        kind: "data",
+        cpp: `${context.dataTypes.cppType(type)}{}`,
+        dataType: type,
+        recordProperties: {},
+    };
+}
+
+/**
+ * `Object.defineProperty(object, key, descriptor)` with a writable,
+ * enumerable and configurable data descriptor: the own data property an
+ * assignment creates, stored in a struct's field. Other attributes,
+ * accessors and targets are not represented.
+ */
+function compileObjectDefineProperty(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 3, 3);
+    const descriptor = context.unwrap(argumentAt(call, 2));
+    const refuse = (message: string): never =>
+        context.fail(call, `Object.defineProperty ${message}`);
+    if (!ts.isObjectLiteralExpression(descriptor))
+        return refuse("needs a literal data descriptor.");
+    let valueNode: ts.Expression | undefined;
+    const attributes = new Set<string>();
+    for (const property of descriptor.properties) {
+        if (
+            !ts.isPropertyAssignment(property) ||
+            !ts.isIdentifier(property.name)
+        )
+            return refuse("needs a literal data descriptor.");
+        const name = property.name.text;
+        if (name === "value") valueNode = property.initializer;
+        else if (
+            ["writable", "enumerable", "configurable"].includes(name) &&
+            property.initializer.kind === ts.SyntaxKind.TrueKeyword
+        )
+            attributes.add(name);
+        else
+            return refuse(
+                `represents writable, enumerable and configurable data properties only, not '${name}: ${property.initializer.getText()}'.`,
+            );
+    }
+    if (!valueNode || attributes.size !== 3)
+        return refuse(
+            "represents a value with writable, enumerable and configurable all true only.",
+        );
+    const keyNode = argumentAt(call, 1);
+    const key = context.compileValue(keyNode).staticString;
+    if (key === undefined)
+        return refuse("needs a property key known at generation.");
+    const targetNode = argumentAt(call, 0);
+    const target = context.compileValue(targetNode);
+    if (target.kind !== "data" || target.dataType?.kind !== "struct")
+        return refuse(
+            `writes a struct's field; a ${target.kind} target is not represented.`,
+        );
+    const structType = target.dataType;
+    // A shared object is held while the value runs; a value struct is written
+    // where it is stored, which a value that runs code could replace first.
+    const reference = context.dataTypes.isReferenceStruct(structType.name);
+    if (!reference && expressionMayRunCode(valueNode))
+        return refuse(
+            "with a value that runs code writes a struct that value could replace.",
+        );
+    const owner = reference
+        ? context.bindings.pinValueToTemporary(
+              target,
+              "defined_object",
+              targetNode,
+          )
+        : target;
+    const field = context.dataTypes.structField(structType.name, key, keyNode);
+    const stored = context.dataLowerer.compileForSink(valueNode, field.type);
+    const access = reference ? "->" : ".";
+    context.emit({
+        kind: "expression",
+        code: `${owner.cpp}${access}${field.name} = ${stored};`,
+    });
+    context.bindings.invalidateRecordProperties(target);
+    const targetName = context.unwrap(targetNode);
+    const bound = ts.isIdentifier(targetName)
+        ? context.bindings.lookupOptional(targetName)
+        : undefined;
+    if (bound) context.bindings.invalidateRecordProperties(bound);
+    return owner;
+}
+
+/**
  * The `Object` statics lowered here, beside `Object.keys`/`values` (the
  * expression lowerer's projection) and `Object.freeze`/`seal` (identities
  * the static evaluator sees through).
@@ -863,6 +1049,8 @@ export const OBJECT_STATIC_HANDLERS: ReadonlyMap<
     (context: ObjectStaticContext, call: ts.CallExpression) => Value
 > = new Map([
     ["assign", compileObjectAssign],
+    ["create", compileObjectCreate],
+    ["defineProperty", compileObjectDefineProperty],
     ["entries", compileObjectEntries],
     ["fromEntries", compileObjectFromEntries],
     ["hasOwn", compileObjectHasOwn],

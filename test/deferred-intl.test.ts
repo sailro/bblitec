@@ -9,7 +9,7 @@ import {
 const deferredCapabilities = "runtime-throw" as const;
 
 const family = `
-let order = '', caught = 0, after = 0;
+let order = '';
 function locale(): string { order += 'l'; return 'en'; }
 function precision(): number { order += 'p'; return 1; }
 const cache = new Map<string, Map<number | undefined, Intl.PluralRules>>();
@@ -23,45 +23,22 @@ function counted(value: number, digits?: number): string {
     }
     return rules.select(value);
 }
-try { counted(2, 0); } catch (error) {
-    if (!error.message.includes('default-lib:Intl.PluralRules.constructor')) throw error;
-    caught++;
-}
-after++;
-try {
-    const list = new Intl.ListFormat(locale(), {style: 'long', type: 'disjunction'});
-    const callbacks: Array<(values: readonly string[]) => string> = [values => list.format(values)];
-    callbacks[0]!(['one', 'two']);
-} catch (error) {
-    if (!error.message.includes('default-lib:Intl.ListFormat.constructor')) throw error;
-    caught++;
-}
+const list = new Intl.ListFormat(locale(), {style: 'long', type: 'disjunction'});
+const callbacks: Array<(values: readonly string[]) => string> = [values => list.format(values)];
 const optional: Array<Intl.ListFormat | undefined> = [undefined];
 optional[0]?.format([locale()]);
 const pluralReads: Array<(rules: Intl.PluralRules) => string> = [rules => rules.select(2)];
-if (order !== 'lpl' || caught !== 2 || after !== 1 || pluralReads.length !== 1) throw new Error('Intl evaluation');
+if (counted(2, 0) !== 'other' || callbacks[0]!(['one', 'two']) !== 'one or two' || order !== 'lpl' || pluralReads.length !== 1) throw new Error('Intl evaluation');
 `;
 
-test("deferred Intl keeps cached nominal formatters, callbacks and constructor evaluation", () => {
-    assert.throws(() => compileSource(family), /Unsupported constructor/);
-    const result = compileSource(family, { deferredCapabilities });
-    const sites = result.manifest.deferredCapabilities ?? [];
-    assert.deepEqual(
-        new Set(sites.map((site) => site.id)),
-        new Set([
-            "default-lib:Intl.ListFormat.constructor",
-            "default-lib:Intl.ListFormat.format",
-            "default-lib:Intl.PluralRules.constructor",
-            "default-lib:Intl.PluralRules.select",
-        ]),
-    );
-    assert.ok(
-        sites.every(
-            (site) => site.origin === "default-lib" && site.timing === "throw",
-        ),
-    );
-    assert.match(result.cpp, /std::shared_ptr<bbl::DeferredPluralRules>/);
-    assert.match(result.cpp, /std::shared_ptr<bbl::DeferredListFormat>/);
+test("Intl ListFormat and PluralRules lower as platform formatters, not deferred boundaries", () => {
+    for (const options of [{}, { deferredCapabilities }]) {
+        const result = compileSource(family, options);
+        assert.equal(result.manifest.deferredCapabilities, undefined);
+        assert.ok(result.manifest.features.includes("data:locale"));
+        assert.match(result.cpp, /bbl::pal::make_plural_rules/);
+        assert.match(result.cpp, /bbl::pal::make_list_format/);
+    }
     assert.throws(
         () =>
             compileSource(family + "new FinalizationRegistry(() => {});", {
@@ -69,12 +46,6 @@ test("deferred Intl keeps cached nominal formatters, callbacks and constructor e
             }),
         /Unsupported constructor/,
     );
-    const tools = optionalNativeFixtureTools(false);
-    assert.ok(tools);
-    runGeneratedProgram(tools, "deferred-intl/family", result.cpp, {
-        expectedOutput: "",
-        timeoutMs: 10000,
-    });
 });
 
 test("Intl descriptors preserve authored implementations and supported ICU paths", () => {

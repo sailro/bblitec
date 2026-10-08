@@ -8,7 +8,10 @@ import {
     findAnalysisNodeWithState,
     someAnalysisNode,
 } from "./analysis-walk.js";
-import { isPrimitiveBrowserValue } from "./browser-erasure.js";
+import {
+    browserDeploymentValue,
+    isPrimitiveBrowserValue,
+} from "./browser-erasure.js";
 import { CompileError } from "./compile-error.js";
 import { isNeverResized } from "./data-lowering.js";
 import { isStoringDataCall } from "./receiver-methods.js";
@@ -21,7 +24,11 @@ import {
     type DataType,
 } from "./data-types.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
-import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
+import {
+    demandedStorageType,
+    requireOneObject,
+    type DynamicBindingStorage,
+} from "./dynamic-binding-storage.js";
 import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import { emitReachableStatements } from "./loop-control.js";
@@ -32,6 +39,8 @@ import {
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { nullability } from "./type-facts.js";
+import { provenUndefinedValue } from "./undefined-values.js";
+import { localClassOfSymbol } from "./class-members.js";
 import { ownKeysKnown } from "./object-statics.js";
 import {
     staticNumberValue,
@@ -94,7 +103,9 @@ interface DeclarationContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "absenceTags"
             | "allocateTemporaryCppName"
+            | "classLowerer"
             | "callbackIdentity"
             | "captureManagedClosureLines"
             | "compileCallbackWithValues"
@@ -116,6 +127,7 @@ interface DeclarationContext
             | "moduleRelativeAssetUrl"
             | "nativeBindingCheckpoint"
             | "options"
+            | "program"
             | "moduleNamespaces"
             | "moduleContainerIsMutated"
             | "reachJson"
@@ -300,13 +312,21 @@ export class DeclarationLowerer {
         name: ts.Identifier,
         initializer: ts.Expression,
     ): DataType | undefined {
+        // A deployment constant the checker leaves untyped (an
+        // `import.meta.env` key its declarations omit) holds its folded value.
+        const deployed = browserDeploymentValue(this.context, initializer);
         return (
             this.context.dataLowerer.dataTypeAt(name) ??
             this.context.dataTypes.fromCheckedObjectInitializer(initializer) ??
             this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(name),
                 name,
-            )
+            ) ??
+            (typeof deployed === "string"
+                ? { kind: "string" }
+                : typeof deployed === "boolean"
+                  ? { kind: "boolean" }
+                  : undefined)
         );
     }
 
@@ -436,6 +456,66 @@ export class DeclarationLowerer {
         });
     }
 
+    /**
+     * A binding whose `null` and `undefined` the program tells apart
+     * (`AbsenceTagStorageRequired`) keeps both in tagged storage: undefined
+     * until its initializer or an assignment defines it.
+     */
+    private emitAbsenceTaggedDeclaration(
+        declaration: ts.VariableDeclaration,
+        cppName: string,
+        sharedClosureStorage: boolean,
+    ): boolean {
+        if (!ts.isIdentifier(declaration.name)) return false;
+        const type = this.context.dataTypes.taggedDeclarationStorage(
+            declaration,
+            declaration.type
+                ? this.context.checker.getTypeFromTypeNode(declaration.type)
+                : this.context.checker.getTypeAtLocation(declaration.name),
+            declaration.type ?? declaration.name,
+        );
+        if (!type) return false;
+        this.context.reachJsData();
+        const cppType = this.context.dataTypes.cppType(type);
+        const initializer = declaration.initializer
+            ? this.context.dataLowerer.compileForSink(
+                  declaration.initializer,
+                  type,
+              )
+            : undefined;
+        this.context.emit(
+            sharedClosureStorage
+                ? {
+                      kind: "declaration",
+                      type: "auto",
+                      name: cppName,
+                      initializer: `bbl::js::make_gc_shared<${cppType}>(${initializer ?? ""})`,
+                  }
+                : initializer !== undefined
+                  ? {
+                        kind: "declaration",
+                        type: cppType,
+                        name: cppName,
+                        initializer,
+                    }
+                  : {
+                        kind: "declaration",
+                        type: cppType,
+                        name: cppName,
+                        initializer: "",
+                        initialization: "default",
+                        attributes: "[[maybe_unused]] ",
+                    },
+        );
+        const bound = sharedClosureStorage ? `(*${cppName})` : cppName;
+        this.context.dataLowerer.registerLocal(bound, "owned");
+        this.context.bindings.defineVariable(declaration.name, {
+            ...this.context.dataLowerer.leafValue(bound, type),
+            ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
+        });
+        return true;
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
@@ -552,6 +632,14 @@ export class DeclarationLowerer {
         }
         const sharedClosureStorage =
             this.context.sharedClosures.needsSharedClosureStorage(declaration);
+        if (
+            this.emitAbsenceTaggedDeclaration(
+                declaration,
+                cppName,
+                sharedClosureStorage,
+            )
+        )
+            return;
         if (!declaration.initializer) {
             if (
                 declaration.parent === undefined ||
@@ -628,6 +716,8 @@ export class DeclarationLowerer {
                 declaration,
                 this.context.checker,
             );
+            dataType ??=
+                this.context.dataTypes.undefinedOnlyStorage(declaredType);
             if (
                 !dataType &&
                 declaration.type?.kind === ts.SyntaxKind.UnknownKeyword
@@ -872,12 +962,29 @@ export class DeclarationLowerer {
             return;
         }
 
+        // `const K = class { ... }` declares the class `K`: what the
+        // declaration runs (static fields and blocks) runs here.
+        const classExpression = this.context.unwrap(declaration.initializer);
+        if (ts.isClassExpression(classExpression)) {
+            if (
+                localClassOfSymbol(
+                    this.context.symbols.valueSymbol(declaration.name),
+                ) !== classExpression
+            )
+                this.context.fail(
+                    declaration.initializer,
+                    "A class expression is lowered as the initializer of a const it names.",
+                );
+            this.context.classLowerer.emitDeclaration(classExpression);
+            return;
+        }
         const forwardCallback = this.prepareForwardFunctionResult(
             declaration,
             cppName,
         );
         const initializerBoundary = this.context.nativeBindingCheckpoint();
         let value = this.context.compileValue(declaration.initializer);
+        requireOneObject(this.context, declaration, value);
         if (value.kind === "record" && declaration.type) {
             value = this.context.bindings.materializeDeclaredRecordContainers(
                 value,
@@ -1029,6 +1136,23 @@ export class DeclarationLowerer {
             return;
         }
         if (value.kind === "void") {
+            // `void x`, or a call whose completion is proven undefined: the
+            // effects run here and the binding is `undefined`.
+            if (
+                !value.abruptCompletion &&
+                !value.coroutineResult &&
+                !this.context.sharedClosures.identifierIsRebound(
+                    declaration.name,
+                ) &&
+                provenUndefinedValue(this.context, declaration.initializer)
+            ) {
+                this.context.emitDiscardedValue(value);
+                this.context.bindings.defineVariable(declaration.name, {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                });
+                return;
+            }
             this.context.fail(
                 declaration.initializer,
                 `Expression assigned to '${sourceName}' does not produce a native value.`,
@@ -1213,6 +1337,16 @@ export class DeclarationLowerer {
                 narrowedFound,
                 referenceStruct ? undefined : optionalFoundCpp,
             );
+            const reference =
+                stableOwnerAlias ||
+                (aliases && !wrapperCopiesIdentity) ||
+                narrowed.borrowedData;
+            // An alias of a read-only reference parameter is a const handle,
+            // through which the shared record stays writable.
+            const constant =
+                reference && referenceStruct && narrowed.readOnly
+                    ? "const "
+                    : "";
             this.context.emit({
                 kind: "declaration",
                 name: cppName,
@@ -1220,7 +1354,7 @@ export class DeclarationLowerer {
                     ? "auto"
                     : stableOwnerAlias && narrowed.dataType.kind === "string"
                       ? "auto&"
-                      : `${localType}${stableOwnerAlias || (aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""}`,
+                      : `${constant}${localType}${reference ? "&" : ""}`,
                 initializer: sharedDataBinding
                     ? `bbl::js::make_gc_shared<${localType}>(${initializerCpp})`
                     : initializerCpp,
@@ -1712,10 +1846,14 @@ export class DeclarationLowerer {
             // source callback declaration returned by an inlined builder.
             return undefined;
         }
-        const signatures = this.context.checker
-            .getTypeAtLocation(name)
-            .getCallSignatures();
-        if (signatures.length !== 1) return undefined;
+        const declaredType = this.context.checker.getTypeAtLocation(name);
+        const signatures = declaredType.getCallSignatures();
+        // A function object with properties is a callable record.
+        if (
+            signatures.length !== 1 ||
+            this.context.checker.getPropertiesOfType(declaredType).length > 0
+        )
+            return undefined;
         const signature = signatures[0]!;
         const returnType =
             this.context.checker.getReturnTypeOfSignature(signature);
@@ -1819,11 +1957,15 @@ export class DeclarationLowerer {
         const compiled = this.context.captureManagedClosureLines(() => {
             for (const name of forward.parameterNames)
                 this.context.registerNativeBinding(name);
+            // The slot is a void function: the callback's result, typed
+            // `void` (a generic result instantiated as `void` included),
+            // is discarded.
             const compile = () =>
                 this.context.compileCallbackWithValues(
                     value.callbackDeclaration!,
                     arguments_,
                     declaration.initializer!,
+                    true,
                 );
             const result = value.callbackRecordOwner
                 ? this.context.withRecordScopes(
@@ -2304,44 +2446,12 @@ export class DeclarationLowerer {
         if (this.context.dynamicBindings.has(declaration)) {
             const storage = this.context.dynamicBindings.get(declaration);
             if (storage) {
-                const source = this.context.checker.getTypeAtLocation(name);
-                const mapped =
-                    typeof storage === "object"
-                        ? this.context.dataTypes.fromStoredTsType(
-                              storage.nativeType,
-                              storage.node,
-                          )
-                        : storage === "error-array"
-                          ? undefined
-                          : this.context.dataTypes.fromStoredTsType(
-                                source,
-                                declaration,
-                            );
-                let type: DataType | undefined = mapped;
-                if (typeof storage === "object" && type) {
-                    const absent = nullability(source);
-                    if (absent.null || absent.undefined)
-                        type = this.context.dataTypes.nullableType(
-                            type,
-                            !absent.null,
-                        );
-                } else if (storage === "error-array") {
-                    type = { kind: "vector", element: { kind: "error" } };
-                } else if (storage === "array") {
-                    const indexed = this.context.checker.getIndexTypeOfType(
-                        source,
-                        ts.IndexKind.Number,
-                    );
-                    const element =
-                        mapped?.kind === "vector" || mapped?.kind === "span"
-                            ? mapped.element
-                            : indexed &&
-                              this.context.dataTypes.fromStoredTsType(
-                                  indexed,
-                                  declaration,
-                              );
-                    type = element ? { kind: "vector", element } : undefined;
-                }
+                let type = demandedStorageType(
+                    this.context,
+                    declaration,
+                    storage,
+                    this.context.unwrap(declaration.initializer),
+                );
                 if (!type)
                     this.context.fail(
                         declaration,
@@ -2493,6 +2603,12 @@ export class DeclarationLowerer {
         }
         if (annotated && this.context.sharedClosures.identifierIsRebound(name))
             annotated = this.reboundBindingStorage(annotated, declaredType);
+        if (annotated)
+            annotated = this.context.dataTypes.withDemandedNumericSlot(
+                declaration,
+                declaredType,
+                annotated,
+            );
         if (annotated?.kind === "enum" && sharedClosureStorage) {
             const initializer = this.context.compileValue(
                 declaration.initializer,

@@ -31,7 +31,11 @@ import {
     type DataType,
 } from "./data-types.js";
 import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
-import { classMemberTable, classMethod } from "./class-members.js";
+import {
+    classMemberTable,
+    classMethod,
+    localClassOfSymbol,
+} from "./class-members.js";
 import { readsNativeStorage, type Value } from "./types.js";
 import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import {
@@ -123,7 +127,7 @@ interface NativeMethodSignature {
     parameters: DataFunctionParameter[];
     returnType: DataType | undefined;
     method: ts.MethodDeclaration;
-    classDeclaration: ts.ClassDeclaration;
+    classDeclaration: ts.ClassLikeDeclaration;
     getters: Record<string, ts.GetAccessorDeclaration>;
 }
 
@@ -617,7 +621,7 @@ export class NativeFunctionLowerer {
     public tryCompileMethodCall(
         call: ts.CallExpression,
         method: ts.MethodDeclaration,
-        classDeclaration: ts.ClassDeclaration,
+        classDeclaration: ts.ClassLikeDeclaration,
         instance: Value,
     ): Value | undefined {
         if (requiresDefaultParameterBinding(this.context.checker, method, call))
@@ -805,6 +809,16 @@ export class NativeFunctionLowerer {
                         ? known.dataType.inner
                         : known.dataType,
                 );
+            if (
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "parse" &&
+                libraryGlobal(
+                    this.context.checker,
+                    node.expression.expression,
+                ) === "JSON"
+            )
+                return predicate({ kind: "json" });
             return (
                 (ts.isPropertyAccessExpression(node) ||
                     ts.isElementAccessExpression(node)) &&
@@ -825,14 +839,32 @@ export class NativeFunctionLowerer {
             // any attempt to retain it still reaches the owning-sink refusal.
             if (inner?.kind === "span" || inner?.kind === "table") return false;
         }
-        if (target.kind === "span" && target.element.kind === "number") {
+        // An ArrayLike<number> parameter, or an array of them.
+        const numericViews =
+            (target.kind === "span" && target.element.kind === "number") ||
+            ((target.kind === "span" || target.kind === "vector") &&
+                (target.element.kind === "span" ||
+                    target.element.kind === "vector") &&
+                target.element.element.kind === "number");
+        if (numericViews) {
             const actual =
                 this.context.knownValueWithoutEvaluation(argument)?.dataType ??
+                this.context.dataTypes.numericSlotReadStorage(argument) ??
                 this.context.dataLowerer.dataTypeAt(argument);
-            const inner = actual?.kind === "optional" ? actual.inner : actual;
-            // Typed arrays require their concrete live view, not a copied
-            // double span. The shared/inlined call binds that actual owner.
-            if (inner && isTypedArrayType(inner)) return false;
+            const present = (type: DataType | undefined) =>
+                type?.kind === "optional" ? type.inner : type;
+            const inner = present(actual);
+            const view =
+                target.element.kind === "number"
+                    ? inner
+                    : inner?.kind === "span" || inner?.kind === "vector"
+                      ? present(inner.element)
+                      : undefined;
+            // Typed arrays and numeric views, or arrays of them, require
+            // their concrete live views, not copied double spans. The
+            // shared/inlined call binds that actual owner.
+            if (view && (isTypedArrayType(view) || view.kind === "numberindex"))
+                return false;
         }
         if (
             target.kind === "map" &&
@@ -1509,6 +1541,11 @@ export class NativeFunctionLowerer {
                         parameterType,
                     );
             }
+            if (parameterType)
+                parameterType = this.context.dataTypes.absenceTaggedStorage(
+                    parameter,
+                    parameterType,
+                );
             if (
                 !parameterType ||
                 parameterType.kind === "function" ||
@@ -1674,7 +1711,7 @@ export class NativeFunctionLowerer {
      */
     private resolveMethodSignature(
         method: ts.MethodDeclaration,
-        classDeclaration: ts.ClassDeclaration,
+        classDeclaration: ts.ClassLikeDeclaration,
     ): NativeMethodSignature | undefined {
         const cached = this.methodSignatures.get(method);
         if (cached) {
@@ -1917,7 +1954,7 @@ export class NativeFunctionLowerer {
      */
     private collectMethodClosure(
         method: ts.MethodDeclaration,
-        classDeclaration: ts.ClassDeclaration,
+        classDeclaration: ts.ClassLikeDeclaration,
     ): MethodClosure | undefined {
         const table = classMemberTable(this.context.checker, classDeclaration);
         const memberNamed = (
@@ -1943,11 +1980,12 @@ export class NativeFunctionLowerer {
         const localClassConstruction = (node: ts.NewExpression): boolean => {
             const callee = this.context.unwrap(node.expression);
             if (!ts.isIdentifier(callee)) return true;
-            const target = resolvedSymbol(this.context.checker, callee);
-            return (target?.declarations ?? []).some(
-                (candidate) =>
-                    ts.isClassDeclaration(candidate) &&
-                    !candidate.getSourceFile().isDeclarationFile,
+            const target = localClassOfSymbol(
+                resolvedSymbol(this.context.checker, callee),
+            );
+            return (
+                target !== undefined &&
+                !target.getSourceFile().isDeclarationFile
             );
         };
         const invalid = (root: ts.Node) =>

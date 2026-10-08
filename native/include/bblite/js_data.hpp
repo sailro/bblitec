@@ -65,6 +65,11 @@ struct Undefined {
     friend bool operator==(Undefined, Undefined) = default;
 };
 
+/** A record field whose type is `null` holds null alone. */
+struct Null {
+    friend bool operator==(Null, Null) = default;
+};
+
 /** Transfer a compiler-owned temporary into its source binding. */
 template <typename T> [[nodiscard]] T take_temporary(T& value) {
     static_assert(!std::is_const_v<T>);
@@ -101,6 +106,35 @@ template <typename... T> [[nodiscard]] bool union_truthy(const std::variant<T...
                 return true;
         },
         value);
+}
+
+/** ToIntegerOrInfinity: NaN and both zeros read as +0. */
+[[nodiscard]] inline double to_integer_or_infinity(double value) {
+    const double integer = std::trunc(value);
+    return std::isnan(integer) || integer == 0.0 ? 0.0 : integer;
+}
+
+/** A Uint8ClampedArray element: a byte whose stores clamp and round half to even. */
+struct ClampedByte {
+    std::uint8_t value = 0;
+    constexpr ClampedByte() = default;
+    constexpr explicit ClampedByte(std::uint8_t byte) : value(byte) {}
+    constexpr operator std::uint8_t() const { return value; }
+};
+
+/** ToUint8Clamp. */
+[[nodiscard]] inline ClampedByte to_uint8_clamp(double value) {
+    if (!(value > 0.0))
+        return ClampedByte{0};
+    if (value >= 255.0)
+        return ClampedByte{255};
+    const double floor = std::floor(value);
+    const double half = floor + 0.5;
+    const double rounded = half < value                   ? floor + 1.0
+                           : value < half                 ? floor
+                           : std::fmod(floor, 2.0) == 0.0 ? floor
+                                                          : floor + 1.0;
+    return ClampedByte(static_cast<std::uint8_t>(rounded));
 }
 
 template <typename T> class TypedArray;
@@ -158,6 +192,12 @@ public:
         : bytes_(std::make_shared<std::vector<std::uint8_t>>(std::move(bytes))) {}
     explicit ArrayBuffer(std::shared_ptr<std::vector<std::uint8_t>> bytes)
         : bytes_(std::move(bytes)) {}
+    /** A SharedArrayBuffer: bytes no agent but this realm's reaches. */
+    [[nodiscard]] static ArrayBuffer shared_bytes(std::vector<std::uint8_t> bytes) {
+        ArrayBuffer buffer(std::move(bytes));
+        buffer.shared_ = true;
+        return buffer;
+    }
     template <typename T>
         requires std::is_trivially_copyable_v<T>
     explicit ArrayBuffer(const TypedArray<T>& values) : ArrayBuffer(values.buffer()) {}
@@ -198,6 +238,8 @@ public:
         return bytes_;
     }
     [[nodiscard]] bool retains_storage() const { return bytes_ || external_owner_; }
+    /** Whether the buffer is a SharedArrayBuffer rather than an ArrayBuffer. */
+    [[nodiscard]] bool shared() const { return shared_; }
     [[nodiscard]] const void* identity() const {
         return bytes_ ? static_cast<const void*>(bytes_.get()) : external_owner_.get();
     }
@@ -213,6 +255,7 @@ private:
     std::shared_ptr<void> external_owner_;
     std::uint8_t* external_data_ = nullptr;
     std::size_t external_length_ = 0;
+    bool shared_ = false;
 };
 
 /** ToIndex for numeric buffer-view arguments; validate after truncation. */
@@ -1208,12 +1251,23 @@ throw_nullish_access(const char* message = "Cannot read properties of null or un
     throw NamedError("TypeError", message);
 }
 
+template <typename T> inline constexpr bool is_ref_v = false;
+template <typename T> inline constexpr bool is_ref_v<Ref<T>> = true;
+
 template <typename T> class Nullable {
 public:
     Nullable() = default;
     Nullable(std::nullopt_t) {}
-    Nullable(const T& value) : owned_(value) {}
-    Nullable(T&& value) : owned_(std::move(value)) {}
+    // An empty reference is no object: a Map slot or record field holding
+    // none reads as absent, never as a present null.
+    Nullable(const T& value) {
+        if (present(value))
+            owned_.emplace(value);
+    }
+    Nullable(T&& value) {
+        if (present(value))
+            owned_.emplace(std::move(value));
+    }
     template <typename U>
         requires(!std::is_same_v<std::remove_cvref_t<U>, Nullable> &&
                  std::is_constructible_v<T, U &&>)
@@ -1266,12 +1320,18 @@ public:
     }
     Nullable& operator=(const T& value) {
         reference_ = nullptr;
-        owned_ = value;
+        if (present(value))
+            owned_ = value;
+        else
+            owned_.reset();
         return *this;
     }
     Nullable& operator=(T&& value) {
         reference_ = nullptr;
-        owned_ = std::move(value);
+        if (present(value))
+            owned_ = std::move(value);
+        else
+            owned_.reset();
         return *this;
     }
     template <typename U>
@@ -1284,6 +1344,12 @@ public:
     }
 
 private:
+    static bool present([[maybe_unused]] const T& value) {
+        if constexpr (is_ref_v<T>)
+            return static_cast<bool>(value);
+        else
+            return true;
+    }
     /** JavaScript refuses a property read through null or undefined. */
     template <typename Self> static auto& require_owned(Self& self) {
         if (!self.owned_)
@@ -1297,6 +1363,35 @@ private:
 namespace gc {
 template <typename T> struct Traceable<Nullable<T>> : Traceable<T> {};
 } // namespace gc
+
+/**
+ * A slot that tells JavaScript's two absent values apart where the program
+ * observes the difference: `undefined` until it is defined, then its value,
+ * whose own empty state is `null`.
+ */
+template <typename T> class Tagged {
+public:
+    Tagged() = default;
+    Tagged(T value, bool defined) : value_(std::move(value)), defined_(defined) {}
+    [[nodiscard]] const T& value() const { return value_; }
+    [[nodiscard]] bool defined() const { return defined_; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(value_); }
+
+private:
+    T value_{};
+    bool defined_ = false;
+};
+namespace gc {
+template <typename T> struct Traceable<Tagged<T>> : Traceable<T> {};
+} // namespace gc
+
+/** A Map slot of an object reference, as the Nullable an optional object is stored as. */
+template <typename T> [[nodiscard]] Nullable<Ref<T>> nullable_object(const Ref<T>& value) {
+    return Nullable<Ref<T>>(value);
+}
+template <typename T> [[nodiscard]] Nullable<T> nullable_object(const Nullable<T>& value) {
+    return value;
+}
 
 template <typename T> struct IsNullable : std::false_type {};
 template <typename T> struct IsNullable<Nullable<T>> : std::true_type {};
@@ -1360,11 +1455,16 @@ struct RegExpReplacement {
     }
 };
 
-/** RegExp aliases share their expression and lastIndex, measured in UTF-16 units. */
+/**
+ * RegExp aliases share their expression and lastIndex, measured in UTF-16 units.
+ * A `unicode` expression is the compiler's rewrite of a `u` pattern over UTF-16
+ * units, each atom consuming whole code points: matches start at code point
+ * boundaries and an empty match advances by one code point.
+ */
 class RegExp {
 public:
-    RegExp(std::string source, bool global, bool ignore_case)
-        : state_(std::make_shared<State>(source, global, ignore_case)) {}
+    RegExp(std::string source, bool global, bool ignore_case, bool unicode = false)
+        : state_(std::make_shared<State>(source, global, ignore_case, unicode)) {}
 
     [[nodiscard]] double& last_index() const { return state_->last_index; }
 
@@ -1380,7 +1480,8 @@ public:
         }
         const auto start = static_cast<std::size_t>(requested);
         std::wsmatch match;
-        if (!search(units, start, match)) {
+        const auto position = search(units, start, match);
+        if (!position) {
             if (state_->global)
                 last_index() = 0.0;
             return std::nullopt;
@@ -1391,8 +1492,7 @@ public:
             groups.push_back(group.matched ? narrow(group.str()) : std::string{});
         }
         if (state_->global) {
-            last_index() = static_cast<double>(start + static_cast<std::size_t>(match.position()) +
-                                               match.length());
+            last_index() = static_cast<double>(*position + match.length());
         }
         return groups;
     }
@@ -1400,6 +1500,33 @@ public:
     [[nodiscard]] Array<std::string> split(const std::string& input) const {
         Array<std::string> result;
         const auto units = wide(input);
+        if (state_->unicode) {
+            // String.prototype[Symbol.split]: a sticky match at each code point.
+            std::wsmatch match;
+            if (units.empty()) {
+                if (!match_at(units, 0, match))
+                    result.push_back(input);
+                return result;
+            }
+            std::size_t previous = 0;
+            for (std::size_t position = 0; position < units.size();) {
+                if (!match_at(units, position, match)) {
+                    position = advance(units, position);
+                    continue;
+                }
+                const auto end =
+                    std::min(position + static_cast<std::size_t>(match.length()), units.size());
+                if (end == previous) {
+                    position = advance(units, position);
+                    continue;
+                }
+                result.push_back(narrow(units.substr(previous, position - previous)));
+                previous = end;
+                position = end;
+            }
+            result.push_back(narrow(units.substr(previous)));
+            return result;
+        }
         std::wsregex_token_iterator part(units.begin(), units.end(), state_->expression, -1);
         const std::wsregex_token_iterator end;
         for (; part != end; ++part)
@@ -1414,7 +1541,10 @@ public:
             last_index() = 0.0;
         std::size_t start = 0;
         std::wsmatch found;
-        while (start <= units.size() && search(units, start, found)) {
+        while (start <= units.size()) {
+            const auto position = search(units, start, found);
+            if (!position)
+                break;
             if (state_->global)
                 result.push_back(narrow(found.str()));
             else {
@@ -1423,9 +1553,9 @@ public:
                     result.push_back(group.matched ? narrow(group.str()) : std::string{});
                 break;
             }
-            start += static_cast<std::size_t>(found.position() + found.length());
+            start = *position + static_cast<std::size_t>(found.length());
             if (found.length() == 0)
-                ++start;
+                start = advance(units, start);
         }
         return result.empty() ? Nullable<Array<std::string>>(std::nullopt)
                               : Nullable<Array<std::string>>(std::move(result));
@@ -1443,22 +1573,29 @@ public:
             return result;
         std::size_t start = static_cast<std::size_t>(requested);
         std::wsmatch found;
-        while (start <= units.size() && search(units, start, found)) {
+        while (start <= units.size()) {
+            const auto position = search(units, start, found);
+            if (!position)
+                break;
             Array<std::string> groups;
             groups.reserve(found.size());
             for (const auto& group : found) {
                 groups.push_back(group.matched ? narrow(group.str()) : std::string{});
             }
             result.push_back(std::move(groups));
-            start += static_cast<std::size_t>(found.position() + found.length());
+            start = *position + static_cast<std::size_t>(found.length());
             if (found.length() == 0)
-                ++start;
+                start = advance(units, start);
         }
         return result;
     }
 
     [[nodiscard]] std::string replace(const std::string& input,
                                       const std::string& replacement) const {
+        if (state_->unicode)
+            return replace_with(input, [&replacement](const RegExpReplacement& match) {
+                return substitution(match, replacement);
+            });
         const auto units = wide(input);
         if (state_->global)
             last_index() = 0.0;
@@ -1497,23 +1634,108 @@ private:
     static std::string narrow(const std::wstring& input) {
         return string_from_code_units({input.begin(), input.end()});
     }
+    static bool lead_surrogate(wchar_t unit) { return unit >= 0xD800 && unit <= 0xDBFF; }
+    static bool trail_surrogate(wchar_t unit) { return unit >= 0xDC00 && unit <= 0xDFFF; }
     struct State {
         std::wregex expression;
         bool global;
+        bool unicode;
         double last_index = 0;
-        State(const std::string& source, bool global_, bool ignore_case)
+        State(const std::string& source, bool global_, bool ignore_case, bool unicode_)
             : expression(wide(source), ignore_case ? std::regex_constants::ECMAScript |
                                                          std::regex_constants::icase
                                                    : std::regex_constants::ECMAScript),
-              global(global_) {}
+              global(global_), unicode(unicode_) {}
     };
     std::shared_ptr<State> state_;
 
-    bool search(const std::wstring& input, std::size_t start, std::wsmatch& match) const {
-        const auto flags = start == 0 ? std::regex_constants::match_default
-                                      : std::regex_constants::match_prev_avail;
-        return std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(start), input.cend(),
-                                 match, state_->expression, flags);
+    /** AdvanceStringIndex: one code point in unicode mode, one unit otherwise. */
+    std::size_t advance(const std::wstring& input, std::size_t index) const {
+        return state_->unicode && index + 1 < input.size() && lead_surrogate(input[index]) &&
+                       trail_surrogate(input[index + 1])
+                   ? index + 2
+                   : index + 1;
+    }
+
+    /** A match starting exactly at `position`. */
+    bool match_at(const std::wstring& input, std::size_t position, std::wsmatch& match) const {
+        const auto flags = (position == 0 ? std::regex_constants::match_default
+                                          : std::regex_constants::match_prev_avail) |
+                           std::regex_constants::match_continuous;
+        return std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(position),
+                                 input.cend(), match, state_->expression, flags);
+    }
+
+    /** The first match at or after `start`, as its UTF-16 index. */
+    std::optional<std::size_t> search(const std::wstring& input, std::size_t start,
+                                      std::wsmatch& match) const {
+        if (!state_->unicode) {
+            const auto flags = start == 0 ? std::regex_constants::match_default
+                                          : std::regex_constants::match_prev_avail;
+            if (!std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(start),
+                                   input.cend(), match, state_->expression, flags))
+                return std::nullopt;
+            return start + static_cast<std::size_t>(match.position());
+        }
+        // A start inside a surrogate pair begins at the pair, as V8 reads lastIndex.
+        if (start > 0 && start < input.size() && trail_surrogate(input[start]) &&
+            lead_surrogate(input[start - 1]))
+            --start;
+        for (std::size_t position = start; position <= input.size();
+             position = advance(input, position))
+            if (match_at(input, position, match))
+                return position;
+        return std::nullopt;
+    }
+
+    /** GetSubstitution over UTF-16 units: `$$`, `$&`, `` $` ``, `$'` and `$n`/`$nn`. */
+    static std::string substitution(const RegExpReplacement& match,
+                                    const std::string& replacement) {
+        const auto pattern = string_code_units(replacement);
+        const auto input = string_code_units(match.input);
+        const auto matched = string_code_units(*match.groups[0]);
+        const auto position = static_cast<std::size_t>(match.offset);
+        const std::size_t captures = match.groups.size() - 1;
+        std::u16string output;
+        for (std::size_t index = 0; index < pattern.size(); ++index) {
+            const char16_t unit = pattern[index];
+            if (unit != u'$' || index + 1 >= pattern.size()) {
+                output.push_back(unit);
+                continue;
+            }
+            const char16_t next = pattern[index + 1];
+            if (next == u'$') {
+                output.push_back(u'$');
+                ++index;
+            } else if (next == u'&') {
+                output += matched;
+                ++index;
+            } else if (next == u'`') {
+                output.append(input, 0, position);
+                ++index;
+            } else if (next == u'\'') {
+                const auto tail = std::min(position + matched.size(), input.size());
+                output.append(input, tail, input.size() - tail);
+                ++index;
+            } else if (next >= u'0' && next <= u'9') {
+                const std::size_t one = static_cast<std::size_t>(next - u'0');
+                const bool two_digits = index + 2 < pattern.size() && pattern[index + 2] >= u'0' &&
+                                        pattern[index + 2] <= u'9';
+                const std::size_t both =
+                    two_digits ? one * 10 + static_cast<std::size_t>(pattern[index + 2] - u'0') : 0;
+                const std::size_t group = two_digits && both >= 1 && both <= captures ? both : one;
+                if (group < 1 || group > captures) {
+                    output.push_back(unit);
+                    continue;
+                }
+                if (const auto& captured = match.groups[group])
+                    output += string_code_units(*captured);
+                index += group == both && two_digits ? 2 : 1;
+            } else {
+                output.push_back(unit);
+            }
+        }
+        return string_from_code_units(output);
     }
 
     std::vector<RegExpReplacement> replacements(const std::string& input) const {
@@ -1523,9 +1745,11 @@ private:
             last_index() = 0.0;
         std::size_t start = 0;
         std::wsmatch match;
-        while (start <= units.size() && search(units, start, match)) {
-            const auto position = start + static_cast<std::size_t>(match.position());
-            RegExpReplacement result{{}, static_cast<double>(position), input};
+        while (start <= units.size()) {
+            const auto position = search(units, start, match);
+            if (!position)
+                break;
+            RegExpReplacement result{{}, static_cast<double>(*position), input};
             result.groups.reserve(match.size());
             for (const auto& group : match)
                 result.groups.push_back(group.matched ? Nullable<std::string>(narrow(group.str()))
@@ -1533,9 +1757,9 @@ private:
             results.push_back(std::move(result));
             if (!state_->global)
                 break;
-            start = position + static_cast<std::size_t>(match.length());
+            start = *position + static_cast<std::size_t>(match.length());
             if (match.length() == 0)
-                ++start;
+                start = advance(units, start);
         }
         return results;
     }
@@ -1579,6 +1803,7 @@ namespace detail {
  */
 template <typename T> inline constinit const Ref<T> empty_ref{};
 template <typename Signature> inline const Callback<Signature> empty_callback{};
+template <typename Table> inline const GenericCallback<Table> empty_generic_callback{};
 } // namespace detail
 
 template <typename T> struct MapGetResult<Ref<T>> {
@@ -1594,6 +1819,13 @@ template <typename R, typename... Args> struct MapGetResult<Callback<R(Args...)>
 
     [[nodiscard]] static Type missing() { return detail::empty_callback<R(Args...)>; }
     [[nodiscard]] static Type found(Callback<R(Args...)>& value) { return value; }
+};
+
+template <typename Table> struct MapGetResult<GenericCallback<Table>> {
+    using Type = const GenericCallback<Table>&;
+
+    [[nodiscard]] static Type missing() { return detail::empty_generic_callback<Table>; }
+    [[nodiscard]] static Type found(GenericCallback<Table>& value) { return value; }
 };
 
 /** An unmapped arguments object owns indexed values independently of the rest array. */
@@ -1755,9 +1987,6 @@ private:
     BaseIterator end_;
 };
 
-template <typename T> inline constexpr bool is_ref_v = false;
-template <typename T> inline constexpr bool is_ref_v<Ref<T>> = true;
-
 // Insertion-ordered JavaScript Map and Set containers.
 namespace detail {
 template <typename T> inline constexpr bool is_variant_v = false;
@@ -1806,6 +2035,9 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
                            return false;
                    },
                    left, right);
+    } else if constexpr (requires { left.same_value_zero(right); }) {
+        // A value carrying several kinds (a parsed document) owns its rule.
+        return left.same_value_zero(right);
     } else {
         return std::equal_to<T>{}(left, right);
     }
@@ -1828,6 +2060,8 @@ template <typename T> [[nodiscard]] decltype(auto) stored_key(const T& key) {
             },
             stored);
         return stored;
+    } else if constexpr (requires { key.stored_key(); }) {
+        return key.stored_key();
     } else {
         return key;
     }
@@ -1858,6 +2092,8 @@ template <typename T> struct ValueHash {
             return ValueHash<const void*>{}(value.get());
         } else if constexpr (requires { value.identity(); }) {
             return ValueHash<std::remove_cvref_t<decltype(value.identity())>>{}(value.identity());
+        } else if constexpr (requires { value.key_hash(); }) {
+            return value.key_hash();
         } else {
             return std::hash<T>{}(value);
         }
@@ -2869,6 +3105,45 @@ template <typename Yield, bool Entries, typename T>
     return Iterator<Yield>(SetCursor<Yield, T, Entries>{values, {}});
 }
 
+/** Which part of each entry a Map iterator yields. */
+enum class MapPart { keys, values, entries };
+
+/** A live Map iterator, pinned to its last yielded slot as SetCursor is. */
+template <typename Yield, typename K, typename V, MapPart Part> struct MapCursor {
+    std::optional<Map<K, V>> values;
+    std::optional<InsertionOrderedIterator<std::pair<K, V>, true>> cursor;
+    Nullable<Yield> operator()() {
+        if (!values)
+            return {};
+        const Map<K, V>& source = *values;
+        if (cursor)
+            ++*cursor;
+        else
+            cursor.emplace(source.begin());
+        if (*cursor == source.end()) {
+            cursor.reset();
+            values.reset();
+            return {};
+        }
+        const auto& entry = **cursor;
+        if constexpr (Part == MapPart::keys)
+            return entry.first;
+        else if constexpr (Part == MapPart::values)
+            return entry.second;
+        else
+            return Yield{entry.first, entry.second};
+    }
+    void gc_trace(const TraceVisitor& visitor) const {
+        visitor(values);
+        visitor(cursor);
+    }
+};
+
+template <typename Yield, MapPart Part, typename K, typename V>
+[[nodiscard]] Iterator<Yield> map_iterator(const Map<K, V>& values) {
+    return Iterator<Yield>(MapCursor<Yield, K, V, Part>{values, {}});
+}
+
 template <typename T> using Span = std::span<T>;
 
 /**
@@ -3833,6 +4108,16 @@ string_ends_with(const std::string& value, const std::string& suffix,
     return string_from_code_units(units.substr(first, last - first));
 }
 
+/** `String.prototype.substr(start, length)`, over UTF-16 units. */
+[[nodiscard]] inline std::string string_substr(const std::string& value, double start,
+                                               double length) {
+    const auto units = string_code_units(value);
+    const auto first = relative_index(units.size(), start);
+    const double count =
+        std::clamp(to_integer_or_infinity(length), 0.0, static_cast<double>(units.size() - first));
+    return string_from_code_units(units.substr(first, static_cast<std::size_t>(count)));
+}
+
 [[nodiscard]] inline std::string string_repeat(const std::string& value, double count) {
     count = std::isnan(count) ? 0.0 : std::trunc(count);
     if (!std::isfinite(count) || count < 0.0)
@@ -4249,11 +4534,13 @@ template <typename Values> inline Values typed_array_reverse(Values values) {
     return values;
 }
 
-/** `ArrayBuffer.prototype.slice`: a new buffer holding a copy of the relative byte range. */
+/** `ArrayBuffer`/`SharedArrayBuffer.prototype.slice`: a new buffer of the same class holding a copy of the relative byte range. */
 [[nodiscard]] inline ArrayBuffer array_buffer_slice(const ArrayBuffer& buffer, double begin_value,
                                                     double end_value) {
     const auto [begin, end] = relative_slice_bounds(buffer.byte_length(), begin_value, end_value);
-    return ArrayBuffer(std::vector<std::uint8_t>(buffer.data() + begin, buffer.data() + end));
+    std::vector<std::uint8_t> bytes(buffer.data() + begin, buffer.data() + end);
+    return buffer.shared() ? ArrayBuffer::shared_bytes(std::move(bytes))
+                           : ArrayBuffer(std::move(bytes));
 }
 
 // `array.indexOf(value)` — the first strictly-equal element, or -1.
@@ -4825,6 +5112,7 @@ template <typename T> [[nodiscard]] bool nullable_truthy(const Nullable<T>& valu
 }
 
 // JavaScript typed arrays reached by the compiled subset.
+using U8CArray = TypedArray<ClampedByte>;
 using F64Array = TypedArray<double>;
 using F32Array = TypedArray<float>;
 using U16Array = TypedArray<std::uint16_t>;
@@ -5030,6 +5318,8 @@ template <typename Left, typename Right>
 template <typename T> [[nodiscard]] T numeric_store_value(double value) {
     if constexpr (std::is_floating_point_v<T>)
         return static_cast<T>(value);
+    else if constexpr (std::is_same_v<T, ClampedByte>)
+        return to_uint8_clamp(value);
     else if constexpr (std::is_same_v<T, std::uint8_t>)
         return to_uint8(value);
     else if constexpr (std::is_same_v<T, std::int8_t>)
@@ -5059,6 +5349,88 @@ struct NumberArgument {
         return numeric_store_value<T>(value);
     }
 };
+
+/**
+ * ValidateAtomicAccess: the element ToIndex reads, inside the view's length,
+ * or a RangeError. One realm owns its memory (no agent shares it), so each
+ * Atomics operation is the plain element access it is on a non-shared buffer.
+ */
+template <typename Values>
+[[nodiscard]] std::size_t atomic_index(const Values& values, double index) {
+    static_assert(std::is_integral_v<typename Values::value_type>,
+                  "Atomics operate on integer typed arrays.");
+    const double integer = to_integer_or_infinity(index);
+    if (integer < 0.0 || integer >= static_cast<double>(values.size()))
+        throw NamedError("RangeError", "Invalid atomic access index");
+    return static_cast<std::size_t>(integer);
+}
+
+/** `Atomics.load(typedArray, index)`. */
+template <typename Values> [[nodiscard]] double atomics_load(const Values& values, double index) {
+    return static_cast<double>(values.load(atomic_index(values, index)));
+}
+
+/** `Atomics.store`: stores the element and returns ToIntegerOrInfinity(value). */
+template <typename Values> double atomics_store(Values values, double index, double value) {
+    const std::size_t element = atomic_index(values, index);
+    const double integer = to_integer_or_infinity(value);
+    values.store(element, numeric_store_value<typename Values::value_type>(integer));
+    return integer;
+}
+
+enum class AtomicOperation { add, sub, bit_and, bit_or, bit_xor, exchange };
+
+/** The read-modify-write operations: wrapping element arithmetic, the old element returned. */
+template <AtomicOperation Operation, typename Values>
+double atomics_modify(Values values, double index, double value) {
+    using T = typename Values::value_type;
+    using Bits = std::make_unsigned_t<T>;
+    const std::size_t element = atomic_index(values, index);
+    const auto operand = static_cast<Bits>(numeric_store_value<T>(to_integer_or_infinity(value)));
+    const T previous = values.load(element);
+    const auto old = static_cast<Bits>(previous);
+    Bits result = operand;
+    if constexpr (Operation == AtomicOperation::add)
+        result = static_cast<Bits>(old + operand);
+    else if constexpr (Operation == AtomicOperation::sub)
+        result = static_cast<Bits>(old - operand);
+    else if constexpr (Operation == AtomicOperation::bit_and)
+        result = static_cast<Bits>(old & operand);
+    else if constexpr (Operation == AtomicOperation::bit_or)
+        result = static_cast<Bits>(old | operand);
+    else if constexpr (Operation == AtomicOperation::bit_xor)
+        result = static_cast<Bits>(old ^ operand);
+    values.store(element, static_cast<T>(result));
+    return static_cast<double>(previous);
+}
+
+/** `Atomics.compareExchange`: both operands compare and store as element values. */
+template <typename Values>
+double atomics_compare_exchange(Values values, double index, double expected, double replacement) {
+    using T = typename Values::value_type;
+    const std::size_t element = atomic_index(values, index);
+    const T expected_element = numeric_store_value<T>(to_integer_or_infinity(expected));
+    const T replacement_element = numeric_store_value<T>(to_integer_or_infinity(replacement));
+    const T previous = values.load(element);
+    if (previous == expected_element)
+        values.store(element, replacement_element);
+    return static_cast<double>(previous);
+}
+
+/** `Atomics.notify` on an Int32Array: no agent of this realm can wait, so none wakes. */
+[[nodiscard]] inline double atomics_notify(const TypedArray<std::int32_t>& values, double index,
+                                           std::optional<double> count) {
+    static_cast<void>(atomic_index(values, index));
+    if (count)
+        static_cast<void>(to_integer_or_infinity(*count));
+    return 0.0;
+}
+
+/** `Atomics.isLockFree(size)`: element sizes 1, 2, 4 and 8, as V8 answers on 64-bit hosts. */
+[[nodiscard]] inline bool atomics_is_lock_free(double size) {
+    const double integer = to_integer_or_infinity(size);
+    return integer == 1.0 || integer == 2.0 || integer == 4.0 || integer == 8.0;
+}
 
 [[nodiscard]] inline U8Array u8_array_sized(double count) {
     return U8Array(static_cast<std::size_t>(count));
@@ -5100,6 +5472,10 @@ template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Valu
     return I32Array(static_cast<std::size_t>(count), 0);
 }
 
+[[nodiscard]] inline U8CArray u8c_array_sized(double count) {
+    return U8CArray(static_cast<std::size_t>(count), ClampedByte{});
+}
+
 template <typename Output, typename Values, typename Convert>
 [[nodiscard]] inline Output typed_array_from_values(const Values& values, Convert convert) {
     Output result;
@@ -5137,6 +5513,10 @@ template <typename Values> [[nodiscard]] inline U32Array u32_array_from(const Va
 
 template <typename Values> [[nodiscard]] inline I32Array i32_array_from(const Values& values) {
     return typed_array_from_values<I32Array>(values, to_int32);
+}
+
+template <typename Values> [[nodiscard]] inline U8CArray u8c_array_from(const Values& values) {
+    return typed_array_from_values<U8CArray>(values, to_uint8_clamp);
 }
 
 /**

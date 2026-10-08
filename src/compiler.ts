@@ -69,19 +69,15 @@ import {
     requireDynamicBindingStorage,
     type DynamicBindingStorage,
 } from "./compiler/dynamic-binding-storage.js";
-import {
-    mergeNativeRecordStorage,
-    type NativeRecordStorageDemand,
-} from "./compiler/native-record-storage.js";
-import { GenericFunctionStorage } from "./compiler/generic-function-storage.js";
+import type { NativeRecordStorageDemand } from "./compiler/native-record-storage.js";
 import {
     isStorageDemand,
     recordStorageCompileAttempt,
     storageDemandPlanningEnabled,
     storageRequest,
     StorageDemandPlanner,
-    type StorageRequest,
 } from "./compiler/storage-demand-planner.js";
+import { ReplayStorage } from "./compiler/replay-storage.js";
 import { resolve } from "node:path";
 import { integerCounterOf } from "./compiler/integer-loops.js";
 import {
@@ -199,6 +195,11 @@ import {
     planEntryModuleState,
     planImportedModuleState,
 } from "./compiler/module-initializers.js";
+import {
+    namespaceMemberName,
+    refuseNamespaceMemberWrite,
+} from "./compiler/namespace-declarations.js";
+import { emitBigIntCompoundAssignment } from "./compiler/bigint-values.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { createCompilerProgram } from "./compiler/program.js";
 import {
@@ -212,6 +213,7 @@ import {
     declaredIn,
     declaredInDomLibrary,
     enumMemberConstant,
+    symbolPropertyKey,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
 import {
@@ -576,70 +578,31 @@ function compileSourceApplication(
         };
         // Each demand belongs to a source binding, not its spelling. Reuse the
         // frontend and rebuild emission so earlier aliases use the same storage.
-        const dynamicBindings = new Map<
-            ts.VariableDeclaration,
-            DynamicBindingStorage | undefined
-        >();
-        const ownedRecords = new Map<
-            NativeRecordStorageDemand["identity"],
-            NativeRecordStorageDemand
-        >();
-        const genericFunctions = new GenericFunctionStorage();
+        const storage = new ReplayStorage(input.checker);
         const lazyModules = new Set<ts.SourceFile>();
-        const newCompiler = (planning: boolean): Compiler => {
-            recordStorageCompileAttempt(planning);
+        const newCompiler = (planner?: StorageDemandPlanner): Compiler => {
+            recordStorageCompileAttempt(planner !== undefined);
             return new Compiler(
                 input.program,
                 input.sourceFile,
                 input.checker,
                 resolved,
-                dynamicBindings,
-                ownedRecords,
-                genericFunctions,
+                storage,
                 lazyModules,
+                planner,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
         // only the attempt that ran to the end.
         const lower = (): CompileResult =>
             coverSourceRealm(input.program, input.sourceFile.fileName, () => {
-                const compiler = newCompiler(false);
+                const compiler = newCompiler();
                 const result = traceSourceProgram(input.program, () =>
                     compiler.compile(),
                 );
                 result.manifest.inputs = input.localFiles;
                 return result;
             });
-        const acceptStorage = (request: StorageRequest): boolean => {
-            if (
-                request.kind === "dynamic" &&
-                (!dynamicBindings.has(request.declaration) ||
-                    (request.storage &&
-                        !dynamicBindings.get(request.declaration)))
-            ) {
-                dynamicBindings.set(request.declaration, request.storage);
-            } else if (request.kind === "record") {
-                const previous = ownedRecords.get(request.demand.identity);
-                const merged = mergeNativeRecordStorage(
-                    previous,
-                    request.demand,
-                );
-                if (
-                    previous &&
-                    previous.proxy === merged.proxy &&
-                    (previous.joins?.length ?? 0) ===
-                        (merged.joins?.length ?? 0)
-                )
-                    return false;
-                ownedRecords.set(request.demand.identity, merged);
-            } else if (
-                request.kind === "generic" &&
-                genericFunctions.add(request.demand)
-            ) {
-                return true;
-            } else return false;
-            return true;
-        };
         const acceptReplay = (error: unknown): boolean => {
             if (error instanceof ModuleActivationRequired) {
                 if (lazyModules.has(error.file)) return false;
@@ -647,7 +610,7 @@ function compileSourceApplication(
                 return true;
             }
             if (isStorageDemand(error))
-                return acceptStorage(storageRequest(error));
+                return storage.add(storageRequest(error));
             if (
                 error instanceof RuntimeSearchParamsRequired &&
                 (!resolved.runtimeSearchParams ||
@@ -663,8 +626,15 @@ function compileSourceApplication(
             } else return false;
             return true;
         };
-        let storageReplays = 0;
+        // A second storage demand no plan foresaw starts a discarded planning
+        // attempt, which collects the demands past it; demands the last plan
+        // lacked plan again, to a fixed point. A plan that found no more
+        // than the next strict attempt would doubles the demands the next
+        // one waits for.
+        let unplanned = 0;
+        let interval = 2;
         for (;;) {
+            const started = performance.now();
             try {
                 return survey
                     ? survey.attempt(input.sourceFile.fileName, lower)
@@ -672,22 +642,33 @@ function compileSourceApplication(
             } catch (error) {
                 if (!acceptReplay(error)) throw error;
                 if (
-                    isStorageDemand(error) &&
-                    ++storageReplays === 2 &&
-                    storageDemandPlanningEnabled()
-                ) {
-                    const planner = new StorageDemandPlanner();
-                    // No coverage realm or survey attempt can publish this
-                    // discarded compiler. The next strict attempt owns both.
-                    try {
-                        planner.run(() => {
-                            newCompiler(true).compile();
-                        });
-                    } catch (planningError) {
-                        if (!acceptReplay(planningError)) throw planningError;
-                    }
-                    for (const demand of planner.demands) acceptStorage(demand);
+                    !isStorageDemand(error) ||
+                    !storageDemandPlanningEnabled() ||
+                    ++unplanned < interval
+                )
+                    continue;
+                unplanned = 0;
+                // A plan may lower as much as two strict attempts.
+                const planner = new StorageDemandPlanner(
+                    input.checker,
+                    2 * (performance.now() - started),
+                    survey !== undefined,
+                );
+                // No coverage realm or survey attempt can publish this
+                // discarded compiler. The next strict attempt owns both.
+                try {
+                    planner.run(() => {
+                        newCompiler(planner).compile();
+                    });
+                } catch (planningError) {
+                    if (!acceptReplay(planningError)) throw planningError;
                 }
+                const added = planner.demands.filter(
+                    (demand) =>
+                        !storage.joinsAlreadyHeld(demand) &&
+                        storage.add(demand),
+                ).length;
+                interval = added > 1 ? 2 : 2 * interval;
             }
         }
     };
@@ -865,7 +846,7 @@ class Compiler implements LoweringServices {
     @journaled private accessor thisInstance: Value | undefined;
     private readonly classInstances = new EmissionMap<
         Value,
-        ts.ClassDeclaration
+        ts.ClassLikeDeclaration
     >();
     /**
      * JavaScript identities minted for materialized callbacks, per
@@ -950,23 +931,32 @@ class Compiler implements LoweringServices {
     @journaled private accessor temporaryIndex = 0;
     @journaled public accessor defaultRenderTaskAdapted = false;
     @journaled private accessor sceneRegistrationSite: ts.Node | undefined;
+    /** The storage demands this compile replays with (`ReplayStorage`). */
+    public readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
+    private readonly ownedRecords: ReadonlyMap<
+        NativeRecordStorageDemand["identity"],
+        NativeRecordStorageDemand
+    >;
+    public readonly absenceTags: ReadonlySet<ts.Declaration>;
+    public readonly tupleArraySlots: ReadonlySet<ts.Declaration>;
 
     public constructor(
         public readonly program: ts.Program,
         public readonly sourceFile: ts.SourceFile,
         public readonly checker: ts.TypeChecker,
         public readonly options: ResolvedCompileOptions,
-        public readonly dynamicBindings: ReadonlyMap<
-            ts.VariableDeclaration,
-            DynamicBindingStorage | undefined
-        >,
-        private readonly ownedRecords: ReadonlyMap<
-            NativeRecordStorageDemand["identity"],
-            NativeRecordStorageDemand
-        >,
-        genericFunctions: GenericFunctionStorage,
+        storage: ReplayStorage,
         private readonly lazyModules: ReadonlySet<ts.SourceFile>,
+        /** The discarded planning attempt this compiler lowers for, if any. */
+        planner?: StorageDemandPlanner,
     ) {
+        this.dynamicBindings = storage.dynamicBindings;
+        this.ownedRecords = storage.records;
+        this.absenceTags = storage.absenceTags;
+        this.tupleArraySlots = storage.tupleArraySlots;
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
         this.dataTypes = new DataTypeRegistry(
@@ -974,7 +964,8 @@ class Compiler implements LoweringServices {
             (node, message) => this.fail(node, message),
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
-            genericFunctions,
+            storage,
+            planner && ((demand) => planner.planJoin(demand)),
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
@@ -1104,6 +1095,10 @@ class Compiler implements LoweringServices {
         this.ui.validateUiStaticProjection();
 
         if (this.dataTypes.usesJsonStorage()) this.reachJson();
+        if (this.dataTypes.usesBigIntStorage())
+            this.reachFeature("data:bigint");
+        if (this.dataTypes.usesSymbolStorage())
+            this.reachFeature("data:symbol");
         if (this.dataTypes.usesFileStorage())
             this.reachFeature("browser:file", this.sourceFile);
 
@@ -1229,22 +1224,23 @@ class Compiler implements LoweringServices {
         this.dataTypes.prepareRecordComponents(
             recordComponents(
                 this.checker,
-                [...this.ownedRecords.values()].flatMap((demand) =>
-                    (demand.joins ?? []).map((join) => ({
-                        ...join,
-                        source: demand.type,
-                    })),
+                [...this.ownedRecords.values()].flatMap(
+                    (demand) => demand.joins ?? [],
                 ),
             ),
             this.ownedRecords.values(),
         );
         for (const demand of this.ownedRecords.values())
-            this.dataTypes.predeclareOwnedRecord(demand);
-        for (const declaration of this.dynamicBindings.keys()) {
-            const type = this.dataTypes.fromTsType(
-                this.checker.getTypeAtLocation(declaration.name),
-                declaration,
-            );
+            if (!demand.document) this.dataTypes.predeclareOwnedRecord(demand);
+        for (const [declaration, storage] of this.dynamicBindings) {
+            const source = this.checker.getTypeAtLocation(declaration.name);
+            // A record of methods has a type only as the storage it takes:
+            // the binding's one object, whose methods read it as `this`.
+            const type =
+                this.dataTypes.fromTsType(source, declaration) ??
+                (storage === "source"
+                    ? this.dataTypes.fromStoredTsType(source, declaration)
+                    : undefined);
             if (type) this.dataTypes.markStoredObjectReferences(type);
         }
         const visit = (root: ts.Node): void =>
@@ -2165,6 +2161,12 @@ class Compiler implements LoweringServices {
 
     /** `emitAssignment` once its target's keys are read. */
     private emitStore(expression: ts.BinaryExpression): void {
+        const namespaceMember = namespaceMemberName(
+            this.checker,
+            this.unwrap(expression.left),
+        );
+        if (namespaceMember) refuseNamespaceMemberWrite(this, namespaceMember);
+        if (emitBigIntCompoundAssignment(this, expression)) return;
         if (emitWindowLocationAssignment(this.dataLowerer, expression)) return;
         this.checkNodeGeometryMutation(expression);
         const input = this.compileNodeInputMutation(expression);
@@ -3500,6 +3502,8 @@ class Compiler implements LoweringServices {
             return name.text;
         }
         if (ts.isComputedPropertyName(name)) {
+            const symbolKey = symbolPropertyKey(this.checker, name.expression);
+            if (symbolKey !== undefined) return symbolKey;
             const value = this.compileValue(name.expression);
             if (value.staticString !== undefined) return value.staticString;
             if (value.staticNumber !== undefined) {
@@ -5278,9 +5282,17 @@ class Compiler implements LoweringServices {
     public bindUninitializedClassDataField(
         name: ts.MemberName,
         declared?: DataType,
+        assignedBeforeRead = false,
     ): Value | undefined {
         const dataType = declared ?? this.dataLowerer.dataTypeAt(name);
-        if (dataType?.kind !== "optional" && dataType?.kind !== "vector") {
+        // A field no code can read before its first assignment needs no
+        // representation of its initial `undefined`.
+        if (
+            !dataType ||
+            (!assignedBeforeRead &&
+                dataType.kind !== "optional" &&
+                dataType.kind !== "vector")
+        ) {
             return undefined;
         }
         const sharedStorage = this.classFieldNeedsSharedStorage(name);
@@ -5388,13 +5400,13 @@ class Compiler implements LoweringServices {
 
     public registerClassInstance(
         instance: Value,
-        declaration: ts.ClassDeclaration,
+        declaration: ts.ClassLikeDeclaration,
     ): void {
         writable(instance).classDeclaration = declaration;
         this.classInstances.set(instance, declaration);
     }
 
-    public classOf(instance: Value): ts.ClassDeclaration | undefined {
+    public classOf(instance: Value): ts.ClassLikeDeclaration | undefined {
         return instance.classDeclaration ?? this.classInstances.get(instance);
     }
 
@@ -5993,7 +6005,9 @@ class Compiler implements LoweringServices {
             counter ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
-                : (value.optionalStorageCpp ?? value.cpp));
+                : (value.absenceTagStorageCpp ??
+                  value.optionalStorageCpp ??
+                  value.cpp));
         if (
             isCompileTimeOnlyValue(value.kind) ||
             value.kind === "browser" ||
@@ -6016,17 +6030,19 @@ class Compiler implements LoweringServices {
                       : value.kind === "texture" &&
                           value.textureStorage === "pixels"
                         ? "bbl::PixelsTexture"
-                        : value.dataType
-                          ? this.dataTypes.cppType(value.dataType)
-                          : isHandleKind(value.kind)
-                            ? handleCppType(value.kind)
-                            : value.kind === "number"
-                              ? "double"
-                              : value.kind === "boolean"
-                                ? "bool"
-                                : value.kind === "string"
-                                  ? "std::string"
-                                  : undefined;
+                        : value.absenceTagType
+                          ? this.dataTypes.cppType(value.absenceTagType)
+                          : value.dataType
+                            ? this.dataTypes.cppType(value.dataType)
+                            : isHandleKind(value.kind)
+                              ? handleCppType(value.kind)
+                              : value.kind === "number"
+                                ? "double"
+                                : value.kind === "boolean"
+                                  ? "bool"
+                                  : value.kind === "string"
+                                    ? "std::string"
+                                    : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,
@@ -6328,6 +6344,17 @@ class Compiler implements LoweringServices {
         return top?.kind === "native" ? top.type : undefined;
     }
 
+    /** Whether an expression's type is a Promise (every present member). */
+    private isPromiseTyped(expression: ts.Expression): boolean {
+        const members = presentMembers(
+            this.checker.getTypeAtLocation(expression),
+        );
+        return (
+            members.length > 0 &&
+            members.every((member) => member.getSymbol()?.name === "Promise")
+        );
+    }
+
     public emitNativeReturn(statement: ts.ReturnStatement): void {
         const frame = this.returnFrames.at(-1);
         if (frame?.kind === "native" && frame.generator) {
@@ -6354,20 +6381,50 @@ class Compiler implements LoweringServices {
             this.fail(statement, "Return outside a native function.");
         }
         if (coroutine && statement.expression) {
-            const result =
-                returnType !== "void" && frame.compileReturn
-                    ? frame.compileReturn(statement.expression, returnType)
-                    : this.asyncActivations.compileAsyncReturn(
-                          statement.expression,
-                          returnType === "void" ? undefined : returnType,
-                      );
-            this.emit({
-                kind: "control",
-                code: this.statements.needsReturnCompletion(statement)
-                    ? `throw bbl::js::AsyncReturn<${returnType === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(returnType)}>(${result});`
-                    : `co_return ${result};`,
-                transfer: "suspend",
-            });
+            const emitResult = (expression: ts.Expression): void => {
+                const selected = this.unwrap(expression);
+                // A promise on one branch only: each branch is its own
+                // return, the promise one adopting its settlement.
+                if (
+                    ts.isConditionalExpression(selected) &&
+                    this.isPromiseTyped(selected.whenTrue) !==
+                        this.isPromiseTyped(selected.whenFalse)
+                ) {
+                    const condition = this.conditions.compileCondition(
+                        selected.condition,
+                    );
+                    this.emit({ kind: "open", code: `if (${condition}) {` });
+                    this.increaseIndent();
+                    this.enterRuntimeControlFlow();
+                    try {
+                        emitResult(selected.whenTrue);
+                        this.decreaseIndent();
+                        this.emit({ kind: "branch", code: "} else {" });
+                        this.increaseIndent();
+                        emitResult(selected.whenFalse);
+                    } finally {
+                        this.leaveRuntimeControlFlow();
+                    }
+                    this.decreaseIndent();
+                    this.emit({ kind: "close", code: "}" });
+                    return;
+                }
+                const result =
+                    returnType !== "void" && frame.compileReturn
+                        ? frame.compileReturn(expression, returnType)
+                        : this.asyncActivations.compileAsyncReturn(
+                              expression,
+                              returnType === "void" ? undefined : returnType,
+                          );
+                this.emit({
+                    kind: "control",
+                    code: this.statements.needsReturnCompletion(statement)
+                        ? `throw bbl::js::AsyncReturn<${returnType === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(returnType)}>(${result});`
+                        : `co_return ${result};`,
+                    transfer: "suspend",
+                });
+            };
+            emitResult(statement.expression);
             return;
         }
         if (returnType === "void") {
@@ -6447,11 +6504,6 @@ class Compiler implements LoweringServices {
         const frame = this.returnFrames.at(-1);
         if (frame?.kind !== "native" || !frame.generator)
             this.fail(expression, "Yield requires an active generator body.");
-        if (expression.asteriskToken || !expression.expression)
-            this.fail(
-                expression,
-                "Generator delegation and empty yields require a typed protocol channel.",
-            );
         for (
             let owner: ts.Node = expression.parent;
             !ts.isFunctionLike(owner);
@@ -6467,20 +6519,107 @@ class Compiler implements LoweringServices {
                     "Yield in finally requires a resumable cleanup protocol.",
                 );
         }
-        const value = frame.generator.asynchronous
-            ? this.asyncActivations.compileAsyncReturn(
-                  expression.expression,
-                  frame.generator.element,
+        if (expression.asteriskToken) {
+            this.emitDelegatedYield(expression, frame.generator);
+            return;
+        }
+        const element = frame.generator.element;
+        // `yield;` yields undefined, which the pull channel must tell from
+        // completion: an empty reference or function would read as done.
+        if (
+            !expression.expression &&
+            element.kind !== "undefined" &&
+            (element.kind !== "optional" ||
+                element.inner.kind === "struct" ||
+                element.inner.kind === "function")
+        )
+            this.fail(
+                expression,
+                "A generator's empty yields produce undefined, which its element storage holds only as an optional value apart from completion.",
+            );
+        const value = !expression.expression
+            ? this.dataLowerer.compileKnownValueForSink(
+                  { kind: "json-null", cpp: "std::nullopt" },
+                  element,
+                  expression,
               )
-            : this.dataLowerer.compileForSink(
-                  expression.expression,
-                  frame.generator.element,
-              );
+            : frame.generator.asynchronous
+              ? this.asyncActivations.compileAsyncReturn(
+                    expression.expression,
+                    element,
+                )
+              : this.dataLowerer.compileForSink(expression.expression, element);
         this.emit({
             kind: "control",
-            code: `co_yield ${frame.generator.asynchronous ? `co_await bbl::js::generator_yield_value<${this.dataTypes.cppType(frame.generator.element)}>(${value})` : value};`,
+            code: `co_yield ${frame.generator.asynchronous ? `co_await bbl::js::generator_yield_value<${this.dataTypes.cppType(element)}>(${value})` : value};`,
             transfer: "suspend",
         });
+    }
+
+    /**
+     * `yield* delegate` in a synchronous generator: each value the delegate
+     * produces is yielded in turn, and closing the generator while it is
+     * suspended there closes the delegate. `next` takes no inbound value and
+     * `throw` is not represented, so forwarding `next` and `return` is the
+     * whole protocol; the delegate's completion value is `undefined`.
+     */
+    private emitDelegatedYield(
+        expression: ts.YieldExpression,
+        generator: DataType<"iterator">,
+    ): void {
+        if (generator.asynchronous || !expression.expression)
+            this.fail(
+                expression,
+                "yield* delegates to a synchronous iterable from a synchronous generator.",
+            );
+        const delegateType = this.dataLowerer.dataTypeAt(expression.expression);
+        const yieldElement = (cpp: string, type: DataType): void =>
+            this.emit({
+                kind: "control",
+                code: `co_yield ${this.dataLowerer.compileKnownValueForSink(this.dataLowerer.leafValue(cpp, type), generator.element, expression)};`,
+                transfer: "suspend",
+            });
+        if (delegateType?.kind === "iterator" && !delegateType.asynchronous) {
+            const delegate = this.dataLowerer.compileForSink(
+                expression.expression,
+                delegateType,
+            );
+            this.statements.emitIteratorWalk(
+                this,
+                expression,
+                this.dataLowerer.leafValue(delegate, delegateType),
+                delegateType,
+                (element) => yieldElement(element, delegateType.element),
+            );
+            return;
+        }
+        if (delegateType?.kind === "vector" || delegateType?.kind === "span") {
+            // The array iterator reads the length and the element at each
+            // step, so the array may change while the generator waits.
+            const source = this.allocateTemporaryCppName("delegated_array");
+            const index = this.allocateTemporaryCppName("delegated_index");
+            this.emit({ kind: "open", code: "{" });
+            this.increaseIndent();
+            this.emit(
+                `const auto ${source} = ${this.dataLowerer.compileForSink(expression.expression, delegateType)};`,
+            );
+            this.emit({
+                kind: "open",
+                code: `for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`,
+                iteration: true,
+            });
+            this.increaseIndent();
+            yieldElement(`${source}[${index}]`, delegateType.element);
+            this.decreaseIndent();
+            this.emit({ kind: "close", code: "}" });
+            this.decreaseIndent();
+            this.emit({ kind: "close", code: "}" });
+            return;
+        }
+        this.fail(
+            expression.expression,
+            "yield* delegates to a generator, an iterator or an array.",
+        );
     }
 
     public activeGeneratorType(): DataType<"iterator"> | undefined {

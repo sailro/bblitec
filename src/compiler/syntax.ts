@@ -104,11 +104,47 @@ export function unwrapExpression(
     return current;
 }
 
+interface ClimbOptions {
+    /**
+     * Also climb out of a conditional's branch (not its condition) and either
+     * operand of `??`: the value they yield is the enclosing expression's.
+     */
+    readonly branches?: boolean;
+}
+
+/**
+ * The outermost node around `node` that yields its value: past the wrappers
+ * around it and, with `branches`, the conditional and `??` operands.
+ */
+export function outermostWrapper(
+    node: ts.Node,
+    options: ClimbOptions = {},
+): ts.Node {
+    let current = node;
+    for (
+        let parent = current.parent;
+        // A source file has no parent.
+        parent !== undefined &&
+        (isExpressionWrapper(parent) ||
+            (options.branches === true && yieldsOperand(parent, current)));
+        parent = current.parent
+    )
+        current = parent;
+    return current;
+}
+
+/** Whether `parent` yields `operand`'s value: a conditional branch or a `??` operand. */
+function yieldsOperand(parent: ts.Node, operand: ts.Node): boolean {
+    return (
+        (ts.isConditionalExpression(parent) && parent.condition !== operand) ||
+        (ts.isBinaryExpression(parent) &&
+            parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+    );
+}
+
 /** The node that consumes an expression, past the wrappers around it. */
 export function wrappedParent(expression: ts.Expression): ts.Node {
-    let current: ts.Node = expression;
-    while (isExpressionWrapper(current.parent)) current = current.parent;
-    return current.parent;
+    return outermostWrapper(expression).parent;
 }
 
 /**

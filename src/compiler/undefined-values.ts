@@ -44,6 +44,7 @@ interface UndefinedContext {
         isImmutableVariable(node: ts.Node | undefined): boolean;
     };
     sharedClosures: { identifierIsRebound(identifier: ts.Identifier): boolean };
+    dataTypes: { resolveTypeParameter(type: ts.Type): ts.Type };
 }
 
 /** Follow immutable results to a concrete completion, never an erased void type. */
@@ -57,9 +58,12 @@ export function provenUndefinedValue(
         const expression = unwrapExpression(source);
         if (seen.has(expression)) return false;
         seen.add(expression);
+        // A type parameter answers through the substitution in force.
         if (
             ts.isVoidExpression(expression) ||
-            (context.checker.getTypeAtLocation(expression).flags &
+            (context.dataTypes.resolveTypeParameter(
+                context.checker.getTypeAtLocation(expression),
+            ).flags &
                 ts.TypeFlags.Undefined) !==
                 0
         )
@@ -82,11 +86,31 @@ export function provenUndefinedValue(
         if (!ts.isCallExpression(expression)) return false;
         const callee = unwrapExpression(expression.expression);
         if (ts.isIdentifier(callee)) {
-            const stored = context.bindings.lookupOptional(callee)?.dataType;
+            const bound = context.bindings.lookupOptional(callee);
+            const stored = bound?.dataType;
             if (stored?.kind === "function" && stored.undefinedCompletion)
                 return true;
             if (context.sharedClosures.identifierIsRebound(callee))
                 return false;
+            // A name bound at generation to one function literal or
+            // declaration (a specialized callback parameter) calls it.
+            const callback =
+                bound?.kind === "callback" && bound.callbackDeclaration
+                    ? ts.isIdentifier(bound.callbackDeclaration)
+                        ? declaredSymbol(
+                              context.checker,
+                              bound.callbackDeclaration,
+                          )?.valueDeclaration
+                        : bound.callbackDeclaration
+                    : undefined;
+            if (
+                callback &&
+                (ts.isFunctionDeclaration(callback) ||
+                    ts.isFunctionExpression(callback) ||
+                    ts.isArrowFunction(callback)) &&
+                hasUndefinedCompletion(context.checker, callback)
+            )
+                return true;
             const declaration = declaredSymbol(
                 context.checker,
                 callee,

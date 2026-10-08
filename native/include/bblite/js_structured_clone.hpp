@@ -110,6 +110,19 @@ template <> struct CloneCodec<Undefined> {
     }
 };
 
+/** A function cannot be cloned; an absent one (an empty callback) clones as undefined. */
+template <typename R, typename... Args> struct CloneCodec<Callback<R(Args...)>> {
+    static pal::CloneNode encode(pal::CloneWriter&, const Callback<R(Args...)>& value) {
+        if (value)
+            throw pal::DataCloneError("A function cannot be structured-cloned.");
+        return pal::CloneUndefined{};
+    }
+    static void read_into(pal::CloneReader& reader, pal::CloneId id, Callback<R(Args...)>& value) {
+        reader.get<pal::CloneUndefined>(id);
+        value = {};
+    }
+};
+
 template <typename T> struct CloneCodec<Ref<T>> {
     static pal::CloneId write(pal::CloneWriter& writer, const Ref<T>& value) {
         if (!value)
@@ -256,6 +269,9 @@ template <> struct CloneCodec<Date> {
 
 template <> struct CloneCodec<ArrayBuffer> {
     static pal::CloneId write(pal::CloneWriter& writer, const ArrayBuffer& value) {
+        // No other agent can share this realm's memory, as without cross-origin isolation.
+        if (value.shared())
+            throw pal::DataCloneError("A SharedArrayBuffer cannot be shared with another agent.");
         // Retained storage is keyed by its owner, so every view of it shares
         // one received buffer. Borrowed native bytes are keyed by address; an
         // empty borrowed buffer has neither, and its identity is unobservable.
@@ -304,6 +320,9 @@ template <> struct CloneElement<float> {
 };
 template <> struct CloneElement<double> {
     static constexpr auto kind = pal::CloneViewKind::float64;
+};
+template <> struct CloneElement<ClampedByte> {
+    static constexpr auto kind = pal::CloneViewKind::uint8_clamped;
 };
 
 /** A view copies its whole buffer once per message, as HTML serializes [[ViewedArrayBuffer]]. */
@@ -436,6 +455,16 @@ pal::SerializedMessage serialize_message(const T& value,
     pal::CloneWriter writer(transfers);
     const auto root = clone_write(writer, value);
     return std::move(writer).finish(root);
+}
+
+/** `structuredClone(value)`: a deep copy keeping aliases and cycles, or a DataCloneError. */
+template <typename T> T structured_clone(const T& value) {
+    try {
+        pal::CloneReader reader(serialize_message(value));
+        return clone_read<T>(reader, reader.root());
+    } catch (const pal::DataCloneError& error) {
+        throw NamedError("DataCloneError", error.what());
+    }
 }
 
 } // namespace bbl::js
