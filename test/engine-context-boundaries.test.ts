@@ -271,7 +271,9 @@ for (const [label, parameter, depth] of [
                 assert.ok(inner, "nested record reference storage");
                 value = `bbl::js::make_ref<bblscene::${inner[2]}>(bblscene::${inner[2]}{${value}})`;
             }
-            return depth ? `${parameterType}{${value}}` : value;
+            return depth
+                ? `bbl::js::make_ref<${parameterType}::element_type>(${parameterType}::element_type{${value}})`
+                : value;
         };
         const tools = optionalNativeFixtureTools(false);
         if (!tools) {

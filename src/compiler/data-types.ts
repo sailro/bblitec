@@ -3438,6 +3438,29 @@ export class DataTypeRegistry {
         }
     }
 
+    /** Stored callbacks retain record arguments; ArrayLike parameters remain borrowed views. */
+    private ownFunctionRecord(type: DataType): DataType {
+        switch (type.kind) {
+            case "struct":
+                return this.markStoredObjectReferences(type);
+            case "optional": {
+                const inner = this.ownFunctionRecord(type.inner);
+                return inner.kind === "struct" ? inner : { ...type, inner };
+            }
+            case "tagged":
+                return { ...type, inner: this.ownFunctionRecord(type.inner) };
+            case "union":
+                return {
+                    ...type,
+                    members: type.members.map((member) =>
+                        this.ownFunctionRecord(member),
+                    ),
+                };
+            default:
+                return type;
+        }
+    }
+
     /** A stored JavaScript function with a fully native data signature. */
     private fromFunctionType(
         type: ts.Type,
@@ -3584,7 +3607,7 @@ export class DataTypeRegistry {
                 // call boundary so an eventual Array/Map/Set comparison can observe it.
                 if (!mapped) return [undefined];
                 const owned = markIdentityFunctions(
-                    this.markStoredObjectReferences(
+                    this.ownFunctionRecord(
                         this.ownReadonlyArray(mapped, parameterType),
                     ),
                 );
@@ -3696,6 +3719,7 @@ export class DataTypeRegistry {
         const declaration = signature.declaration;
         if (!declaration || ts.isJSDocSignature(declaration)) return undefined;
         const family = this.storage.genericFunctions.family(
+            this.checker,
             signature,
             this.typeArgumentFrames(),
         );

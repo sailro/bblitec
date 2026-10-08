@@ -1953,14 +1953,37 @@ export class AsyncLowerer {
      */
     refuseThenable(value: Value | undefined, node: ts.Node): void {
         const property = value?.recordProperties?.then;
-        const field =
-            value?.dataType?.kind === "struct"
-                ? this.context.dataTypes.findStructField(
-                      value.dataType.name,
-                      "then",
-                      node,
-                  )
-                : undefined;
+        const somePresentStorage = (
+            type: DataType | undefined,
+            matches: (member: DataType) => boolean,
+        ): boolean => {
+            if (!type) return false;
+            if (type.kind === "optional" || type.kind === "tagged")
+                return somePresentStorage(type.inner, matches);
+            if (type.kind === "union")
+                return type.members.some((member) =>
+                    somePresentStorage(member, matches),
+                );
+            return matches(type);
+        };
+        const storedCallable = (type: DataType | undefined): boolean =>
+            somePresentStorage(
+                type,
+                (member) =>
+                    member.kind === "function" ||
+                    (member.kind === "struct" &&
+                        this.context.dataTypes.structCall(member.name) !==
+                            undefined),
+            );
+        const storedThenable = somePresentStorage(value?.dataType, (member) => {
+            if (member.kind !== "struct") return false;
+            const field = this.context.dataTypes.findStructField(
+                member.name,
+                "then",
+                node,
+            );
+            return !!field?.accessor || storedCallable(field?.type);
+        });
         const customThen = (type: ts.Type): boolean => {
             const resolved = this.context.dataTypes.resolveTypeParameter(type);
             if (resolved.isUnion()) return resolved.types.some(customThen);
@@ -2023,9 +2046,8 @@ export class AsyncLowerer {
             value?.recordMethods?.then ||
             value?.recordGetters?.then ||
             property?.kind === "callback" ||
-            property?.dataType?.kind === "function" ||
-            field?.type.kind === "function" ||
-            field?.accessor ||
+            storedCallable(property?.dataType) ||
+            storedThenable ||
             customResult(node)
         )
             this.context.fail(

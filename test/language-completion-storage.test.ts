@@ -76,6 +76,57 @@ test("synchronous async lowering refuses custom thenable completion", () => {
         );
 });
 
+test("async completion checks erased thenables through stored unions and optionals", () => {
+    for (const [property, owner] of [
+        ["then: number | Callback", "T"],
+        ["then?: number | Callback", "T"],
+        ["then: number | Callback", "T | undefined"],
+        ["then: number | Callback", "T | number"],
+    ])
+        assert.throws(
+            () =>
+                compileSource(`
+                    type Callback = (resolve: (value: number) => void) => void;
+                    interface T { ${property}; }
+                    const item: T = {then: resolve => resolve(3)};
+                    const values: (${owner})[] = [item];
+                    const value = values[0] as {};
+                    async function create() { return value; }
+                    create();
+                `),
+            /thenable assimilation/,
+        );
+    assert.throws(
+        () =>
+            compileSource(`
+                const value = {then: Object.assign(
+                    (resolve: (value: number) => void) => resolve(3), {tag: 1}
+                )} as {};
+                async function create() { return value; }
+                create();
+            `),
+        /thenable assimilation/,
+    );
+    for (const type of ["number | string", "number | string | undefined"])
+        assert.doesNotThrow(() =>
+            compileSource(`
+                interface T { then: ${type}; }
+                const values: T[] = [{then: 3}];
+                const value = values[0] as {};
+                async function create() { return value; }
+                create();
+            `),
+        );
+    assert.doesNotThrow(() =>
+        compileSource(`
+            const values: Promise<number>[] = [Promise.resolve(3)];
+            const value = values[0]! as {};
+            async function create() { return value; }
+            create();
+        `),
+    );
+});
+
 test("void comparisons refuse an erased non-undefined completion", () => {
     assert.throws(
         () =>
@@ -96,6 +147,10 @@ check(
         if (result.then !== 3 || result.value !== 7) throw new Error('plain then field');
         async function refined() { return Promise.resolve(3) as Promise<number> & {optional?: number}; }
         if (await refined() !== 3) throw new Error('refined native promise');
+        const inert: {then: number | string}[] = [{then: 3}, {then: 'plain'}];
+        async function choose(index: number) { return inert[index]!; }
+        if (await choose(0) !== inert[0] || (await choose(1)).then !== 'plain')
+            throw new Error('non-callable union then');
     }
     run();
     `,

@@ -1093,10 +1093,17 @@ export class BindingScopes {
                 identifier,
             )
         ) {
-            const represented = this.context.dataTypes.fromStoredTsType(
+            const declared = this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(identifier),
                 identifier,
             );
+            const represented =
+                declared &&
+                this.context.dataLowerer.retainedResultType(
+                    narrowed,
+                    declared,
+                    identifier,
+                );
             if (
                 represented?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(represented.name)
