@@ -1,4 +1,5 @@
 import test from "node:test";
+import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
@@ -90,3 +91,87 @@ test(
         );
     },
 );
+
+test("retained array defaults keep fresh owners, aliases and initializer order", () => {
+    const arrays = `
+        interface Row { value:number; }
+        class Holder {
+            values:readonly Row[]=[];
+            saved:readonly Row[]=[];
+            set(values:readonly Row[]=[], alias=values):void {
+                this.values=values; this.saved=alias;
+            }
+            set reset(value:number) { value; this.set(); }
+        }
+        const first=new Holder(),second=new Holder();
+        first.set(); second.set(undefined);
+        if(first.values!==first.saved || second.values!==second.saved || first.values===second.values)
+            throw Error('fresh default owner');
+        const supplied:Row[]=[{value:3}];
+        first.set(supplied);
+        if(first.values!==supplied || first.saved!==supplied)throw Error('supplied alias');
+        supplied.push({value:4}); supplied[0]!.value=8;
+        if(first.values.length!==2 || first.saved[0]!.value!==8)throw Error('retained writes');
+        const previous=second.values;
+        second.reset=1;
+        if(previous===second.values || second.values!==second.saved)throw Error('setter default');
+
+        class Constructed { constructor(public values:readonly Row[]=[]) {} }
+        const built1=new Constructed(),built2=new Constructed(undefined),built3=new Constructed(supplied);
+        if(built1.values===built2.values || built3.values!==supplied)throw Error('constructor owners');
+        function capture(values:readonly Row[]=[],alias=values):()=>readonly Row[] {
+            if(values!==alias)throw Error('function default alias');
+            return()=>values;
+        }
+        const read1=capture(),read2=capture(),read3=capture(supplied);
+        if(read1()===read2() || read3()!==supplied)throw Error('captured default owner');
+
+        let order='',created=0;
+        function missing():undefined {order+='a';return undefined;}
+        function later():number {order+='b';return 1;}
+        function makeRow():Row {order+='d';created++;return {value:created};}
+        class LiteralDefaults {
+            values:readonly Row[]=[];
+            saved:readonly Row[]=[];
+            set(values:readonly Row[]=[makeRow()],alias=values,last=0):void {
+                last; this.values=values; this.saved=alias;
+            }
+        }
+        const literal1=new LiteralDefaults(),literal2=new LiteralDefaults();
+        literal1.set(missing(),undefined,later());
+        literal2.set();
+        if(order!=='abdd' || created!==2 || literal1.values===literal2.values ||
+            literal1.values[0]===literal2.values[0] || literal1.values!==literal1.saved ||
+            literal2.values!==literal2.saved || literal1.saved[0]!.value!==1)
+            throw Error('literal default once and in order');
+        const row=literal1.saved[0]!; row.value=9;
+        if(literal1.values[0]!.value!==9)throw Error('literal row alias');
+        literal1.set(supplied);
+        if(order!=='abdd' || created!==2 || literal1.values!==supplied || literal1.saved!==supplied)
+            throw Error('supplied argument skips literal initializer');
+    `;
+    runInNewContext(
+        ts.transpileModule(arrays, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(arrays);
+    const tools = optionalNativeFixtureTools();
+    if (tools)
+        runGeneratedProgram(tools, "class-default-array-retention", result.cpp);
+});
+
+test("default array ownership does not admit retention of borrowed arguments", () => {
+    for (const body of [
+        `const saved:Array<readonly Item[]>=[];
+         const stores:Array<(items:ArrayLike<Item>)=>void>=[items=>saved.push(items as readonly Item[])];`,
+        `const saved:Array<{items:readonly Item[]}>=[];
+         const stores:Array<(items:ArrayLike<Item>)=>void>=[items=>saved.push({items:items as readonly Item[]})];`,
+    ])
+        assert.throws(
+            () =>
+                compileSource(`interface Item {value:number;}
+                    ${body} stores[0]!([{value:1}]);`),
+            /A borrowed array view cannot retain JavaScript array identity in owning storage/,
+        );
+});

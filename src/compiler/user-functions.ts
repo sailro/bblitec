@@ -59,6 +59,7 @@ import {
 import { readOnlyDataMethods } from "./receiver-methods.js";
 import {
     callArgumentIsReadOnly,
+    isEffectFunction,
     parameterIsReadOnly,
     parameterOnlyRead,
 } from "./parameter-effects.js";
@@ -6664,8 +6665,8 @@ ${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
 
     /**
      * A default array literal is a fresh array per call. A parameter the
-     * body writes through (`out[0] = x`) holds it in the parameter's own
-     * native array storage, as a declared mutable local does.
+     * body retains, observes by identity or writes through holds that one
+     * owner in native array storage. Constructor parameter properties retain it.
      */
     private defaultParameterValue(
         context: UserFunctionContext,
@@ -6676,14 +6677,22 @@ ${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
         if (
             value.kind !== "tuple" ||
             !ts.isIdentifier(parameter.name) ||
-            !isSupportedFunction(declaration) ||
-            parameterIsReadOnly(this.checker, declaration, parameter.name)
+            !isEffectFunction(declaration) ||
+            (parameterOnlyRead(this.checker, declaration, parameter.name) &&
+                !(
+                    ts.isConstructorDeclaration(declaration) &&
+                    ts.isParameterPropertyDeclaration(
+                        parameter.declaration,
+                        declaration,
+                    )
+                ))
         )
             return value;
-        const storage = context.dataTypes.fromStoredTsType(
+        const mapped = context.dataTypes.fromStoredTsType(
             parameter.type,
             parameter.declaration,
         );
+        const storage = mapped && context.dataTypes.ownReturnedArray(mapped);
         if (storage?.kind !== "tuple" && storage?.kind !== "vector")
             return value;
         return context.bindings.pinValueToTemporary(
