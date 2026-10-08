@@ -131,6 +131,7 @@ interface StatementLoweringContext extends Pick<
     | "bindDataIterationVariable"
     | "registerNativeBindingType"
     | "activeNativeReturnType"
+    | "activeNativeCoroutine"
     | "prefersNativeDataIteration"
     | "trackResourceLoopEarlyReturn"
     | "isRuntimeResourceConstruction"
@@ -404,13 +405,15 @@ interface JumpLabel {
 }
 
 /**
- * A cleanup that suspends (`emitSuspendingCleanup`): a native return or a
+ * A cleanup that suspends or overrides a completion: a native return or a
  * break or continue leaving it completes through it, by an exception its
  * handler turns back into that completion once the cleanup has run.
  */
 interface CleanupRegion {
     readonly returns: boolean;
-    readonly jumps: Set<ts.BreakStatement | ts.ContinueStatement>;
+    readonly jumps: Set<
+        ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement
+    >;
 }
 
 /**
@@ -506,7 +509,7 @@ function labeledBody(statement: ts.LabeledStatement): ts.Statement {
 
 export class StatementLowerer {
     /**
-     * Whether a native return leaves a suspending cleanup of its own
+     * Whether a native return leaves a completion-aware cleanup of its own
      * function, which then completes it; the innermost one is told.
      */
     public needsReturnCompletion(statement: ts.ReturnStatement): boolean {
@@ -517,7 +520,7 @@ export class StatementLowerer {
         return region !== undefined;
     }
 
-    /** The innermost suspending cleanup being emitted in `owner`. */
+    /** The innermost completion-aware cleanup being emitted in `owner`. */
     private innermostCleanup(
         owner: ts.Node | undefined,
     ): CleanupRegion | undefined {
@@ -715,8 +718,6 @@ export class StatementLowerer {
                     statement,
                     "An early return out of a statically unrolled loop is not lowered.",
                 );
-            this.leave(context, statement, target, crossed);
-            return true;
         }
         let cleanup: CleanupRegion | undefined;
         for (const entry of above)
@@ -729,6 +730,10 @@ export class StatementLowerer {
                 code: `throw bbl::js::LoopCompletion(${statement.pos + 1}u);`,
                 transfer: "throw",
             });
+            return true;
+        }
+        if (ts.isReturnStatement(statement)) {
+            this.leave(context, statement, target, crossed);
             return true;
         }
         const kind = ts.isBreakStatement(statement) ? "break" : "continue";
@@ -1846,9 +1851,9 @@ export class StatementLowerer {
         // that follows the `if`, so its effects are rolled back.
         const emitBranch = (branch: ts.Statement): void => {
             const emit = (): void =>
-                this.inRuntimeControlFlow(context, () =>
-                    this.emitScopedBody(context, branch),
-                );
+                this.inRuntimeControlFlow(context, () => {
+                    this.emitScopedBody(context, branch);
+                });
             if (terminatesFlow(branch))
                 context.dataLowerer.withPreservedAliasState(emit);
             else emit();
@@ -2028,12 +2033,18 @@ export class StatementLowerer {
             this.emitTryBody(context, statement);
             return;
         }
+        const coroutine = !!context.asyncActivations.workerCheckpointCpp();
+        // Settled static iteration exits are generation completions. Their
+        // probe requests scoped replay if a cleanup exit becomes dynamic.
+        const staticCleanup = this.jumpTargets.some(
+            ({ iteration }) => iteration && iteration.mode !== "scoped",
+        );
         if (
-            context.asyncActivations.workerCheckpointCpp() &&
+            (coroutine || !staticCleanup) &&
             someAnalysisNode(
                 finallyBlock,
                 (node) =>
-                    ts.isAwaitExpression(node) ||
+                    (coroutine && ts.isAwaitExpression(node)) ||
                     ts.isReturnStatement(node) ||
                     ts.isBreakStatement(node) ||
                     ts.isContinueStatement(node),
@@ -2042,7 +2053,7 @@ export class StatementLowerer {
                 },
             )
         )
-            return this.emitSuspendingFinally(context, statement);
+            return this.emitCompletionFinally(context, statement);
         // Lower in source order so generation-only bindings and cleanup see
         // the try body's effects. Native cleanup still precedes the captured
         // body as a scope guard, covering early returns and exceptions.
@@ -2098,27 +2109,40 @@ export class StatementLowerer {
         } else for (const line of body) context.emit(line);
     }
 
-    private emitSuspendingFinally(
+    private emitCompletionFinally(
         context: StatementLoweringContext,
         statement: ts.TryStatement,
     ): void {
-        this.emitSuspendingCleanup(
+        this.emitCompletionCleanup(
             context,
             statement,
-            () => this.emitTryBody(context, statement),
+            () => {
+                this.emitTryBody(context, statement);
+                return (
+                    !this.staticIterationCompleted() &&
+                    this.terminatesAfterLowering(statement.tryBlock) &&
+                    (!statement.catchClause ||
+                        this.terminatesAfterLowering(
+                            statement.catchClause.block,
+                        ))
+                );
+            },
             () => this.emitBlock(context, statement.finallyBlock!),
         );
     }
 
-    private emitSuspendingCleanup(
+    private emitCompletionCleanup(
         context: StatementLoweringContext,
         statement: ts.Node,
-        emitBody: () => void,
-        emitCleanup: (pending: string) => void,
+        emitBody: () => boolean | void,
+        emitCleanup: (pending: string) => boolean | void,
     ): void {
+        context.reachJsData();
         const region: CleanupRegion = {
             returns: false,
-            jumps: new EmissionSet<ts.BreakStatement | ts.ContinueStatement>(),
+            jumps: new EmissionSet<
+                ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement
+            >(),
         };
         const pending = context.allocateTemporaryCppName("cleanup_exception");
         const body = this.withJumpTarget(
@@ -2128,15 +2152,18 @@ export class StatementLowerer {
                     context.emit(`std::exception_ptr ${pending};`);
                     context.emit({ kind: "open", code: "try {" });
                     context.increaseIndent();
-                    emitBody();
+                    const abruptBody = emitBody() === true;
                     context.decreaseIndent();
                     context.emit(
                         `} ${context.options.workers ? "catch (const bbl::pal::WorkerTerminated&) { throw; } " : ""}catch (...) { ${pending} = std::current_exception(); }`,
                     );
-                    emitCleanup(pending);
-                    context.emit(
-                        `if (${pending}) std::rethrow_exception(${pending});`,
-                    );
+                    const abruptCleanup = emitCleanup(pending) === true;
+                    // Preserve definite completion for native return analysis,
+                    // and emit nothing after a cleanup that always replaces it.
+                    if (!abruptCleanup)
+                        context.emit(
+                            `${abruptBody ? "" : `if (${pending}) `}std::rethrow_exception(${pending});`,
+                        );
                 }),
         );
         context.emit({
@@ -2149,20 +2176,23 @@ export class StatementLowerer {
         if (region.returns) {
             const type = context.activeNativeReturnType();
             const generator = context.activeGeneratorType();
+            const coroutine = context.activeNativeCoroutine();
             if (type === undefined && !generator)
                 context.fail(
                     statement,
-                    "Suspending cleanup requires a native completion type.",
+                    "Cleanup requires a native completion type.",
                 );
             const cpp =
                 type === "void" || type === undefined
-                    ? "bbl::js::PromiseVoid"
+                    ? coroutine
+                        ? "bbl::js::PromiseVoid"
+                        : "void"
                     : context.dataTypes.cppType(type);
             const result = context.allocateTemporaryCppName("cleanup_return");
             context.emit(
                 generator
                     ? "} catch (const bbl::js::GeneratorClose&) {"
-                    : `} catch ([[maybe_unused]] const bbl::js::AsyncReturn<${cpp}>& ${result}) {`,
+                    : `} catch ([[maybe_unused]] const bbl::js::${coroutine ? "AsyncReturn" : "ReturnCompletion"}<${cpp}>& ${result}) {`,
             );
             context.increaseIndent();
             const parent = this.innermostCleanup(
@@ -2172,7 +2202,15 @@ export class StatementLowerer {
                 writable(parent).returns = true;
                 context.emit("throw;");
             } else
-                context.emit(generator ? "co_return;" : `co_return ${result};`);
+                context.emit(
+                    generator
+                        ? "co_return;"
+                        : coroutine
+                          ? `co_return ${result};`
+                          : type === "void"
+                            ? "return;"
+                            : `return ${result}.value;`,
+                );
             context.decreaseIndent();
         }
         if (region.jumps.size) {
@@ -2185,7 +2223,9 @@ export class StatementLowerer {
                     code: `if (${jump}.target == ${source.pos + 1}u) {`,
                 });
                 context.increaseIndent();
-                this.lowerStatement(context, source);
+                this.inRuntimeControlFlow(context, () =>
+                    this.lowerStatement(context, source),
+                );
                 context.decreaseIndent();
                 context.emit({ kind: "close", code: "}" });
             }
@@ -2501,10 +2541,11 @@ export class StatementLowerer {
     private emitBlock(
         context: StatementLoweringContext,
         statement: ts.Block,
-    ): void {
+    ): boolean {
         context.emit({ kind: "open", code: "{" });
-        this.emitScopedBody(context, statement);
+        const terminated = this.emitScopedBody(context, statement);
         context.emit({ kind: "close", code: "}" });
+        return terminated;
     }
 
     private emitFor(
@@ -2652,22 +2693,35 @@ export class StatementLowerer {
                         );
                         const lines = emitted.map(renderNativeEmission);
                         if (
-                            lines.length === 0 ||
-                            lines.some((line) => !line.endsWith(";")) ||
-                            (lines.length > 1 &&
-                                emitted.some(
-                                    (item) =>
-                                        item.statement.kind !== "expression",
-                                ))
+                            emitted.every(
+                                (item) => item.statement.kind === "expression",
+                            ) &&
+                            lines.every((line) => line.endsWith(";"))
+                        ) {
+                            header = lines
+                                .map((line) => line.slice(0, -1))
+                                .join(", ");
+                        } else if (
+                            someAnalysisNode(
+                                statement.incrementor,
+                                (node) =>
+                                    ts.isAwaitExpression(node) ||
+                                    ts.isYieldExpression(node),
+                                { functions: "skip" },
+                            ) ||
+                            emitted.some(
+                                (item) =>
+                                    item.statement.kind === "control" &&
+                                    item.statement.transfer === "suspend",
+                            )
                         ) {
                             context.fail(
                                 statement.incrementor,
-                                "Loop incrementors must lower to native expressions.",
+                                "A suspending loop incrementor requires native expression storage.",
                             );
+                        } else {
+                            header = `([&]() -> void { ${lines.join(" ")} }())`;
                         }
-                        header = lines
-                            .map((line) => line.slice(0, -1))
-                            .join(", ");
                     }
                     let terminates = false;
                     const body = context.captureEmittedStatements(() => {
@@ -2689,9 +2743,20 @@ export class StatementLowerer {
                     // still reaches the incrementor, including inside a switch.
                     if (
                         terminates &&
-                        !enclosingLoopControl(statement.statement, {
-                            breaks: false,
-                        })
+                        !someAnalysisNode(
+                            statement.statement,
+                            (node) => {
+                                if (!ts.isContinueStatement(node)) return false;
+                                const target = jumpBinding(node);
+                                return (
+                                    target === statement ||
+                                    (target !== undefined &&
+                                        ts.isLabeledStatement(target) &&
+                                        labeledBody(target) === statement)
+                                );
+                            },
+                            { functions: "skip" },
+                        )
                     )
                         header = "";
                     context.emit({
@@ -3336,7 +3401,7 @@ export class StatementLowerer {
         context.increaseIndent();
         context.emit(`const auto ${source} = ${iterator.cpp};`);
         context.emit(`bool ${complete} = false;`);
-        this.emitSuspendingCleanup(
+        this.emitCompletionCleanup(
             context,
             owner,
             () => {
@@ -4484,7 +4549,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
         propagateRebindings = false,
-    ): void {
+    ): boolean {
         context.increaseIndent();
         context.bindings.pushScope(
             context.allocateBlockPrefix(),
@@ -4496,12 +4561,10 @@ export class StatementLowerer {
                 : [statement];
             for (const nested of statements) {
                 this.emit(context, nested);
-                if (
-                    this.terminatesAfterLowering(nested) ||
-                    this.staticIterationCompleted()
-                )
-                    break;
+                if (this.terminatesAfterLowering(nested)) return true;
+                if (this.staticIterationCompleted()) break;
             }
+            return false;
         } finally {
             context.bindings.popScope();
             context.decreaseIndent();

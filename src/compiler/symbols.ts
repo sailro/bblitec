@@ -258,6 +258,11 @@ export function isAbsentTypeofIdentifier(
     );
 }
 
+const declaredSymbols = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.Node, ts.Symbol | undefined>
+>();
+
 /**
  * The symbol a node names where it is written, an import alias NOT
  * followed: a declaration's own symbol (a variable, parameter, function or
@@ -277,11 +282,23 @@ export function declaredSymbol(
     checker: ts.TypeChecker,
     node: ts.Node,
 ): ts.Symbol | undefined {
-    return node.parent &&
+    // Parsed source is immutable for a checker. Factory nodes may acquire a
+    // different parent even when their text range was copied from source.
+    const parsed =
+        node.pos >= 0 && (node.flags & ts.NodeFlags.Synthesized) === 0;
+    let symbols = parsed ? declaredSymbols.get(checker) : undefined;
+    if (symbols?.has(node)) return symbols.get(node);
+    const symbol =
+        node.parent &&
         ts.isShorthandPropertyAssignment(node.parent) &&
         node.parent.name === node
-        ? checker.getShorthandAssignmentValueSymbol(node.parent)
-        : checker.getSymbolAtLocation(node);
+            ? checker.getShorthandAssignmentValueSymbol(node.parent)
+            : checker.getSymbolAtLocation(node);
+    if (parsed) {
+        if (!symbols) declaredSymbols.set(checker, (symbols = new WeakMap()));
+        symbols.set(node, symbol);
+    }
+    return symbol;
 }
 
 /** The binding an import alias stands for; any other symbol is itself. */

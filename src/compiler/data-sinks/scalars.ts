@@ -1,6 +1,6 @@
 import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
-import { absenceKind } from "../type-facts.js";
+import { absenceKind, declaredContextualType } from "../type-facts.js";
 import { hasNonNullAssertion, unwrapExpression } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
 
@@ -11,6 +11,8 @@ import { eventTargetCpp } from "../dom-targets.js";
 import { authoredErrorValue, thrownMessage } from "../error-values.js";
 import { provenUndefinedValue } from "../undefined-values.js";
 import { rejectionOnlyPromiseCpp, settlesNever } from "../promises.js";
+import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import {
     compileJsonRecordView,
     compileJsonTupleView,
@@ -119,6 +121,46 @@ function valueJson(
     if (isJsonValue(value)) {
         lowerer.markEscaped(value);
         return value.cpp;
+    }
+    const expression =
+        value.kind === "record" || value.dataType?.kind === "struct"
+            ? lowerer.convertedExpression(node)
+            : undefined;
+    const contextual =
+        expression &&
+        declaredContextualType(lowerer.context.checker, expression);
+    if (contextual && (contextual.flags & ts.TypeFlags.NonPrimitive) !== 0) {
+        // An erased object remains writable through its retained aliases.
+        // Observing views cannot provide that contract for fixed records.
+        if (value.dataType?.kind === "struct") {
+            const demand = lowerer.context.dataTypes.documentRecordDemand(
+                value.dataType.name,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
+            return lowerer.context.fail(
+                node,
+                "Erased object storage requires a mutable plain-data document owner.",
+            );
+        }
+        if (value.kind === "record" && expression) {
+            const declaration = lowerer.context.bindings.recordDeclaration(
+                value,
+                expression,
+            );
+            if (
+                declaration &&
+                !lowerer.context.dynamicBindings.has(declaration)
+            )
+                throw new DynamicBindingStorageRequired(declaration, "source");
+        }
+    }
+    if (
+        value.kind === "void" &&
+        !value.erasedVoidCompletion &&
+        provenUndefinedValue(lowerer.context, node)
+    ) {
+        lowerer.context.emitDiscardedValue(value);
+        return "bbl::js::JsonValue{}";
     }
     // An optional's one absent state is the absence its read admits:
     // `undefined` or `null`, or the run-time answer of a read that records
@@ -418,6 +460,21 @@ export const scalarsSinks: DataSinkOperations<
         value: (_type, lowerer, value, node) => {
             const type = value.dataType;
             if (type?.kind === "weak-key") return value.cpp;
+            if (type?.kind === "function" && (type.identity || type.generic))
+                return `(${value.cpp}).weak_identity()`;
+            if (
+                value.kind === "callback" &&
+                !value.cpp &&
+                ts.isExpression(node)
+            ) {
+                const declaration =
+                    lowerer.context.bindings.callbackDeclaration(value, node);
+                if (declaration)
+                    throw new DynamicBindingStorageRequired(
+                        declaration,
+                        "callback",
+                    );
+            }
             if (type?.kind === "struct") {
                 lowerer.context.dataTypes.markStoredObjectReferences(type);
                 return `(${value.cpp}).weak_identity()`;

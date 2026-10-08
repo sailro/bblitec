@@ -2784,14 +2784,6 @@ function emitTargetPropertyAssignment(
                 ) {
                     context.admissions.noteMaterialColorRead("diffuseColor");
                 }
-                if (
-                    ts.isArrayLiteralExpression(shape) &&
-                    shape.elements.length !== 3
-                )
-                    context.fail(
-                        expression.right,
-                        "Material diffuseColor requires a three-channel numeric array.",
-                    );
                 const owner = context.allocateTemporaryCppName(
                     "material_color_owner",
                 );
@@ -2801,10 +2793,56 @@ function emitTargetPropertyAssignment(
                     name: owner,
                     initializer: target.cpp,
                 });
-                const values = context.compileForDataSink(expression.right, {
-                    kind: "vector",
-                    element: { kind: "number" },
-                });
+                const literal = context.unwrap(expression.right);
+                let values: string;
+                if (
+                    ts.isArrayLiteralExpression(literal) &&
+                    literal.elements.some(ts.isSpreadElement)
+                ) {
+                    const lanes = context.dataLowerer.spreadLaneValues(
+                        literal.elements,
+                        (element) =>
+                            context.bindings.pinValueToTemporary(
+                                context.compileValue(element),
+                                "color_lane",
+                                element,
+                            ),
+                        "Material diffuseColor requires a three-channel numeric array.",
+                        (lane, spread) =>
+                            context.bindings.pinValueToTemporary(
+                                lane,
+                                "color_lane",
+                                spread,
+                            ),
+                    );
+                    if (lanes.length !== 3)
+                        context.fail(
+                            expression.right,
+                            "Material diffuseColor requires a three-channel numeric array.",
+                        );
+                    values = context.dataLowerer.compileKnownValueForSink(
+                        {
+                            kind: "tuple",
+                            cpp: "",
+                            tupleElements: lanes.map(({ value }) => value),
+                        },
+                        { kind: "vector", element: { kind: "number" } },
+                        expression.right,
+                    );
+                } else {
+                    if (
+                        ts.isArrayLiteralExpression(shape) &&
+                        shape.elements.length !== 3
+                    )
+                        context.fail(
+                            expression.right,
+                            "Material diffuseColor requires a three-channel numeric array.",
+                        );
+                    values = context.compileForDataSink(expression.right, {
+                        kind: "vector",
+                        element: { kind: "number" },
+                    });
+                }
                 context.emit({
                     kind: "expression",
                     code: `bbl::set_material_diffuse_color(${context.requireEngine(target, expression)}, ${owner}, ${values});`,

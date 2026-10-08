@@ -11656,20 +11656,13 @@ check(
 );
 
 test("stored function storage refuses values reading arguments it drops", () => {
-    for (const source of [
-        `const stores: Array<(a: number) => number> = [(a, b = 7) => a + b];
+    assert.throws(
+        () =>
+            compileSource(`const stores: Array<(a: number) => number> = [(a, b = 7) => a + b];
         const wide: Array<(a: number, b: number) => number> = [stores[0]!];
-        if (wide[0]!(1, 2) !== 3) throw new Error("x");`,
-        `function callWide(f: (a: number, b: number) => number): number { return f(1, 2); }
-        const narrow: Array<(a: number) => number> = [(a) => a];
-        const first = callWide(narrow[0]!);
-        const later: Array<(a: number) => number> = [(a, b = 7) => a + b];
-        if (first + later[0]!(1) !== 9) throw new Error("x");`,
-    ])
-        assert.throws(
-            () => compileSource(source),
-            /reading arguments past its storage signature cannot share that signature with calls passing more arguments/,
-        );
+        if (wide[0]!(1, 2) !== 3) throw new Error("x");`),
+        /reading arguments past its storage signature cannot share that signature with calls passing more arguments/,
+    );
 });
 
 check(

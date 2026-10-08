@@ -174,6 +174,8 @@ interface DataKinds {
     function: {
         kind: "function";
         parameters: DataType[];
+        /** Checked source contract for callback flow; not part of its native ABI. */
+        signatureSite?: string;
         /** Owned table of the reached concrete signatures of a generic callable. */
         generic?: string;
         /** Native parameter index of the final, freshly packed rest array. */

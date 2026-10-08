@@ -11,6 +11,11 @@ struct LoopCompletion : AbruptCompletion {
     explicit LoopCompletion(unsigned value) : target(value) {}
     unsigned target;
 };
+template <typename T> struct ReturnCompletion : AbruptCompletion {
+    explicit ReturnCompletion(T result) : value(std::move(result)) {}
+    T value;
+};
+template <> struct ReturnCompletion<void> : AbruptCompletion {};
 
 inline bool is_throw_completion(const std::exception_ptr& value) {
     if (!value)

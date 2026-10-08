@@ -329,6 +329,22 @@ export class BindingScopes {
         );
     }
 
+    /** The lexical owner of one unmaterialized callback, before its aliases. */
+    public callbackDeclaration(
+        value: Value,
+        expression: ts.Expression,
+    ): ts.VariableDeclaration | undefined {
+        return this.aggregateDeclaration(
+            value.callbackRecordOwner ?? value,
+            (bound) =>
+                bound.kind === "callback" &&
+                bound.callbackDeclaration === value.callbackDeclaration
+                    ? (bound.callbackRecordOwner ?? bound)
+                    : undefined,
+            expression,
+        );
+    }
+
     private aggregateDeclaration(
         members: object | undefined,
         membersOf: (value: Value) => object | undefined,

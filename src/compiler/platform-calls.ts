@@ -35,7 +35,7 @@ import { isDocumentReceiver } from "./dom-targets.js";
 import type { DataType } from "./data-types.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
-import { compileDateUtc } from "./dates.js";
+import { compileDateParse, compileDateUtc } from "./dates.js";
 import {
     parseUiSelectorSequence,
     splitUiSelectorList,
@@ -428,6 +428,11 @@ export class PlatformCalls {
                 impure: true,
             };
         }
+        if (
+            callee.name.text === "parse" &&
+            this.context.libraryGlobal(receiver) === "Date"
+        )
+            return compileDateParse(this.context.dataLowerer, call);
         if (
             callee.name.text === "UTC" &&
             this.context.libraryGlobal(receiver) === "Date"
@@ -1884,8 +1889,6 @@ export class PlatformCalls {
                     name.toLowerCase(),
                     call,
                 );
-            else if (name.toLowerCase() === "style")
-                this.ui.recordUiUnknownStaticStyle(receiver);
             return {
                 kind: "boolean",
                 cpp: `bbl::ui_toggle_attribute(${this.context.requireEngine(receiver, call)}, ${receiver.cpp}, ${this.context.cppString(name)}, ${force})`,
@@ -1907,7 +1910,6 @@ export class PlatformCalls {
                     argumentAt(call, 0),
                     "",
                 );
-            else if (name === "style") this.ui.recordUiStaticStyle(element, "");
             return {
                 kind: "void",
                 cpp: `bbl::ui_remove_attribute(${engine}, ${element.cpp}, ${this.context.cppString(sourceName)})`,
@@ -1960,17 +1962,6 @@ export class PlatformCalls {
                     name,
                     argumentAt(call, 1),
                 );
-            } else if (name === "style" && staticValue !== undefined) {
-                this.ui.recordUiStaticStyle(
-                    element,
-                    this.ui.lowerUiAttributeLiteral(
-                        "style",
-                        staticValue,
-                        argumentAt(call, 1),
-                    ),
-                );
-            } else if (name === "style") {
-                this.ui.recordUiUnknownStaticStyle(element);
             }
             return {
                 kind: "void",

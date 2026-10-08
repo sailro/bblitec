@@ -17,6 +17,7 @@ import {
 import { isJsonValue } from "../json-bridge.js";
 import { declaredSymbol, isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 import { recordPropertyKeys } from "../object-statics.js";
 import {
@@ -307,19 +308,23 @@ function valueStruct(
     ) {
         return value.ownedCpp ?? value.cpp;
     }
+    if (isOpaqueReference(value.dataType)) {
+        const demand = lowerer.context.dataTypes.nativeRecordViewDemand(
+            dataType.name,
+            value.dataType!,
+            node,
+        );
+        if (demand) throw new NativeRecordStorageRequired(demand);
+        lowerer.context.fail(
+            node,
+            "A native object cannot be retained as a structural record without preserving its identity.",
+            "static-value-required",
+        );
+    }
     // A structural view of a stored class binds its prototype methods to
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
-        if (
-            isOpaqueReference(value.dataType) &&
-            lowerer.context.dataTypes.isReferenceStruct(dataType.name)
-        )
-            lowerer.context.fail(
-                node,
-                "A native object cannot be retained as a structural record without preserving its identity.",
-                "static-value-required",
-            );
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,

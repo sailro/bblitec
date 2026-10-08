@@ -210,6 +210,7 @@ import { RecordProxies } from "./compiler/proxies.js";
 import { PropertyAccessLowerer } from "./compiler/properties.js";
 import {
     CompilerSymbols,
+    accessedPropertySymbol,
     declaredIn,
     declaredInDomLibrary,
     enumMemberConstant,
@@ -241,6 +242,7 @@ import {
     parameterIsReadOnly,
 } from "./compiler/parameter-effects.js";
 import { recordComponents } from "./compiler/record-components.js";
+import { callArgumentProjectionIsReadOnly } from "./compiler/parameter-projection-effects.js";
 import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
@@ -2702,11 +2704,10 @@ class Compiler implements LoweringServices {
     /**
      * Whether the program writes through a module constant: an assignment,
      * an update or a mutating call through it, through a binding initialized
-     * from an expression that mentions it, or through an iteration binding
+     * from an expression that carries it, or through an iteration binding
      * over one; or it hands one to a call that may write it. The scan covers
      * the constant's file, and referencing files when it is exported. A binding
-     * that only mentions the constant counts as one, which can only refuse
-     * more.
+     * carrying a copied scalar does not carry its source object's identity.
      */
     private moduleConstantIsWritten(name: ts.Identifier): boolean {
         const symbol = this.symbols.valueSymbol(name);
@@ -2752,8 +2753,15 @@ class Compiler implements LoweringServices {
         // A function inside the expression reads the constant without
         // handing it on; its own body is part of the walk.
         const mentions = (expression: ts.Expression): boolean =>
-            someAnalysisNode(expression, names, { functions: "skip" }) &&
-            typeCanCarryReference(this.checker.getTypeAtLocation(expression));
+            someAnalysisNode(
+                expression,
+                (node) =>
+                    ts.isExpression(node) &&
+                    !typeCanCarryReference(this.checker.getTypeAtLocation(node))
+                        ? "skip"
+                        : names(node),
+                { functions: "skip" },
+            );
         let changed = true;
         const alias = (binding: ts.BindingName): void => {
             for (const identifier of bindingNameIdentifiers(binding)) {
@@ -2781,6 +2789,16 @@ class Compiler implements LoweringServices {
                     for (const iterated of node.initializer.declarations)
                         alias(iterated.name);
                 return (
+                    // The alias walk can stop at a getter's scalar result,
+                    // but evaluating that getter may still mutate its owner.
+                    ((ts.isPropertyAccessExpression(node) ||
+                        ts.isElementAccessExpression(node)) &&
+                        mentions(node.expression) &&
+                        accessedPropertySymbol(
+                            this.checker,
+                            node,
+                        )?.declarations?.some(ts.isGetAccessorDeclaration) &&
+                        this.evaluationOrder.writesStorage(node)) ||
                     writesThroughTrackedRoot(node, (target) => {
                         return names(this.unwrap(target));
                     }) ||
@@ -2793,10 +2811,11 @@ class Compiler implements LoweringServices {
                                     node,
                                     index,
                                 ) &&
-                                !callArgumentIsReadOnly(
+                                !callArgumentProjectionIsReadOnly(
                                     this.checker,
                                     node,
                                     index,
+                                    [],
                                 ),
                         ))
                 );
@@ -6349,6 +6368,11 @@ class Compiler implements LoweringServices {
         return top?.kind === "native" ? top.type : undefined;
     }
 
+    public activeNativeCoroutine(): boolean {
+        const top = this.returnFrames.at(-1);
+        return top?.kind === "native" && top.coroutine === true;
+    }
+
     /** Whether an expression's type is a Promise (every present member). */
     private isPromiseTyped(expression: ts.Expression): boolean {
         const members = presentMembers(
@@ -6385,6 +6409,23 @@ class Compiler implements LoweringServices {
         if (returnType === undefined) {
             this.fail(statement, "Return outside a native function.");
         }
+        const completesCleanup =
+            !coroutine && this.statements.needsReturnCompletion(statement);
+        const emitReturned = (cpp?: string): void => {
+            this.emit({
+                kind: "control",
+                code: completesCleanup
+                    ? returnType === "void"
+                        ? "throw bbl::js::ReturnCompletion<void>{};"
+                        : `throw bbl::js::ReturnCompletion<${this.dataTypes.cppType(returnType)}>(${cpp});`
+                    : `${returnKeyword}${cpp === undefined ? "" : ` ${cpp}`};`,
+                transfer: completesCleanup
+                    ? "throw"
+                    : coroutine
+                      ? "suspend"
+                      : "return",
+            });
+        };
         if (returnType !== "void" && statement.expression)
             this.asyncActivations.refuseThenableReturn(statement.expression);
         if (coroutine && statement.expression) {
@@ -6448,23 +6489,25 @@ class Compiler implements LoweringServices {
                 // value-returning expressions accepted by a void callback.
                 this.asyncActivations.emitDiscardedReturn(statement.expression);
             }
-            this.emit(
-                coroutine
-                    ? this.statements.needsReturnCompletion(statement)
+            if (coroutine)
+                this.emit(
+                    this.statements.needsReturnCompletion(statement)
                         ? "throw bbl::js::AsyncReturn<bbl::js::PromiseVoid>(bbl::js::PromiseVoid{});"
-                        : "co_return bbl::js::PromiseVoid{};"
-                    : "return;",
-            );
+                        : "co_return bbl::js::PromiseVoid{};",
+                );
+            else emitReturned();
             return;
         }
         if (!statement.expression) {
             if (returnType.kind === "optional") {
-                this.emit(
+                if (
                     coroutine &&
-                        this.statements.needsReturnCompletion(statement)
-                        ? `throw bbl::js::AsyncReturn<${this.dataTypes.cppType(returnType)}>(std::nullopt);`
-                        : `${returnKeyword} std::nullopt;`,
-                );
+                    this.statements.needsReturnCompletion(statement)
+                )
+                    this.emit(
+                        `throw bbl::js::AsyncReturn<${this.dataTypes.cppType(returnType)}>(std::nullopt);`,
+                    );
+                else emitReturned("std::nullopt");
                 return;
             }
             this.fail(
@@ -6473,20 +6516,16 @@ class Compiler implements LoweringServices {
             );
         }
         if (frame?.kind === "native" && frame.compileReturn) {
-            this.emit(
-                `${returnKeyword} ${frame.compileReturn(statement.expression, returnType)};`,
-            );
+            emitReturned(frame.compileReturn(statement.expression, returnType));
             return;
         }
         if (returnType.kind === "number") {
-            this.emit(
-                `${returnKeyword} ${this.compileNumber(statement.expression, "double")};`,
-            );
+            emitReturned(this.compileNumber(statement.expression, "double"));
             return;
         }
         if (returnType.kind === "boolean") {
-            this.emit(
-                `${returnKeyword} ${this.conditions.compileCondition(statement.expression)};`,
+            emitReturned(
+                this.conditions.compileCondition(statement.expression),
             );
             return;
         }
@@ -6502,8 +6541,10 @@ class Compiler implements LoweringServices {
             statement.expression,
             returnType,
         );
-        this.emit(
-            `${returnKeyword} ${this.movesReturnedLocal(statement, returned) ? `std::move(${returned})` : returned};`,
+        emitReturned(
+            !completesCleanup && this.movesReturnedLocal(statement, returned)
+                ? `std::move(${returned})`
+                : returned,
         );
     }
 

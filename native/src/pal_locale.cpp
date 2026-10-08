@@ -714,25 +714,31 @@ std::string normalize_string(const std::string& value, const std::string& form) 
         input.size()));
 }
 
-double local_time_zone_offset(double utc_milliseconds) {
-    // One calendar per thread, opened in the zone Intl.DateTimeFormat resolves
-    // when the thread first reads local time, and the last offset it answered:
-    // a date's getters read one time value in turn.
-    struct ZoneCalendar {
-        std::unique_ptr<UCalendar, decltype(&ucal_close)> calendar{nullptr, &ucal_close};
-        double time = std::numeric_limits<double>::quiet_NaN();
-        double offset = 0.0;
-    };
+namespace {
+struct ZoneCalendar {
+    std::unique_ptr<UCalendar, decltype(&ucal_close)> calendar{nullptr, &ucal_close};
+    double time = std::numeric_limits<double>::quiet_NaN();
+    double offset = 0.0;
+};
+
+ZoneCalendar& local_zone_calendar() {
     thread_local ZoneCalendar cache;
-    if (utc_milliseconds == cache.time)
-        return cache.offset;
-    UErrorCode status = U_ZERO_ERROR;
     if (!cache.calendar) {
+        UErrorCode status = U_ZERO_ERROR;
         const auto id = js::string_code_units(*js::make_date_time_format());
         cache.calendar.reset(
             ucal_open(id.data(), icu_length(id.size()), "", UCAL_GREGORIAN, &status));
         check_icu(status);
     }
+    return cache;
+}
+} // namespace
+
+double local_time_zone_offset(double utc_milliseconds) {
+    auto& cache = local_zone_calendar();
+    if (utc_milliseconds == cache.time)
+        return cache.offset;
+    UErrorCode status = U_ZERO_ERROR;
     ucal_setMillis(cache.calendar.get(), utc_milliseconds, &status);
     const auto standard = ucal_get(cache.calendar.get(), UCAL_ZONE_OFFSET, &status);
     const auto daylight = ucal_get(cache.calendar.get(), UCAL_DST_OFFSET, &status);
@@ -740,6 +746,24 @@ double local_time_zone_offset(double utc_milliseconds) {
     cache.time = utc_milliseconds;
     cache.offset = static_cast<double>(standard) + static_cast<double>(daylight);
     return cache.offset;
+}
+
+double parse_date(const std::string& value) {
+    const auto parsed = js::parse_date_time_string(value);
+    if (!parsed.local || !std::isfinite(parsed.milliseconds))
+        return js::date_time_clip(parsed.milliseconds);
+    // Even a full day's timezone displacement cannot bring these values into TimeClip.
+    if (std::abs(parsed.milliseconds) > 8640000086400000.0)
+        return std::numeric_limits<double>::quiet_NaN();
+    auto& cache = local_zone_calendar();
+    UErrorCode status = U_ZERO_ERROR;
+    ucal_setMillis(cache.calendar.get(), parsed.milliseconds, &status);
+    int32_t standard = 0, daylight = 0;
+    // Both repeated and skipped wall times use the offset before the transition.
+    ucal_getTimeZoneOffsetFromLocal(cache.calendar.get(), UCAL_TZ_LOCAL_FORMER,
+                                    UCAL_TZ_LOCAL_FORMER, &standard, &daylight, &status);
+    check_icu(status);
+    return js::date_time_clip(parsed.milliseconds - static_cast<double>(standard) - daylight);
 }
 
 namespace {

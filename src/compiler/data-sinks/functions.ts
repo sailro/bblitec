@@ -96,10 +96,10 @@ function storedSignature(
         return value.dataType?.kind === "function" ? value.dataType : undefined;
     if (value.kind !== "callback") return undefined;
     const parameters = value.nativeCallbackParameterTypes;
+    const declared = value.callbackDeclaration
+        ? lowerer.dataTypeAt(value.callbackDeclaration)
+        : undefined;
     if (parameters === undefined) {
-        const declared = value.callbackDeclaration
-            ? lowerer.dataTypeAt(value.callbackDeclaration)
-            : undefined;
         return declared?.kind === "function" ? declared : undefined;
     }
     return parameters.every(
@@ -108,6 +108,9 @@ function storedSignature(
         ? {
               kind: "function",
               parameters: [...parameters],
+              ...(declared?.kind === "function"
+                  ? { signatureSite: declared.signatureSite }
+                  : {}),
               ...(value.nativeCallbackReturnType
                   ? { result: value.nativeCallbackReturnType }
                   : {}),
@@ -305,6 +308,7 @@ function valueFunction(
     // itself again refuses rather than recursing.
     const stored = storedSignature(lowerer, value);
     if (stored) {
+        lowerer.connectFunctionStorage(stored, dataType, node);
         if (dataType.undefinedCompletion && !stored.undefinedCompletion)
             lowerer.context.fail(
                 node,
