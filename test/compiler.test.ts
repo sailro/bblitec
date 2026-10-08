@@ -3390,10 +3390,9 @@ test("preserves the optional first value of a temporary Map iterator", () => {
         }
         main();
     `);
-    assert.match(result.cpp, /map_values\(/);
-    assert.match(result.cpp, /map_iterator_values/);
-    assert.match(result.cpp, /array_at_or_default\([^,]+, 0\.0\)/);
-    assert.match(result.cpp, /\.empty\(\)/);
+    assert.match(result.cpp, /map_iterator<[^\n]+MapPart::values>/);
+    assert.match(result.cpp, /\.next\(\)/);
+    assert.match(result.cpp, /\.value/);
 });
 
 test("stores and mutates a runtime string local", () => {

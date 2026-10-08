@@ -1,5 +1,10 @@
 import ts from "typescript";
-import { declarationOrigin, type DeclarationOrigin } from "./symbols.js";
+import {
+    declarationOrigin,
+    declaredInDefaultLibrary,
+    type DeclarationOrigin,
+} from "./symbols.js";
+import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 
 /**
  * Record types a record converted between stays one object under.
@@ -489,6 +494,15 @@ function layoutsHoldBoth(
         (b.flags & ts.TypeFlags.Never) !== 0
     )
         return true;
+    // The native view retains its buffer, including its shared brand. The
+    // library's buffer type parameter does not change a view's storage.
+    const typedArray = (type: ts.Type) =>
+        declaredInDefaultLibrary(type.symbol)
+            ? TYPED_ARRAY_KINDS.get(type.symbol.name)
+            : undefined;
+    const arrayA = typedArray(a),
+        arrayB = typedArray(b);
+    if (arrayA && arrayB) return arrayA === arrayB;
     let compared = seen.get(a);
     if (!compared) seen.set(a, (compared = new Set()));
     if (compared.has(b)) return true;

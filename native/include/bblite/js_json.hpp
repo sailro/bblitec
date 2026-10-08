@@ -29,6 +29,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <string>
@@ -678,6 +679,47 @@ public:
         if (kind_ != Kind::object || native_)
             throw std::runtime_error("Dynamic property deletion requires an owned object.");
         std::erase_if(*object_, [&](const Entry& entry) { return entry.first == key; });
+    }
+
+    /** Object.assign keeps the target identity; arguments are already evaluated. */
+    void assign(std::initializer_list<JsonValue> sources) const {
+        if (kind_ != Kind::object || native_)
+            throw std::runtime_error("Object.assign requires an owned dynamic object target.");
+        const auto copy_entry = [this](std::string_view key, const JsonValue& value) {
+            if (key == "__proto__" && !has_own(key))
+                throw std::runtime_error("Object.assign prototype mutation is not represented.");
+            set(key, value);
+        };
+        for (const auto& source : sources) {
+            if (source.is_null() || source.is_undefined())
+                continue;
+            if (source.kind_ == Kind::object && !source.native_)
+                json_for_each_object_entry(*source.object_, copy_entry);
+            else
+                for (const auto& key : source.own_keys())
+                    if (source.has_own(key))
+                        copy_entry(key, source.get(key));
+        }
+    }
+
+    /** Object rest is a shallow copy; its nested objects keep their identity. */
+    [[nodiscard]] JsonValue object_rest(std::initializer_list<std::string_view> excluded) const {
+        Object entries;
+        const auto included = [&](std::string_view key) {
+            return std::find(excluded.begin(), excluded.end(), key) == excluded.end();
+        };
+        if (kind_ == Kind::object && !native_) {
+            entries.reserve(object_->size());
+            json_for_each_object_entry(*object_, [&](const auto& key, const auto& value) {
+                if (included(key))
+                    entries.emplace_back(key, value);
+            });
+        } else {
+            for (const auto& key : own_keys())
+                if (included(key) && has_own(key))
+                    entries.emplace_back(key, get(key));
+        }
+        return from_object(std::move(entries));
     }
 
     [[nodiscard]] JsonArrayView elements() const;

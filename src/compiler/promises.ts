@@ -1,6 +1,8 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { caughtErrorValue } from "./error-values.js";
+import { objectIdentityObserved } from "./record-observations.js";
+import { declaredInDefaultLibrary } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
@@ -8,6 +10,8 @@ import type { Value } from "./types.js";
 export interface PromiseLoweringContext extends Pick<
     LoweringServices,
     | "libraryGlobal"
+    | "program"
+    | "checker"
     | "compileValue"
     | "compileCallbackWithValues"
     | "catchBindingIsErased"
@@ -25,6 +29,21 @@ export interface PromiseLoweringContext extends Pick<
 > {}
 
 type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
+
+/** Immediate settlements cannot stand for promises observed as objects. */
+export function requirePromiseIdentity(
+    context: Pick<PromiseLoweringContext, "program" | "checker" | "options">,
+    type: ts.Type,
+): void {
+    const symbol = type.getSymbol();
+    if (
+        !context.options.workers &&
+        symbol?.name === "Promise" &&
+        declaredInDefaultLibrary(symbol) &&
+        objectIdentityObserved(context, type)
+    )
+        throw new ApplicationRealmRequired();
+}
 
 /**
  * The C++ clause that catches a rejection for `callback`, and the values
@@ -62,6 +81,12 @@ export function compileImmediatePromise(
     context: PromiseLoweringContext,
     call: ts.CallExpression,
 ): Value | undefined {
+    // This also precedes shared native lowering of source async calls.
+    if (!context.options.workers)
+        requirePromiseIdentity(
+            context,
+            context.checker.getTypeAtLocation(call),
+        );
     if (
         ts.isPropertyAccessExpression(call.expression) &&
         context.libraryGlobal(call.expression.expression) === "Promise" &&
@@ -118,6 +143,12 @@ export function compileImmediatePromise(
                     : { kind: "void", cpp: "" };
             }
             if (iterable.kind !== "tuple" || !iterable.tupleElements) {
+                if (
+                    iterable.dataType?.kind === "set" ||
+                    iterable.dataType?.kind === "iterator" ||
+                    iterable.dataType?.kind === "span"
+                )
+                    throw new ApplicationRealmRequired();
                 context.fail(
                     argument,
                     "Promise.all requires an array literal or compile-time tuple.",

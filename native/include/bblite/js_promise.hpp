@@ -125,6 +125,7 @@ template <typename T> class Promise {
 public:
     Promise() : state_(make_gc_shared<State>()) {}
     const void* get() const noexcept { return view_ ? view_->get() : state_.get(); }
+    const void* identity() const noexcept { return get(); }
     template <typename U> bool operator==(const Promise<U>& other) const noexcept {
         return get() == other.get();
     }

@@ -207,7 +207,9 @@ function compileStringify(
     }
     const dataType = containsJsonValue(represented)
         ? jsonType
-        : (represented.dataType ?? context.dataLowerer.dataTypeAt(argument));
+        : (represented.dataType ??
+          context.dataLowerer.dataTypeAt(argument) ??
+          (represented.kind === "record" ? jsonType : undefined));
     if (!dataType) {
         context.fail(
             argument,

@@ -59,6 +59,33 @@ const arrayCopyAnswers = new WeakMap<
 /** @unjournaled Pure functions of the checked program, kept across replays. */
 const arrayIdentityAnswers = new WeakMap<ts.Type, string | null>();
 
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const objectIdentityAnswers = new WeakMap<ts.Type, boolean>();
+
+/** Whether an object of `type` may reach an identity comparison or key. */
+export function objectIdentityObserved(
+    context: Pick<RecordObservationContext, "program" | "checker">,
+    type: ts.Type,
+): boolean {
+    const known = objectIdentityAnswers.get(type);
+    if (known !== undefined) return known;
+    const observations = programObservations(context.program);
+    const candidates = [
+        type,
+        ...observations.assertions
+            .filter(
+                ({ asserted, open }) =>
+                    open || context.checker.isTypeAssignableTo(asserted, type),
+            )
+            .map(({ asserted }) => asserted),
+    ];
+    const answer = [...observations.identities].some((holder) =>
+        holdsRecord(context.checker, holder, candidates),
+    );
+    objectIdentityAnswers.set(type, answer);
+    return answer;
+}
+
 /**
  * Why a native copy of a `source` record stored as `target` could be told
  * apart from the shared JavaScript object, or undefined when nothing in the

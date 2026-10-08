@@ -43,8 +43,9 @@ export interface NamedRead {
  *   fields;
  * - array writes: changes of an array's elements or length (element and
  *   `length` writes, deletions, the mutating methods);
- * - identities: operands of `===`/`!==`/`==`/`!=` other than nullish
- *   literals, `Object.is`, `switch` subjects, `includes`/`indexOf`/
+ * - identities: operands of `===`/`!==` and `Object.is` when both can be
+ *   objects; operands of `==`/`!=` other than nullish literals, `switch`
+ *   subjects, `includes`/`indexOf`/
  *   `lastIndexOf` arguments, and the key or target types of constructed
  *   Map, Set, WeakMap, WeakSet, WeakRef and FinalizationRegistry values;
  * - enumerations: `Object.keys`/`values`/`entries`/`getOwnPropertyNames`/
@@ -218,22 +219,30 @@ function observe(program: ts.Program): ProgramObservations {
     const arrayLike = (node: ts.Node): boolean =>
         checker.isArrayLikeType(typeOf(node));
     const objectLike = (type: ts.Type): boolean =>
-        (type.flags &
-            (ts.TypeFlags.Object |
-                ts.TypeFlags.NonPrimitive |
-                ts.TypeFlags.Union |
-                ts.TypeFlags.Intersection |
-                ts.TypeFlags.Any |
-                ts.TypeFlags.Unknown |
-                ts.TypeFlags.TypeParameter |
-                ts.TypeFlags.Index |
-                ts.TypeFlags.IndexedAccess |
-                ts.TypeFlags.Conditional |
-                ts.TypeFlags.Substitution)) !==
-        0;
+        type.isUnion()
+            ? type.types.some(objectLike)
+            : (type.flags &
+                  (ts.TypeFlags.Object |
+                      ts.TypeFlags.NonPrimitive |
+                      ts.TypeFlags.Intersection |
+                      ts.TypeFlags.Any |
+                      ts.TypeFlags.Unknown |
+                      ts.TypeFlags.TypeParameter |
+                      ts.TypeFlags.Index |
+                      ts.TypeFlags.IndexedAccess |
+                      ts.TypeFlags.Conditional |
+                      ts.TypeFlags.Substitution)) !==
+              0;
     const identity = (node: ts.Node): void => {
         const type = typeOf(node);
         if (objectLike(type)) identities.add(type);
+    };
+    const identityComparison = (left: ts.Node, right: ts.Node): void => {
+        const leftType = typeOf(left),
+            rightType = typeOf(right);
+        if (!objectLike(leftType) || !objectLike(rightType)) return;
+        identities.add(leftType);
+        identities.add(rightType);
     };
     const enumerated = (node: ts.Node): void => {
         const type = typeOf(node);
@@ -397,8 +406,15 @@ function observe(program: ts.Program): ProgramObservations {
                 !nullish(node.left) &&
                 !nullish(node.right)
             ) {
-                identity(node.left);
-                identity(node.right);
+                if (
+                    operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                    operator === ts.SyntaxKind.ExclamationEqualsEqualsToken
+                )
+                    identityComparison(node.left, node.right);
+                else {
+                    identity(node.left);
+                    identity(node.right);
+                }
             } else if (operator === ts.SyntaxKind.InKeyword)
                 enumerated(node.right);
         } else if (ts.isSwitchStatement(node)) identity(node.expression);
@@ -461,7 +477,8 @@ function observe(program: ts.Program): ProgramObservations {
                         ? { property: key.text }
                         : {}),
                 });
-            } else if (method === "is") node.arguments.forEach(identity);
+            } else if (method === "is" && first && node.arguments[1])
+                identityComparison(first, node.arguments[1]);
             else if (ENUMERATING_STATICS.has(method) && first)
                 enumerated(first);
         } else if (owner === "Reflect") {

@@ -2,6 +2,7 @@ import { journaled } from "./emission-transaction.js";
 import ts from "typescript";
 import { framePollExecutor } from "./frame-poll.js";
 import { PendingActivations } from "./pending-activations.js";
+import { requirePromiseIdentity } from "./promises.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { DataType } from "./data-types.js";
 import {
@@ -38,6 +39,7 @@ interface AsyncActivationContext extends Pick<
     | "isRuntimeResourceConstruction"
     | "libraryGlobal"
     | "options"
+    | "program"
     | "sourceFiles"
     | "symbols"
     | "unwrap"
@@ -76,6 +78,27 @@ export class AsyncActivations {
         arguments_: readonly Value[],
         node: ts.Node,
     ): Value | undefined {
+        if (
+            !this.context.options.workers &&
+            ts
+                .getModifiers(declaration)
+                ?.some(
+                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+                )
+        ) {
+            const signature =
+                this.context.checker.getSignatureFromDeclaration(declaration);
+            if (signature)
+                requirePromiseIdentity(
+                    this.context,
+                    this.context.checker.getReturnTypeOfSignature(signature),
+                );
+            if (ts.isCallExpression(node))
+                requirePromiseIdentity(
+                    this.context,
+                    this.context.checker.getTypeAtLocation(node),
+                );
+        }
         return this.context.options.workers
             ? this.context.asyncLowerer.compileCall(
                   declaration,

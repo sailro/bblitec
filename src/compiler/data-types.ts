@@ -79,6 +79,7 @@ import {
     type RecordJoin,
 } from "./record-components.js";
 import ts from "typescript";
+import { requireDeclarationAbsenceTag } from "./absence-tag-storage.js";
 import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
 import {
@@ -102,7 +103,6 @@ import {
     nullability,
     presentMembers,
     isTypeReference,
-    slotHoldsOnlyNull,
     type AbsentValueKind,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -909,6 +909,29 @@ function unionPresence(
         (property) => (property.flags & ts.SymbolFlags.Optional) !== 0,
     );
     if (optional.every((flag) => !flag)) return "own";
+    // A spread of `{ key: value } | {}` synthesizes `key?: undefined`
+    // for the empty arm, reusing the populated arm's literal declaration.
+    // It is an absent key, unlike an authored optional undefined field.
+    const absentSpreadSlot = (index: number): boolean => {
+        const declarations = properties[index]!.declarations;
+        return (
+            presentMembers(types[index]!).length === 0 &&
+            valueAbsence([types[index]!]) === "undefined" &&
+            declarations !== undefined &&
+            declarations.length > 0 &&
+            declarations.every(
+                (declaration) =>
+                    (ts.isPropertyAssignment(declaration) ||
+                        ts.isShorthandPropertyAssignment(declaration)) &&
+                    properties.some(
+                        (property, other) =>
+                            !optional[other] &&
+                            valueAbsence([types[other]!]) === undefined &&
+                            property.declarations?.includes(declaration),
+                    ),
+            )
+        );
+    };
     // A required property no empty value holds fills its slot, and an
     // optional one holding undefined is absent: the slot alone says whether
     // the key is own. An optional undefined-only property keeps its own
@@ -917,7 +940,8 @@ function unionPresence(
         optional.some((flag) => !flag) &&
         !optional.every((flag, index) =>
             flag
-                ? presentMembers(types[index]!).length > 0
+                ? presentMembers(types[index]!).length > 0 ||
+                  absentSpreadSlot(index)
                 : valueAbsence([types[index]!]) === undefined,
         )
     )
@@ -3225,6 +3249,7 @@ export class DataTypeRegistry {
             if (
                 symbolName &&
                 [
+                    "MapIterator",
                     "SetIterator",
                     "IterableIterator",
                     "IteratorObject",
@@ -3243,7 +3268,8 @@ export class DataTypeRegistry {
                     ? {
                           kind: "iterator",
                           element,
-                          ...(symbolName === "SetIterator"
+                          ...(symbolName === "SetIterator" ||
+                          symbolName === "MapIterator"
                               ? { traced: true }
                               : {}),
                           ...(symbolName.startsWith("Async")
@@ -4889,6 +4915,58 @@ export class DataTypeRegistry {
                               node,
                           )
                         : undefined;
+                    // A field only some arms declare has no checker-wide
+                    // property union. Its plain-record payloads can still
+                    // share one layout, preserving each payload's identity.
+                    if (
+                        !mapped &&
+                        armFields &&
+                        first?.kind === "struct" &&
+                        candidates.every(
+                            (candidate) => candidate?.kind === "struct",
+                        )
+                    ) {
+                        const records = propertyTypes.map((propertyType) =>
+                            this.checker.getNonNullableType(propertyType),
+                        );
+                        const source = records[0]!;
+                        const demand = this.recordDemand(source, node);
+                        if (
+                            records.every(
+                                (record) =>
+                                    this.joinableRecord(demand, record) &&
+                                    layoutsCompatible(
+                                        this.checker,
+                                        source,
+                                        record,
+                                    ),
+                            )
+                        ) {
+                            const joins = records
+                                .slice(1)
+                                .filter(
+                                    (target) =>
+                                        !this.joined(source, target) &&
+                                        !this.demandedJoins
+                                            .get(source)
+                                            ?.some(
+                                                (join) =>
+                                                    join.target === target,
+                                            ),
+                                )
+                                .map((target): RecordJoin => ({
+                                    source,
+                                    target,
+                                    kind: "value",
+                                }));
+                            if (joins.length) {
+                                this.requireJoin({ ...demand, joins });
+                                // A planning attempt may finish with a copy;
+                                // emission replays with the shared layout.
+                                mapped = first;
+                            }
+                        }
+                    }
                     // Grouped arms fall back to the members' common view.
                     if (!mapped) return grouped ? undefined : null;
                 } else {
@@ -5401,20 +5479,9 @@ export class DataTypeRegistry {
     ): DataType | undefined {
         const resolved = this.resolveTypeParameter(type);
         const members = resolved.isUnion() ? resolved.types : [resolved];
-        // A property a type declares only null fills (`houseArc: null`)
-        // holds null. An object literal's own `null` property is the null
-        // its position's type widens.
-        if (
-            members.every(
-                (member) => (member.flags & ts.TypeFlags.Null) !== 0,
-            ) &&
-            property?.declarations?.length &&
-            property.declarations.every(
-                (declaration) =>
-                    ts.isPropertySignature(declaration) ||
-                    ts.isPropertyDeclaration(declaration),
-            )
-        )
+        // A required null-only field has storage before its record joins
+        // another shape; the joined layout can then hold its null value.
+        if (members.every((member) => (member.flags & ts.TypeFlags.Null) !== 0))
             return { kind: "null" };
         if (
             !members.every(
@@ -5656,31 +5723,16 @@ export class DataTypeRegistry {
                 type,
                 mapped,
             }: (typeof values)[number]): boolean =>
-                (mapped === undefined || mapped.kind === "undefined") &&
+                (mapped === undefined ||
+                    mapped.kind === "undefined" ||
+                    mapped.kind === "null") &&
                 presentMembers(type).length === 0;
             const valued = values.filter(
                 (value) => storing(value) && !nullish(value),
             );
             const empty = (value: (typeof values)[number]): boolean =>
                 valued.length > 0 && nullish(value);
-            // A required property every shape declares only null holds
-            // JSON's null; an object literal's type takes its contextual
-            // type's storage instead.
-            const onlyNull =
-                valued.length === 0 &&
-                values.length > 0 &&
-                declared.every(
-                    ({ owner }) =>
-                        ((owner.symbol?.flags ?? 0) &
-                            ts.SymbolFlags.ObjectLiteral) ===
-                        0,
-                ) &&
-                values.every(
-                    (value) => nullish(value) && slotHoldsOnlyNull(value.type),
-                );
-            const mappedValue: DataType | undefined = onlyNull
-                ? { kind: "json" }
-                : (valued[0] ?? values.find(storing))?.mapped;
+            const mappedValue = (valued[0] ?? values.find(storing))?.mapped;
             if (!mappedValue) {
                 return undefined;
             }
@@ -5693,7 +5745,7 @@ export class DataTypeRegistry {
             let stored: DataType = storage(mappedValue);
             let unionField: DataType | undefined;
             for (const [index, value] of values.entries()) {
-                if (!storing(value) || empty(value) || onlyNull) continue;
+                if (!storing(value) || empty(value)) continue;
                 const { mapped } = value;
                 const next =
                     mapped && this.joinedStorage(stored, storage(mapped));
@@ -5734,7 +5786,7 @@ export class DataTypeRegistry {
             )?.mapped;
             const joined: DataType =
                 unionField ??
-                (declared.length === 1 || onlyNull
+                (declared.length === 1
                     ? mappedValue
                     : nullable && dataTypesEqual(storage(nullable), stored)
                       ? nullable
@@ -7615,6 +7667,18 @@ export class DataTypeRegistry {
     ): string | undefined {
         if (isUndefinedDataType(type))
             return `(static_cast<void>(${cpp}), bbl::js::JsonValue{})`;
+        if (type.kind === "null")
+            return `(static_cast<void>(${cpp}), bbl::js::JsonValue::null_value())`;
+        if (type.kind === "tagged") {
+            const present = this.jsonPresentValueCpp(
+                type.inner,
+                "value.value()",
+                node,
+            );
+            return present === undefined
+                ? undefined
+                : `([](const auto& value) { return value.defined() ? ${present} : bbl::js::JsonValue{}; })(${cpp})`;
+        }
         if (type.kind === "enum") {
             this.enumToStringCpp(type, cpp, node);
             this.jsonBoxedEnums.add(type.name);
@@ -7659,6 +7723,52 @@ export class DataTypeRegistry {
         return `bbl::js::json_value(${cpp})`;
     }
 
+    /** A defined slot's empty native storage is null, never undefined. */
+    private jsonPresentValueCpp(
+        type: DataType,
+        cpp: string,
+        node: ts.Node,
+    ): string | undefined {
+        if (type.kind !== "optional") return this.jsonValueCpp(type, cpp, node);
+        return this.jsonValueCpp(type.inner, "value", node) === undefined
+            ? undefined
+            : `bbl::js::json_value_or_null(${cpp})`;
+    }
+
+    /** Reflected fields use their declared absence, including replayed tags. */
+    private jsonFieldValueCpp(
+        structName: string,
+        field: DataStructField,
+        cpp: string,
+        node: ts.Node,
+    ): string | undefined {
+        if (field.type.kind === "optional" && !field.type.undefinedOnly) {
+            const absence =
+                this.fieldPresences.get(`${structName}.${field.sourceName}`)
+                    ?.absence ??
+                valueAbsence(
+                    (field.declarations ?? []).map((declaration) =>
+                        this.checker.getTypeAtLocation(declaration),
+                    ),
+                );
+            if (absence === "null")
+                return this.jsonPresentValueCpp(field.type, cpp, node);
+            if (absence === "undefined")
+                return this.jsonValueCpp(
+                    { ...field.type, undefinedOnly: true },
+                    cpp,
+                    node,
+                );
+            if (absence === "either")
+                for (const declaration of field.declarations ?? [])
+                    requireDeclarationAbsenceTag(
+                        this.storage.absenceTags,
+                        declaration,
+                    );
+        }
+        return this.jsonValueCpp(field.type, cpp, node);
+    }
+
     /** Native object views retain the original reference and read its live fields. */
     public markJsonBoxed(type: DataType<"struct">, node: ts.Node): void {
         if (!this.isReferenceStruct(type.name)) {
@@ -7694,7 +7804,10 @@ export class DataTypeRegistry {
         for (const field of this.structFields(type.name, node, "accessors")) {
             // The view lists a field among its own keys while it is one.
             this.ownPresence(type.name, field, "value", "->", node);
-            if (this.jsonValueCpp(field.type, "value", node) === undefined)
+            if (
+                this.jsonFieldValueCpp(type.name, field, "value", node) ===
+                undefined
+            )
                 this.fail(
                     node,
                     `Dynamic object field '${field.sourceName}' has no retained value view for ${field.type.kind}.`,
@@ -7721,7 +7834,12 @@ export class DataTypeRegistry {
             );
             fields.forEach((field, index) => {
                 const property = `value->${field.name}${field.accessor ? ".get()" : ""}`;
-                const cpp = this.jsonValueCpp(field.type, property, node)!;
+                const cpp = this.jsonFieldValueCpp(
+                    name,
+                    field,
+                    property,
+                    node,
+                )!;
                 // An absent shared object reads undefined, not its null, and
                 // a nullable field's empty storage refuses to guess.
                 const presence = presences[index];

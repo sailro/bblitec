@@ -30,35 +30,41 @@ template <typename PendingValues, typename Result> struct AllState {
     }
 };
 
-template <typename... T, std::size_t... I>
-Promise<std::tuple<T...>> all_tuple(const std::tuple<Promise<T>...>& inputs,
-                                    std::index_sequence<I...>) {
-    using Result = std::tuple<T...>;
-    using PendingValues = std::tuple<std::optional<T>...>;
+template <std::size_t Index, typename State, typename Handler, typename Input>
+void settle_all_tuple_element(const State& state, Handler& handler, const Input& value) {
+    if (state->settled)
+        return;
+    try {
+        std::get<Index>(state->values) = handler(value);
+        state->ready([](const auto& values) {
+            return std::apply([](const auto&... item) { return std::tuple{*item...}; }, values);
+        });
+    } catch (const pal::WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        state->reject(std::current_exception());
+    }
+}
+
+template <typename... T, typename... Fulfilled, typename... Rejected, std::size_t... I>
+auto all_tuple(const std::tuple<Promise<T>...>& inputs, const std::tuple<Fulfilled...>& fulfilled,
+               const std::tuple<Rejected...>& rejected, std::index_sequence<I...>) {
+    using Result = std::tuple<std::invoke_result_t<Fulfilled&, const T&>...>;
+    using PendingValues = std::tuple<std::optional<std::invoke_result_t<Fulfilled&, const T&>>...>;
     auto state = make_gc_shared<AllState<PendingValues, Result>>(sizeof...(T));
     if constexpr (sizeof...(T) == 0)
         state->result.resolve(Result{});
     else
         (std::get<I>(inputs).observe(
-             make_closure(std::tuple{state},
+             make_closure(std::tuple{state, std::get<I>(fulfilled)},
                           [](auto& environment, const T& value) {
-                              auto& owned = *std::get<0>(environment);
-                              if (owned.settled)
-                                  return;
-                              try {
-                                  std::get<I>(owned.values) = value;
-                                  owned.ready([](const PendingValues& values) {
-                                      return std::apply(
-                                          [](const auto&... item) { return Result{*item...}; },
-                                          values);
-                                  });
-                              } catch (...) {
-                                  owned.reject(std::current_exception());
-                              }
+                              auto& [retained, handler] = environment;
+                              settle_all_tuple_element<I>(retained, handler, value);
                           }),
-             make_closure(std::tuple{state},
+             make_closure(std::tuple{state, std::get<I>(rejected)},
                           [](auto& environment, std::exception_ptr error) {
-                              std::get<0>(environment)->reject(error);
+                              auto& [retained, handler] = environment;
+                              settle_all_tuple_element<I>(retained, handler, error);
                           })),
          ...);
     return state->result;
@@ -69,7 +75,17 @@ Promise<std::tuple<T...>> all_tuple(const std::tuple<Promise<T>...>& inputs,
 /** Every input is observed immediately; output positions follow input order. */
 template <typename... T>
 Promise<std::tuple<T...>> promise_all_tuple(const std::tuple<Promise<T>...>& inputs) {
-    return promise_detail::all_tuple(inputs, std::index_sequence_for<T...>{});
+    return promise_detail::all_tuple(
+        inputs, std::tuple{([](const T& value) { return value; })...},
+        std::tuple{([](std::exception_ptr error) -> T { std::rethrow_exception(error); })...},
+        std::index_sequence_for<T...>{});
+}
+
+template <typename... T, typename... Fulfilled, typename... Rejected>
+auto promise_all_settled_tuple(const std::tuple<Promise<T>...>& inputs,
+                               const std::tuple<Fulfilled...>& fulfilled,
+                               const std::tuple<Rejected...>& rejected) {
+    return promise_detail::all_tuple(inputs, fulfilled, rejected, std::index_sequence_for<T...>{});
 }
 
 namespace promise_detail {
@@ -84,55 +100,79 @@ template <> struct AllElement<PromiseVoid> {
     static Undefined from(const PromiseVoid&) { return {}; }
 };
 
-} // namespace promise_detail
+template <typename T> Array<T> finish_all_array(const std::vector<std::optional<T>>& values) {
+    Array<T> result;
+    result.reserve(values.size());
+    for (const auto& item : values)
+        result.push_back(*item);
+    return result;
+}
 
-template <typename T>
-Promise<Array<typename promise_detail::AllElement<T>::type>>
-promise_all(const Array<Promise<T>>& inputs) {
-    using Element = promise_detail::AllElement<T>;
-    using Stored = typename Element::type;
+template <typename Stored, typename State, typename Handler, typename Input>
+void settle_all_element(const State& state, std::size_t index, Handler& handler,
+                        const Input& value) {
+    if (state->settled)
+        return;
+    try {
+        state->values[index] = handler(value);
+        state->ready(finish_all_array<Stored>);
+    } catch (const pal::WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        state->reject(std::current_exception());
+    }
+}
+
+/** Register each observation before advancing an effectful iterable. */
+template <typename Iterable, typename Fulfilled, typename Rejected>
+auto all_iterable(const Iterable& inputs, Fulfilled fulfilled, Rejected rejected) {
+    using Input = std::remove_cvref_t<decltype(*inputs.begin())>;
+    using T = ResultType<Input>;
+    using Stored = std::invoke_result_t<Fulfilled&, const T&>;
     using PendingValues = std::vector<std::optional<Stored>>;
-    auto state =
-        make_gc_shared<promise_detail::AllState<PendingValues, Array<Stored>>>(inputs.size());
-    state->values.resize(inputs.size());
-    if (inputs.empty())
-        state->result.resolve(Array<Stored>{});
-    for (std::size_t index = 0; index < inputs.size(); ++index)
-        inputs[index].observe(
-            make_closure(std::tuple{state, index},
-                         [](auto& environment, const T& value) {
-                             auto& [retained, position] = environment;
-                             auto& owned = *retained;
-                             if (owned.settled)
-                                 return;
-                             try {
-                                 owned.values[position] = Element::from(value);
-                                 owned.ready([](const PendingValues& values) {
-                                     Array<Stored> result;
-                                     result.reserve(values.size());
-                                     for (const auto& item : values)
-                                         result.push_back(*item);
-                                     return result;
-                                 });
-                             } catch (...) {
-                                 owned.reject(std::current_exception());
-                             }
-                         }),
-            make_closure(std::tuple{state}, [](auto& environment, std::exception_ptr error) {
-                std::get<0>(environment)->reject(error);
-            }));
+    auto state = make_gc_shared<AllState<PendingValues, Array<Stored>>>(1);
+    try {
+        if constexpr (requires { inputs.size(); })
+            state->values.reserve(inputs.size());
+        for (const auto& input : inputs) {
+            const auto index = state->values.size();
+            state->values.emplace_back();
+            ++state->remaining;
+            input.observe(
+                make_closure(std::tuple{state, index, fulfilled},
+                             [](auto& environment, const T& value) {
+                                 auto& [retained, position, handler] = environment;
+                                 settle_all_element<Stored>(retained, position, handler, value);
+                             }),
+                make_closure(std::tuple{state, index, rejected},
+                             [](auto& environment, std::exception_ptr error) {
+                                 auto& [retained, position, handler] = environment;
+                                 settle_all_element<Stored>(retained, position, handler, error);
+                             }));
+        }
+        state->ready(finish_all_array<Stored>);
+    } catch (const pal::WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        state->reject(std::current_exception());
+    }
     return state->result;
 }
 
+} // namespace promise_detail
+
+template <typename Iterable> auto promise_all(const Iterable& inputs) {
+    using Input = std::remove_cvref_t<decltype(*inputs.begin())>;
+    using Element = promise_detail::AllElement<promise_detail::ResultType<Input>>;
+    return promise_detail::all_iterable(
+        inputs, [](const auto& value) { return Element::from(value); },
+        [](std::exception_ptr error) -> typename Element::type { std::rethrow_exception(error); });
+}
+
 /** Settlement records are fresh owned objects supplied by the typed lowering. */
-template <typename T, typename Fulfilled, typename Rejected>
-auto promise_all_settled(const Array<Promise<T>>& inputs, Fulfilled fulfilled, Rejected rejected) {
-    using Result = std::invoke_result_t<Fulfilled&, const T&>;
-    Array<Promise<Result>> settlements;
-    settlements.reserve(inputs.size());
-    for (const auto& input : inputs)
-        settlements.push_back(input.then(fulfilled, rejected));
-    return promise_all(settlements);
+template <typename Iterable, typename Fulfilled, typename Rejected>
+auto promise_all_settled(const Iterable& inputs, Fulfilled fulfilled, Rejected rejected) {
+    return promise_detail::all_iterable(inputs, std::move(fulfilled), std::move(rejected));
 }
 
 /** Observing every competitor also handles rejections after the race has settled. */

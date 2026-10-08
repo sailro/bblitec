@@ -12,6 +12,7 @@ interface CameraWriteContext extends Pick<
     | "compileValue"
     | "resolveRecordValue"
     | "resolveRecordMember"
+    | "probeEmission"
     | "bindings"
     | "requireEngine"
     | "allocateTemporaryCppName"
@@ -21,14 +22,18 @@ interface CameraWriteContext extends Pick<
 export function isCameraExpression(
     context: Pick<
         CameraWriteContext,
-        "checker" | "bindings" | "resolveRecordMember"
+        "checker" | "bindings" | "resolveRecordMember" | "probeEmission"
     >,
     expression: ts.Expression,
 ): boolean {
+    // Classification does not evaluate a receiver; the selected writer does.
     const value = ts.isIdentifier(expression)
         ? context.bindings.lookupOptional(expression)
         : ts.isPropertyAccessExpression(expression)
-          ? context.resolveRecordMember(expression)
+          ? context.probeEmission(
+                () => context.resolveRecordMember(expression),
+                () => false,
+            )
           : undefined;
     return (
         value?.kind === "camera" ||
@@ -77,7 +82,9 @@ export function cameraNumberWrite(
         if (!field) return undefined;
         camera = context.compileValue(ownerExpression);
     } else if (["x", "y", "z"].includes(left.name.text)) {
-        vector = context.resolveRecordValue(ownerExpression)?.cameraVector;
+        vector = context.probeEmission(
+            () => context.resolveRecordValue(ownerExpression)?.cameraVector,
+        );
         if (
             !vector &&
             ts.isPropertyAccessExpression(ownerExpression) &&

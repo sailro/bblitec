@@ -1013,8 +1013,8 @@ export class AsyncLowerer {
      * An array literal with spreads (`[p, ...ps]`) holds a count known only
      * at run time: it is the fresh array JavaScript builds first, element by
      * element in source order, which the combinator then reads as a stored
-     * array. Its elements must be promises of one settlement type; one that
-     * only rejects joins it.
+     * array. Promise result views join its represented settlement types
+     * without adding reactions; one that only rejects joins any result.
      */
     private spreadLiteralInput(
         argument: ts.Expression,
@@ -1027,13 +1027,17 @@ export class AsyncLowerer {
             return undefined;
         const lowerer = this.context.dataLowerer;
         let element: DataType | undefined;
+        let mixed = false;
         for (const item of argument.elements) {
             const declared = lowerer.dataTypeAt(
                 ts.isSpreadElement(item) ? item.expression : item,
             );
             const type = !ts.isSpreadElement(item)
                 ? declared
-                : declared?.kind === "vector" || declared?.kind === "span"
+                : declared?.kind === "vector" ||
+                    declared?.kind === "span" ||
+                    declared?.kind === "set" ||
+                    (declared?.kind === "iterator" && !declared.asynchronous)
                   ? declared.element
                   : undefined;
             if (
@@ -1045,15 +1049,30 @@ export class AsyncLowerer {
                 )
             )
                 continue;
-            if (
-                type?.kind !== "promise" ||
-                (element !== undefined && !dataTypesEqual(element, type))
-            )
+            if (type?.kind !== "promise")
                 return this.context.fail(
                     item,
-                    `Promise.${operation} literal spreads require promises and arrays of promises of one settlement type.`,
+                    `Promise.${operation} literal spreads require promises and represented synchronous iterables of promises.`,
                 );
+            mixed ||= element !== undefined && !dataTypesEqual(element, type);
             element = type;
+        }
+        if (mixed) {
+            const checker = this.context.checker;
+            const indexed = checker.getIndexTypeOfType(
+                checker.getTypeAtLocation(argument),
+                ts.IndexKind.Number,
+            );
+            const awaited = indexed && checker.getAwaitedType(indexed);
+            const result =
+                awaited &&
+                this.context.dataTypes.fromStoredTsType(awaited, argument);
+            if (!result)
+                return this.context.fail(
+                    argument,
+                    `Promise.${operation} literal spreads require an owned common settlement representation.`,
+                );
+            element = { kind: "promise", result };
         }
         const array: DataType = { kind: "vector", element: element! };
         return {
@@ -1145,6 +1164,7 @@ export class AsyncLowerer {
                       input,
                       () => context.compileValue(input),
                   );
+        const settlements: ReturnType<AsyncLowerer["settledHandlers"]>[] = [];
         const pin = (
             value: Value,
             source: ts.Node,
@@ -1170,10 +1190,8 @@ export class AsyncLowerer {
                     "Promise.allSettled requires an owned settlement value.",
                 );
             const handlers = this.settledHandlers(type, call);
-            return context.dataLowerer.leafValue(
-                `(${promise.cpp}).then(${handlers.fulfilled}, ${handlers.rejected})`,
-                { kind: "promise", result: handlers.type },
-            );
+            settlements.push(handlers);
+            return promise;
         };
         let promises: Value[];
         const spread = settled
@@ -1200,22 +1218,27 @@ export class AsyncLowerer {
                     pin(element, argument, this.elementType(type, index)),
                 );
             } else {
-                const type = value.dataType;
-                if (type?.kind !== "vector")
+                const iterated = context.dataLowerer.iteratedElements(value);
+                if (
+                    !iterated ||
+                    !("range" in iterated) ||
+                    (value.dataType?.kind === "iterator" &&
+                        value.dataType.asynchronous)
+                )
                     return context.fail(
                         argument,
-                        `Promise.${operation} requires an array or a represented tuple.`,
+                        `Promise.${operation} requires a represented synchronous iterable.`,
                     );
-                if (type.element.kind !== "promise")
+                if (iterated.element.kind !== "promise")
                     return context.fail(
                         argument,
-                        `Promise.${operation} stored arrays currently require promise elements.`,
+                        `Promise.${operation} stored iterables currently require promise elements.`,
                     );
-                const element = type.element.result;
+                const element = iterated.element.result;
                 if (settled) {
                     const handlers = this.settledHandlers(element, call);
                     return context.dataLowerer.leafValue(
-                        `bbl::js::promise_all_settled(${value.cpp}, ${handlers.fulfilled}, ${handlers.rejected})`,
+                        `bbl::js::promise_all_settled(${iterated.range.cpp}, ${handlers.fulfilled}, ${handlers.rejected})`,
                         {
                             kind: "promise",
                             result: { kind: "vector", element: handlers.type },
@@ -1224,7 +1247,7 @@ export class AsyncLowerer {
                 }
                 // A void fulfillment is undefined in the aggregate array.
                 return context.dataLowerer.leafValue(
-                    `bbl::js::promise_all(${value.cpp})`,
+                    `bbl::js::promise_all(${iterated.range.cpp})`,
                     {
                         kind: "promise",
                         result: {
@@ -1238,11 +1261,21 @@ export class AsyncLowerer {
         const result: Value = {
             kind: "tuple",
             cpp: "",
-            tupleElements: promises.map((value) => value.promiseResult!),
+            tupleElements: promises.map((value, index) =>
+                settled
+                    ? context.dataLowerer.leafValue(
+                          "",
+                          settlements[index]!.type,
+                      )
+                    : value.promiseResult!,
+            ),
         };
+        const inputs = `std::tuple{${promises.map((value) => value.cpp).join(", ")}}`;
         return {
             kind: "promise",
-            cpp: `bbl::js::promise_all_tuple(std::tuple{${promises.map((value) => value.cpp).join(", ")}})`,
+            cpp: settled
+                ? `bbl::js::promise_all_settled_tuple(${inputs}, std::tuple{${settlements.map((value) => value.fulfilled).join(", ")}}, std::tuple{${settlements.map((value) => value.rejected).join(", ")}})`
+                : `bbl::js::promise_all_tuple(${inputs})`,
             promiseType: this.cppType(result, call),
             promiseResult: result,
             nativeCaptures: promises.flatMap(

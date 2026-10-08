@@ -20,6 +20,7 @@ import {
     isTypedArrayType,
     passesByReferenceKind,
     propertyIsReadOnly,
+    reseatsOnAssignment,
     resourceValueCppType,
     type DataType,
 } from "./data-types.js";
@@ -1156,8 +1157,7 @@ export class BindingScopes {
         sharedStorage = false,
     ): void {
         this.context.useNativeValue(value);
-        // A parameter the function never rebinds keeps its argument as the
-        // binding; a private name is never a parameter.
+        // A private name is never a parameter.
         const parameterDeclaration =
             parameter && ts.isIdentifier(identifier)
                 ? ts.findAncestor(identifier, ts.isParameter)
@@ -1282,7 +1282,9 @@ export class BindingScopes {
             return;
         }
         if (
-            (value.kind === "string" && (!parameter || readOnlyParameter)) ||
+            (value.kind === "string" &&
+                (!parameter ||
+                    (readOnlyParameter && !readsNativeStorage(value)))) ||
             value.kind === "callback" ||
             isCompileTimeOnlyValue(value.kind)
         ) {
@@ -1308,6 +1310,15 @@ export class BindingScopes {
             value.kind !== "number" && value.kind !== "boolean";
         const stableNativeBinding =
             referenceValue && this.context.hasStableNativeBinding(value);
+        // Each call retains the argument's value. Borrowing a mutable caller
+        // binding would let its later reassignment change this parameter,
+        // including reads in a returned callback or after a reentrant call.
+        const ownsParameterValue =
+            parameter &&
+            value.dataType !== undefined &&
+            reseatsOnAssignment(value.dataType, (name) =>
+                this.context.dataTypes.isReferenceStruct(name),
+            );
         const borrowsImmutableBinding =
             !sharedStorage &&
             stableNativeBinding &&
@@ -1342,7 +1353,10 @@ export class BindingScopes {
                     ? "bool"
                     : isStringValue(value)
                       ? "std::string"
-                      : parameter && !copiesHandle && !reboundParameter
+                      : parameter &&
+                          !copiesHandle &&
+                          !reboundParameter &&
+                          !ownsParameterValue
                         ? "auto&&"
                         : "auto";
         const ownsTemporaryArgument =
@@ -1360,7 +1374,10 @@ export class BindingScopes {
             !borrowsImmutableBinding &&
             referenceValue &&
             !reference &&
-            (stableNativeBinding || (parameter && value.nativeLvalue))
+            nativeType !== "std::string" &&
+            (stableNativeBinding ||
+                (parameter && value.nativeLvalue) ||
+                (ownsParameterValue && !value.nativeOwnedRvalue))
         ) {
             this.context.reachJsData();
             initializerCpp = `bbl::js::snapshot_value(${initializerCpp})`;
@@ -1466,6 +1483,7 @@ export class BindingScopes {
             !reboundParameter &&
             (borrowsImmutableBinding ||
                 ownsTemporaryArgument ||
+                ownsParameterValue ||
                 (copiesHandle && !reference) ||
                 nativeType === "std::string")
         ) {
