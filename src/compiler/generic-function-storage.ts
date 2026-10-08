@@ -18,13 +18,30 @@ export interface GenericFunctionDemand {
 
 type SameType = (left: ts.Type, right: ts.Type) => boolean;
 
-/** Equivalent binders may share storage; structural assignability cannot. */
+/**
+ * Equivalent type-level binders may share storage. Executable declarations
+ * keep source-specific families, which also bound recursive specialization.
+ */
 function samePolymorphicSignature(
     checker: ts.TypeChecker,
     left: ts.Signature,
     right: ts.Signature,
 ): boolean {
-    if (!left.typeParameters?.length || !right.typeParameters?.length)
+    const typeLevel = (signature: ts.Signature): boolean => {
+        const declaration = signature.declaration;
+        return (
+            declaration !== undefined &&
+            (ts.isMethodSignature(declaration) ||
+                ts.isCallSignatureDeclaration(declaration) ||
+                ts.isFunctionTypeNode(declaration))
+        );
+    };
+    if (
+        !left.typeParameters?.length ||
+        !right.typeParameters?.length ||
+        !typeLevel(left) ||
+        !typeLevel(right)
+    )
         return false;
     const active = new Map<ts.Type, Set<ts.Type>>();
     const sameType = (

@@ -35,6 +35,12 @@ test("alpha-equivalent generic callback families require exact schemas", () => {
         type NestedSwapped = <T>(callback:<U>(left:U, right:Array<T>)=>U)=>T;
         type Fixed = (radius:number, callback:()=>number)=>number;
         type FixedCopy = (radius:number, callback:()=>number)=>number;
+        function implementation<T>(radius:number, callback:()=>T):T { return callback(); }
+        type ExecutableFunction = typeof implementation;
+        const arrow = <T>(radius:number, callback:()=>T):T => callback();
+        type ExecutableArrow = typeof arrow;
+        const methods = { run<T>(radius:number, callback:()=>T):T { return callback(); } };
+        type ExecutableMethod = typeof methods.run;
         `,
         resolve("artifacts/generic-function-families/schema.ts"),
     );
@@ -77,6 +83,9 @@ test("alpha-equivalent generic callback families require exact schemas", () => {
         "Default",
         "Const",
         "Fixed",
+        "ExecutableFunction",
+        "ExecutableArrow",
+        "ExecutableMethod",
     ])
         assert.notEqual(family("Base"), family(name), name);
     for (const [left, right] of [
@@ -132,6 +141,15 @@ test("forwarded generic callbacks share identity, captures and specializations",
         original.run=other.run;
         if(saved===original.run || result.run(4,()=>5)!==5 || original.count()!==10)
             throw new Error('retained callback after field replacement');
+        type Track=<T>(label:string,work:()=>T)=>T;
+        let labels='';
+        const tracks:Track[]=[(label,work)=>{labels+=label;return work();}];
+        const work=()=>7;
+        tracks[0]!('direct',work);
+        const wrapper=<V>(label:string,work:()=>V):V=>tracks[0]!(label,work);
+        const wrappers:Array<typeof wrapper>=[wrapper];
+        if(wrappers[0]!('wrapped',work)!==7 || wrappers[0]!('text',()=>'kept')!=='kept' || labels!=='directwrappedtext')
+            throw new Error('first-demand order and wrapper specializations');
     `;
     runInNewContext(
         ts.transpileModule(source, {
@@ -151,4 +169,27 @@ test("forwarded generic callbacks share identity, captures and specializations",
         "generic-function-families/forwarded-callbacks",
         result.cpp,
     );
+});
+
+test("recursive generic calls through equivalent source views still refuse", () => {
+    for (const argument of ["value", "[value]"]) {
+        const recursive = `(state as View).read(${argument},depth-1)${argument === "value" ? "" : "[0]!"}`;
+        assert.throws(
+            () =>
+                compileSource(`
+                interface Source { read<T>(value:T,depth:number):T; ready():boolean; }
+                interface View { read<U>(value:U,depth:number):U; ready():boolean; }
+                function make():Source {
+                    return {ready:()=>true,read<T>(value:T,depth:number):T {
+                        return depth>0 ? ${recursive} : value;
+                    }};
+                }
+                const saved:Array<()=>boolean>=[];
+                saved.push(()=>state.ready());
+                const state=make();
+                state.read(3,2);
+            `),
+            /Recursive stored generic functions require an already represented signature/,
+        );
+    }
 });
