@@ -22,6 +22,8 @@ test("unrelated identity uses do not activate immediate promises", () => {
         `const values:Promise<number>[]=[Promise.resolve(1),Promise.resolve(1)];if(await values[0]!==1)throw new Error('value');`,
         `const value:unknown=await Promise.resolve(1);if(value!==1)throw new Error('value');`,
         `async function value(){return 1;}const item:unknown=await value();if(item!==1)throw new Error('value');`,
+        `async function read():Promise<ArrayBuffer>{return Promise.resolve(new ArrayBuffer(4));}if((await read()).byteLength!==4)throw new Error('adoption');`,
+        `let value:string|null=null;if(value===null)value=await Promise.resolve('ready');if(value!=='ready')throw new Error('assignment');`,
     ]) {
         const result = compileSource(source);
         assert.ok(
@@ -44,10 +46,8 @@ test("reached promise identities and erased aliases require owned storage", () =
         `function hide(value:Promise<number>[]):unknown[]{return value;}const values=hide([Promise.resolve(1),Promise.resolve(1)]);if(values[0]===values[1])throw new Error('identity');`,
         `function hide<T>(value:T):unknown{return value;}if(hide(Promise.resolve(1))===hide(Promise.resolve(1)))throw new Error('identity');`,
         `const values=new Map<string,Promise<number>>([['a',Promise.resolve(1)]]);const hidden:unknown=values;`,
+        `const p:PromiseLike<number>=Promise.resolve(1);const q:PromiseLike<number>=Promise.resolve(1);if(p===q)throw new Error('PromiseLike aliases');`,
         `const p=Promise.resolve(1);if(typeof p!=='object')throw new Error('object type');`,
-        `const p=Promise.resolve(false);if(!p)throw new Error('truthiness');`,
-        `const p=Promise.resolve(false);if(!Boolean(p))throw new Error('Boolean');`,
-        `const p=Promise.resolve(false);if((p)){}else throw new Error('wrapped truthiness');`,
     ]) {
         const result = compileSource(source);
         assert.ok(
@@ -89,9 +89,6 @@ test("owned promise aliases retain identity before and after awaiting", async (t
         (async()=>{
             const a=Promise.resolve(1),b=Promise.resolve(1);
             if(typeof a!=='object')throw new Error('object observation');
-            const falseValue=Promise.resolve(false);
-            if(!falseValue||!Boolean(falseValue))throw new Error('Promise truthiness');
-            if((falseValue)){}else throw new Error('wrapped Promise truthiness');
             if(new Set([a,b]).size!==2||new Map([[a,1],[b,2]]).size!==2)throw new Error('keys');
             const hidden:unknown=a,other:unknown=b;
             function equal(left:unknown,right:unknown){return left===right;}
@@ -133,6 +130,52 @@ test("owned promise aliases retain identity before and after awaiting", async (t
                 defines: ["BBLITE_WORKERS=1"],
                 timeoutMs: 20_000,
             },
+        );
+    });
+});
+
+test("immediate promise adoption preserves wrapped results and effects", async (t) => {
+    const source = `
+        (async()=>{
+            let calls=0;
+            function bytes(size:number){calls++;return Promise.resolve(new ArrayBuffer(size));}
+            async function read(flag:boolean):Promise<ArrayBuffer>{
+                return flag ? (bytes(4)) : (bytes(8));
+            }
+            const wrapped=async ():Promise<ArrayBuffer> => (bytes(2));
+            const first=await (read(true));
+            const second=await (read(false));
+            await (wrapped());
+            if(first.byteLength!==4||second.byteLength!==8||calls!==3)
+                throw new Error('adopted results and effects');
+            let text:string|null=null;
+            function choose(flag:boolean){calls++;return flag;}
+            if(text===null)text=await (choose(true) ? Promise.resolve('ready') : Promise.resolve('wrong'));
+            if(text!=='ready'||calls!==4)throw new Error('awaited assignment');
+            globalThis.close();
+        })();
+    `;
+    let closed = false;
+    await runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+        {
+            close() {
+                closed = true;
+            },
+        },
+    );
+    assert.equal(closed, true);
+    const compiled = compileSource(source);
+    assert.ok(!compiled.manifest.features.includes("platform:workers"));
+    assert.doesNotMatch(compiled.cpp, /bbl::js::Promise</);
+    const tools = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !tools }, () => {
+        runGeneratedProgram(
+            tools!,
+            "promise-activation-reach/adoption",
+            compiled.cpp,
         );
     });
 });

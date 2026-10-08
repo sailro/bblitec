@@ -37,6 +37,10 @@
     {
       "summary": "Iterator result absence uses the existing null-only slot proof and one owned-present Nullable factory.",
       "applied": true
+    },
+    {
+      "summary": "Await and async return adoption share the existing wrapper traversal and one contextual-storage boundary.",
+      "applied": true
     }
   ]
 }

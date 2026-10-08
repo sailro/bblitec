@@ -170,6 +170,7 @@ Awaited, statically expanded `Promise.all` maps preserve fixed asset-load order;
 Outside a realm the executor runs in place and an await reads the settlement; one still pending ends the
 awaiting activation ([fidelity](fidelity.md#semantic-contract)). Timers/microtasks need no engine. RAF
 needs a Window repaint source. Unhandled rejections are reported in a subsequent task after microtasks.
+Immediate promise values do not represent general object truthiness.
 MessageChannel refuses; gzip/base64 JSON decoded through
 `DecompressionStream` folds at generation.
 

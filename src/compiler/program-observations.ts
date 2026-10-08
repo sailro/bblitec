@@ -65,7 +65,7 @@ export interface ProgramObservations {
     readonly writes: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
     readonly arrayWrites: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
     readonly identities: ReadonlySet<ts.Type>;
-    /** Operand/key types at identity, typeof or truthiness uses, consulted only when reached. */
+    /** Operand/key types at identity or typeof uses, consulted only when reached. */
     readonly identityConsumers: ReadonlyMap<ts.Node, ReadonlySet<ts.Type>>;
     readonly enumerations: ReadonlySet<ts.Type>;
     readonly assertions: readonly {
@@ -342,21 +342,6 @@ function observe(program: ts.Program): ProgramObservations {
             : yieldsNewArray(checker, unwrapped);
     };
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isIfStatement(node) ||
-            ts.isWhileStatement(node) ||
-            ts.isDoStatement(node)
-        )
-            observesObject(node.expression, node.expression);
-        else if (ts.isForStatement(node) && node.condition)
-            observesObject(node.condition, node.condition);
-        else if (ts.isConditionalExpression(node))
-            observesObject(node.condition, node.condition);
-        else if (
-            ts.isPrefixUnaryExpression(node) &&
-            node.operator === ts.SyntaxKind.ExclamationToken
-        )
-            observesObject(node.operand, node);
         // A new array is created with the type it is read as.
         if (ts.isExpression(node) && !newArrayValue(node)) {
             const own = mutableElement(typeOf(node));
@@ -470,11 +455,6 @@ function observe(program: ts.Program): ProgramObservations {
                 }
             } else if (operator === ts.SyntaxKind.InKeyword)
                 enumerated(node.right);
-            else if (
-                operator === ts.SyntaxKind.AmpersandAmpersandToken ||
-                operator === ts.SyntaxKind.BarBarToken
-            )
-                observesObject(node.left, node.left);
         } else if (ts.isTypeOfExpression(node)) {
             observesObject(node.expression, node);
         } else if (ts.isSwitchStatement(node)) identity(node.expression);
@@ -509,8 +489,6 @@ function observe(program: ts.Program): ProgramObservations {
     const call = (node: ts.CallExpression): void => {
         const callee = unwrapExpression(node.expression);
         const first = node.arguments[0];
-        if (first && libraryGlobal(checker, callee) === "Boolean")
-            observesObject(first, node);
         if (!ts.isPropertyAccessExpression(callee)) return;
         const method = callee.name.text;
         const owner = libraryGlobal(checker, callee.expression);
