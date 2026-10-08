@@ -136,29 +136,31 @@ private:
 template <typename T, typename Record>
 [[nodiscard]] Accessor<T> entry_accessor(Record record, std::string key) {
     auto entry = std::tuple<Record, std::string>{std::move(record), std::move(key)};
-    return Accessor<T>(make_closure(entry,
-                                    [](std::tuple<Record, std::string>& view) -> T {
-                                        return std::get<0>(view).at(std::get<1>(view));
-                                    }),
-                       make_closure(entry, [](std::tuple<Record, std::string>& view, T value) {
-                           std::get<0>(view).set(std::get<1>(view), std::move(value));
-                       }));
+    auto getter = make_closure(entry, [](std::tuple<Record, std::string>& view) -> T {
+        return std::get<0>(view).at(std::get<1>(view));
+    });
+    auto setter =
+        make_closure(std::move(entry), [](std::tuple<Record, std::string>& view, T value) {
+            std::get<0>(view).set(std::get<1>(view), std::move(value));
+        });
+    return Accessor<T>(std::move(getter), std::move(setter));
 }
 
 /** An optional field of such a view: an absent entry reads as absent. */
 template <typename T, typename Record>
 [[nodiscard]] Accessor<T> optional_entry_accessor(Record record, std::string key) {
     auto entry = std::tuple<Record, std::string>{std::move(record), std::move(key)};
-    return Accessor<T>(make_closure(entry,
-                                    [](std::tuple<Record, std::string>& view) -> T {
-                                        return std::get<0>(view).get(std::get<1>(view));
-                                    }),
-                       make_closure(entry, [](std::tuple<Record, std::string>& view, T value) {
-                           if (value)
-                               std::get<0>(view).set(std::get<1>(view), *std::move(value));
-                           else
-                               static_cast<void>(std::get<0>(view).erase(std::get<1>(view)));
-                       }));
+    auto getter = make_closure(entry, [](std::tuple<Record, std::string>& view) -> T {
+        return std::get<0>(view).get(std::get<1>(view));
+    });
+    auto setter =
+        make_closure(std::move(entry), [](std::tuple<Record, std::string>& view, T value) {
+            if (value)
+                std::get<0>(view).set(std::get<1>(view), *std::move(value));
+            else
+                static_cast<void>(std::get<0>(view).erase(std::get<1>(view)));
+        });
+    return Accessor<T>(std::move(getter), std::move(setter));
 }
 
 } // namespace bbl::js

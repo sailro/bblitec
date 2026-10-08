@@ -77,7 +77,7 @@ namespace promise_detail {
 /** What an aggregate array holds for one fulfillment: a void fulfillment is undefined. */
 template <typename T> struct AllElement {
     using type = T;
-    static const T& from(const T& value) { return value; }
+    static T from(const T& value) { return value; }
 };
 template <> struct AllElement<PromiseVoid> {
     using type = Undefined;
