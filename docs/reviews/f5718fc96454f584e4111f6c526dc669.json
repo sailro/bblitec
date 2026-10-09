@@ -61,6 +61,26 @@
     {
       "summary": "Class owner-return lowering reuses final-return analysis and retains recursion guards.",
       "applied": true
+    },
+    {
+      "summary": "Retained iteration analysis reuses shared syntax walkers and declaration ancestry checks.",
+      "applied": true
+    },
+    {
+      "summary": "Undefined and nonthenable completion proofs avoid repeated callback body walks.",
+      "applied": true
+    },
+    {
+      "summary": "Nullable resource bindings use freshly reconstructed values without redundant cloning.",
+      "applied": true
+    },
+    {
+      "summary": "Shared-return ownership validation memoizes owner queries within one validation.",
+      "applied": true
+    },
+    {
+      "summary": "Numeric accessor lowering runs the shared admission check before speculative lowering.",
+      "applied": true
     }
   ]
 }
