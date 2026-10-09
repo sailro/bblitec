@@ -149,6 +149,45 @@ export interface OneObjectContext
     >;
 }
 
+/** Replay a mutable compile-time array using its declared or represented source storage. */
+export function requireMutableTupleStorage(
+    context: OneObjectContext,
+    value: Value,
+    expression: ts.Expression,
+): void {
+    const declaration = context.bindings.tupleDeclaration(value, expression);
+    if (!declaration?.initializer || context.dynamicBindings.has(declaration))
+        return;
+    const initializer = unwrapExpression(declaration.initializer);
+    const declared = demandedStorageType(
+        context,
+        declaration,
+        "array",
+        initializer,
+    );
+    // Generation-known handle lists retain their composition metadata.
+    if (declared?.kind === "vector") {
+        if (declared.element.kind !== "handle")
+            throw new DynamicBindingStorageRequired(declaration, "array");
+        return;
+    }
+    // A wider annotation can mention unrepresented owners while the actual
+    // initializer has a concrete array type. Every later write still passes
+    // through that native element sink and refuses an incompatible value.
+    const storage = {
+        nativeType: context.checker.getTypeAtLocation(initializer),
+        node: initializer,
+    };
+    const represented = demandedStorageType(
+        context,
+        declaration,
+        storage,
+        initializer,
+    );
+    if (represented?.kind === "vector" && represented.element.kind !== "handle")
+        throw new DynamicBindingStorageRequired(declaration, storage);
+}
+
 /**
  * The value a declaration's initializer lowered to, as a binding takes it
  * or the static path reads it. A compile-time record or tuple is rebuilt at

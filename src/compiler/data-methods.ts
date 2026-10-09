@@ -43,6 +43,7 @@ import {
 } from "./search-params.js";
 import { compileCollectionForEach } from "./collection-methods.js";
 import { pinOperand } from "./evaluation-order.js";
+import { requireMutableTupleStorage } from "./dynamic-binding-storage.js";
 
 import {
     dataTypesEqual,
@@ -507,6 +508,12 @@ export function compileDataMethodCall(
             true,
         );
     }
+    if (dynamicOwner?.kind === "tuple" && mutatingArrayMethods.has(method))
+        requireMutableTupleStorage(
+            lowerer.context,
+            dynamicOwner,
+            ownerExpression,
+        );
     // A query bag the fold answered stays a browser value until a read it
     // cannot answer arrives here; that read parses the deployment query.
     if (

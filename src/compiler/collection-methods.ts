@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
-import type { Value } from "./types.js";
+import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 
 export function compileCollectionForEach(
     lowerer: DataLowerer,
@@ -92,7 +92,12 @@ export function compileMapInitializer(
             expression,
             "new Map expects at most one iterable.",
         );
-    return compileEntryCollection(lowerer, expression.arguments[0]!, type);
+    return compileEntryCollection(
+        lowerer,
+        expression.arguments[0]!,
+        type,
+        true,
+    );
 }
 
 /** Consume key/value entries for Map constructors and Object.fromEntries. */
@@ -137,10 +142,16 @@ export function compileEntryCollection(
     lowerer: DataLowerer,
     expression: ts.Expression,
     type: DataType & { kind: "map" },
+    absentIsEmpty = false,
 ): Value {
     const input = lowerer.context.unwrap(expression);
     const result = lowerer.context.allocateTemporaryCppName("map_initialized");
-    if (ts.isArrayLiteralExpression(input)) {
+    if (
+        ts.isArrayLiteralExpression(input) &&
+        input.elements.every((element) =>
+            ts.isArrayLiteralExpression(lowerer.context.unwrap(element)),
+        )
+    ) {
         lowerer.context.emit(
             `${lowerer.context.dataTypes.cppType(type)} ${result};`,
         );
@@ -188,7 +199,25 @@ export function compileEntryCollection(
                 code: `${result}.set(${entry.keyName}, ${entry.valueName});`,
             });
     } else {
-        const source = compileCollectionEntries(lowerer, input, type);
+        let source = compileCollectionEntries(lowerer, input, type);
+        if (absentIsEmpty && source.dataType?.kind === "optional") {
+            const inner = source.dataType.inner;
+            if (
+                inner.kind === "vector" ||
+                inner.kind === "span" ||
+                inner.kind === "map"
+            ) {
+                const pinned = lowerer.context.bindings.pinValueToTemporary(
+                    source,
+                    "map_iterable",
+                    input,
+                );
+                source = lowerer.leafValue(
+                    `(${optionalPresentCpp(pinned.cpp)} ? ${optionalValueCpp(pinned.cpp)} : ${lowerer.context.dataTypes.cppType(inner)}{})`,
+                    inner,
+                );
+            }
+        }
         if (
             source.dataType?.kind === "vector" &&
             source.dataType.element.kind === "product" &&

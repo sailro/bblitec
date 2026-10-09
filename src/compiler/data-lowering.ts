@@ -9089,6 +9089,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         this.context.reachJsData();
         const cppType = this.context.dataTypes.cppType(dataType);
+        if (arguments_.length === 1) {
+            const argument = arguments_[0]!;
+            const checked = this.context.checker.getTypeAtLocation(argument);
+            const members = checked.isUnion() ? checked.types : [checked];
+            if (
+                members.every(
+                    (member) =>
+                        (member.flags &
+                            (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
+                        0,
+                )
+            ) {
+                this.context.emitDiscardedValue(
+                    this.context.compileValue(argument),
+                );
+                return { kind: "data", cpp: `${cppType}{}`, dataType };
+            }
+        }
         if (dataType.kind === "map") {
             if (dataType.weak && arguments_.length !== 0)
                 this.context.fail(
