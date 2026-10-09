@@ -41,12 +41,15 @@ import { recordAt } from "./record-access.js";
 import { ScopedValueIndex } from "./scoped-value-index.js";
 import { retainTextValue } from "./text-surface.js";
 import {
+    commonResourceValue,
     isCompileTimeOnlyValue,
     isStringValue,
     presenceFlagCpp,
     readsNativeStorage,
+    representedStorage,
     snapshotReadCpp,
     valueForKind,
+    withNativeMetadata,
     type Value,
     type VariableBinding,
 } from "./types.js";
@@ -1175,6 +1178,16 @@ export class BindingScopes {
     ): void {
         this.context.useNativeValue(value);
         const nativeRecordOwner = isNativeOwnerRecord(value);
+        const ownedResource =
+            value.dataType?.kind === "handle" &&
+            value.dataType.ownedEngine === true;
+        const resourceStorage = ownedResource
+            ? (representedStorage(value) ??
+              this.context.fail(
+                  identifier,
+                  "An owned resource requires its represented storage.",
+              ))
+            : undefined;
         // A private name is never a parameter.
         const parameterDeclaration =
             parameter && ts.isIdentifier(identifier)
@@ -1310,7 +1323,9 @@ export class BindingScopes {
             return;
         }
         const cppName = explicitCppName ?? this.cppIdentifier(identifier.text);
-        const reference = value.kind === "engine" || value.kind === "scene";
+        const reference =
+            !ownedResource &&
+            (value.kind === "engine" || value.kind === "scene");
         const copiesHandle =
             parameter &&
             (this.context.dataLowerer.dataTypeAt(identifier)?.kind ===
@@ -1386,7 +1401,7 @@ export class BindingScopes {
         let initializerCpp =
             value.kind === "number" && value.staticNumber !== undefined
                 ? numberConstantValue(value.staticNumber).cpp
-                : value.cpp;
+                : (resourceStorage?.cpp ?? value.cpp);
         if (
             !sharedStorage &&
             !borrowsImmutableBinding &&
@@ -1402,10 +1417,12 @@ export class BindingScopes {
         }
         if (sharedStorage) {
             if (isHandleKind(value.kind)) {
-                const cppType = this.context.dataTypes.cppType({
-                    kind: "handle",
-                    handle: value.kind,
-                });
+                const cppType = this.context.dataTypes.cppType(
+                    resourceStorage?.type ?? {
+                        kind: "handle",
+                        handle: value.kind,
+                    },
+                );
                 this.context.emit({
                     kind: "declaration",
                     type: "auto",
@@ -1434,10 +1451,12 @@ export class BindingScopes {
         // A shared handle cell declares its native type, so closures that
         // capture it have a concrete environment.
         if (isHandleKind(value.kind) && sharedStorage) {
-            const handleType = this.context.dataTypes.cppType({
-                kind: "handle",
-                handle: value.kind,
-            });
+            const handleType = this.context.dataTypes.cppType(
+                resourceStorage?.type ?? {
+                    kind: "handle",
+                    handle: value.kind,
+                },
+            );
             this.context.registerNativeBindingType(
                 cppName,
                 `std::shared_ptr<${handleType}>`,
@@ -1459,12 +1478,17 @@ export class BindingScopes {
                 (value.kind === "boolean" &&
                     value.staticBoolean !== undefined)) &&
             !value.parameterBinding;
+        const storedType = resourceStorage?.type ?? value.dataType;
+        const bound =
+            (nativeRecordOwner || ownedResource) && storedType
+                ? withNativeMetadata(
+                      this.context.dataLowerer.leafValue(storedCpp, storedType),
+                      value,
+                  )
+                : value;
         const stored: Value = {
-            ...value,
-            ...(nativeRecordOwner && value.dataType
-                ? this.context.dataLowerer.leafValue(storedCpp, value.dataType)
-                : {}),
-            cpp: storedCpp,
+            ...bound,
+            cpp: ownedResource ? bound.cpp : storedCpp,
             ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
             ...(parameter ? { parameterBinding: !constantParameter } : {}),
             ...(!parameter ? { nativeBinding: true } : {}),
@@ -1720,6 +1744,26 @@ export class BindingScopes {
                     storedEngineCpp: [binding],
                 },
             };
+        }
+        if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
+            const storage = representedStorage(value);
+            if (!storage)
+                throw new Error(
+                    "An owned resource requires its represented storage.",
+                );
+            const cpp = this.context.allocateTemporaryCppName(label);
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: cpp,
+                initializer: storage.cpp,
+                attributes: "[[maybe_unused]] ",
+            });
+            this.context.registerNativeConstBinding(cpp);
+            return withNativeMetadata(
+                this.context.dataLowerer.leafValue(cpp, storage.type),
+                value,
+            );
         }
         if (value.kind === "engine" && value.ownedEngineCpp) {
             if (value.stableOwnerCpp === value.ownedEngineCpp) return value;
@@ -2128,15 +2172,28 @@ export class BindingScopes {
                 dataType?.kind === "tuple" ||
                 dataType?.kind === "product"
             ) {
+                const handle =
+                    dataType.kind === "vector" &&
+                    dataType.element.kind === "handle"
+                        ? dataType.element.handle
+                        : undefined;
                 return this.pinValueToTemporary(
-                    this.context.dataLowerer.leafValue(
-                        this.context.dataLowerer.compileKnownValueForSink(
-                            value,
+                    {
+                        ...this.context.dataLowerer.leafValue(
+                            this.context.dataLowerer.compileKnownValueForSink(
+                                value,
+                                dataType,
+                                node,
+                            ),
                             dataType,
-                            node,
                         ),
-                        dataType,
-                    ),
+                        ...(handle &&
+                        value.tupleElements?.every(
+                            (element) => element.kind === handle,
+                        )
+                            ? { staticElements: value.tupleElements }
+                            : {}),
+                    },
                     label,
                     node,
                 );
@@ -2285,8 +2342,10 @@ export class BindingScopes {
                 fields.some(
                     (field) =>
                         field.readOnly &&
-                        value.recordProperties?.[field.sourceName]
-                            ?.engineIdentity,
+                        (value.recordProperties?.[field.sourceName]
+                            ?.engineIdentity ||
+                            value.recordProperties?.[field.sourceName]
+                                ?.engineCpp),
                 )
             ) {
                 projected = this.pinValueToTemporary(projected, "record", node);
@@ -2303,7 +2362,18 @@ export class BindingScopes {
                         : undefined;
                     if (identity && member.kind === "engine")
                         writable(member).engineIdentity = identity;
-                    properties[field.sourceName] = member;
+                    const known = field.readOnly
+                        ? value.recordProperties?.[field.sourceName]
+                        : undefined;
+                    properties[field.sourceName] =
+                        known &&
+                        field.type.kind === "handle" &&
+                        !field.type.ownedEngine
+                            ? commonResourceValue(
+                                  withNativeMetadata(member, known),
+                                  [known],
+                              )
+                            : member;
                 }
                 projected = valueForKind("data", {
                     ...projected,

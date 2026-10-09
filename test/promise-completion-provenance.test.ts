@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { assertAsyncSourceCloses } from "./async-oracle.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -33,22 +32,7 @@ test("stored Promise recovery callbacks retain concrete undefined completions", 
             globalThis.close();
         })();
     `;
-    let closed = false;
-    await runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: {
-                target: ts.ScriptTarget.ES2022,
-                module: ts.ModuleKind.None,
-            },
-        }).outputText,
-        {
-            queueMicrotask,
-            close: () => {
-                closed = true;
-            },
-        },
-    );
-    assert.equal(closed, true);
+    await assertAsyncSourceCloses(source);
     const result = compileSource(source);
     const native = optionalNativeFixtureTools(false);
     await t.test("native assertions", { skip: !native }, () => {
@@ -93,22 +77,7 @@ test("erased callback views cannot fabricate undefined or drop adoption", async 
                 globalThis.close();
             })();
         `;
-        let closed = false;
-        await runInNewContext(
-            ts.transpileModule(source, {
-                compilerOptions: {
-                    target: ts.ScriptTarget.ES2022,
-                    module: ts.ModuleKind.None,
-                },
-            }).outputText,
-            {
-                queueMicrotask,
-                close: () => {
-                    closed = true;
-                },
-            },
-        );
-        assert.equal(closed, true);
+        await assertAsyncSourceCloses(source);
         assert.throws(
             () => compileSource(source),
             /proven undefined completion|thenable assimilation|stored void|Promise.*result/,
@@ -137,22 +106,7 @@ test("async replacements preserve the adoption boundary of a void callback slot"
                 globalThis.close();
             })();
         `;
-        let closed = false;
-        await runInNewContext(
-            ts.transpileModule(source, {
-                compilerOptions: {
-                    target: ts.ScriptTarget.ES2022,
-                    module: ts.ModuleKind.None,
-                },
-            }).outputText,
-            {
-                queueMicrotask,
-                close: () => {
-                    closed = true;
-                },
-            },
-        );
-        assert.equal(closed, true);
+        await assertAsyncSourceCloses(source);
         assert.throws(
             () => compileSource(source),
             /proven undefined completion/,

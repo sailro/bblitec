@@ -662,6 +662,19 @@ public:
         return {};
     }
 
+    /** JavaScript member reads reject nullish receivers; dictionary lookups use get/at. */
+    [[nodiscard]] JsonValue read_property(std::string_view key) const {
+        if (is_null() || is_undefined())
+            throw_nullish_access();
+        return get(key);
+    }
+
+    [[nodiscard]] JsonValue read_index(double index) const {
+        if (is_null() || is_undefined())
+            throw_nullish_access();
+        return at(index);
+    }
+
     template <typename Visitor> void for_each_entry(Visitor&& visitor) const {
         if (native_) {
             for (const auto& key : own_keys())
@@ -800,9 +813,7 @@ public:
     [[nodiscard]] bool has_property(std::string_view key) const {
         if (!is_object() && !is_array())
             throw std::runtime_error("The right side of in must be an object.");
-        if (has_own(key))
-            return true;
-        if (native_ && native_->has_property(key))
+        if (native_ ? native_->has_property(key) : has_own(key))
             return true;
         if (object_prototype_has_property(key))
             return true;
@@ -1151,8 +1162,7 @@ template <> struct JsonNativeBox<Error> final : JsonNativeObject {
         return key == "name" || key == "message" || has_own(key);
     }
     std::string to_string() const override {
-        const auto name = error_name(value), message = error_message(value);
-        return name.empty() ? message : message.empty() ? name : name + ": " + message;
+        return error_to_string(error_name(value), error_message(value));
     }
     const std::type_info& type() const override { return typeid(Error); }
     const void* identity() const override { return value.identity(); }
@@ -1260,7 +1270,9 @@ public:
     bool null() { return append(JsonValue::null_value()); }
     bool boolean(bool value) { return append(JsonValue::from_boolean(value)); }
     bool number_integer(nlohmann::json::number_integer_t value) {
-        return append(JsonValue::from_number(static_cast<double>(value)));
+        // The JSON lexer sends positive integer tokens to number_unsigned;
+        // a signed integer token starts with '-', so its zero is exactly -0.
+        return append(JsonValue::from_number(value == 0 ? -0.0 : static_cast<double>(value)));
     }
     bool number_unsigned(nlohmann::json::number_unsigned_t value) {
         return append(JsonValue::from_number(static_cast<double>(value)));

@@ -71,7 +71,6 @@ import {
     requireDynamicBindingStorage,
     type DynamicBindingStorage,
 } from "./compiler/dynamic-binding-storage.js";
-import type { NativeRecordStorageDemand } from "./compiler/native-record-storage.js";
 import {
     isStorageDemand,
     recordStorageCompileAttempt,
@@ -878,6 +877,7 @@ class Compiler implements LoweringServices {
         string,
         readonly NativeCaptureBinding[]
     >();
+    private readonly realmEngineStorage = new EmissionMap<string, string>();
     public readonly managedCaptures: ClosureCaptures[] = emissionArray([]);
     public readonly body: NativeEmission[] = emissionArray([]);
     @journaled private accessor emissionSource: string | undefined;
@@ -929,10 +929,7 @@ class Compiler implements LoweringServices {
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
-    private readonly ownedRecords: ReadonlyMap<
-        NativeRecordStorageDemand["identity"],
-        NativeRecordStorageDemand
-    >;
+    private readonly ownedRecords: Readonly<ReplayStorage["records"]>;
     public readonly absenceTags: ReadonlySet<ts.Declaration>;
     public readonly tupleArraySlots: ReadonlySet<ts.Declaration>;
 
@@ -2116,6 +2113,7 @@ class Compiler implements LoweringServices {
     public hasStableNativeBinding(value: Value): boolean {
         const storage =
             value.stableOwnerCpp ??
+            value.resourceStorageCpp ??
             (value.kind === "engine" ? value.storedEngineCpp : undefined) ??
             value.cpp;
         if (
@@ -2482,6 +2480,15 @@ class Compiler implements LoweringServices {
         this.ui.emitUiDatasetProperty(element, property, value, site);
     }
 
+    public emitUiStyleValue(
+        element: Value,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void {
+        this.ui.emitUiStyleProperty(element, property, site, site, value);
+    }
+
     public emitWindowLogicalAssignment(
         expression: ts.BinaryExpression,
     ): boolean {
@@ -2543,6 +2550,21 @@ class Compiler implements LoweringServices {
         }
         if (retained.size && !this.nativeStoredValues.has(value))
             writable(value).nativeCaptures = [...retained];
+        if (
+            value.kind === "engine" &&
+            (value.storedEngineCpp || value.ownedEngineCpp) &&
+            expression.parent !== undefined &&
+            ts.isCallExpression(expression.parent) &&
+            expression.parent.arguments.includes(expression)
+        ) {
+            // A call receives this owner before later arguments or statements
+            // can replace the source slot; resources keep the same snapshot.
+            value = this.bindings.pinValueToTemporary(
+                value,
+                "engine_argument",
+                expression,
+            );
+        }
         this.describeEngineCaptures(value);
         this.useNativeValue(value);
         // A generation-known list of strings travels on the value, exactly
@@ -6005,9 +6027,26 @@ class Compiler implements LoweringServices {
 
     private describeEngineCaptures(value: Value): void {
         if (!value.engineCpp) return;
+        if (value.kind === "engine") {
+            const storage =
+                value.storedEngineCpp ??
+                (value.ownedEngineCpp
+                    ? `bbl::StoredEngine{${value.ownedEngineCpp}}`
+                    : undefined);
+            if (storage) this.realmEngineStorage.set(value.engineCpp, storage);
+        }
         if (value.kind === "engine" && value.ownedEngineCpp) {
             const owner = this.nativeBindings.get(value.ownedEngineCpp);
             if (owner) this.realmEngineCaptures.set(value.engineCpp, [owner]);
+        }
+        if (value.kind === "engine" && value.storedEngineCpp) {
+            const owner = this.nativeBindings.get(value.storedEngineCpp);
+            const captures = owner
+                ? [owner]
+                : (value.nativeCompanionCaptures?.storedEngineCpp ??
+                  value.nativeCaptures);
+            if (captures?.length)
+                this.realmEngineCaptures.set(value.engineCpp, captures);
         }
         const owners = this.realmEngineCaptures.get(value.engineCpp);
         if (owners)
@@ -6023,6 +6062,7 @@ class Compiler implements LoweringServices {
         const counter = integerCounterOf(value);
         const storage =
             value.sharedStorageCpp ??
+            value.resourceStorageCpp ??
             counter ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
@@ -6105,7 +6145,9 @@ class Compiler implements LoweringServices {
      * does not make constant.
      */
     public markImmutableNativeStorage(value: Value, immutable: boolean): void {
-        const binding = this.nativeBindings.get(value.cpp);
+        const binding = this.nativeBindings.get(
+            value.resourceStorageCpp ?? value.cpp,
+        );
         if (
             binding &&
             !value.sharedStorageCpp &&
@@ -6273,6 +6315,8 @@ class Compiler implements LoweringServices {
     private trackRetainedCaptureName(name: string): void {
         const binding = this.nativeBindings.get(name);
         if (binding) this.useNativeBinding(binding);
+        for (const owner of this.realmEngineCaptures.get(name) ?? [])
+            this.useNativeBinding(owner);
     }
 
     public emitInlinedBody<T>(
@@ -7079,7 +7123,16 @@ class Compiler implements LoweringServices {
     }
 
     public requiresStaticDataIteration(statement: ts.Node): boolean {
-        return requiresStaticDataIteration(this, statement);
+        // Runtime control flow and stored bodies cannot retain one settled
+        // DOM subtree for all invocations. Their loops need no static expansion.
+        return requiresStaticDataIteration(
+            this,
+            statement,
+            false,
+            !this.isInRuntimeControlFlow() &&
+                !this.isInFrameCallback() &&
+                !this.isInNativeFunctionBody(),
+        );
     }
 
     public canShareFunctionBody(body: ts.Node): boolean {
@@ -8384,6 +8437,9 @@ class Compiler implements LoweringServices {
 
     public requireEngine(value: Value, node: ts.Node): string {
         if (!value.engineCpp) {
+            this.dataTypes.requireEngineParameterStorage(
+                value.engineOwnerParameter,
+            );
             this.fail(
                 node,
                 `A ${value.kind} value is not associated with an engine.`,
@@ -8391,6 +8447,61 @@ class Compiler implements LoweringServices {
         }
         this.trackRetainedCaptureName(value.engineCpp);
         return value.engineCpp;
+    }
+
+    /** Preserve the actual stored owner when a resource leaves its source scope. */
+    public storedResourceEngine(value: Value, node: ts.Node): string {
+        this.useNativeValue(value);
+        const engine = this.requireEngine(value, node);
+        if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
+            if (!value.resourceStorageCpp)
+                return this.fail(
+                    node,
+                    "An owned resource requires its represented storage.",
+                );
+            return `(${value.resourceStorageCpp}).first`;
+        }
+        return (
+            this.realmEngineStorage.get(engine) ??
+            `bbl::StoredEngine{${engine}}`
+        );
+    }
+
+    /** A tracked resource choice retains only the selected engine owner. */
+    public selectResourceOwner(
+        value: Value,
+        candidates: readonly Value[],
+        index: Value,
+        node: ts.Node,
+    ): Value {
+        this.useNativeValue(index);
+        const owners = candidates.map((candidate) => {
+            return this.storedResourceEngine(candidate, node);
+        });
+        let selected = owners.at(-1)!;
+        for (let position = owners.length - 2; position >= 0; --position)
+            selected = `(${index.cpp} == ${position} ? ${owners[position]} : ${selected})`;
+        const owner = this.allocateTemporaryCppName("resource_owner");
+        this.emit({
+            kind: "declaration",
+            type: "const bbl::StoredEngine",
+            name: owner,
+            initializer: selected,
+            attributes: "[[maybe_unused]] ",
+        });
+        const capture = this.registerNativeConstBinding(owner);
+        this.registerNativeBindingType(owner, "bbl::StoredEngine");
+        const engineCpp = `(*${owner})`;
+        this.realmEngineStorage.set(engineCpp, owner);
+        this.realmEngineCaptures.set(engineCpp, [capture]);
+        return {
+            ...value,
+            engineCpp,
+            nativeCompanionCaptures: {
+                ...value.nativeCompanionCaptures,
+                engineCpp: [capture],
+            },
+        };
     }
 
     public engineFor(value: Value, node: ts.Node): string {
@@ -8450,6 +8561,7 @@ class Compiler implements LoweringServices {
                       )
                     : source;
             engine = retained.cpp;
+            this.describeEngineCaptures(retained);
             this.realmEngineCaptures.set(
                 engine,
                 this.nativeValueCaptures.bindingsOf(retained),

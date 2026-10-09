@@ -14,6 +14,7 @@ export {
     presenceCpp,
     presenceFlagCpp,
     readsNativeStorage,
+    representedStorage,
     snapshotReadCpp,
     statedTruthinessCpp,
     valueForKind,
@@ -1893,6 +1894,23 @@ export function runtimeMeshValue(value: Value): Value {
             ? { engineCpp: value.engineCpp }
             : {}),
         ...(value.dataType ? { dataType: value.dataType } : {}),
+        ...(value.dataType?.kind === "handle" && value.dataType.ownedEngine
+            ? {
+                  ...(value.resourceStorageCpp
+                      ? { resourceStorageCpp: value.resourceStorageCpp }
+                      : {}),
+                  ...(value.ownedCpp ? { ownedCpp: value.ownedCpp } : {}),
+                  ...(value.nativeCaptures
+                      ? { nativeCaptures: value.nativeCaptures }
+                      : {}),
+                  ...(value.nativeCompanionCaptures
+                      ? {
+                            nativeCompanionCaptures:
+                                value.nativeCompanionCaptures,
+                        }
+                      : {}),
+              }
+            : {}),
         ...(value.runtimeIteration ? { runtimeIteration: true } : {}),
         ...(value.runtimeMeshStreams ? { runtimeMeshStreams: true } : {}),
         ...(value.directMorphCompatible ? { directMorphCompatible: true } : {}),
@@ -1951,6 +1969,46 @@ export function commonResourceValue(
     candidates: readonly Value[],
 ): Value {
     const common = { ...value };
+    const first = candidates[0];
+    for (const key of ["ownedCpp", "resourceStorageCpp"] as const) {
+        if (
+            (value.dataType?.kind === "handle" &&
+                !value.dataType.ownedEngine) ||
+            candidates.some((candidate) => candidate[key] !== value[key])
+        ) {
+            delete common[key];
+            if (
+                key === "resourceStorageCpp" &&
+                common.nativeCompanionCaptures
+            ) {
+                common.nativeCompanionCaptures = {
+                    ...common.nativeCompanionCaptures,
+                };
+                delete common.nativeCompanionCaptures.resourceStorageCpp;
+            }
+        }
+    }
+    if (
+        value.kind !== "engine" &&
+        first?.engineCpp &&
+        candidates.every((candidate) => candidate.engineCpp === first.engineCpp)
+    ) {
+        common.engineCpp = first.engineCpp;
+        common.nativeCompanionCaptures = {
+            ...common.nativeCompanionCaptures,
+        };
+        const captures = first.nativeCompanionCaptures?.engineCpp;
+        if (captures) common.nativeCompanionCaptures.engineCpp = captures;
+        else delete common.nativeCompanionCaptures.engineCpp;
+    } else if (value.kind !== "engine") {
+        delete common.engineCpp;
+        if (common.nativeCompanionCaptures) {
+            common.nativeCompanionCaptures = {
+                ...common.nativeCompanionCaptures,
+            };
+            delete common.nativeCompanionCaptures.engineCpp;
+        }
+    }
     for (const key of metadataFieldsForKind(value.kind)) {
         if (candidates.some((candidate) => candidate[key] !== value[key]))
             delete common[key];
@@ -2027,6 +2085,10 @@ export interface ValueFields {
     ownedEngineCpp?: string;
     /** Owned data wrapper for an engine reference crossing a stored boundary. */
     storedEngineCpp?: string;
+    /** Stored engine/handle pair; cpp reads its raw handle member. */
+    resourceStorageCpp?: string;
+    /** Stored parameter whose reached owner use can request an owning carrier. */
+    engineOwnerParameter?: ts.ParameterDeclaration;
     /** One bound engine value; aliases and owning snapshots retain this identity. */
     engineIdentity?: symbol;
     cpp: string;
@@ -2648,6 +2710,8 @@ export interface ValueFields {
     /** A value bound by a native runtime iteration, not a static unroll. */
     runtimeIteration?: true;
     staticString?: string;
+    /** A retained const initializer's text; reading its lexical home may still throw. */
+    lexicalStaticString?: string;
     /**
      * The generation-known contents of a `string[]`, carried on the value the
      * way `staticString` carries one string.

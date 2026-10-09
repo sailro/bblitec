@@ -2664,6 +2664,18 @@ function compileArrayMap(
                         "flat_map_value",
                         callback,
                     );
+                    if (mappedType.element.kind === "json") {
+                        const value = lowerer.compileKnownValueForSink(
+                            owner,
+                            mappedType.element,
+                            callback,
+                        );
+                        lowerer.context.emit({
+                            kind: "expression",
+                            code: `bbl::js::json_flatten_into(${output}, ${value}, 1);`,
+                        });
+                        return;
+                    }
                     const item =
                         lowerer.context.allocateTemporaryCppName(
                             "flat_map_item",
@@ -2702,19 +2714,19 @@ function compileArrayMap(
                     return;
                 }
                 if (
+                    lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
+                        mappedType.element,
+                    )
+                )
+                    lowerer.context.refuseBorrowedPlatformEventEscape(
+                        result,
+                        callback,
+                        `Array.${method} result`,
+                    );
+                if (
                     method === "flatMap" &&
                     result.dataType?.kind === "product"
                 ) {
-                    if (
-                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                            mappedType.element,
-                        )
-                    )
-                        lowerer.context.refuseBorrowedPlatformEventEscape(
-                            result,
-                            callback,
-                            "Array.flatMap result",
-                        );
                     const tuple = lowerer.context.bindings.pinValueToTemporary(
                         result,
                         "flat_map_tuple",
@@ -2749,16 +2761,6 @@ function compileArrayMap(
                         result.dataType?.kind === "vector" ||
                         result.dataType?.kind === "span")
                 ) {
-                    if (
-                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                            mappedType.element,
-                        )
-                    )
-                        lowerer.context.refuseBorrowedPlatformEventEscape(
-                            result,
-                            callback,
-                            "Array.flatMap result",
-                        );
                     // flatMap reads the returned array's elements once and
                     // keeps none of the array itself.
                     const values = lowerer.compileKnownValueForSink(
@@ -2789,17 +2791,6 @@ function compileArrayMap(
                     }
                     value = "true";
                 } else {
-                    if (
-                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                            mappedType.element,
-                        )
-                    ) {
-                        lowerer.context.refuseBorrowedPlatformEventEscape(
-                            result,
-                            callback,
-                            "Array.map result",
-                        );
-                    }
                     value = lowerer.compileKnownValueForSink(
                         result,
                         mappedType.element,
@@ -3282,6 +3273,19 @@ function compileMapDataMethod(
         lowerer.context.fail(call, `WeakMap.${method} is not represented.`);
     if (method === "forEach")
         return compileCollectionForEach(lowerer, call, narrowed, dataType);
+    if (
+        ["has", "get", "delete", "set"].includes(method) &&
+        lowerer.context.evaluationOrder.operandsToPin([
+            callee.expression,
+            ...call.arguments,
+        ])[0]
+    )
+        narrowed = pinOperand(
+            lowerer.context,
+            narrowed,
+            callee.expression,
+            "map_receiver",
+        );
     lowerer.context.reachJsData();
     if (method === "clear") {
         if (call.arguments.length !== 0) {
@@ -3406,7 +3410,6 @@ function compileMapDataMethod(
             );
         }
         const keyValue = lowerer.context.compileValue(argumentAt(call, 0));
-        const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
         lowerer.context.recordCollectionKey(narrowed, keyValue);
         if (
             lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.key)
@@ -3417,6 +3420,20 @@ function compileMapDataMethod(
                 "Map.set key",
             );
         }
+        // A key is read before the value argument can replace its source
+        // binding. Its retained sink also snapshots an engine-owned key.
+        const key = lowerer.context.allocateTemporaryCppName("map_key");
+        lowerer.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: key,
+            initializer: lowerer.compileKnownValueForSink(
+                keyValue,
+                dataType.key,
+                argumentAt(call, 0),
+            ),
+        });
+        const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
         if (
             lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.value,
@@ -3428,11 +3445,6 @@ function compileMapDataMethod(
                 "Map.set value",
             );
         }
-        const key = lowerer.compileKnownValueForSink(
-            keyValue,
-            dataType.key,
-            argumentAt(call, 0),
-        );
         const value = lowerer.compileKnownValueForSink(
             assignedValue,
             dataType.value,
@@ -3476,8 +3488,33 @@ function compileMapDataMethod(
                   ? dataType.value
                   : dataType.key;
         lowerer.context.reachJsData();
+        let projector = "";
+        if (
+            method === "entries" &&
+            element.kind === "vector" &&
+            (!dataTypesEqual(dataType.key, element.element) ||
+                !dataTypesEqual(dataType.value, element.element))
+        ) {
+            const parameters = [dataType.key, dataType.value].map((type) => ({
+                type,
+                name: lowerer.context.allocateTemporaryCppName("entry_lane"),
+            }));
+            const lines = lowerer.context.captureEmittedLines(() => {
+                const lanes = parameters.map(({ type, name }) =>
+                    lowerer.compileLaneForSink(
+                        lowerer.leafValue(name, type),
+                        element.element,
+                        call,
+                    ),
+                );
+                lowerer.context.emit(
+                    `return ${lowerer.context.dataTypes.cppType(element)}{${lanes.join(", ")}};`,
+                );
+            });
+            projector = `, [](${parameters.map(({ type, name }) => `[[maybe_unused]] const ${lowerer.context.dataTypes.cppType(type)}& ${name}`).join(", ")}) { ${lines.join("\n")} }`;
+        }
         return lowerer.leafValue(
-            `bbl::js::map_iterator<${lowerer.context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${narrowed.cpp})`,
+            `bbl::js::map_iterator<${lowerer.context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${narrowed.cpp}${projector})`,
             { kind: "iterator", element, traced: true },
         );
     }
@@ -3512,6 +3549,19 @@ function compileSetDataMethod(
     }
     if (method === "forEach")
         return compileCollectionForEach(lowerer, call, narrowed, dataType);
+    if (
+        ["has", "delete", "add"].includes(method) &&
+        lowerer.context.evaluationOrder.operandsToPin([
+            callee.expression,
+            ...call.arguments,
+        ])[0]
+    )
+        narrowed = pinOperand(
+            lowerer.context,
+            narrowed,
+            callee.expression,
+            "set_receiver",
+        );
     lowerer.context.reachJsData();
     if (method === "clear") {
         if (call.arguments.length !== 0) {

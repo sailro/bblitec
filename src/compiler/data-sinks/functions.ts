@@ -71,7 +71,12 @@ function expressionFunction(
     ) {
         return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     }
-    if (value.kind === "data" && value.dataType?.kind === "function") {
+    if (
+        value.kind === "data" &&
+        (value.dataType?.kind === "function" ||
+            (value.dataType?.kind === "struct" &&
+                lowerer.context.dataTypes.structCall(value.dataType.name)))
+    ) {
         return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     }
     lowerer.context.fail(
@@ -149,6 +154,12 @@ function widenedLane(
     lines: string[],
 ): string | undefined {
     if (dataTypesEqual(from, to)) return cpp;
+    if (
+        from.kind === "function" &&
+        to.kind === "function" &&
+        completionProofWidens(from, to)
+    )
+        return cpp;
     if (!plainLaneWidens(from, to)) return undefined;
     let converted = "";
     lines.push(
@@ -161,6 +172,32 @@ function widenedLane(
         }),
     );
     return converted;
+}
+
+/** Completion facts can be forgotten when the same callback storage reaches a wider contract. */
+function completionProofWidens(
+    from: DataType<"function">,
+    to: DataType<"function">,
+): boolean {
+    if (
+        (to.undefinedCompletion && !from.undefinedCompletion) ||
+        (to.awaitedUndefinedCompletion && !from.awaitedUndefinedCompletion)
+    )
+        return false;
+    return dataTypesEqual(
+        {
+            ...from,
+            identity: true,
+            undefinedCompletion: true,
+            awaitedUndefinedCompletion: true,
+        },
+        {
+            ...to,
+            identity: true,
+            undefinedCompletion: true,
+            awaitedUndefinedCompletion: true,
+        },
+    );
 }
 
 /**
@@ -315,6 +352,14 @@ function valueFunction(
                 "A stored callback requires a proven undefined completion.",
             );
         if (
+            dataType.awaitedUndefinedCompletion &&
+            !stored.awaitedUndefinedCompletion
+        )
+            lowerer.context.fail(
+                node,
+                "A stored callback requires a proven undefined completion after awaiting.",
+            );
+        if (
             dataTypesEqual(
                 { ...stored, identity: true },
                 { ...dataType, identity: true },
@@ -326,6 +371,9 @@ function valueFunction(
                 node,
                 "Stored generic function conversion requires matching concrete signature families.",
             );
+        lowerer.context.dataTypes.joinCallableRecordTypes([
+            { source: stored, target: dataType },
+        ]);
         const adapted = adaptedCall(lowerer, stored, dataType, node);
         if (adapted) {
             // Parameters the sink does not declare read only what it passes;

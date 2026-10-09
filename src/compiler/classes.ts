@@ -1,5 +1,6 @@
 import {
     optionalPresentCpp,
+    representedStorage,
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
@@ -13,6 +14,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
+import { isEngineScopedHandleKind } from "./data-types/handles.js";
 import type { DataStructField, DataType } from "./data-types.js";
 import {
     classTagMember,
@@ -1278,7 +1280,7 @@ export class ClassLowerer {
                     this.context.emit({
                         kind: "expression",
                         code:
-                            `${stored.cpp} = ` +
+                            `${representedStorage(stored)?.cpp ?? this.context.fail(member, "Stored class field requires represented storage.")} = ` +
                             `${this.context.compileForDataSink(
                                 member.initializer,
                                 stored.dataType!,
@@ -1392,6 +1394,7 @@ export class ClassLowerer {
                 source,
             );
             if (field) {
+                this.context.dataTypes.requireEngineFieldStorage(field, member);
                 if (!sources.has(source)) {
                     layout.push({ ...field, source });
                     sources.add(source);
@@ -2416,8 +2419,30 @@ export class ClassLowerer {
                 : mappedReturnType
                   ? this.context.dataTypes.ownReturnedArray(mappedReturnType)
                   : undefined;
-        if (!returnsVoid && !returnType) {
-            const finalStatement = method.body.statements.at(-1);
+        const lastStatement = method.body.statements.at(-1);
+        const inlineOwnerReturn =
+            returnType?.kind === "handle" &&
+            !returnType.ownedEngine &&
+            isEngineScopedHandleKind(returnType.handle) &&
+            lastStatement !== undefined &&
+            ts.isReturnStatement(lastStatement) &&
+            lastStatement.expression !== undefined &&
+            !firstReturn(method.body.statements.slice(0, -1), {
+                valued: true,
+            }) &&
+            !this.methodRecurses(
+                declaration,
+                method,
+                instance.classCandidates,
+            ) &&
+            !(
+                this.isStoredInstance(instance) &&
+                this.recursesThroughReceivers(declaration, method)
+            );
+        // A final resource return keeps the actual field owner alongside its
+        // handle instead of reducing it to the declared raw return type.
+        if (!returnsVoid && (!returnType || inlineOwnerReturn)) {
+            const finalStatement = lastStatement;
             if (
                 !finalStatement ||
                 !ts.isReturnStatement(finalStatement) ||
@@ -2429,7 +2454,9 @@ export class ClassLowerer {
                 );
             }
             const leading = method.body.statements.slice(0, -1);
-            const earlierValueReturn = firstReturn(leading, { valued: true });
+            const earlierValueReturn = inlineOwnerReturn
+                ? undefined
+                : firstReturn(leading, { valued: true });
             if (earlierValueReturn) {
                 const nullableRecord = this.compileGuardedNullableRecordMethod(
                     instance,
@@ -3417,7 +3444,7 @@ export class ClassLowerer {
         if (stored?.classStoredField) {
             this.context.emit({
                 kind: "expression",
-                code: `${stored.cpp} = ${this.context.compileForDataSink(name, stored.dataType!)};`,
+                code: `${representedStorage(stored)?.cpp ?? this.context.fail(name, "Stored class field requires represented storage.")} = ${this.context.compileForDataSink(name, stored.dataType!)};`,
             });
         } else {
             writable(properties)[name.text] = this.context.compileValue(name);

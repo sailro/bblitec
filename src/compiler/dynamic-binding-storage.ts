@@ -9,7 +9,10 @@ import { resolvedSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 import { nullability } from "./type-facts.js";
 import type { Value } from "./types.js";
-import { NativeRecordStorageRequired } from "./native-record-storage.js";
+import {
+    NativeRecordStorageRequired,
+    type NativeRecordStorageDemand,
+} from "./native-record-storage.js";
 
 /** Storage choices survive replay; generated type names belong to one registry. */
 export type DynamicBindingStorage =
@@ -17,6 +20,8 @@ export type DynamicBindingStorage =
     | "array"
     | "error-array"
     | "callback"
+    | { nativeHandle: DataType<"handle"> }
+    | { callable: NativeRecordStorageDemand }
     | { nativeType: ts.Type; node: ts.Expression };
 
 /** A reached assignment proves that a lexical binding must retain dynamic object storage. */
@@ -35,6 +40,7 @@ export interface DemandedStorageContext {
     readonly dataTypes: Pick<
         DataTypeRegistry,
         | "fromStoredTsType"
+        | "fromCallableRecordDemand"
         | "fromSharedReturnType"
         | "nativeRecordViewDemand"
         | "markStoredObjectReferences"
@@ -52,7 +58,7 @@ export function demandedStorageType(
     context: DemandedStorageContext,
     declaration: ts.VariableDeclaration,
     storage: DynamicBindingStorage,
-    initializer: ts.Expression,
+    initializer: ts.Expression | undefined,
 ): DataType | undefined {
     const { checker, dataTypes } = context;
     const source = checker.getTypeAtLocation(declaration.name);
@@ -82,6 +88,10 @@ export function demandedStorageType(
     if (storage === "error-array")
         return { kind: "vector", element: { kind: "error" } };
     if (typeof storage === "object") {
+        if ("nativeHandle" in storage)
+            return dataTypes.nullableType(storage.nativeHandle);
+        if ("callable" in storage)
+            return dataTypes.fromCallableRecordDemand(storage.callable);
         const mapped = dataTypes.fromStoredTsType(
             storage.nativeType,
             storage.node,
@@ -106,7 +116,8 @@ export function demandedStorageType(
         dataTypes.fromStoredTsType(source, declaration) ??
         // A fresh `{}` has no members to type: a parsed document holds it
         // as one object with identity.
-        (ts.isObjectLiteralExpression(initializer) &&
+        (initializer &&
+        ts.isObjectLiteralExpression(initializer) &&
         initializer.properties.length === 0
             ? { kind: "json" as const }
             : undefined)

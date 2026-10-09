@@ -2,7 +2,6 @@ import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
-    isOpaqueReference,
     propertyIsReadOnly,
     type DataStructField,
     type DataType,
@@ -18,6 +17,8 @@ import { isJsonValue } from "../json-bridge.js";
 import { declaredSymbol, isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
+import { nativeStructuralViewType } from "../native-owner-carrier.js";
+import { callableRecordValue } from "../callable-records.js";
 import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 import { recordPropertyKeys } from "../object-statics.js";
 import {
@@ -128,6 +129,8 @@ function expressionStruct(
     }
     if (
         ts.isCallExpression(unwrapped) ||
+        ts.isArrowFunction(unwrapped) ||
+        ts.isFunctionExpression(unwrapped) ||
         ts.isNewExpression(unwrapped) ||
         ts.isIdentifier(unwrapped) ||
         unwrapped.kind === ts.SyntaxKind.ThisKeyword ||
@@ -137,13 +140,20 @@ function expressionStruct(
         const known = lowerer.context.compileValue(unwrapped);
         if (
             known.kind === "record" ||
-            known.kind === "platform-keyboard-event" ||
-            known.kind === "platform-mouse-event" ||
+            ((known.kind === "callback" ||
+                known.dataType?.kind === "function") &&
+                lowerer.context.dataTypes.structCall(dataType.name) !==
+                    undefined) ||
+            nativeStructuralViewType(known) !== undefined ||
             ((known.kind === "json-null" ||
                 known.dataType?.kind === "optional") &&
                 lowerer.context.dataTypes.isReferenceStruct(dataType.name))
         ) {
-            return lowerer.compileKnownValueForSink(known, dataType, unwrapped);
+            return lowerer.compileKnownValueForSink(
+                known,
+                dataType,
+                expression,
+            );
         }
         if (
             known.kind === "data" &&
@@ -228,6 +238,8 @@ function valueStruct(
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    const callable = callableRecordValue(lowerer, value, dataType, node);
+    if (callable) return callable.cpp;
     value = lowerer.context.classLowerer.errorView(value, node) ?? value;
     const wrapped = value.dataType?.kind === "optional";
     const sourceType =
@@ -310,24 +322,8 @@ function valueStruct(
     ) {
         return value.ownedCpp ?? value.cpp;
     }
-    const represented =
-        value.dataType ??
-        (value.kind === "platform-keyboard-event" ||
-        value.kind === "platform-mouse-event"
-            ? ({
-                  kind: "borrowed-platform-event",
-                  event: value.platformEventBase
-                      ? "event"
-                      : value.kind === "platform-keyboard-event"
-                        ? "keyboard"
-                        : "mouse",
-              } satisfies DataType)
-            : undefined);
-    if (
-        represented &&
-        (isOpaqueReference(represented) ||
-            represented.kind === "borrowed-platform-event")
-    ) {
+    const represented = nativeStructuralViewType(value);
+    if (represented) {
         const demand = lowerer.context.dataTypes.nativeRecordViewDemand(
             dataType.name,
             represented,
@@ -409,6 +405,10 @@ function valueStruct(
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
+                lowerer.context.dataTypes.requireEngineFieldStorage(
+                    field,
+                    node,
+                );
                 const getter = value.recordGetters?.[field.sourceName];
                 const setter = value.recordSetters?.[field.sourceName];
                 if (getter || setter)
@@ -465,7 +465,9 @@ function valueStruct(
                               node,
                               field.sourceName,
                           )
-                    : field.defaultWhenMissing
+                    : field.defaultWhenMissing ||
+                        (field.accessorReceiver &&
+                            field.type.kind === "optional")
                       ? "{}"
                       : field.type.kind === "optional"
                         ? "std::nullopt"
@@ -530,6 +532,10 @@ function valueStruct(
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
+                lowerer.context.dataTypes.requireEngineFieldStorage(
+                    field,
+                    node,
+                );
                 const source = sourceFields.get(field.sourceName);
                 if (!source) {
                     if (field.defaultWhenMissing) {
@@ -543,6 +549,10 @@ function valueStruct(
                         `Struct ${sourceType.name} is missing required destination field '${field.sourceName}'.`,
                     );
                 }
+                lowerer.context.dataTypes.requireEngineFieldStorage(
+                    source,
+                    node,
+                );
                 const sourceCpp = `${value.cpp}${sourceArrow ? "->" : "."}${source.name}`;
                 // One object seen through two record types keeps its
                 // accessors; a stored value becomes the target's cell.
@@ -589,6 +599,8 @@ function valueStruct(
         lowerer.context.dataTypes.noteRecordConversion(dataType, [
             UNKNOWN_PROPERTIES,
         ]);
+        for (const field of fields)
+            lowerer.context.dataTypes.requireEngineFieldStorage(field, node);
         // A parsed entry converts, checked, to a scalar field type.
         const parsedEntry = (field: DataStructField): boolean => {
             const stored =

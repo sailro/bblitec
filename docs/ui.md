@@ -80,8 +80,8 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Area | Supported | Limits |
 | --- | --- | --- |
 | Construction | Static tags, retained createTextNode, appendChild/insertBefore, mixed text/element append/prepend/replaceChildren, element-array spreads in append/replaceChildren, remove, retained roots; parentElement, first/last child and sibling node/element reads; childElementCount and direct children.length/childNodes.length | No general DOM implementation; stored child collections and prepend spreads refuse; tree, text and insertion reads inside innerHTML throw; document roots only append |
-| Content | textContent/innerText writes, textContent reads, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute/toggleAttribute, isContentEditable from contenteditable; dataset reads/writes and Object.assign from plain string/number/boolean/nullish fields | Compound text writes; `<style>` text reads; unsupported root replacement/removal |
-| Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle; getComputedStyle display/opacity/visibility/zIndex from the last layout | Nonempty setProperty priority; dynamic property names; other computed properties; a scene's first computed read precedes its layout |
+| Content | textContent/innerText writes, textContent reads, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute/toggleAttribute, isContentEditable from contenteditable; dataset reads/writes (dot or static computed keys) and Object.assign from plain string/number/boolean/nullish fields | Compound text/dataset writes and dynamic dataset keys; `<style>` text reads; unsupported root replacement/removal |
+| Styles/classes | cssText, static style fields/methods, Object.assign from represented records into existing style setters, classList add/remove/forced toggle; getComputedStyle display/opacity/visibility/zIndex from the last layout | Nonempty setProperty priority; dynamic property names; other computed properties; a scene's first computed read precedes its layout |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Node/Element/HTMLElement and reached control interfaces | :scope, pseudo-element queries; dynamic selectors and interaction-state queries throw in deferred capability mode and otherwise refuse |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events; setPointerCapture/releasePointerCapture/hasPointerCapture throw in deferred capability mode |
 | Handler properties | Element `on<event>` for represented pointer, keyboard, file-drag and form-control events: HTML listener position, in-place replacement, `null` removal, `false` cancels | Events without an element listener |
@@ -139,7 +139,9 @@ caching is unsupported; native pagehide has persisted=false.
 Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
 removes prior children. Plain text leaf updates retain projected text nodes and send changed strings
 across the Window mailbox; structural and special text changes rebuild projection.
-Dataset reads distinguish missing (`undefined`) and empty attributes.
+Dataset reads distinguish missing (`undefined`) and empty attributes. Dataset writes snapshot their
+receiver before the right operand; Object.assign snapshots its target and evaluates all arguments
+before copying source properties in order.
 Source append and replaceChildren arguments finish before replacement and insertion. Canvas backing
 dimensions are drawable pixels; client dimensions and bounding rectangles are CSS pixels; element
 offset/client sizes are rounded CSS pixels. Rectangle and size reads flush pending layout.

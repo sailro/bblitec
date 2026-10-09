@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { assertAsyncSourceCloses } from "./async-oracle.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import {
@@ -31,22 +30,7 @@ test("async records retain concrete erased field owners and shared identities", 
             globalThis.close();
         })();
     `;
-    let closed = false;
-    await runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: {
-                target: ts.ScriptTarget.ES2022,
-                module: ts.ModuleKind.None,
-            },
-        }).outputText,
-        {
-            queueMicrotask,
-            close: () => {
-                closed = true;
-            },
-        },
-    );
-    assert.equal(closed, true);
+    await assertAsyncSourceCloses(source);
     const result = compileSource(source);
     const native = optionalNativeFixtureTools(false);
     await t.test("native assertions", { skip: !native }, () => {

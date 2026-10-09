@@ -1,5 +1,6 @@
 import type ts from "typescript";
 import type { AbsenceTagDeclaration } from "./absence-tag-storage.js";
+import type { EngineOwnerStorageDeclaration } from "./engine-owner-storage.js";
 import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
 import {
     GenericFunctionStorage,
@@ -17,6 +18,7 @@ import {
     isRecordComponentKey,
     recordComponents,
     recordIdentity,
+    type InstantiatedRecord,
 } from "./record-components.js";
 
 /** One storage demand a compile replays with. */
@@ -29,6 +31,7 @@ export type StorageRequest =
     | { kind: "record"; demand: NativeRecordStorageDemand }
     | { kind: "generic"; demand: GenericFunctionDemand }
     | { kind: "absence-tag"; declaration: AbsenceTagDeclaration }
+    | { kind: "engine-owner"; declaration: EngineOwnerStorageDeclaration }
     | {
           kind: "tuple-array";
           declaration: ts.PropertySignature | ts.PropertyDeclaration;
@@ -54,12 +57,14 @@ export class ReplayStorage {
     >();
     /** @unjournaled Demands outlive the attempts that met them. */
     readonly records = new Map<
-        NativeRecordStorageDemand["identity"],
+        NativeRecordStorageDemand["identity"] | InstantiatedRecord,
         NativeRecordStorageDemand
     >();
     readonly genericFunctions = new GenericFunctionStorage();
     /** @unjournaled Demands outlive the attempts that met them. Source storages that keep `null` and `undefined` apart (`DataType<"tagged">`). */
     readonly absenceTags = new Set<ts.Declaration>();
+    /** @unjournaled Resource storages whose reached uses require their actual engine. */
+    readonly engineOwners = new Set<ts.Declaration>();
     /** @unjournaled Demands outlive the attempts that met them. Record properties storing their numeric tuples as growable arrays. */
     readonly tupleArraySlots = new Set<ts.Declaration>();
     /** @unjournaled Demands outlive the attempts that met them. `ArrayLike<number>` slots retyped for the numeric arrays they store. */
@@ -77,8 +82,13 @@ export class ReplayStorage {
         switch (request.kind) {
             case "dynamic": {
                 const known = this.dynamicBindings.get(request.declaration);
+                const callableUpgrade =
+                    known === "callback" &&
+                    typeof request.storage === "object" &&
+                    "callable" in request.storage;
                 if (
                     this.dynamicBindings.has(request.declaration) &&
+                    !callableUpgrade &&
                     (known || !request.storage)
                 )
                     return false;
@@ -88,9 +98,11 @@ export class ReplayStorage {
             case "record": {
                 // A record component's members demand apart: their shared
                 // key is renumbered as joins grow.
-                const key = isRecordComponentKey(request.demand.identity)
-                    ? recordIdentity(this.checker, request.demand.type)
-                    : request.demand.identity;
+                const key =
+                    request.demand.instantiation ??
+                    (isRecordComponentKey(request.demand.identity)
+                        ? recordIdentity(this.checker, request.demand.type)
+                        : request.demand.identity);
                 const merged = mergeNativeRecordStorage(
                     this.records.get(key),
                     request.demand,
@@ -103,6 +115,8 @@ export class ReplayStorage {
                 return this.genericFunctions.add(request.demand);
             case "absence-tag":
                 return addNew(this.absenceTags, request.declaration);
+            case "engine-owner":
+                return addNew(this.engineOwners, request.declaration);
             case "tuple-array":
                 return addNew(this.tupleArraySlots, request.declaration);
             case "numeric-slot": {
@@ -135,13 +149,14 @@ export class ReplayStorage {
             this.checker,
             [...this.records.values()].flatMap((demand) => demand.joins ?? []),
         );
-        const component = (type: ts.Type) =>
-            components.get(recordIdentity(this.checker, type));
+        const component = (type: ts.Type, instantiation?: InstantiatedRecord) =>
+            components.get(instantiation ?? recordIdentity(this.checker, type));
         return request.demand.joins.every(
             (join) =>
-                !join.targetInstantiation &&
-                component(join.source) !== undefined &&
-                component(join.source) === component(join.target),
+                component(join.source, join.sourceInstantiation) !==
+                    undefined &&
+                component(join.source, join.sourceInstantiation) ===
+                    component(join.target, join.targetInstantiation),
         );
     }
 }

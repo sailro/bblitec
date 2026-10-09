@@ -7,6 +7,7 @@ import {
     optionalValueCpp,
     presenceFlagCpp,
     readsNativeStorage,
+    representedStorage,
     statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
@@ -29,6 +30,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
+import { isEngineScopedHandleKind } from "./data-types/handles.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import {
     accessedPropertySymbol,
@@ -40,7 +42,10 @@ import {
     resolvedSymbol,
     symbolPropertyKey,
 } from "./symbols.js";
-import { compileMapInitializer } from "./collection-methods.js";
+import {
+    compileCollectionIterable,
+    compileMapInitializer,
+} from "./collection-methods.js";
 import { requireObservedPromise } from "./promise-observations.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import {
@@ -202,6 +207,7 @@ import { symbolProperty } from "./symbol-values.js";
 import {
     bigintArrayElementAccess,
     compileBigIntArrayNew,
+    isBigIntTyped,
 } from "./bigint-values.js";
 import { recordAt } from "./record-access.js";
 import {
@@ -576,6 +582,8 @@ interface DataLoweringContext extends Pick<
     | "defaultEngine"
     | "requireDefaultEngine"
     | "requireEngine"
+    | "storedResourceEngine"
+    | "selectResourceOwner"
     | "refuseBorrowedPlatformEventEscape"
     | "fail"
 > {
@@ -628,6 +636,11 @@ interface PairedAbsence {
     readonly reference: ts.Expression;
     /** `x != null` rather than `x == null`. */
     readonly present: boolean;
+}
+
+interface JsonAssignmentTarget {
+    readonly owner: string;
+    readonly key: string;
 }
 
 /** A Map/Record entry with a number value, absent until set. */
@@ -732,9 +745,9 @@ export class DataLowerer {
      * or boolean slot stores in place and yields the stored scalar; any
      * other target stores through its statement, which binds the right
      * side where it first consumes it, converted for that consumer
-     * (`assigned`), and the assignment yields that binding. Undefined for a
-     * compound operator, and for a browser-only assignment the browser
-     * lowering owns.
+     * (`assigned`), and the assignment yields that binding. Dynamic member
+     * compound assignments return their new primitive. Other compound targets
+     * and browser-only assignments remain with their respective lowerers.
      */
     public compileAssignmentValue(
         expression: ts.BinaryExpression,
@@ -743,7 +756,26 @@ export class DataLowerer {
             this.context.deferredCapabilities.assignment(expression);
         if (deferred) return deferred;
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
-            return undefined;
+            const operator = ASSIGNMENT_OPERATORS.get(
+                expression.operatorToken.kind,
+            );
+            const left = this.context.unwrap(expression.left);
+            if (
+                !operator ||
+                (!ts.isPropertyAccessExpression(left) &&
+                    !ts.isElementAccessExpression(left))
+            )
+                return undefined;
+            return this.withStoreKeysHeld(expression, () => {
+                const target = this.jsonAssignmentTarget(left);
+                return target
+                    ? this.emitJsonCompoundAssignment(
+                          expression,
+                          target,
+                          operator,
+                      )
+                    : undefined;
+            });
         }
         return this.withStoreKeysHeld(expression, () =>
             this.compileStoredAssignmentValue(expression),
@@ -765,6 +797,25 @@ export class DataLowerer {
         expression: ts.BinaryExpression,
         lower: () => T,
     ): T {
+        const target = this.context.unwrap(expression.left);
+        if (
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+            ASSIGNMENT_OPERATORS.has(expression.operatorToken.kind) &&
+            (ts.isPropertyAccessExpression(target) ||
+                ts.isElementAccessExpression(target)) &&
+            !this.context.browserErasure.isBrowserOnlyExpression(target)
+        ) {
+            if (this.jsonAssignmentTargets.has(target)) return lower();
+            const prepared = this.jsonAssignmentTarget(target);
+            if (prepared) {
+                this.jsonAssignmentTargets.set(target, prepared);
+                try {
+                    return lower();
+                } finally {
+                    this.jsonAssignmentTargets.delete(target);
+                }
+            }
+        }
         const keys: ts.Expression[] = [];
         for (
             let target = this.context.unwrap(expression.left);
@@ -2109,7 +2160,14 @@ export class DataLowerer {
             const bound =
                 this.context.bindings.lookupOptional(unwrapped) ??
                 this.context.moduleNamespaces.fromIdentifier(unwrapped);
-            if (bound?.kind !== "data" && bound?.kind !== "promise") {
+            if (
+                bound?.kind !== "data" &&
+                bound?.kind !== "promise" &&
+                !(
+                    bound?.dataType?.kind === "handle" &&
+                    bound.dataType.ownedEngine
+                )
+            ) {
                 // A module-level `const Record<Union, T> = { ... }` has no
                 // runtime local binding. Materialize its typed literal at
                 // the use site so a runtime enum index can select a slot;
@@ -2222,6 +2280,10 @@ export class DataLowerer {
                 ? undefined
                 : this.context.propertyAccess.declaredDataProperty(unwrapped);
             if (declared) {
+                // Native handle properties use their represented writer, not
+                // the value returned by their getter as a storage lvalue.
+                if (mode === "write" && isHandleKind(declared.kind))
+                    return undefined;
                 return declared;
             }
         }
@@ -2339,7 +2401,7 @@ export class DataLowerer {
                 owner.dataType?.kind === "handle" &&
                 !cppIdentifierPattern.test(owner.cpp)
             ) {
-                if (owner.kind === "engine") {
+                if (owner.kind === "engine" || owner.dataType.ownedEngine) {
                     owner = this.context.bindings.pinValueToTemporary(
                         owner,
                         "property_owner",
@@ -2375,6 +2437,7 @@ export class DataLowerer {
             }
             if (
                 mode === "write" &&
+                !throughReceiver &&
                 this.accessorField(owner, unwrapped.name.text, unwrapped)
             )
                 this.context.fail(
@@ -2434,7 +2497,17 @@ export class DataLowerer {
                     unwrapped,
                     "Module namespace properties are read-only.",
                 );
-            return this.elementRead(owner, unwrapped, mode);
+            const receiverType =
+                owner.dataType?.kind === "optional"
+                    ? owner.dataType.inner
+                    : owner.dataType;
+            return this.elementRead(
+                owner,
+                unwrapped,
+                throughReceiver && receiverType?.kind === "struct"
+                    ? "read"
+                    : mode,
+            );
         }
         return undefined;
     }
@@ -2443,6 +2516,7 @@ export class DataLowerer {
     private emitAccessorAssignment(
         left: ts.PropertyAccessExpression,
         right: ts.Expression,
+        preparedOwner?: Value,
     ): boolean {
         const receiver = this.context.unwrap(left.expression);
         const property = declaredSymbol(this.context.checker, left.name);
@@ -2463,23 +2537,26 @@ export class DataLowerer {
         const accessorOwner = (owner: Value | undefined): boolean =>
             owner !== undefined &&
             this.accessorField(owner, left.name.text, left) !== undefined;
-        const owner = this.context.probeEmission(() => {
-            const path =
-                this.compileDataPath(left.expression, "read") ??
-                (receiver.kind === ts.SyntaxKind.ThisKeyword
-                    ? this.context.compileValue(receiver)
-                    : undefined);
-            return path && this.narrowOptional(path, left.expression);
-        }, accessorOwner);
+        const owner =
+            preparedOwner ??
+            this.context.probeEmission(() => {
+                const path =
+                    this.compileDataPath(left.expression, "read") ??
+                    (receiver.kind === ts.SyntaxKind.ThisKeyword
+                        ? this.context.compileValue(receiver)
+                        : undefined);
+                return path && this.narrowOptional(path, left.expression);
+            }, accessorOwner);
         const type = owner?.dataType;
         const field = owner && this.accessorField(owner, left.name.text, left);
         if (!owner || type?.kind !== "struct" || !field) return false;
         // A shared record is pinned before the value is evaluated; a record
         // stored inline is written in place.
         const reference = this.context.dataTypes.isReferenceStruct(type.name);
-        const target = reference
-            ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
-            : `${owner.cpp}.`;
+        const target =
+            reference && !preparedOwner
+                ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
+                : `${owner.cpp}${reference ? "->" : "."}`;
         const value = this.compileForSink(right, field.type);
         this.context.emit({
             kind: "expression",
@@ -2498,6 +2575,7 @@ export class DataLowerer {
     private emitAccessorElementAssignment(
         left: ts.ElementAccessExpression,
         right: ts.Expression,
+        preparedOwner?: Value,
     ): boolean {
         if (
             !this.context.dataTypes.isAccessorRecordType(
@@ -2505,22 +2583,30 @@ export class DataLowerer {
             )
         )
             return false;
-        const owner = this.context.probeEmission(
-            () => {
-                const path = this.compileDataPath(left.expression, "read");
-                return path && this.narrowOptional(path, left.expression);
-            },
-            (candidate) =>
-                candidate?.dataType?.kind === "struct" &&
-                this.context.dataTypes
-                    .structFields(candidate.dataType.name, left, "accessors")
-                    .some((field) => field.accessor),
-        );
+        const owner =
+            preparedOwner ??
+            this.context.probeEmission(
+                () => {
+                    const path = this.compileDataPath(left.expression, "read");
+                    return path && this.narrowOptional(path, left.expression);
+                },
+                (candidate) =>
+                    candidate?.dataType?.kind === "struct" &&
+                    this.context.dataTypes
+                        .structFields(
+                            candidate.dataType.name,
+                            left,
+                            "accessors",
+                        )
+                        .some((field) => field.accessor),
+            );
         const type = owner?.dataType;
         if (!owner || type?.kind !== "struct") return false;
-        const target = this.context.dataTypes.isReferenceStruct(type.name)
-            ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
-            : `${owner.cpp}.`;
+        const reference = this.context.dataTypes.isReferenceStruct(type.name);
+        const target =
+            reference && !preparedOwner
+                ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
+                : `${owner.cpp}${reference ? "->" : "."}`;
         const write = (field: DataStructField, value: string): string =>
             field.accessor
                 ? `${target}${field.name}.set(${value});`
@@ -2729,6 +2815,7 @@ export class DataLowerer {
         // encode absence as an empty shared pointer instead (below).
         if (
             isPresentValue(owner) &&
+            !isJsonValue(owner) &&
             !(
                 owner.dataType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(owner.dataType.name)
@@ -2739,7 +2826,20 @@ export class DataLowerer {
         let present: string;
         let presentOwner: Value;
         let snapshotPresentOwner = false;
-        if (owner.dataType?.kind === "optional") {
+        if (isJsonValue(owner)) {
+            const selected = this.context.bindings.pinValueToTemporary(
+                owner,
+                "optional_json",
+                access.expression,
+            );
+            const notNullish = `(!(${selected.cpp}).is_null() && !(${selected.cpp}).is_undefined())`;
+            present = access.questionDotToken
+                ? ownerFound
+                    ? `(${ownerFound} && ${notNullish})`
+                    : notNullish
+                : (ownerFound ?? "true");
+            presentOwner = this.leafValue(selected.cpp, { kind: "json" });
+        } else if (owner.dataType?.kind === "optional") {
             const ownerType = this.context.dataTypes.cppType(owner.dataType);
             // Reads borrow container storage. Calls snapshot the receiver:
             // evaluating an argument can clear the original nullable slot.
@@ -2913,8 +3013,13 @@ export class DataLowerer {
             });
             return name;
         })();
-        const withSlot = (value: Value): Value =>
-            slotFound ? { ...value, slotFoundCpp: slotFound } : value;
+        const withSlot = (value: Value): Value => ({
+            ...value,
+            ...(slotFound ? { slotFoundCpp: slotFound } : {}),
+            ...(isJsonValue(value)
+                ? { optionalFoundCpp: combinedPresent }
+                : {}),
+        });
         const impure = selected.impure;
         const optionalResult = (
             type: DataType,
@@ -3155,9 +3260,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : tupleElement
                   ? this.context.dataTypes.fromTsType(tupleElement, expression)
                   : undefined;
-        const inferred = (known.tupleElements ?? []).map(
-            (entry) => representedResultType(this.context.dataTypes, entry),
-        );
+        const inferred = declaredElement
+            ? []
+            : (known.tupleElements ?? []).map((entry) =>
+                  representedResultType(this.context.dataTypes, entry),
+              );
         const first = inferred[0];
         const inferredElement =
             first &&
@@ -3167,10 +3274,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             )
                 ? first
                 : undefined;
-        const element = declaredElement ?? inferredElement;
+        let element = declaredElement ?? inferredElement;
         if (!element) {
             return undefined;
         }
+        const retained = this.retainedResultType(
+            known,
+            { kind: "vector", element },
+            expression,
+        );
+        if (retained.kind === "vector") element = retained.element;
         if (
             !(known.tupleElements ?? []).every((entry) =>
                 this.knownValueFitsSink(entry, element, expression, false),
@@ -3201,7 +3314,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return element;
     }
 
-    /** Keep JSON-backed objects in typed aggregate results without copying their identity. */
+    /** Preserve represented owners in typed aggregate results. */
     public retainedResultType(
         source: Value,
         type: DataType,
@@ -3212,6 +3325,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? source.dataType.inner
                 : source.dataType;
         const declared = type.kind === "optional" ? type.inner : type;
+        if (
+            declared.kind === "handle" &&
+            isEngineScopedHandleKind(declared.handle) &&
+            source.engineOwnerParameter &&
+            (source.kind === declared.handle ||
+                (actual?.kind === "handle" &&
+                    actual.handle === declared.handle))
+        )
+            this.context.dataTypes.requireEngineParameterStorage(
+                source.engineOwnerParameter,
+            );
+        if (
+            (type.kind === "vector" || type.kind === "span") &&
+            type.element.kind === "handle"
+        ) {
+            const element = type.element;
+            const candidates =
+                source.kind === "tuple"
+                    ? source.tupleElements?.map((value) => value.dataType)
+                    : actual?.kind === "vector" || actual?.kind === "span"
+                      ? [actual.element]
+                      : undefined;
+            if (
+                candidates?.some(
+                    (candidate) =>
+                        candidate?.kind === "handle" &&
+                        candidate.handle === element.handle &&
+                        candidate.ownedEngine,
+                )
+            )
+                return { ...type, element: { ...element, ownedEngine: true } };
+        }
+        if (
+            actual?.kind === "handle" &&
+            actual.ownedEngine &&
+            declared.kind === "handle" &&
+            actual.handle === declared.handle
+        )
+            return type.kind === "optional"
+                ? { ...type, inner: actual }
+                : actual;
         if (
             declared.kind === "struct" &&
             (isOpaqueReference(actual) || actual?.kind === "event-target")
@@ -3243,17 +3397,44 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? { ...type, elements }
                 : type;
         }
-        if (source.kind !== "record" || type.kind !== "struct") return type;
+        if (type.kind !== "struct") return type;
+        const actualFields =
+            actual?.kind === "struct" && actual.name !== type.name
+                ? new Map(
+                      this.context.dataTypes
+                          .structFields(actual.name, node, "accessors")
+                          .map((field) => [field.sourceName, field.type]),
+                  )
+                : undefined;
+        if (source.kind !== "record" && !actualFields) return type;
         const fields = this.context.dataTypes.structFields(
             type.name,
             node,
             "accessors",
         );
         const represented = fields.map((field) => {
-            const value = source.recordProperties?.[field.sourceName];
+            const actualField = actualFields?.get(field.sourceName);
+            const value =
+                source.recordProperties?.[field.sourceName] ??
+                (actualField
+                    ? { kind: "data" as const, cpp: "", dataType: actualField }
+                    : undefined);
             const retained = value
                 ? this.retainedResultType(value, field.type, node)
                 : field.type;
+            const sourceHandle =
+                retained.kind === "optional" ? retained.inner : retained;
+            const targetHandle =
+                field.type.kind === "optional" ? field.type.inner : field.type;
+            if (
+                sourceHandle.kind === "handle" &&
+                sourceHandle.ownedEngine &&
+                targetHandle.kind === "handle" &&
+                !targetHandle.ownedEngine &&
+                sourceHandle.handle === targetHandle.handle &&
+                field.declarations?.length
+            )
+                this.context.dataTypes.requireEngineFieldStorage(field, node);
             return {
                 ...field,
                 type: retained,
@@ -3717,6 +3898,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ((narrowed &&
                     narrowed.kind !== "optional" &&
                     (dataTypesEqual(narrowed, inner) ||
+                        (narrowed.kind === "handle" &&
+                            inner.kind === "handle" &&
+                            narrowed.handle === inner.handle) ||
                         this.spanCompatible(inner, narrowed) ||
                         (["string", "enum"].includes(inner.kind) &&
                             ["string", "enum"].includes(narrowed.kind)))) ||
@@ -3753,6 +3937,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (member) =>
                 narrowed &&
                 (dataTypesEqual(member, narrowed) ||
+                    (member.kind === "handle" &&
+                        narrowed.kind === "handle" &&
+                        member.handle === narrowed.handle) ||
                     this.spanCompatible(member, narrowed) ||
                     (member.kind === "string" && narrowed.kind === "enum")),
         );
@@ -4732,17 +4919,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // A parsed document answers every property, because that is
             // what a document does: a key it does not carry reads as
             // `undefined` rather than failing here.
-            return property === "length"
-                ? {
-                      kind: "number",
-                      cpp: `${owner.cpp}.length()`,
-                      dataType: { kind: "number" },
-                  }
-                : {
-                      kind: "data",
-                      cpp: `${owner.cpp}.get(${this.context.cppString(property)})`,
-                      dataType: { kind: "json" },
-                  };
+            return this.leafValue(
+                `${owner.cpp}.read_property(${this.context.cppString(property)})`,
+                { kind: "json" },
+            );
         }
         if (["blob", "file", "file-list"].includes(dataType.kind))
             return browserFileDataProperty(this.context, owner, access);
@@ -4834,6 +5014,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ]?.recordProperties === owner.recordProperties)
                     ? owner.recordProperties?.[property]
                     : undefined;
+            if (
+                staticField &&
+                field.type.kind === "handle" &&
+                !field.type.ownedEngine
+            )
+                return commonResourceValue(
+                    withNativeMetadata(value, staticField),
+                    [staticField],
+                );
+            if (
+                staticField &&
+                field.type.kind === "vector" &&
+                field.type.element.kind === "handle"
+            )
+                return {
+                    ...value,
+                    ...(staticField.staticElements
+                        ? { staticElements: staticField.staticElements }
+                        : {}),
+                    ...(staticField.staticElementsOwner
+                        ? {
+                              staticElementsOwner:
+                                  staticField.staticElementsOwner,
+                          }
+                        : {}),
+                    ...(staticField.runtimeElementTemplate
+                        ? {
+                              runtimeElementTemplate:
+                                  staticField.runtimeElementTemplate,
+                          }
+                        : {}),
+                };
             if (staticField?.staticNumber !== undefined) {
                 writable(value).staticNumber = staticField.staticNumber;
             }
@@ -5550,6 +5762,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (dataType.kind === "struct") {
             // A write through a view of fixed fields names its field by a
             // literal key or a finite key union, as a struct key does.
+            if (
+                this.context.dataTypes.isReferenceStruct(dataType.name) &&
+                this.indexMayChangeOwner(access)
+            )
+                owner = this.context.bindings.pinValueToTemporary(
+                    owner,
+                    "indexed_owner",
+                    access.expression,
+                );
             const keyTsType = this.context.checker.getTypeAtLocation(
                 access.argumentExpression,
             );
@@ -5737,6 +5958,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const indexLines = retainedIndexOwner
             ? this.context.captureEmittedLines(compileIndex)
             : (compileIndex(), []);
+        const ownerChoices =
+            mode === "read" &&
+            !retainedIndexOwner &&
+            dataType.kind === "vector" &&
+            dataType.element.kind === "handle" &&
+            !dataType.element.ownedEngine &&
+            dataType.element.handle !== "engine"
+                ? (owner.staticElementsOwner?.staticElements ??
+                  owner.staticElements)
+                : undefined;
+        let ownerIndex: Value | undefined;
+        if (
+            ownerChoices?.length &&
+            ownerChoices.every((candidate) => candidate.engineCpp) &&
+            ownerChoices.some(
+                (candidate) =>
+                    candidate.engineCpp !== ownerChoices[0]!.engineCpp,
+            ) &&
+            preparedIndex?.staticNumber === undefined &&
+            staticNumberValue(this.context, access.argumentExpression) ===
+                undefined
+        ) {
+            ownerIndex = pinOperand(
+                this.context,
+                this.leafValue(index, { kind: "number" }),
+                access.argumentExpression,
+                "resource_index",
+            );
+            index = ownerIndex.cpp;
+        }
         const elementType = arrayElementType(
             this.context.checker,
             this.context.checker.getTypeAtLocation(access.expression),
@@ -5772,9 +6023,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // Only proven arms use it: a proven counter is a non-negative integer.
         // A held store key is the counter's value before the right side,
         // which the live counter no longer is.
-        const counter = this.isHeldStoreKey(access.argumentExpression)
-            ? undefined
-            : this.integerCounterIndex(access.argumentExpression);
+        const counter =
+            ownerIndex || this.isHeldStoreKey(access.argumentExpression)
+                ? undefined
+                : this.integerCounterIndex(access.argumentExpression);
         const nativeIndex = counter
             ? `static_cast<std::size_t>(${counter})`
             : `bbl::js::array_index(${index})`;
@@ -5913,11 +6165,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     }
                     if (mode === "write") this.invalidateStaticElements(value);
                 }
-                return mode === "read" &&
-                    value.kind === "material" &&
+                if (
+                    mode === "read" &&
+                    dataType.element.kind === "handle" &&
+                    !dataType.element.ownedEngine &&
                     candidates?.length
-                    ? commonResourceValue(value, candidates)
-                    : value;
+                ) {
+                    const fixed =
+                        preparedIndex?.staticNumber ??
+                        staticNumberValue(
+                            this.context,
+                            access.argumentExpression,
+                        );
+                    const selected =
+                        snapshotOwner.staticElements &&
+                        fixed !== undefined &&
+                        Number.isInteger(fixed)
+                            ? snapshotOwner.staticElements[fixed]
+                            : undefined;
+                    const possible = selected ? [selected] : candidates;
+                    const common = commonResourceValue(
+                        withNativeMetadata(value, possible[0]),
+                        possible,
+                    );
+                    return ownerIndex && ownerChoices
+                        ? this.context.selectResourceOwner(
+                              common,
+                              ownerChoices,
+                              ownerIndex,
+                              access,
+                          )
+                        : common;
+                }
+                return value;
             }
             case "span":
                 return {
@@ -6702,6 +6982,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.reachJson();
             return this.leafValue(`bbl::js::json_value(${lookup})`, type);
         }
+        if (type.kind === "tagged")
+            return this.storedCallResult(
+                `${lookup}.value_or(${this.context.dataTypes.cppType(type)}{})`,
+                type,
+            );
         // A slot of an opaque object reference reads as the Nullable an
         // optional object of that kind is stored as.
         if (isOpaqueReference(type))
@@ -6829,6 +7114,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         if (dataType.kind === "handle") {
+            if (dataType.ownedEngine) {
+                const raw = this.leafValue(`(${cpp}).second`, {
+                    kind: "handle",
+                    handle: dataType.handle,
+                });
+                const captures = cppIdentifierPattern.test(cpp)
+                    ? [this.context.registerNativeBinding(cpp)]
+                    : undefined;
+                return {
+                    ...raw,
+                    dataType,
+                    ownedCpp: cpp,
+                    resourceStorageCpp: cpp,
+                    engineCpp: `(*(${cpp}).first)`,
+                    ...(captures
+                        ? {
+                              nativeCaptures: captures,
+                              nativeCompanionCaptures: {
+                                  engineCpp: captures,
+                                  resourceStorageCpp: captures,
+                              },
+                          }
+                        : {}),
+                };
+            }
             // Handle leaves surface as ordinary resource values, so
             // every mesh intrinsic and property assignment works on a
             // mesh read out of a struct or array exactly as it does on
@@ -7873,6 +8183,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Array.${method} expects a search value and an optional fromIndex.`,
             );
         }
+        if (
+            element.kind === "handle" &&
+            !element.ownedEngine &&
+            isEngineScopedHandleKind(element.handle)
+        )
+            return this.compileEngineHandleSearch(call, owner, element, method);
+        const unownedHandle = (type: DataType): boolean =>
+            type.kind === "handle"
+                ? !type.ownedEngine && isEngineScopedHandleKind(type.handle)
+                : type.kind === "optional"
+                  ? unownedHandle(type.inner)
+                  : type.kind === "union" && type.members.some(unownedHandle);
+        if (unownedHandle(element))
+            this.context.fail(
+                call,
+                "Array resource identity requires represented engine owners.",
+            );
         // Stored objects compare through their retained identity, including
         // nested collections. Borrowed views and value structs still refuse.
         const comparable = (type: DataType): boolean =>
@@ -7960,6 +8287,68 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             cpp: `bbl::js::array_includes(${owner.cpp}, ${needle}${from})`,
             dataType: { kind: "boolean" },
         };
+    }
+
+    /** A raw homogeneous resource array can compare only within its proved engine. */
+    private compileEngineHandleSearch(
+        call: ts.CallExpression,
+        owner: Value,
+        element: DataType<"handle">,
+        method: "indexOf" | "includes" | "lastIndexOf",
+    ): Value {
+        const facts = owner.staticElementsOwner ?? owner;
+        const receiver = this.context.bindings.pinValueToTemporary(
+            owner,
+            "search_owner",
+        );
+        const argument = argumentAt(call, 0);
+        const rawNeedle = this.context.compileValue(argument);
+        const storedType = { ...element, ownedEngine: true } as const;
+        const needle = this.context.bindings.pinValueToTemporary(
+            this.leafValue(
+                this.compileKnownValueForSink(rawNeedle, storedType, argument),
+                storedType,
+            ),
+            "search_needle",
+            argument,
+        );
+        const from = this.compileNumberArgument(
+            call.arguments[1],
+            method === "lastIndexOf"
+                ? "std::numeric_limits<double>::infinity()"
+                : "0.0",
+        );
+        // Argument effects may have invalidated this exact array's contents.
+        const members = facts.staticElements;
+        if (
+            !members ||
+            members.some(
+                (member) =>
+                    !member.engineCpp ||
+                    member.engineCpp !== members[0]?.engineCpp,
+            )
+        )
+            return this.context.fail(
+                call,
+                "Array resource identity requires one proved engine or owned element storage.",
+            );
+        const type = {
+            kind: method === "includes" ? "boolean" : "number",
+        } as const;
+        const absent = method === "includes" ? "false" : "-1.0";
+        if (!members.length) return this.leafValue(absent, type);
+        const engine = this.context.storedResourceEngine(members[0]!, call);
+        const same = `std::addressof(*(${engine})) == std::addressof(${this.context.requireEngine(needle, call)})`;
+        const operation =
+            method === "includes"
+                ? "array_includes"
+                : method === "indexOf"
+                  ? "array_index_of"
+                  : "array_last_index_of";
+        return this.leafValue(
+            `(${same} ? bbl::js::${operation}(${receiver.cpp}, ${needle.cpp}, ${from}) : ${absent})`,
+            type,
+        );
     }
 
     /** Snapshot a numeric argument before compiling the next argument's effects. */
@@ -8998,20 +9387,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const type = this.context.checker.getTypeAtLocation(expression);
             if (!isTypeReference(type)) return undefined;
             const types = this.context.dataTypes;
-            const [first, second] = this.context.checker
-                .getTypeArguments(type)
-                .map((argument) =>
-                    types.withDynamicJsonTypes(
-                        true,
-                        () =>
-                            types.dynamicJsonType(argument) ??
-                            // `new Map()` without type arguments holds
-                            // whatever is stored, as documents.
-                            ((argument.flags & ts.TypeFlags.Any) !== 0
-                                ? { kind: "json" as const }
-                                : types.fromTsType(argument, expression)),
-                    ),
-                );
+            const checkedArguments =
+                this.context.checker.getTypeArguments(type);
+            const [first, second] = checkedArguments.map((argument) =>
+                types.withDynamicJsonTypes(
+                    true,
+                    () =>
+                        types.dynamicJsonType(argument) ??
+                        // `new Map()` without type arguments holds
+                        // whatever is stored, as documents.
+                        ((argument.flags & ts.TypeFlags.Any) !== 0
+                            ? { kind: "json" as const }
+                            : types.fromTsType(argument, expression)),
+                ),
+            );
             if (
                 !first ||
                 (constructedKind === "map") !== (second !== undefined)
@@ -9020,13 +9409,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return second
                 ? {
                       kind: "map",
-                      key: types.markStoredObjectReferences(first),
+                      key: types.collectionKeyStorage(
+                          types.markStoredObjectReferences(first),
+                          checkedArguments[0],
+                      ),
                       value: types.markStoredObjectReferences(second),
                   }
                 : {
                       kind: "set",
                       ...weakSet,
-                      element: types.markStoredObjectReferences(first),
+                      element: types.collectionKeyStorage(
+                          types.markStoredObjectReferences(first),
+                          checkedArguments[0],
+                      ),
                   };
         };
         const declared =
@@ -9062,7 +9457,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (copiedType?.kind === "vector" ||
             copiedType?.kind === "span" ||
             copiedType?.kind === "set"
-                ? { kind: "set", ...weakSet, element: copiedType.element }
+                ? {
+                      kind: "set",
+                      ...weakSet,
+                      element: this.context.dataTypes.collectionKeyStorage(
+                          copiedType.element,
+                      ),
+                  }
                 : // A parsed array the checker widened to `any[]` keeps its
                   // elements as documents.
                   copiedType?.kind === "json"
@@ -9094,9 +9495,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         0,
                 )
             ) {
-                this.context.emitDiscardedValue(
-                    this.context.compileValue(argument),
-                );
+                const value = this.context.compileValue(argument);
+                if (
+                    value.kind !== "json-null" &&
+                    value.dataType?.kind !== "null" &&
+                    !isUndefinedDataType(value.dataType)
+                )
+                    this.context.fail(
+                        argument,
+                        "An absent collection initializer requires a represented null or undefined value.",
+                    );
+                this.context.emitDiscardedValue(value);
                 return { kind: "data", cpp: `${cppType}{}`, dataType };
             }
         }
@@ -9138,48 +9547,55 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         }
         const source = copied ?? this.context.compileValue(iterable);
-        const iterated = this.iteratedElements(source);
-        // The constructor copies the elements into a new collection, even
-        // when the source is a Set. A borrowed view is read, never retained.
-        // The constructor reads each element once and keeps none of the
-        // source, so an element conversion copies nothing JavaScript shares.
-        const values =
-            iterated &&
-            "range" in iterated &&
-            dataTypesEqual(iterated.element, dataType.element)
-                ? `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${iterated.range.cpp})`
-                : isJsonValue(source) && dataType.element.kind !== "json"
-                  ? this.documentElementsCopy(
-                        source,
-                        dataType.element,
-                        iterable,
-                    )
-                  : this.compileKnownValueForSink(
-                        { ...source, unaliased: source.unaliased ?? "object" },
-                        {
-                            kind: "vector",
-                            element: dataType.element,
-                        },
-                        iterable,
-                    );
-        if (
-            this.context.dataTypes.carriesBorrowedPlatformEvent(
-                dataType.element,
-            ) ||
-            (dataType.element.kind === "handle" &&
-                dataType.element.handle === "dom-event-identity")
-        ) {
-            this.context.refuseBorrowedPlatformEventEscape(
-                source,
-                iterable,
-                "Set constructor",
-            );
-        }
-        return {
-            kind: "data",
-            cpp: `${cppType}(${values})`,
-            dataType,
-        };
+        return compileCollectionIterable(this, source, dataType, (source) => {
+            const iterated = this.iteratedElements(source);
+            // The constructor copies the elements into a new collection, even
+            // when the source is a Set. A borrowed view is read, never retained.
+            // The constructor reads each element once and keeps none of the
+            // source, so an element conversion copies nothing JavaScript shares.
+            const values =
+                iterated &&
+                "range" in iterated &&
+                dataTypesEqual(iterated.element, dataType.element)
+                    ? `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${iterated.range.cpp})`
+                    : isJsonValue(source) && dataType.element.kind !== "json"
+                      ? this.documentElementsCopy(
+                            source,
+                            dataType.element,
+                            iterable,
+                        )
+                      : this.compileKnownValueForSink(
+                            {
+                                ...(iterated && "range" in iterated
+                                    ? iterated.range
+                                    : source),
+                                unaliased: source.unaliased ?? "object",
+                            },
+                            {
+                                kind: "vector",
+                                element: dataType.element,
+                            },
+                            iterable,
+                        );
+            if (
+                this.context.dataTypes.carriesBorrowedPlatformEvent(
+                    dataType.element,
+                ) ||
+                (dataType.element.kind === "handle" &&
+                    dataType.element.handle === "dom-event-identity")
+            ) {
+                this.context.refuseBorrowedPlatformEventEscape(
+                    source,
+                    iterable,
+                    "Set constructor",
+                );
+            }
+            return {
+                kind: "data",
+                cpp: `${cppType}(${values})`,
+                dataType,
+            };
+        });
     }
 
     /**
@@ -10108,6 +10524,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType,
         node: ts.Node,
     ): string {
+        if (dataType.kind === "json")
+            this.requireNativeHandleBinding(value, node);
         if (value.dataType && this.context.dataTypes.carriesFunction(dataType))
             this.connectFunctionStorage(value.dataType, dataType, node);
         if (
@@ -10199,10 +10617,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             value.dataType &&
             this.spanCompatible(value.dataType, dataType)
         ) {
-            return value.cpp;
+            return dataType.kind === "handle" && dataType.ownedEngine
+                ? (representedStorage(value)?.cpp ??
+                      this.context.fail(
+                          node,
+                          "An owned resource requires its represented storage.",
+                      ))
+                : value.cpp;
         }
         if (
             dataType.kind !== "optional" &&
+            !(
+                dataType.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(dataType.name)
+            ) &&
             value.dataType?.kind === "optional"
         ) {
             const inner = value.dataType.inner;
@@ -10653,6 +11081,50 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             nativeType,
             node: initializer as ts.Expression,
         });
+    }
+
+    /** An erased local retains a represented native owner in its existing handle storage. */
+    private requireNativeHandleBinding(value: Value, node: ts.Node): void {
+        const stored =
+            value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : value.dataType;
+        const nativeHandle =
+            stored?.kind === "handle"
+                ? stored
+                : isHandleKind(value.kind)
+                  ? { kind: "handle" as const, handle: value.kind }
+                  : undefined;
+        const converted = this.convertedExpression(node);
+        if (!nativeHandle || !converted) return;
+        const expression = outermostWrapper(converted, { branches: true });
+        const parent = expression.parent;
+        const declaration =
+            ts.isVariableDeclaration(parent) &&
+            parent.initializer === expression
+                ? parent
+                : ts.isBinaryExpression(parent) &&
+                    parent.right === expression &&
+                    [
+                        ts.SyntaxKind.EqualsToken,
+                        ts.SyntaxKind.QuestionQuestionEqualsToken,
+                        ts.SyntaxKind.BarBarEqualsToken,
+                        ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+                    ].includes(parent.operatorToken.kind) &&
+                    ts.isIdentifier(parent.left)
+                  ? resolvedSymbol(this.context.checker, parent.left)
+                        ?.valueDeclaration
+                  : undefined;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            this.context.dynamicBindings.has(declaration) ||
+            (this.context.checker.getTypeAtLocation(declaration.name).flags &
+                ts.TypeFlags.Unknown) ===
+                0
+        )
+            return;
+        throw new DynamicBindingStorageRequired(declaration, { nativeHandle });
     }
 
     /**
@@ -11251,12 +11723,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         const parts = fields.map((field) => {
             const initializer = provided.get(field.sourceName);
+            this.context.dataTypes.requireEngineFieldStorage(
+                field,
+                initializer ?? literal,
+            );
             if (!initializer) {
-                const absent = field.defaultWhenMissing
-                    ? "{}"
-                    : field.type.kind === "optional"
-                      ? "std::nullopt"
-                      : undefined;
+                const absent =
+                    field.defaultWhenMissing ||
+                    (field.accessorReceiver && field.type.kind === "optional")
+                        ? "{}"
+                        : field.type.kind === "optional"
+                          ? "std::nullopt"
+                          : undefined;
                 if (absent !== undefined)
                     return this.context.dataTypes.structFieldInitializerCpp(
                         field,
@@ -11268,6 +11746,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             provided.delete(field.sourceName);
+            if (!ts.isMethodDeclaration(initializer))
+                this.context.dataTypes.requireOwnUndefinedField(
+                    dataType.name,
+                    field,
+                    this.context.checker.getTypeAtLocation(initializer),
+                    initializer,
+                );
             if (ts.isMethodDeclaration(initializer)) {
                 if (field.type.kind !== "function") {
                     this.context.fail(
@@ -11510,6 +11995,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? operation
                     : `object ${operation}`,
             );
+            this.context.dataTypes.requireEngineFieldStorage(
+                sourceField,
+                source,
+            );
+            this.context.dataTypes.requireEngineFieldStorage(
+                targetField,
+                source,
+            );
+            if (declared)
+                this.context.dataTypes.requireOwnUndefinedField(
+                    target.type.name,
+                    targetField,
+                    this.context.checker.getTypeOfSymbol(declared),
+                    source,
+                );
             const raw =
                 entry.presence?.emptySlot === "ambiguous" &&
                 targetField.type.kind === "optional" &&
@@ -11975,7 +12475,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return true;
         }
         if (
-            (target?.kind !== "data" && target?.kind !== "promise") ||
+            (target?.kind !== "data" &&
+                target?.kind !== "promise" &&
+                !(
+                    target?.dataType?.kind === "handle" &&
+                    target.dataType.ownedEngine
+                )) ||
             !target.dataType
         ) {
             return false;
@@ -12073,7 +12578,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const value = this.compileForSink(expression.right, target.dataType);
         this.context.emit({
             kind: "expression",
-            code: `${target.cpp} = ${value};`,
+            code: `${target.resourceStorageCpp ?? target.cpp} = ${value};`,
         });
         const rebound = this.context.recordDataAssignmentMetadata(
             target,
@@ -12635,6 +13140,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return tests.length ? `(${tests.join(" || ")})` : "false";
         }
         if (narrowed.kind === "data" && dataType?.kind === "struct") {
+            if (
+                this.context.dataTypes.structCall(dataType.name) &&
+                (key.staticString === undefined ||
+                    [
+                        "name",
+                        "length",
+                        "prototype",
+                        "arguments",
+                        "caller",
+                    ].includes(key.staticString) ||
+                    (operator === "in" &&
+                        ["call", "apply", "bind"].includes(key.staticString)))
+            )
+                this.context.fail(
+                    keyNode,
+                    "Function intrinsic property membership requires represented function metadata.",
+                );
             if (key.staticString === undefined) {
                 const keyCpp = this.membershipStringKeyCpp(key, keyNode);
                 const fields = this.context.dataTypes.structFields(
@@ -12839,6 +13361,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     private dictionaryEntry(
         left: ts.Expression,
+        retainOwner = false,
     ):
         | { owner: Value; dataType: DataType & { kind: "map" }; keyCpp: string }
         | undefined {
@@ -12857,7 +13380,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         )
             return undefined;
         let owner = this.context.probeEmission(() => {
-            const path = this.compileDataPath(left.expression, "read");
+            const path =
+                this.compileDataPath(left.expression, "read") ??
+                (retainOwner
+                    ? this.context.compileValue(left.expression)
+                    : undefined);
             const candidate =
                 path?.kind === "data"
                     ? this.narrowOptional(path, left.expression)
@@ -12868,6 +13395,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         }
         const dataType = owner.dataType;
+        if (retainOwner)
+            owner = this.context.bindings.pinValueToTemporary(
+                owner,
+                "entry_owner",
+                left.expression,
+            );
         if (ts.isPropertyAccessExpression(left)) {
             if (dataType.key.kind !== "string") return undefined;
             return {
@@ -12876,7 +13409,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 keyCpp: this.context.cppString(left.name.text),
             };
         }
-        if (expressionMayRunCode(left.argumentExpression)) {
+        if (!retainOwner && expressionMayRunCode(left.argumentExpression)) {
             const cpp = this.context.allocateTemporaryCppName("entry_owner");
             this.context.emit({
                 kind: "declaration",
@@ -12909,7 +13442,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataType: DataType & { kind: "map" };
             keyCpp: string;
         },
-    ): void {
+    ): Value {
         this.context.reachJsData();
         const key = this.context.allocateTemporaryCppName("entry_key");
         this.context.emit({
@@ -12918,10 +13451,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             name: key,
             initializer: entry.keyCpp,
         });
-        const guard = this.logicalAssignmentGuard(
-            expression,
-            `!${entry.owner.cpp}.has(${key})`,
+        const target = this.mapPropertyValue(
+            entry.owner.cpp,
+            key,
+            entry.dataType.value,
         );
+        const guard = this.logicalAssignmentGuard(expression, target);
+        if (guard === undefined) return target;
         this.emitGuardedStore(guard, () => {
             const value = this.compileForRetainedSink(
                 expression.right,
@@ -12934,24 +13470,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
             this.context.bindings.invalidateRecordProperties(entry.owner);
         });
+        return this.mapPropertyValue(
+            entry.owner.cpp,
+            key,
+            entry.dataType.value,
+        );
     }
 
     /**
-     * The condition under which a logical assignment stores: `nullish`
-     * spells the `??=` test, and the other two read the target's
-     * truthiness. A condition the model settled folds to `true`/`false`.
+     * The condition under which a logical assignment stores its held target.
+     * Undefined means the target is represented as always non-nullish.
      */
     private logicalAssignmentGuard(
         expression: ts.BinaryExpression,
-        nullish: string,
-    ): string {
+        target: Value,
+    ): string | undefined {
         const kind = expression.operatorToken.kind;
         if (kind === ts.SyntaxKind.QuestionQuestionEqualsToken) {
-            return nullish;
+            if (isUndefinedDataType(target.dataType))
+                return `(static_cast<void>(${target.cpp}), true)`;
+            if (isJsonValue(target))
+                return `((${target.cpp}).is_null() || (${target.cpp}).is_undefined())`;
+            const present =
+                presenceFlagCpp(target) ??
+                (target.dataType?.kind === "optional"
+                    ? optionalPresentCpp(`(${target.cpp})`)
+                    : target.dataType?.kind === "struct" &&
+                        this.context.dataTypes.isReferenceStruct(
+                            target.dataType.name,
+                        )
+                      ? this.referencePresence(target.cpp)
+                      : undefined);
+            return present === undefined ? undefined : `!(${present})`;
         }
-        const truthy = this.context.conditions.compileCondition(
-            expression.left,
-        );
+        const truthy =
+            this.truthinessCondition(target) ??
+            this.context.fail(
+                expression.left,
+                "Logical assignment requires a truth-testable stored value.",
+            );
         if (kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken) {
             return truthy;
         }
@@ -13231,38 +13788,175 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return { kind: "string", cpp: result };
     }
 
+    /** Logical accessor stores use one getter value and return the selected RHS. */
+    private emitLogicalAccessorAssignment(
+        expression: ts.BinaryExpression,
+        left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): Value | undefined {
+        const owner = this.context.probeEmission(() => {
+            const path =
+                this.compileDataPath(left.expression, "read") ??
+                this.context.compileValue(left.expression);
+            const value = this.narrowOptional(path, left.expression);
+            const type = value.dataType;
+            if (type?.kind !== "struct") return undefined;
+            return (
+                ts.isPropertyAccessExpression(left)
+                    ? this.accessorField(value, left.name.text, left)
+                    : this.context.dataTypes
+                          .structFields(type.name, left, "accessors")
+                          .some((field) => field.accessor)
+            )
+                ? value
+                : undefined;
+        });
+        if (!owner) return undefined;
+        const ownerType = owner.dataType;
+        if (ownerType?.kind !== "struct") return undefined;
+        const held = this.context.dataTypes.isReferenceStruct(ownerType.name)
+            ? this.context.bindings.pinValueToTemporary(
+                  owner,
+                  "accessor_owner",
+                  left.expression,
+              )
+            : owner;
+        const key = ts.isElementAccessExpression(left)
+            ? this.context.unwrap(left.argumentExpression)
+            : undefined;
+        const previousKey = key && this.assignedRights.get(key);
+        if (key)
+            this.assignedRights.set(
+                key,
+                pinOperand(
+                    this.context,
+                    this.context.compileValue(key),
+                    key,
+                    "accessor_key",
+                ),
+            );
+        try {
+            const read = ts.isPropertyAccessExpression(left)
+                ? this.compilePropertyFromValue(held, left)
+                : this.elementRead(held, left, "read");
+            if (!read?.dataType)
+                this.context.fail(
+                    left,
+                    "Logical accessor assignment requires represented result storage.",
+                );
+            const type = read.absenceTagType ?? read.dataType;
+            const selected =
+                this.context.allocateTemporaryCppName("logical_selected");
+            this.context.emit({
+                kind: "declaration",
+                type: this.context.dataTypes.cppType(type),
+                name: selected,
+                initializer: this.compileKnownValueForSink(read, type, left),
+            });
+            this.context.registerNativeBinding(selected);
+            const result = this.leafValue(selected, type);
+            const guard = this.logicalAssignmentGuard(expression, result);
+            if (guard !== undefined)
+                this.emitGuardedStore(guard, () => {
+                    const right = this.context.unwrap(expression.right);
+                    this.context.emit({
+                        kind: "expression",
+                        code: `${selected} = ${this.compileForRetainedSink(expression.right, type, "logical assignment")};`,
+                    });
+                    const previous = this.assignedRights.get(right);
+                    this.assignedRights.set(right, result);
+                    try {
+                        const stored = ts.isPropertyAccessExpression(left)
+                            ? this.emitAccessorAssignment(left, right, held)
+                            : this.emitAccessorElementAssignment(
+                                  left,
+                                  right,
+                                  held,
+                              );
+                        if (!stored)
+                            this.context.fail(
+                                left,
+                                "Logical accessor assignment requires a represented setter.",
+                            );
+                    } finally {
+                        if (previous === undefined)
+                            this.assignedRights.delete(right);
+                        else this.assignedRights.set(right, previous);
+                    }
+                });
+            return result;
+        } finally {
+            if (key) {
+                if (previousKey === undefined) this.assignedRights.delete(key);
+                else this.assignedRights.set(key, previousKey);
+            }
+        }
+    }
+
     /**
      * `a ??= b`, `a ||= b` and `a &&= b` over the data model.
      *
-     * The target is read for the guard and written for the store, which is
-     * JavaScript's own reference-then-assign order for a call-free target;
-     * a target containing a call refuses rather than run it twice. The
-     * right side compiles inside the guarded block, so it is evaluated
-     * only when the store happens, and a target the model proves never
-     * nullish (`??=` on a plain number) emits nothing at all, exactly as
-     * JavaScript never evaluates that right side. The store runs as
-     * runtime control flow, so the plain assignment's bookkeeping treats
-     * it as the conditional write it is.
+     * Member targets retain their owner and key before the guard. The
+     * right side runs only for a selected store; value consumers snapshot
+     * the result before a later expression can mutate the same location.
      */
-    public emitLogicalAssignment(expression: ts.BinaryExpression): void {
+    public emitLogicalAssignment(
+        expression: ts.BinaryExpression,
+        asValue = false,
+    ): Value {
+        const result = (value: Value): Value =>
+            asValue
+                ? this.context.bindings.pinValueToTemporary(
+                      value,
+                      "logical_result",
+                      expression,
+                  )
+                : value;
         const left = this.context.unwrap(expression.left);
         if (
-            someAnalysisNode(
-                left,
-                (node) => ts.isCallExpression(node) || ts.isNewExpression(node),
-            )
+            ts.isPropertyAccessExpression(left) ||
+            ts.isElementAccessExpression(left)
         ) {
-            this.context.fail(
+            this.requireOwnUndefinedWrite(left, expression.right);
+            const accessor = this.emitLogicalAccessorAssignment(
+                expression,
                 left,
-                "A logical assignment target must not contain a call; bind the call's result to a local first.",
             );
+            if (accessor) return result(accessor);
+            const json = this.jsonAssignmentTarget(left);
+            if (json) {
+                const previous =
+                    this.context.allocateTemporaryCppName("logical_value");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: previous,
+                    initializer: `${json.owner}.read_property(${json.key})`,
+                });
+                const guard = this.logicalAssignmentGuard(
+                    expression,
+                    this.leafValue(previous, { kind: "json" }),
+                )!;
+                this.emitGuardedStore(guard, () => {
+                    const value = this.compileForSink(expression.right, {
+                        kind: "json",
+                    });
+                    this.context.emit({
+                        kind: "expression",
+                        code: `${json.owner}.set(${json.key}, ${value});`,
+                    });
+                });
+                return result(
+                    this.leafValue(`${json.owner}.read_property(${json.key})`, {
+                        kind: "json",
+                    }),
+                );
+            }
         }
         // A dictionary entry has no native lvalue: its presence is the
         // guard and the store is `set`.
-        const entry = this.dictionaryEntry(left);
+        const entry = this.dictionaryEntry(left, true);
         if (entry) {
-            this.emitLogicalEntryAssignment(expression, entry);
-            return;
+            return result(this.emitLogicalEntryAssignment(expression, entry));
         }
         // A plain number, boolean or string local is a native scalar rather
         // than a data value; it stores the way its plain assignment does.
@@ -13275,17 +13969,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 bound.kind === "boolean" ||
                 bound.kind === "string")
                 ? bound
-                : this.compileDataPath(
+                : ((ts.isPropertyAccessExpression(left) ||
+                  ts.isElementAccessExpression(left)
+                      ? (this.preparePropertyAssignmentTarget(left) ??
+                        (ts.isElementAccessExpression(left)
+                            ? this.prepareArrayAssignmentTarget(left)
+                            : undefined))
+                      : undefined) ??
+                  this.compileDataPath(
                       left,
                       ts.isIdentifier(left) ? "read" : "write",
-                  );
+                  ));
         const root = !ts.isIdentifier(left)
             ? rootIdentifier(left, (chain) => this.context.unwrap(chain))
             : undefined;
-        this.emitLogicalSlotAssignment(
-            expression,
-            target,
-            root ? this.context.bindings.lookupOptional(root) : undefined,
+        return result(
+            this.emitLogicalSlotAssignment(
+                expression,
+                target,
+                root ? this.context.bindings.lookupOptional(root) : undefined,
+            ),
         );
     }
 
@@ -13294,7 +13997,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.BinaryExpression,
         target: Value | undefined,
         sourceOwner?: Value,
-    ): void {
+    ): Value {
         const left = this.context.unwrap(expression.left);
         const scalarKind =
             target &&
@@ -13320,39 +14023,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "A logical assignment into a typed-array lane is not lowered; store the selected value explicitly.",
             );
         }
-        const targetType = target.dataType;
+        const targetType = target.absenceTagType ?? target.dataType;
         const nullish =
             expression.operatorToken.kind ===
             ts.SyntaxKind.QuestionQuestionEqualsToken;
-        // An optional is present when engaged; a shared object is its
-        // reference, whose null is the binding's absent state.
-        const presence = isUndefinedDataType(targetType)
-            ? `(static_cast<void>(${target.cpp}), false)`
-            : targetType?.kind === "optional"
-              ? optionalPresentCpp(`(${target.cpp})`)
-              : targetType?.kind === "struct" &&
-                  this.context.dataTypes.isReferenceStruct(targetType.name)
-                ? this.referencePresence(target.cpp)
-                : undefined;
-        if (nullish && (scalarKind || presence === undefined)) {
+        const guard = this.logicalAssignmentGuard(expression, target);
+        if (guard === undefined) {
             // A non-nullable target never takes the right side.
-            return;
+            return target;
         }
         if (nullish) {
             this.context.reachJsData();
         }
-        const truthy = nullish ? undefined : this.truthinessCondition(target);
-        if (!nullish && truthy === undefined)
-            this.context.fail(
-                expression.left,
-                "Logical assignment requires a truth-testable stored value.",
-            );
-        const guard = nullish
-            ? `!${presence}`
-            : expression.operatorToken.kind ===
-                ts.SyntaxKind.AmpersandAmpersandEqualsToken
-              ? truthy!
-              : `!(${truthy})`;
         this.emitGuardedStore(guard, () => {
             const value =
                 scalarKind === "number"
@@ -13374,7 +14056,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                           );
             this.context.emit({
                 kind: "expression",
-                code: `${target.cpp} = ${value};`,
+                code: `${target.absenceTagStorageCpp ?? target.cpp} = ${value};`,
             });
             if (scalarKind) {
                 return;
@@ -13396,11 +14078,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 }
             }
         });
+        return target;
     }
+
+    /** Compound stores prepare the whole receiver before any computed key. */
+    private readonly jsonAssignmentTargets = new EmissionMap<
+        ts.Expression,
+        JsonAssignmentTarget
+    >();
 
     private jsonAssignmentTarget(
         left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
-    ): { owner: string; key: string } | undefined {
+    ): JsonAssignmentTarget | undefined {
+        const prepared = this.jsonAssignmentTargets.get(left);
+        if (prepared) return prepared;
         const jsonOwner = this.context.probeEmission(() => {
             if (
                 !isJsonRootedExpression(this.context, left.expression) &&
@@ -13432,6 +14123,70 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   "assignment_key",
               ).cpp;
         return { owner: owner.cpp, key };
+    }
+
+    /** Keep the selected owner, key and old primitive ahead of the right side. */
+    private emitJsonCompoundAssignment(
+        expression: ts.BinaryExpression,
+        target: JsonAssignmentTarget,
+        operator: string,
+    ): Value {
+        if (
+            isBigIntTyped(this.context.checker, expression.left) ||
+            isBigIntTyped(this.context.checker, expression.right)
+        )
+            this.context.fail(
+                expression,
+                "Dynamic object compound assignment does not represent BigInt operands.",
+            );
+        this.context.reachJson();
+        const previous =
+            this.context.allocateTemporaryCppName("compound_previous");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: previous,
+            initializer: `${target.owner}.read_property(${target.key})`,
+        });
+        const right = this.context.allocateTemporaryCppName("compound_right");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: right,
+            initializer: this.compileForSink(expression.right, {
+                kind: "json",
+            }),
+        });
+        // Represented primitives have ordinary ToNumber and string addition.
+        // Objects can run authored valueOf/toString hooks, which this boundary
+        // cannot invoke merely from a dynamic carrier.
+        this.context.emit({
+            kind: "expression",
+            code: `if (${previous}.is_object() || ${previous}.is_array() || ${right}.is_object() || ${right}.is_array()) throw std::runtime_error("Dynamic compound assignment requires primitive operands.");`,
+        });
+        const numeric = compoundAssignmentValue(
+            operator,
+            `${previous}.to_number()`,
+            `${right}.to_number()`,
+            staticNumberValue(this.context, expression.right),
+        );
+        if (numeric.jsData) this.context.reachJsData();
+        const number = `bbl::js::json_value(${numeric.cpp})`;
+        const next = this.context.allocateTemporaryCppName("compound_next");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: next,
+            initializer:
+                operator === "+="
+                    ? `(${previous}.is_string() || ${right}.is_string() ? bbl::js::json_value(${previous}.to_string() + ${right}.to_string()) : ${number})`
+                    : number,
+        });
+        this.context.emit({
+            kind: "expression",
+            code: `${target.owner}.set(${target.key}, ${next});`,
+        });
+        return this.leafValue(next, { kind: "json" });
     }
 
     /**
@@ -13492,6 +14247,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
     }
 
+    /** Member stores demand the field's owner and own-presence representation. */
+    private requireOwnUndefinedWrite(
+        left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+        right: ts.Expression,
+    ): void {
+        const source = this.context.dataTypes.resolveTypeParameter(
+            this.context.checker.getTypeAtLocation(right),
+        );
+        const owner = this.dataTypeAt(left.expression);
+        const held = owner?.kind === "optional" ? owner.inner : owner;
+        if (held?.kind !== "struct") return;
+        const name = ts.isPropertyAccessExpression(left)
+            ? left.name.text
+            : ts.isStringLiteralLike(left.argumentExpression)
+              ? left.argumentExpression.text
+              : undefined;
+        for (const field of this.context.dataTypes.structFields(
+            held.name,
+            left,
+            "accessors",
+        ))
+            if (name === undefined || field.sourceName === name) {
+                this.context.dataTypes.requireEngineFieldStorage(field, left);
+                this.context.dataTypes.requireOwnUndefinedField(
+                    held.name,
+                    field,
+                    source,
+                    right,
+                );
+            }
+    }
+
     /**
      * `target = value` / `target op= value` into data storage. The right
      * side compiles into the store; an assignment used as a value has it
@@ -13541,13 +14328,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return false;
         }
+        if (operator === "=")
+            this.requireOwnUndefinedWrite(left, expression.right);
         const json = this.jsonAssignmentTarget(left);
         if (json) {
-            if (operator !== "=")
-                this.context.fail(
-                    expression,
-                    "Dynamic object properties currently support plain assignment only.",
-                );
+            if (operator !== "=") {
+                this.emitJsonCompoundAssignment(expression, json, operator);
+                return true;
+            }
             const value = this.compileForSink(expression.right, {
                 kind: "json",
             });
@@ -13870,7 +14658,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const prepared = retainOwner
                 ? (this.preparePropertyAssignmentTarget(left) ??
                   (stored?.kind === "handle" &&
-                  stored.handle === "render-target" &&
                   ts.isElementAccessExpression(left)
                       ? this.prepareArrayAssignmentTarget(left)
                       : undefined))
@@ -14013,7 +14800,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return true;
         }
         if (
-            (target.kind === "data" || target.kind === "render-target") &&
+            (target.kind === "data" || isHandleKind(target.kind)) &&
             target.dataType
         ) {
             if (operator === "+=" && target.dataType.kind === "string") {
@@ -14083,7 +14870,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             this.context.emit({
                 kind: "expression",
-                code: `${target.cpp} = ${value};`,
+                code: `${target.resourceStorageCpp ?? target.storedEngineCpp ?? target.cpp} = ${value};`,
             });
             this.context.recordDataAssignmentMetadata(
                 target,
@@ -15193,7 +15980,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "declaration",
             type: "const double",
             name: previous,
-            initializer: `${target.owner}.get(${target.key}).to_number()`,
+            initializer: `${target.owner}.read_property(${target.key}).to_number()`,
         });
         this.context.emit({
             kind: "declaration",
@@ -15398,6 +16185,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // flag is an object: truthy exactly when present.
         const object = objectTruthinessCpp(value);
         if (object !== undefined) return object;
+        if (
+            isHandleKind(value.kind) ||
+            value.dataType?.kind === "handle" ||
+            value.dataType?.kind === "borrowed-platform-event" ||
+            value.kind === "platform-mouse-event" ||
+            value.kind === "platform-keyboard-event"
+        ) {
+            // Native handle numbers and payload fields are not JavaScript
+            // truthiness. Every present owner is an object, including handle
+            // zero; absence was handled by its represented guard above.
+            return value.cpp && !readsNativeStorage(value)
+                ? `(static_cast<void>(${value.cpp}), true)`
+                : "true";
+        }
         if (
             value.kind === "data" &&
             value.dataType?.kind === "struct" &&
@@ -16181,16 +16982,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // Prefer that concrete lowered type for optional-chain operands so
         // `record[key]?.flag === true` compares the contained flag rather
         // than the nullable's presence bit.
+        const optionalRepresentation = (
+            value: Value | undefined,
+        ): Value | undefined => {
+            if (
+                value?.dataType?.kind === "handle" &&
+                value.dataType.ownedEngine &&
+                value.optionalStorageCpp
+            )
+                return this.leafValue(value.optionalStorageCpp, {
+                    kind: "optional",
+                    inner: value.dataType,
+                    undefinedOnly: true,
+                });
+            return value?.kind === "data" && optionalComparable(value.dataType)
+                ? value
+                : undefined;
+        };
         const loweredOptional = (operand: ts.Expression): Value | undefined => {
             const unwrapped = this.context.options.workers
                 ? unwrapExpression(operand)
                 : this.context.unwrap(operand);
             if (ts.isIdentifier(unwrapped)) {
                 const bound = this.context.bindings.lookupOptional(unwrapped);
-                return bound?.kind === "data" &&
-                    optionalComparable(bound.dataType)
-                    ? bound
-                    : undefined;
+                return optionalRepresentation(bound);
             }
             // The input getter remains nullable after an earlier assignment:
             // a helper can change its retained slot without TypeScript
@@ -16234,10 +17049,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     const value =
                         this.compileDataPath(unwrapped, "read") ??
                         this.context.compileValue(unwrapped);
-                    return value?.kind === "data" &&
-                        optionalComparable(value.dataType)
-                        ? value
-                        : undefined;
+                    return optionalRepresentation(value);
                 });
             }
             const value =
@@ -16245,9 +17057,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 (ts.isCallExpression(unwrapped)
                     ? this.context.compileValue(unwrapped)
                     : undefined);
-            return value?.kind === "data" && optionalComparable(value.dataType)
-                ? value
-                : undefined;
+            return optionalRepresentation(value);
         };
         // Detect the representation without committing either operand's calls.
         // Once selected, evaluate and snapshot both operands in source order.
@@ -16309,6 +17119,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const rightType = optionalComparable(rightOptional?.dataType)
             ? rightOptional.dataType
             : this.dataTypeAt(right);
+        for (const [type, value] of [
+            [leftType, leftOptional],
+            [rightType, rightOptional],
+        ] as const) {
+            if (
+                type?.kind === "optional" &&
+                type.inner.kind === "handle" &&
+                isEngineScopedHandleKind(type.inner.handle) &&
+                !type.inner.ownedEngine
+            ) {
+                this.context.dataTypes.requireEngineParameterStorage(
+                    value?.engineOwnerParameter,
+                );
+                this.context.fail(
+                    expression,
+                    "Handle identity requires represented engine owners.",
+                );
+            }
+        }
         const widenTag = (
             value: { cpp: string; dataType: DataType },
             node: ts.Node,
@@ -16434,6 +17263,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // as the strings they spell.
         const textual = (type: DataType): boolean =>
             type.kind === "string" || type.kind === "enum";
+        const presentEquality = (
+            type: DataType,
+            left: string,
+            right: string,
+        ): string =>
+            type.kind === "handle" && type.ownedEngine
+                ? `bbl::js::detail::same_value_zero(${left}, ${right})`
+                : `${left} == ${right}`;
         if (
             optionalComparable(leftType) &&
             optionalComparable(rightType) &&
@@ -16453,7 +17290,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 false,
             );
             const presentEqual = dataTypesEqual(leftType.inner, rightType.inner)
-                ? `(*${leftCpp}) == (*${rightCpp})`
+                ? presentEquality(
+                      leftType.inner,
+                      `(*${leftCpp})`,
+                      `(*${rightCpp})`,
+                  )
                 : `std::string(${widenTag({ cpp: `(*${leftCpp})`, dataType: leftType.inner }, left).cpp}) == ` +
                   `std::string(${widenTag({ cpp: `(*${rightCpp})`, dataType: rightType.inner }, right).cpp})`;
             const equal = absentAwareEquality(
@@ -16488,7 +17329,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : this.compileForSink(right, present.dataType);
             const equal =
                 `(${optionalPresentCpp(leftCpp)} && ` +
-                `${present.cpp} == ${rightCpp})`;
+                `${presentEquality(present.dataType, present.cpp, rightCpp)})`;
             return negated ? `!${equal}` : equal;
         }
         if (optionalComparable(rightType)) {
@@ -16511,7 +17352,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : this.compileForSink(left, present.dataType);
             const equal =
                 `(${optionalPresentCpp(rightCpp)} && ` +
-                `${leftCpp} == ${present.cpp})`;
+                `${presentEquality(present.dataType, leftCpp, present.cpp)})`;
             return negated ? `!${equal}` : equal;
         }
         const compare = (
@@ -16901,7 +17742,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const template =
                 value.staticElementsOwner?.runtimeElementTemplate ??
                 value.runtimeElementTemplate ??
-                (element.kind === "handle" && elements?.length
+                (element.kind === "handle" &&
+                !element.ownedEngine &&
+                elements?.length
                     ? commonResourceValue(
                           withNativeMetadata(
                               this.leafValue("", element),
@@ -17168,14 +18011,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             { kind: "map-entry" | "set-entry" }
         >,
         site: ts.Node,
-        type?: DataType,
     ): Value {
         const pair = this.iterationElementValue(item, element);
         const lanes =
             element.kind === "set-entry"
                 ? [element.element, element.element]
                 : [element.key, element.value];
-        const pairType = type ?? this.context.dataTypes.tupleStorage(lanes);
+        const pairType = this.context.dataTypes.tupleStorage(lanes);
         const cpp = this.context.allocateTemporaryCppName("entry_pair");
         this.context.emit({
             kind: "declaration",
@@ -17204,6 +18046,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const owner = this.context.registerNativeBinding(itemCpp, false, true);
         const defineItem = (identifier: ts.Identifier, value: Value): void =>
             define(identifier, { ...value, nativeCaptures: [owner] });
+        const defineIndex = (
+            identifier: ts.Identifier,
+            indexCpp: string,
+        ): void => {
+            // The yielded number is a writable binding, independent of the
+            // iterator's counter and of numbers yielded on later iterations.
+            const cpp = this.context.allocateTemporaryCppName("entry_index");
+            this.context.emit({
+                kind: "declaration",
+                type: "double",
+                name: cpp,
+                initializer: `static_cast<double>(${indexCpp})`,
+                attributes: "[[maybe_unused]] ",
+            });
+            define(identifier, {
+                kind: "number",
+                cpp,
+                dataType: { kind: "number" },
+                nativeCaptures: [
+                    this.context.registerNativeBinding(cpp, false, true),
+                ],
+            });
+        };
         if (element.kind === "array-index") {
             if (!ts.isIdentifier(name)) {
                 this.context.fail(
@@ -17211,11 +18076,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "Array keys iteration binds one identifier.",
                 );
             }
-            defineItem(name, {
-                kind: "number",
-                cpp: `static_cast<double>(${element.indexCpp})`,
-                dataType: { kind: "number" },
-            });
+            defineIndex(name, element.indexCpp);
             return;
         }
         if (element.kind === "array-entry") {
@@ -17238,11 +18099,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "Array entry destructuring accepts at most two bindings.",
                 );
             }
-            const indexOwner = this.context.registerNativeBinding(
-                element.indexCpp,
-                false,
-                true,
-            );
             name.elements.forEach((binding, position) => {
                 if (ts.isOmittedExpression(binding)) return;
                 if (
@@ -17273,12 +18129,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         "Array entry binding is out of range.",
                     );
                 if (position === 0) {
-                    define(binding.name, {
-                        kind: "number",
-                        cpp: `static_cast<double>(${element.indexCpp})`,
-                        dataType: { kind: "number" },
-                        nativeCaptures: [indexOwner],
-                    });
+                    defineIndex(binding.name, element.indexCpp);
                     return;
                 }
                 const value: Value = {
@@ -17294,15 +18145,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (element.kind === "map-entry" || element.kind === "set-entry") {
             if (ts.isIdentifier(name)) {
-                const type = this.dataTypeAt(name);
-                if (!type)
-                    this.context.fail(
-                        name,
-                        "Entry iteration requires a concrete pair type.",
-                    );
                 define(
                     name,
-                    this.materializeIterationPair(itemCpp, element, name, type),
+                    this.materializeIterationPair(itemCpp, element, name),
                 );
                 return;
             }
@@ -17387,16 +18232,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     );
                 const cpp =
                     this.context.allocateTemporaryCppName("entry_binding");
+                const storage =
+                    source.absenceTagType ??
+                    (source.dataType?.kind === "handle" &&
+                    source.dataType.ownedEngine
+                        ? source.dataType
+                        : undefined);
                 this.context.emit({
                     kind: "declaration",
                     type: "auto",
                     name: cpp,
-                    initializer: source.cpp,
+                    initializer: storage
+                        ? this.compileKnownValueForSink(
+                              source,
+                              storage,
+                              binding,
+                          )
+                        : source.cpp,
                     attributes: "[[maybe_unused]] ",
                 });
                 const value = {
-                    ...source,
-                    cpp,
+                    ...withNativeMetadata(
+                        storage
+                            ? this.leafValue(cpp, storage)
+                            : { ...source, cpp },
+                        source,
+                    ),
                     nativeCaptures: [this.context.registerNativeBinding(cpp)],
                 };
                 define(binding.name, value);
@@ -18009,14 +18870,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     dataType.element,
                     "Array literal",
                 );
-                return pins[index]
-                    ? pinOperand(
-                          this.context,
-                          this.leafValue(cpp, dataType.element),
-                          element,
-                          "array_member",
-                      ).cpp
-                    : cpp;
+                if (!pins[index]) return cpp;
+                // This is already sink storage. Projecting it to a Value
+                // would separate absence tags and native owners from their
+                // payload before the array receives the complete element.
+                const name =
+                    this.context.allocateTemporaryCppName("array_member");
+                this.context.emit({
+                    kind: "declaration",
+                    type: `const ${this.context.dataTypes.cppType(dataType.element)}`,
+                    name,
+                    initializer: cpp,
+                });
+                this.context.registerNativeConstBinding(name);
+                return name;
             });
             return `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}>{${elements.join(", ")}}`;
         }

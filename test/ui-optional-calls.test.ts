@@ -11,6 +11,23 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     const result = compileSource(
         `
+        let classSelected: HTMLDivElement | null = null;
+        let classEffects = 0;
+        function forcedClass(): boolean { classEffects++; classSelected = null; return true; }
+        const updateClass = (): void => { classSelected?.classList.toggle("selected", forcedClass()); };
+        updateClass();
+        if (classEffects !== 0) throw new Error("absent class argument");
+        const retained = document.createElement("div");
+        classSelected = retained;
+        updateClass();
+        if (classEffects !== 1 || classSelected !== null || !retained.classList.contains("selected"))
+            throw new Error("selected class receiver");
+        classSelected?.classList.remove("selected");
+        if (!retained.classList.contains("selected")) throw new Error("absent class removal");
+        classSelected = retained;
+        classSelected.classList.toggle("selected", forcedClass());
+        if (classEffects !== 2 || !retained.classList.contains("selected"))
+            throw new Error("direct class receiver");
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         document.getElementById("host")?.remove();

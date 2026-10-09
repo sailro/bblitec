@@ -196,13 +196,20 @@ export const scalarKinds: DataKindOperations<
         tracedEdges: "never",
     },
     handle: {
-        cpp: (type) => handleCppType(type.handle),
-        key: (type) => `h(${type.handle})`,
-        equal: (left, right) => left.handle === right.handle,
+        cpp: (type) =>
+            type.ownedEngine
+                ? `std::pair<bbl::StoredEngine, ${handleCppType(type.handle)}>`
+                : handleCppType(type.handle),
+        key: (type) => `h(${type.handle}${type.ownedEngine ? ",engine" : ""})`,
+        equal: (left, right) =>
+            left.handle === right.handle &&
+            left.ownedEngine === right.ownedEngine,
         children: () => [],
         byReference: false,
         tracedEdges: (type) =>
-            `bbl::js::gc_traceable<${handleCppType(type.handle)}>`,
+            type.ownedEngine
+                ? "true"
+                : `bbl::js::gc_traceable<${handleCppType(type.handle)}>`,
         reseats: true,
     },
     u8array: typedArray("u8array"),

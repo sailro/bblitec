@@ -546,43 +546,6 @@ export class StatementLowerer {
         return !context.requiresStaticDataIteration(statement.statement);
     }
 
-    private plainIterationData(
-        context: StatementLoweringContext,
-        value: Value,
-    ): boolean {
-        if (
-            value.kind === "number" ||
-            value.kind === "boolean" ||
-            value.kind === "string" ||
-            value.kind === "json-null"
-        )
-            return true;
-        if (value.kind === "tuple") {
-            return (
-                value.tupleElements?.every((entry) =>
-                    this.plainIterationData(context, entry),
-                ) === true
-            );
-        }
-        if (value.kind === "record") {
-            return (
-                value.recordProperties !== undefined &&
-                Object.values(value.recordProperties).every((entry) =>
-                    this.plainIterationData(context, entry),
-                ) &&
-                Object.keys(value.recordMethods ?? {}).length === 0 &&
-                Object.keys(value.recordGetters ?? {}).length === 0 &&
-                Object.keys(value.recordSetters ?? {}).length === 0
-            );
-        }
-        return (
-            value.kind === "data" &&
-            value.dataType !== undefined &&
-            !context.dataTypes.carriesHandle(value.dataType) &&
-            !context.dataTypes.carriesFunction(value.dataType)
-        );
-    }
-
     /** Compile one body whose effects occur only on a native runtime path. */
     private inRuntimeControlFlow<T>(
         context: StatementLoweringContext,
@@ -2512,9 +2475,17 @@ export class StatementLowerer {
                   )
                 : context.compileValue(thrown);
         const error = authoredErrorValue(context, sourceError) ?? sourceError;
-        if (error.dataType?.kind === "error") {
+        if (error.dataType?.kind === "error" || isJsonValue(error)) {
             context.reachThrow();
-            context.emitNativeThrow(error.cpp, statement, true);
+            context.emitNativeThrow(
+                context.dataLowerer.compileKnownValueForSink(
+                    error,
+                    { kind: "error" },
+                    thrown,
+                ),
+                statement,
+                true,
+            );
             return;
         }
         const value = thrownMessage(error);
@@ -3611,26 +3582,24 @@ export class StatementLowerer {
             ? values.elements.map((element) => context.compileValue(element))
             : undefined;
         if (
-            compiled?.every((value) =>
-                this.plainIterationData(context, value),
-            ) &&
-            context.emitNativeDataIteration(statement, () =>
-                this.emitRuntimeForOf(context, statement, declaration, {
-                    kind: "tuple",
-                    cpp: "",
-                    tupleElements: compiled,
-                }),
-            )
-        ) {
-            return;
-        }
-        if (
             compiled &&
             this.emitNativeHandleTableForOf(
                 context,
                 statement,
                 declaration,
                 compiled,
+            )
+        ) {
+            return;
+        }
+        if (
+            compiled &&
+            context.emitNativeDataIteration(statement, () =>
+                this.emitRuntimeForOf(context, statement, declaration, {
+                    kind: "tuple",
+                    cpp: "",
+                    tupleElements: compiled,
+                }),
             )
         ) {
             return;
@@ -3925,9 +3894,6 @@ export class StatementLowerer {
         }
         if (
             this.preferNativeDataIteration(context, statement) &&
-            elements.every((value) =>
-                this.plainIterationData(context, value),
-            ) &&
             this.emitRuntimeForOf(context, statement, declaration)
         ) {
             return true;
@@ -3991,10 +3957,19 @@ export class StatementLowerer {
         }
         if (elements.length === 0) return true;
         if (
+            this.emitNativeHandleTableForOf(
+                context,
+                statement,
+                declaration,
+                elements,
+            )
+        ) {
+            return true;
+        }
+        // Materialization proves the common storage, including callback and
+        // record identities; a separate scalar-only test would reject it.
+        if (
             this.preferNativeDataIteration(context, statement) &&
-            elements.every((value) =>
-                this.plainIterationData(context, value),
-            ) &&
             context.emitNativeDataIteration(statement, () =>
                 this.emitRuntimeForOf(context, statement, declaration, {
                     kind: "tuple",
@@ -4010,16 +3985,6 @@ export class StatementLowerer {
             context.dataIterationTarget(statement.expression)
         ) {
             return false;
-        }
-        if (
-            this.emitNativeHandleTableForOf(
-                context,
-                statement,
-                declaration,
-                elements,
-            )
-        ) {
-            return true;
         }
         this.emitUnrolledLoop(
             context,
@@ -4336,7 +4301,7 @@ export class StatementLowerer {
             statement.expression,
         );
         // `entries()`/`keys()` walk the array by index: the counter is the
-        // loop variable, and an entry's value is the element in place.
+        // loop variable, and an entry snapshots the value at that index.
         const indexed =
             target.element.kind === "array-entry" ||
             target.element.kind === "array-index"
@@ -4454,13 +4419,22 @@ export class StatementLowerer {
                 context.bindings.popScope();
             }
         });
-        if (indexed) {
-            const indexCpp = indexed.indexCpp;
+        if (indexed || container?.kind === "vector") {
+            // Array iterators retain their original owner and read its live
+            // length and next value. Native vector iterators cannot survive
+            // growth, and a reference to a slot is not the yielded JS value.
+            const indexCpp =
+                indexed?.indexCpp ??
+                context.allocateTemporaryCppName("array_index");
             const range = context.allocateTemporaryCppName("range");
-            const span = target.container.dataType?.kind === "span";
+            const span = container?.kind === "span";
             context.emit({
                 kind: "declaration",
-                type: span ? "auto" : "auto&&",
+                type: span
+                    ? "auto"
+                    : container?.kind === "vector"
+                      ? "const auto"
+                      : "auto&&",
                 name: range,
                 initializer: span
                     ? `std::span{${target.container.cpp}}`
@@ -4472,10 +4446,10 @@ export class StatementLowerer {
                 iteration: true,
             });
             context.increaseIndent();
-            if (indexed.kind === "array-entry") {
+            if (indexed?.kind !== "array-index") {
                 context.emit({
                     kind: "declaration",
-                    type: "auto&&",
+                    type: container?.kind === "vector" ? "auto" : "auto&&",
                     name: item,
                     initializer: `${range}[${indexCpp}]`,
                     // `for (const [index] of list.entries())` binds no value.
@@ -4697,6 +4671,11 @@ export class StatementLowerer {
                 ) {
                     return;
                 }
+                if (target.kind === "engine")
+                    context.fail(
+                        unwrapped.left,
+                        "Reassigning an engine alias is not supported.",
+                    );
                 const rightExpression = context.unwrap(unwrapped.right);
                 if (target.absenceTagStorageCpp !== undefined) {
                     // Tagged storage changes only through a tagged store.
@@ -4774,6 +4753,13 @@ export class StatementLowerer {
                         kind: "expression",
                         code: `${target.cpp} = ${cpp};`,
                     });
+                } else if (
+                    target.dataType?.kind === "handle" &&
+                    target.dataType.ownedEngine &&
+                    operator === "=" &&
+                    context.dataLowerer.emitAssignment(unwrapped)
+                ) {
+                    return;
                 } else if (target.kind === "audio-node" && operator === "=") {
                     const value = context.compileValue(unwrapped.right);
                     context.expectKind(value, "audio-node", unwrapped.right);

@@ -87,18 +87,12 @@ export class AbsentRecordProperties {
     ): void {
         const carried = this.carriedInto(struct);
         if (carried.has(property) || carried.has(UNKNOWN_PROPERTIES)) {
-            const sources = new Set<string>();
-            const pending = [...(this.sources.get(struct) ?? [])];
-            for (
-                let source = pending.pop();
-                source !== undefined;
-                source = pending.pop()
-            ) {
-                if (sources.has(source)) continue;
-                sources.add(source);
-                pending.push(...(this.sources.get(source) ?? []));
-            }
-            this.retain?.(struct, [...sources], property, node);
+            this.retain?.(
+                struct,
+                [...this.sourceRecords(struct)],
+                property,
+                node,
+            );
             this.fail(
                 node,
                 `Property '${property}' is not stored by '${struct}' records, but a record converted into that storage may carry it.`,
@@ -111,8 +105,17 @@ export class AbsentRecordProperties {
         const known = this.closure.get(struct);
         if (known) return known;
         const result = new Set<string>();
+        for (const source of [struct, ...this.sourceRecords(struct)])
+            for (const property of this.carried.get(source) ?? [])
+                result.add(property);
+        this.closure.set(struct, result);
+        return result;
+    }
+
+    /** Every source whose conversions can reach this struct, including cycles. */
+    private sourceRecords(struct: string): ReadonlySet<string> {
         const visited = new Set<string>();
-        const pending = [struct];
+        const pending = [...(this.sources.get(struct) ?? [])];
         for (
             let next = pending.pop();
             next !== undefined;
@@ -120,11 +123,8 @@ export class AbsentRecordProperties {
         ) {
             if (visited.has(next)) continue;
             visited.add(next);
-            for (const property of this.carried.get(next) ?? [])
-                result.add(property);
             pending.push(...(this.sources.get(next) ?? []));
         }
-        this.closure.set(struct, result);
-        return result;
+        return visited;
     }
 }

@@ -900,8 +900,14 @@ export class UiProjection {
         return createsElement || this.isNativeUiHelperCall(value);
     }
 
-    public uiStringCpp(expression: ts.Expression, purpose: string): string {
-        const staticValue = this.tryUiStaticString(expression);
+    public uiStringCpp(
+        expression: ts.Expression,
+        purpose: string,
+        knownValue?: Value,
+    ): string {
+        const staticValue = knownValue
+            ? knownValue.staticString
+            : this.tryUiStaticString(expression);
         if (staticValue !== undefined) {
             return this.context.cppString(staticValue);
         }
@@ -909,7 +915,7 @@ export class UiProjection {
         // its record type declares.
         const value = this.context.dataLowerer.stringReceiver(
             this.context.dataLowerer.narrowOptional(
-                this.context.compileValue(expression),
+                knownValue ?? this.context.compileValue(expression),
                 expression,
             ),
             expression,
@@ -3642,11 +3648,16 @@ export class UiProjection {
         site: ts.Node,
         capabilities: readonly string[],
         signature: string,
+        knownValue?: Value,
     ): boolean {
         if (!this.context.options.deferredCapabilities || !capabilities.length)
             return false;
         pinDetached(this.context, element, "style_receiver");
-        const cpp = this.uiStringCpp(expression, "Deferred UI style operation");
+        const cpp = this.uiStringCpp(
+            expression,
+            "Deferred UI style operation",
+            knownValue,
+        );
         this.context.emitDiscardedValue({ kind: "string", cpp });
         for (const id of capabilities) {
             const trap = this.context.deferredCapabilities.emitKnown(site, {
@@ -4669,16 +4680,42 @@ export class UiProjection {
         const globalLeft = this.context.unwrap(expression.left);
         if (
             this.context.options.workers &&
-            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
-            ts.isPropertyAccessExpression(globalLeft) &&
+            (ts.isPropertyAccessExpression(globalLeft) ||
+                ts.isElementAccessExpression(globalLeft)) &&
             ts.isPropertyAccessExpression(globalLeft.expression) &&
-            globalLeft.expression.name.text === "dataset" &&
-            this.compileUiElementReceiver(globalLeft.expression.expression)
-        )
-            this.context.fail(
-                expression,
-                "Compound retained dataset assignments require a represented attribute update.",
-            );
+            globalLeft.expression.name.text === "dataset"
+        ) {
+            const receiver = globalLeft.expression.expression;
+            const element = this.compileUiElementReceiver(receiver);
+            if (element) {
+                if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+                    this.context.fail(
+                        expression,
+                        "Compound retained dataset assignments require a represented attribute update.",
+                    );
+                const target = pinDetached(
+                    this.context,
+                    element,
+                    "dataset_target",
+                );
+                const property = ts.isPropertyAccessExpression(globalLeft)
+                    ? globalLeft.name.text
+                    : this.tryUiStaticString(globalLeft.argumentExpression);
+                if (property === undefined)
+                    this.context.fail(
+                        globalLeft,
+                        "Retained dataset assignments require a static property name.",
+                        "static-value-required",
+                    );
+                this.emitUiDatasetProperty(
+                    target,
+                    property,
+                    this.context.compileValue(expression.right),
+                    expression.right,
+                );
+                return true;
+            }
+        }
         if (
             expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
             ts.isPropertyAccessExpression(globalLeft) &&
@@ -4725,23 +4762,6 @@ export class UiProjection {
             return false;
         }
         const property = expression.left.name.text;
-        const dataset = this.context.unwrap(expression.left.expression);
-        if (
-            this.context.options.workers &&
-            ts.isPropertyAccessExpression(dataset) &&
-            dataset.name.text === "dataset"
-        ) {
-            const element = this.compileUiElementReceiver(dataset.expression);
-            if (element) {
-                this.emitUiDatasetProperty(
-                    element,
-                    property,
-                    this.context.compileValue(expression.right),
-                    expression.right,
-                );
-                return true;
-            }
-        }
         const directElement = this.compileUiElementReceiver(
             expression.left.expression,
         );
@@ -5115,14 +5135,15 @@ export class UiProjection {
         property: string,
         valueExpression: ts.Expression,
         site: ts.Node,
+        knownValue?: Value,
     ): void {
         const nativeProperty = this.nativeUiStyleProperty(property);
+        const knownString = knownValue
+            ? knownValue.staticString
+            : this.tryUiStaticString(valueExpression);
         const capability =
             this.context.options.deferredCapabilities &&
-            deferredUiStyleCapability(
-                nativeProperty,
-                this.tryUiStaticString(valueExpression),
-            );
+            deferredUiStyleCapability(nativeProperty, knownString);
         if (
             capability &&
             this.emitDeferredUiStyle(
@@ -5131,6 +5152,7 @@ export class UiProjection {
                 site,
                 [capability],
                 `CSSStyleDeclaration.${property}: string`,
+                knownValue,
             )
         )
             return;
@@ -5150,7 +5172,7 @@ export class UiProjection {
             ].includes(nativeProperty) ||
             isUiLayoutProperty(nativeProperty)
         ) {
-            const value = this.tryUiStaticString(valueExpression);
+            const value = knownString;
             if (value !== undefined && value !== "")
                 this.auditUiStyleDeclarations(
                     `${nativeProperty}:${value}`,
@@ -5161,9 +5183,13 @@ export class UiProjection {
         // pass a runtime string through as written.
         const staticValue =
             nativeProperty === "border-image"
-                ? this.context.compileStringLiteral(valueExpression)
+                ? (knownString ??
+                  this.context.fail(
+                      site,
+                      "UI border-image requires a generation-known string.",
+                  ))
                 : UiProjection.UI_LOWERED_STYLE_VALUES.has(nativeProperty)
-                  ? this.tryUiStaticString(valueExpression)
+                  ? knownString
                   : undefined;
         const styleValue =
             staticValue !== undefined
@@ -5174,7 +5200,11 @@ export class UiProjection {
                           valueExpression,
                       ),
                   )
-                : this.uiStringCpp(valueExpression, `UI style.${property}`);
+                : this.uiStringCpp(
+                      valueExpression,
+                      `UI style.${property}`,
+                      knownValue,
+                  );
         this.context.emit({
             kind: "expression",
             code:

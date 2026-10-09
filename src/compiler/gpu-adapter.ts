@@ -53,40 +53,33 @@ export function compileGpuAdapterCall(
             ? `${held.cpp}.has_value() && *${held.cpp} != nullptr`
             : `${held.cpp} != nullptr`;
     if (ts.isOptionalChain(call) && ts.isOptionalChain(target)) {
-        const resultType = {
-            kind: "optional",
-            inner: {
-                kind: "promise",
-                result: { kind: "optional", inner: { kind: "gpu-adapter" } },
-            },
-            undefinedOnly: true,
-        } as const;
-        const result = context.allocateTemporaryCppName("optional_gpu_request");
-        context.emit({
-            kind: "declaration",
-            type: context.dataTypes.cppType(resultType),
-            name: result,
-            initializer: context.dataTypes.absentValue(resultType),
-        });
-        const binding = context.registerNativeBinding(result);
-        context.emit({ kind: "open", code: `if (${present}) {` });
-        context.increaseIndent();
-        context.enterRuntimeControlFlow();
-        try {
-            const requested = compileRequest(lowerer, call);
-            context.emit({
-                kind: "expression",
-                code: `${result} = ${lowerer.compileKnownValueForSink(requested, resultType, call)};`,
-            });
-        } finally {
-            context.leaveRuntimeControlFlow();
-            context.decreaseIndent();
-        }
-        context.emit({ kind: "close", code: "}" });
+        // Normalize both nullable storage and a null native pointer into the
+        // shared optional-call presence contract. The receiver is already held.
+        const owner = lowerer.leafValue(
+            receiver.dataType?.kind === "optional"
+                ? `(*${held.cpp})`
+                : held.cpp,
+            { kind: "gpu" },
+        );
+        const requested = lowerer.optionalAccess(
+            { ...owner, optionalFoundCpp: present },
+            call,
+            () => compileRequest(lowerer, call),
+        );
+        if (requested?.dataType?.kind !== "optional")
+            throw new Error(
+                "An optional GPU request requires represented result storage.",
+            );
         return {
-            ...lowerer.leafValue(result, resultType),
-            nativeBinding: true,
-            nativeCaptures: [binding],
+            ...pinOperand(
+                context,
+                {
+                    ...requested,
+                    dataType: { ...requested.dataType, undefinedOnly: true },
+                },
+                call,
+                "optional_gpu_request",
+            ),
             preserveUncheckedLookup: true,
         };
     }

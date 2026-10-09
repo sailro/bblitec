@@ -25,16 +25,19 @@ export const namedKinds: DataKindOperations<"struct" | "enum" | "function"> = {
                 : `bbl::js::Callback<${type.result ? context.cppType(type.result) : "void"}` +
                   `(${type.parameters.map((parameter) => context.cppType(parameter)).join(", ")})>`,
         key: (type, key) =>
-            type.generic
+            (type.generic
                 ? `generic(${type.generic})`
                 : `${type.identity ? "cb" : "fn"}(${type.parameters.map(key).join(",")})` +
                   `${type.restParameter === undefined ? "" : `...${type.restParameter}`}` +
                   `${type.optionalParameters?.length ? `?${type.optionalParameters.join(",")}` : ""}` +
-                  `${type.erasedParameters?.length ? `~${type.erasedParameters.join(",")}` : ""}->${type.result ? key(type.result) : "void"}${type.undefinedCompletion ? ":undefined" : ""}`,
+                  `${type.erasedParameters?.length ? `~${type.erasedParameters.join(",")}` : ""}->${type.result ? key(type.result) : "void"}${type.undefinedCompletion ? ":undefined" : ""}`) +
+            (type.awaitedUndefinedCompletion ? ":awaited-undefined" : ""),
         equal: (left, right, equal) =>
             left.generic === right.generic &&
             left.identity === right.identity &&
             left.undefinedCompletion === right.undefinedCompletion &&
+            left.awaitedUndefinedCompletion ===
+                right.awaitedUndefinedCompletion &&
             left.restParameter === right.restParameter &&
             (left.optionalParameters ?? []).join(",") ===
                 (right.optionalParameters ?? []).join(",") &&

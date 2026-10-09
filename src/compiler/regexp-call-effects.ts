@@ -6,28 +6,22 @@ import {
     libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
-import { regularExpressionParts, unwrapExpression } from "./syntax.js";
+import {
+    outermostWrapper,
+    regularExpressionParts,
+    unwrapExpression,
+} from "./syntax.js";
 
 /** Immutable checked-source facts, independent of emission and its rollbacks. */
 interface RegExpEffects {
     readonly files: readonly ts.SourceFile[];
     readonly references: Map<ts.Symbol, ts.Identifier[]>;
     readonly receivers: Map<ts.Symbol, boolean>;
-    readonly prototypeUses: ts.Expression[];
+    readonly prototypeUses: ts.Node[];
     prototypeSafe?: boolean;
 }
 
 const effects = new WeakMap<ts.TypeChecker, RegExpEffects>();
-
-function outer(expression: ts.Expression): ts.Expression {
-    let result = expression;
-    while (
-        ts.isExpression(result.parent) &&
-        unwrapExpression(result.parent) === expression
-    )
-        result = result.parent;
-    return result;
-}
 
 function constant(node: ts.Node): node is ts.VariableDeclaration & {
     name: ts.Identifier;
@@ -104,7 +98,7 @@ function facts(
                     if (global === "eval" || global === "Function")
                         result.prototypeUses.push(node);
                     if (global === "RegExp") {
-                        const expression = outer(node);
+                        const expression = outermostWrapper(node);
                         const parent = expression.parent;
                         if (!(
                             (ts.isCallExpression(parent) ||
@@ -142,7 +136,7 @@ function facts(
                         libraryGlobal(checker, node.expression) ?? "",
                     )
                 ) {
-                    const expression = outer(node);
+                    const expression = outermostWrapper(node);
                     result.prototypeUses.push(
                         member === "getPrototypeOf" &&
                             ts.isCallExpression(expression.parent) &&
@@ -162,10 +156,10 @@ function facts(
 function onlyCompared(
     checker: ts.TypeChecker,
     state: RegExpEffects,
-    value: ts.Expression,
+    value: ts.Node,
     seen = new Set<ts.Symbol>(),
 ): boolean {
-    const expression = outer(value);
+    const expression = outermostWrapper(value);
     const parent = expression.parent;
     if (
         ts.isBinaryExpression(parent) &&
@@ -203,11 +197,6 @@ export function isReadOnlyRegExpCall(
     if (!ts.isPropertyAccessExpression(target)) return false;
     const receiver = unwrapExpression(target.expression);
     if (!ts.isIdentifier(receiver)) return false;
-    const state = facts(checker, files);
-    state.prototypeSafe ??= state.prototypeUses.every((use) =>
-        onlyCompared(checker, state, use),
-    );
-    if (!state.prototypeSafe) return false;
     const origin = (
         identifier: ts.Identifier,
         seen: Set<ts.Symbol>,
@@ -231,6 +220,11 @@ export function isReadOnlyRegExpCall(
     };
     const root = origin(receiver, new Set());
     if (!root) return false;
+    const state = facts(checker, files);
+    state.prototypeSafe ??= state.prototypeUses.every((use) =>
+        onlyCompared(checker, state, use),
+    );
+    if (!state.prototypeSafe) return false;
     const cached = state.receivers.get(root);
     if (cached !== undefined) return cached;
     const checked = new Set<ts.Symbol>();
@@ -239,7 +233,7 @@ export function isReadOnlyRegExpCall(
         checked.add(symbol);
         return (state.references.get(symbol) ?? []).every((reference) => {
             if (declarationName(reference)) return true;
-            const expression = outer(reference);
+            const expression = outermostWrapper(reference);
             const parent = expression.parent;
             if (constant(parent) && parent.initializer === expression) {
                 const alias = resolvedSymbol(checker, parent.name);

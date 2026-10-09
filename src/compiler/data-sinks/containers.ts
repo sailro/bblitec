@@ -7,6 +7,7 @@ import {
     type DataType,
 } from "../data-types.js";
 import { optionalValueCpp, presenceFlagCpp, type Value } from "../types.js";
+import { writable } from "../emission-transaction.js";
 
 import {
     DynamicBindingStorageRequired,
@@ -221,8 +222,15 @@ function valueOptional(
             lowerer.context.allocateTemporaryCppName("optional_source");
         let converted = "";
         const lines = lowerer.context.captureEmittedLines(() => {
+            const projected = lowerer.leafValue(
+                optionalValueCpp(source),
+                sourceType,
+            );
+            if (value.engineOwnerParameter)
+                writable(projected).engineOwnerParameter =
+                    value.engineOwnerParameter;
             converted = lowerer.compileKnownValueForSink(
-                lowerer.leafValue(optionalValueCpp(source), sourceType),
+                projected,
                 dataType.inner,
                 node,
             );

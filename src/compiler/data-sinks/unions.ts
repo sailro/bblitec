@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
+import { writable } from "../emission-transaction.js";
 import { isJsonValue } from "../json-bridge.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -17,12 +18,14 @@ function unionValue(
         const arms = value.dataType.members.map((member, index) => {
             let converted: string | undefined;
             const lines = lowerer.context.captureEmittedLines(() => {
-                converted = unionValue(
-                    type,
-                    lowerer,
-                    lowerer.leafValue(`std::get<${index}>(${source})`, member),
-                    node,
+                const projected = lowerer.leafValue(
+                    `std::get<${index}>(${source})`,
+                    member,
                 );
+                if (value.engineOwnerParameter)
+                    writable(projected).engineOwnerParameter =
+                        value.engineOwnerParameter;
+                converted = unionValue(type, lowerer, projected, node);
             });
             return converted === undefined
                 ? ""

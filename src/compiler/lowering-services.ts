@@ -176,6 +176,12 @@ export interface LoweringServices {
         value: Value,
         site: ts.Expression,
     ): void;
+    emitUiStyleValue(
+        element: Value,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void;
     emitWindowLogicalAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
     compileWorkerValue(expression: ts.Expression): Value | undefined;
@@ -611,6 +617,13 @@ export interface LoweringServices {
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     requireEngine(value: Value, node: ts.Node): string;
+    storedResourceEngine(value: Value, node: ts.Node): string;
+    selectResourceOwner(
+        value: Value,
+        candidates: readonly Value[],
+        index: Value,
+        node: ts.Node,
+    ): Value;
     engineFor(value: Value, node: ts.Node): string;
     audioSessionCpp(): string;
     requireDefaultEngine(node: ts.Node): string;

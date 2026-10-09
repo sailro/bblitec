@@ -49,6 +49,7 @@ import {
     type PositiveIntegerContext,
 } from "./option-helpers.js";
 import { readProperty, type PropertyContext } from "./properties.js";
+import { isPlainRecord, isRecordUnion } from "./record-components.js";
 import { walkReachedLoopNodes } from "./resource-loops.js";
 import {
     type CompilerSymbols,
@@ -62,6 +63,7 @@ import {
     propertyNameText,
 } from "./syntax.js";
 import {
+    commonResourceValue,
     isCompileTimeOnlyValue,
     nativeDataMetadata,
     optionalPresentCpp,
@@ -364,10 +366,11 @@ export class DeclarationLowerer {
     }
 
     private initializeLexicalBinding(
-        initializer: ts.Expression,
+        declaration: ts.VariableDeclaration,
         cppName: string,
         type: DataType,
     ): void {
+        const initializer = declaration.initializer!;
         const value = this.context.compileValue(initializer);
         if (value.kind === "void" && value.abruptCompletion) {
             this.context.emitDiscardedValue(value);
@@ -377,6 +380,16 @@ export class DeclarationLowerer {
             kind: "expression",
             code: `${cppName}->initialize(${this.context.dataLowerer.compileKnownValueForSink(value, type, initializer)});`,
         });
+        if (
+            type.kind === "string" &&
+            value.staticString !== undefined &&
+            !value.parameterBinding &&
+            ts.isIdentifier(declaration.name) &&
+            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0
+        ) {
+            const stored = this.context.bindings.lookup(declaration.name);
+            writable(stored).lexicalStaticString = value.staticString;
+        }
     }
 
     /**
@@ -596,7 +609,7 @@ export class DeclarationLowerer {
             this.forwardBindings.delete(declarationSymbol);
             if (forward !== "hoisted")
                 this.initializeLexicalBinding(
-                    declaration.initializer!,
+                    declaration,
                     forward.cppName,
                     forward.type,
                 );
@@ -625,7 +638,7 @@ export class DeclarationLowerer {
                     "A binding captured by its initializer requires an owned data type.",
                 );
             this.initializeLexicalBinding(
-                declaration.initializer,
+                declaration,
                 this.declareLexicalBinding(
                     declaration.name,
                     declarationSymbol,
@@ -705,10 +718,18 @@ export class DeclarationLowerer {
             const declaredType = this.context.checker.getTypeAtLocation(
                 declaration.name,
             );
-            let dataType = this.context.dataTypes.fromTsType(
-                declaredType,
-                declaration.name,
-            );
+            const demanded = this.context.dynamicBindings.get(declaration);
+            let dataType = demanded
+                ? demandedStorageType(
+                      this.context,
+                      declaration,
+                      demanded,
+                      undefined,
+                  )
+                : this.context.dataTypes.fromTsType(
+                      declaredType,
+                      declaration.name,
+                  );
             // Only an assignment gives this binding a value.
             if (dataType)
                 dataType = this.reboundBindingStorage(dataType, declaredType);
@@ -804,7 +825,7 @@ export class DeclarationLowerer {
                 (ts.isArrowFunction(declaration.initializer) ||
                     ts.isFunctionExpression(declaration.initializer))) ||
                 this.isReassignedFunctionLiteral(declaration) ||
-                this.context.dynamicBindings.get(declaration) === "callback") &&
+                this.context.dynamicBindings.has(declaration)) &&
             this.emitAnnotatedDataDeclaration(
                 declaration,
                 cppName,
@@ -1169,7 +1190,10 @@ export class DeclarationLowerer {
                 `Expression assigned to '${sourceName}' does not produce a native value.`,
             );
         }
-        if (isNativeOwnerRecord(value)) {
+        if (
+            isNativeOwnerRecord(value) ||
+            (value.dataType?.kind === "handle" && value.dataType.ownedEngine)
+        ) {
             this.context.bindings.bindLocalOrParameterValue(
                 declaration.name,
                 value,
@@ -1436,6 +1460,14 @@ export class DeclarationLowerer {
                                   dataType: narrowed.dataType,
                               })),
                     ...(sharedDataBinding ? { sharedStorageCpp: cppName } : {}),
+                    ...(narrowed.dataType.kind === "string" &&
+                    narrowed.staticString !== undefined &&
+                    !narrowed.parameterBinding &&
+                    (ts.getCombinedNodeFlags(declaration) &
+                        ts.NodeFlags.Const) !==
+                        0
+                        ? { staticString: narrowed.staticString }
+                        : {}),
                     ...(staticElementsOwner
                         ? {
                               staticElements:
@@ -2492,12 +2524,28 @@ export class DeclarationLowerer {
                     literal.elements.every(ts.isObjectLiteralExpression)
                         ? this.context.compileValue(literal)
                         : undefined;
-                const engineRecordSnapshot =
-                    this.hasReadonlyEngineField(type, declaration) &&
+                const resourceRecordSnapshot =
+                    this.hasReadonlyResourceField(type, declaration) &&
                     !this.context.sharedClosures.identifierIsRebound(name)
                         ? this.context.compileValue(declaration.initializer)
                         : undefined;
-                const snapshot = arraySnapshot ?? engineRecordSnapshot;
+                const resourceArraySnapshot =
+                    type.kind === "vector" &&
+                    type.element.kind === "handle" &&
+                    !sharedClosureStorage &&
+                    !this.context.sharedClosures.identifierIsRebound(name)
+                        ? this.context.compileValue(declaration.initializer)
+                        : undefined;
+                const snapshot =
+                    arraySnapshot ??
+                    resourceRecordSnapshot ??
+                    resourceArraySnapshot;
+                if (snapshot)
+                    type = this.context.dataLowerer.retainedResultType(
+                        snapshot,
+                        type,
+                        declaration.initializer,
+                    );
                 const initializer = snapshot
                     ? this.context.dataLowerer.compileKnownValueForSink(
                           snapshot,
@@ -2534,16 +2582,23 @@ export class DeclarationLowerer {
                         ? { sharedStorageCpp: cppName }
                         : {}),
                 };
-                if (engineRecordSnapshot) {
-                    const properties = this.projectReadonlyEngineProperties(
+                if (resourceRecordSnapshot) {
+                    const properties = this.projectReadonlyResourceProperties(
                         bound.cpp,
                         type,
-                        engineRecordSnapshot,
+                        resourceRecordSnapshot,
                         declaration,
                     );
                     if (properties)
                         writable(bound).recordProperties = properties;
                 }
+                const resourceElements =
+                    resourceArraySnapshot?.tupleElements ??
+                    resourceArraySnapshot?.staticElementsOwner
+                        ?.staticElements ??
+                    resourceArraySnapshot?.staticElements;
+                if (resourceElements)
+                    writable(bound).staticElements = resourceElements;
                 this.context.bindings.defineVariable(name, bound);
                 if (arraySnapshot)
                     this.context.dataLowerer.retainArrayLiteralFacts(
@@ -2582,14 +2637,32 @@ export class DeclarationLowerer {
         // representation here exactly as it would as a field or an element;
         // otherwise `let c: C | null = null` would keep the initializer's
         // null as the binding's only representation.
-        let annotated = this.context.sharedClosures.identifierIsRebound(name)
+        const rebound = this.context.sharedClosures.identifierIsRebound(name);
+        let annotated = rebound
             ? this.context.dataTypes.fromStoredTsType(declaredType, typeSite)
             : this.context.dataTypes.fromTsType(declaredType, typeSite);
+        if (!annotated && rebound) {
+            const record =
+                this.context.checker.getNonNullableType(declaredType);
+            if (
+                isPlainRecord(this.context.checker, record) ||
+                isRecordUnion(this.context.checker, record)
+            )
+                annotated = this.context.dataTypes.withDynamicJsonTypes(
+                    true,
+                    () =>
+                        this.context.dataTypes.fromStoredTsType(
+                            declaredType,
+                            typeSite,
+                        ),
+                );
+        }
         if (
             !annotated &&
-            (this.context.checker.getNonNullableType(declaredType).flags &
+            ((this.context.checker.getNonNullableType(declaredType).flags &
                 ts.TypeFlags.NonPrimitive) !==
-                0
+                0 ||
+                (rebound && (declaredType.flags & ts.TypeFlags.Unknown) !== 0))
         )
             annotated = this.context.dataTypes.dynamicJsonType(declaredType);
         const declaredRecord =
@@ -2892,7 +2965,7 @@ export class DeclarationLowerer {
                       staticNumber: value,
                   }))
                 : undefined;
-        const staticElements =
+        let staticElements: readonly Value[] | undefined =
             annotated.kind === "vector" &&
             ts.isArrayLiteralExpression(initializer) &&
             initializer.elements.length === 0
@@ -2962,12 +3035,18 @@ export class DeclarationLowerer {
             });
         }
         const initializerBoundary = this.context.nativeBindingCheckpoint();
-        const readonlyEngineCall =
+        const readonlyResourceCall =
             ts.isCallExpression(initializer) &&
             !this.context.sharedClosures.identifierIsRebound(name) &&
-            this.hasReadonlyEngineField(annotated, initializer);
+            this.hasReadonlyResourceField(annotated, initializer);
         const initializerSnapshot =
-            readonlyEngineCall ||
+            readonlyResourceCall ||
+            (annotated.kind === "vector" &&
+                annotated.element.kind === "handle" &&
+                ts.isArrayLiteralExpression(initializer)) ||
+            (ts.isCallExpression(initializer) &&
+                this.context.dataTypes.carriesHandle(annotated) &&
+                !this.context.sharedClosures.identifierIsRebound(name)) ||
             (annotated.kind === "http-response" &&
                 !this.context.sharedClosures.identifierIsRebound(name)) ||
             (spreadTarget &&
@@ -2976,6 +3055,24 @@ export class DeclarationLowerer {
                     ts.isConditionalExpression(initializer)))
                 ? this.context.compileValue(initializer)
                 : undefined;
+        if (initializerSnapshot && !selfLiteral && !selfReferentialBinding)
+            annotated = this.context.dataLowerer.retainedResultType(
+                initializerSnapshot,
+                annotated,
+                initializer,
+            );
+        const returnedElements =
+            initializerSnapshot?.tupleElements ??
+            initializerSnapshot?.staticElementsOwner?.staticElements ??
+            initializerSnapshot?.staticElements;
+        if (
+            staticElements === undefined &&
+            staticHandleElementType &&
+            returnedElements?.every(
+                (element) => element.kind === staticHandleElementType.handle,
+            )
+        )
+            staticElements = returnedElements;
         const boundCpp =
             sharedDataBinding || selfReferentialBinding
                 ? `(*${cppName})`
@@ -3096,14 +3193,14 @@ export class DeclarationLowerer {
                 : "copy",
         );
         const staticRecordProperties: Record<string, Value> = {
-            ...(readonlyEngineCall
+            ...(readonlyResourceCall
                 ? {}
                 : (initializerSnapshot?.recordProperties ?? {})),
         };
-        if (readonlyEngineCall && initializerSnapshot)
+        if (readonlyResourceCall && initializerSnapshot)
             Object.assign(
                 staticRecordProperties,
-                this.projectReadonlyEngineProperties(
+                this.projectReadonlyResourceProperties(
                     boundCpp,
                     annotated,
                     initializerSnapshot,
@@ -3242,22 +3339,17 @@ export class DeclarationLowerer {
             : owned;
     }
 
-    private hasReadonlyEngineField(type: DataType, node: ts.Node): boolean {
+    private hasReadonlyResourceField(type: DataType, node: ts.Node): boolean {
         return (
             type.kind === "struct" &&
             this.context.dataTypes
                 .structFields(type.name, node, "accessors")
-                .some(
-                    (field) =>
-                        field.readOnly &&
-                        field.type.kind === "handle" &&
-                        field.type.handle === "engine",
-                )
+                .some((field) => field.readOnly && field.type.kind === "handle")
         );
     }
 
     /** Read live fields from storage; only proven readonly owners keep identity. */
-    private projectReadonlyEngineProperties(
+    private projectReadonlyResourceProperties(
         cpp: string,
         type: DataType,
         source: Value,
@@ -3283,7 +3375,15 @@ export class DeclarationLowerer {
                 : undefined;
             if (identity && member.kind === "engine")
                 writable(member).engineIdentity = identity;
-            properties[field.sourceName] = member;
+            const known = field.readOnly
+                ? source.recordProperties?.[field.sourceName]
+                : undefined;
+            properties[field.sourceName] =
+                known && field.type.kind === "handle" && !field.type.ownedEngine
+                    ? commonResourceValue(withNativeMetadata(member, known), [
+                          known,
+                      ])
+                    : member;
         }
         return properties;
     }
@@ -4100,7 +4200,9 @@ export class DeclarationLowerer {
                     element,
                     this.context.dataLowerer.leafValue(
                         `${temporary}.at(${index}.0)`,
-                        { kind: "json" },
+                        {
+                            kind: "json",
+                        },
                     ),
                 );
             });

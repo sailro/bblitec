@@ -7,7 +7,7 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "../data-types.js";
-import type { Value } from "../types.js";
+import { representedStorage, type Value } from "../types.js";
 
 import { pickedMeshHandleCpp } from "../properties.js";
 import { resolvedSymbol } from "../symbols.js";
@@ -235,6 +235,21 @@ function valueResource(
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    if (dataType.kind === "handle" && dataType.ownedEngine) {
+        if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
+            const storage = representedStorage(value);
+            if (!storage)
+                return lowerer.context.fail(
+                    node,
+                    "An owned resource requires its represented storage.",
+                );
+            return storage.cpp;
+        }
+        const rawType = { kind: "handle", handle: dataType.handle } as const;
+        const raw = lowerer.compileKnownValueForSink(value, rawType, node);
+        const owner = lowerer.context.storedResourceEngine(value, node);
+        return `${lowerer.context.dataTypes.cppType(dataType)}{${owner}, ${raw}}`;
+    }
     if (
         dataType.kind === "handle" &&
         dataType.handle === "dom-event-identity"

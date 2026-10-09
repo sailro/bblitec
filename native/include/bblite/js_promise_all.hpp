@@ -124,10 +124,10 @@ void settle_all_element(const State& state, std::size_t index, Handler& handler,
 }
 
 /** Register each observation before advancing an effectful iterable. */
-template <typename Iterable, typename Fulfilled, typename Rejected>
-auto all_iterable(const Iterable& inputs, Fulfilled fulfilled, Rejected rejected) {
+template <typename Iterable, typename Fulfilled, typename Rejected, typename Resolve>
+auto all_iterable(const Iterable& inputs, Fulfilled fulfilled, Rejected rejected, Resolve resolve) {
     using Input = std::remove_cvref_t<decltype(*inputs.begin())>;
-    using T = ResultType<Input>;
+    using T = ResultType<std::remove_cvref_t<std::invoke_result_t<Resolve&, const Input&>>>;
     using Stored = std::invoke_result_t<Fulfilled&, const T&>;
     using PendingValues = std::vector<std::optional<Stored>>;
     auto state = make_gc_shared<AllState<PendingValues, Array<Stored>>>(1);
@@ -138,7 +138,7 @@ auto all_iterable(const Iterable& inputs, Fulfilled fulfilled, Rejected rejected
             const auto index = state->values.size();
             state->values.emplace_back();
             ++state->remaining;
-            input.observe(
+            resolve(input).observe(
                 make_closure(std::tuple{state, index, fulfilled},
                              [](auto& environment, const T& value) {
                                  auto& [retained, position, handler] = environment;
@@ -161,18 +161,24 @@ auto all_iterable(const Iterable& inputs, Fulfilled fulfilled, Rejected rejected
 
 } // namespace promise_detail
 
-template <typename Iterable> auto promise_all(const Iterable& inputs) {
+template <typename Iterable, typename Resolve = std::identity>
+auto promise_all(const Iterable& inputs, Resolve resolve = {}) {
     using Input = std::remove_cvref_t<decltype(*inputs.begin())>;
-    using Element = promise_detail::AllElement<promise_detail::ResultType<Input>>;
+    using Element = promise_detail::AllElement<promise_detail::ResultType<
+        std::remove_cvref_t<std::invoke_result_t<Resolve&, const Input&>>>>;
     return promise_detail::all_iterable(
         inputs, [](const auto& value) { return Element::from(value); },
-        [](std::exception_ptr error) -> typename Element::type { std::rethrow_exception(error); });
+        [](std::exception_ptr error) -> typename Element::type { std::rethrow_exception(error); },
+        std::move(resolve));
 }
 
 /** Settlement records are fresh owned objects supplied by the typed lowering. */
-template <typename Iterable, typename Fulfilled, typename Rejected>
-auto promise_all_settled(const Iterable& inputs, Fulfilled fulfilled, Rejected rejected) {
-    return promise_detail::all_iterable(inputs, std::move(fulfilled), std::move(rejected));
+template <typename Iterable, typename Fulfilled, typename Rejected,
+          typename Resolve = std::identity>
+auto promise_all_settled(const Iterable& inputs, Fulfilled fulfilled, Rejected rejected,
+                         Resolve resolve = {}) {
+    return promise_detail::all_iterable(inputs, std::move(fulfilled), std::move(rejected),
+                                        std::move(resolve));
 }
 
 /** Observing every competitor also handles rejections after the race has settled. */
@@ -193,18 +199,29 @@ Promise<T> promise_race_tuple(const std::tuple<Inputs...>& inputs) {
     return result;
 }
 
-template <typename T> Promise<T> promise_race(const Array<Promise<T>>& inputs) {
+template <typename Iterable, typename Resolve>
+auto promise_race(const Iterable& inputs, Resolve resolve) {
+    using Input = std::remove_cvref_t<decltype(*inputs.begin())>;
+    using T = promise_detail::ResultType<
+        std::remove_cvref_t<std::invoke_result_t<Resolve&, const Input&>>>;
     Promise<T> result;
-    for (const auto& input : inputs)
-        observe_race(input, result);
+    try {
+        for (const auto& input : inputs)
+            observe_race(resolve(input), result);
+    } catch (const pal::WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        result.reject(std::current_exception());
+    }
     return result;
 }
 
+template <typename T> Promise<T> promise_race(const Array<Promise<T>>& inputs) {
+    return promise_race(inputs, std::identity{});
+}
+
 template <typename T> Promise<T> promise_race(const Array<T>& inputs) {
-    Promise<T> result;
-    for (const auto& input : inputs)
-        observe_race(Promise<T>::resolved(input), result);
-    return result;
+    return promise_race(inputs, [](const T& input) { return Promise<T>::resolved(input); });
 }
 
 namespace promise_detail {
@@ -218,6 +235,9 @@ template <typename T> struct AnyState {
     /** Every input rejected: an AggregateError of their reasons in input order. */
     void rejected(std::size_t index, std::exception_ptr error) {
         errors[index] = error;
+        finish_one();
+    }
+    void finish_one() {
         if (--remaining == 0)
             result.reject(
                 std::make_exception_ptr(AggregateError(errors, "All promises were rejected")));
@@ -256,22 +276,37 @@ Promise<T> promise_any_tuple(const std::tuple<Inputs...>& inputs) {
     return state->result;
 }
 
-template <typename T> Promise<T> promise_any(const Array<Promise<T>>& inputs) {
-    auto state = make_gc_shared<promise_detail::AnyState<T>>(inputs.size());
-    if (inputs.empty())
-        state->result.reject(
-            std::make_exception_ptr(AggregateError({}, "All promises were rejected")));
-    for (std::size_t index = 0; index < inputs.size(); ++index)
-        promise_detail::observe_any(inputs[index], state, index);
+template <typename Iterable, typename Resolve>
+auto promise_any(const Iterable& inputs, Resolve resolve) {
+    using Input = std::remove_cvref_t<decltype(*inputs.begin())>;
+    using T = promise_detail::ResultType<
+        std::remove_cvref_t<std::invoke_result_t<Resolve&, const Input&>>>;
+    auto state = make_gc_shared<promise_detail::AnyState<T>>(0);
+    state->remaining = 1;
+    try {
+        if constexpr (requires { inputs.size(); })
+            state->errors.reserve(inputs.size());
+        for (const auto& input : inputs) {
+            const auto index = state->errors.size();
+            state->errors.emplace_back();
+            ++state->remaining;
+            promise_detail::observe_any(resolve(input), state, index);
+        }
+        state->finish_one();
+    } catch (const pal::WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        state->result.reject(std::current_exception());
+    }
     return state->result;
 }
 
+template <typename T> Promise<T> promise_any(const Array<Promise<T>>& inputs) {
+    return promise_any(inputs, std::identity{});
+}
+
 template <typename T> Promise<T> promise_any(const Array<T>& inputs) {
-    Array<Promise<T>> promises;
-    promises.reserve(inputs.size());
-    for (const auto& input : inputs)
-        promises.push_back(Promise<T>::resolved(input));
-    return promise_any(promises);
+    return promise_any(inputs, [](const T& input) { return Promise<T>::resolved(input); });
 }
 
 } // namespace bbl::js

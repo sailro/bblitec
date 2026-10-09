@@ -14,6 +14,8 @@ export function representedResultType(
         value.kind === "boolean"
     )
         return { kind: value.kind };
+    if (value.kind === "json-null")
+        return { kind: value.cpp === "std::nullopt" ? "undefined" : "null" };
     if (seen.has(value)) return undefined;
     seen.add(value);
     try {

@@ -517,8 +517,15 @@ export function requiresStaticDataIteration(
     context: ResourceLoopContext,
     statement: ts.Node,
     callEffects = false,
+    preservesDomFacts = true,
 ): boolean {
-    return reachesSpecializingEffect(context, statement, callEffects, true);
+    return reachesSpecializingEffect(
+        context,
+        statement,
+        callEffects,
+        true,
+        preservesDomFacts,
+    );
 }
 
 /**
@@ -532,6 +539,7 @@ function reachesSpecializingEffect(
     root: ts.Node,
     callEffects: boolean,
     keepsRetainedFacts: boolean,
+    preservesDomFacts = keepsRetainedFacts,
 ): boolean {
     let required = false;
     walkReachedLoopNodes(context, root, (node) => {
@@ -566,7 +574,7 @@ function reachesSpecializingEffect(
         // Canvas extents have native reads; writes still belong to their
         // normal DOM/retained-canvas lowering and cannot use this exemption.
         if (
-            keepsRetainedFacts &&
+            preservesDomFacts &&
             writesThroughTrackedRoot(node, (target) => {
                 const member = unwrapExpression(target);
                 const symbol = ts.isPropertyAccessExpression(member)
@@ -584,7 +592,7 @@ function reachesSpecializingEffect(
               ? resolvedSymbol(context.checker, node.expression)
               : undefined;
         if (
-            keepsRetainedFacts &&
+            preservesDomFacts &&
             symbol &&
             declaredInDomLibrary(symbol) &&
             !(

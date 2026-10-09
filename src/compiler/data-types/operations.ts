@@ -54,6 +54,15 @@ export function isOpaqueReference(type: DataType | undefined): boolean {
     return type !== undefined && kinds[type.kind].opaqueReference === true;
 }
 
+/** Structural annotations can retain these existing native object carriers. */
+export function isNativeStructuralView(type: DataType | undefined): boolean {
+    return (
+        isOpaqueReference(type) ||
+        type?.kind === "borrowed-platform-event" ||
+        type?.kind === "handle"
+    );
+}
+
 /** Whether native copies of this kind share storage (`sharesStorage`). */
 export function sharesStorageKind(type: DataType): boolean {
     return kinds[type.kind].sharesStorage === true;

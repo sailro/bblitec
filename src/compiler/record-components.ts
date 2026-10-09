@@ -36,7 +36,7 @@ export interface RecordComponent {
      * through an array the program also holds as an array of the narrower
      * type, or through an assertion.
      */
-    readonly holdsNarrower: ReadonlySet<ts.Symbol | ts.Type>;
+    readonly holdsNarrower: ReadonlySet<RecordComponentKey>;
 }
 
 /**
@@ -203,6 +203,8 @@ function propertyTypes(
 export interface RecordJoin {
     readonly source: ts.Type;
     readonly target: ts.Type;
+    /** The concrete instantiation that produced a generic source record. */
+    readonly sourceInstantiation?: InstantiatedRecord;
     /**
      * The instantiation of a generic `target` the record was stored as: the
      * component holds that instantiation alone, and its records take the
@@ -251,10 +253,11 @@ export function recordComponents(
     const join = (
         left: ts.Type,
         right: ts.Type,
-        instantiation?: InstantiatedRecord,
+        sourceInstantiation?: InstantiatedRecord,
+        targetInstantiation?: InstantiatedRecord,
     ): void => {
-        const a = recordIdentity(checker, left);
-        const b = instantiation ?? recordIdentity(checker, right);
+        const a = sourceInstantiation ?? recordIdentity(checker, left);
+        const b = targetInstantiation ?? recordIdentity(checker, right);
         if (!types.has(a)) {
             types.set(a, left);
             parent.set(a, a);
@@ -274,7 +277,8 @@ export function recordComponents(
         // they hold join where the instantiation is concrete.
         if (
             targets.has(b) ||
-            instantiation ||
+            sourceInstantiation ||
+            targetInstantiation ||
             !isRecordLike(checker, left) ||
             !isRecordLike(checker, right)
         )
@@ -295,8 +299,13 @@ export function recordComponents(
                         join(source, target);
                 }
     };
-    for (const { source, target, targetInstantiation } of joins)
-        join(source, target, targetInstantiation);
+    for (const {
+        source,
+        target,
+        sourceInstantiation,
+        targetInstantiation,
+    } of joins)
+        join(source, target, sourceInstantiation, targetInstantiation);
     // Storage of a wider type holds a narrower record where an array of the
     // wider type is also held as an array of the narrower one, where an
     // assertion retypes a narrower record as the wider type, or where a
@@ -305,15 +314,25 @@ export function recordComponents(
         recordProperties(checker, wider).some(
             (property) => !narrower.getProperty(property.name),
         );
-    const holdsNarrower = new Set<ts.Symbol | ts.Type>();
-    for (const { source, target, kind } of joins)
+    const holdsNarrower = new Set<RecordComponentKey>();
+    for (const {
+        source,
+        target,
+        sourceInstantiation,
+        targetInstantiation,
+        kind,
+    } of joins)
         if (kind === "element" && lacks(target, source))
-            holdsNarrower.add(recordIdentity(checker, source));
+            holdsNarrower.add(
+                sourceInstantiation ?? recordIdentity(checker, source),
+            );
         else if (
             (kind === "assertion" && lacks(source, target)) ||
             kind === "spread"
         )
-            holdsNarrower.add(recordIdentity(checker, target));
+            holdsNarrower.add(
+                targetInstantiation ?? recordIdentity(checker, target),
+            );
     const groups = new Map<
         RecordComponentKey,
         { identity: RecordComponentKey; type: ts.Type }[]

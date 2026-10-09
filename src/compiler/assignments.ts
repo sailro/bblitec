@@ -1,4 +1,5 @@
 import { EmissionMap, writable } from "./emission-transaction.js";
+import { representedStorage } from "./types.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { setRecordProperty } from "./object-statics.js";
 import {
@@ -1624,7 +1625,7 @@ export function emitPropertyAssignment(
         ) {
             context.emit({
                 kind: "expression",
-                code: `${existing.cpp} = ${context.compileForDataSink(expression.right, existing.dataType)};`,
+                code: `${representedStorage(existing)?.cpp ?? context.fail(left, "Stored class field requires represented storage.")} = ${context.compileForDataSink(expression.right, existing.dataType)};`,
             });
             return;
         }
@@ -2452,9 +2453,19 @@ function emitTargetPropertyAssignment(
     // (`lighting.sun.shadowGenerator`, `track.ground.receiveShadows`) just as
     // it can through a local. Compile the complete owner path so the same
     // assignment table serves both spellings.
-    const target = ts.isIdentifier(targetExpression)
+    const rawTarget = ts.isIdentifier(targetExpression)
         ? context.bindings.lookup(targetExpression)
         : context.compileValue(targetExpression);
+    let target = context.dataLowerer.narrowOptional(
+        rawTarget,
+        targetExpression,
+    );
+    if (target.dataType?.kind === "handle" && target.dataType.ownedEngine)
+        target = context.bindings.pinValueToTemporary(
+            target,
+            "property_target",
+            targetExpression,
+        );
     const property = left.name.text;
     if (
         target.kind === "mesh" &&

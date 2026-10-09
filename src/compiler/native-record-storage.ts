@@ -1,9 +1,13 @@
 import type ts from "typescript";
-import type { RecordJoin } from "./record-components.js";
+import type { InstantiatedRecord, RecordJoin } from "./record-components.js";
+import type { DataType } from "./data-types/model.js";
+import { dataTypesEqual } from "./data-types/operations.js";
 
 /** The source type and generic environment that produced a native record. */
 export interface NativeRecordStorageDemand {
     identity: ts.Symbol | ts.Type | string;
+    /** Stable identity when a generic source is mapped under concrete arguments. */
+    instantiation?: InstantiatedRecord;
     type: ts.Type;
     node: ts.Node;
     frames: readonly ReadonlyMap<ts.Symbol, ts.Type>[];
@@ -24,9 +28,15 @@ export interface NativeRecordStorageDemand {
     /** One retained record cannot change its dictionary value representation. */
     dictionaryConflict?: true;
     /** A structural interface retains the native owner whose checked type supplies it. */
-    native?: { readonly type: ts.Type; readonly node: ts.Node };
+    native?: {
+        readonly type: ts.Type;
+        readonly node: ts.Node;
+        readonly storage: DataType;
+    };
     /** Distinct checked native owners cannot overwrite one structural demand. */
     nativeConflict?: true;
+    /** A function can enter this callable record before any named property is installed. */
+    bareCallable?: true;
     /**
      * Record types a record was stored as where a copy could be told apart:
      * each joins its source's record component (`record-components.ts`), so
@@ -69,6 +79,7 @@ const RECORD_STORAGE_FLAGS = [
     "view",
     "nativeConflict",
     "dictionaryConflict",
+    "bareCallable",
 ] as const;
 
 /**
@@ -85,7 +96,7 @@ export function mergeNativeRecordStorage(
         next.nativeConflict ||
         (previous?.native !== undefined &&
             next.native !== undefined &&
-            previous.native.type !== next.native.type);
+            !dataTypesEqual(previous.native.storage, next.native.storage));
     const dictionaryConflict =
         previous?.dictionaryConflict ||
         next.dictionaryConflict ||
@@ -98,6 +109,7 @@ export function mergeNativeRecordStorage(
                 (known) =>
                     known.source === join.source &&
                     known.target === join.target &&
+                    known.sourceInstantiation === join.sourceInstantiation &&
                     known.targetInstantiation === join.targetInstantiation &&
                     known.kind === join.kind,
             ),

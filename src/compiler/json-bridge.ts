@@ -85,6 +85,18 @@ export function compileJsonPropertyKey(
     value: Value,
     node: ts.Node,
 ): string {
+    if (value.absenceTagStorageCpp && value.absenceTagType) {
+        const tagged = context.dataTypes.jsonValueCpp(
+            value.absenceTagType,
+            value.absenceTagStorageCpp,
+            node,
+        );
+        if (tagged) return `${tagged}.to_string()`;
+        return context.fail(
+            node,
+            "Dynamic property keys require a represented string conversion.",
+        );
+    }
     if (value.dataType?.kind === "enum")
         return context.dataTypes.enumToStringCpp(
             value.dataType,
@@ -136,7 +148,7 @@ export function compileJsonElementRead(
     const key = context.compileValue(index);
     return {
         ...jsonValue(
-            `${receiver.cpp}.get(${compileJsonPropertyKey(context, key, index)})`,
+            `${receiver.cpp}.read_property(${compileJsonPropertyKey(context, key, index)})`,
         ),
         nativeCaptures: [
             ...(receiver.nativeCaptures ?? []),
@@ -384,7 +396,7 @@ export function hasDynamicObjectSpread(
  * Only descent is handled here, because descent is what has no static type
  * to consult: `file.parts[0].s` is three reads over a document whose shape
  * the source has not proven yet. Everything the chain reaches is another
- * dynamic value, except `length`, which JavaScript answers as a number.
+ * dynamic value, including an object's own `length` property.
  */
 export function compileJsonRead(
     context: JsonBridgeContext,
@@ -400,27 +412,28 @@ export function compileJsonRead(
         if (!isJsonValue(owner)) {
             return undefined;
         }
-        if (unwrapped.name.text === "length") {
-            return {
-                kind: "number",
-                cpp: `${owner.cpp}.length()`,
-                dataType: { kind: "number" },
-            };
-        }
-        return jsonValue(
-            `${owner.cpp}.get(${context.cppString(unwrapped.name.text)})`,
-        );
+        const read = (selected: Value): Value =>
+            jsonValue(
+                `${selected.cpp}.read_property(${context.cppString(unwrapped.name.text)})`,
+            );
+        return ts.isOptionalChain(unwrapped)
+            ? context.dataLowerer.optionalAccess(owner, unwrapped, read)
+            : read(owner);
     }
     if (ts.isElementAccessExpression(unwrapped)) {
         const owner = compileJsonRead(context, unwrapped.expression);
         if (!isJsonValue(owner)) {
             return undefined;
         }
-        return compileJsonElementRead(
-            context,
-            owner,
-            unwrapped.argumentExpression,
-        );
+        const read = (selected: Value): Value =>
+            compileJsonElementRead(
+                context,
+                selected,
+                unwrapped.argumentExpression,
+            );
+        return ts.isOptionalChain(unwrapped)
+            ? context.dataLowerer.optionalAccess(owner, unwrapped, read)
+            : read(owner);
     }
     if (ts.isCallExpression(unwrapped)) {
         const parsed = compileJsonCall(context, unwrapped);

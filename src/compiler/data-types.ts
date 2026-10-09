@@ -1,4 +1,9 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
+import { isEngineScopedHandleKind } from "./data-types/handles.js";
+import {
+    EngineOwnerStorageRequired,
+    isEngineOwnerStorageDeclaration,
+} from "./engine-owner-storage.js";
 import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
 import { ERROR_CLASS_FIELDS, ERROR_CONSTRUCTORS } from "./error-values.js";
 import { functionSignatureSite } from "./function-storage-flow.js";
@@ -14,6 +19,8 @@ import {
     containsDataKind,
     isUndefinedDataType,
     isOpaqueReference,
+    isNativeStructuralView,
+    sharesStorageKind,
     tracedEdgeCondition,
     recordTraceConditions,
     type DataTypeCppContext,
@@ -40,6 +47,7 @@ export {
     dataTypesEqual,
     passesByReferenceKind,
     isOpaqueReference,
+    isNativeStructuralView,
     isUndefinedDataType,
     primitiveTraits,
     reseatsOnAssignment,
@@ -207,6 +215,8 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     ProceduralSkyEnvironment: "procedural-sky-environment",
     NodeInputHandle: "node-input",
     NodeMaterial: "material",
+    PbrMaterialProps: "material",
+    StandardMaterialProps: "material",
     TextData: "text-data",
     DefaultTextData: "text-data",
     TextRenderable: "text-renderable",
@@ -1731,6 +1741,10 @@ export class DataTypeRegistry {
                 this.withRecordDemand(demand, () =>
                     this.recordViews.add(this.structIdentity(demand.type)),
                 );
+            if (demand.bareCallable)
+                this.withRecordDemand(demand, () =>
+                    this.partialRecords.add(this.structIdentity(demand.type)),
+                );
             for (const { name, setter, own } of demand.accessors ?? [])
                 for (const declaration of this.checker.getPropertyOfType(
                     demand.type,
@@ -1757,14 +1771,10 @@ export class DataTypeRegistry {
                 });
             if (demand.native)
                 this.withRecordDemand(demand, () => {
-                    const type = this.fromStoredTsType(
-                        demand.native!.type,
-                        demand.native!.node,
-                    );
+                    const type = demand.native!.storage;
                     if (
                         !type ||
-                        (!isOpaqueReference(type) &&
-                            type.kind !== "borrowed-platform-event") ||
+                        !isNativeStructuralView(type) ||
                         demand.document ||
                         demand.dictionary
                     )
@@ -1817,26 +1827,34 @@ export class DataTypeRegistry {
         if (
             !source ||
             this.isClassStruct(name) ||
-            (!isOpaqueReference(actual) &&
-                actual.kind !== "borrowed-platform-event") ||
+            !isNativeStructuralView(actual) ||
             !ts.isExpression(node)
         )
             return undefined;
         const expression = unwrapExpression(node);
         const checked = this.checker.getNonNullableType(
-            this.checker.getTypeAtLocation(expression),
+            this.checker.getTypeAtLocation(node),
         );
         const mapped = this.fromStoredTsType(checked, expression);
         if (
             !mapped ||
-            !dataTypesEqual(mapped, actual) ||
+            (!dataTypesEqual(mapped, actual) &&
+                !(
+                    actual.kind === "handle" &&
+                    (mapped.kind === "struct" ||
+                        (mapped.kind === "handle" &&
+                            mapped.handle === actual.handle))
+                )) ||
             !this.checker.isTypeAssignableTo(
                 checked,
                 this.checker.getNonNullableType(source.type),
             )
         )
             return undefined;
-        return { ...source, native: { type: checked, node: expression } };
+        return {
+            ...source,
+            native: { type: checked, node: expression, storage: actual },
+        };
     }
 
     public dictionaryRecordDemand(
@@ -2026,7 +2044,8 @@ export class DataTypeRegistry {
     public mayHoldNarrower(type: ts.Type): boolean {
         return (
             this.recordComponentOf(type)?.holdsNarrower.has(
-                recordIdentity(this.checker, type),
+                this.instantiatedRecordOf(type) ??
+                    recordIdentity(this.checker, type),
             ) === true
         );
     }
@@ -2395,6 +2414,81 @@ export class DataTypeRegistry {
         }
     }
 
+    /** Engine table slots are identities only together with their owning engine. */
+    public collectionKeyStorage(type: DataType, source?: ts.Type): DataType {
+        if (source && type.kind !== "json" && type.kind !== "tagged") {
+            const absent = nullability(this.resolveTypeParameter(source));
+            if (absent.null && absent.undefined)
+                return {
+                    kind: "tagged",
+                    inner: this.collectionKeyStorage(type),
+                };
+        }
+        switch (type.kind) {
+            case "handle":
+                return isEngineScopedHandleKind(type.handle)
+                    ? { ...type, ownedEngine: true }
+                    : type;
+            case "optional":
+            case "tagged":
+                return {
+                    ...type,
+                    inner: this.collectionKeyStorage(type.inner),
+                };
+            case "union":
+                return {
+                    ...type,
+                    members: type.members.map((member) =>
+                        this.collectionKeyStorage(member),
+                    ),
+                };
+            default:
+                return type;
+        }
+    }
+
+    public requiresEngineParameterStorage(
+        declaration: ts.ParameterDeclaration,
+    ): boolean {
+        return this.storage.engineOwners.has(declaration);
+    }
+
+    public requireEngineParameterStorage(
+        declaration: ts.ParameterDeclaration | undefined,
+    ): void {
+        if (declaration && !this.requiresEngineParameterStorage(declaration))
+            throw new EngineOwnerStorageRequired(declaration);
+    }
+
+    public requireEngineFieldStorage(
+        field: DataStructField,
+        node: ts.Node,
+    ): void {
+        if (dataTypesEqual(field.type, this.collectionKeyStorage(field.type)))
+            return;
+        for (const declaration of field.declarations ?? [])
+            if (
+                isEngineOwnerStorageDeclaration(declaration) &&
+                !this.storage.engineOwners.has(declaration)
+            )
+                throw new EngineOwnerStorageRequired(declaration);
+        this.fail(
+            node,
+            `Resource field '${field.sourceName}' requires represented engine owner storage.`,
+        );
+    }
+
+    private engineFieldStorage(
+        type: DataType,
+        declarations: readonly ts.Declaration[] | undefined,
+    ): DataType {
+        return declarations?.some((declaration) =>
+            this.storage.engineOwners.has(declaration),
+        )
+            ? this.collectionKeyStorage(type)
+            : type;
+    }
+
     /** Resolve ownership demands before any earlier initializer or alias is emitted. */
     public predeclareOwnedRecord(demand: NativeRecordStorageDemand): void {
         this.withRecordDemand(demand, () => {
@@ -2403,12 +2497,7 @@ export class DataTypeRegistry {
             );
             if (demand.dictionary && type?.kind === "map" && type.dictionary)
                 return;
-            if (
-                demand.native &&
-                (isOpaqueReference(type) ||
-                    type?.kind === "borrowed-platform-event")
-            )
-                return;
+            if (demand.native && isNativeStructuralView(type)) return;
             if (type?.kind !== "struct")
                 this.fail(
                     demand.node,
@@ -2482,8 +2571,10 @@ export class DataTypeRegistry {
         type: ts.Type,
         node: ts.Node,
     ): NativeRecordStorageDemand {
+        const instantiation = this.instantiatedRecordOf(type);
         return {
             identity: this.structIdentity(type),
+            ...(instantiation ? { instantiation } : {}),
             type,
             node,
             frames: this.typeArgumentFrames().map((frame) => new Map(frame)),
@@ -2583,7 +2674,14 @@ export class DataTypeRegistry {
         // A copy lent to a callee that only reads it lives for the call.
         if (observed === undefined || lentForCall) return;
         this.requireSharedValueViews(sourceType, targetType);
-        if (this.joinConcreteCallableFields(sourceFields, targetFields)) return;
+        const sourceByName = new Map(
+            sourceFields.map((field) => [field.sourceName, field]),
+        );
+        const callableFields = targetFields.flatMap((target) => {
+            const source = sourceByName.get(target.sourceName);
+            return source ? [{ source: source.type, target: target.type }] : [];
+        });
+        if (this.joinCallableRecordTypes(callableFields)) return;
         // A record type a generic call's instantiation does not reach is
         // one type under every instantiation.
         const joinable = (
@@ -2594,19 +2692,32 @@ export class DataTypeRegistry {
             !this.isClassStruct(
                 demand === source ? sourceType.name : targetType.name,
             );
-        // A generic target names the one instantiation in force, which
-        // joins the source's component alone.
-        const targetInstantiation =
-            target &&
-            targetRecord &&
-            !joinable(target, targetRecord) &&
-            (isPlainRecord(this.checker, targetRecord) ||
-                isRecordUnion(this.checker, targetRecord)) &&
-            !this.isClassStruct(targetType.name)
-                ? this.withRecordDemand(target, () =>
-                      this.instantiatedRecordOf(targetRecord),
+        // Each generic endpoint names its own instantiation in force.
+        const instantiation = (
+            demand: NativeRecordStorageDemand | undefined,
+            record: ts.Type | undefined,
+            name: string,
+        ): InstantiatedRecord | undefined =>
+            demand &&
+            record &&
+            !joinable(demand, record) &&
+            (isPlainRecord(this.checker, record) ||
+                isRecordUnion(this.checker, record)) &&
+            !this.isClassStruct(name)
+                ? this.withRecordDemand(demand, () =>
+                      this.instantiatedRecordOf(record),
                   )
                 : undefined;
+        const sourceInstantiation = instantiation(
+            source,
+            sourceRecord,
+            sourceType.name,
+        );
+        const targetInstantiation = instantiation(
+            target,
+            targetRecord,
+            targetType.name,
+        );
         const kind: RecordJoin["kind"] = sharedArray
             ? "element"
             : ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)
@@ -2620,20 +2731,31 @@ export class DataTypeRegistry {
                 ?.some(
                     (join) =>
                         join.target === targetRecord &&
+                        join.sourceInstantiation === sourceInstantiation &&
                         join.targetInstantiation === targetInstantiation &&
                         join.kind === kind,
                 );
+        const sourceComponent =
+            sourceRecord &&
+            this.recordComponents.get(
+                sourceInstantiation ??
+                    recordIdentity(this.checker, sourceRecord),
+            );
+        const targetComponent =
+            targetRecord &&
+            this.recordComponents.get(
+                targetInstantiation ??
+                    recordIdentity(this.checker, targetRecord),
+            );
         if (
             source &&
             target &&
             sourceRecord &&
             targetRecord &&
             !demanded &&
-            joinable(source, sourceRecord) &&
+            (sourceInstantiation || joinable(source, sourceRecord)) &&
             (targetInstantiation || joinable(target, targetRecord)) &&
-            !this.withRecordDemand(target, () =>
-                this.joined(sourceRecord, targetRecord),
-            )
+            (!sourceComponent || sourceComponent !== targetComponent)
         ) {
             // A record stored as a union, or a union's record stored as
             // another record type, keeps its fields in the union's layout
@@ -2650,7 +2772,7 @@ export class DataTypeRegistry {
             // Every property any arm declares takes one storage in the
             // joined layout, including those the union's own fields omit.
             if (
-                targetInstantiation
+                sourceInstantiation || targetInstantiation
                     ? union !== sourceUnion ||
                       this.structLayoutsCompatible(sourceFields, targetFields)
                     : layoutsCompatible(
@@ -2666,6 +2788,9 @@ export class DataTypeRegistry {
                         {
                             source: sourceRecord,
                             target: targetRecord,
+                            ...(sourceInstantiation
+                                ? { sourceInstantiation }
+                                : {}),
                             ...(targetInstantiation
                                 ? { targetInstantiation }
                                 : {}),
@@ -2720,10 +2845,11 @@ export class DataTypeRegistry {
             left: readonly DataStructField[],
             right: readonly DataStructField[],
         ): void => {
+            const sources = new Map(
+                left.map((field) => [field.sourceName, field]),
+            );
             for (const field of right) {
-                const from = left.find(
-                    (candidate) => candidate.sourceName === field.sourceName,
-                );
+                const from = sources.get(field.sourceName);
                 if (from) compare(from.type, field.type);
             }
         };
@@ -2754,14 +2880,10 @@ export class DataTypeRegistry {
     }
 
     /** Concrete callable slots share their record arguments before generic outer records are interned. */
-    private joinConcreteCallableFields(
-        sourceFields: readonly DataStructField[],
-        targetFields: readonly DataStructField[],
+    public joinCallableRecordTypes(
+        pairs: readonly { source: DataType; target: DataType }[],
     ): boolean {
         const demands: NativeRecordStorageDemand[] = [];
-        const sources = new Map(
-            sourceFields.map((field) => [field.sourceName, field]),
-        );
         const held = (from: DataType, to: DataType): boolean => {
             if (dataTypesEqual(from, to)) return true;
             if (from.kind !== "struct" || to.kind !== "struct") return false;
@@ -2771,11 +2893,39 @@ export class DataTypeRegistry {
                 !source ||
                 !target ||
                 this.isClassStruct(from.name) ||
-                this.isClassStruct(to.name) ||
-                !this.joinableRecord(source, source.type) ||
-                !this.joinableRecord(target, target.type) ||
-                this.joined(source.type, target.type) ||
-                !layoutsCompatible(this.checker, source.type, target.type)
+                this.isClassStruct(to.name)
+            )
+                return false;
+            const sourceInstantiation = this.withRecordDemand(source, () =>
+                this.instantiatedRecordOf(source.type),
+            );
+            const targetInstantiation = this.withRecordDemand(target, () =>
+                this.instantiatedRecordOf(target.type),
+            );
+            const sourceComponent = this.recordComponents.get(
+                sourceInstantiation ??
+                    recordIdentity(this.checker, source.type),
+            );
+            const targetComponent = this.recordComponents.get(
+                targetInstantiation ??
+                    recordIdentity(this.checker, target.type),
+            );
+            if (
+                (!sourceInstantiation &&
+                    !this.joinableRecord(source, source.type)) ||
+                (!targetInstantiation &&
+                    !this.joinableRecord(target, target.type)) ||
+                (sourceComponent && sourceComponent === targetComponent) ||
+                !(sourceInstantiation || targetInstantiation
+                    ? this.structLayoutsCompatible(
+                          this.structFields(
+                              from.name,
+                              source.node,
+                              "accessors",
+                          ),
+                          this.structFields(to.name, target.node, "accessors"),
+                      )
+                    : layoutsCompatible(this.checker, source.type, target.type))
             )
                 return false;
             demands.push({
@@ -2784,17 +2934,16 @@ export class DataTypeRegistry {
                     {
                         source: source.type,
                         target: target.type,
+                        ...(sourceInstantiation ? { sourceInstantiation } : {}),
+                        ...(targetInstantiation ? { targetInstantiation } : {}),
                         kind: "assertion",
                     },
                 ],
             });
             return true;
         };
-        for (const target of targetFields) {
-            const source = sources.get(target.sourceName);
-            const a = source?.type;
-            const b = target.type;
-            if (!a || dataTypesEqual(a, b)) continue;
+        for (const { source: a, target: b } of pairs) {
+            if (dataTypesEqual(a, b)) continue;
             if (
                 a.kind !== "function" ||
                 b.kind !== "function" ||
@@ -3266,6 +3415,54 @@ export class DataTypeRegistry {
         );
     }
 
+    /** Full property views keep the pinned owner's identity and storage. */
+    private nativeHandleKind(
+        type: ts.Type,
+        seen?: Set<ts.Type>,
+    ): HandleKind | undefined {
+        const concrete = this.resolveTypeParameter(type);
+        const direct = pinnedHandleKind(concrete);
+        if (direct) return direct;
+        const sources = concrete.isIntersection()
+            ? concrete.types
+            : (concrete.flags & ts.TypeFlags.Object) !== 0 &&
+                ((concrete as ts.ObjectType).objectFlags &
+                    ts.ObjectFlags.Mapped) !==
+                    0
+              ? (concrete.aliasTypeArguments ?? [])
+              : [];
+        if (sources.length === 0) return undefined;
+        const visited = seen ?? new Set<ts.Type>();
+        if (visited.has(concrete)) return undefined;
+        visited.add(concrete);
+        for (const source of sources) {
+            const owner = this.resolveTypeParameter(source);
+            const kind = this.nativeHandleKind(owner, visited);
+            if (!kind) continue;
+            const fields = this.checker.getPropertiesOfType(concrete);
+            const owned = this.checker.getPropertiesOfType(owner);
+            if (
+                concrete.getCallSignatures().length ||
+                concrete.getConstructSignatures().length ||
+                this.checker.getIndexInfosOfType(concrete).length ||
+                fields.length !== owned.length ||
+                !fields.every((field) => {
+                    const original = owner.getProperty(field.name);
+                    return (
+                        original !== undefined &&
+                        (field.flags & ts.SymbolFlags.Optional) ===
+                            (original.flags & ts.SymbolFlags.Optional) &&
+                        this.checker.getTypeOfSymbol(field) ===
+                            this.checker.getTypeOfSymbol(original)
+                    );
+                })
+            )
+                continue;
+            return kind;
+        }
+        return undefined;
+    }
+
     private fromNonNullableType(
         type: ts.Type,
         node: ts.Node,
@@ -3315,6 +3512,8 @@ export class DataTypeRegistry {
             return this.fromUnionType(type as ts.UnionType, node);
         }
         if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
+            const handle = this.nativeHandleKind(type);
+            if (handle) return { kind: "handle", handle };
             // `S & {}` is NonNullable<S>, the checker's type for a parameter
             // narrowed past null: map `S` under the active substitution.
             const constrained = (type as ts.IntersectionType).types.filter(
@@ -3538,10 +3737,8 @@ export class DataTypeRegistry {
             // ordinary data sinks still refuse incompatible F64 producers.
             return { kind: "f32array" };
         }
-        const pinnedHandle = pinnedHandleKind(type);
-        if (pinnedHandle) {
-            return { kind: "handle", handle: pinnedHandle };
-        }
+        const pinnedHandle = this.nativeHandleKind(type);
+        if (pinnedHandle) return { kind: "handle", handle: pinnedHandle };
         if (
             type.symbol &&
             declaredIn(type.symbol, "babylon") &&
@@ -3691,7 +3888,10 @@ export class DataTypeRegistry {
                 return {
                     kind: "map",
                     key: markIdentityFunctions(
-                        this.markStoredObjectReferences(key),
+                        this.collectionKeyStorage(
+                            this.markStoredObjectReferences(key),
+                            keyType,
+                        ),
                     ),
                     value: this.markStoredObjectReferences(value),
                 };
@@ -3734,7 +3934,10 @@ export class DataTypeRegistry {
                               ? { weak: true as const }
                               : {}),
                           element: markIdentityFunctions(
-                              this.markStoredObjectReferences(element),
+                              this.collectionKeyStorage(
+                                  this.markStoredObjectReferences(element),
+                                  elementType,
+                              ),
                           ),
                       }
                     : undefined;
@@ -3887,10 +4090,24 @@ export class DataTypeRegistry {
             const generic = this.classDemanded
                 ? this.fromGenericFunction(signature, node)
                 : undefined;
-            return generic &&
-                hasUndefinedCompletion(this.checker, signature.declaration)
-                ? { ...generic, undefinedCompletion: true }
-                : generic;
+            return (
+                generic && {
+                    ...generic,
+                    ...(hasUndefinedCompletion(
+                        this.checker,
+                        signature.declaration,
+                    )
+                        ? { undefinedCompletion: true as const }
+                        : {}),
+                    ...(hasUndefinedCompletion(
+                        this.checker,
+                        signature.declaration,
+                        true,
+                    )
+                        ? { awaitedUndefinedCompletion: true as const }
+                        : {}),
+                }
+            );
         }
         const erasedParameters: number[] = [];
         const optionalParameters: number[] = [];
@@ -3995,10 +4212,18 @@ export class DataTypeRegistry {
                         this.ownReadonlyArray(mapped, parameterType),
                     ),
                 );
+                const retained =
+                    declaration &&
+                    ts.isParameter(declaration) &&
+                    this.requiresEngineParameterStorage(declaration)
+                        ? this.collectionKeyStorage(owned)
+                        : owned;
                 return [
                     this.absenceTaggedStorage(
                         declaration,
-                        defaulted ? this.nullableType(owned, true) : owned,
+                        defaulted
+                            ? this.nullableType(retained, true)
+                            : retained,
                     ),
                 ];
             });
@@ -4038,6 +4263,20 @@ export class DataTypeRegistry {
             return undefined;
         }
         const signatureSite = functionSignatureSite(signature);
+        const completionDeclaration = (resultOverride ?? signature).declaration;
+        const undefinedCompletion = hasUndefinedCompletion(
+            this.checker,
+            completionDeclaration,
+            true,
+        );
+        const asyncCompletion =
+            completionDeclaration &&
+            ts.canHaveModifiers(completionDeclaration) &&
+            ts
+                .getModifiers(completionDeclaration)
+                ?.some(
+                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+                );
         const mapped: DataType<"function"> = {
             kind: "function",
             ...(signatureSite === undefined ? {} : { signatureSite }),
@@ -4048,21 +4287,21 @@ export class DataTypeRegistry {
                     : parameter,
             ),
             ...(result ? { result } : {}),
-            ...(hasUndefinedCompletion(
-                this.checker,
-                (resultOverride ?? signature).declaration,
-            )
+            ...(undefinedCompletion && !asyncCompletion
                 ? { undefinedCompletion: true as const }
+                : {}),
+            ...(undefinedCompletion
+                ? { awaitedUndefinedCompletion: true as const }
                 : {}),
             ...(erasedParameters.length > 0 ? { erasedParameters } : {}),
             ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
         };
-        // A parameter that can be passed both absent values names its
-        // declaration, which a body telling them apart demands tagged.
+        // Parameter declarations connect a stored signature to the body's
+        // demands for nullish tags or a resource's engine owner.
         const sites = signature
             .getParameters()
             .filter((_, index) => !erasedParameters.includes(index))
-            .map((parameter) => {
+            .map((parameter, index) => {
                 const declaration =
                     parameter.valueDeclaration ?? parameter.declarations?.[0];
                 if (!declaration || !ts.isParameter(declaration)) return "";
@@ -4072,9 +4311,11 @@ export class DataTypeRegistry {
                         declaration,
                     ),
                 );
+                const stored = parameters[index]!;
                 if (
-                    !absent.null ||
-                    (!absent.undefined && !declaration.initializer)
+                    (!absent.null ||
+                        (!absent.undefined && !declaration.initializer)) &&
+                    dataTypesEqual(stored, this.collectionKeyStorage(stored))
                 )
                     return "";
                 const site = `${declaration.getSourceFile().fileName}:${declaration.pos}`;
@@ -4506,7 +4747,7 @@ export class DataTypeRegistry {
         node: ts.Node,
     ): DataType | undefined {
         const members = type.types;
-        const handles = members.map(pinnedHandleKind);
+        const handles = members.map((member) => this.nativeHandleKind(member));
         if (handles.every((kind) => kind === "mesh" || kind === "scene-node"))
             return { kind: "handle", handle: "scene-node" };
         if (
@@ -4765,7 +5006,9 @@ export class DataTypeRegistry {
                     0,
             ) &&
             !type.types.every(binaryLibraryClass) &&
-            !type.types.every((member) => pinnedHandleKind(member) !== undefined)
+            !type.types.every(
+                (member) => this.nativeHandleKind(member) !== undefined,
+            )
         )
             return undefined;
         if (this.mixedUnionsInProgress.has(type)) return undefined;
@@ -4868,11 +5111,16 @@ export class DataTypeRegistry {
             const optional = memberProperties.some(
                 (member) => (member.flags & ts.SymbolFlags.Optional) !== 0,
             );
-            const stored = this.markStoredObjectReferences(first);
+            const stored = markIdentityFunctions(
+                this.markStoredObjectReferences(first),
+            );
             fields.push({
                 sourceName: property.name,
                 name: sanitizeIdentifier(property.name),
                 type: stored,
+                declarations: memberProperties.flatMap(
+                    (member) => member.declarations ?? [],
+                ),
                 ...(optional ? { optionalProperty: true } : {}),
                 ...(optional && stored.kind !== "optional"
                     ? { defaultWhenMissing: true }
@@ -4962,12 +5210,17 @@ export class DataTypeRegistry {
                 )
             )
                 return undefined;
-            const stored = this.markStoredObjectReferences(first);
+            const stored = markIdentityFunctions(
+                this.markStoredObjectReferences(first),
+            );
             const fieldType = absent ? this.nullableType(stored, true) : stored;
             fields.push({
                 sourceName: propertyName,
                 name: sanitizeIdentifier(propertyName),
                 type: fieldType,
+                declarations: members.flatMap(
+                    (member) => member.declarations ?? [],
+                ),
                 ...(absent
                     ? { optionalProperty: true, defaultWhenMissing: true }
                     : {}),
@@ -5350,7 +5603,12 @@ export class DataTypeRegistry {
             fields.push({
                 sourceName: propertyName,
                 name: sanitizeIdentifier(propertyName),
-                type: this.markStoredObjectReferences(mapped),
+                declarations: memberProperties.flatMap(
+                    (member) => member.declarations ?? [],
+                ),
+                type: markIdentityFunctions(
+                    this.markStoredObjectReferences(mapped),
+                ),
                 ...(bySlot ||
                 memberProperties.some(
                     (property) =>
@@ -5472,7 +5730,8 @@ export class DataTypeRegistry {
         }
         const members: DataType[] = [];
         const append = (type: DataType): void => {
-            if (type.kind === "optional") append(type.inner);
+            if (type.kind === "optional" || type.kind === "tagged")
+                append(type.inner);
             else if (type.kind === "union") type.members.forEach(append);
             else if (type.kind === "enum") append({ kind: "string" });
             else if (!members.some((member) => dataTypesEqual(member, type)))
@@ -5481,21 +5740,28 @@ export class DataTypeRegistry {
         elements
             .map((element) => this.markStoredObjectReferences(element))
             .forEach(append);
-        const undefinedOnly = elements.every(
-            (element) => element.kind !== "optional" || element.undefinedOnly,
-        )
-            ? true
-            : undefined;
+        // An erased lane already stores every primitive and both absent
+        // values. Wrapping it in an optional union would lose those tags.
+        if (members.some((member) => member.kind === "json"))
+            return { kind: "vector", element: { kind: "json" } };
+        const tagged = elements.some((type) => type.kind === "tagged");
+        const undefinedOnly =
+            !tagged &&
+            elements.every(
+                (element) =>
+                    element.kind !== "optional" || element.undefinedOnly,
+            )
+                ? true
+                : undefined;
+        const element: DataType = {
+            kind: "optional",
+            ...(undefinedOnly ? { undefinedOnly } : {}),
+            inner:
+                members.length === 1 ? members[0]! : { kind: "union", members },
+        };
         return {
             kind: "vector",
-            element: {
-                kind: "optional",
-                ...(undefinedOnly ? { undefinedOnly } : {}),
-                inner:
-                    members.length === 1
-                        ? members[0]!
-                        : { kind: "union", members },
-            },
+            element: tagged ? { kind: "tagged", inner: element } : element,
         };
     }
 
@@ -6317,6 +6583,10 @@ export class DataTypeRegistry {
         presences: readonly FieldPresence[],
         call?: DataType<"function">,
     ): DataType<"struct"> {
+        fields = fields.map((field) => ({
+            ...field,
+            type: this.engineFieldStorage(field.type, field.declarations),
+        }));
         // A union's stored element and a callback's declared result share an
         // object when their field layouts agree, regardless of mapping path.
         const key = fields
@@ -6363,7 +6633,13 @@ export class DataTypeRegistry {
         if (signature?.kind !== "function" || signature.generic)
             return undefined;
         // The call is the function object itself: it keeps that identity.
-        const call: DataType<"function"> = { ...signature, identity: true };
+        const call: DataType<"function"> = {
+            ...signature,
+            identity: true,
+            ...(signature.result
+                ? { result: this.markStoredObjectReferences(signature.result) }
+                : {}),
+        };
         const record = this.fromStructType(type, node, call);
         return record?.kind === "struct" && this.structCall(record.name)
             ? record
@@ -6373,6 +6649,42 @@ export class DataTypeRegistry {
     /** The call a callable record holds (`fromCallableRecordType`). */
     public structCall(name: string): DataType<"function"> | undefined {
         return this.structsByName.get(name)?.call;
+    }
+
+    /** A callable starts with its original call identity and no installed named properties. */
+    public callableRecordDemand(
+        name: string,
+    ): NativeRecordStorageDemand | undefined {
+        const source = this.nativeRecordSources.get(name);
+        if (!source || !this.structCall(name)) return undefined;
+        const demand: NativeRecordStorageDemand = {
+            ...source,
+            stored: true,
+            bareCallable: true,
+            proxy: true,
+        };
+        if (
+            !this.withRecordDemand(source, () =>
+                this.assertedEmpty(source.type),
+            ) ||
+            this.structFields(name, source.node, "accessors").some(
+                (field) => !field.accessorReceiver,
+            )
+        )
+            throw new NativeRecordStorageRequired(demand);
+        return demand;
+    }
+
+    /** Remap a callable's canonical source in the generic environment that demanded it. */
+    public fromCallableRecordDemand(
+        demand: NativeRecordStorageDemand,
+    ): DataType<"struct"> | undefined {
+        return this.withRecordDemand(demand, () => {
+            const mapped = this.fromStoredTsType(demand.type, demand.node);
+            return mapped?.kind === "struct" && this.structCall(mapped.name)
+                ? mapped
+                : undefined;
+        });
     }
 
     /**
@@ -6452,6 +6764,57 @@ export class DataTypeRegistry {
         );
     }
 
+    /** An own field written undefined needs presence separate from its payload. */
+    public requireOwnUndefinedField(
+        structName: string,
+        field: DataStructField,
+        source: ts.Type,
+        node: ts.Node,
+    ): void {
+        const resolved = this.resolveTypeParameter(source);
+        if (
+            !field.optionalProperty ||
+            (!nullability(resolved).undefined &&
+                (resolved.flags & ts.TypeFlags.Void) === 0)
+        )
+            return;
+        let payload = field.type;
+        while (payload.kind === "optional" || payload.kind === "tagged")
+            payload = payload.inner;
+        if (
+            !field.accessorReceiver &&
+            (payload.kind === "struct" ||
+                payload.kind === "function" ||
+                payload.kind === "handle" ||
+                isOpaqueReference(payload) ||
+                sharesStorageKind(payload))
+        ) {
+            const demand = this.nativeRecordSources.get(structName);
+            if (
+                demand &&
+                !this.isClassStruct(structName) &&
+                !demand.type.isUnion()
+            )
+                throw new NativeRecordStorageRequired({
+                    ...demand,
+                    proxy: true,
+                });
+            this.refuseAmbiguousPresence(field, node);
+        }
+        if (
+            field.accessorReceiver ||
+            field.type.kind !== "optional" ||
+            !["number", "string", "boolean", "enum"].includes(
+                field.type.inner.kind,
+            )
+        )
+            return;
+        const demand = this.documentRecordDemand(structName);
+        if (demand && !demand.type.isUnion())
+            throw new NativeRecordStorageRequired(demand);
+        this.refuseAmbiguousPresence(field, node);
+    }
+
     /**
      * The run-time presence of `field` as an own key of the struct
      * `ownerCpp` names (read through `access`), or undefined when it always
@@ -6470,10 +6833,12 @@ export class DataTypeRegistry {
         // A document records those states independently of the payload slot.
         if (
             field.optionalProperty &&
+            !field.accessorReceiver &&
             (field.type.kind === "json" || field.type.kind === "tagged")
         ) {
             const demand = this.documentRecordDemand(structName);
-            if (demand) throw new NativeRecordStorageRequired(demand);
+            if (demand && !demand.type.isUnion())
+                throw new NativeRecordStorageRequired(demand);
             this.refuseAmbiguousPresence(field, node);
         }
         // A field only some union arms declare is own when the record's
@@ -6714,8 +7079,29 @@ export class DataTypeRegistry {
         });
         this.referenceStructNames.add(name);
         const fields: DataStructField[] = [];
+        const layouts = classes.map((member, index) =>
+            this.classStructFields(member, types[index]!),
+        );
+        const declarationsByField = new Map<string, ts.Declaration[]>();
+        for (const layout of layouts)
+            for (const field of layout.fields) {
+                const declarations =
+                    declarationsByField.get(field.sourceName) ?? [];
+                for (const declaration of field.declarations ?? [])
+                    if (!declarations.includes(declaration))
+                        declarations.push(declaration);
+                declarationsByField.set(field.sourceName, declarations);
+            }
         classes.forEach((member, index) => {
-            const declared = this.classStructFields(member, types[index]!);
+            const declared = layouts[index]!;
+            for (const field of declared.fields) {
+                field.declarations =
+                    declarationsByField.get(field.sourceName) ?? [];
+                field.type = this.engineFieldStorage(
+                    field.type,
+                    field.declarations,
+                );
+            }
             this.recordFieldPresences(
                 name,
                 declared.fields,
@@ -6847,8 +7233,12 @@ export class DataTypeRegistry {
             const field: DataStructField = {
                 sourceName: member.name.text,
                 name: nativeName,
-                type: this.markStoredObjectReferences(
-                    markIdentityFunctions(mapped),
+                declarations: [member],
+                type: this.engineFieldStorage(
+                    this.markStoredObjectReferences(
+                        markIdentityFunctions(mapped),
+                    ),
+                    [member],
                 ),
                 ...(member.modifiers?.some(
                     (modifier) =>
@@ -6909,6 +7299,15 @@ export class DataTypeRegistry {
         if (!property) {
             return undefined;
         }
+        const stored = this.existingClassStruct(type);
+        const field =
+            stored &&
+            this.structsByName
+                .get(stored)
+                ?.fields.find(
+                    (candidate) => candidate.sourceName === name.text,
+                );
+        if (field) return field.type;
         const fieldType = this.checker.getTypeOfSymbolAtLocation(
             property,
             name,
@@ -6926,7 +7325,12 @@ export class DataTypeRegistry {
         // still an owned JavaScript Array.  Keeping the ordinary parameter/view
         // representation (`Span<const T>`) here would leave the field pointing
         // into a temporary such as `items.map(...)` after construction returns.
-        return mapped ? this.markStoredObjectReferences(mapped) : undefined;
+        return mapped
+            ? this.engineFieldStorage(
+                  this.markStoredObjectReferences(mapped),
+                  property.declarations,
+              )
+            : undefined;
     }
 
     /** The class one class-backed struct name stands for. */
@@ -7044,7 +7448,16 @@ export class DataTypeRegistry {
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
-        return this.withClassDemand(true, () => this.fromTsType(type, node));
+        const mapped = this.withClassDemand(true, () =>
+            this.fromTsType(type, node),
+        );
+        const absent = nullability(this.resolveTypeParameter(type));
+        return mapped?.kind === "struct" && absent.null && absent.undefined
+            ? {
+                  kind: "tagged",
+                  inner: this.markStoredObjectReferences(mapped),
+              }
+            : mapped;
     }
 
     public returnsArray(type: DataType | undefined): boolean {
@@ -7084,51 +7497,8 @@ export class DataTypeRegistry {
         node: ts.Node,
     ): DataType | undefined {
         const concrete = this.checker.getNonNullableType(type);
-        const resource = isPinnedType(concrete, [
-            "PbrMaterialProps",
-            "StandardMaterialProps",
-        ])
-            ? "material"
-            : isPinnedType(concrete, ["AssetContainer"])
-              ? "asset"
-              : undefined;
-        if (resource) {
-            const handle: DataType = { kind: "handle", handle: resource };
-            return concrete === type
-                ? handle
-                : { kind: "optional", inner: handle };
-        }
         const mapped = this.fromTsType(type, node);
         if (mapped) return this.ownReturnedArray(mapped);
-        if (
-            (concrete.flags & ts.TypeFlags.Object) !== 0 &&
-            ((concrete as ts.ObjectType).objectFlags &
-                ts.ObjectFlags.Reference) !==
-                0 &&
-            (concrete.symbol?.name === "Array" ||
-                concrete.symbol?.name === "ReadonlyArray") &&
-            declaredInDefaultLibrary(concrete.symbol)
-        ) {
-            const [element] = this.checker.getTypeArguments(
-                concrete as ts.TypeReference,
-            );
-            if (
-                element &&
-                isPinnedType(element, [
-                    "PbrMaterialProps",
-                    "StandardMaterialProps",
-                    "AssetContainer",
-                ])
-            ) {
-                const stored = this.fromSharedReturnType(element, node);
-                if (stored) {
-                    const array: DataType = { kind: "vector", element: stored };
-                    return concrete === type
-                        ? array
-                        : { kind: "optional", inner: array };
-                }
-            }
-        }
         const symbol = concrete.symbol;
         const declaration = symbol?.declarations?.find(ts.isClassLike);
         if (
@@ -7483,7 +7853,10 @@ export class DataTypeRegistry {
         const stored = fields.map((field) => ({
             ...field,
             name: sanitizeIdentifier(field.sourceName),
-            type: this.markStoredObjectReferences(field.type),
+            type: this.engineFieldStorage(
+                this.markStoredObjectReferences(field.type),
+                field.declarations,
+            ),
         }));
         const key = `owned-result:${stored
             .map(
@@ -8243,9 +8616,17 @@ export class DataTypeRegistry {
                 "Dynamic object storage requires an owned reference.",
             );
         }
+        const source = this.classStruct(type.name);
+        if (
+            source &&
+            classErrorBase(this.classHierarchy.table(source.declaration))
+        )
+            this.fail(
+                node,
+                "Authored Error reflection requires represented property descriptors.",
+            );
         if (this.jsonBoxedStructs.has(type.name)) return;
         const stored = this.classStructLayout(type.name);
-        const source = this.classStruct(type.name);
         if (source)
             for (const member of classInstanceProperties(source.declaration)) {
                 const name = ts.isPrivateIdentifier(member.name)

@@ -44,13 +44,14 @@ import {
 import {
     passesByReference,
     dataTypesEqual,
-    isOpaqueReference,
+    isNativeStructuralView,
     isHandleKind,
     isTypedArrayType,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
+import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import {
     renderClosure,
     renderAsyncClosure,
@@ -177,6 +178,27 @@ function generationKnownStringArgument(value: Value): boolean {
         return result;
     };
     return known(value);
+}
+
+/** Raw resource handles need their captured engine beside a returned value. */
+function carriesCapturedEngineOwner(value: Value): boolean {
+    const seen = new Set<Value>();
+    const visit = (current: Value): boolean => {
+        if (seen.has(current)) return false;
+        seen.add(current);
+        if (
+            current.kind !== "engine" &&
+            isHandleKind(current.kind) &&
+            current.engineCpp !== undefined
+        )
+            return true;
+        return [
+            ...Object.values(current.recordProperties ?? {}),
+            ...(current.tupleElements ?? []),
+            ...(current.staticElements ?? []),
+        ].some(visit);
+    };
+    return visit(value);
 }
 
 /** Plain-data field reads cannot invoke accessors; preserve real getter effects. */
@@ -1032,6 +1054,7 @@ export interface UserFunctionContext
             | "reachesOnlyClosedEffects"
             | "requiresStaticDataIteration"
             | "probeEmission"
+            | "runGenerationFunction"
             | "conditions"
             | "withRecordScopes"
             | "browserErasure"
@@ -1270,10 +1293,35 @@ export class UserFunctionLowerer {
                 if (!values.every((value) => knownArgument(value)))
                     return undefined;
                 const value = this.lower(context, ir, values, call);
-                return value.staticBoolean !== undefined ||
+                if (
+                    value.staticBoolean !== undefined ||
                     value.staticString !== undefined
-                    ? value
-                    : undefined;
+                )
+                    return value;
+                if (
+                    (flags & ts.TypeFlags.StringLike) !== 0 &&
+                    this.canExecuteStringHelper(context, declaration)
+                ) {
+                    // The native lowering above owns argument effects. A pure
+                    // builder can recover text lost through its local storage.
+                    const scalars = values.map((argument) =>
+                        argument.parameterBinding
+                            ? undefined
+                            : (argument.staticString ??
+                              argument.staticNumber ??
+                              argument.staticBoolean),
+                    );
+                    if (scalars.every((argument) => argument !== undefined)) {
+                        const text = context.runGenerationFunction(
+                            declaration,
+                            scalars,
+                            `String helper '${identifier.text}'`,
+                        );
+                        if (typeof text === "string")
+                            return { ...value, staticString: text };
+                    }
+                }
+                return undefined;
             });
         } catch (error) {
             // Declining this optional specialization leaves the ordinary native
@@ -1281,6 +1329,38 @@ export class UserFunctionLowerer {
             if (!(error instanceof CompileError)) throw error;
             return undefined;
         }
+    }
+
+    /** Optional eager folding runs frame-local code, without loops or recursion. */
+    private canExecuteStringHelper(
+        context: UserFunctionContext,
+        declaration: SupportedFunction,
+    ): boolean {
+        if (!context.evaluationOrder.isPure(declaration)) return false;
+        const reached = context.evaluationOrder.reachedCode(declaration);
+        return (
+            !reached.opaque &&
+            [declaration, ...reached.units].every(
+                (unit) =>
+                    !someAnalysisNode(unit, (node) => {
+                        if (ts.isIterationStatement(node, false)) return true;
+                        if (!ts.isIdentifier(node)) return false;
+                        const binding = resolvedSymbol(
+                            this.checker,
+                            node,
+                        )?.valueDeclaration;
+                        return (
+                            binding !== undefined &&
+                            !binding.getSourceFile().isDeclarationFile &&
+                            (ts.isVariableDeclaration(binding) ||
+                                ts.isBindingElement(binding) ||
+                                ts.isParameter(binding)) &&
+                            !ts.findAncestor(binding, (owner) => owner === unit)
+                        );
+                    }) &&
+                    (!isSupportedFunction(unit) || !this.recursiveGroup(unit)),
+            )
+        );
     }
 
     public compileSharedMethod(
@@ -2943,7 +3023,9 @@ export class UserFunctionLowerer {
                 };
                 return;
             }
-            const represented = argument?.dataType;
+            const represented = argument
+                ? (nativeStructuralViewType(argument) ?? argument.dataType)
+                : undefined;
             const argumentType =
                 represented?.kind === "optional"
                     ? represented.inner
@@ -2965,7 +3047,7 @@ export class UserFunctionLowerer {
                 !recursive &&
                 parameterType?.kind === "struct" &&
                 (argumentType?.kind === "struct" ||
-                    isOpaqueReference(argumentType) ||
+                    isNativeStructuralView(argumentType) ||
                     (argument &&
                         context.bindings.containsPlatformEvent(argument))) &&
                 (!argumentType || !dataTypesEqual(argumentType, parameterType))
@@ -3063,6 +3145,23 @@ export class UserFunctionLowerer {
                           `Recursive function requires argument '${parameter.name.getText()}'.`,
                       ));
             rootEntry.captured[index] = value;
+        });
+
+        // Represented resource containers are specialized through their
+        // values. Give fresh argument storage its caller-side home before
+        // binding it inside a separately emitted body.
+        rootEntry.captured.forEach((value, index) => {
+            if (
+                value?.kind === "data" &&
+                value.dataType &&
+                context.dataTypes.carriesHandle(value.dataType)
+            )
+                rootEntry.captured[index] =
+                    context.bindings.pinValueToTemporary(
+                        value,
+                        "shared_argument",
+                        argumentExpressions[index],
+                    );
         });
 
         // A borrowed platform event lives on the dispatch stack of the
@@ -3587,7 +3686,8 @@ export class UserFunctionLowerer {
                               value.cameraVector ||
                               value.sceneNodeVector ||
                               value.borrowedData ||
-                              value.materialUboArrayFields?.size
+                              value.materialUboArrayFields?.size ||
+                              carriesCapturedEngineOwner(value)
                           ) {
                               throw new SharedCallRequiresInline();
                           }
@@ -3936,12 +4036,18 @@ export class UserFunctionLowerer {
         name: string,
         type: DataType,
     ): Value {
-        return context.dataValue(
+        const value = context.dataValue(
             type.kind === "string" && ts.isIdentifier(parameter)
                 ? `std::move(${name})`
                 : name,
             type,
         );
+        if (
+            ts.isParameter(parameter.parent) &&
+            !dataTypesEqual(type, context.dataTypes.collectionKeyStorage(type))
+        )
+            writable(value).engineOwnerParameter = parameter.parent;
+        return value;
     }
 
     private declarationIdentifier(
@@ -4280,6 +4386,14 @@ export class UserFunctionLowerer {
                 expression,
                 "A stored callback requires a proven undefined completion.",
             );
+        if (
+            dataType.awaitedUndefinedCompletion &&
+            !hasUndefinedCompletion(this.checker, declaration, true)
+        )
+            context.fail(
+                expression,
+                "A stored callback requires a proven undefined completion after awaiting.",
+            );
         // A stored closure may be called before the later declaration runs.
         context.callbacks.hoistForwardCallbackBindings(declaration, true);
         this.loweringStoredDataFunctions.add(declaration);
@@ -4576,6 +4690,27 @@ export class UserFunctionLowerer {
                             continue;
                         }
                         const { type, cppName: name } = supplied;
+                        if (
+                            context.dataTypes.requiresEngineParameterStorage(
+                                parameter.declaration,
+                            ) &&
+                            !dataTypesEqual(
+                                type,
+                                context.dataTypes.collectionKeyStorage(type),
+                            )
+                        )
+                            context.dataTypes.requireEngineParameterStorage(
+                                context.dataTypes.signatureParameterDeclaration(
+                                    signatureType,
+                                    runtimeIndex - 1,
+                                ) ??
+                                    (site &&
+                                        storedSignatureParameter(
+                                            this.checker,
+                                            site,
+                                            ir.parameters.indexOf(parameter),
+                                        )),
+                            );
                         // A parameter that tells null from undefined needs
                         // the signature its callers pass through to as well.
                         if (
@@ -5289,6 +5424,49 @@ export class UserFunctionLowerer {
                     context.endNativeFunctionBody();
                 }
             }
+            if (
+                !discardReturn &&
+                !body?.coroutine &&
+                !ir.returnExpression &&
+                !firstReturn(ir.statements)
+            ) {
+                const signature = this.checker.getSignatureFromDeclaration(
+                    ir.declaration,
+                );
+                const result = signature
+                    ? nativeReturnTsType(
+                          this.checker,
+                          this.checker.getReturnTypeOfSignature(signature),
+                          ir.declaration,
+                          { unwrapPromise: false },
+                      )
+                    : undefined;
+                const type =
+                    result &&
+                    context.dataTypes.fromTsType(result, ir.declaration);
+                const inner = type?.kind === "optional" ? type.inner : type;
+                if (
+                    type &&
+                    !isNativeStructuralView(inner) &&
+                    !context.dataTypes.carriesHandle(type) &&
+                    !context.dataTypes.carriesBorrowedPlatformEvent(type)
+                ) {
+                    // A throwing body still has its declared expression type.
+                    // Keep the call in a typed lambda only when lowering proves
+                    // that no value must actually be produced.
+                    const abrupt = context.probeEmission(
+                        () =>
+                            this.emitValueLambdaResult(
+                                context,
+                                ir.statements,
+                                type,
+                                false,
+                            ),
+                        (result) => result.abrupt,
+                    );
+                    if (abrupt.abrupt) return abrupt.value;
+                }
+            }
             if (ir.needsValueLambda) {
                 if (body?.coroutine) {
                     // The caller owns this coroutine frame. Its early returns
@@ -5405,6 +5583,20 @@ export class UserFunctionLowerer {
         returnType: DataType | undefined,
         discardReturn: boolean,
     ): Value {
+        return this.emitValueLambdaResult(
+            context,
+            statements,
+            returnType,
+            discardReturn,
+        ).value;
+    }
+
+    private emitValueLambdaResult(
+        context: UserFunctionContext,
+        statements: readonly ts.Statement[],
+        returnType: DataType | undefined,
+        discardReturn: boolean,
+    ): { value: Value; abrupt: boolean } {
         if (returnType?.kind === "struct")
             context.dataTypes.markStoredObjectReferences(returnType);
         const result = `bbl_fn_${context.allocateUserFunctionPrefix()}result`;
@@ -5427,8 +5619,9 @@ export class UserFunctionLowerer {
                   }
                 : {},
         );
+        let terminated: boolean;
         try {
-            const terminated = emitReachableStatements(context, statements);
+            terminated = emitReachableStatements(context, statements);
             if (!terminated && returnType) {
                 context.emit({
                     kind: "control",
@@ -5442,9 +5635,12 @@ export class UserFunctionLowerer {
         }
         context.emit("}();");
         if (returnType) context.registerNativeTemporary(result, returnType);
-        return returnType
-            ? context.dataValue(result, returnType)
-            : { kind: "void", cpp: "" };
+        return {
+            value: returnType
+                ? context.dataValue(result, returnType)
+                : { kind: "void", cpp: "" },
+            abrupt: terminated && !firstReturn(statements),
+        };
     }
 
     private compileNativeReturnValue(

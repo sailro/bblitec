@@ -100,6 +100,38 @@ export function handleCppType(kind: HandleKind): string {
     return handleCppTypes[kind];
 }
 
+const engineScopedHandleKinds = new Set<HandleKind>([
+    "asset",
+    "mesh",
+    "thin-instance-pool",
+    "material",
+    "camera",
+    "light",
+    "animation-group",
+    "transform-node",
+    "scene-node",
+    "hierarchy-instance-pool",
+    "render-target",
+    "sprite-atlas",
+    "sprite-layer",
+    "billboard-system",
+    "billboard-sprite",
+    "skeleton",
+    "scene-skeleton",
+    "bone",
+    "splat-mesh",
+    "shadow-generator",
+    "utility-layer",
+    "pointer-drag",
+    "ui-element",
+    "flow-graph",
+]);
+
+/** These native handles name slots inside one Engine, not process-wide identities. */
+export function isEngineScopedHandleKind(kind: HandleKind): boolean {
+    return engineScopedHandleKinds.has(kind);
+}
+
 /**
  * Resource values outside the data model whose native value has exactly one
  * type: every intrinsic that produces the kind returns it

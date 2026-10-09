@@ -26,6 +26,7 @@ import {
 import {
     dataTypesEqual,
     isOpaqueReference,
+    isNativeStructuralView,
     isTypedArrayType,
     passesByReference,
     type DataType,
@@ -37,6 +38,7 @@ import {
     localClassOfSymbol,
 } from "./class-members.js";
 import { readsNativeStorage, type Value } from "./types.js";
+import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import {
     bindingIsOnlyCalledDirectly,
@@ -889,9 +891,13 @@ export class NativeFunctionLowerer {
             return false;
         if (target.kind === "struct") {
             const known = this.context.knownValueWithoutEvaluation(argument);
-            if (known && this.context.bindings.containsPlatformEvent(known))
+            if (
+                known &&
+                (nativeStructuralViewType(known) ||
+                    this.context.bindings.containsPlatformEvent(known))
+            )
                 return false;
-            if (carries(argument, isOpaqueReference)) return false;
+            if (carries(argument, isNativeStructuralView)) return false;
             const path = this.context.unwrap(argument);
             if (
                 (ts.isPropertyAccessExpression(path) ||
@@ -904,7 +910,7 @@ export class NativeFunctionLowerer {
                             argument,
                             "read",
                         )?.dataType;
-                        return isOpaqueReference(
+                        return isNativeStructuralView(
                             type?.kind === "optional" ? type.inner : type,
                         );
                     },
@@ -934,7 +940,7 @@ export class NativeFunctionLowerer {
             argument,
         );
         if (
-            isOpaqueReference(
+            isNativeStructuralView(
                 argumentType?.kind === "optional"
                     ? argumentType.inner
                     : argumentType,

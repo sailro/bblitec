@@ -2073,7 +2073,8 @@ test("lowers dynamic arrays with fill, pop, truncation, and index writes", () =>
         result.cpp,
         /bbl::js::Array<double>\(static_cast<std::size_t>\(4\.0\)\)/,
     );
-    assert.match(result.cpp, /for \(auto&& v_bblite_item_\d+ : v_board\)/);
+    assert.match(result.cpp, /const auto \w+ = v_board;/);
+    assert.match(result.cpp, /for \(std::size_t/);
 });
 
 test("lowers nested Array.from length allocations", () => {
@@ -3184,7 +3185,7 @@ test("iterates data nested inside a class record field", () => {
         const counter = new Counter({ entries });
     `);
 
-    assert.match(result.cpp, /for \(auto&&/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.match(result.cpp, /continue;/);
 });
 
@@ -5042,7 +5043,10 @@ test("specializes a generation-known read-only scalar parameter", () => {
         const matches = sameLength([1, 2, 3], 3);
     `);
 
-    assert.match(result.cpp, /\.length\(\) == v_fn\d+_expected/);
+    assert.match(
+        result.cpp,
+        /\.read_property\("length"\)\.strict_equals\(v_fn\d+_expected\)/,
+    );
     assert.match(result.cpp, /\)\(v_bblite_dynamic_tuple_view_\d+, 3\.0\)/);
 });
 
@@ -7267,7 +7271,8 @@ test("does not snapshot a push behind a runtime condition", () => {
     `);
 
     assert.match(result.cpp, /if \([^)]*random/);
-    assert.match(result.cpp, /for \(auto&& .* : v_rows\) \{/);
+    assert.match(result.cpp, /const auto \w+ = v_rows;/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 1);
 });
 
@@ -7290,7 +7295,8 @@ test("does not leak a conditionally pushed handle outside its block", () => {
         }
     `);
 
-    assert.match(result.cpp, /for \(auto&& .* : v_scenes\) \{/);
+    assert.match(result.cpp, /const auto \w+ = v_scenes;/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.equal((result.cpp.match(/\.clear_color =/g) ?? []).length, 1);
 });
 
@@ -7358,7 +7364,8 @@ test("shares a static element snapshot through a const array alias", () => {
     `);
 
     assert.match(result.cpp, /v_alias\.push_back/);
-    assert.match(result.cpp, /for \(auto&& .* : v_rows\) \{/);
+    assert.match(result.cpp, /const auto \w+ = v_rows;/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 1);
 });
 
@@ -7866,7 +7873,7 @@ test("asks the pin's cone-tip question of the option the scene named", () => {
     assert.match(named.cpp, /\(0\.0 == 0\.0\)\}\)/);
 });
 
-test("iterates runtime data arrays with range-for", () => {
+test("iterates runtime data arrays through a retained owner and live index", () => {
     const result = compileSource(`
         function values(): number[] {
             return [1, 2, 3];
@@ -7877,10 +7884,8 @@ test("iterates runtime data arrays with range-for", () => {
         }
     `);
 
-    assert.match(
-        result.cpp,
-        /for \(auto&& v_bblite_item_\d+ : bblscene::values\(\)\) \{/,
-    );
+    assert.match(result.cpp, /const auto \w+ = bblscene::values\(\);/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.match(result.cpp, /v_total \+= v_bblite_item_\d+;/);
 });
 

@@ -140,6 +140,22 @@ check(
 );
 
 check(
+    "erased-map-records-retain-own-nullish-fields",
+    `
+    interface Entry { id: string; }
+    function collect(input: readonly Entry[]) {
+        if (!Array.isArray(input)) throw new Error('array');
+        return input.map(entry => ({id: entry.id, absent: undefined, empty: null}));
+    }
+    const input: Entry[] = [];
+    input.push({id: 'one'});
+    const result = collect(input)[0]!;
+    if (Object.keys(result).join() !== 'id,absent,empty' || !Object.hasOwn(result, 'absent') ||
+        result.absent !== undefined || result.empty !== null) throw new Error('own nullish fields');
+`,
+);
+
+check(
     "flat-map-stored-product-results",
     `
     function pair(value: string): readonly [string, string] { return [value, value]; }

@@ -9,7 +9,12 @@ import {
 
 function check(name: string, source: string): void {
     test(name, (t) => {
-        runInNewContext('"use strict";\n' + ts.transpile(source));
+        runInNewContext(
+            '"use strict";\n' +
+                ts.transpileModule(source, {
+                    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+                }).outputText,
+        );
         const result = compileSource(source);
         const native = optionalNativeFixtureTools(false);
         if (!native) return t.skip("Native fixture compiler unavailable.");
@@ -43,10 +48,61 @@ test("receiver descriptor state preserves callback identity and rejects locked d
             try { static_cast<void>(target.check_proxy_value_definition()); }
             catch (const bbl::js::NamedError& error) { if (error.name == "TypeError") ++denied; }
             assert(denied == 3);
+
+            // An adapted absent callback can have an identity without a callable body.
+            const bbl::js::Callback<bool(double, double)> absent_setter(
+                static_cast<bool (*)(double, double)>(nullptr));
+            Slot absent;
+            absent.define(Slot(getter, absent_setter), false, false, 1.0);
+            assert(absent.check_proxy_definition(Slot(getter, absent_setter), false, false));
+            assert(absent.check_proxy_definition(Slot(getter, {}), false, true));
+            denied = 0;
+            try { static_cast<void>(absent.check_proxy_set()); }
+            catch (const bbl::js::NamedError& error) { if (error.name == "TypeError") ++denied; }
+            try { static_cast<void>(absent.check_proxy_definition(Slot(getter, {}), false, false)); }
+            catch (const bbl::js::NamedError& error) { if (error.name == "TypeError") ++denied; }
+            assert(denied == 2);
+
+            std::weak_ptr<double> captured;
+            const auto snapshot = [&] {
+                const auto owner = std::make_shared<double>(7.0);
+                captured = owner;
+                Slot transient(bbl::js::make_closure(std::tuple{owner},
+                    [](auto& state, double) { return *std::get<0>(state); }), {});
+                return transient.descriptor_state();
+            }();
+            assert(snapshot.has_getter && !snapshot.has_setter);
+            assert(captured.expired());
         }
     `,
     );
 });
+
+check(
+    "descriptor-captures-retain-forward-bindings-and-instance-state",
+    `
+    interface State {x:number}
+    const target:State={x:0};
+    const view=new Proxy(target,{});
+    Object.defineProperty(target,"x",{get:()=>read(),enumerable:true,configurable:true});
+    let denied=0;
+    let completed=false;
+    try { const early=view.x; completed=true; }
+    catch(error) { if(!String(error).includes("before initialization"))throw error; denied++; }
+    let count=1;
+    const read=()=>++count;
+    if(completed||denied!==1||view.x!==2||target.x!==3)throw new Error("forward capture");
+    function create(start:number):State {
+        let state=start;
+        const result:State={x:0};
+        Object.defineProperty(result,"x",{get:()=>++state,enumerable:true,configurable:true});
+        return result;
+    }
+    const first=create(10);
+    const second=create(20);
+    if(first.x!==11||second.x!==21||first.x!==12||second.x!==22)throw new Error("instance capture");
+`,
+);
 
 check(
     "plain-objects-share-proxy-layout-with-independent-descriptors",

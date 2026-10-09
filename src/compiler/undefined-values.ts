@@ -1,6 +1,11 @@
 import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol } from "./symbols.js";
+import {
+    declarationInDefaultLibrary,
+    declaredSymbol,
+    libraryGlobal,
+} from "./symbols.js";
+import { hasNoValueCompletion } from "./native-return-type.js";
 import { unwrapExpression } from "./syntax.js";
 import type { Value } from "./types.js";
 
@@ -118,10 +123,26 @@ export function provenUndefinedValue(
         }
         if (!ts.isCallExpression(expression)) return false;
         const callee = unwrapExpression(expression.expression);
+        const signature = context.checker.getResolvedSignature(expression);
+        const declaration = signature?.declaration;
+        if (
+            libraryGlobal(context.checker, callee) &&
+            declaration &&
+            ts.isFunctionDeclaration(declaration) &&
+            declarationInDefaultLibrary(declaration) &&
+            hasNoValueCompletion(
+                context.checker.getReturnTypeOfSignature(signature),
+            )
+        )
+            return true;
         if (ts.isIdentifier(callee)) {
             const bound = context.bindings.lookupOptional(callee);
             const stored = bound?.dataType;
-            if (stored?.kind === "function" && stored.undefinedCompletion)
+            if (
+                stored?.kind === "function" &&
+                (stored.undefinedCompletion ||
+                    (awaited && stored.awaitedUndefinedCompletion))
+            )
                 return true;
             if (context.sharedClosures.identifierIsRebound(callee))
                 return false;
@@ -146,11 +167,7 @@ export function provenUndefinedValue(
             !ts.isFunctionExpression(callee)
         )
             return false;
-        return hasUndefinedCompletion(
-            context.checker,
-            context.checker.getResolvedSignature(expression)?.declaration,
-            awaited,
-        );
+        return hasUndefinedCompletion(context.checker, declaration, awaited);
     };
     return visit(node);
 }

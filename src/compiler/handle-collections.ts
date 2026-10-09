@@ -1,4 +1,9 @@
-import { presenceFlagCpp, valueForKind, withNativeMetadata } from "./types.js";
+import {
+    presenceFlagCpp,
+    representedStorage,
+    valueForKind,
+    withNativeMetadata,
+} from "./types.js";
 import type { ValueBase } from "./types.js";
 // Handle collections carry engine identity, generation-known members and asset traversal contracts.
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
@@ -388,6 +393,7 @@ interface HandleCollectionsContext
             | "checker"
             | "symbols"
             | "dataTypes"
+            | "dataLowerer"
             | "options"
             | "assetPayloads"
             | "unwrap"
@@ -2568,12 +2574,9 @@ export class HandleCollections {
     }
 
     /**
-     * `a === b` / `a !== b` over two engine handles — upstream object
-     * identity, which native handles carry as their creation-ordered
-     * `.value`. Folded when both sides carry generation-known collection
-     * slots; a native comparison otherwise. Undefined when either side is
-     * not a bound handle, so numeric and data comparisons keep their own
-     * lowerings.
+     * Engine object identity includes the actual owner and full native
+     * handle, with each operand snapshotted before the next evaluates.
+     * Other comparisons keep their own lowerings.
      */
     public compileHandleEquality(
         expression: ts.BinaryExpression,
@@ -2585,18 +2588,49 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const left = this.lookupHandleOperand(expression.left);
-        const right = this.lookupHandleOperand(expression.right);
-        if (!left || !right || left.kind !== right.kind) {
+        const leftKind = this.handleOperandKind(expression.left);
+        const rightKind = this.handleOperandKind(expression.right);
+        if (!leftKind || leftKind !== rightKind) {
             return undefined;
         }
-        this.context.expectSameEngine(left, right, expression);
+        const snapshot = (node: ts.Expression): Value => {
+            let value = this.context.compileValue(node);
+            if (!isHandleKind(value.kind))
+                return this.context.fail(
+                    node,
+                    "Handle identity requires a represented native handle.",
+                );
+            this.context.requireEngine(value, node);
+            const type = {
+                kind: "handle",
+                handle: value.kind,
+                ownedEngine: true,
+            } as const;
+            value = this.context.dataLowerer.leafValue(
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    type,
+                    node,
+                ),
+                type,
+            );
+            return this.context.bindings.pinValueToTemporary(
+                value,
+                "handle_compare",
+                node,
+            );
+        };
+        const left = snapshot(expression.left);
+        const right = snapshot(expression.right);
         const equals = operator === ts.SyntaxKind.EqualsEqualsEqualsToken;
-        if (left.handleIdentity && right.handleIdentity) {
-            const same = left.handleIdentity === right.handleIdentity;
-            return same === equals ? "true" : "false";
-        }
-        return `(${left.cpp}.value ${equals ? "==" : "!="} ${right.cpp}.value)`;
+        const stored = (value: Value): string =>
+            representedStorage(value)?.cpp ??
+            this.context.fail(
+                expression,
+                "Handle identity requires represented engine owners.",
+            );
+        const same = `bbl::js::detail::same_value_zero(${stored(left)}, ${stored(right)})`;
+        return equals ? same : `!${same}`;
     }
 
     /**
@@ -2634,15 +2668,18 @@ export class HandleCollections {
         return tuple?.map((value) => ({ value, node: expression }));
     }
 
-    /** An identifier bound to an engine handle, without emission. */
-    private lookupHandleOperand(expression: ts.Expression): Value | undefined {
+    /** Decide the comparison lane before evaluating either source operand. */
+    private handleOperandKind(
+        expression: ts.Expression,
+    ): ValueKind | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
             const value = this.context.bindings.lookupOptional(unwrapped);
             if (value) {
                 return handleKinds.includes(value.kind) &&
+                    value.optionalStorageCpp === undefined &&
                     value.animationGroupSource !== "property"
-                    ? value
+                    ? value.kind
                     : undefined;
             }
         }
@@ -2653,11 +2690,7 @@ export class HandleCollections {
         if (type?.kind !== "handle" || !handleKinds.includes(type.handle)) {
             return undefined;
         }
-        const value = this.context.compileValue(unwrapped);
-        return handleKinds.includes(value.kind) &&
-            value.animationGroupSource !== "property"
-            ? value
-            : undefined;
+        return type.handle;
     }
 }
 

@@ -298,29 +298,34 @@ test("JSON.parse answers a dynamic document the source's guards decide over", ()
     // `!file` is JavaScript truthiness over the whole document.
     assert.match(result.cpp, /\.truthy\(\)/);
     // `file.version !== 1` is a strict comparison, not a coercion.
-    assert.match(result.cpp, /\.get\("version"\)\.strict_equals\(1\.0\)/);
+    assert.match(
+        result.cpp,
+        /\.read_property\("version"\)\.strict_equals\(1\.0\)/,
+    );
     // `Array.isArray(file.parts)` asks the document.
-    assert.match(result.cpp, /\.get\("parts"\)\.is_array\(\)/);
+    assert.match(result.cpp, /\.read_property\("parts"\)\.is_array\(\)/);
     // `for (const entry of file.parts)` walks the document's own elements.
-    assert.match(result.cpp, /\.get\("parts"\)\.elements\(\)/);
+    assert.match(result.cpp, /\.read_property\("parts"\)\.elements\(\)/);
     // `typeof x === "number"` and `Number.isFinite(x)` over an element.
     assert.match(result.cpp, /\.type_of\(\)/);
     assert.match(result.cpp, /std::isfinite\(\w+\.to_number\(\)\)/);
     // `.length === n` and the indexed reads inside the guard.
-    assert.match(result.cpp, /\.length\(\)/);
+    assert.match(result.cpp, /\.read_property\("length"\)/);
     const receivers = [
-        ...result.cpp.matchAll(/\bauto (\w+) = [^;\n]+\.get\("s"\);/g),
+        ...result.cpp.matchAll(
+            /\bauto (\w+) = [^;\n]+\.read_property\("s"\);/g,
+        ),
     ];
     assert.ok(
         receivers.some(([, name]) =>
             result.cpp.includes(
-                `${name}.get(bbl::js::number_to_string(0.0)).to_number()`,
+                `${name}.read_property(bbl::js::number_to_string(0.0)).to_number()`,
             ),
         ),
         "indexed reads use the retained receiver and JavaScript property-key conversion",
     );
     // The optional `sh` is a strict comparison over a possibly-absent key.
-    assert.match(result.cpp, /\.get\("sh"\)\.strict_equals\(1\.0\)/);
+    assert.match(result.cpp, /\.read_property\("sh"\)\.strict_equals\(1\.0\)/);
 });
 
 test("JSON.parse refuses a reviver reading its holder rather than ignoring it", () => {

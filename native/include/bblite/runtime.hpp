@@ -766,6 +766,14 @@ struct VatData {
 struct BillboardSpriteHandle {
     BillboardSystemHandle system{};
     std::uint32_t id = invalid_handle;
+
+    /** IDs are never reused within a system, including after removal or clear. */
+    [[nodiscard]] std::pair<std::uint32_t, std::uint32_t> identity() const noexcept {
+        return {system.value, id};
+    }
+    [[nodiscard]] bool operator==(const BillboardSpriteHandle& other) const noexcept {
+        return identity() == other.identity();
+    }
 };
 
 /** Which sprite family a frame animation drives. */

@@ -2012,6 +2012,13 @@ namespace detail {
 template <typename T> inline constexpr bool is_variant_v = false;
 template <typename... T> inline constexpr bool is_variant_v<std::variant<T...>> = true;
 
+template <typename T> inline constexpr bool is_pair_v = false;
+template <typename First, typename Second>
+inline constexpr bool is_pair_v<std::pair<First, Second>> = true;
+
+template <typename T> inline constexpr bool is_tagged_v = false;
+template <typename T> inline constexpr bool is_tagged_v<Tagged<T>> = true;
+
 /** A number key's hash under SameValueZero: every NaN is one key and -0 is the +0 key. */
 [[nodiscard]] inline std::size_t number_key_hash(double value) noexcept {
     if (std::isnan(value))
@@ -2045,6 +2052,9 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
     } else if constexpr (IsNullable<T>::value) {
         return left.has_value() == right.has_value() &&
                (!left.has_value() || same_value_zero(*left, *right));
+    } else if constexpr (is_tagged_v<T>) {
+        return left.defined() == right.defined() &&
+               (!left.defined() || same_value_zero(left.value(), right.value()));
     } else if constexpr (is_variant_v<T>) {
         return left.index() == right.index() &&
                std::visit(
@@ -2055,9 +2065,19 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
                            return false;
                    },
                    left, right);
+    } else if constexpr (is_pair_v<T>) {
+        return same_value_zero(left.first, right.first) &&
+               same_value_zero(left.second, right.second);
     } else if constexpr (requires { left.same_value_zero(right); }) {
         // A value carrying several kinds (a parsed document) owns its rule.
         return left.same_value_zero(right);
+    } else if constexpr (
+        !requires { left == right; } &&
+        requires {
+            left.value;
+            right.value;
+        }) {
+        return same_value_zero(left.value, right.value);
     } else {
         return std::equal_to<T>{}(left, right);
     }
@@ -2069,6 +2089,8 @@ template <typename T> [[nodiscard]] decltype(auto) stored_key(const T& key) {
         return key == 0 ? T{} : key;
     } else if constexpr (IsNullable<T>::value) {
         return key.has_value() ? T{stored_key(*key)} : T{};
+    } else if constexpr (is_tagged_v<T>) {
+        return key.defined() ? T{stored_key(key.value()), true} : T{};
     } else if constexpr (is_variant_v<T>) {
         T stored = key;
         std::visit(
@@ -2117,6 +2139,19 @@ template <typename T> struct ValueHash {
         } else {
             return std::hash<T>{}(value);
         }
+    }
+};
+
+/** Owned native keys compare both their engine and their resource. */
+template <typename First, typename Second> struct ValueHash<std::pair<First, Second>> {
+    [[nodiscard]] std::size_t operator()(const std::pair<First, Second>& value) const noexcept {
+        return std::rotl(ValueHash<First>{}(value.first), 1) ^ ValueHash<Second>{}(value.second);
+    }
+};
+
+template <typename T> struct ValueHash<Tagged<T>> {
+    [[nodiscard]] std::size_t operator()(const Tagged<T>& value) const noexcept {
+        return value.defined() ? ValueHash<T>{}(value.value()) : 0;
     }
 };
 
@@ -3211,10 +3246,26 @@ template <typename Yield, bool Entries, typename T>
 /** Which part of each entry a Map iterator yields. */
 enum class MapPart { keys, values, entries };
 
+/** The default projector keeps no state while accepting the existing nullptr sentinel. */
+struct NoMapEntryProjector {
+    constexpr NoMapEntryProjector() = default;
+    constexpr NoMapEntryProjector(std::nullptr_t) noexcept {}
+};
+
 /** A live Map iterator, pinned to its last yielded slot as SetCursor is. */
-template <typename Yield, typename K, typename V, MapPart Part> struct MapCursor {
+template <typename Yield, typename K, typename V, MapPart Part,
+          typename EntryProjector = std::nullptr_t>
+struct MapCursor {
     std::optional<Map<K, V>> values;
     std::optional<InsertionOrderedIterator<std::pair<K, V>, true>> cursor;
+    using ProjectorStorage = std::conditional_t<std::is_same_v<EntryProjector, std::nullptr_t>,
+                                                NoMapEntryProjector, EntryProjector>;
+#if defined(_MSC_VER)
+    [[msvc::no_unique_address]]
+#else
+    [[no_unique_address]]
+#endif
+    ProjectorStorage project_entry{};
     Nullable<Yield> operator()() {
         if (!values)
             return {};
@@ -3233,6 +3284,8 @@ template <typename Yield, typename K, typename V, MapPart Part> struct MapCursor
             return Nullable<Yield>::yielded(entry.first);
         else if constexpr (Part == MapPart::values)
             return Nullable<Yield>::yielded(entry.second);
+        else if constexpr (!std::is_same_v<EntryProjector, std::nullptr_t>)
+            return Nullable<Yield>::yielded(project_entry(entry.first, entry.second));
         else
             return Nullable<Yield>::yielded(Yield{entry.first, entry.second});
     }
@@ -3242,9 +3295,14 @@ template <typename Yield, typename K, typename V, MapPart Part> struct MapCursor
     }
 };
 
-template <typename Yield, MapPart Part, typename K, typename V>
-[[nodiscard]] Iterator<Yield> map_iterator(const Map<K, V>& values) {
-    return Iterator<Yield>(MapCursor<Yield, K, V, Part>{values, {}});
+template <typename Yield, MapPart Part, typename K, typename V,
+          typename EntryProjector = std::nullptr_t>
+[[nodiscard]] Iterator<Yield> map_iterator(const Map<K, V>& values, EntryProjector project = {}) {
+    // Only stateless entry conversion is accepted; the cursor traces every owner itself.
+    static_assert(std::is_same_v<EntryProjector, std::nullptr_t> ||
+                  std::is_empty_v<EntryProjector>);
+    return Iterator<Yield>(
+        MapCursor<Yield, K, V, Part, EntryProjector>{values, {}, std::move(project)});
 }
 
 template <typename T> using Span = std::span<T>;

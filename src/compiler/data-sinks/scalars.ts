@@ -254,6 +254,7 @@ function valuePromise(
     const result = type.result;
     const expected = result ? types.cppType(result) : "bbl::js::PromiseVoid";
     if (value.promiseType === expected) return value.cpp;
+    const parameter = lowerer.context.allocateTemporaryCppName("promise_value");
     let converted: string | undefined;
     if (
         value.promiseResult?.kind === "void" &&
@@ -268,7 +269,7 @@ function valuePromise(
         result?.kind === "optional" &&
         value.promiseType === types.cppType(result.inner)
     ) {
-        converted = `${expected}{value}`;
+        converted = `${expected}{${parameter}}`;
     }
     if (
         !converted &&
@@ -298,7 +299,7 @@ function valuePromise(
         // conversion must therefore keep every retained object's identity.
         const lines = lowerer.context.captureEmittedLines(() => {
             converted = lowerer.compileKnownValueForSink(
-                lowerer.leafValue("value", source),
+                lowerer.leafValue(parameter, source),
                 result,
                 node,
             );
@@ -314,7 +315,7 @@ function valuePromise(
             node,
             `Promise storage requires ${expected}, received ${value.promiseType}.`,
         );
-    return `bbl::js::Promise<${expected}>::view(${value.cpp}, []([[maybe_unused]] const ${value.promiseType}& value) -> ${expected} { return ${converted}; })`;
+    return `bbl::js::Promise<${expected}>::view(${value.cpp}, []([[maybe_unused]] const ${value.promiseType}& ${parameter}) -> ${expected} { return ${converted}; })`;
 }
 
 function valueNumber(
@@ -422,15 +423,15 @@ const opaqueSink = {
 };
 
 /** A leaf only a value of its own kind converts to. */
-function sameKindSink<K extends "symbol" | "bigint" | "i64array" | "u64array">(
-    kind: K,
-): DataSinkOperations<K>[K] {
+function sameKindSink<
+    K extends "symbol" | "bigint" | "i64array" | "u64array" | "gpu",
+>(kind: K): DataSinkOperations<K>[K] {
     return {
-        expression: (type, lowerer, _expression, unwrapped) =>
+        expression: (type, lowerer, expression, unwrapped) =>
             lowerer.compileKnownValueForSink(
                 lowerer.context.compileValue(unwrapped),
                 type,
-                unwrapped,
+                expression,
             ),
         value: (_type, _lowerer, value) =>
             value.dataType?.kind === kind ? value.cpp : undefined,
@@ -582,16 +583,7 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     "gpu-adapter": opaqueSink,
-    gpu: {
-        expression: (type, lowerer, expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                expression,
-            ),
-        value: (_type, _lowerer, value) =>
-            value.dataType?.kind === "gpu" ? value.cpp : undefined,
-    },
+    gpu: sameKindSink("gpu"),
     file: opaqueSink,
     blob: opaqueSink,
     "file-list": opaqueSink,

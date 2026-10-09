@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
@@ -95,4 +96,49 @@ test("Map constructors copy optional iterable owners and preserve entry values",
     const native = optionalNativeFixtureTools(false);
     if (!native) return t.skip("Native fixture compiler unavailable.");
     runGeneratedProgram(native, "collection-constructor-optional", result.cpp);
+});
+
+test("collection constructors refuse an absent annotation hiding a present iterable", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            const entries = [["key", 3]] as unknown as undefined;
+            const values = new Map<string, number>(entries);
+            if (values.size !== 1) throw new Error("present iterable");
+        `),
+        /absent collection initializer requires a represented null or undefined/,
+    );
+});
+
+test("Set constructors handle absent iterables and erased string iteration", (t) => {
+    const result = compileSource(`
+        function numbers(input?: readonly number[] | null) { return new Set(input); }
+        function text(input?: string | null) { return new Set(input); }
+        function pair(input: readonly [number, number] | null) { return new Set(input); }
+        const numberFactories: Array<typeof numbers> = [numbers];
+        const textFactories: Array<typeof text> = [text];
+        const pairFactories: Array<typeof pair> = [pair];
+        if (numberFactories[0]!().size !== 0 || numberFactories[0]!(null).size !== 0 ||
+            numberFactories[0]!([1, 1, 2]).size !== 2 || pairFactories[0]!(null).size !== 0 ||
+            pairFactories[0]!([3, 3]).size !== 1)
+            throw new Error("nullable iterable ownership");
+        if (textFactories[0]!().size !== 0 || textFactories[0]!(null).size !== 0 ||
+            [...textFactories[0]!("A😀A")].join() !== "A,😀")
+            throw new Error("nullable string code points");
+        const erased = new Set(JSON.parse('"A😀A"'));
+        if (erased.size !== 2 || !erased.has("😀")) throw new Error("erased string iterable");
+        const fromArray = new Set<number>(JSON.parse('[2,2,3]'));
+        if (fromArray.size !== 2 || !fromArray.has(3)) throw new Error("parsed array iterable");
+        let refused = false;
+        try { new Set(JSON.parse('{"length":2}')); }
+        catch (error) { if (!(error instanceof TypeError)) throw error; refused = true; }
+        if (!refused) throw new Error("non-iterable object must throw");
+    `);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        native,
+        "collection-constructor-set-iterables",
+        result.cpp,
+    );
 });
