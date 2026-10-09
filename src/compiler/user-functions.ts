@@ -57,6 +57,7 @@ import {
     type CapturedClosure,
 } from "./closure-captures.js";
 import { readOnlyDataMethods } from "./receiver-methods.js";
+import { isReadOnlyRegExpCall } from "./regexp-call-effects.js";
 import {
     callArgumentIsReadOnly,
     isEffectFunction,
@@ -360,6 +361,7 @@ function writesThroughRoot(
     mutatesVia: (method: string) => boolean = (method) =>
         !readOnlyDataMethods.has(method),
     checker?: ts.TypeChecker,
+    sourceFiles?: readonly ts.SourceFile[],
 ): boolean {
     if (isAssignmentExpression(node)) {
         return assignmentTargets(node.left).some(isTarget);
@@ -367,6 +369,12 @@ function writesThroughRoot(
     if (isUpdateExpression(node)) {
         return isTarget(node.operand);
     }
+    if (
+        checker &&
+        sourceFiles &&
+        isReadOnlyRegExpCall(checker, node, sourceFiles)
+    )
+        return false;
     const target = mutatingCallTarget(node, mutatesVia);
     // Calling a method on a primitive field cannot write through its owner.
     // Argument and callback effects remain the enclosing analysis's concern.

@@ -2799,9 +2799,13 @@ class Compiler implements LoweringServices {
                             node,
                         )?.declarations?.some(ts.isGetAccessorDeclaration) &&
                         this.evaluationOrder.writesStorage(node)) ||
-                    writesThroughTrackedRoot(node, (target) => {
-                        return names(this.unwrap(target));
-                    }) ||
+                    writesThroughTrackedRoot(
+                        node,
+                        (target) => names(this.unwrap(target)),
+                        undefined,
+                        this.checker,
+                        this.program.getSourceFiles(),
+                    ) ||
                     (ts.isCallExpression(node) &&
                         node.arguments.some(
                             (argument, index) =>
@@ -4526,6 +4530,7 @@ class Compiler implements LoweringServices {
         const result = executeApplicationFunction(
             {
                 checker: this.checker,
+                sourceFiles: this.program.getSourceFiles(),
                 fail: (node, message) => this.fail(node, message),
                 foldEnclosing: (identifier) => {
                     closed = false;

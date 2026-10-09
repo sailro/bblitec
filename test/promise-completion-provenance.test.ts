@@ -1,0 +1,141 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
+
+test("stored Promise recovery callbacks retain concrete undefined completions", async (t) => {
+    const source = `
+        queueMicrotask(() => {});
+        const events: string[] = [];
+        const hooks = {
+            failed(error: unknown) { events.push("first"); hooks.failed = error => { events.push("replacement"); }; }
+        };
+        (async () => {
+            const saved = hooks.failed;
+            const recovered = await Promise.reject<boolean>(new Error("source")).catch(saved).finally(() => { events.push("finally"); });
+            if (recovered !== undefined || events.join() !== "first,finally") throw new Error("recovery completion/order");
+            const replaced = await Promise.reject<boolean>(new Error("next")).then(value => value, hooks.failed);
+            if (replaced !== undefined || events.join() !== "first,finally,replacement") throw new Error("replacement completion");
+            let caught = 0;
+            try { await Promise.reject<boolean>(new Error("source")).catch(() => { throw new Error("callback"); }); }
+            catch { caught++; }
+            try { await Promise.resolve(1).finally(() => { throw new Error("cleanup"); }); }
+            catch { caught++; }
+            if (caught !== 2) throw new Error("reaction throws");
+            globalThis.close();
+        })();
+    `;
+    let closed = false;
+    await runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+        {
+            queueMicrotask,
+            close: () => {
+                closed = true;
+            },
+        },
+    );
+    assert.equal(closed, true);
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "promise-completion-provenance/concrete",
+            result.cpp,
+            {
+                defines: ["BBLITE_WORKERS=1"],
+                timeoutMs: 10000,
+                expectedOutput: "",
+            },
+        );
+    });
+});
+
+test("erased callback views cannot fabricate undefined or drop adoption", async () => {
+    for (const [body, expected] of [
+        ["return 7;", "7"],
+        [
+            "return Promise.resolve().then(() => { events.push('adopted'); return 9; });",
+            "9",
+        ],
+        [
+            "return Promise.resolve().then(() => { events.push('adopted'); throw new Error('delayed'); });",
+            "'rejected'",
+        ],
+        [
+            "return {then(resolve: (value: number) => void) { events.push('adopted'); resolve(11); }};",
+            "11",
+        ],
+    ]) {
+        const source = `
+            queueMicrotask(() => {});
+            const events: string[] = [];
+            const hooks: {failed(error: unknown): void} = {failed: error => { ${body} }};
+            (async () => {
+                let observed: unknown = 'rejected';
+                try { observed = await Promise.reject<boolean>(new Error('source')).catch(hooks.failed).finally(() => { events.push('finally'); }); }
+                catch { }
+                if (observed !== ${expected} || events[events.length - 1] !== 'finally') throw new Error('completion/adoption');
+                globalThis.close();
+            })();
+        `;
+        let closed = false;
+        await runInNewContext(
+            ts.transpileModule(source, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ES2022,
+                    module: ts.ModuleKind.None,
+                },
+            }).outputText,
+            {
+                queueMicrotask,
+                close: () => {
+                    closed = true;
+                },
+            },
+        );
+        assert.equal(closed, true);
+        assert.throws(
+            () => compileSource(source),
+            /proven undefined completion|thenable assimilation|stored void|Promise.*result/,
+        );
+    }
+});
+
+test("unknown implementations and value-returning replacements retain the completion boundary", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        queueMicrotask(() => {});
+        function install(hooks: {failed(error: unknown): void}) {
+            void Promise.resolve(true).catch(hooks.failed).finally(() => {});
+        }
+        const retained: Array<typeof install> = [install];
+        if (retained.length !== 1) throw new Error('retained');
+    `),
+        /proven undefined completion/,
+    );
+    for (const body of ["return 7;", "return Promise.resolve(9);"]) {
+        assert.throws(
+            () =>
+                compileSource(`
+            queueMicrotask(() => {});
+            const hooks = {failed() {}};
+            hooks.failed = () => { ${body} };
+            void Promise.reject<boolean>(new Error('source')).catch(hooks.failed);
+        `),
+            /proven undefined completion/,
+        );
+    }
+});

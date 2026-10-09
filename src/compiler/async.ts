@@ -7,6 +7,7 @@ import type {
 import ts from "typescript";
 import {
     hasUndefinedCompletion,
+    hasUndefinedCallbackCompletion,
     provenUndefinedValue,
 } from "./undefined-values.js";
 import {
@@ -1332,6 +1333,15 @@ export class AsyncLowerer {
             (ts.isIdentifier(inline)
                 ? tryResolveFunctionDeclaration(context.checker, inline)
                 : inline);
+        const undefinedCompletion =
+            hasUndefinedCompletion(context.checker, declaration) ||
+            hasUndefinedCallbackCompletion(
+                context.checker,
+                evaluated ??
+                    (inline && ts.isIdentifier(inline)
+                        ? context.bindings.lookupOptional(inline)
+                        : undefined),
+            );
         const asynchronous =
             declaration &&
             ts
@@ -1501,10 +1511,7 @@ export class AsyncLowerer {
                         settlement.result &&
                         (result.value.erasedVoidCompletion ||
                             (!reportingOnly &&
-                                !hasUndefinedCompletion(
-                                    context.checker,
-                                    declaration,
-                                ) &&
+                                !undefinedCompletion &&
                                 !(
                                     stored?.dataType?.kind === "function" &&
                                     stored.dataType.undefinedCompletion

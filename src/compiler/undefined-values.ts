@@ -37,6 +37,27 @@ export function hasUndefinedCompletion(
         : isUndefined(declaration.body);
 }
 
+/** A source-specialized callback retains the body behind an immutable alias. */
+export function hasUndefinedCallbackCompletion(
+    checker: ts.TypeChecker,
+    value: Value | undefined,
+): boolean {
+    if (value?.kind !== "callback" || value.cpp) return false;
+    const declaration = value.callbackDeclaration;
+    if (!declaration) return false;
+    const source = ts.isIdentifier(declaration)
+        ? declaredSymbol(checker, declaration)?.valueDeclaration
+        : declaration;
+    return (
+        !!source &&
+        (ts.isFunctionDeclaration(source) ||
+            ts.isFunctionExpression(source) ||
+            ts.isArrowFunction(source) ||
+            ts.isMethodDeclaration(source)) &&
+        hasUndefinedCompletion(checker, source)
+    );
+}
+
 interface UndefinedContext {
     checker: ts.TypeChecker;
     bindings: {
@@ -94,22 +115,7 @@ export function provenUndefinedValue(
                 return false;
             // A name bound at generation to one function literal or
             // declaration (a specialized callback parameter) calls it.
-            const callback =
-                bound?.kind === "callback" && bound.callbackDeclaration
-                    ? ts.isIdentifier(bound.callbackDeclaration)
-                        ? declaredSymbol(
-                              context.checker,
-                              bound.callbackDeclaration,
-                          )?.valueDeclaration
-                        : bound.callbackDeclaration
-                    : undefined;
-            if (
-                callback &&
-                (ts.isFunctionDeclaration(callback) ||
-                    ts.isFunctionExpression(callback) ||
-                    ts.isArrowFunction(callback)) &&
-                hasUndefinedCompletion(context.checker, callback)
-            )
+            if (hasUndefinedCallbackCompletion(context.checker, bound))
                 return true;
             const declaration = declaredSymbol(
                 context.checker,

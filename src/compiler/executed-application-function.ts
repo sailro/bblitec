@@ -47,6 +47,7 @@ export type ExecutedScalar = string | number | boolean;
 
 interface ExecutedFunctionContext {
     readonly checker: ts.TypeChecker;
+    readonly sourceFiles?: readonly ts.SourceFile[];
     fail(node: ts.Node, message: string): never;
     /**
      * The generation-known value of a binding the function closes over from
@@ -445,13 +446,19 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                     );
                 }
                 if (
-                    writesThroughTrackedRoot(node, (expression) => {
-                        const identifier = rootIdentifier(expression);
-                        return (
-                            identifier !== undefined &&
-                            this.namesClosureBinding(identifier, root)
-                        );
-                    })
+                    writesThroughTrackedRoot(
+                        node,
+                        (expression) => {
+                            const identifier = rootIdentifier(expression);
+                            return (
+                                identifier !== undefined &&
+                                this.namesClosureBinding(identifier, root)
+                            );
+                        },
+                        undefined,
+                        this.context.checker,
+                        this.context.sourceFiles,
+                    )
                 ) {
                     this.context.fail(
                         node,
