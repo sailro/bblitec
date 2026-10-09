@@ -153,7 +153,7 @@ test("rebuild subscribers registered after construction remain a live loop", () 
         unsubscribe();
         source.rebuild();
     `).cpp;
-    assert.match(cpp, /const auto \w+ = [^\n]*subscribers[^\n]*;/);
+    assert.match(cpp, /const auto& \w+ = [^\n]*subscribers[^\n]*;/);
     assert.match(cpp, /for \(std::size_t/);
     assert.match(cpp, /\w+\(42\.0\)/);
 });

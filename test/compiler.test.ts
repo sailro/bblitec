@@ -2093,7 +2093,7 @@ test("lowers dynamic arrays with fill, pop, truncation, and index writes", () =>
         result.cpp,
         /bbl::js::Array<double>\(static_cast<std::size_t>\(4\.0\)\)/,
     );
-    assert.match(result.cpp, /const auto \w+ = v_board;/);
+    assert.match(result.cpp, /const auto&? \w+ = v_board;/);
     assert.match(result.cpp, /for \(std::size_t/);
 });
 
@@ -2669,10 +2669,10 @@ test("retains lexical constant-expression tuple arrays for runtime break", () =>
         result.cpp,
         /bbl::js::Array<bbl::js::Tuple<2>> v_fn\d+_shots = bbl::js::Array<bbl::js::Tuple<2>>/,
     );
-    const range = /const auto (\w+) = v_fn\d+_shots;/.exec(result.cpp);
+    const range = /const auto&? (\w+) = v_fn\d+_shots;/.exec(result.cpp);
     assert.ok(range);
     const iteration = new RegExp(
-        `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] auto (\\w+) = ${range[1]}\\[\\1\\];`,
+        `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] auto (\\w+) = bbl::js::snapshot_value\\(${range[1]}\\[\\1\\]\\);`,
     ).exec(result.cpp);
     assert.ok(iteration);
     assert.match(
@@ -4344,7 +4344,7 @@ test("preserves missing Map handle storage in nullable locals", () => {
     assert.equal((result.cpp.match(/bbl::create_box\(/g) ?? []).length, 1);
     assert.match(
         result.cpp,
-        /if \(!\(v_mesh\.has_value\(\)\)\) \{\s*v_mesh = [^\n]+bbl::StoredEngine\{v_engine\}[^\n]+bbl::create_box\(v_engine,[^\n]+;\s*const auto (\w+) = "wall";\s*static_cast<void>\(v_meshes\.set\(\1, \(\(\*v_mesh\)\)\.second\)\);/,
+        /if \(!\(v_mesh\.has_value\(\)\)\) \{\s*v_mesh = [^\n]+bbl::StoredEngine\{v_engine\}[^\n]+bbl::create_box\(v_engine,[^\n]+;\s*const auto& (\w+) = "wall";\s*static_cast<void>\(v_meshes\.set\(\1, \(\(\*v_mesh\)\)\.second\)\);/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -7357,7 +7357,7 @@ test("does not snapshot a push behind a runtime condition", () => {
     `);
 
     assert.match(result.cpp, /if \([^)]*random/);
-    assert.match(result.cpp, /const auto \w+ = v_rows;/);
+    assert.match(result.cpp, /const auto&? \w+ = v_rows;/);
     assert.match(result.cpp, /for \(std::size_t/);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 1);
 });
@@ -7381,7 +7381,7 @@ test("does not leak a conditionally pushed handle outside its block", () => {
         }
     `);
 
-    assert.match(result.cpp, /const auto \w+ = v_scenes;/);
+    assert.match(result.cpp, /const auto&? \w+ = v_scenes;/);
     assert.match(result.cpp, /for \(std::size_t/);
     assert.equal((result.cpp.match(/\.clear_color =/g) ?? []).length, 1);
 });
@@ -7450,7 +7450,7 @@ test("shares a static element snapshot through a const array alias", () => {
     `);
 
     assert.match(result.cpp, /v_alias\.push_back/);
-    assert.match(result.cpp, /const auto \w+ = v_rows;/);
+    assert.match(result.cpp, /const auto&? \w+ = v_rows;/);
     assert.match(result.cpp, /for \(std::size_t/);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 1);
 });
@@ -7996,7 +7996,7 @@ test("iterates runtime data arrays through a retained owner and live index", () 
         }
     `);
 
-    assert.match(result.cpp, /const auto \w+ = bblscene::values\(\);/);
+    assert.match(result.cpp, /const auto& \w+ = bblscene::values\(\);/);
     assert.match(result.cpp, /for \(std::size_t/);
     assert.match(result.cpp, /v_total \+= v_bblite_item_\d+;/);
 });
@@ -8008,14 +8008,14 @@ test("iterates strings through their JavaScript characters", () => {
         }
     `);
     const range =
-        /const auto (\w+) = bbl::js::string_characters\("abc"\);/.exec(
+        /const auto& (\w+) = bbl::js::string_characters\("abc"\);/.exec(
             result.cpp,
         );
     assert.ok(range);
     assert.match(
         result.cpp,
         new RegExp(
-            `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] auto (\\w+) = ${range[1]}\\[\\1\\];\\s+\\[\\[maybe_unused\\]\\] std::string \\w+ = \\2;`,
+            `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] auto (\\w+) = bbl::js::snapshot_value\\(${range[1]}\\[\\1\\]\\);\\s+\\[\\[maybe_unused\\]\\] std::string \\w+ = \\2;`,
         ),
     );
 });
@@ -11629,7 +11629,7 @@ test("stores nullable retained UI handles in native optional storage", () => {
     const ownedUi = "std::pair<bbl::StoredEngine, bbl::UiElementHandle>";
     const styleReceiver = result.cpp.match(
         new RegExp(
-            String.raw`const bbl::js::Nullable<${ownedUi}> (v_bblite_style_receiver_\d+) = \(\[&\]\(\) -> bbl::js::Nullable<${ownedUi}> \{ const auto (\w+) = v_stats; return \2 \? bbl::js::Nullable<${ownedUi}>\{\*\2\} : bbl::js::Nullable<${ownedUi}>\{std::nullopt\}; \}\(\)\);`,
+            String.raw`bbl::js::Nullable<${ownedUi}> (v_bblite_style_receiver_\d+) = \(\[&\]\(\) -> bbl::js::Nullable<${ownedUi}> \{ const auto& (\w+) = v_stats; return \2 \? bbl::js::Nullable<${ownedUi}>\{\*\2\} : bbl::js::Nullable<${ownedUi}>\{std::nullopt\}; \}\(\)\);`,
         ),
     );
     assert.ok(styleReceiver);
@@ -13542,7 +13542,7 @@ test("reads mesh.parent as the nullable handle setParent owns", () => {
     const ownedMesh = "std::pair<bbl::StoredEngine, bbl::MeshHandle>";
     const receiver = result.cpp.match(
         new RegExp(
-            String.raw`const bbl::js::Nullable<${ownedMesh}> (v_bblite_property_owner_\d+) = \(\[&\]\(\) -> bbl::js::Nullable<${ownedMesh}> \{ const auto (\w+) = v_current; return \2 \? bbl::js::Nullable<${ownedMesh}>\{\*\2\} : bbl::js::Nullable<${ownedMesh}>\{std::nullopt\}; \}\(\)\);`,
+            String.raw`bbl::js::Nullable<${ownedMesh}> (v_bblite_property_owner_\d+) = \(\[&\]\(\) -> bbl::js::Nullable<${ownedMesh}> \{ const auto& (\w+) = v_current; return \2 \? bbl::js::Nullable<${ownedMesh}>\{\*\2\} : bbl::js::Nullable<${ownedMesh}>\{std::nullopt\}; \}\(\)\);`,
         ),
     );
     assert.ok(receiver);
@@ -13758,7 +13758,7 @@ test("stores and fills a nullable mesh local", () => {
     assert.equal((result.cpp.match(/bbl::create_sphere\(/g) ?? []).length, 1);
     const receiver = result.cpp.match(
         new RegExp(
-            String.raw`if \(v_mesh\.has_value\(\)\) \{\s*\[\[maybe_unused\]\] const bbl::js::Nullable<${ownedMesh}> (\w+) = \(\[&\]\(\) -> bbl::js::Nullable<${ownedMesh}> \{ const auto (\w+) = v_mesh; return \2 \? bbl::js::Nullable<${ownedMesh}>\{\*\2\} : bbl::js::Nullable<${ownedMesh}>\{std::nullopt\}; \}\(\)\);`,
+            String.raw`if \(v_mesh\.has_value\(\)\) \{\s*\[\[maybe_unused\]\] bbl::js::Nullable<${ownedMesh}> (\w+) = \(\[&\]\(\) -> bbl::js::Nullable<${ownedMesh}> \{ const auto& (\w+) = v_mesh; return \2 \? bbl::js::Nullable<${ownedMesh}>\{\*\2\} : bbl::js::Nullable<${ownedMesh}>\{std::nullopt\}; \}\(\)\);`,
         ),
     );
     assert.ok(receiver);
@@ -14618,7 +14618,7 @@ test("mutates a Map array fallback before storing it back", () => {
     assert.match(result.cpp, /v_list\.push_back\(3\.0\)/);
     assert.match(
         result.cpp,
-        /v_list\.push_back\(3\.0\)[\s\S]*const auto (v_bblite_map_key_\d+) = "items";\s+static_cast<void>\(v_groups\.set\(\1, v_list\)\)/,
+        /v_list\.push_back\(3\.0\)[\s\S]*const auto& (v_bblite_map_key_\d+) = "items";\s+static_cast<void>\(v_groups\.set\(\1, v_list\)\)/,
     );
 });
 
@@ -16411,9 +16411,10 @@ test("keeps sprite layers as handles when returned through data records and arra
     `);
 
     assert.equal(result.cpp.match(/bbl::create_sprite_2d_layer\(/g)?.length, 1);
+    // Engine-owned layer storage passes the layers its pairs hold.
     assert.match(
         result.cpp,
-        /SpriteRendererOptions\{bbl::js::array_to_vector\(v_mapped\)/,
+        /SpriteRendererOptions\{\(\[&\] \{ std::vector<bbl::Sprite2DLayerHandle> layers; for \(const auto& layer : v_mapped\) layers\.push_back\(layer\.second\); return layers; \}\(\)\)/,
     );
     assert.doesNotMatch(result.cpp, /std::string v_[^;]*(?:layer|layers)/);
 });
@@ -19827,7 +19828,7 @@ function assertAnimationSeekSelection(
     ];
     const isOwnedSharedResult = (name: string): boolean => {
         const held = new RegExp(
-            `auto ${name} = (v_bblite_shared_result_\\d+);`,
+            `auto&? ${name} = (v_bblite_shared_result_\\d+);`,
         ).exec(cpp);
         const call =
             held &&

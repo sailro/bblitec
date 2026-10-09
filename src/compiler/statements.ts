@@ -101,6 +101,7 @@ import { renderNativeEmission } from "./native-statements.js";
 interface StatementLoweringContext extends Pick<
     LoweringServices,
     | "absenceTags"
+    | "hasStableNativeBinding"
     | "classLowerer"
     | "resolveRecordValue"
     | "admissions"
@@ -4428,17 +4429,28 @@ export class StatementLowerer {
                 context.allocateTemporaryCppName("array_index");
             const range = context.allocateTemporaryCppName("range");
             const span = container?.kind === "span";
+            // A binding the body cannot rebind already retains the array.
+            const retainsArray =
+                container?.kind === "vector" &&
+                !context.hasStableNativeBinding(target.container) &&
+                context.evaluationOrder
+                    .operandsToPin([statement.expression, statement.statement])
+                    .at(0) === true;
             context.emit({
                 kind: "declaration",
                 type: span
                     ? "auto"
                     : container?.kind === "vector"
-                      ? "const auto"
+                      ? retainsArray
+                          ? "const auto"
+                          : "const auto&"
                       : "auto&&",
                 name: range,
                 initializer: span
                     ? `std::span{${target.container.cpp}}`
-                    : target.container.cpp,
+                    : retainsArray
+                      ? `bbl::js::snapshot_value(${target.container.cpp})`
+                      : target.container.cpp,
             });
             context.emit({
                 kind: "open",
@@ -4447,11 +4459,17 @@ export class StatementLowerer {
             });
             context.increaseIndent();
             if (indexed?.kind !== "array-index") {
+                if (container?.kind === "vector") context.reachJsData();
                 context.emit({
                     kind: "declaration",
                     type: container?.kind === "vector" ? "auto" : "auto&&",
                     name: item,
-                    initializer: `${range}[${indexCpp}]`,
+                    // The yielded value is a copy the body's writes to the
+                    // array cannot change, taken as a snapshot.
+                    initializer:
+                        container?.kind === "vector"
+                            ? `bbl::js::snapshot_value(${range}[${indexCpp}])`
+                            : `${range}[${indexCpp}]`,
                     // `for (const [index] of list.entries())` binds no value.
                     attributes: "[[maybe_unused]] ",
                 });

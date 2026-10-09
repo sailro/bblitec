@@ -911,6 +911,20 @@ function holdsRecordStorage(type: DataType): boolean {
     );
 }
 
+/** A function type without the completion facts its declaration proves. */
+function withoutCompletionFacts(
+    type: DataType<"function">,
+): DataType<"function"> {
+    const {
+        signatureSite: _site,
+        undefinedCompletion: _undefined,
+        awaitedUndefinedCompletion: _awaited,
+        nonThenableCompletion: _nonThenable,
+        ...signature
+    } = type;
+    return signature;
+}
+
 /** One fact two shapes give: shapes that disagree leave `conflict`. */
 function mergedFact<T>(
     previous: T | undefined,
@@ -1934,6 +1948,17 @@ export class DataTypeRegistry {
         return { ...source, dictionary: value.kind };
     }
 
+    /** Whether struct `name` is a record type a declaration file declares. */
+    public isDeclarationFileRecord(name: string): boolean {
+        const type = this.nativeRecordSources.get(name)?.type;
+        const symbol = type && (type.aliasSymbol ?? type.getSymbol());
+        return (
+            symbol?.declarations?.some(
+                (declaration) => declaration.getSourceFile().isDeclarationFile,
+            ) ?? false
+        );
+    }
+
     /**
      * The demand that stores every record of struct `name` as a document,
      * for a parsed document reaching it: a plain-data record or synthetic
@@ -2595,8 +2620,16 @@ export class DataTypeRegistry {
     public requireEngineFieldStorage(
         field: DataStructField,
         node: ts.Node,
+        elements = false,
     ): void {
-        if (dataTypesEqual(field.type, this.collectionKeyStorage(field.type)))
+        if (
+            dataTypesEqual(
+                field.type,
+                elements
+                    ? this.engineOwnedFieldStorage(field.type)
+                    : this.collectionKeyStorage(field.type),
+            )
+        )
             return;
         for (const declaration of field.declarations ?? [])
             if (
@@ -2617,8 +2650,15 @@ export class DataTypeRegistry {
         return declarations?.some((declaration) =>
             this.storage.engineOwners.has(declaration),
         )
-            ? this.collectionKeyStorage(type)
+            ? this.engineOwnedFieldStorage(type)
             : type;
+    }
+
+    /** An owned resource field's storage; an array of resources owns each element. */
+    private engineOwnedFieldStorage(type: DataType): DataType {
+        return type.kind === "vector" || type.kind === "span"
+            ? { ...type, element: this.engineOwnedStorage(type.element) }
+            : this.collectionKeyStorage(type);
     }
 
     /** Resolve ownership demands before any earlier initializer or alias is emitted. */
@@ -3179,6 +3219,33 @@ export class DataTypeRegistry {
         right: DataType,
     ): DataType | undefined {
         if (dataTypesEqual(left, right)) return left;
+        // One signature declared twice is stored once; the storage keeps
+        // only the completion facts every value it holds proves.
+        if (
+            left.kind === "function" &&
+            right.kind === "function" &&
+            dataTypesEqual(
+                withoutCompletionFacts(left),
+                withoutCompletionFacts(right),
+            )
+        )
+            return {
+                ...withoutCompletionFacts(left),
+                ...(left.signatureSite &&
+                left.signatureSite === right.signatureSite
+                    ? { signatureSite: left.signatureSite }
+                    : {}),
+                ...(left.undefinedCompletion && right.undefinedCompletion
+                    ? { undefinedCompletion: true }
+                    : {}),
+                ...(left.awaitedUndefinedCompletion &&
+                right.awaitedUndefinedCompletion
+                    ? { awaitedUndefinedCompletion: true }
+                    : {}),
+                ...(left.nonThenableCompletion && right.nonThenableCompletion
+                    ? { nonThenableCompletion: true }
+                    : {}),
+            };
         if (
             left.kind === "function" &&
             right.kind === "function" &&

@@ -1798,11 +1798,13 @@ export class BindingScopes {
                     kind: "optional",
                     inner: value.dataType,
                 });
+                // Not const: an alias of the snapshot can be captured by a
+                // closure environment's mutable reference.
                 this.context.emit({
                     kind: "declaration",
-                    type: `const ${type}`,
+                    type,
                     name: cpp,
-                    initializer: `([&]() -> ${type} { const auto ${source} = ${value.optionalStorageCpp}; return ${source} ? ${type}{*${source}} : ${type}{std::nullopt}; }())`,
+                    initializer: `([&]() -> ${type} { const auto& ${source} = ${value.optionalStorageCpp}; return ${source} ? ${type}{*${source}} : ${type}{std::nullopt}; }())`,
                     attributes: "[[maybe_unused]] ",
                 });
                 const binding = this.context.registerNativeConstBinding(cpp);

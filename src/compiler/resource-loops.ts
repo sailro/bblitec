@@ -591,6 +591,31 @@ function reachesSpecializingEffect(
                 return false;
             }
         }
+        // An audio node's wave or filter type is a closed string enum the
+        // graph composes at generation, inside runtime control flow too.
+        if (
+            writesThroughTrackedRoot(node, (target) => {
+                const member = unwrapExpression(target);
+                const symbol = ts.isPropertyAccessExpression(member)
+                    ? resolvedSymbol(context.checker, member)
+                    : undefined;
+                return (
+                    symbol !== undefined &&
+                    symbol.name === "type" &&
+                    declaredInDomLibrary(symbol) &&
+                    (symbol.declarations ?? []).some(
+                        (declaration) =>
+                            ts.isInterfaceDeclaration(declaration.parent) &&
+                            ["OscillatorNode", "BiquadFilterNode"].includes(
+                                declaration.parent.name.text,
+                            ),
+                    )
+                );
+            })
+        ) {
+            required = true;
+            return false;
+        }
         // Canvas extents have native reads; writes still belong to their
         // normal DOM/retained-canvas lowering and cannot use this exemption.
         if (

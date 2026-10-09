@@ -239,16 +239,35 @@ function requireCopiedOwnUndefinedFields(
     dataType: DataType<"struct">,
     node: ts.Node,
     storedSource?: DataType<"struct">,
+    record?: Value,
 ): void {
     const fields = lowerer.context.dataTypes
         .structFields(dataType.name, node, "accessors")
-        .filter((field) => field.optionalProperty && !field.accessorReceiver);
+        .filter((field) => field.optionalProperty && !field.accessorReceiver)
+        // A compile-time record's generation-known scalar is present: its
+        // key can never hold an own undefined.
+        .filter((field) => {
+            const fact = record?.recordProperties?.[field.sourceName];
+            return (
+                fact?.staticString === undefined &&
+                fact?.staticNumber === undefined &&
+                fact?.staticBoolean === undefined
+            );
+        });
     if (!fields.length) return;
     const expression = lowerer.convertedExpression(node);
     if (!expression) return;
     const source = lowerer.context.checker.getNonNullableType(
         lowerer.context.checker.getTypeAtLocation(expression),
     );
+    // A value of the struct's own type carries no new own-undefined fact:
+    // its initializers already decided that type's presence storage.
+    const sourceType = lowerer.context.dataTypes.fromStoredTsType(
+        source,
+        expression,
+    );
+    if (sourceType?.kind === "struct" && sourceType.name === dataType.name)
+        return;
     const members = source.isUnion() ? source.types : [source];
     const storedFields = storedSource
         ? new Map(
@@ -406,7 +425,13 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
-        requireCopiedOwnUndefinedFields(lowerer, dataType, node);
+        requireCopiedOwnUndefinedFields(
+            lowerer,
+            dataType,
+            node,
+            undefined,
+            value,
+        );
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,

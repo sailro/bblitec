@@ -19,7 +19,7 @@ import { functionUsesDynamicThis } from "./user-functions.js";
 import { isNullishLiteral } from "./symbols.js";
 
 import type { DataType } from "./data-types.js";
-import type { Value } from "./types.js";
+import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 
 /** The narrow slice of the expression context this bridge needs. */
 interface JsonBridgeContext extends Pick<
@@ -114,6 +114,47 @@ export function compileJsonPropertyKey(
             value.cpp === "std::nullopt" ? "undefined" : "null",
         );
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
+    // An absent key that can only be undefined spells "undefined".
+    if (
+        value.dataType?.kind === "optional" &&
+        value.dataType.undefinedOnly &&
+        value.dataType.inner.kind === "union"
+    ) {
+        const present = compileJsonPropertyKey(
+            context,
+            {
+                kind: "data",
+                cpp: optionalValueCpp(value.cpp),
+                dataType: value.dataType.inner,
+            },
+            node,
+        );
+        return `(${optionalPresentCpp(value.cpp)} ? std::string(${present}) : std::string("undefined"))`;
+    }
+    // A union key converts the member it holds; a native handle or function
+    // member has no represented string conversion and refuses where it runs.
+    if (value.dataType?.kind === "union") {
+        const source = "property_key_source";
+        const arms = value.dataType.members.map((member, index) => {
+            const body =
+                member.kind === "handle" || member.kind === "function"
+                    ? `throw std::runtime_error("Dynamic property keys require a represented string conversion.");`
+                    : `return std::string(${compileJsonPropertyKey(
+                          context,
+                          {
+                              kind: "data",
+                              cpp: `std::get<${index}>(${source})`,
+                              dataType: member,
+                          },
+                          node,
+                      )});`;
+            return `case ${index}: ${body}`;
+        });
+        return (
+            `([&]() -> std::string { const auto& ${source} = ${value.cpp}; ` +
+            `switch (${source}.index()) { ${arms.join(" ")} default: throw std::runtime_error("Value is outside the property key union."); } }())`
+        );
+    }
     if (value.dataType) {
         const cpp = context.dataTypes.jsonValueCpp(
             value.dataType,

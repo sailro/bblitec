@@ -275,7 +275,7 @@ const assignmentControls = [
 
 test("ordinary array assignment shares cardinality after static elements are withdrawn", () => {
     const result = compileSource(assignmentControls[0]);
-    assert.match(result.cpp, /const auto \w+ = v_values;/);
+    assert.match(result.cpp, /const auto& \w+ = v_values;/);
     assert.match(result.cpp, /for \(std::size_t/);
     assert.match(result.cpp, /v_total \+=/);
 });
@@ -301,7 +301,7 @@ test("array rebinding detaches only the destination's cardinality", () => {
 test("unproven assignment aliases cannot retain an empty-collection shortcut", () => {
     for (const source of assignmentControls.slice(4, 6)) {
         const result = compileSource(`async function main() { ${source} }`);
-        assert.match(result.cpp, /const auto \w+ = v_values;/);
+        assert.match(result.cpp, /const auto& \w+ = v_values;/);
         assert.match(result.cpp, /for \(std::size_t/);
         assert.match(result.cpp, /v_total \+=/);
     }
@@ -654,7 +654,7 @@ test("parameterizes nested counted and homogeneous static for-of resource loops"
     );
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.manifest.sceneMeshes.length, 4096);
-    assert.match(result.cpp, /const auto \w+ = v_columns;/);
+    assert.match(result.cpp, /const auto& \w+ = v_columns;/);
     assert.match(result.cpp, /for \(std::size_t/);
     assert.ok(Buffer.byteLength(result.cpp) < 6000);
 });
@@ -714,7 +714,7 @@ test("keeps collected runtime handles live rather than snapshotting one loop ite
     );
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.cpp.match(/\.rotation\.y \+=/g)?.length, 1);
-    assert.match(result.cpp, /const auto \w+ = v_meshes;/);
+    assert.match(result.cpp, /const auto& \w+ = v_meshes;/);
     assert.match(result.cpp, /for \(std::size_t/);
     assert.doesNotMatch(result.cpp, /handle_table/);
     assert.equal(result.manifest.sceneMeshes.length, 300);

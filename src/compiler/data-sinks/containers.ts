@@ -190,9 +190,12 @@ function valueOptional(
         return absent;
     }
     if (value.kind === "void") {
+        // An abrupt completion (a suspended coroutine call) never yields
+        // this value; its result settles through the activation.
         if (
-            value.erasedVoidCompletion ||
-            !provenUndefinedValue(lowerer.context, node)
+            !value.abruptCompletion &&
+            (value.erasedVoidCompletion ||
+                !provenUndefinedValue(lowerer.context, node))
         )
             lowerer.context.fail(
                 node,

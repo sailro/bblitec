@@ -52,8 +52,14 @@ export function inferPromiseRejectStorage(
             (node) => ts.isFunctionLike(node) || ts.isSourceFile(node),
         )!,
     );
+    // Every value it holds is a Promise's reject resolver, which completes
+    // with undefined.
     return found && compatible
-        ? { kind: "function", parameters: [{ kind: "error" }] }
+        ? {
+              kind: "function",
+              parameters: [{ kind: "error" }],
+              undefinedCompletion: true,
+          }
         : undefined;
 }
 

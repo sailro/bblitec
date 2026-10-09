@@ -30,7 +30,10 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
-import { isEngineScopedHandleKind } from "./data-types/handles.js";
+import {
+    handleCppType,
+    isEngineScopedHandleKind,
+} from "./data-types/handles.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import {
     accessedPropertySymbol,
@@ -3453,13 +3456,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 (actualField
                     ? { kind: "data" as const, cpp: "", dataType: actualField }
                     : undefined);
-            const retained = value
-                ? this.retainedResultType(value, field.type, node)
-                : field.type;
-            const sourceHandle =
-                retained.kind === "optional" ? retained.inner : retained;
-            const targetHandle =
+            // A compile-time tuple builds the field's own array from its
+            // lanes, so the declared element storage holds them.
+            const candidate =
+                value && value.kind !== "tuple"
+                    ? this.retainedResultType(value, field.type, node)
+                    : field.type;
+            // A resource with its own process-wide identity (not an engine
+            // slot) needs no engine owner in a plain declared field.
+            const candidateHandle =
+                candidate.kind === "optional" ? candidate.inner : candidate;
+            const fieldHandle =
                 field.type.kind === "optional" ? field.type.inner : field.type;
+            const retained =
+                candidateHandle.kind === "handle" &&
+                candidateHandle.ownedEngine &&
+                !isEngineScopedHandleKind(candidateHandle.handle) &&
+                fieldHandle.kind === "handle" &&
+                !fieldHandle.ownedEngine &&
+                fieldHandle.handle === candidateHandle.handle &&
+                // The plain field stores the very handle the pair holds;
+                // textures convert between stored, file and solid storages.
+                fieldHandle.handle !== "texture" &&
+                this.context.dataTypes.cppType(fieldHandle) ===
+                    handleCppType(fieldHandle.handle)
+                    ? field.type
+                    : candidate;
+            // An array of known resources owns each element's engine.
+            const knownElements =
+                value?.staticElementsOwner?.staticElements ??
+                value?.staticElements;
+            const resource = (type: DataType): DataType => {
+                const present = type.kind === "optional" ? type.inner : type;
+                return knownElements &&
+                    (present.kind === "vector" || present.kind === "span")
+                    ? present.element
+                    : present;
+            };
+            const sourceHandle = resource(retained);
+            const targetHandle = resource(field.type);
             if (
                 sourceHandle.kind === "handle" &&
                 sourceHandle.ownedEngine &&
@@ -3468,7 +3503,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 sourceHandle.handle === targetHandle.handle &&
                 field.declarations?.length
             )
-                this.context.dataTypes.requireEngineFieldStorage(field, node);
+                this.context.dataTypes.requireEngineFieldStorage(
+                    field,
+                    node,
+                    targetHandle !==
+                        (field.type.kind === "optional"
+                            ? field.type.inner
+                            : field.type),
+                );
             return {
                 ...field,
                 type: retained,
@@ -6269,7 +6311,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                               ownerIndex,
                               access,
                           )
-                        : common;
+                        : !common.engineCpp &&
+                            possible.some(
+                                (candidate) => candidate.engineCarriersDisagree,
+                            )
+                          ? { ...common, engineCarriersDisagree: true }
+                          : common;
                 }
                 return value;
             }
@@ -9068,8 +9115,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             name: result,
             initializer: cpp,
         });
-        if (ownsEngine) this.context.registerNativeBinding(result);
-        else this.context.registerNativeConstBinding(result);
+        // Never rebound: an owned pair stays non-const only so a closure
+        // environment's mutable reference can alias it.
+        this.context.registerNativeConstBinding(result);
         return { ...this.leafValue(result, type), nativeBinding: true };
     }
 
@@ -17521,9 +17569,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const rightType = optionalComparable(rightOptional?.dataType)
             ? rightOptional.dataType
             : this.dataTypeAt(right);
-        for (const [type, value] of [
-            [leftType, leftOptional],
-            [rightType, rightOptional],
+        for (const [type, value, operand] of [
+            [leftType, leftOptional, left],
+            [rightType, rightOptional, right],
         ] as const) {
             if (
                 type?.kind === "optional" &&
@@ -17534,6 +17582,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.dataTypes.requireEngineParameterStorage(
                     value?.engineOwnerParameter,
                 );
+                // A parameter or local holding the handle stores its engine
+                // beside it.
+                const local = this.context.unwrap(operand);
+                if (ts.isIdentifier(local)) {
+                    const declaration = resolvedSymbol(
+                        this.context.checker,
+                        local,
+                    )?.valueDeclaration;
+                    if (declaration && ts.isParameter(declaration))
+                        this.context.dataTypes.requireEngineParameterStorage(
+                            declaration,
+                        );
+                    requireDynamicBindingStorage(this.context.checker, local, {
+                        nativeHandle: { ...type.inner, ownedEngine: true },
+                    });
+                }
                 this.context.fail(
                     expression,
                     "Handle identity requires represented engine owners.",
@@ -19150,6 +19214,65 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         }
         const sourceElement = iterated?.element;
+        // Engine-owned resources spread into plain handle storage keep the
+        // handle of each owned pair.
+        if (
+            iterated &&
+            sourceElement?.kind === "handle" &&
+            dataType.element.kind === "handle" &&
+            sourceElement.handle === dataType.element.handle &&
+            sourceElement.ownedEngine &&
+            !dataType.element.ownedEngine
+        ) {
+            const item = this.context.allocateTemporaryCppName("spread_item");
+            return {
+                ...this.leafValue(
+                    `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +
+                        `${iterated.range.cpp}, [](const auto& ${item}) { return ${item}.second; })`,
+                    dataType,
+                ),
+                freshSpread: true,
+            };
+        }
+        // Resources spread into engine-owned storage pair each handle with
+        // the one engine their elements are proven to share.
+        if (
+            iterated &&
+            sourceElement?.kind === "handle" &&
+            dataType.element.kind === "handle" &&
+            sourceElement.handle === dataType.element.handle &&
+            !sourceElement.ownedEngine &&
+            dataType.element.ownedEngine
+        ) {
+            const members =
+                iterated.range.staticElements ?? iterable.staticElements;
+            const proof = iterated.range.engineCpp
+                ? iterated.range
+                : members?.length &&
+                    members.every(
+                        (member) =>
+                            member.engineCpp !== undefined &&
+                            member.engineCpp === members[0]!.engineCpp,
+                    )
+                  ? members[0]
+                  : undefined;
+            if (!proof)
+                return this.context.fail(
+                    spread,
+                    "Array spread into engine-owned resource storage requires one proved engine.",
+                );
+            const engine = this.context.storedResourceEngine(proof, spread);
+            const owned = this.context.dataTypes.cppType(dataType.element);
+            const item = this.context.allocateTemporaryCppName("spread_item");
+            return {
+                ...this.leafValue(
+                    `bbl::js::array_from_iterable<${owned}>(` +
+                        `${iterated.range.cpp}, [&](const auto& ${item}) { return ${owned}{${engine}, ${item}}; })`,
+                    dataType,
+                ),
+                freshSpread: true,
+            };
+        }
         // Lanes of another scalar spelling, or records seen through the
         // target's record type (projected as a readonly view's elements
         // are), convert one by one.

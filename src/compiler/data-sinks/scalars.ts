@@ -137,7 +137,12 @@ function valueJson(
     // Stored document members remain mutable through every retained alias.
     // A native observation wrapper only supplies reads; a plain record
     // therefore acquires the document owner before entering this storage.
-    if (value.dataType?.kind === "struct") {
+    // A pinned record type (declared by the package) keeps the struct its
+    // engine intrinsics return; the document holds a copy of it.
+    if (
+        value.dataType?.kind === "struct" &&
+        !lowerer.context.dataTypes.isDeclarationFileRecord(value.dataType.name)
+    ) {
         const demand = lowerer.context.dataTypes.documentRecordDemand(
             value.dataType.name,
         );

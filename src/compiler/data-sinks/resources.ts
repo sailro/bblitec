@@ -18,6 +18,35 @@ import { resolvedSymbol } from "../symbols.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import type { LoweringServices } from "../lowering-services.js";
 
+/**
+ * The texture a stored sprite atlas was built over, read from its `const`
+ * record initializer as the expression sink reads it: the atlas belongs to
+ * that texture's engine.
+ */
+function spriteAtlasTexture(
+    lowerer: DataSinkHost,
+    node: ts.Node,
+): Value | undefined {
+    const expression = lowerer.convertedExpression(node);
+    const name = expression && lowerer.context.unwrap(expression);
+    const declaration =
+        name && ts.isIdentifier(name)
+            ? resolvedSymbol(lowerer.context.checker, name)?.valueDeclaration
+            : undefined;
+    if (
+        !declaration ||
+        !ts.isVariableDeclaration(declaration) ||
+        !declaration.initializer ||
+        !ts.isVariableDeclarationList(declaration.parent) ||
+        (declaration.parent.flags & ts.NodeFlags.Const) === 0
+    )
+        return undefined;
+    const record = lowerer.context.compileValue(declaration.initializer);
+    const texture =
+        record.kind === "record" ? record.recordProperties?.texture : undefined;
+    return texture?.engineCpp ? texture : undefined;
+}
+
 /** A singleton cloned-root container shares the clone's mesh-only asset record. */
 export function projectAssetContainer(
     context: Pick<LoweringServices, "requireEngine" | "dataLowerer">,
@@ -278,7 +307,12 @@ function valueResource(
         }
         const rawType = { kind: "handle", handle: dataType.handle } as const;
         const raw = lowerer.compileKnownValueForSink(value, rawType, node);
-        const owner = lowerer.context.storedResourceEngine(value, node);
+        const owner = lowerer.context.storedResourceEngine(
+            (!value.engineCpp && dataType.handle === "sprite-atlas"
+                ? spriteAtlasTexture(lowerer, node)
+                : undefined) ?? value,
+            node,
+        );
         return `${lowerer.context.dataTypes.cppType(dataType)}{${owner}, ${raw}}`;
     }
     if (

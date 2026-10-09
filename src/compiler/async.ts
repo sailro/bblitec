@@ -30,6 +30,7 @@ import {
     optionalPresentCpp,
     presenceFlagCpp,
     valueForKind,
+    withKindValueFacts,
     type Value,
 } from "./types.js";
 import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
@@ -66,6 +67,7 @@ interface AsyncContext extends Pick<
     | "registerNativeBinding"
     | "registerNativeBindingType"
     | "registerNativeTemporary"
+    | "registerNativeConstBinding"
     | "nativeEmission"
     | "emit"
     | "emitDiscardedValue"
@@ -251,6 +253,13 @@ export class AsyncLowerer {
                     temporary,
                     settled.dataType ?? { kind: "string" },
                 );
+            // An owned engine pair is never taken or rebound, so a
+            // declaration aliases it.
+            if (
+                settled.dataType?.kind === "handle" &&
+                settled.dataType.ownedEngine
+            )
+                context.registerNativeConstBinding(temporary);
             return this.resultAt(settled, temporary, binding);
         }
         if (
@@ -1931,8 +1940,8 @@ export class AsyncLowerer {
         binding: NativeCaptureBinding,
     ): Value {
         const { ownedCpp, ...value } = source;
-        if (value.dataType?.kind === "handle" && value.dataType.ownedEngine)
-            return {
+        if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
+            const owned = {
                 ...this.context.dataLowerer.leafValue(cpp, value.dataType),
                 nativeCaptures: [binding],
                 nativeCompanionCaptures: {
@@ -1940,6 +1949,9 @@ export class AsyncLowerer {
                     resourceStorageCpp: [binding],
                 },
             };
+            // The owned storage keeps the handle's plain generation facts.
+            return withKindValueFacts(owned, value);
+        }
         if (value.kind === "engine" && value.dataType?.kind === "handle")
             return valueForKind("engine", {
                 ...this.context.dataLowerer.leafValue(cpp, value.dataType),
@@ -2364,6 +2376,11 @@ export class AsyncLowerer {
             result?.kind === "optional" &&
             result.inner.kind === "handle" &&
             (value.kind === result.inner.handle ||
+                // A scene node slot holds the node kinds its sink converts.
+                (result.inner.handle === "scene-node" &&
+                    ["mesh", "transform-node", "asset-root"].includes(
+                        value.kind,
+                    )) ||
                 value.kind === "json-null" ||
                 value.kind === "void")
         ) {
@@ -2424,8 +2441,12 @@ export class AsyncLowerer {
                 type,
                 node,
             );
+            // The owned storage keeps the handle's plain generation facts.
             if (type.ownedEngine)
-                return this.context.dataLowerer.leafValue(cpp, type);
+                return withKindValueFacts(
+                    this.context.dataLowerer.leafValue(cpp, type),
+                    value,
+                );
             // A settled owned handle has left its producer's local slot.
             // Nullable results carry their presence in the payload instead.
             return valueForKind(value.kind, {
@@ -2524,12 +2545,14 @@ export class AsyncLowerer {
                         : {}),
                 });
             }
+            // A class instance's methods belong to its class; a plain
+            // record's own methods and accessors have no owned field.
             if (
                 fields.length &&
-                Object.keys(value.recordMethods ?? {}).length === 0 &&
-                Object.keys(value.recordGetters ?? {}).length === 0 &&
-                Object.keys(value.recordSetters ?? {}).length === 0 &&
-                !value.classDeclaration
+                (value.classDeclaration ||
+                    (Object.keys(value.recordMethods ?? {}).length === 0 &&
+                        Object.keys(value.recordGetters ?? {}).length === 0 &&
+                        Object.keys(value.recordSetters ?? {}).length === 0))
             ) {
                 result = this.context.dataTypes.ownedRecordType(fields);
                 value = { ...value, recordProperties };

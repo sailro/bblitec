@@ -6377,6 +6377,13 @@ class Compiler implements LoweringServices {
     private trackRetainedCaptureName(name: string): void {
         const binding = this.nativeBindings.get(name);
         if (binding) this.useNativeBinding(binding);
+        // A spelling read through storage (an owned field's engine) names
+        // the bindings it reads; each is captured where the spelling is used.
+        else
+            for (const identifier of name.match(/[A-Za-z_]\w*/g) ?? []) {
+                const read = this.nativeBindings.get(identifier);
+                if (read) this.useNativeBinding(read);
+            }
         for (const owner of this.realmEngineCaptures.get(name) ?? [])
             this.useNativeBinding(owner);
     }
@@ -8627,6 +8634,10 @@ class Compiler implements LoweringServices {
             this.dataTypes.requireEngineParameterStorage(
                 value.engineOwnerParameter,
             );
+            // Resources whose carriers disagree belong to the one
+            // unambiguous engine context (one engine per entry point).
+            if (value.engineCarriersDisagree)
+                return this.requireDefaultEngine(node);
             this.fail(
                 node,
                 `A ${value.kind} value is not associated with an engine.`,

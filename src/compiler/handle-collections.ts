@@ -454,6 +454,19 @@ interface HandleCollectionMember {
     index: number;
 }
 
+/** A container's identity facts, without the storage that holds the container itself. */
+function containerIdentity<T extends Value>(
+    owner: T,
+): Omit<T, "dataType" | "ownedCpp" | "resourceStorageCpp"> {
+    const {
+        dataType: _storage,
+        ownedCpp: _owned,
+        resourceStorageCpp: _resource,
+        ...identity
+    } = owner;
+    return identity;
+}
+
 export class HandleCollections {
     /** Fold only the hierarchy traversal; lower the source's Map updates normally. */
     public compileAssetOwnerMap(
@@ -1194,7 +1207,7 @@ export class HandleCollections {
             );
         }
         return {
-            ...owner,
+            ...containerIdentity(owner),
             kind: "asset-entity",
             engineCpp: this.context.requireEngine(owner, unwrapped),
         };
@@ -1240,7 +1253,7 @@ export class HandleCollections {
         }
         const engine = this.context.requireEngine(owner, collection);
         return {
-            ...owner,
+            ...containerIdentity(owner),
             kind: "asset-root",
             cpp:
                 assetKind === "gltf"

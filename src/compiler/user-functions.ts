@@ -3565,6 +3565,7 @@ export class UserFunctionLowerer {
                 result,
                 "shared_return",
                 ts.isExpression(call) ? call : undefined,
+                true,
             );
         const projected = { ...result };
         if (statedTruthinessCpp(metadata) === "true")
@@ -5290,11 +5291,11 @@ export class UserFunctionLowerer {
             const source = ts.isCallExpression(callNode)
                 ? callNode.arguments[index]
                 : undefined;
-            const value = this.parameterValue(
+            const value = this.engineOwnedParameter(
                 context,
                 parameter,
-                values[index],
-                source,
+                this.parameterValue(context, parameter, values[index], source),
+                source ?? callNode,
             );
             this.bindSpecializedParameter(
                 context,
@@ -5303,6 +5304,38 @@ export class UserFunctionLowerer {
                 this.absenceTaggedParameter(context, parameter, value, source),
             );
         });
+    }
+
+    /**
+     * A parameter whose resources need their engine holds its argument in
+     * engine-owned storage, which carries the argument's engine.
+     */
+    private engineOwnedParameter(
+        context: UserFunctionContext,
+        parameter: UserFunctionParameterIr,
+        value: Value,
+        node: ts.Node,
+    ): Value {
+        if (
+            !value.dataType ||
+            !context.dataTypes.requiresEngineParameterStorage(
+                parameter.declaration,
+            )
+        )
+            return value;
+        const owned = context.dataTypes.collectionKeyStorage(value.dataType);
+        if (dataTypesEqual(owned, value.dataType)) return value;
+        return withNativeMetadata(
+            context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    owned,
+                    node,
+                ),
+                owned,
+            ),
+            value,
+        );
     }
 
     /**

@@ -874,6 +874,30 @@ export class DeclarationLowerer {
         const nullableResource = this.context.nullableResourceKind(
             declaration.name,
         );
+        // A literal null settles the binding before any declaration path
+        // reads its annotation as a record; other absent initializers are
+        // proven after their value compiles, below.
+        if (
+            declaration.initializer.kind === ts.SyntaxKind.NullKeyword &&
+            nullableResource &&
+            !this.context.dynamicBindings.has(declaration)
+        ) {
+            this.bindOptionalResource(
+                declaration.name,
+                cppName,
+                nullableResource,
+                sharedClosureStorage,
+                valueForKind(nullableResource.kind, {
+                    cpp: "",
+                    ...nullableResourceEngine(
+                        nullableResource.kind,
+                        this.context.options.workers,
+                        this.context.defaultEngineCpp,
+                    ),
+                }),
+            );
+            return;
+        }
         const hostLookup = this.context.unwrap(declaration.initializer);
         const id =
             !this.context.defaultEngineCpp &&
@@ -978,6 +1002,7 @@ export class DeclarationLowerer {
         let value = this.context.compileValue(declaration.initializer);
         if (
             nullableResource &&
+            !this.context.dynamicBindings.has(declaration) &&
             (value.kind === "json-null" ||
                 (value.kind === "void" &&
                     provenUndefinedValue(
@@ -2315,7 +2340,7 @@ export class DeclarationLowerer {
                     "Recursive callback parameters must be non-rest identifiers.",
                 );
             }
-            const type =
+            const mapped =
                 this.context.dataTypes.fromTsType(
                     this.context.checker.getTypeAtLocation(parameter),
                     parameter,
@@ -2323,12 +2348,18 @@ export class DeclarationLowerer {
                 this.context.dataTypes.dynamicJsonType(
                     this.context.checker.getTypeAtLocation(parameter),
                 );
-            if (!type) {
+            if (!mapped) {
                 this.context.fail(
                     parameter,
                     "Recursive callback parameters must have plain-data types.",
                 );
             }
+            // A parameter whose resources need their engine stores it.
+            const type = this.context.dataTypes.requiresEngineParameterStorage(
+                parameter,
+            )
+                ? this.context.dataTypes.collectionKeyStorage(mapped)
+                : mapped;
             const byReference = passesByReference(this.context.dataTypes, type);
             const readOnly = parameterIsReadOnly(
                 this.context.checker,
@@ -3164,6 +3195,11 @@ export class DeclarationLowerer {
                 this.context.dataTypes.carriesHandle(annotated) &&
                 !this.context.sharedClosures.identifierIsRebound(name)) ||
             (annotated.kind === "http-response" &&
+                !this.context.sharedClosures.identifierIsRebound(name)) ||
+            // A literal stored as a document keeps its evaluated facts.
+            (annotated.kind === "json" &&
+                ts.isObjectLiteralExpression(initializer) &&
+                !initializer.properties.some(ts.isSpreadAssignment) &&
                 !this.context.sharedClosures.identifierIsRebound(name)) ||
             (spreadTarget &&
                 ((ts.isObjectLiteralExpression(initializer) &&

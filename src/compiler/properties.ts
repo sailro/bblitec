@@ -3724,7 +3724,9 @@ export class PropertyAccessLowerer {
                     recordProperties: {
                         notify: {
                             kind: "data",
-                            cpp: `std::function<void()>{[&${engine}, drag = ${owner.cpp}]() { bbl::pointer_drag_hover(${engine}, drag, ${expression.name.text === "onHoverStart"}); }}`,
+                            // An engine read through owned storage is an
+                            // expression, which only an init-capture names.
+                            cpp: `std::function<void()>{[&hover_engine = ${engine}, drag = ${owner.cpp}]() { bbl::pointer_drag_hover(hover_engine, drag, ${expression.name.text === "onHoverStart"}); }}`,
                             dataType: {
                                 kind: "function",
                                 parameters: [],

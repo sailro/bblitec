@@ -1119,11 +1119,15 @@ function compileKnownDataMethod(
     if (recordType?.kind === "struct") {
         // A reference record owns its selected object across argument effects
         // and temporary accessor results; an inline record still aliases it.
-        const receiverBinding = lowerer.context.dataTypes.isReferenceStruct(
-            recordType.name,
-        )
-            ? "const auto"
-            : "const auto&";
+        // A local no argument can rebind already owns it.
+        const receiverBinding =
+            lowerer.context.dataTypes.isReferenceStruct(recordType.name) &&
+            (!cppIdentifierPattern.test(narrowed.cpp) ||
+                lowerer.context.evaluationOrder
+                    .operandsToPin([callee.expression, ...call.arguments])
+                    .at(0))
+                ? "const auto"
+                : "const auto&";
         const field = lowerer.context.dataTypes.findStructField(
             recordType.name,
             method,
@@ -3021,10 +3025,19 @@ function compileArrayPush(state: ArrayMethodState): Value {
                     ...(staticElements ?? []),
                     ...pushedValues,
                 ];
-                snapshotOwner.runtimeElementTemplate = commonResourceValue(
+                const template = commonResourceValue(
                     runtimeMeshValue(snapshotOwner.runtimeElementTemplate),
                     candidates,
                 );
+                // Elements of different engine carriers leave no one engine
+                // spelling; a reached owner use can request owned elements.
+                snapshotOwner.runtimeElementTemplate =
+                    !template.engineCpp &&
+                    (snapshotOwner.runtimeElementTemplate
+                        .engineCarriersDisagree ||
+                        candidates.every((candidate) => candidate.engineCpp))
+                        ? { ...template, engineCarriersDisagree: true }
+                        : template;
             } else if (pushedHandleKind === "material") {
                 snapshotOwner.runtimeElementTemplate = commonResourceValue(
                     snapshotOwner.runtimeElementTemplate,
@@ -3429,16 +3442,28 @@ function compileMapDataMethod(
         }
         // A key is read before the value argument can replace its source
         // binding. Its retained sink also snapshots an engine-owned key.
+        const [keyMayChange] = lowerer.context.evaluationOrder.operandsToPin([
+            argumentAt(call, 0),
+            argumentAt(call, 1),
+        ]);
+        const keyCpp = lowerer.compileKnownValueForSink(
+            keyValue,
+            dataType.key,
+            argumentAt(call, 0),
+        );
         const key = lowerer.context.allocateTemporaryCppName("map_key");
         lowerer.context.emit({
             kind: "declaration",
-            type: "const auto",
+            type:
+                keyMayChange &&
+                !(
+                    keyCpp === keyValue.cpp &&
+                    lowerer.context.hasStableNativeBinding(keyValue)
+                )
+                    ? "const auto"
+                    : "const auto&",
             name: key,
-            initializer: lowerer.compileKnownValueForSink(
-                keyValue,
-                dataType.key,
-                argumentAt(call, 0),
-            ),
+            initializer: keyCpp,
         });
         const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
         if (

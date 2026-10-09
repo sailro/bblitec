@@ -1,6 +1,10 @@
 import type ts from "typescript";
 import { EmissionWeakMap } from "./emission-transaction.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    demandedStorageType,
+} from "./dynamic-binding-storage.js";
+import { unwrapExpression } from "./syntax.js";
 import type { CapturedClosure } from "./closure-captures.js";
 import type { Value } from "./types.js";
 import type { DataSinkHost } from "./data-sinks/contracts.js";
@@ -116,7 +120,18 @@ export function compileJsonRecordView(
     const expression = lowerer.convertedExpression(node);
     const declaration =
         expression && context.bindings.recordDeclaration(record, expression);
-    if (declaration) {
+    // A binding whose type has no native storage (an open record of unknown
+    // values) keeps the observing view below over its existing cells.
+    if (
+        declaration &&
+        demandedStorageType(
+            context,
+            declaration,
+            "source",
+            declaration.initializer &&
+                unwrapExpression(declaration.initializer),
+        )
+    ) {
         // A retained alias needs one owner in the source binding's scope.
         // A cached view created here could belong to a nested callback.
         if (context.dynamicBindings.has(declaration))

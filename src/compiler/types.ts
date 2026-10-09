@@ -2089,6 +2089,21 @@ export function withCommonResourceMetadata(
     return result;
 }
 
+/**
+ * `value` with the plain generation facts (numbers and booleans) of its kind
+ * that `source` holds. Spelled facts name the source's own storage and do
+ * not follow the value into other storage.
+ */
+export function withKindValueFacts(value: Value, source: Value): Value {
+    const result = { ...value };
+    for (const key of metadataFieldsForKind(source.kind)) {
+        const fact: unknown = source[key];
+        if (typeof fact === "number" || typeof fact === "boolean")
+            Object.assign(result, { [key]: fact });
+    }
+    return result;
+}
+
 /** A nullable resource's native payload, including an engine owner when stored. */
 export interface NullableResourceType {
     kind: ValueKind;
@@ -2119,6 +2134,8 @@ export interface ValueFields {
     resourceStorageCpp?: string;
     /** Stored parameter whose reached owner use can request an owning carrier. */
     engineOwnerParameter?: ts.ParameterDeclaration;
+    /** Joined from resources of different engine carriers; its engine is the one unambiguous engine context. */
+    engineCarriersDisagree?: true;
     /** One bound engine value; aliases and owning snapshots retain this identity. */
     engineIdentity?: symbol;
     /** Proven immutable captured engine owning this resource, independent of its carrier. */
