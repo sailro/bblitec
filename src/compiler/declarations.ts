@@ -323,6 +323,9 @@ export class DeclarationLowerer {
                 this.context.checker.getTypeAtLocation(name),
                 name,
             ) ??
+            this.context.dataTypes.dynamicJsonType(
+                this.context.checker.getTypeAtLocation(name),
+            ) ??
             (typeof deployed === "string"
                 ? { kind: "string" }
                 : typeof deployed === "boolean"
@@ -2566,6 +2569,13 @@ export class DeclarationLowerer {
         let annotated = this.context.sharedClosures.identifierIsRebound(name)
             ? this.context.dataTypes.fromStoredTsType(declaredType, typeSite)
             : this.context.dataTypes.fromTsType(declaredType, typeSite);
+        if (
+            !annotated &&
+            (this.context.checker.getNonNullableType(declaredType).flags &
+                ts.TypeFlags.NonPrimitive) !==
+                0
+        )
+            annotated = this.context.dataTypes.dynamicJsonType(declaredType);
         const declaredRecord =
             annotated?.kind === "optional" ? annotated.inner : annotated;
         if (declaredRecord?.kind === "struct") {
