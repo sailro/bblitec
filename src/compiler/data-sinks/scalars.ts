@@ -1,5 +1,6 @@
 import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
+import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
 import { hasNonNullAssertion, unwrapExpression } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
@@ -284,7 +285,14 @@ function valuePromise(
         payload?.kind === "string" ||
         payload?.kind === "boolean"
             ? { kind: payload.kind }
-            : undefined);
+            : payload && isHandleKind(payload.kind)
+              ? { kind: "handle" as const, handle: payload.kind }
+              : undefined);
+    if (source && types.cppType(source) !== value.promiseType)
+        return lowerer.context.fail(
+            node,
+            "A Promise result view requires its payload's exact owned storage.",
+        );
     if (!converted && result && source) {
         // A result view reads the original settlement; ordinary storage
         // conversion must therefore keep every retained object's identity.

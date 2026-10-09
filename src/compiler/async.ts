@@ -47,6 +47,7 @@ import {
 import { isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { hasNoValueCompletion } from "./native-return-type.js";
+import { representedResultType } from "./represented-result.js";
 
 interface AsyncContext extends Pick<
     LoweringServices,
@@ -2096,10 +2097,23 @@ export class AsyncLowerer {
                         property,
                         node,
                     );
-                const mapped = this.context.dataTypes.fromSharedReturnType(
+                let mapped = this.context.dataTypes.fromSharedReturnType(
                     fieldType,
                     node,
                 );
+                const field = value.recordProperties?.[property.name];
+                if (
+                    !mapped &&
+                    field &&
+                    !field.conditionalOwnKey &&
+                    (fieldType.flags &
+                        (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !==
+                        0
+                )
+                    mapped = representedResultType(
+                        this.context.dataTypes,
+                        this.ownResult(field, node, fieldType),
+                    );
                 if (!mapped || (property.flags & ts.SymbolFlags.Optional) !== 0)
                     return this.context.fail(
                         node,

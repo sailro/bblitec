@@ -4573,9 +4573,12 @@ export class DataTypeRegistry {
                 this.arrayUnionsInProgress.delete(type);
             }
         }
-        // Library binary classes keep their own storage, which `instanceof`
-        // selects; a common-field record would drop `buffer` and the elements.
-        if (type.types.every(binaryLibraryClass))
+        // Opaque handles and library binary classes retain their alternatives;
+        // a common-field record would discard their owners and identities.
+        if (
+            handles.every((kind) => kind !== undefined) ||
+            type.types.every(binaryLibraryClass)
+        )
             return this.fromMixedUnion(type, node);
         // A record union whose component stores shapes its own layout does
         // not hold takes the component's layout (`layoutUnion`).
@@ -4754,7 +4757,8 @@ export class DataTypeRegistry {
                             ts.TypeFlags.BooleanLike)) !==
                     0,
             ) &&
-            !type.types.every(binaryLibraryClass)
+            !type.types.every(binaryLibraryClass) &&
+            !type.types.every((member) => pinnedHandleKind(member) !== undefined)
         )
             return undefined;
         if (this.mixedUnionsInProgress.has(type)) return undefined;
