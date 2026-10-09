@@ -580,21 +580,15 @@ function compileObjectEntries(
             : undefined;
     if (array) return array;
     if (isJsonValue(owner)) {
-        // A document's values are documents too, also where TypeScript
-        // types them `any` (the entries of an `object`).
-        const typed = context.dataTypes.withDynamicJsonTypes(true, () =>
-            context.dataLowerer.dataTypeAt(call),
-        );
-        const documentType: DataType<"vector"> =
-            typed?.kind === "vector"
-                ? typed
-                : {
-                      kind: "vector",
-                      element: {
-                          kind: "product",
-                          elements: [{ kind: "string" }, { kind: "json" }],
-                      },
-                  };
+        // A document's values keep their represented storage even when its
+        // source type names a narrower union. Each entry is a fresh array.
+        const documentType: DataType<"vector"> = {
+            kind: "vector",
+            element: context.dataTypes.tupleStorage([
+                { kind: "string" },
+                { kind: "json" },
+            ]),
+        };
         // A parsed document's own pairs, in property order.
         return pairArray(
             context,

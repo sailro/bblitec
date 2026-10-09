@@ -379,12 +379,13 @@ export function hasDynamicObjectSpread(
     return literal.properties.some((property) => {
         if (!ts.isSpreadAssignment(property)) return false;
         if (isJsonRootedExpression(context, property.expression)) return true;
-        const type = context.checker.getTypeAtLocation(
-            context.unwrap(property.expression),
-        );
+        const source = context.unwrap(property.expression);
+        const type = context.checker.getTypeAtLocation(source);
         return (
             (type.flags & ts.TypeFlags.Any) !== 0 ||
-            context.dataTypes.dynamicJsonType(type) !== undefined
+            context.dataTypes.dynamicJsonType(type) !== undefined ||
+            // A concrete record can acquire document storage through a retained view.
+            context.dataTypes.fromTsType(type, source)?.kind === "json"
         );
     });
 }

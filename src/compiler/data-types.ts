@@ -922,6 +922,34 @@ function mergedFact<T>(
         : conflict;
 }
 
+/** A synthesized undefined-only spread slot is missing, rather than an own undefined key. */
+export function isAbsentSpreadProperty(
+    properties: readonly ts.Symbol[],
+    types: readonly ts.Type[],
+    index: number,
+): boolean {
+    const property = properties[index]!;
+    const declarations = property.declarations;
+    return (
+        (property.flags & ts.SymbolFlags.Optional) !== 0 &&
+        presentMembers(types[index]!).length === 0 &&
+        valueAbsence([types[index]!]) === "undefined" &&
+        declarations !== undefined &&
+        declarations.length > 0 &&
+        declarations.every(
+            (declaration) =>
+                (ts.isPropertyAssignment(declaration) ||
+                    ts.isShorthandPropertyAssignment(declaration)) &&
+                properties.some(
+                    (other, otherIndex) =>
+                        (other.flags & ts.SymbolFlags.Optional) === 0 &&
+                        valueAbsence([types[otherIndex]!]) === undefined &&
+                        other.declarations?.includes(declaration),
+                ),
+        )
+    );
+}
+
 /** One field from a property every member of a union declares. */
 function unionPresence(
     properties: readonly ts.Symbol[],
@@ -932,29 +960,6 @@ function unionPresence(
         (property) => (property.flags & ts.SymbolFlags.Optional) !== 0,
     );
     if (optional.every((flag) => !flag)) return "own";
-    // A spread of `{ key: value } | {}` synthesizes `key?: undefined`
-    // for the empty arm, reusing the populated arm's literal declaration.
-    // It is an absent key, unlike an authored optional undefined field.
-    const absentSpreadSlot = (index: number): boolean => {
-        const declarations = properties[index]!.declarations;
-        return (
-            presentMembers(types[index]!).length === 0 &&
-            valueAbsence([types[index]!]) === "undefined" &&
-            declarations !== undefined &&
-            declarations.length > 0 &&
-            declarations.every(
-                (declaration) =>
-                    (ts.isPropertyAssignment(declaration) ||
-                        ts.isShorthandPropertyAssignment(declaration)) &&
-                    properties.some(
-                        (property, other) =>
-                            !optional[other] &&
-                            valueAbsence([types[other]!]) === undefined &&
-                            property.declarations?.includes(declaration),
-                    ),
-            )
-        );
-    };
     // A required property no empty value holds fills its slot, and an
     // optional one holding undefined is absent: the slot alone says whether
     // the key is own. An optional undefined-only property keeps its own
@@ -964,7 +969,7 @@ function unionPresence(
         !optional.every((flag, index) =>
             flag
                 ? presentMembers(types[index]!).length > 0 ||
-                  absentSpreadSlot(index)
+                  isAbsentSpreadProperty(properties, types, index)
                 : valueAbsence([types[index]!]) === undefined,
         )
     )

@@ -2,6 +2,7 @@ import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
+    isAbsentSpreadProperty,
     propertyIsReadOnly,
     type DataStructField,
     type DataType,
@@ -237,6 +238,7 @@ function requireCopiedOwnUndefinedFields(
     lowerer: DataSinkHost,
     dataType: DataType<"struct">,
     node: ts.Node,
+    storedSource?: DataType<"struct">,
 ): void {
     const fields = lowerer.context.dataTypes
         .structFields(dataType.name, node, "accessors")
@@ -247,21 +249,52 @@ function requireCopiedOwnUndefinedFields(
     const source = lowerer.context.checker.getNonNullableType(
         lowerer.context.checker.getTypeAtLocation(expression),
     );
+    const members = source.isUnion() ? source.types : [source];
+    const storedFields = storedSource
+        ? new Map(
+              lowerer.context.dataTypes
+                  .structFields(storedSource.name, node, "accessors")
+                  .map((field) => [field.sourceName, field]),
+          )
+        : undefined;
     for (const field of fields) {
-        const property = lowerer.context.checker.getPropertyOfType(
-            source,
-            field.sourceName,
+        const original = storedFields?.get(field.sourceName);
+        // In this source slot, an empty payload already means a missing key.
+        if (
+            storedSource &&
+            original?.type.kind === "optional" &&
+            ["number", "string", "boolean", "enum"].includes(
+                original.type.inner.kind,
+            ) &&
+            !original.accessorReceiver &&
+            lowerer.context.dataTypes.ownPropertyPresence(
+                storedSource.name,
+                original,
+            ) === "stored"
+        )
+            continue;
+        const properties = members.flatMap((member) => {
+            const property = lowerer.context.checker.getPropertyOfType(
+                member,
+                field.sourceName,
+            );
+            return property ? [property] : [];
+        });
+        const types = properties.map((property) =>
+            lowerer.context.checker.getTypeOfSymbolAtLocation(
+                property,
+                expression,
+            ),
         );
-        if (property)
+        types.forEach((type, index) => {
+            if (isAbsentSpreadProperty(properties, types, index)) return;
             lowerer.context.dataTypes.requireOwnUndefinedField(
                 dataType.name,
                 field,
-                lowerer.context.checker.getTypeOfSymbolAtLocation(
-                    property,
-                    expression,
-                ),
+                type,
                 expression,
             );
+        });
     }
 }
 
@@ -488,6 +521,13 @@ function valueStruct(
                         field,
                         property.callbackDeclaration,
                     );
+                if (field.accessorReceiver && property?.conditionalOwnKey)
+                    return conditionalOwnFieldInitializer(
+                        lowerer,
+                        property,
+                        field,
+                        node,
+                    );
                 const stored = property
                     ? field.defaultWhenMissing &&
                       property.dataType?.kind === "optional" &&
@@ -527,7 +567,12 @@ function valueStruct(
             : aggregate;
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
-        requireCopiedOwnUndefinedFields(lowerer, dataType, node);
+        requireCopiedOwnUndefinedFields(
+            lowerer,
+            dataType,
+            node,
+            value.dataType,
+        );
         const sourceType = value.dataType;
         // Receiver-aware slots retain presence independently of their payload.
         // Their owner types must share one layout even for a fresh object.
@@ -705,11 +750,50 @@ function valueStruct(
     return undefined;
 }
 
-/**
- * The expression a converted struct value is the value of, or the array an
- * element was read out of: a copy handed to a callee that only reads that
- * argument lives for the call.
- */
+// Conditional spreads must choose an absent slot, not an own slot with an
+// empty payload. Snapshot the source once before testing its presence.
+function conditionalOwnFieldInitializer(
+    lowerer: DataSinkHost,
+    property: Value,
+    field: DataStructField,
+    node: ts.Node,
+): string {
+    let held!: Value;
+    let own = "";
+    const snapshots = lowerer.context.captureEmittedLines(() => {
+        held = lowerer.context.bindings.pinValueToTemporary(
+            property,
+            "conditional_field",
+        );
+        own = lowerer.recordMemberEntry(field.sourceName, held, node).presence!
+            .ownCpp;
+    });
+    let stored = "";
+    const conversion = lowerer.context.captureEmittedLines(() => {
+        stored =
+            field.defaultWhenMissing &&
+            held.dataType?.kind === "optional" &&
+            field.type.kind !== "optional"
+                ? armFieldOrDefault(lowerer, held, field, node)
+                : lowerer.compileMemberForSink(
+                      held,
+                      field.type,
+                      node,
+                      field.sourceName,
+                  );
+    });
+    const slot = lowerer.context.dataTypes.structFieldCppType(field);
+    const initialized = lowerer.context.dataTypes.structFieldInitializerCpp(
+        field,
+        stored,
+    );
+    return (
+        `([&]() -> ${slot} { ${snapshots.join(" ")} ` +
+        `if (!(${own})) return {}; ${conversion.join(" ")} ` +
+        `return ${initialized}; }())`
+    );
+}
+
 /**
  * A field only some union arms hold, from a record whose selected arm may
  * lack it (a conditional between two arms' literals): the value where the
@@ -748,6 +832,11 @@ function armFieldOrDefault(
     );
 }
 
+/**
+ * The expression a converted struct value is the value of, or the array an
+ * element was read out of: a copy handed to a callee that only reads that
+ * argument lives for the call.
+ */
 function recordExpression(
     lowerer: DataSinkHost,
     value: Value,

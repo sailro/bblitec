@@ -1470,7 +1470,7 @@ export class ClassLowerer {
     }
 
     /** The lvalue one stored field of a shared instance names. */
-    private storedFieldValue(
+    public storedFieldValue(
         instanceCpp: string,
         field: DataStructField,
     ): Value {

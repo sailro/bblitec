@@ -14517,6 +14517,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ? left.name.text
             : accessedPropertySymbol(this.context.checker, left)?.name;
         if (property !== undefined) {
+            if (root.recordProperties[property]?.classStoredField) {
+                // Rebuild the live slot without any prior value facts, keeping
+                // its receiver capture and the layout's complete storage type.
+                const field = this.context.dataTypes.classStructField(
+                    root.dataType.name,
+                    property,
+                );
+                if (field) {
+                    writable(root.recordProperties)[property] =
+                        this.context.classLowerer.storedFieldValue(
+                            root.cpp,
+                            field,
+                        );
+                    return;
+                }
+            }
             delete writable(root.recordProperties)[property];
         }
     }

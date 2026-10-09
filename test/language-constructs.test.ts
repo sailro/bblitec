@@ -2494,6 +2494,32 @@ check(
 );
 
 check(
+    "class-accessor-field-writes-refresh-live-array-slots",
+    `
+    interface View { value: number; readonly label: string; }
+    class Samples {
+        private values: number[] = [1];
+        get value(): number { return this.values[0]!; }
+        set value(next: number) {
+            this.values = [next];
+            this.values.push(next + 1);
+            this.values = [next + 2];
+        }
+        get label(): string { return this.values.length + ":" + this.values[0]; }
+        view(): View { return this; }
+    }
+    function createView(): View { return new Samples().view(); }
+    const view = createView();
+    const alias = view;
+    if (view.value !== 1 || view.label !== "1:1") throw new Error("initial fields");
+    view.value = 3;
+    if (alias.value !== 5 || alias.label !== "1:5") throw new Error("replacement fields");
+    alias.value = 9;
+    if (view.value !== 11 || view.label !== "1:11") throw new Error("repeated setter");
+`,
+);
+
+check(
     "spreads-read-own-accessors-once",
     `
     interface Save { cx: number; cz: number; name: string; }
@@ -10134,6 +10160,35 @@ check(
     const doors: Door[] = [{ kind: "a", y: 3 }, { kind: "b" }];
     const door = commit(doors[0]!, doors[1]!);
     if (door !== doors[0] || door.kind !== "b" || "y" in door) throw new Error("door commit");
+`,
+);
+
+check(
+    "document-entries-preserve-value-lanes-and-row-identity",
+    `
+    const owner = JSON.parse('{"2":4,"text":"t","flag":true}') as { "2": number; text: string; flag: boolean };
+    let reads = 0;
+    function read(): typeof owner { reads++; return owner; }
+    const entries = Object.entries(read());
+    if (reads !== 1 || entries.map(([key, value]) => key + "=" + value).join() !== "2=4,text=t,flag=true")
+        throw new Error("ordered represented entries");
+    const first = entries[0]!;
+    if (first !== entries[0] || first === entries[1] || first.length !== 2) throw new Error("row identity");
+    owner["2"] = 9;
+    if (first[1] !== 4) throw new Error("entry snapshots primitive value");
+    first[1] = "changed";
+    if (entries[0]![1] !== "changed" || owner["2"] !== 9) throw new Error("row alias is independent of owner");
+    const again = Object.entries(owner);
+    if (again === entries || again[0] === first || again[0]![1] !== 9) throw new Error("fresh entry arrays");
+    const document = JSON.parse('{"empty":null,"child":{"x":2}}') as Record<string, unknown>;
+    document["unset"] = undefined;
+    const rows = Object.entries(document);
+    if (rows.map(([key]) => key).join() !== "empty,child,unset" || rows[0]![1] !== null || rows[2]![1] !== undefined)
+        throw new Error("document tags and own undefined");
+    const child = rows[1]![1] as { x: number };
+    if (child !== document["child"]) throw new Error("nested member identity");
+    child.x = 7;
+    if ((document["child"] as { x: number }).x !== 7) throw new Error("nested member mutation");
 `,
 );
 

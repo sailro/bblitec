@@ -372,9 +372,17 @@ export class BindingScopes {
             if (origin) break;
         }
         const source = unwrapExpression(expression);
-        origin ??= ts.isIdentifier(source)
-            ? this.context.symbols.valueSymbol(source)?.valueDeclaration
+        const symbol = ts.isIdentifier(source)
+            ? this.context.symbols.valueSymbol(source)
             : undefined;
+        // A container's source node can accompany one of its nested values.
+        // Only an unbound name may stand in for an aggregate not found above.
+        if (
+            !origin &&
+            symbol &&
+            !this.variableScopes.some((scope) => scope.has(symbol))
+        )
+            origin = symbol.valueDeclaration;
         if (!origin || !ts.isVariableDeclaration(origin)) return undefined;
         // An imported constant may have no live binding yet. Follow its const
         // aliases to request storage where the original container is created.
