@@ -232,10 +232,7 @@ export class CallbackLowerer {
                         [],
                     );
                 }
-                if (
-                    this.context.options.workers &&
-                    (bound?.kind === "callback" || !bound)
-                ) {
+                if (bound?.kind === "callback" || !bound) {
                     return this.compilePlatformCallback(
                         unwrapped,
                         undefined,

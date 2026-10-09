@@ -225,7 +225,7 @@ export function compileErrorConstruction(
     }
     context.reachJsData();
     const cause = compileErrorCause(context, options);
-    let cpp = `bbl::js::make_error(${context.cppString(name)}, ${message.cpp}, ${cause})`;
+    let cpp = `bbl::js::make_error(${context.cppString(name)}, ${message.cpp}, ${cause}${argument ? "" : ", false"})`;
     if (consumer === "held") {
         const temporary = context.allocateTemporaryCppName("error_value");
         context.emit({

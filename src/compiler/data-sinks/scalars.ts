@@ -8,11 +8,16 @@ import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { eventTargetCpp } from "../dom-targets.js";
-import { authoredErrorValue, thrownMessage } from "../error-values.js";
+import {
+    authoredErrorValue,
+    errorConstructor,
+    thrownMessage,
+} from "../error-values.js";
 import { provenUndefinedValue } from "../undefined-values.js";
 import { rejectionOnlyPromiseCpp, settlesNever } from "../promises.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
+import { requireAbsenceTag } from "../absence-tag-storage.js";
 import {
     compileJsonRecordView,
     compileJsonTupleView,
@@ -122,6 +127,22 @@ function valueJson(
         lowerer.markEscaped(value);
         return value.cpp;
     }
+    const errorExpression =
+        value.dataType?.kind === "error"
+            ? lowerer.convertedExpression(node)
+            : undefined;
+    if (
+        errorExpression &&
+        (ts.isNewExpression(errorExpression) ||
+            ts.isCallExpression(errorExpression)) &&
+        errorConstructor(errorExpression, (expression) =>
+            lowerer.context.libraryGlobal(expression),
+        ) === "AggregateError"
+    )
+        lowerer.context.fail(
+            node,
+            "AggregateError reflection requires represented property descriptors.",
+        );
     const expression =
         value.kind === "record" || value.dataType?.kind === "struct"
             ? lowerer.convertedExpression(node)
@@ -185,6 +206,13 @@ function valueJson(
             return `bbl::js::json_value_or_null(${value.cpp})`;
         if (absence === "undefined" || value.dataType.undefinedOnly)
             return `bbl::js::json_value(${value.cpp})`;
+        if (absence === "either" || absence === undefined)
+            requireAbsenceTag(
+                lowerer.context.checker,
+                lowerer.context.absenceTags,
+                expression ?? node,
+                value,
+            );
     }
     if (value.kind === "json-null")
         return value.cpp === "std::nullopt"
@@ -415,6 +443,7 @@ export const scalarsSinks: DataSinkOperations<
     | "search-params"
     | "http-response"
     | "gpu-adapter"
+    | "gpu"
     | "gpu-adapter-info"
     | "promise"
     | "storage"
@@ -545,6 +574,16 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     "gpu-adapter": opaqueSink,
+    gpu: {
+        expression: (type, lowerer, expression, unwrapped) =>
+            lowerer.compileKnownValueForSink(
+                lowerer.context.compileValue(unwrapped),
+                type,
+                expression,
+            ),
+        value: (_type, _lowerer, value) =>
+            value.dataType?.kind === "gpu" ? value.cpp : undefined,
+    },
     file: opaqueSink,
     blob: opaqueSink,
     "file-list": opaqueSink,
@@ -559,6 +598,8 @@ export const scalarsSinks: DataSinkOperations<
             ),
         value: (_type, lowerer, value, node) => {
             if (value.dataType?.kind === "error") return value.cpp;
+            if (isJsonValue(value))
+                return `${value.cpp}.asserted_instance<bbl::js::Error>()`;
             const authored = authoredErrorValue(lowerer.context, value);
             if (authored) return authored.cpp;
             if (!value.nativeError) return undefined;

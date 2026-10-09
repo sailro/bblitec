@@ -78,6 +78,7 @@ import {
 } from "./numeric-slot-storage.js";
 import { httpResponseProperty } from "./http.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
+import { gpuValue } from "./gpu-value.js";
 import {
     browserFileDataProperty,
     browserFileElementRead,
@@ -1191,7 +1192,7 @@ export class DataLowerer {
         const argumentsCpp = this.functionValueArguments(type, values, node);
         const cpp = `${callable}(${argumentsCpp.join(", ")})`;
         return type.result
-            ? { ...this.leafValue(cpp, type.result), impure: true }
+            ? { ...this.storedCallResult(cpp, type.result), impure: true }
             : { kind: "void", cpp };
     }
 
@@ -2441,6 +2442,7 @@ export class DataLowerer {
         left: ts.PropertyAccessExpression,
         right: ts.Expression,
     ): boolean {
+        const receiver = this.context.unwrap(left.expression);
         const property = declaredSymbol(this.context.checker, left.name);
         // A binding's record can be stored in a view of an open record (or
         // another accessor struct) its declared type does not name.
@@ -2450,7 +2452,8 @@ export class DataLowerer {
                 property,
                 this.context.checker.getTypeAtLocation(left.expression),
             ) &&
-                !ts.isIdentifier(this.context.unwrap(left.expression)))
+                !ts.isIdentifier(receiver) &&
+                receiver.kind !== ts.SyntaxKind.ThisKeyword)
         )
             return false;
         // One evaluation of the receiver, kept when it stores the property
@@ -2459,7 +2462,11 @@ export class DataLowerer {
             owner !== undefined &&
             this.accessorField(owner, left.name.text, left) !== undefined;
         const owner = this.context.probeEmission(() => {
-            const path = this.compileDataPath(left.expression, "read");
+            const path =
+                this.compileDataPath(left.expression, "read") ??
+                (receiver.kind === ts.SyntaxKind.ThisKeyword
+                    ? this.context.compileValue(receiver)
+                    : undefined);
             return path && this.narrowOptional(path, left.expression);
         }, accessorOwner);
         const type = owner?.dataType;
@@ -3321,7 +3328,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? value.staticString !== undefined
                     : value.kind === "string";
             case "enum":
-                return value.staticString !== undefined;
+                return (
+                    (value.staticString !== undefined &&
+                        this.context.dataTypes
+                            .enumMembers(sink.name)
+                            .includes(value.staticString)) ||
+                    (!staticOnly &&
+                        value.dataType?.kind === "enum" &&
+                        dataTypesEqual(value.dataType, sink))
+                );
             case "optional":
                 return (
                     value.kind === "json-null" ||
@@ -4649,6 +4664,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (http) return http;
         const gpu = gpuAdapterProperty(this, owner, property);
         if (gpu) return gpu;
+        if (owner.dataType?.kind === "storage") {
+            const method = storageValue(owner.cpp).recordProperties?.[property];
+            if (method) {
+                this.context.emitDiscardedValue(owner);
+                return method;
+            }
+        }
         const deferred = this.context.deferredCapabilities.property(
             access,
             owner,
@@ -6764,6 +6786,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : { kind: "void", cpp: "" },
             };
         if (dataType.kind === "storage") return storageValue(cpp);
+        if (dataType.kind === "gpu") return gpuValue(cpp);
         if (dataType.kind === "handle" && dataType.handle === "engine") {
             return {
                 kind: "engine",
@@ -8178,13 +8201,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
             bound = count;
         }
-        this.context.emit({
-            kind: "open",
+        const loop = {
+            kind: "open" as const,
             code: reverse
                 ? `for (std::size_t ${index} = ${bound}; ${index}-- > 0;) {`
                 : `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
-            iteration: true,
-        });
+            iteration: true as const,
+        };
+        this.context.emit(loop);
         this.context.increaseIndent();
         this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         const indexCapture = this.context.registerNativeBinding(
@@ -8197,10 +8221,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
             try {
-                if (writable)
-                    this.context.emit(
-                        removedIndexGuard(this, method, index, source),
-                    );
+                const removedGuard = writable
+                    ? {
+                          kind: "expression" as const,
+                          code: removedIndexGuard(this, method, index, source),
+                      }
+                    : undefined;
+                if (removedGuard) this.context.emit(removedGuard);
                 const elementValue = {
                     ...this.leafValue(`${source}[${index}]`, dataType.element),
                     nativeCaptures: [sourceCapture, indexCapture],
@@ -8289,6 +8316,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                               method === "forEach",
                               resultType ? { resultType } : undefined,
                           );
+                if (
+                    result.kind === "void" &&
+                    result.abruptCompletion &&
+                    !reverse
+                ) {
+                    loop.code = `for (std::size_t ${index} = 0; ${index} < ${bound};) {`;
+                    if (
+                        removedGuard &&
+                        receiverWalks.get(method)!.removed === "skip"
+                    )
+                        removedGuard.code = `if (${index} >= ${source}.size()) { ++${index}; continue; }`;
+                }
                 if (predicateMethod && result.kind !== "boolean")
                     result = {
                         kind: "boolean",
@@ -8524,8 +8563,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         const cpp = `${callback}(${args.join(", ")})`;
         return functionType.result
-            ? this.leafValue(cpp, functionType.result)
+            ? this.storedCallResult(cpp, functionType.result)
             : { kind: "void", cpp };
+    }
+
+    /** Tagged calls expose two reads of one result, so materialize it once. */
+    private storedCallResult(cpp: string, type: DataType): Value {
+        if (type.kind !== "tagged") return this.leafValue(cpp, type);
+        const result = this.context.allocateTemporaryCppName("callback_result");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: result,
+            initializer: cpp,
+        });
+        return this.leafValue(result, type);
     }
 
     /** Snapshot a retained callback before evaluating its lazy arguments. */
@@ -8570,8 +8622,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.allocateTemporaryCppName("optional_callback");
         // A result that may itself be absent (`number | null`) is undefined
         // only where the call did not run (`Value.slotFoundCpp`).
+        const signatures = this.context.checker
+            .getNonNullableType(
+                this.context.checker.getTypeAtLocation(call.expression),
+            )
+            .getCallSignatures();
+        const signature =
+            signatures.length === 1
+                ? signatures[0]
+                : this.context.checker.getResolvedSignature(call);
+        const returnAbsence = signature
+            ? nullability(
+                  this.context.checker.getReturnTypeOfSignature(signature),
+              )
+            : undefined;
         const called =
-            returned?.kind === "optional"
+            returnAbsence?.null &&
+            !returnAbsence.undefined &&
+            (returned?.kind === "optional" ||
+                (returned?.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(returned.name)))
                 ? this.context.allocateTemporaryCppName("optional_called")
                 : undefined;
         if (called)
@@ -8619,7 +8689,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const cpp = `([&]() -> ${resultCpp} {\n${lines.join("\n")}\n}())`;
         return resultType
             ? {
-                  ...this.leafValue(cpp, resultType),
+                  ...this.storedCallResult(cpp, resultType),
                   preserveUncheckedLookup: true,
                   ...(called ? { slotFoundCpp: called } : {}),
               }
@@ -9744,6 +9814,55 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 unwrapped,
             );
         if (ts.isBinaryExpression(unwrapped)) {
+            if (
+                dataType.kind === "tagged" &&
+                (unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken ||
+                    unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+            )
+                return this.compileLogicalSelection(
+                    unwrapped,
+                    dataType,
+                    "logical_tagged",
+                    (left) => {
+                        const sourceType =
+                            this.context.checker.getTypeAtLocation(
+                                unwrapped.left,
+                            );
+                        if (
+                            unwrapped.operatorToken.kind ===
+                                ts.SyntaxKind.AmpersandAmpersandToken &&
+                            presentValuesTruthy(
+                                this.context.checker,
+                                sourceType,
+                            )
+                        ) {
+                            const absence = absenceKind(
+                                this.context.checker,
+                                left,
+                                unwrapped.left,
+                            );
+                            if (absence === "either" && !isJsonValue(left))
+                                refuseEitherAbsence(
+                                    this.context,
+                                    unwrapped.left,
+                                    left,
+                                    "A logical result requires storage telling null from undefined.",
+                                );
+                            const defined = isJsonValue(left)
+                                ? `!${left.cpp}.is_undefined()`
+                                : typeof absence === "object"
+                                  ? absence.slotFoundCpp
+                                  : String(absence === "null");
+                            return `${this.context.dataTypes.cppType(dataType)}{${this.context.dataTypes.absentValue(dataType.inner)}, ${defined}}`;
+                        }
+                        return this.compileKnownValueForSink(
+                            left,
+                            dataType,
+                            unwrapped.left,
+                        );
+                    },
+                );
             const logical = this.compileRecordLogicalValue(unwrapped, dataType);
             if (logical)
                 return this.compileKnownValueForSink(
@@ -9885,6 +10004,41 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : key === undefined
                   ? mappedElement(this.context.checker, container)
                   : literalMember(container, key);
+        if (container && !expression && typeof key === "string") {
+            const property = this.context.checker.getPropertyOfType(
+                this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeAtLocation(container),
+                ),
+                key,
+            );
+            if (property && member.dataType?.kind === "optional") {
+                const absence = nullability(
+                    this.context.checker.getTypeOfSymbolAtLocation(
+                        property,
+                        container,
+                    ),
+                );
+                member = {
+                    ...member,
+                    ...(member.slotDeclarations || !property.declarations
+                        ? {}
+                        : { slotDeclarations: property.declarations }),
+                    ...(absence.undefined && !absence.null
+                        ? {
+                              dataType: {
+                                  ...member.dataType,
+                                  undefinedOnly: true,
+                              },
+                          }
+                        : absence.null &&
+                            !absence.undefined &&
+                            !member.preserveUncheckedLookup &&
+                            member.slotFoundCpp === undefined
+                          ? { slotFoundCpp: "true" }
+                          : {}),
+                };
+            }
+        }
         return this.compileConvertedMember(
             member,
             dataType,
@@ -12583,11 +12737,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         access: ts.ElementAccessExpression,
         mode: "read" | "write",
     ): Value {
-        if (mode === "write")
+        if (mode === "write") {
+            const demand = this.context.dataTypes.documentRecordDemand(
+                dataType.name,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
             this.context.fail(
                 access,
                 "Writing through an open dictionary view of fixed fields requires dynamic object storage.",
             );
+        }
         const fields = this.context.dataTypes.structFields(
             dataType.name,
             access,

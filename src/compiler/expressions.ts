@@ -3728,7 +3728,7 @@ export class ExpressionLowerer {
                           work,
                       )
                     : work();
-            return ts.isIdentifier(bound.callbackDeclaration)
+            const result = ts.isIdentifier(bound.callbackDeclaration)
                 ? this.context.userFunctions.compile(
                       this.context,
                       call,
@@ -3741,6 +3741,7 @@ export class ExpressionLowerer {
                       bound.callbackDeclaration,
                       inRecordScope,
                   );
+            return this.knownOptionalCallbackResult(call, bound, result);
         }
         if (bound?.kind === "data" && bound.dataType?.kind === "function") {
             return this.context.dataLowerer.compileStoredCall(
@@ -6213,6 +6214,38 @@ export class ExpressionLowerer {
         }
     }
 
+    /** A concrete callback call ran even when its source spelling is optional. */
+    private knownOptionalCallbackResult(
+        call: ts.CallExpression,
+        callback: Value,
+        result: Value,
+    ): Value {
+        if (
+            !call.questionDotToken ||
+            result.slotFoundCpp !== undefined ||
+            result.preserveUncheckedLookup ||
+            (result.dataType?.kind !== "optional" &&
+                result.dataType?.kind !== "struct")
+        )
+            return result;
+        const source = callback.callbackDeclaration;
+        const declaration =
+            source && ts.isIdentifier(source)
+                ? tryResolveFunctionDeclaration(this.context.checker, source)
+                : source;
+        const signature = declaration?.body
+            ? this.context.checker.getSignatureFromDeclaration(declaration)
+            : undefined;
+        if (
+            !signature ||
+            nullability(
+                this.context.checker.getReturnTypeOfSignature(signature),
+            ).undefined
+        )
+            return result;
+        return { ...result, slotFoundCpp: "true" };
+    }
+
     /** Function call adapters consume the function object before their arguments run. */
     private compileFunctionObject(expression: ts.Expression): Value {
         if (
@@ -7020,7 +7053,9 @@ export class ExpressionLowerer {
                               work,
                           )
                         : work();
-                return ts.isIdentifier(recordCallback.callbackDeclaration)
+                const result = ts.isIdentifier(
+                    recordCallback.callbackDeclaration,
+                )
                     ? this.context.userFunctions.compile(
                           this.context,
                           call,
@@ -7033,6 +7068,11 @@ export class ExpressionLowerer {
                           recordCallback.callbackDeclaration,
                           inRecordScope,
                       );
+                return this.knownOptionalCallbackResult(
+                    call,
+                    recordCallback,
+                    result,
+                );
             }
             if (
                 recordCallback?.kind === "data" &&
