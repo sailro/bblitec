@@ -1,4 +1,5 @@
 import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
+import { provenUndefinedValue } from "./compiler/undefined-values.js";
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
@@ -365,12 +366,6 @@ const CANVAS_SIZE_AXES = new EmissionMap<string, CanvasSizeProperty>([
     ["clientHeight", { axis: "height", client: true }],
 ]);
 
-const NULLABLE_UI_ELEMENT = {
-    origin: "dom",
-    kind: "ui-element",
-    cppType: handleCppType("ui-element"),
-} as const;
-
 /**
  * The resources a nullable name holds as optional native storage beyond the
  * pinned handles and Web Audio identities the data model's own classifiers
@@ -405,11 +400,6 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
         "AssetContainer",
         { origin: "babylon", kind: "asset", cppType: handleCppType("asset") },
     ],
-    // The element interfaces a scene declares empty and fills from a lookup.
-    ["Element", NULLABLE_UI_ELEMENT],
-    ["HTMLElement", NULLABLE_UI_ELEMENT],
-    ["HTMLDivElement", NULLABLE_UI_ELEMENT],
-    ["HTMLCanvasElement", NULLABLE_UI_ELEMENT],
 ]);
 
 /**
@@ -1961,7 +1951,8 @@ class Compiler implements LoweringServices {
         const mappedHandle = this.dataTypes.fromTsType(member, node);
         if (
             mappedHandle?.kind === "handle" &&
-            (mappedHandle.handle === "pointer-drag" ||
+            (mappedHandle.handle === "ui-element" ||
+                mappedHandle.handle === "pointer-drag" ||
                 (this.options.workers &&
                     mappedHandle.handle === "offscreen-canvas"))
         ) {
@@ -7057,7 +7048,12 @@ class Compiler implements LoweringServices {
         const storage = target.optionalStorageCpp;
         if (!storage) return false;
         const value = this.compileValue(expression.right);
-        if (value.kind === "json-null") {
+        if (
+            value.kind === "json-null" ||
+            (value.kind === "void" &&
+                provenUndefinedValue(this, expression.right))
+        ) {
+            this.emitDiscardedValue(value);
             this.emit({ kind: "expression", code: `${storage}.reset();` });
             delete writable(target).engineIdentity;
             delete writable(target).spriteDepthMode;

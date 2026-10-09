@@ -870,27 +870,6 @@ export class DeclarationLowerer {
         const nullableResource = this.context.nullableResourceKind(
             declaration.name,
         );
-        if (
-            declaration.initializer.kind === ts.SyntaxKind.NullKeyword &&
-            nullableResource
-        ) {
-            this.bindOptionalResource(
-                declaration.name,
-                cppName,
-                nullableResource,
-                sharedClosureStorage,
-                valueForKind(nullableResource.kind, {
-                    cpp: "",
-                    ...nullableResourceEngine(
-                        nullableResource.kind,
-                        this.context.options.workers,
-                        this.context.defaultEngineCpp,
-                    ),
-                }),
-            );
-            return;
-        }
-
         const hostLookup = this.context.unwrap(declaration.initializer);
         const id =
             !this.context.defaultEngineCpp &&
@@ -989,6 +968,32 @@ export class DeclarationLowerer {
         );
         const initializerBoundary = this.context.nativeBindingCheckpoint();
         let value = this.context.compileValue(declaration.initializer);
+        if (
+            nullableResource &&
+            (value.kind === "json-null" ||
+                (value.kind === "void" &&
+                    provenUndefinedValue(
+                        this.context,
+                        declaration.initializer,
+                    )))
+        ) {
+            this.context.emitDiscardedValue(value);
+            this.bindOptionalResource(
+                declaration.name,
+                cppName,
+                nullableResource,
+                sharedClosureStorage,
+                valueForKind(nullableResource.kind, {
+                    cpp: "",
+                    ...nullableResourceEngine(
+                        nullableResource.kind,
+                        this.context.options.workers,
+                        this.context.defaultEngineCpp,
+                    ),
+                }),
+            );
+            return;
+        }
         requireOneObject(this.context, declaration, value);
         if (value.kind === "record" && declaration.type) {
             value = this.context.bindings.materializeDeclaredRecordContainers(
