@@ -33,6 +33,12 @@ export class AbsentRecordProperties {
 
     public constructor(
         private readonly fail: (node: ts.Node, message: string) => never,
+        private readonly retain?: (
+            target: string,
+            sources: readonly string[],
+            property: string,
+            node: ts.Node,
+        ) => void,
     ) {}
 
     /** Whether a plain record can lack `property` at all. */
@@ -80,11 +86,24 @@ export class AbsentRecordProperties {
         node: ts.Node,
     ): void {
         const carried = this.carriedInto(struct);
-        if (carried.has(property) || carried.has(UNKNOWN_PROPERTIES))
+        if (carried.has(property) || carried.has(UNKNOWN_PROPERTIES)) {
+            const sources = new Set<string>();
+            const pending = [...(this.sources.get(struct) ?? [])];
+            for (
+                let source = pending.pop();
+                source !== undefined;
+                source = pending.pop()
+            ) {
+                if (sources.has(source)) continue;
+                sources.add(source);
+                pending.push(...(this.sources.get(source) ?? []));
+            }
+            this.retain?.(struct, [...sources], property, node);
             this.fail(
                 node,
                 `Property '${property}' is not stored by '${struct}' records, but a record converted into that storage may carry it.`,
             );
+        }
     }
 
     /** Everything conversions carried into `struct`, directly or through converted structs. */

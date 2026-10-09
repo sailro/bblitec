@@ -2562,19 +2562,13 @@ function compileArrayMap(
           (identity
               ? { kind: "vector", element: dataType.element }
               : undefined));
-    if (requested?.kind !== "vector") {
-        lowerer.context.fail(
-            call,
-            `Array.${method} callback results must belong to the native data model.`,
-        );
-    }
     let mappedType = requested;
     if (
         method === "map" &&
         call.arguments.length === 1 &&
         callback &&
         lowerer.context.libraryGlobal(callback) === "Number" &&
-        mappedType.element.kind === "number" &&
+        mappedType?.element.kind === "number" &&
         (dataType.element.kind === "string" ||
             dataType.element.kind === "number")
     ) {
@@ -2627,6 +2621,22 @@ function compileArrayMap(
                 });
             },
             (result, callback) => {
+                if (!mappedType && method === "map") {
+                    const element =
+                        result.kind === "void" && result.abruptCompletion
+                            ? { kind: "undefined" as const }
+                            : representedCallbackResult(lowerer, result);
+                    if (element) mappedType = { kind: "vector", element };
+                }
+                if (!mappedType)
+                    lowerer.context.fail(
+                        call,
+                        `Array.${method} callback results must belong to the native data model.`,
+                    );
+                if (result.kind === "void" && result.abruptCompletion) {
+                    lowerer.context.emitDiscardedValue(result);
+                    return;
+                }
                 if (method === "map")
                     mappedType = {
                         ...mappedType,
@@ -2705,12 +2715,49 @@ function compileArrayMap(
                     code: `${output}.push_back(${value});`,
                 });
             },
-            method === "map" ? requested.element : undefined,
+            method === "map" ? requested?.element : undefined,
         ),
     );
+    if (!mappedType)
+        lowerer.context.fail(
+            call,
+            `Array.${method} callback results must belong to the native data model.`,
+        );
     lowerer.context.emit(`${collectorCppType(state, mappedType)} ${output};`);
     for (const line of lines) lowerer.context.emit(line);
     return collectedArray(state, output, mappedType);
+}
+
+/** Checked array predicates can erase a callback's field types; its lowered values retain them. */
+function representedCallbackResult(
+    lowerer: DataLowerer,
+    value: Value,
+): DataType | undefined {
+    if (value.dataType) return value.dataType;
+    if (
+        value.kind === "number" ||
+        value.kind === "string" ||
+        value.kind === "boolean"
+    )
+        return { kind: value.kind };
+    if (
+        value.kind !== "record" ||
+        Object.keys(value.recordGetters ?? {}).length > 0 ||
+        Object.keys(value.recordSetters ?? {}).length > 0 ||
+        value.classDeclaration
+    )
+        return undefined;
+    const fields = [];
+    for (const [sourceName, member] of Object.entries(
+        value.recordProperties ?? {},
+    )) {
+        const type = representedCallbackResult(lowerer, member);
+        if (!type) return undefined;
+        fields.push({ sourceName, type });
+    }
+    return fields.length
+        ? lowerer.context.dataTypes.ownedRecordType(fields)
+        : undefined;
 }
 
 function compileArrayForEach(state: ArrayMethodState): Value {

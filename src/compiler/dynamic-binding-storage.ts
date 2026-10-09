@@ -9,6 +9,7 @@ import { resolvedSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 import { nullability } from "./type-facts.js";
 import type { Value } from "./types.js";
+import { NativeRecordStorageRequired } from "./native-record-storage.js";
 
 /** Storage choices survive replay; generated type names belong to one registry. */
 export type DynamicBindingStorage =
@@ -33,7 +34,12 @@ export interface DemandedStorageContext {
     readonly checker: ts.TypeChecker;
     readonly dataTypes: Pick<
         DataTypeRegistry,
-        "fromStoredTsType" | "nullableType" | "withDynamicJsonTypes"
+        | "fromStoredTsType"
+        | "fromSharedReturnType"
+        | "nativeRecordViewDemand"
+        | "markStoredObjectReferences"
+        | "nullableType"
+        | "withDynamicJsonTypes"
     >;
 }
 
@@ -63,8 +69,15 @@ export function demandedStorageType(
                 ts.IndexKind.Number,
             );
             const element =
-                indexed && dataTypes.fromStoredTsType(indexed, declaration);
-            return element ? { kind: "vector", element } : undefined;
+                indexed &&
+                (dataTypes.fromStoredTsType(indexed, declaration) ??
+                    dataTypes.fromSharedReturnType(indexed, declaration));
+            return element
+                ? {
+                      kind: "vector",
+                      element: dataTypes.markStoredObjectReferences(element),
+                  }
+                : undefined;
         });
     if (storage === "error-array")
         return { kind: "vector", element: { kind: "error" } };
@@ -73,6 +86,17 @@ export function demandedStorageType(
             storage.nativeType,
             storage.node,
         );
+        const declared = dataTypes.fromStoredTsType(source, declaration);
+        const target =
+            declared?.kind === "optional" ? declared.inner : declared;
+        if (mapped && target?.kind === "struct") {
+            const demand = dataTypes.nativeRecordViewDemand(
+                target.name,
+                mapped,
+                storage.node,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
+        }
         const absent = nullability(source);
         return mapped && (absent.null || absent.undefined)
             ? dataTypes.nullableType(mapped, !absent.null)

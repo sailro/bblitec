@@ -527,6 +527,31 @@ function layoutsHoldBoth(
     const elementB = element(b);
     if (elementA && elementB)
         return layoutsHoldBoth(checker, elementA, elementB, seen);
+    const dictionary = (record: ts.Type, view: ts.Type): boolean => {
+        if (!isPlainRecord(checker, record)) return false;
+        const value = checker.getIndexTypeOfType(view, ts.IndexKind.String);
+        if (
+            !value ||
+            !like(
+                value,
+                ts.TypeFlags.StringLike |
+                    ts.TypeFlags.NumberLike |
+                    ts.TypeFlags.BooleanLike,
+            )
+        )
+            return false;
+        return checker
+            .getPropertiesOfType(record)
+            .every((property) =>
+                layoutsHoldBoth(
+                    checker,
+                    checker.getTypeOfSymbol(property),
+                    value,
+                    seen,
+                ),
+            );
+    };
+    if (dictionary(a, b) || dictionary(b, a)) return true;
     if (isRecordLike(checker, a) && isRecordLike(checker, b)) {
         const fields = (type: ts.Type, name: string): readonly ts.Type[] =>
             type.isUnion()

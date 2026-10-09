@@ -556,6 +556,12 @@ function valueStruct(
         value.dataType.key.kind === "string"
     ) {
         const sourceMap = value.dataType;
+        if (sourceMap.dictionary && sourceMap.value.kind === "json") {
+            const demand = lowerer.context.dataTypes.documentRecordDemand(
+                dataType.name,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
+        }
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
