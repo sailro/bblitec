@@ -119,11 +119,20 @@ function facts(
                     !ts.isElementAccessExpression(node)
                 )
                     return;
-                const member = accessedPropertySymbol(checker, node)?.name;
+                const key = ts.isElementAccessExpression(node)
+                    ? checker.getTypeAtLocation(node.argumentExpression)
+                    : undefined;
+                const member =
+                    accessedPropertySymbol(checker, node)?.name ??
+                    (ts.isPropertyAccessExpression(node)
+                        ? node.name.text
+                        : key?.isStringLiteral()
+                          ? key.value
+                          : undefined);
                 if (
                     member === "__proto__" ||
-                    (member === "prototype" &&
-                        libraryGlobal(checker, node.expression) !== undefined)
+                    member === "prototype" ||
+                    member === "constructor"
                 )
                     result.prototypeUses.push(node);
                 if (

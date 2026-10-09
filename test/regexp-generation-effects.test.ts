@@ -101,6 +101,9 @@ test("imported immutable aliases are checked across all referencing modules", ()
         "import {names} from './pattern'; names.exec = () => null;",
         "RegExp.prototype.exec = () => null;",
         "const prototype = Object.getPrototypeOf(/x/); prototype.exec = () => null;",
+        "const other = /x/; other.constructor.prototype.exec = () => null;",
+        "const other = /x/ as unknown as { __proto__: { exec: () => null } }; other.__proto__.exec = () => null;",
+        "const key = 'prototype'; const other = /x/; other.constructor[key].exec = () => null;",
     ]) {
         writeFileSync(resolve(directory, "mutation.ts"), mutation);
         assert.throws(
