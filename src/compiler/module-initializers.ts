@@ -791,7 +791,8 @@ class ModuleInitializerPlanner {
      * A `const` whose initializer creates an object its members need, so
      * JavaScript's one evaluation in module order is observable: a record
      * whose methods read `this`, or a call whose function leaves closures
-     * behind that write its locals. Evaluated again at each use (the static
+     * behind that write its locals or returns locally initialized callables.
+     * Evaluated again at each use (the static
      * path), every receiver would get another object, and a member call or
      * a member read as a callback, through an element access or a holder
      * would run on state no other use sees.
@@ -807,6 +808,41 @@ class ModuleInitializerPlanner {
         if (!called?.body) return false;
         const owner = (node: ts.Node) =>
             ts.findAncestor(node.parent, ts.isFunctionLike);
+        // A returned callable binding needs the factory's evaluated scope,
+        // even if all its assignments happened before the return.
+        if (
+            findAnalysisNode(called.body, (node) => {
+                if (
+                    !ts.isReturnStatement(node) ||
+                    !node.expression ||
+                    owner(node) !== called
+                )
+                    return false;
+                return (
+                    findAnalysisNode(
+                        node.expression,
+                        (part) => {
+                            if (!ts.isIdentifier(part)) return false;
+                            const local =
+                                this.symbols.valueSymbol(
+                                    part,
+                                )?.valueDeclaration;
+                            return (
+                                local !== undefined &&
+                                ts.isVariableDeclaration(local) &&
+                                owner(local) === called &&
+                                this.checker.getSignaturesOfType(
+                                    this.checker.getTypeAtLocation(part),
+                                    ts.SignatureKind.Call,
+                                ).length !== 0
+                            );
+                        },
+                        { functions: "skip" },
+                    ) !== undefined
+                );
+            }) !== undefined
+        )
+            return true;
         const writesLocal = (target: ts.Expression): boolean => {
             const name = unwrapExpression(target);
             const local = ts.isIdentifier(name)

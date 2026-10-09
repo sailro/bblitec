@@ -30,6 +30,9 @@ struct CollationOptions {
 /** Milliseconds the host time zone adds to UTC at a time value, daylight saving included. */
 [[nodiscard]] double local_time_zone_offset(double utc_milliseconds);
 
+/** Standardized Date text, with offset-free date-time forms interpreted in the host zone. */
+[[nodiscard]] double parse_date(const std::string& value);
+
 /** A local-time Date getter: the field of LocalTime(t) in the host time zone. */
 [[nodiscard]] inline double date_local_field(const js::Date& date, js::DateField field) {
     const double time = *date;

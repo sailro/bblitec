@@ -33,6 +33,8 @@ import {
 import { refuseEitherAbsence } from "../absence-tag-storage.js";
 import { requireTupleArraySlot } from "../tuple-array-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import { NativeRecordStorageRequired } from "../native-record-storage.js";
+import { isJsonValue } from "../json-bridge.js";
 
 function expressionOptional(
     dataType: DataType<"optional">,
@@ -195,6 +197,24 @@ function valueOptional(
     // A value that is always undefined is evaluated, then stored absent.
     if (isUndefinedDataType(value.dataType))
         return `(static_cast<void>(${value.cpp}), ${absent})`;
+    // A present JSON lane keeps its own null/undefined tags when the inner
+    // storage accepts it; only typed payload conversion needs absence.
+    if (
+        isJsonValue(value) &&
+        !lowerer.knownValueFitsSink(value, dataType.inner, node)
+    ) {
+        const source =
+            lowerer.context.allocateTemporaryCppName("optional_document");
+        let converted = "";
+        const lines = lowerer.context.captureEmittedLines(() => {
+            converted = lowerer.compileKnownValueForSink(
+                lowerer.leafValue(source, { kind: "json" }),
+                dataType.inner,
+                node,
+            );
+        });
+        return `([&]() -> ${lowerer.context.dataTypes.cppType(dataType)} { const auto ${source} = ${value.cpp}; if (${source}.is_null() || ${source}.is_undefined()) return ${absent}; ${lines.join("\n")} return ${converted}; }())`;
+    }
     if (value.dataType?.kind === "optional") {
         const sourceType = value.dataType.inner;
         const source =
@@ -533,6 +553,26 @@ function valueMap(
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    if (dataType.dictionary && dataType.key.kind === "string") {
+        if (value.dataType?.kind === "struct") {
+            const demand = lowerer.context.dataTypes.dictionaryRecordDemand(
+                value.dataType.name,
+                dataType.value,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
+        }
+        if (value.kind === "record" && ts.isExpression(node)) {
+            const declaration = lowerer.context.bindings.recordDeclaration(
+                value,
+                node,
+            );
+            if (
+                declaration &&
+                !lowerer.context.dynamicBindings.has(declaration)
+            )
+                throw new DynamicBindingStorageRequired(declaration, "source");
+        }
+    }
     if (value.kind === "record") {
         // A key a conditional spread wrote is stored while it is own, in
         // creation order.

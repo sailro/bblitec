@@ -157,10 +157,6 @@ interface UiStaticElement {
     readonly ids: Set<string>;
     readonly children: Set<number>;
     readonly markupChildren: readonly UiStaticMarkupNode[];
-    /** Reachable complete inline declaration lists, not assignment history. */
-    readonly styles: readonly string[];
-    readonly styleShapeKnown: boolean;
-    readonly styleMayMutateDynamically: boolean;
     readonly mutableClasses: Set<string>;
     readonly classShapeKnown: boolean;
     /** False when known child construction sites can occur a runtime number of times. */
@@ -1058,9 +1054,6 @@ export class UiProjection {
             ids: new EmissionSet(),
             children: new EmissionSet(),
             markupChildren: [],
-            styles: [""],
-            styleShapeKnown: true,
-            styleMayMutateDynamically: false,
             mutableClasses: new EmissionSet(),
             classShapeKnown: true,
             childCardinalityKnown: true,
@@ -1219,85 +1212,6 @@ export class UiProjection {
             }
         }
         this.setUiClassAlternatives(element, alternatives);
-    }
-
-    private recordUiStaticStyles(
-        element: UiStaticElement,
-        styles: readonly string[],
-    ): void {
-        const wasKnown = element.styleShapeKnown;
-        const currentMutationIsDynamic = this.uiStaticMutationIsDynamic();
-        if (currentMutationIsDynamic) {
-            writable(element).styleMayMutateDynamically = true;
-        }
-        const mayReplaceLater =
-            currentMutationIsDynamic || element.styleMayMutateDynamically;
-        writable(element).styles = mayReplaceLater
-            ? [...new EmissionSet([...element.styles, ...styles])]
-            : [...new EmissionSet(styles)];
-        writable(element).styleShapeKnown = mayReplaceLater ? wasKnown : true;
-    }
-
-    public recordUiStaticStyle(value: Value, style: string): void {
-        const element = this.uiStaticElement(value);
-        if (!element) return;
-        this.recordUiStaticStyles(element, [style]);
-    }
-
-    public recordUiUnknownStaticStyle(value: Value): void {
-        const element = this.uiStaticElement(value);
-        if (!element) return;
-        if (this.uiStaticMutationIsDynamic()) {
-            writable(element).styleMayMutateDynamically = true;
-        }
-        writable(element).styleShapeKnown = false;
-    }
-
-    private static uiStyleWithProperty(
-        style: string,
-        name: string,
-        value: string,
-    ): string {
-        const declarations: string[] = [];
-        UiProjection.forEachUiStyleDeclaration(style, (declaration) => {
-            const colon = declaration.indexOf(":");
-            if (
-                colon < 0 ||
-                UiProjection.cssPropertyName(
-                    declaration.slice(0, colon).trim(),
-                ) !== name
-            ) {
-                if (declaration.trim()) declarations.push(declaration);
-            }
-        });
-        declarations.push(`${name}:${value}`);
-        return declarations.join(";");
-    }
-
-    private recordUiStaticStyleProperty(
-        value: Value,
-        name: string,
-        expression: ts.Expression,
-        knownValue?: string,
-    ): void {
-        const element = this.uiStaticElement(value);
-        if (!element) return;
-        const staticValue = knownValue ?? this.tryUiStaticString(expression);
-        const updated = element.styles.map((style) =>
-            UiProjection.uiStyleWithProperty(
-                style,
-                name,
-                staticValue ?? "__bbl_dynamic_style_value__",
-            ),
-        );
-        const currentMutationIsDynamic = this.uiStaticMutationIsDynamic();
-        if (currentMutationIsDynamic) {
-            writable(element).styleMayMutateDynamically = true;
-        }
-        writable(element).styles =
-            currentMutationIsDynamic || element.styleMayMutateDynamically
-                ? [...new EmissionSet([...element.styles, ...updated])]
-                : [...new EmissionSet(updated)];
     }
 
     /** A child joining `parent`; one that does not join last leaves the child order unknown. */
@@ -3588,31 +3502,17 @@ export class UiProjection {
                 staticValue,
                 expression,
             );
-            if (ownerId !== undefined) {
-                const owner = this.uiStaticElements.get(ownerId);
-                if (owner) this.recordUiStaticStyles(owner, [lowered]);
-            }
             return this.context.cppString(lowered);
         }
         const unwrapped = this.context.unwrap(expression);
-        const recordCandidates = (candidate: ts.Expression): void => {
-            if (ownerId === undefined) return;
-            const owner = this.uiStaticElements.get(ownerId);
-            if (!owner) return;
-            const candidates = this.uiStringCandidates(candidate);
-            if (!candidates) {
-                writable(owner).styleShapeKnown = false;
+        const auditCandidates = (candidate: ts.Expression): void => {
+            if (ownerId === undefined || !this.uiStaticElements.has(ownerId))
                 return;
-            }
-            this.recordUiStaticStyles(
-                owner,
-                candidates.map((value) =>
-                    this.lowerUiAttributeLiteral("style", value, expression),
-                ),
-            );
+            for (const value of this.uiStringCandidates(candidate) ?? [])
+                this.lowerUiAttributeLiteral("style", value, expression);
         };
         if (ts.isConditionalExpression(unwrapped)) {
-            recordCandidates(unwrapped);
+            auditCandidates(unwrapped);
             return (
                 `(${this.context.conditions.compileCondition(unwrapped.condition)} ? ` +
                 `${this.compileUiStyleString(unwrapped.whenTrue)} : ` +
@@ -3635,7 +3535,7 @@ export class UiProjection {
                 );
             };
             if (containsConditional(unwrapped)) {
-                recordCandidates(unwrapped);
+                auditCandidates(unwrapped);
                 return (
                     `std::string(${this.compileUiStyleString(unwrapped.left)}) + ` +
                     this.compileUiStyleString(unwrapped.right)
@@ -3659,10 +3559,6 @@ export class UiProjection {
                 source,
                 expression,
             );
-            if (ownerId !== undefined) {
-                const owner = this.uiStaticElements.get(ownerId);
-                if (owner) this.recordUiStaticStyles(owner, [lowered]);
-            }
             const chunks = lowered.split(
                 /(__BBLITE_UI_(?:STYLE|ASSET)_\d+__)/g,
             );
@@ -5261,11 +5157,6 @@ export class UiProjection {
                     valueExpression,
                 );
         }
-        this.recordUiStaticStyleProperty(
-            styleElement,
-            nativeProperty,
-            valueExpression,
-        );
         // Border images lower only from static text; other lowered values
         // pass a runtime string through as written.
         const staticValue =
@@ -5308,7 +5199,6 @@ export class UiProjection {
     ): Value {
         const nativeProperty = this.nativeUiStyleProperty(property);
         this.auditUiStylePropertyName(property, site);
-        this.recordUiStaticStyleProperty(element, nativeProperty, site, "");
         const engine = this.context.requireEngine(element, site);
         return {
             kind: "string",

@@ -35,6 +35,7 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
+import { nullability } from "./type-facts.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     ERROR_CLASS_FIELDS,
@@ -1743,6 +1744,24 @@ export class ClassLowerer {
     }
 
     /** Evaluate explicit class-call arguments while the caller owns `this`. */
+    private compileArgument(
+        parameter: ts.ParameterDeclaration,
+        argument: ts.Expression,
+    ): Value {
+        if (!ts.isIdentifier(parameter.name))
+            this.context.fail(
+                parameter,
+                "Class parameters must be plain identifiers.",
+            );
+        // Default selection runs later, after all arguments, in the callee's
+        // scope. Preserve the supplied undefined state until that boundary.
+        return parameter.initializer &&
+            nullability(this.context.checker.getTypeAtLocation(argument))
+                .undefined
+            ? this.context.compileValue(argument)
+            : this.context.compileClassParameterValue(parameter.name, argument);
+    }
+
     private compileClassArguments(
         declaration:
             | ts.ConstructorDeclaration
@@ -1767,10 +1786,7 @@ export class ClassLowerer {
                 );
             }
             const value = this.context.bindings.settleBuiltValue(
-                this.context.compileClassParameterValue(
-                    parameter.name,
-                    argument,
-                ),
+                this.compileArgument(parameter, argument),
                 (built) =>
                     this.context.evaluationOrder.calleeChanges(
                         built,
@@ -1825,10 +1841,7 @@ export class ClassLowerer {
                             ? "Class parameters must be plain identifiers."
                             : "Class method received too many arguments.",
                     );
-                const value = this.context.compileClassParameterValue(
-                    parameter.name,
-                    argument,
-                );
+                const value = this.compileArgument(parameter, argument);
                 expressions.push(argument);
                 values.push(
                     ordered[index] && value.kind !== "callback"
@@ -3350,15 +3363,26 @@ export class ClassLowerer {
                     : preserveStaticRecords || spreadUse
                       ? this.context.compileValue(argument)
                       : undefined;
-            if (
-                evaluatedArgument &&
-                missingLanes.has(index) &&
-                parameter.initializer
-            ) {
-                this.bindDefaultedLane(
+            if (parameter.initializer) {
+                this.context.bindings.bindParameterValue(
                     parameter.name,
-                    parameter.initializer,
-                    evaluatedArgument,
+                    this.context.userFunctions.parameterValue(
+                        this.context,
+                        {
+                            declaration: parameter,
+                            name: parameter.name,
+                            type: this.context.checker.getTypeAtLocation(
+                                parameter,
+                            ),
+                        },
+                        evaluatedArgument ??
+                            (index < argumentList.length
+                                ? (staticRecord ??
+                                  this.context.compileValue(argument))
+                                : undefined),
+                        argumentList[index],
+                        missingLanes.has(index),
+                    ),
                 );
             } else if (staticRecord?.kind === "record") {
                 this.context.bindings.bindParameterValue(
@@ -3383,64 +3407,6 @@ export class ClassLowerer {
                 );
             }
         });
-    }
-
-    /**
-     * A defaulted parameter a spread tuple's optional lane supplies: the
-     * lane where the tuple holds it, else the default, evaluated in the
-     * callee's scope only then.
-     */
-    private bindDefaultedLane(
-        name: ts.Identifier,
-        initializer: ts.Expression,
-        lane: Value,
-    ): void {
-        const type = this.context.dataLowerer.dataTypeAt(name);
-        if (lane.dataType?.kind !== "optional" || !type)
-            this.context.fail(
-                initializer,
-                "A defaulted parameter supplied by an optional spread lane requires optional lane storage.",
-            );
-        const input = this.context.allocateTemporaryCppName("spread_lane");
-        this.context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: input,
-            initializer: lane.cpp,
-        });
-        let fallback = "";
-        const lines = this.context.captureEmittedLines(() => {
-            this.context.enterRuntimeControlFlow();
-            try {
-                fallback = this.context.compileForDataSink(initializer, type);
-            } finally {
-                this.context.leaveRuntimeControlFlow();
-            }
-        });
-        const present = this.context.dataLowerer.compileKnownValueForSink(
-            this.context.dataLowerer.narrowOptional(
-                this.context.dataLowerer.leafValue(input, lane.dataType),
-                initializer,
-                true,
-            ),
-            type,
-            initializer,
-        );
-        const cppType = this.context.dataTypes.cppType(type);
-        const result = this.context.allocateTemporaryCppName("spread_value");
-        this.context.emit({
-            kind: "declaration",
-            type: `const ${cppType}`,
-            name: result,
-            initializer: `[&]() -> ${cppType} {
-    if (${optionalPresentCpp(input)}) return ${present};
-${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
-}()`,
-        });
-        this.context.bindings.bindParameterValue(
-            name,
-            this.context.dataValue(result, type),
-        );
     }
 
     private initializeParameterProperty(

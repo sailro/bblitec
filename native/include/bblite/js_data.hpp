@@ -2739,6 +2739,87 @@ struct DayTime {
 }
 } // namespace date_detail
 
+struct ParsedDateTime {
+    double milliseconds;
+    bool local;
+};
+
+/** ECMAScript Date Time String Format; implementation-specific legacy formats refuse. */
+[[nodiscard]] inline ParsedDateTime parse_date_time_string(std::string_view text) {
+    std::size_t cursor = 0;
+    const auto unsupported = []() -> void {
+        throw std::runtime_error("Date parsing requires the standardized date-time string format.");
+    };
+    const auto take = [&](char token) {
+        if (cursor < text.size() && text[cursor] == token) {
+            ++cursor;
+            return true;
+        }
+        return false;
+    };
+    const auto digits = [&](std::size_t count) {
+        unsigned value = 0;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (cursor == text.size() || text[cursor] < '0' || text[cursor] > '9')
+                unsupported();
+            value = value * 10 + static_cast<unsigned>(text[cursor++] - '0');
+        }
+        return value;
+    };
+    const bool negative = take('-');
+    const bool expanded = negative || take('+');
+    const auto year_digits = digits(expanded ? 6 : 4);
+    const std::int64_t year =
+        negative ? -static_cast<std::int64_t>(year_digits) : static_cast<std::int64_t>(year_digits);
+    unsigned month = 1, day = 1;
+    if (take('-')) {
+        month = digits(2);
+        if (take('-'))
+            day = digits(2);
+    }
+    unsigned hours = 0, minutes = 0, seconds = 0, milliseconds = 0;
+    const bool timed = take('T');
+    bool local = timed;
+    int offset = 0;
+    if (timed) {
+        hours = digits(2);
+        if (!take(':'))
+            unsupported();
+        minutes = digits(2);
+        if (take(':')) {
+            seconds = digits(2);
+            if (take('.'))
+                milliseconds = digits(3);
+        }
+        if (take('Z')) {
+            local = false;
+        } else if (cursor < text.size() && (text[cursor] == '+' || text[cursor] == '-')) {
+            const bool west = text[cursor++] == '-';
+            const auto offset_hours = digits(2);
+            if (!take(':'))
+                unsupported();
+            const auto offset_minutes = digits(2);
+            if (offset_hours > 23 || offset_minutes > 59)
+                return {std::numeric_limits<double>::quiet_NaN(), false};
+            offset = static_cast<int>(offset_hours * 60 + offset_minutes) * (west ? -1 : 1);
+            local = false;
+        }
+    }
+    if (cursor != text.size())
+        unsupported();
+    if ((negative && year_digits == 0) || month < 1 || month > 12 || day < 1 || day > 31 ||
+        hours > 24 || minutes > 59 || seconds > 59 ||
+        (hours == 24 && (minutes != 0 || seconds != 0 || milliseconds != 0)))
+        return {std::numeric_limits<double>::quiet_NaN(), false};
+    const double time = static_cast<double>(date_detail::days_from_civil(year, month, day)) *
+                            date_detail::milliseconds_per_day +
+                        static_cast<double>(hours) * 3600000.0 +
+                        static_cast<double>(minutes) * 60000.0 +
+                        static_cast<double>(seconds) * 1000.0 + milliseconds -
+                        static_cast<double>(offset) * 60000.0;
+    return {time, local};
+}
+
 /** One field of an integral time value read as UTC: NaN for an invalid date. */
 [[nodiscard]] inline double date_time_field(double time, DateField field) {
     using namespace date_detail;

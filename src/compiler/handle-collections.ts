@@ -5,7 +5,10 @@ import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    demandedStorageType,
+} from "./dynamic-binding-storage.js";
 import { handleCppType, isHandleKind } from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import {
@@ -1628,15 +1631,16 @@ export class HandleCollections {
         if (this.context.isInRuntimeControlFlow()) {
             const declaration =
                 this.context.symbols.valueSymbol(owner)?.valueDeclaration;
-            const type = this.context.dataTypes.fromTsType(
-                this.context.checker.getTypeAtLocation(owner),
-                owner,
-            );
             if (
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
                 declaration.initializer &&
-                type?.kind === "vector"
+                demandedStorageType(
+                    this.context,
+                    declaration,
+                    "array",
+                    declaration.initializer,
+                )?.kind === "vector"
             ) {
                 throw new DynamicBindingStorageRequired(declaration, "array");
             }

@@ -30,6 +30,9 @@ public:
         return methods_ ? methods_.get()->*field : Member{};
     }
     [[nodiscard]] std::size_t identity() const { return identity_; }
+    [[nodiscard]] std::weak_ptr<const void> weak_identity() const {
+        return methods_.weak_identity();
+    }
     void gc_trace(const TraceVisitor& visitor) const { visitor(methods_); }
     [[nodiscard]] friend bool operator==(const GenericCallback& left,
                                          const GenericCallback& right) {
@@ -174,13 +177,20 @@ public:
     template <typename F>
     Callback(std::size_t identity, F&& body)
         : identity_(identity),
-          body_(make_gc_shared<Callable<std::decay_t<F>>>(std::forward<F>(body))) {}
+          body_(make_gc_shared<Callable<std::decay_t<F>>>(std::forward<F>(body))),
+          identity_owner_(body_) {}
+    template <typename F>
+    Callback(std::size_t identity, F&& body, std::weak_ptr<const void> identity_owner)
+        : Callback(identity, std::forward<F>(body)) {
+        identity_owner_ = std::move(identity_owner);
+    }
 
     R operator()(Args... args) const { return snapshot()(std::forward<Args>(args)...); }
     /** Retain once before argument evaluation, including recursive cells replaced by the call. */
     [[nodiscard]] Invocation snapshot() const { return Invocation(*this); }
     explicit operator bool() const { return body_ && body_->present(); }
     [[nodiscard]] std::size_t identity() const { return identity_; }
+    [[nodiscard]] std::weak_ptr<const void> weak_identity() const { return identity_owner_; }
     void gc_trace(const TraceVisitor& visitor) const {
         visitor(body_);
         visitor(recursive_owner_);
@@ -198,6 +208,7 @@ public:
         // The cell can be reassigned during invocation. Pin its current body
         // independently while retaining the cell for weak recursive reads.
         retained.body_ = owner->body_;
+        retained.identity_owner_ = owner->identity_owner_;
         retained.recursive_owner_ = std::move(owner);
         return retained;
     }
@@ -209,6 +220,7 @@ private:
     std::size_t identity_ = 0;
     // A dispatch snapshot retains the closure without resetting its local state.
     std::shared_ptr<Body> body_;
+    std::weak_ptr<const void> identity_owner_;
     std::shared_ptr<Callback> recursive_owner_;
 };
 
@@ -298,7 +310,8 @@ template <typename Target, typename Source, typename Invoke>
     if (!source)
         return {};
     const auto identity = source.identity();
-    return Target{identity, make_closure(std::move(source), std::move(invoke))};
+    const auto owner = source.weak_identity();
+    return Target{identity, make_closure(std::move(source), std::move(invoke)), owner};
 }
 
 // A recursive body holds only a weak reference to its own storage. Every

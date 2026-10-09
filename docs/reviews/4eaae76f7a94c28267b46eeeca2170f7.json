@@ -1,0 +1,46 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Date string admission uses the shared isStringValue classifier.",
+      "applied": true
+    },
+    {
+      "summary": "Promise settlement classification uses the shared no-value completion predicate.",
+      "applied": true
+    },
+    {
+      "summary": "Demanded lexical storage has one array mapping path; the unreachable fallback is removed.",
+      "applied": true
+    },
+    {
+      "summary": "Spread field lookup delegates directly after removing the obsolete accessor guard.",
+      "applied": true
+    },
+    {
+      "summary": "Record storage selection computes its generic component identity once.",
+      "applied": true
+    },
+    {
+      "summary": "Erased JSON owner checks query contextual types only for record values.",
+      "applied": true
+    },
+    {
+      "summary": "Callback contract and concrete method-record pairing use indexed source fields.",
+      "applied": true
+    },
+    {
+      "summary": "Callback contract union roots compress parent paths through the existing emission journal.",
+      "applied": true
+    },
+    {
+      "summary": "Record absence proof skips source-shape scans for open record and proxy views that already cannot prove absence.",
+      "applied": true
+    }
+  ]
+}

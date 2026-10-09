@@ -38,6 +38,7 @@ import {
     type NativeFunctionContext,
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import { nullability } from "./type-facts.js";
 import { provenUndefinedValue } from "./undefined-values.js";
 import { localClassOfSymbol } from "./class-members.js";
@@ -798,7 +799,8 @@ export class DeclarationLowerer {
             ((declaration.type &&
                 (ts.isArrowFunction(declaration.initializer) ||
                     ts.isFunctionExpression(declaration.initializer))) ||
-                this.isReassignedFunctionLiteral(declaration)) &&
+                this.isReassignedFunctionLiteral(declaration) ||
+                this.context.dynamicBindings.get(declaration) === "callback") &&
             this.emitAnnotatedDataDeclaration(
                 declaration,
                 cppName,
@@ -4538,11 +4540,16 @@ export class DeclarationLowerer {
             this.context.checker.getTypeAtLocation(element.name),
             element.name,
         );
-        if (type?.kind !== "struct")
+        if (type?.kind !== "struct") {
+            const demand = this.context.dataTypes.documentRecordDemand(
+                source.dataType.name,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
             this.context.fail(
                 element,
                 "Object rest requires a concrete record result type.",
             );
+        }
         this.context.dataTypes.markStoredObjectReferences(type);
         const cppName = this.context.bindings.cppIdentifier(element.name.text);
         this.context.emit({

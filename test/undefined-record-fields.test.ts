@@ -194,7 +194,17 @@ test("cloned undefined fields retain required keys and aliases", (t) => {
     });
 });
 
-test("erased void completion and unrepresented undefined containers refuse", () => {
+check(
+    "required-undefined-array-json",
+    `
+    const records:Array<{value:undefined}>=[{value:undefined}];
+    if(JSON.stringify([records[0]!.value])!=='[null]')throw new Error('array');
+    if(JSON.stringify(records[0])!=='{}')throw new Error('object');
+    if(!('value' in records[0]!))throw new Error('presence');
+`,
+);
+
+test("erased void completion and untagged undefined fields refuse", () => {
     for (const source of [
         `const f:()=>void=()=>7;const records:Array<{value:void}>=[{value:f()}];JSON.stringify(records);`,
         `let f=()=>{};f=()=>7;const records:Array<{value:void}>=[{value:f()}];JSON.stringify(records);`,
@@ -203,13 +213,6 @@ test("erased void completion and unrepresented undefined containers refuse", () 
             () => compileSource(source),
             /requires a proven undefined completion/,
         );
-    assert.throws(
-        () =>
-            compileSource(
-                `const records:Array<{value:undefined}>=[{value:undefined}];if(JSON.stringify([records[0]!.value])!=='[null]')throw new Error('array');`,
-            ),
-        /JSON.stringify serializes a plain-data value/,
-    );
     assert.throws(
         () =>
             compileSource(

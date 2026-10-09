@@ -13,6 +13,7 @@ import {
 } from "./types.js";
 import { emitStringAppend } from "./expressions.js";
 import { BranchState } from "./branch-state.js";
+import { FunctionStorageFlow } from "./function-storage-flow.js";
 import {
     compileDataExpressionSink,
     compileDataValueSink,
@@ -1609,16 +1610,14 @@ export class DataLowerer {
         return argumentsCpp;
     }
 
-    /**
-     * Native function storage signatures, by C++ type, whose stored values
-     * may read arguments past the signature's parameters (a value declaring
-     * more optional, defaulted or rest parameters than the signature), and
-     * those some call or adaptation passes more arguments than the
-     * signature declares. JavaScript hands the value those extra arguments;
-     * its native storage drops them, so one signature cannot be both.
-     */
-    private readonly signaturesReadPast = new EmissionSet<string>();
-    private readonly signaturesPassedPast = new EmissionSet<string>();
+    private readonly functionStorageFlow = new FunctionStorageFlow();
+
+    private refuseDroppedArguments(node: ts.Node): never {
+        return this.context.fail(
+            node,
+            "A stored function value reading arguments past its storage signature cannot share that signature with calls passing more arguments than it declares.",
+        );
+    }
 
     public noteArgumentsPastSignature(
         type: DataType<"function">,
@@ -1626,17 +1625,121 @@ export class DataLowerer {
         node: ts.Node,
     ): void {
         if (type.generic) return;
-        const key = this.context.dataTypes.cppType(type);
-        const [noted, conflicting] =
-            use === "reads"
-                ? [this.signaturesReadPast, this.signaturesPassedPast]
-                : [this.signaturesPassedPast, this.signaturesReadPast];
-        if (conflicting.has(key))
-            this.context.fail(
-                node,
-                "A stored function value reading arguments past its storage signature cannot share that signature with calls passing more arguments than it declares.",
-            );
-        noted.add(key);
+        if (
+            !this.functionStorageFlow.note(
+                {
+                    signatureSite: type.signatureSite,
+                    abi: this.context.dataTypes.cppType(type),
+                },
+                use,
+            )
+        )
+            this.refuseDroppedArguments(node);
+    }
+
+    /** Connect callback contracts even when an enclosing container keeps its ABI. */
+    public connectFunctionStorage(
+        source: DataType,
+        target: DataType,
+        node: ts.Node,
+    ): void {
+        const seen = new Map<DataType, Set<DataType>>();
+        const connect = (from: DataType, to: DataType): void => {
+            if (from === to) return;
+            let targets = seen.get(from);
+            if (!targets) seen.set(from, (targets = new Set()));
+            if (targets.has(to)) return;
+            targets.add(to);
+            if (from.kind === "optional" || from.kind === "tagged")
+                return connect(from.inner, to);
+            if (to.kind === "optional" || to.kind === "tagged")
+                return connect(from, to.inner);
+            if (from.kind === "union") {
+                for (const member of from.members) connect(member, to);
+                return;
+            }
+            if (to.kind === "union") {
+                for (const member of to.members) connect(from, member);
+                return;
+            }
+            if (from.kind === "function" && to.kind === "function") {
+                if (
+                    !from.generic &&
+                    !to.generic &&
+                    !this.functionStorageFlow.connect(
+                        {
+                            signatureSite: from.signatureSite,
+                            abi: this.context.dataTypes.cppType(from),
+                        },
+                        {
+                            signatureSite: to.signatureSite,
+                            abi: this.context.dataTypes.cppType(to),
+                        },
+                    )
+                )
+                    this.refuseDroppedArguments(node);
+                for (
+                    let index = 0;
+                    index <
+                    Math.max(from.parameters.length, to.parameters.length);
+                    index++
+                ) {
+                    const parameter = (
+                        type: DataType<"function">,
+                    ): DataType | undefined => {
+                        if (
+                            type.restParameter !== undefined &&
+                            index >= type.restParameter
+                        ) {
+                            const rest = type.parameters[type.restParameter];
+                            return rest?.kind === "vector"
+                                ? rest.element
+                                : undefined;
+                        }
+                        return type.parameters[index];
+                    };
+                    const a = parameter(from),
+                        b = parameter(to);
+                    if (a && b) connect(a, b);
+                }
+                if (from.result && to.result) connect(from.result, to.result);
+                return;
+            }
+            if ("element" in from && "element" in to)
+                return connect(from.element, to.element);
+            if (from.kind === "map" && to.kind === "map") {
+                connect(from.key, to.key);
+                connect(from.value, to.value);
+                return;
+            }
+            if (from.kind === "promise" && to.kind === "promise") {
+                if (from.result && to.result) connect(from.result, to.result);
+                return;
+            }
+            if (from.kind === "product" && to.kind === "product") {
+                from.elements.forEach((element, index) => {
+                    const other = to.elements[index];
+                    if (other) connect(element, other);
+                });
+                return;
+            }
+            if (from.kind === "struct" && to.kind === "struct") {
+                const fields = new Map(
+                    this.context.dataTypes
+                        .structFields(from.name, node, "accessors")
+                        .map((field) => [field.sourceName, field]),
+                );
+                for (const field of this.context.dataTypes.structFields(
+                    to.name,
+                    node,
+                    "accessors",
+                )) {
+                    const other = fields.get(field.sourceName);
+                    if (other) connect(other.type, field.type);
+                }
+            }
+        };
+        connect(source, target);
     }
 
     /**
@@ -3123,8 +3226,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 type.kind === "vector" ||
                 type.kind === "map" ||
                 type.kind === "json")
-        )
+        ) {
+            this.requireDocumentRecord(type);
             return source.dataType;
+        }
         if (type.kind === "product" && source.dataType?.kind === "vector")
             return source.dataType;
         if (source.kind === "tuple" && type.kind === "product") {
@@ -3135,7 +3240,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : element;
             });
             return elements.some(
-                (element, index) => element !== type.elements[index],
+                (element, index) =>
+                    !dataTypesEqual(element, type.elements[index]!),
             )
                 ? { ...type, elements }
                 : type;
@@ -3154,7 +3260,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return {
                 ...field,
                 type: retained,
-                ...(retained !== field.type &&
+                ...(!dataTypesEqual(retained, field.type) &&
                 retained.kind !== "optional" &&
                 (isOpaqueReference(retained) ||
                     retained.kind === "event-target")
@@ -3163,7 +3269,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         });
         return represented.some(
-            (field, index) => field.type !== fields[index]!.type,
+            (field, index) => !dataTypesEqual(field.type, fields[index]!.type),
         )
             ? this.context.dataTypes.ownedRecordType(represented)
             : type;
@@ -4471,10 +4577,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): Value | undefined {
         const property = access.name.text;
         const symbol = accessedPropertySymbol(this.context.checker, access);
+        const indexed = !symbol
+            ? this.context.checker.getIndexTypeOfType(
+                  this.context.checker.getTypeAtLocation(access.expression),
+                  ts.IndexKind.String,
+              )
+            : undefined;
         if (
-            !symbol ||
-            ((symbol.flags & ts.SymbolFlags.Optional) === 0 &&
-                !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol)))
+            symbol
+                ? (symbol.flags & ts.SymbolFlags.Optional) === 0 &&
+                  !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol))
+                : !indexed || !admitsUndefined(indexed)
         )
             return undefined;
         const path = !owner.impure && isCppPath(owner.cpp);
@@ -8954,16 +9067,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         }
         const source = copied ?? this.context.compileValue(iterable);
+        const iterated = this.iteratedElements(source);
         // The constructor copies the elements into a new collection, even
         // when the source is a Set. A borrowed view is read, never retained.
         // The constructor reads each element once and keeps none of the
         // source, so an element conversion copies nothing JavaScript shares.
         const values =
-            source.kind === "data" &&
-            (source.dataType?.kind === "span" ||
-                source.dataType?.kind === "set") &&
-            dataTypesEqual(source.dataType.element, dataType.element)
-                ? `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${source.cpp})`
+            iterated &&
+            "range" in iterated &&
+            dataTypesEqual(iterated.element, dataType.element)
+                ? `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${iterated.range.cpp})`
                 : isJsonValue(source) && dataType.element.kind !== "json"
                   ? this.documentElementsCopy(
                         source,
@@ -9320,6 +9433,35 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expressions: readonly ts.Expression[],
         source: ts.Node,
     ): string {
+        if (expressions.some(ts.isSpreadElement)) {
+            const pin = (value: Value, node: ts.Expression): Value =>
+                this.context.bindings.pinValueToTemporary(
+                    value,
+                    "typed_array_lane",
+                    node,
+                );
+            const lanes = this.spreadLaneValues(
+                expressions,
+                (element) => pin(this.context.compileValue(element), element),
+                "Typed array literal spreads require represented numeric tuples.",
+                pin,
+            );
+            const values = lanes.map(({ value }) => value.staticNumber);
+            return this.typedArrayFromElements(
+                kind,
+                lanes.map(({ value, node }) =>
+                    this.compileKnownValueForSink(
+                        value,
+                        { kind: "number" },
+                        node,
+                    ),
+                ),
+                values.every((value): value is number => value !== undefined)
+                    ? values
+                    : undefined,
+                source,
+            );
+        }
         const elements = expressions.map((element) =>
             this.context.compileNumber(element, "double"),
         );
@@ -9560,6 +9702,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType,
     ): string {
         requireObservedPromise(this.context, expression);
+        if (this.context.dataTypes.carriesFunction(dataType)) {
+            const source = this.dataTypeAt(expression);
+            if (source)
+                this.connectFunctionStorage(source, dataType, expression);
+        }
         const assigned =
             this.assignedRights.size === 0
                 ? undefined
@@ -9806,6 +9953,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType,
         node: ts.Node,
     ): string {
+        if (value.dataType && this.context.dataTypes.carriesFunction(dataType))
+            this.connectFunctionStorage(value.dataType, dataType, node);
         if (
             dataType.kind === "iterator" &&
             value.dataType?.kind === "iterator"
@@ -9978,13 +10127,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /** A guarded numeric tuple, including a document array copied by spread. */
+    public tupleSpreadValue(expression: ts.Expression, known?: Value): Value {
+        const value = this.narrowOptional(
+            known ?? this.context.compileValue(expression),
+            expression,
+        );
+        if (!isJsonValue(value)) return value;
+        const type = this.dataTypeAt(expression);
+        if (type?.kind !== "tuple") return value;
+        const copied = this.compileKnownValueForSink(
+            value,
+            { kind: "vector", element: { kind: "number" } },
+            expression,
+        );
+        return {
+            ...this.leafValue(
+                `bbl::js::array_as_tuple<${type.arity}>(${copied})`,
+                type,
+            ),
+            freshData: true,
+        };
+    }
+
     /**
      * The lanes a numeric tuple spreads (`iteratedElements`): a
      * compile-time tuple's own elements, or a native tuple's elements as
      * they are where the spread is read, each read once into a temporary.
      * Undefined for any other value, whose element count is not known.
      */
-    private spreadTupleLanes(
+    public spreadTupleLanes(
         spread: Value,
         node: ts.Expression,
     ): readonly Value[] | undefined {
@@ -10025,7 +10197,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return elements.flatMap((element) => {
             if (!ts.isSpreadElement(element))
                 return [{ value: read(element), node: element }];
-            const spread = this.context.compileValue(element.expression);
+            const spread = this.tupleSpreadValue(element.expression);
             const lanes =
                 this.spreadTupleLanes(spread, element) ??
                 this.context.fail(element, refusal);
@@ -10082,14 +10254,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression.elements.length === 1 &&
                 ts.isSpreadElement(expression.elements[0]!)
             ) {
-                const spread = this.context.compileValue(
+                const spread = this.tupleSpreadValue(
                     expression.elements[0].expression,
                 );
                 if (
                     spread.dataType &&
                     dataTypesEqual(spread.dataType, dataType)
                 ) {
-                    return `bbl::js::clone_tuple(${spread.cpp})`;
+                    return spread.freshData
+                        ? spread.cpp
+                        : `bbl::js::clone_tuple(${spread.cpp})`;
                 }
                 if (spread.kind === "tuple") {
                     return this.compileKnownValueForSink(
@@ -10414,6 +10588,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
         if (dataType.kind === "enummap" && value.dataType?.kind === "struct")
             this.requireEnumMapBinding(expression, dataType);
+        if (dataType.kind === "struct" && isOpaqueReference(value.dataType)) {
+            const demand = this.context.dataTypes.nativeRecordViewDemand(
+                dataType.name,
+                value.dataType!,
+                expression,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
+        }
         this.context.fail(
             expression,
             `Expression does not produce the expected data ${JSON.stringify(dataType)} value; received ${value.kind} ${value.dataType ? JSON.stringify(value.dataType) : "without a data type"}.`,
@@ -11227,12 +11409,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // An accessor slot of a new object (a spread, a rest) holds
             // the copied value as data; one of an assigned object runs its
             // setter.
-            if (targetField.accessorReceiver)
-                this.context.dataTypes.structField(
-                    target.type.name,
-                    targetField.sourceName,
-                    source,
-                );
             const store = (stored: string): string =>
                 !targetField.accessor
                     ? `${target.cpp}${member}${targetField.name} = ${stored};`
@@ -11298,19 +11474,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             declared = true;
         };
         const member = referenceStruct ? "->" : ".";
-        // A field of the new object: an accessor slot (a view's) holds the
-        // value it is written as data; a receiver slot refuses.
-        const fieldOf = (name: string, node: ts.Node): DataStructField => {
-            const field = this.context.dataTypes.structField(
+        // Every accessor slot of the new object holds the copied value as data.
+        const fieldOf = (name: string, node: ts.Node): DataStructField =>
+            this.context.dataTypes.structField(
                 dataType.name,
                 name,
                 node,
                 "accessors",
             );
-            if (field.accessorReceiver)
-                this.context.dataTypes.structField(dataType.name, name, node);
-            return field;
-        };
         const store = (field: DataStructField, cpp: string): string =>
             `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, cpp)};`;
         const assigned = new EmissionSet<string>();
@@ -11802,13 +11973,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         "static-value-required",
                     );
                 }
-                if (this.context.isInRuntimeControlFlow()) {
-                    this.context.fail(
-                        expression,
-                        "A compile-time record cannot be edited from runtime control flow.",
-                        "static-value-required",
-                    );
-                }
+                this.requireRuntimeRecordStorage(
+                    recordOwner,
+                    target.expression,
+                );
                 deleteRecordProperty(recordOwner, key.staticString);
                 return;
             }
@@ -11936,13 +12104,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         expression,
                         "Module namespace properties are read-only.",
                     );
-                if (this.context.isInRuntimeControlFlow()) {
-                    this.context.fail(
-                        expression,
-                        "A compile-time record cannot be edited from runtime control flow.",
-                        "static-value-required",
-                    );
-                }
+                this.requireRuntimeRecordStorage(
+                    recordOwner,
+                    target.expression,
+                );
                 deleteRecordProperty(recordOwner, target.name.text);
                 return;
             }
@@ -11964,6 +12129,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     target.name.text,
                     target,
                 );
+                return;
+            }
+            if (owner?.dataType?.kind === "map" && owner.dataType.dictionary) {
+                this.context.reachJsData();
+                this.context.emit({
+                    kind: "expression",
+                    code: `static_cast<void>(${owner.cpp}.erase(${this.context.cppString(target.name.text)}));`,
+                });
+                this.context.bindings.invalidateRecordProperties(owner);
                 return;
             }
             const field = this.compileDataPath(target, "write");
@@ -11989,6 +12163,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /** `delete owner[key]` for a key generation knows: the `?` field's storage empties. */
+    private requireRuntimeRecordStorage(
+        owner: Value,
+        expression: ts.Expression,
+    ): void {
+        if (!this.context.isInRuntimeControlFlow()) return;
+        const declaration = this.context.bindings.recordDeclaration(
+            owner,
+            expression,
+        );
+        if (declaration && !this.context.dynamicBindings.has(declaration))
+            throw new DynamicBindingStorageRequired(declaration, "source");
+        this.context.fail(
+            expression,
+            "A compile-time record cannot be edited from runtime control flow.",
+            "static-value-required",
+        );
+    }
+
     private deleteStructField(
         owner: Value,
         type: DataType<"struct">,
@@ -17319,7 +17511,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (
             optional?.kind === "data" &&
-            optional.dataType?.kind === "optional"
+            (optional.dataType?.kind === "optional" || isJsonValue(optional))
         ) {
             return this.compileKnownValueForSink(optional, dataType, unwrapped);
         }

@@ -47,7 +47,6 @@ import {
     isOpaqueReference,
     isHandleKind,
     isTypedArrayType,
-    tupleComponents,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
@@ -60,6 +59,7 @@ import {
 import { readOnlyDataMethods } from "./receiver-methods.js";
 import {
     callArgumentIsReadOnly,
+    isEffectFunction,
     parameterIsReadOnly,
     parameterOnlyRead,
 } from "./parameter-effects.js";
@@ -1339,6 +1339,9 @@ export class UserFunctionLowerer {
                 "Array-bound callback parameters require a native tuple value.",
             );
         }
+        // The lane expressions read this owner inside the callee. In an
+        // async activation it must survive with the callee's other captures.
+        context.useNativeValue(value);
         parameter.name.elements.forEach((element, index) => {
             if (ts.isOmittedExpression(element)) return;
             if (!ts.isIdentifier(element.name))
@@ -4246,6 +4249,13 @@ export class UserFunctionLowerer {
                 "Stored function must resolve to a local function declaration or literal.",
             );
         }
+        const sourceType = context.dataLowerer.dataTypeAt(declaration);
+        if (sourceType)
+            context.dataLowerer.connectFunctionStorage(
+                sourceType,
+                dataType,
+                expression,
+            );
         if (this.loweringStoredDataFunctions.has(declaration)) {
             context.fail(
                 expression,
@@ -6343,7 +6353,10 @@ export class UserFunctionLowerer {
             const sink =
                 rest !== undefined && index >= rest ? expanded : values;
             if (ts.isSpreadElement(argument)) {
-                const spread = this.argumentValue(context, argument.expression);
+                const spread = context.dataLowerer.tupleSpreadValue(
+                    argument.expression,
+                    this.argumentValue(context, argument.expression),
+                );
                 if (spread.kind === "tuple") {
                     sink.push(...(spread.tupleElements ?? []));
                     return;
@@ -6354,20 +6367,11 @@ export class UserFunctionLowerer {
                 ) {
                     // A numeric tuple's lanes are its arguments, read off
                     // one bound evaluation of the tuple.
-                    const arity = spread.dataType.arity;
-                    const bound = context.bindings.bindDataTuple(
-                        spread,
-                        arity,
-                        "spread_tuple",
-                    );
                     sink.push(
-                        ...tupleComponents(bound, arity, "double").map(
-                            (cpp): Value => ({
-                                kind: "number",
-                                cpp,
-                                dataType: { kind: "number" },
-                            }),
-                        ),
+                        ...context.dataLowerer.spreadTupleLanes(
+                            spread,
+                            argument,
+                        )!,
                     );
                     return;
                 }
@@ -6519,7 +6523,7 @@ export class UserFunctionLowerer {
         );
     }
 
-    private parameterValue(
+    public parameterValue(
         context: UserFunctionContext,
         parameter: UserFunctionParameterIr,
         argument: Value | undefined,
@@ -6553,6 +6557,7 @@ export class UserFunctionLowerer {
         }
         const storage = argument.dataType;
         if (!storage) return argument;
+        const document = isJsonValue(argument);
         const sourceType = source
             ? this.checker.getTypeAtLocation(source)
             : parameter.type;
@@ -6563,18 +6568,19 @@ export class UserFunctionLowerer {
             (storage.kind === "function" ||
                 (storage.kind === "struct" &&
                     context.dataTypes.isReferenceStruct(storage.name)));
-        if (storage.kind !== "optional" && !referenceAbsence) return argument;
+        if (storage.kind !== "optional" && !referenceAbsence && !document)
+            return argument;
         // A default of `undefined` keeps an optional argument as passed,
         // absent or not.
         if (
-            storage.kind === "optional" &&
+            (storage.kind === "optional" || document) &&
             isGlobalUndefined(this.checker, initializer)
         )
             return argument;
         // An argument that states whether it is defined takes the default
         // only when it is not: a `null` argument is the parameter's value.
         const definedCpp = absent.null ? argument.slotFoundCpp : undefined;
-        if (absent.null) {
+        if (absent.null && !document) {
             if (!mayBeUndefined) return argument;
             // A default of `null` gives an undefined argument the value a
             // null one already has: the one empty slot answers both.
@@ -6632,7 +6638,7 @@ export class UserFunctionLowerer {
         const result = context.allocateTemporaryCppName("default_value");
         const cppType = context.dataTypes.cppType(type);
         const present =
-            definedCpp ??
+            (document ? `!${input}.is_undefined()` : definedCpp) ??
             (storage.kind === "optional"
                 ? optionalPresentCpp(input)
                 : `static_cast<bool>(${input})`);
@@ -6659,8 +6665,8 @@ ${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
 
     /**
      * A default array literal is a fresh array per call. A parameter the
-     * body writes through (`out[0] = x`) holds it in the parameter's own
-     * native array storage, as a declared mutable local does.
+     * body retains, observes by identity or writes through holds that one
+     * owner in native array storage. Constructor parameter properties retain it.
      */
     private defaultParameterValue(
         context: UserFunctionContext,
@@ -6671,14 +6677,22 @@ ${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
         if (
             value.kind !== "tuple" ||
             !ts.isIdentifier(parameter.name) ||
-            !isSupportedFunction(declaration) ||
-            parameterIsReadOnly(this.checker, declaration, parameter.name)
+            !isEffectFunction(declaration) ||
+            (parameterOnlyRead(this.checker, declaration, parameter.name) &&
+                !(
+                    ts.isConstructorDeclaration(declaration) &&
+                    ts.isParameterPropertyDeclaration(
+                        parameter.declaration,
+                        declaration,
+                    )
+                ))
         )
             return value;
-        const storage = context.dataTypes.fromStoredTsType(
+        const mapped = context.dataTypes.fromStoredTsType(
             parameter.type,
             parameter.declaration,
         );
+        const storage = mapped && context.dataTypes.ownReturnedArray(mapped);
         if (storage?.kind !== "tuple" && storage?.kind !== "vector")
             return value;
         return context.bindings.pinValueToTemporary(

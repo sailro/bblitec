@@ -5,7 +5,10 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
-import { provenUndefinedValue } from "./undefined-values.js";
+import {
+    hasUndefinedCompletion,
+    provenUndefinedValue,
+} from "./undefined-values.js";
 import {
     renderClosure,
     type CapturedClosure,
@@ -42,6 +45,7 @@ import {
 } from "./promises.js";
 import { isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { hasNoValueCompletion } from "./native-return-type.js";
 
 interface AsyncContext extends Pick<
     LoweringServices,
@@ -382,13 +386,32 @@ export class AsyncLowerer {
                         : cpp,
                 };
             }
+            const settlement =
+                rejection || node.arguments.length === 2
+                    ? this.settlementType(node)
+                    : undefined;
             const first = this.compileReaction(
                 argumentAt(node, 0),
                 promise,
                 rejection ? "catch" : "then",
                 node,
+                undefined,
+                settlement,
             );
             if (rejection && first.cppType !== promise.promiseType) {
+                if (settlement) {
+                    const forwarded = this.forwardReaction(
+                        promise,
+                        settlement,
+                        node,
+                    );
+                    return {
+                        kind: "promise",
+                        cpp: `${promise.cpp}.then(${forwarded}, ${first.cpp})`,
+                        promiseResult: this.withoutConstants(first.output),
+                        promiseType: first.cppType,
+                    };
+                }
                 if (
                     first.output.kind === "void" &&
                     !isPromiseResultUsed(node)
@@ -416,6 +439,8 @@ export class AsyncLowerer {
                     promise,
                     "catch",
                     node,
+                    undefined,
+                    settlement,
                 );
                 if (second.cppType !== cppType)
                     return context.fail(
@@ -1290,6 +1315,7 @@ export class AsyncLowerer {
         reaction: "then" | "catch" | "finally",
         node: ts.CallExpression,
         evaluated?: Value,
+        settlement?: DataType<"promise">,
     ): { cpp: string; output: Value; cppType: string; present?: string } {
         const context = this.context;
         const rejection = reaction === "catch";
@@ -1318,6 +1344,14 @@ export class AsyncLowerer {
             .getCallSignatures()[0];
         const returnType =
             signature && context.checker.getReturnTypeOfSignature(signature);
+        // A single fulfillment callback determines its own settlement. The
+        // call's context may widen its generic result to a constructor input
+        // union that the callback never produces.
+        if (!cleanup && !rejection && !settlement && returnType) {
+            settlement = this.settlementType(node, returnType);
+            // A null-only callback still needs the result's contextual carrier.
+            if (!settlement) settlement = this.settlementType(node);
+        }
         // A reporting function value still installs a reaction: only its
         // browser instrumentation is erased, not rejection handling or timing.
         const reportingOnly =
@@ -1329,7 +1363,7 @@ export class AsyncLowerer {
                 0 &&
             context.browserErasure.isBrowserOnlyHandler(callback, rejection);
         const neverReturns =
-            rejection &&
+            (rejection || settlement !== undefined) &&
             signature &&
             (context.checker.getReturnTypeOfSignature(signature).flags &
                 ts.TypeFlags.Never) !==
@@ -1434,6 +1468,10 @@ export class AsyncLowerer {
                     context.emitDiscardedValue(result.value);
                     result.value = { kind: "void", cpp: "" };
                 }
+                if (neverReturns) {
+                    context.emitDiscardedValue(result.value);
+                    return;
+                }
                 const expected = rejection
                     ? promise.promiseResult?.dataType
                     : undefined;
@@ -1457,6 +1495,31 @@ export class AsyncLowerer {
                         node,
                         context.checker.getTypeAtLocation(node),
                     );
+                if (!cleanup && settlement) {
+                    if (
+                        result.value.kind === "void" &&
+                        settlement.result &&
+                        (result.value.erasedVoidCompletion ||
+                            (!reportingOnly &&
+                                !hasUndefinedCompletion(
+                                    context.checker,
+                                    declaration,
+                                ) &&
+                                !(
+                                    stored?.dataType?.kind === "function" &&
+                                    stored.dataType.undefinedCompletion
+                                )))
+                    )
+                        context.fail(
+                            callback,
+                            "Promise recovery with a void result requires a proven undefined completion.",
+                        );
+                    result.value = this.convertResult(
+                        result.value,
+                        settlement,
+                        node,
+                    );
+                }
                 if (result.value.kind === "void") {
                     if (result.value.cpp)
                         context.emit({
@@ -1472,12 +1535,16 @@ export class AsyncLowerer {
             }),
         );
         const output = neverReturns
-            ? promise.promiseResult!
+            ? settlement
+                ? settlement.result
+                    ? context.dataLowerer.leafValue("", settlement.result)
+                    : { kind: "void" as const, cpp: "" }
+                : promise.promiseResult!
             : result.value.kind === "promise"
               ? result.value.promiseResult!
               : result.value;
         const cppType = neverReturns
-            ? promise.promiseType!
+            ? this.cppType(output, node)
             : result.value.kind === "promise"
               ? result.value.promiseType!
               : this.cppType(output, node);
@@ -1485,7 +1552,15 @@ export class AsyncLowerer {
             cpp: renderClosure(
                 compiled,
                 cleanup ? "" : `[[maybe_unused]] ${parameterType} ${name}`,
-                neverReturns ? cppType : undefined,
+                neverReturns
+                    ? cppType
+                    : settlement
+                      ? result.value.kind === "promise"
+                          ? context.dataTypes.cppType(settlement)
+                          : settlement.result
+                            ? cppType
+                            : "void"
+                      : undefined,
             ),
             output,
             cppType,
@@ -1493,6 +1568,94 @@ export class AsyncLowerer {
                 ? { present: `static_cast<bool>(${stored.cpp})` }
                 : {}),
         };
+    }
+
+    /** Owned settlement storage, shared by both outcomes when a reaction can recover. */
+    private settlementType(
+        node: ts.Expression,
+        source = this.context.checker.getTypeAtLocation(node),
+    ): DataType<"promise"> | undefined {
+        const context = this.context;
+        const awaited = context.checker.getAwaitedType(source);
+        if (!awaited) return undefined;
+        if (hasNoValueCompletion(awaited)) return { kind: "promise" };
+        const result = context.dataTypes.fromPromiseResultType(awaited, node);
+        return result
+            ? {
+                  kind: "promise",
+                  result: context.dataTypes.markStoredObjectReferences(result),
+              }
+            : undefined;
+    }
+
+    /** Storage conversion observes a settlement directly; it does not install a Promise reaction. */
+    private convertResult(
+        value: Value,
+        expected: DataType<"promise">,
+        node: ts.Node,
+    ): Value {
+        const context = this.context;
+        if (value.kind === "promise")
+            return context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    expected,
+                    node,
+                ),
+                expected,
+            );
+        if (!expected.result) {
+            context.emitDiscardedValue(value);
+            return { kind: "void", cpp: "" };
+        }
+        if (value.kind === "void") {
+            context.emitDiscardedValue(value);
+            value = { kind: "json-null", cpp: "std::nullopt" };
+        }
+        return context.dataLowerer.leafValue(
+            context.dataLowerer.compileKnownValueForSink(
+                value,
+                expected.result,
+                node,
+            ),
+            expected.result,
+        );
+    }
+
+    private forwardReaction(
+        promise: Value,
+        expected: DataType<"promise">,
+        node: ts.Node,
+    ): string {
+        const context = this.context;
+        const name = context.allocateTemporaryCppName("promise_fulfillment");
+        const compiled = context.withOwnedCallbackBody(() =>
+            context.captureManagedClosureLines(() => {
+                context.registerNativeBindingType(
+                    name,
+                    `const ${promise.promiseType}`,
+                );
+                const binding = context.registerNativeBinding(name);
+                const value = this.convertResult(
+                    this.resultAt(promise.promiseResult!, name, binding),
+                    expected,
+                    node,
+                );
+                if (value.kind !== "void")
+                    context.emit({
+                        kind: "control",
+                        code: `return ${this.resultCpp(value, node)};`,
+                        transfer: "return",
+                    });
+            }),
+        );
+        return renderClosure(
+            compiled,
+            `[[maybe_unused]] const ${promise.promiseType}& ${name}`,
+            expected.result
+                ? context.dataTypes.cppType(expected.result)
+                : "void",
+        );
     }
 
     private isPromiseType(expression: ts.Expression): boolean {
@@ -1647,18 +1810,21 @@ export class AsyncLowerer {
     }
     /**
      * The value `Promise.resolve(value)` adopts, in the representation of
-     * the promise its context expects when that differs from the value's
+     * the promise its context or checked call expects when that differs from the value's
      * own: `Promise.resolve("a")` returned as a `Promise<"a" | "b">`
      * resolves the literal union's enum, not a string.
      */
     private resolvedValue(node: ts.CallExpression): Value {
         const context = this.context;
         const argument = node.arguments[0];
-        if (!argument) return { kind: "void", cpp: "" };
-        const value = context.compileValue(argument);
+        let value = argument
+            ? context.compileValue(argument)
+            : { kind: "void" as const, cpp: "" };
+        value = this.adoptPromiseUnion(value, argument ?? node) ?? value;
         // Existing promises keep their identity and settlement; only a raw
         // payload needs conversion to its contextual result representation.
         if (value.kind === "promise") return value;
+        this.refuseThenable(value, argument ?? node);
         const own =
             value.dataType ??
             (value.kind === "string" ||
@@ -1666,38 +1832,42 @@ export class AsyncLowerer {
             value.kind === "boolean"
                 ? { kind: value.kind }
                 : undefined);
-        const contextual = context.checker.getContextualType(node);
-        const awaited =
-            contextual &&
-            context.checker.getAwaitedType(
-                // Absence of the promise itself is not absence of its payload.
-                context.checker.getNonNullableType(contextual),
-            );
-        const expected =
-            own &&
-            awaited &&
-            (awaited.flags &
-                (ts.TypeFlags.Any |
-                    ts.TypeFlags.Unknown |
-                    ts.TypeFlags.Void |
-                    ts.TypeFlags.Undefined)) ===
-                0
-                ? context.dataTypes.fromTsType(awaited, node)
+        const settlement = (
+            type: ts.Type | undefined,
+        ): DataType | undefined => {
+            const awaited =
+                type &&
+                context.checker.getAwaitedType(
+                    // Absence of the promise itself is not absence of its payload.
+                    context.checker.getNonNullableType(type),
+                );
+            return awaited &&
+                (awaited.flags &
+                    (ts.TypeFlags.Any |
+                        ts.TypeFlags.Unknown |
+                        ts.TypeFlags.Void |
+                        ts.TypeFlags.Undefined)) ===
+                    0
+                ? context.dataTypes.fromPromiseResultType(awaited, node)
                 : undefined;
+        };
+        const expected =
+            settlement(context.checker.getContextualType(node)) ??
+            settlement(context.checker.getTypeAtLocation(node));
         if (
-            !own ||
             !expected ||
-            context.dataTypes.cppType(expected) ===
-                context.dataTypes.cppType(own)
+            (own &&
+                context.dataTypes.cppType(expected) ===
+                    context.dataTypes.cppType(own))
         )
             return value;
-        return context.dataLowerer.leafValue(
-            context.dataLowerer.compileKnownValueForSink(
-                value,
-                expected,
-                argument,
-            ),
-            expected,
+        return this.convertResult(
+            value,
+            {
+                kind: "promise",
+                result: context.dataTypes.markStoredObjectReferences(expected),
+            },
+            argument ?? node,
         );
     }
     /**

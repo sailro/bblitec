@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataLowerer } from "./data-lowering.js";
-import type { Value } from "./types.js";
+import { isStringValue, type Value } from "./types.js";
 import { compileDateLocaleString } from "./locale.js";
 
 /** The default Intl formatter captures its host time zone at construction. */
@@ -61,7 +61,7 @@ export function compileDateNew(
     if (args.length > 1)
         context.fail(
             expression,
-            "Date construction supports the current time or one numeric timestamp or Date value.",
+            "Date construction supports the current time or one numeric timestamp, standardized date-time string or Date value.",
         );
     context.reachJsData();
     const value = args[0] ? context.compileValue(args[0]) : undefined;
@@ -71,15 +71,46 @@ export function compileDateNew(
           ? `*(${value.cpp})`
           : value.kind === "number"
             ? context.castNumber(value, "double")
-            : context.fail(
-                  args[0]!,
-                  "Date construction requires a numeric timestamp or a Date value.",
-              );
+            : isStringValue(value)
+              ? dateStringValue(lowerer, value, args[0]!)
+              : context.fail(
+                    args[0]!,
+                    "Date construction requires a numeric timestamp, standardized date-time string or Date value.",
+                );
     return {
         kind: "data",
         cpp: `bbl::js::make_date(${timestamp})`,
         dataType: { kind: "date" },
         impure: true,
+    };
+}
+
+function dateStringValue(
+    lowerer: DataLowerer,
+    value: Value,
+    node: ts.Node,
+): string {
+    lowerer.context.reachJsData();
+    lowerer.context.reachFeature("data:locale", node);
+    return `bbl::pal::parse_date(${lowerer.compileKnownValueForSink(value, { kind: "string" }, node)})`;
+}
+
+export function compileDateParse(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+): Value {
+    lowerer.context.expectArgumentCount(call, 1, 1);
+    const argument = call.arguments[0]!;
+    const value = lowerer.context.compileValue(argument);
+    if (!isStringValue(value))
+        lowerer.context.fail(
+            argument,
+            "Date.parse requires a standardized date-time string; other coercions are not represented.",
+        );
+    return {
+        kind: "number",
+        cpp: dateStringValue(lowerer, value, argument),
+        dataType: { kind: "number" },
     };
 }
 

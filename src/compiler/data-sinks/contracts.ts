@@ -35,6 +35,7 @@ export type DataSinkHost = Pick<
     | "invalidateEscapingCollection"
     | "knownValueFitsSink"
     | "noteArgumentsPastSignature"
+    | "connectFunctionStorage"
     | "requireNumericSlot"
 >;
 

@@ -15,6 +15,7 @@ export type DynamicBindingStorage =
     | "source"
     | "array"
     | "error-array"
+    | "callback"
     | { nativeType: ts.Type; node: ts.Expression };
 
 /** A reached assignment proves that a lexical binding must retain dynamic object storage. */
@@ -32,7 +33,7 @@ export interface DemandedStorageContext {
     readonly checker: ts.TypeChecker;
     readonly dataTypes: Pick<
         DataTypeRegistry,
-        "fromStoredTsType" | "nullableType"
+        "fromStoredTsType" | "nullableType" | "withDynamicJsonTypes"
     >;
 }
 
@@ -49,6 +50,22 @@ export function demandedStorageType(
 ): DataType | undefined {
     const { checker, dataTypes } = context;
     const source = checker.getTypeAtLocation(declaration.name);
+    if (storage === "callback") {
+        const mapped = dataTypes.fromStoredTsType(source, declaration);
+        return mapped?.kind === "function"
+            ? { ...mapped, identity: true }
+            : undefined;
+    }
+    if (storage === "array")
+        return dataTypes.withDynamicJsonTypes(true, () => {
+            const indexed = checker.getIndexTypeOfType(
+                source,
+                ts.IndexKind.Number,
+            );
+            const element =
+                indexed && dataTypes.fromStoredTsType(indexed, declaration);
+            return element ? { kind: "vector", element } : undefined;
+        });
     if (storage === "error-array")
         return { kind: "vector", element: { kind: "error" } };
     if (typeof storage === "object") {
@@ -61,22 +78,15 @@ export function demandedStorageType(
             ? dataTypes.nullableType(mapped, !absent.null)
             : mapped;
     }
-    const mapped =
+    return (
         dataTypes.fromStoredTsType(source, declaration) ??
         // A fresh `{}` has no members to type: a parsed document holds it
         // as one object with identity.
-        (storage === "source" &&
-        ts.isObjectLiteralExpression(initializer) &&
+        (ts.isObjectLiteralExpression(initializer) &&
         initializer.properties.length === 0
             ? { kind: "json" as const }
-            : undefined);
-    if (storage === "source") return mapped;
-    const indexed = checker.getIndexTypeOfType(source, ts.IndexKind.Number);
-    const element =
-        mapped?.kind === "vector" || mapped?.kind === "span"
-            ? mapped.element
-            : indexed && dataTypes.fromStoredTsType(indexed, declaration);
-    return element ? { kind: "vector", element } : undefined;
+            : undefined)
+    );
 }
 
 /** The initialized variable declaration a name reads, whose storage a demand can retype. */

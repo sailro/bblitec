@@ -209,7 +209,9 @@ function compileStringify(
         ? jsonType
         : (represented.dataType ??
           context.dataLowerer.dataTypeAt(argument) ??
-          (represented.kind === "record" ? jsonType : undefined));
+          (represented.kind === "record" || represented.kind === "tuple"
+              ? jsonType
+              : undefined));
     if (!dataType) {
         context.fail(
             argument,

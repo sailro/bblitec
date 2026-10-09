@@ -7,6 +7,14 @@ interface NativeReturnTypeOptions {
     unwrapPromise?: boolean;
 }
 
+/** Void and undefined have the same completion ABI, including their union. */
+export function hasNoValueCompletion(type: ts.Type): boolean {
+    return (type.isUnion() ? type.types : [type]).every(
+        (member) =>
+            (member.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0,
+    );
+}
+
 /** The value a source function returns in the synchronous native model. */
 export function nativeReturnTsType(
     checker: ts.TypeChecker,
@@ -46,8 +54,7 @@ export function nativeReturnTsType(
             if (absent.undefined && !absent.void) type = result;
         }
     }
-    if ((type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0)
-        return undefined;
+    if (hasNoValueCompletion(type)) return undefined;
     if (options.unwrapPromise === false) return type;
     const promiseChecker = checker as ts.TypeChecker & {
         getPromisedTypeOfPromise(candidate: ts.Type): ts.Type | undefined;
@@ -63,9 +70,7 @@ export function nativeReturnTsType(
         resolved = promised;
     }
     resolved = settledUnion(promiseChecker, resolved);
-    return (resolved.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0
-        ? undefined
-        : resolved;
+    return hasNoValueCompletion(resolved) ? undefined : resolved;
 }
 
 /**
