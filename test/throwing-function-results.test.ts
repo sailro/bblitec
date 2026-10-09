@@ -69,14 +69,45 @@ test("throwing void functions cannot become represented result values", () => {
     );
 });
 
-test("throwing native-owner functions cannot invent owner provenance", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+test("throwing native-owner functions cannot invent owner provenance", (t) => {
+    for (const expression of ["make().position.x", "returned(make).position.x"])
+        assert.throws(
+            () =>
+                compileSource(`
+                    import type { Mesh } from '@babylonjs/lite';
+                    function returned(make:()=>Mesh):Mesh {return make();}
+                    function observe(make:()=>Mesh):number {return ${expression};}
+                    const readers:Array<typeof observe>=[observe];
+                `),
+            /A mesh value is not associated with an engine/,
+        );
+    const source = `
         import type { Mesh } from '@babylonjs/lite';
-        function fail():Mesh {throw new Error('expected');}
-        const position=fail().position;
-    `),
-        /A mesh value is not associated with an engine/,
+        const expected=new Error('expected');
+        let trace='';
+        let caught=0;
+        function fail():Mesh {trace+='f';throw expected;}
+        try {
+            const position=fail().position;
+            trace+='a';
+            void position;
+        } catch(error) {
+            if(error!==expected)throw error;
+            caught++;
+        }
+        if(trace!=='f'||caught!==1)throw new Error('throwing owner result');
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.CommonJS,
+            },
+        }).outputText,
+        { exports: {} },
     );
+    const result = compileSource(source);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("The native fixture compiler is unavailable.");
+    runGeneratedProgram(tools, "throwing-native-owner-result", result.cpp);
 });

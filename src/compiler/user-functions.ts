@@ -2346,6 +2346,7 @@ export class UserFunctionLowerer {
                                   argument,
                               )
                             : rawValue;
+                    context.dataLowerer.markEscaped(value);
                     cpp =
                         value.kind === "data" &&
                         value.dataType &&
@@ -5597,7 +5598,7 @@ export class UserFunctionLowerer {
                           this.checker,
                           this.checker.getReturnTypeOfSignature(signature),
                           ir.declaration,
-                          { unwrapPromise: false },
+                          { unwrapPromise: !context.options.workers },
                       )
                     : undefined;
                 const type =

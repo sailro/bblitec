@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
+import { CompileError, compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -1445,6 +1445,25 @@ check(
 );
 
 check(
+    "plain-record-membership-distinguishes-inherited-and-own-keys",
+    `
+    interface Row { value: number }
+    function inspect(row: Row): number {
+        if (Object.hasOwn(row, "toString") || Object.hasOwn(row, "constructor"))
+            throw new Error("inherited names are not own keys");
+        if (!("toString" in row) || !("constructor" in row))
+            throw new Error("inherited names remain present");
+        if (!Object.hasOwn(row, "value") || !("value" in row) || Object.hasOwn(row, "missing") || "missing" in row)
+            throw new Error("declared and absent own keys");
+        return row.value;
+    }
+    const inspectors: Array<typeof inspect> = [inspect];
+    const rows: Row[] = [{ value: 3 }];
+    if (inspectors[0]!(rows[0]!) !== 3) throw new Error("stored record membership");
+`,
+);
+
+check(
     "callback-factory-record-assignment",
     `
     let count = 0;
@@ -2563,16 +2582,64 @@ check(
 `,
 );
 
-test("union arms told apart by a field that admits null refuse", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+check(
+    "overlapping-nullable-union-values-retain-array-length",
+    `
+    type R = { ok: false; a: string | null } | { ok: false; b: number } | { ok: true };
+    const rs: R[] = [{ ok: false, a: null }, { ok: false, b: 1 }, { ok: true }];
+    if (rs.length !== 3) throw new Error("n");
+`,
+);
+
+test("overlapping nullable union membership refuses unrepresented arm fields", () => {
+    const source = `
+        type R = { ok: false; a: string | null } | { ok: false; b: number } | { ok: true };
+        function describe(row: R): string {
+            if (row.ok) return "ok";
+            if ("a" in row) {
+                if (!Object.hasOwn(row, "a") || Object.hasOwn(row, "b")) throw new Error("a own key");
+                return row.a === null ? "null" : row.a;
+            }
+            if (Object.hasOwn(row, "a") || !Object.hasOwn(row, "b")) throw new Error("b own key");
+            return String(row.b);
+        }
+        const observers: Array<typeof describe> = [describe];
+        const rs: R[] = [{ ok: false, a: null }, { ok: false, b: 1 }, { ok: true }];
+    `;
+    const refuses = (observed: string): void => {
+        runInNewContext(
+            ts.transpileModule(observed, {
+                compilerOptions: { target: ts.ScriptTarget.ES2022 },
+            }).outputText,
+        );
+        assert.throws(
+            () => compileSource(observed),
+            (error: unknown) =>
+                error instanceof CompileError &&
+                error.detail ===
+                    "Own-property membership requires represented field 'a'.",
+        );
+    };
+    refuses(
+        source +
+            `
+            if (observers[0]!(rs[0]!) !== "null" || observers[0]!(rs[1]!) !== "1" ||
+                observers[0]!(rs[2]!) !== "ok") throw new Error("union presence oracle");
+        `,
+    );
+    for (const membership of [
+        "Object.hasOwn(row, 'a')",
+        "key in row",
+        "Object.hasOwn(row, key)",
+    ])
+        refuses(`
             type R = { ok: false; a: string | null } | { ok: false; b: number } | { ok: true };
             const rs: R[] = [{ ok: false, a: null }, { ok: false, b: 1 }, { ok: true }];
-            if (rs.length !== 3) throw new Error("n");
-            `),
-        /Struct literal has unknown field 'a'/,
-    );
+            function observe(row: R, key: string): boolean { return ${membership}; }
+            const observers: Array<typeof observe> = [observe];
+            if (!observers[0]!(rs[0]!, 'a') || observers[0]!(rs[1]!, 'a') || observers[0]!(rs[2]!, 'a'))
+                throw new Error("own null and missing arm keys differ");
+        `);
 });
 
 check(
@@ -12009,6 +12076,44 @@ check(
     if (bound(trace("c", 3)) !== 123 || bound(4) !== 124 || order.join(",") !== "a,b,c")
         throw new Error("bound arguments read once " + order.join(","));
     if (inc === add.bind(null, 1)) throw new Error("bind identity");
+`,
+);
+
+check(
+    "this-field-writes-invalidate-shared-row-facts",
+    `
+    interface Counter { k: number; untouched: number }
+    function assign(this: Counter, value: number): number {
+        this.k = value;
+        return this.k;
+    }
+    function assignValue(this: Counter, value: number): number {
+        return this["k"] = value;
+    }
+    function add(this: Counter, by: number): number {
+        this.k += by;
+        return this.k;
+    }
+    function addKey(this: Counter, by: number): number {
+        this["k"] += by;
+        return this["k"];
+    }
+    const assigned: Counter[] = [{k:1,untouched:7}];
+    const assignedAlias = assigned[0]!;
+    if (assign.call(assigned[0]!,4)!==4 || assignedAlias.k!==4 || assigned[0]!.k!==4 || assignedAlias.untouched!==7)
+        throw new Error("this assignment alias");
+    const assignedValue: Counter[] = [{k:2,untouched:8}];
+    const valueAlias = assignedValue[0]!;
+    if (assignValue.call(assignedValue[0]!,5)!==5 || valueAlias.k!==5 || assignedValue[0]!.k!==5 || valueAlias.untouched!==8)
+        throw new Error("this assignment expression alias");
+    const compounded: Counter[] = [{k:3,untouched:9}];
+    const compoundAlias = compounded[0]!;
+    if (add.call(compounded[0]!,4)!==7 || compoundAlias.k!==7 || compounded[0]!.k!==7 || compoundAlias.untouched!==9)
+        throw new Error("this compound alias");
+    const computed: Counter[] = [{k:4,untouched:10}];
+    const computedAlias = computed[0]!;
+    if (addKey.call(computed[0]!,5)!==9 || computedAlias.k!==9 || computed[0]!.k!==9 || computedAlias.untouched!==10)
+        throw new Error("this computed compound alias");
 `,
 );
 

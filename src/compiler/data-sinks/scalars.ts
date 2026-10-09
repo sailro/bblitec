@@ -4,6 +4,8 @@ import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
 import { hasNonNullAssertion, unwrapExpression } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
+import { yieldsFreshObject } from "../fresh-records.js";
+import { objectIdentityCallArgument } from "../static-evaluator.js";
 
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
@@ -22,6 +24,7 @@ import { requireAbsenceTag } from "../absence-tag-storage.js";
 import {
     compileJsonRecordView,
     compileJsonTupleView,
+    isPlainJsonRecord,
 } from "../json-record-views.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -87,7 +90,7 @@ function expressionJson(
 }
 
 /**
- * An object literal stored straight into a document slot is the document
+ * A fresh plain object stored straight into a document slot is the document
  * itself: an owned object of its own keys, in creation order, each member
  * stored as a document value (a key a conditional spread wrote only while
  * it is own). Undefined for a record with methods or accessors, or one
@@ -98,14 +101,17 @@ function ownedDocument(
     record: Value,
     node: ts.Node,
 ): string | undefined {
-    const literal = lowerer.convertedExpression(node);
-    if (
-        !literal ||
-        !ts.isObjectLiteralExpression(unwrapExpression(literal)) ||
-        Object.keys(record.recordMethods ?? {}).length ||
-        Object.keys(record.recordGetters ?? {}).length ||
-        Object.keys(record.recordSetters ?? {}).length
-    )
+    if (!isPlainJsonRecord(record)) return undefined;
+    let expression = lowerer.convertedExpression(node);
+    while (expression) {
+        const argument = objectIdentityCallArgument(
+            unwrapExpression(expression),
+            (value) => lowerer.context.libraryGlobal(value),
+        );
+        if (!argument) break;
+        expression = argument;
+    }
+    if (!expression || !yieldsFreshObject(lowerer.context.checker, expression))
         return undefined;
     const entries = ownEntries(lowerer.ownObjectContext(), record, node);
     if (!entries) return undefined;

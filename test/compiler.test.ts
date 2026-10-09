@@ -615,10 +615,9 @@ test("carries a handle annotation on a declaration the intrinsic produced", () =
     assert.match(result.cpp, /-2\.6/);
 });
 
-test("captures an integer loop counter a shared helper body reads", () => {
-    // The helper's material argument chooses between two handles by the
-    // counter, so its shared body reads the caller's counter through the
-    // captured environment: the capture is the native 64-bit counter.
+test("selects a loop material before invoking its shared helper", () => {
+    // The integer counter chooses the material at the call site. The shared
+    // body captures that selected handle and receives the counter as x.
     const result = compileSource(`
         import {
             addToScene,
@@ -649,15 +648,36 @@ test("captures an integer loop counter a shared helper body reads", () => {
     `);
 
     assert.match(result.cpp, /std::int64_t v_\w+_i = 0;/);
-    // A shared body's environment lives for one call, so it holds the
-    // caller's counter by reference rather than a copy.
+    const selected =
+        /auto (v_bblite_resource_argument_\d+) = \(std::fmod\(static_cast<double>\((v_\w+_i)\), 3\.0\) == 0\.0 \? v_cyan : v_white\);/.exec(
+            result.cpp,
+        );
+    assert.ok(selected);
+    const called = new RegExp(
+        `auto (v_bblite_shared_result_\\d+) = bbl::js::make_closure\\(bblscene::\\w+\\{v_engine, ${selected[1]}\\}, bblscene::\\w+\\)\\(static_cast<double>\\(${selected[2]}\\)\\);`,
+    ).exec(result.cpp);
+    assert.ok(called && selected.index < called.index);
+    assert.equal((result.cpp.match(/std::fmod\(/g) ?? []).length, 1);
     assert.match(
         result.cpp,
-        /std::remove_reference_t<std::int64_t>& capture\d+;/,
+        /std::remove_reference_t<bbl::MaterialHandle>& capture\d+;/,
     );
     assert.match(
         result.cpp,
-        /auto& (v_\w+_i) = v_bblite_environment_\d+\.capture\d+;[^]*std::fmod\(static_cast<double>\(\1\), 3\.0\)/,
+        new RegExp(
+            `auto& ${selected[1]} = v_bblite_environment_\\d+\\.capture\\d+;`,
+        ),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `bbl::set_mesh_material\\(v_engine, \\w+, ${selected[1]}\\);`,
+        ),
+    );
+    assert.ok(
+        result.cpp.includes(
+            `bbl::add_to_scene(v_scene, (${called[1]}).second);`,
+        ),
     );
 });
 
@@ -4193,8 +4213,9 @@ test("writes through a data struct returned by a reached call", () => {
         result.cpp,
         /auto&& (v_bblite_typed_slot_\d+) = bbl::js::array_store_checked\([^\n]+2\.0[^\n]+\);\s+\1 = bbl::js::to_uint8\(7\.0\)/,
     );
+    // Retained field metadata pins the struct before projecting its blocks.
     assert.equal(
-        (result.cpp.match(/auto v_bblite_shared_result_\d+ =/g) ?? []).length,
+        (result.cpp.match(/auto v_bblite_shared_return_\d+ =/g) ?? []).length,
         1,
         "probing an unchecked element must not evaluate its call-shaped owner twice",
     );
@@ -4257,9 +4278,33 @@ test("rebinds a nullable material cache entry from its factory", () => {
         const material = cache.materialFor();
     `);
 
-    assert.match(
-        result.cpp,
-        /std::optional<bbl::MaterialHandle> v_fn\d+_material/,
+    const material = result.cpp.match(
+        /std::optional<std::pair<bbl::StoredEngine, bbl::MaterialHandle>> (v_fn\d+_material) = [^\n]+\.to_optional\(\);/,
+    );
+    assert.ok(material);
+    const creation = result.cpp.match(
+        new RegExp(
+            String.raw`if \(!\(${material[1]}\.has_value\(\)\)\) \{\s*${material[1]} = bbl::js::Nullable<std::pair<bbl::StoredEngine, bbl::MaterialHandle>>\{std::pair<bbl::StoredEngine, bbl::MaterialHandle>\{bbl::StoredEngine\{(\w+)\}, bbl::create_standard_material\(\1\)\}\}\.to_optional\(\);`,
+        ),
+    );
+    assert.ok(creation);
+    assert.equal(
+        (result.cpp.match(/bbl::create_standard_material\(/g) ?? []).length,
+        1,
+    );
+    const cacheStore = result.cpp.match(
+        new RegExp(
+            String.raw`\(\*v_bblite_class_field_material_\d+\) = [^\n]+\{\(\*${material[1]}\)\}[^\n]+\.to_optional\(\);`,
+        ),
+    );
+    assert.ok(cacheStore);
+    assert.ok(result.cpp.includes(`return (*${material[1]});`));
+    assert.ok(
+        result.cpp.indexOf(creation[0]) < result.cpp.indexOf(cacheStore[0]),
+    );
+    assert.ok(
+        result.cpp.indexOf(cacheStore[0]) <
+            result.cpp.indexOf(`return (*${material[1]});`),
     );
 });
 
@@ -4285,11 +4330,21 @@ test("preserves missing Map handle storage in nullable locals", () => {
         /const auto (v_bblite_map_get_\d+) = .*\.get\("wall"\);/,
     );
     assert.ok(lookup);
+    const ownedMesh = "std::pair<bbl::StoredEngine, bbl::MeshHandle>";
     assert.match(
         result.cpp,
         new RegExp(
-            `std::optional<bbl::MeshHandle> v_mesh = ${lookup[1]}\\.to_optional\\(\\);`,
+            String.raw`std::optional<${ownedMesh}> v_mesh = bbl::js::Nullable<${ownedMesh}>\{\(${lookup[1]}\.has_value\(\) \? bbl::js::Nullable<${ownedMesh}>\{${ownedMesh}\{bbl::StoredEngine\{v_engine\}, \(\*${lookup[1]}\)\}\} : bbl::js::Nullable<${ownedMesh}>\{std::nullopt\}\)\}\.to_optional\(\);`,
         ),
+    );
+    assert.equal(
+        (result.cpp.match(/v_meshes\.get\("wall"\)/g) ?? []).length,
+        1,
+    );
+    assert.equal((result.cpp.match(/bbl::create_box\(/g) ?? []).length, 1);
+    assert.match(
+        result.cpp,
+        /if \(!\(v_mesh\.has_value\(\)\)\) \{\s*v_mesh = [^\n]+bbl::StoredEngine\{v_engine\}[^\n]+bbl::create_box\(v_engine,[^\n]+;\s*const auto (\w+) = "wall";\s*static_cast<void>\(v_meshes\.set\(\1, \(\(\*v_mesh\)\)\.second\)\);/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -4433,13 +4488,15 @@ test("keeps an object element alive after its container is resized", () => {
         list.push({ value: 2 });
         entry.value = 5;
     `);
-    // The checked access selects the existing slot; the source binding then
-    // owns that selected reference before the array grows.
-    assert.match(
-        result.cpp,
-        /bblscene::Entry v_entry = bbl::js::snapshot_value\(bbl::js::array_index_checked\(v_list, 0\.0, "[^"]+"\)\);/,
+    // The initializer proves index zero present. The source binding owns
+    // the selected reference before the array grows.
+    assert.match(result.cpp, /using Entry = bbl::js::Ref<EntryData>;/);
+    const selected = result.cpp.indexOf(
+        "bblscene::Entry v_entry = bbl::js::snapshot_value(v_list[bbl::js::array_index(0.0)]);",
     );
-    assert.match(result.cpp, /v_entry->value = 5\.0;/);
+    const resized = result.cpp.indexOf("v_list.push_back(");
+    const written = result.cpp.indexOf("v_entry->value = 5.0;");
+    assert.ok(selected >= 0 && selected < resized && resized < written);
 });
 
 test("mutable object aliases retain JavaScript identity", () => {
@@ -8046,6 +8103,38 @@ test("retains recursive timer callbacks after their source scope returns", () =>
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
 });
 
+test("uses void completion for immediate recursive async callbacks", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            let visits = 0;
+            const early = async (value: number): Promise<void> => {
+                if (value <= 0) return;
+                visits += 1;
+                await early(value - 1);
+            };
+            const falling = async (value: number): Promise<void> => {
+                visits += 1;
+                if (value > 0) await falling(value - 1);
+            };
+            await early(3);
+            await falling(2);
+            if (visits !== 6) throw new Error("recursive completion effects");
+        }
+        main();
+    `);
+
+    assert.equal(
+        result.cpp.match(
+            /bbl::js::Callback<void\(double\)> v_\w*(?:early|falling);/g,
+        )?.length,
+        2,
+    );
+    assert.doesNotMatch(result.cpp, /bbl::js::Callback<bool\(double\)>/);
+});
+
 test("keeps synchronous recursive callbacks local to native data functions", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -9000,7 +9089,15 @@ test("narrows an assigned nullable retained-UI class field", () => {
     assert.match(result.cpp, /ui_append_to_root/);
     assert.match(
         result.cpp,
-        /if \([^\n]+\.has_value\(\)\) \{\s*\[\[maybe_unused\]\] auto (\w+) = [^;]+;\s*bbl::ui_remove\([^,]+, \1\);/,
+        /if \(\(\*(v_bblite_class_field_root_\d+)\)\.has_value\(\)\) \{\s*\[\[maybe_unused\]\] const auto (\w+) = \(\*\(\*\1\)\);\s*bbl::ui_remove\(\(\*\(\2\)\.first\), \(\2\)\.second\);/,
+    );
+    assert.match(
+        result.cpp,
+        /\(\*v_bblite_class_field_root_\d+\) = bbl::js::Nullable<std::pair<bbl::StoredEngine, bbl::UiElementHandle>>\{std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{bbl::StoredEngine\{(\w+)\}, bbl::ui_create_element\(\1, "div"\)\}\}\.to_optional\(\);/,
+    );
+    assert.equal(
+        (result.cpp.match(/bbl::ui_create_element\(/g) ?? []).length,
+        1,
     );
 });
 
@@ -11517,10 +11614,41 @@ test("stores nullable retained UI handles in native optional storage", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /std::optional<bbl::UiElementHandle> v_stats/);
-    assert.match(result.cpp, /v_stats = bbl::ui_create_element/);
-    assert.match(result.cpp, /ui_set_text\([^;]*\(\*v_stats\)/);
-    assert.match(result.cpp, /ui_get_style_property/);
+    assert.match(
+        result.cpp,
+        /std::optional<std::pair<bbl::StoredEngine, bbl::UiElementHandle>> v_stats\{\};/,
+    );
+    assert.match(
+        result.cpp,
+        /v_stats = bbl::js::Nullable<std::pair<bbl::StoredEngine, bbl::UiElementHandle>>\{std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{bbl::StoredEngine\{(\w+)\}, bbl::ui_create_element\(\1, "div"\)\}\}\.to_optional\(\);/,
+    );
+    assert.equal(
+        (result.cpp.match(/bbl::ui_create_element\(/g) ?? []).length,
+        1,
+    );
+    const ownedUi = "std::pair<bbl::StoredEngine, bbl::UiElementHandle>";
+    const styleReceiver = result.cpp.match(
+        new RegExp(
+            String.raw`const bbl::js::Nullable<${ownedUi}> (v_bblite_style_receiver_\d+) = \(\[&\]\(\) -> bbl::js::Nullable<${ownedUi}> \{ const auto (\w+) = v_stats; return \2 \? bbl::js::Nullable<${ownedUi}>\{\*\2\} : bbl::js::Nullable<${ownedUi}>\{std::nullopt\}; \}\(\)\);`,
+        ),
+    );
+    assert.ok(styleReceiver);
+    const stylePair = `(*${styleReceiver[1]})`;
+    assert.ok(
+        result.cpp.includes(
+            `bbl::ui_set_style_property((*(${stylePair}).first), (${stylePair}).second, "display", "flex");`,
+        ),
+    );
+    assert.ok(
+        result.cpp.includes(
+            'bbl::ui_get_style_property((*((*v_stats)).first), ((*v_stats)).second, "display")',
+        ),
+    );
+    assert.ok(
+        result.cpp.includes(
+            'bbl::ui_set_text((*((*v_stats)).first), ((*v_stats)).second, "READY");',
+        ),
+    );
 });
 
 test("uses the first gradient colour for retained gradient text", () => {
@@ -13411,10 +13539,22 @@ test("reads mesh.parent as the nullable handle setParent owns", () => {
     // The optional local takes the parent only when the handle is present;
     // an absent parent leaves it empty rather than engaging it with the
     // invalid-handle sentinel.
-    assert.match(
-        result.cpp,
-        /v_current = \(\([^\n]*\.parent\.value != bbl::invalid_handle\) \? std::optional\{[^\n]*\.parent\} : std::nullopt\);/,
+    const ownedMesh = "std::pair<bbl::StoredEngine, bbl::MeshHandle>";
+    const receiver = result.cpp.match(
+        new RegExp(
+            String.raw`const bbl::js::Nullable<${ownedMesh}> (v_bblite_property_owner_\d+) = \(\[&\]\(\) -> bbl::js::Nullable<${ownedMesh}> \{ const auto (\w+) = v_current; return \2 \? bbl::js::Nullable<${ownedMesh}>\{\*\2\} : bbl::js::Nullable<${ownedMesh}>\{std::nullopt\}; \}\(\)\);`,
+        ),
     );
+    assert.ok(receiver);
+    const pair = `(*${receiver[1]})`;
+    const engine = `(*(${pair}).first)`;
+    const parent = `bbl::handle_at(${engine}.meshes, (${pair}).second).parent`;
+    const assignment =
+        `v_current = bbl::js::Nullable<${ownedMesh}>{((${parent}.value != bbl::invalid_handle) ? ` +
+        `bbl::js::Nullable<${ownedMesh}>{${ownedMesh}{bbl::StoredEngine{${engine}}, ${parent}}} : ` +
+        `bbl::js::Nullable<${ownedMesh}>{std::nullopt})}.to_optional();`;
+    assert.ok(result.cpp.includes(assignment));
+    assert.ok(result.cpp.indexOf(receiver[0]) < result.cpp.indexOf(assignment));
 });
 
 test("reads the live local bounds retained with mesh geometry", () => {
@@ -13609,8 +13749,31 @@ test("stores and fills a nullable mesh local", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /std::optional<bbl::MeshHandle> v_mesh\{\};/);
-    assert.match(result.cpp, /v_mesh = bbl::create_sphere/);
+    const ownedMesh = "std::pair<bbl::StoredEngine, bbl::MeshHandle>";
+    assert.ok(result.cpp.includes(`std::optional<${ownedMesh}> v_mesh{};`));
+    assert.match(
+        result.cpp,
+        /v_mesh = bbl::js::Nullable<std::pair<bbl::StoredEngine, bbl::MeshHandle>>\{std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{v_engine\}, bbl::create_sphere\(v_engine, [^\n]+\)\}\}\.to_optional\(\);/,
+    );
+    assert.equal((result.cpp.match(/bbl::create_sphere\(/g) ?? []).length, 1);
+    const receiver = result.cpp.match(
+        new RegExp(
+            String.raw`if \(v_mesh\.has_value\(\)\) \{\s*\[\[maybe_unused\]\] const bbl::js::Nullable<${ownedMesh}> (\w+) = \(\[&\]\(\) -> bbl::js::Nullable<${ownedMesh}> \{ const auto (\w+) = v_mesh; return \2 \? bbl::js::Nullable<${ownedMesh}>\{\*\2\} : bbl::js::Nullable<${ownedMesh}>\{std::nullopt\}; \}\(\)\);`,
+        ),
+    );
+    assert.ok(receiver);
+    const pair = `(*${receiver[1]})`;
+    const engine = `(*(${pair}).first)`;
+    assert.ok(
+        result.cpp.includes(
+            `bbl::handle_at(${engine}.meshes, (${pair}).second).position.y = 2.0;`,
+        ),
+    );
+    assert.ok(
+        result.cpp.includes(
+            `bbl::mark_mesh_dirty(${engine}, (${pair}).second);`,
+        ),
+    );
 });
 
 test("retains a static false through a readonly receiveShadows parameter", () => {
@@ -14047,13 +14210,56 @@ test("assigns a promised resource tuple into definite-assignment locals", () => 
     `);
 
     assert.equal(
-        (result.cpp.match(/std::optional<bbl::AssetHandle> v_\w+\{\};/g) ?? [])
-            .length,
+        (
+            result.cpp.match(
+                /std::optional<std::pair<bbl::StoredEngine, bbl::AssetHandle>> v_(?:ship|rock)\{\};/g,
+            ) ?? []
+        ).length,
         2,
     );
     assert.equal((result.cpp.match(/bbl::load_gltf/g) ?? []).length, 2);
-    assert.match(result.cpp, /v_ship = v_bblite_destructure_resource_\d+;/);
-    assert.match(result.cpp, /v_rock = v_bblite_destructure_resource_\d+;/);
+    const assets = ["ship.glb", "rock.glb"].map((source) => {
+        const asset = result.manifest.assets.find(
+            (entry) => entry.source === source,
+        );
+        assert.ok(asset);
+        return asset.output;
+    });
+    const loads = [
+        ...result.cpp.matchAll(
+            /auto (v_bblite_awaited_\d+) = bbl::load_gltf\((v_engine), bbl::asset_path\("([^"]+)"\)\);/g,
+        ),
+    ];
+    assert.deepEqual(
+        loads.map((load) => load[3]),
+        assets,
+    );
+    const snapshots = [
+        ...result.cpp.matchAll(
+            /const auto (v_bblite_destructure_resource_\d+) = (v_bblite_awaited_\d+);/g,
+        ),
+    ];
+    assert.equal(snapshots.length, 2);
+    assert.deepEqual(
+        snapshots.map((snapshot) => snapshot[2]),
+        loads.map((load) => load[1]),
+    );
+    assert(loads[1]!.index < snapshots[0]!.index);
+    const assignments = [
+        ...result.cpp.matchAll(/(v_ship|v_rock) = ([^\n]+);/g),
+    ];
+    assert.deepEqual(
+        assignments.map((assignment) => assignment[1]),
+        ["v_ship", "v_rock"],
+    );
+    assert(snapshots[1]!.index < assignments[0]!.index);
+    const assetType = "std::pair<bbl::StoredEngine, bbl::AssetHandle>";
+    assignments.forEach((assignment, index) => {
+        assert.equal(
+            assignment[2]!,
+            `bbl::js::Nullable<${assetType}>{${assetType}{bbl::StoredEngine{${loads[index]![2]}}, ${snapshots[index]![1]}}}.to_optional()`,
+        );
+    });
     assert.equal((result.cpp.match(/bbl::add_to_scene/g) ?? []).length, 2);
 });
 
@@ -19784,7 +19990,7 @@ test("cross-fades glTF groups without enabling or replacing their mixer", () => 
     assert.match(result.cpp, /bbl::enable_animation_blending\(v_manager\)/);
     assert.match(
         result.cpp,
-        /bbl::cross_fade_animation_groups\(v_manager, v_engine, bbl::AnimationWeightFadeTarget::from_gltf\(v_idle\), bbl::AnimationWeightFadeTarget::from_gltf\(v_sadPose\), 1000\.0, 1\.0\)/,
+        /bbl::cross_fade_animation_groups\(v_manager, \(\*\(v_idle\)\.first\), bbl::AnimationWeightFadeTarget::from_gltf\(\(v_idle\)\.second\), bbl::AnimationWeightFadeTarget::from_gltf\(\(v_sadPose\)\.second\), 1000\.0, 1\.0\)/,
     );
     assert.ok(result.manifest.features.includes("animation:gltf-blending"));
     assert.ok(result.manifest.features.includes("animation:weight-fades"));
@@ -19899,11 +20105,11 @@ test("setAnimationAdditive resolves its options at generation exactly where the 
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive\(v_engine, [^,]+, 0\.5\)/,
+        /bbl::set_animation_additive\(\(\*\(v_idle\)\.first\), \(v_idle\)\.second, 0\.5\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0\)/,
+        /bbl::set_animation_additive_from_frame\(\(\*\(v_other\)\.first\), \(v_other\)\.second, 0\.0\)/,
     );
 });
 

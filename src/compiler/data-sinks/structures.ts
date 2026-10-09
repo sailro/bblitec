@@ -232,6 +232,39 @@ function valueEnum(
     return undefined;
 }
 
+/** A copied own undefined field needs the same presence storage as a direct initializer. */
+function requireCopiedOwnUndefinedFields(
+    lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
+    node: ts.Node,
+): void {
+    const fields = lowerer.context.dataTypes
+        .structFields(dataType.name, node, "accessors")
+        .filter((field) => field.optionalProperty && !field.accessorReceiver);
+    if (!fields.length) return;
+    const expression = lowerer.convertedExpression(node);
+    if (!expression) return;
+    const source = lowerer.context.checker.getNonNullableType(
+        lowerer.context.checker.getTypeAtLocation(expression),
+    );
+    for (const field of fields) {
+        const property = lowerer.context.checker.getPropertyOfType(
+            source,
+            field.sourceName,
+        );
+        if (property)
+            lowerer.context.dataTypes.requireOwnUndefinedField(
+                dataType.name,
+                field,
+                lowerer.context.checker.getTypeOfSymbolAtLocation(
+                    property,
+                    expression,
+                ),
+                expression,
+            );
+    }
+}
+
 function valueStruct(
     dataType: DataType<"struct">,
     lowerer: DataSinkHost,
@@ -340,6 +373,7 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
+        requireCopiedOwnUndefinedFields(lowerer, dataType, node);
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
@@ -493,6 +527,7 @@ function valueStruct(
             : aggregate;
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
+        requireCopiedOwnUndefinedFields(lowerer, dataType, node);
         const sourceType = value.dataType;
         // Receiver-aware slots retain presence independently of their payload.
         // Their owner types must share one layout even for a fresh object.

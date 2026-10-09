@@ -1096,6 +1096,7 @@ export class DataLowerer {
         const root = rootIdentifier(left, (node) => this.context.unwrap(node));
         const owner = root && this.context.bindings.lookupOptional(root);
         if (owner) this.context.bindings.invalidateRecordProperties(owner);
+        else this.invalidateRecordFieldSnapshot(left);
         return target.kind === "number"
             ? {
                   kind: "number",
@@ -2166,6 +2167,15 @@ export class DataLowerer {
             (mode === "read" || throughReceiver)
         )
             return this.context.compileValue(unwrapped);
+        // A represented plain receiver uses the same indexed field path as
+        // a local alias; class fields keep their separate binding protocol.
+        if (throughReceiver && unwrapped.kind === ts.SyntaxKind.ThisKeyword) {
+            const instance = this.context.activeThis();
+            return instance?.dataType?.kind === "struct" &&
+                !this.context.dataTypes.isClassStruct(instance.dataType.name)
+                ? this.context.compileValue(unwrapped)
+                : undefined;
+        }
         if (ts.isIdentifier(unwrapped)) {
             const bound =
                 this.context.bindings.lookupOptional(unwrapped) ??
@@ -4489,6 +4499,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     inner: left.dataType,
                 };
                 const cppType = this.context.dataTypes.cppType(optionalType);
+                const present =
+                    left.dataType.kind === "handle" && left.dataType.ownedEngine
+                        ? (representedStorage(left)?.cpp ??
+                          this.context.fail(
+                              expression.left,
+                              "An owned resource requires its represented storage.",
+                          ))
+                        : left.cpp;
                 this.context.reachJsData();
                 const objectIdentity =
                     left.dataType.kind === "struct"
@@ -4497,7 +4515,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return {
                     kind: "data",
                     cpp:
-                        `(${leftFound} ? ${cppType}{${left.cpp}} : ` +
+                        `(${leftFound} ? ${cppType}{${present}} : ` +
                         `${cppType}{std::nullopt})`,
                     dataType: optionalType,
                     optionalFoundCpp: leftFound,
@@ -11324,6 +11342,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
         const source = dictionary(value.dataType);
         if (!source) return;
+        // Native dictionaries with represented object values already expose a
+        // live observing view; their JSON bridge rejects dynamic writes/removal.
+        if (
+            target.kind === "json" &&
+            !this.context.dataTypes.isScalarDocumentStorage(source.value)
+        )
+            return;
         const targetMap = dictionary(target);
         const sourceNeedsStorage =
             source.value.kind !== "json" &&
@@ -13371,6 +13396,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "Function intrinsic property membership requires represented function metadata.",
                 );
             if (key.staticString === undefined) {
+                this.context.dataTypes.requireStoredRecordProperties(
+                    dataType.name,
+                    ownerNode,
+                );
                 const keyCpp = this.membershipStringKeyCpp(key, keyNode);
                 const fields = this.context.dataTypes.structFields(
                     dataType.name,
@@ -13400,10 +13429,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ownerNode,
             );
             if (!field) {
-                return String(
+                if (
                     operator === "in" &&
-                        Object.hasOwn(Object.prototype, key.staticString),
+                    Object.hasOwn(Object.prototype, key.staticString)
+                )
+                    return "true";
+                this.context.dataTypes.requireStoredRecordProperties(
+                    dataType.name,
+                    ownerNode,
+                    key.staticString,
                 );
+                this.context.dataTypes.absentRecordProperty(
+                    dataType.name,
+                    key.staticString,
+                    ownerNode,
+                );
+                return "false";
             }
             return this.structFieldMembershipCpp(
                 narrowed.cpp,
@@ -14449,18 +14490,34 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * A direct write to `root.field` invalidates that field's static fact,
+     * A direct write to a named field on a binding or `this` invalidates its fact,
      * not unrelated fields on the same object. The property snapshot object
      * is shared by aliases, so deleting in place updates every view while
      * preserving immutable dimensions/constants.
      */
-    private invalidateRecordFieldSnapshot(left: ts.Expression): void {
-        if (!ts.isPropertyAccessExpression(left)) return;
+    private invalidateRecordFieldSnapshot(
+        left: ts.Expression,
+        resolvedOwner?: Value,
+    ): void {
+        if (
+            !ts.isPropertyAccessExpression(left) &&
+            !ts.isElementAccessExpression(left)
+        )
+            return;
         const owner = this.context.unwrap(left.expression);
-        if (!ts.isIdentifier(owner)) return;
-        const root = this.context.bindings.lookupOptional(owner);
-        if (root?.dataType?.kind === "struct" && root.recordProperties) {
-            delete writable(root.recordProperties)[left.name.text];
+        const root =
+            resolvedOwner ??
+            (ts.isIdentifier(owner)
+                ? this.context.bindings.lookupOptional(owner)
+                : owner.kind === ts.SyntaxKind.ThisKeyword
+                  ? this.context.activeThis()
+                  : undefined);
+        if (root?.dataType?.kind !== "struct" || !root.recordProperties) return;
+        const property = ts.isPropertyAccessExpression(left)
+            ? left.name.text
+            : accessedPropertySymbol(this.context.checker, left)?.name;
+        if (property !== undefined) {
+            delete writable(root.recordProperties)[property];
         }
     }
 
@@ -15709,6 +15766,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 cpp,
                 nativeCaptures: [this.context.registerNativeBinding(cpp)],
             };
+            // The prepared receiver may have come from a getter. Withdraw
+            // its shared field fact without evaluating that receiver again.
+            this.invalidateRecordFieldSnapshot(access, retained);
             if (ts.isPropertyAccessExpression(access))
                 return this.compilePropertyFromValue(retained, access);
             const field = this.elementRead(retained, access, "write");

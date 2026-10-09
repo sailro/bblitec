@@ -104,6 +104,52 @@ test("a page-hosted Canvas2D program compiles against the page's markup", () => 
     assert.doesNotMatch(cpp, /ui_set_text\([^;]*aria-pressed/);
 });
 
+test("deferred host lookups attach their owner to the retained binding", () => {
+    const model = page(
+        [],
+        [
+            element("canvas", { id: "surface" }),
+            element("textarea", { id: "input" }),
+            entryScript,
+        ],
+    );
+    const result = compileSource(
+        `
+        import { createEngine } from "@babylonjs/lite";
+        const canvas = document.getElementById("surface") as HTMLCanvasElement;
+        const textarea = document.getElementById("input") as HTMLTextAreaElement;
+        async function run(): Promise<void> {
+            const engine = await createEngine(canvas);
+            if (textarea.value !== "") throw new Error("initial input");
+            textarea.addEventListener("input", () => {
+                if (textarea.value === "rejected") throw new Error("input callback");
+            });
+        }
+        void run();
+    `,
+        hostPageCompileOptions(model),
+    );
+    const creation = /auto (\w+) = bbl::create_engine\(/.exec(result.cpp);
+    assert.ok(creation);
+    const selected = new RegExp(
+        String.raw`const auto (\w+) = bbl::ui_get_element_by_id\(${creation[1]}, "input"\);`,
+    ).exec(result.cpp);
+    assert.ok(selected && creation.index < selected.index);
+    const reads = [
+        ...result.cpp.matchAll(/bbl::ui_get_form_value\((\w+), (\w+)\)/g),
+    ];
+    assert.equal(
+        reads.length,
+        2,
+        "initial and retained callback reads both keep the host owner",
+    );
+    for (const read of reads) {
+        assert.equal(read[1], creation[1]);
+        assert.equal(read[2], selected[1]);
+    }
+    assert.match(result.cpp, /bbl::on_dom_pointer\(/);
+});
+
 test("the page's loader runs before its entry and must end with the import", () => {
     const withLoader = (source: string): HostPage => ({
         ...host,

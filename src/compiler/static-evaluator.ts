@@ -27,7 +27,7 @@ export function isObjectIdentityFunction(
 }
 
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
-function objectIdentityCallArgument(
+export function objectIdentityCallArgument(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
 ): ts.Expression | undefined {

@@ -2667,6 +2667,7 @@ export class AsyncLowerer {
             );
     }
     private resultCpp(value: Value, node: ts.Node): string {
+        this.context.dataLowerer.markEscaped(value);
         if (value.kind === "physics-engine-module")
             return "bbl::js::PromiseVoid{}";
         if (

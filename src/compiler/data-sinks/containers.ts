@@ -36,6 +36,7 @@ import { requireTupleArraySlot } from "../tuple-array-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { isJsonValue } from "../json-bridge.js";
+import { provenUndefinedValue } from "../undefined-values.js";
 
 function expressionOptional(
     dataType: DataType<"optional">,
@@ -189,6 +190,14 @@ function valueOptional(
         return absent;
     }
     if (value.kind === "void") {
+        if (
+            value.erasedVoidCompletion ||
+            !provenUndefinedValue(lowerer.context, node)
+        )
+            lowerer.context.fail(
+                node,
+                "Optional storage requires a proven undefined completion.",
+            );
         lowerer.context.emitDiscardedValue(value);
         return absent;
     }
@@ -493,6 +502,11 @@ function convertedElementsCopy(
                       target,
                   );
         if (observed !== undefined) {
+            // A retained array keeps one element representation through every view.
+            lowerer.context.dataTypes.requireSharedValueViews(
+                element,
+                dataType.element,
+            );
             // An array of ArrayLike slots takes the kind of its elements.
             lowerer.requireNumericSlot(value, dataType, node);
             requireStringElements(lowerer, element, dataType.element);

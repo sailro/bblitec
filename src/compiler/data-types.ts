@@ -1175,6 +1175,10 @@ export class DataTypeRegistry {
 
     /** The statement writing `cpp` of `type` as JSON through `writer`. */
     public jsonWriteCpp(type: DataType, cpp: string): string {
+        // EnumMap's native array does not carry the closed Record's key schema.
+        // Preserve its generated writer through nullable storage as well.
+        if (type.kind === "optional" && type.inner.kind === "enummap")
+            return `{ const auto& json_optional = ${cpp}; if (json_optional.has_value()) { ${this.jsonWriteCpp(type.inner, "*json_optional")} } else { writer.null_value(); } }`;
         return type.kind === "enummap"
             ? `bblscene::${this.jsonEnumMapWriter(type)}(writer, ${cpp});`
             : `json_write(writer, ${cpp});`;
@@ -1963,6 +1967,25 @@ export class DataTypeRegistry {
         return { ...source, document: true };
     }
 
+    /** Scalar dictionary slots can share mutable storage with a document view. */
+    public isScalarDocumentStorage(value: DataType): boolean {
+        return value.kind === "optional" || value.kind === "tagged"
+            ? this.isScalarDocumentStorage(value.inner)
+            : value.kind === "union"
+              ? value.members.every((member) =>
+                    this.isScalarDocumentStorage(member),
+                )
+              : [
+                    "string",
+                    "number",
+                    "boolean",
+                    "enum",
+                    "undefined",
+                    "null",
+                    "json",
+                ].includes(value.kind);
+    }
+
     /** A scalar dictionary stored through a writable document keeps own undefined entries. */
     public documentDictionaryDemand(
         type: ts.Type,
@@ -1977,26 +2000,12 @@ export class DataTypeRegistry {
         )
             return undefined;
         const mapped = this.fromStoredTsType(concrete, node);
-        const scalar = (value: DataType): boolean =>
-            value.kind === "optional" || value.kind === "tagged"
-                ? scalar(value.inner)
-                : value.kind === "union"
-                  ? value.members.every(scalar)
-                  : [
-                        "string",
-                        "number",
-                        "boolean",
-                        "enum",
-                        "undefined",
-                        "null",
-                        "json",
-                    ].includes(value.kind);
         if (
             mapped?.kind !== "map" ||
             !mapped.dictionary ||
             mapped.key.kind !== "string" ||
             mapped.value.kind === "json" ||
-            !scalar(mapped.value)
+            !this.isScalarDocumentStorage(mapped.value)
         )
             return undefined;
         return {
@@ -2622,6 +2631,12 @@ export class DataTypeRegistry {
             )
                 return;
             if (demand.native && isNativeStructuralView(type)) return;
+            // Another demand in this joined component may already require a document.
+            if (
+                type?.kind === "json" &&
+                this.documentRecords.has(this.structIdentity(demand.type))
+            )
+                return;
             if (type?.kind !== "struct")
                 this.fail(
                     demand.node,
@@ -2931,8 +2946,8 @@ export class DataTypeRegistry {
         );
     }
 
-    /** A shared parent stores each nested record through its dictionary or document view. */
-    private requireSharedValueViews(source: DataType, target: DataType): void {
+    /** Shared records and arrays retain nested records through one dictionary or document view. */
+    public requireSharedValueViews(source: DataType, target: DataType): void {
         const seen = new Set<string>();
         const compare = (a: DataType, b: DataType): void => {
             const left = fieldStorage(a),
@@ -4928,6 +4943,12 @@ export class DataTypeRegistry {
         type: ts.UnionType,
         node: ts.Node,
     ): DataType | undefined {
+        // Record-union document demands precede their specialized native layouts.
+        if (
+            this.documentRecords.size !== 0 &&
+            this.documentRecords.has(this.structIdentity(type))
+        )
+            return this.fromStructType(type, node);
         const members = type.types;
         const handles = members.map((member) => this.nativeHandleKind(member));
         if (handles.every((kind) => kind === "mesh" || kind === "scene-node"))
@@ -7681,7 +7702,13 @@ export class DataTypeRegistry {
         const mapped = this.fromTsType(type, node);
         if (mapped) {
             const stored = this.ownReturnedArray(mapped);
-            const owned = this.engineOwnedStorage(stored);
+            const owned =
+                stored.kind === "promise" && stored.result
+                    ? {
+                          ...stored,
+                          result: this.engineOwnedStorage(stored.result),
+                      }
+                    : this.engineOwnedStorage(stored);
             const absent = nullability(this.resolveTypeParameter(type));
             return !dataTypesEqual(stored, owned) &&
                 owned.kind !== "tagged" &&
@@ -8237,11 +8264,62 @@ export class DataTypeRegistry {
             return false;
         // Union layouts can start with common fields only. A declared arm
         // field needs layout replay instead of an assumed absent value.
-        return !this.withRecordDemand(source, () => {
-            const shapes =
-                this.recordComponentOf(source.type)?.shapes ??
-                (source.type.isUnion() ? source.type.types : [source.type]);
-            return shapes.some((shape) => shape.getProperty(property));
+        return !this.withRecordDemand(source, () =>
+            this.recordSourceShapes(source).some((shape) =>
+                shape.getProperty(property),
+            ),
+        );
+    }
+
+    private recordSourceShapes(source: NativeRecordStorageDemand): ts.Type[] {
+        const shapes = this.recordComponentOf(source.type)?.shapes ?? [
+            source.type,
+        ];
+        return shapes.flatMap((shape) =>
+            shape.isUnion() ? shape.types : [shape],
+        );
+    }
+
+    /** Membership cannot treat a declared property omitted by a common union layout as absent. */
+    public requireStoredRecordProperties(
+        structName: string,
+        node: ts.Node,
+        property?: string,
+    ): void {
+        const source = this.nativeRecordSources.get(structName);
+        if (!source || this.isClassStruct(structName)) return;
+        this.withRecordDemand(source, () => {
+            if (property !== undefined) {
+                if (
+                    this.recordSourceShapes(source).some((shape) =>
+                        this.checker
+                            .getPropertiesOfType(shape)
+                            .some((declared) => declared.name === property),
+                    )
+                )
+                    this.requireArmFields(
+                        structName,
+                        property,
+                        node,
+                        `Own-property membership requires represented field '${property}'.`,
+                    );
+                return;
+            }
+            const fields = this.structFields(structName, node, "accessors");
+            const stored = new Set(fields.map((field) => field.sourceName));
+            for (const shape of this.recordSourceShapes(source)) {
+                for (const declared of this.checker.getPropertiesOfType(
+                    shape,
+                )) {
+                    if (!stored.has(declared.name))
+                        this.requireArmFields(
+                            structName,
+                            declared.name,
+                            node,
+                            `Own-property membership requires represented field '${declared.name}'.`,
+                        );
+                }
+            }
         });
     }
 

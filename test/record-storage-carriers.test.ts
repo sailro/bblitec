@@ -224,6 +224,33 @@ check(
 );
 
 check(
+    "document array views retain input and element identity through rest copies",
+    `
+    interface Control {x:number;lat?:number}
+    function normalize(raw:Record<string,unknown>) {return typeof raw.lat==='number'?raw.lat:0;}
+    function project(controls:Control[]) {
+        const values=controls.map(control=>{
+            const {lat,...rest}=control;
+            return control.x>0?{...control,lat:2}:rest;
+        }).map(control=>normalize(control as unknown as Record<string,unknown>));
+        controls[0]!.x=8;
+        controls.push({x:3,lat:4});
+        return {controls,values};
+    }
+    const retained:Array<typeof project>=[project],original=[{x:1,lat:7},{x:0,lat:9}];
+    const alias=original,first=original[0]!;
+    const result=retained[0]!(original);
+    if(result.controls!==original||alias!==result.controls||result.controls[0]!==first)
+        throw new Error('shared array and element identities');
+    if(result.values[0]!==2||result.values[1]!==0||first.x!==8||first.lat!==7||
+        original.length!==3||original[1]!.lat!==9||original[2]!.lat!==4)
+        throw new Error('rest omission and writes through original owner');
+    alias[1]!.lat=5;
+    if(result.controls[1]!.lat!==5) throw new Error('later alias mutation');
+    `,
+);
+
+check(
     "finite generic keys retain optional constraint fields and original aliases",
     `
     interface Fields {wall?:string;body?:string}

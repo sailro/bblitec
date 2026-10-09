@@ -38,7 +38,7 @@ const scene = (body: string): string => `
 
 /** The read `found?.position.y` guarded by the chain's presence. */
 const guardedRead =
-    /\(v_found\.has_value\(\) \? bbl::handle_at\(v_engine\.meshes, \(\*v_found\)\)\.position\.y : std::remove_cvref_t<decltype\(/;
+    /\(v_found\.has_value\(\) \? (?<read>bbl::handle_at\(\(\*(?<pair>\(\(\*v_found\)\))\.first\)\.meshes, \k<pair>\.second\)\.position\.y) : std::remove_cvref_t<decltype\(\k<read>\)>\{\}\)/;
 
 test("a condition over a chain continuation tests presence first", () => {
     const result = compileSource(
@@ -50,10 +50,7 @@ test("a condition over a chain continuation tests presence first", () => {
         /if \(\(v_found\.has_value\(\) && bbl::js::number_truthy\(\(v_found\.has_value\(\) \? /,
     );
     assert.match(result.cpp, guardedRead);
-    assert.doesNotMatch(
-        result.cpp,
-        /number_truthy\(bbl::handle_at\(v_engine\.meshes, \(\*v_found\)\)/,
-    );
+    assert.doesNotMatch(result.cpp, /number_truthy\(bbl::handle_at\(/);
 });
 
 test("a binding of a chain continuation reads through the guard", () => {

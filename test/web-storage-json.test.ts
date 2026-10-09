@@ -214,10 +214,19 @@ test("JSON.stringify emits codecs for the records it reaches, in order", () => {
         ["s", "p", "q", "c", "sh"],
         "keys are written in the record's declaration order, not sorted",
     );
+    const ownKey = codec[1]!.match(
+        /const bool (\w+) = value\.sh\.has_value\(\);/,
+    );
+    assert.ok(ownKey, "the optional key is snapshotted before reading values");
+    assert.ok(
+        codec[1]!.indexOf(ownKey[0]) < codec[1]!.indexOf('writer.key("s")'),
+    );
     assert.match(
         codec[1]!,
-        /if \(value\.sh\.has_value\(\)\) \{/,
-        "a property the source declared optional is omitted when absent",
+        new RegExp(
+            String.raw`if \(${ownKey[1]}\) \{\s*const auto (\w+) = value\.sh;\s*if \(\1\.has_value\(\)\) \{\s*writer\.key\("sh"\);\s*json_write\(writer, \1\);`,
+        ),
+        "the snapshotted key reads its value once and omits an absent payload",
     );
     assert.match(
         result.cpp,

@@ -1,5 +1,6 @@
 import type ts from "typescript";
 import { EmissionWeakMap } from "./emission-transaction.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import type { CapturedClosure } from "./closure-captures.js";
 import type { Value } from "./types.js";
 import type { DataSinkHost } from "./data-sinks/contracts.js";
@@ -90,6 +91,19 @@ export function compileJsonTupleView(
     return cpp;
 }
 
+/** Plain record facts that either JSON ownership strategy can preserve. */
+export function isPlainJsonRecord(record: Value): boolean {
+    return (
+        record.kind === "record" &&
+        !record.classDeclaration &&
+        !record.moduleNamespace &&
+        !record.objectIdentityCpp &&
+        Object.keys(record.recordMethods ?? {}).length === 0 &&
+        Object.keys(record.recordGetters ?? {}).length === 0 &&
+        Object.keys(record.recordSetters ?? {}).length === 0
+    );
+}
+
 /** A fixed plain record keeps its existing cells behind an observing view. */
 export function compileJsonRecordView(
     lowerer: DataSinkHost,
@@ -97,18 +111,21 @@ export function compileJsonRecordView(
     node: ts.Node,
 ): string | undefined {
     const properties = record.recordProperties;
-    if (
-        record.kind !== "record" ||
-        !properties ||
-        record.classDeclaration ||
-        record.moduleNamespace ||
-        record.objectIdentityCpp ||
-        Object.keys(record.recordMethods ?? {}).length ||
-        Object.keys(record.recordGetters ?? {}).length ||
-        Object.keys(record.recordSetters ?? {}).length
-    )
-        return undefined;
+    if (!isPlainJsonRecord(record) || !properties) return undefined;
     const context = lowerer.context;
+    const expression = lowerer.convertedExpression(node);
+    const declaration =
+        expression && context.bindings.recordDeclaration(record, expression);
+    if (declaration) {
+        // A retained alias needs one owner in the source binding's scope.
+        // A cached view created here could belong to a nested callback.
+        if (context.dynamicBindings.has(declaration))
+            context.fail(
+                node,
+                "A retained record requires a represented document owner.",
+            );
+        throw new DynamicBindingStorageRequired(declaration, "source");
+    }
     const previous = views.get(properties);
     if (previous) {
         context.useNativeValue(previous);

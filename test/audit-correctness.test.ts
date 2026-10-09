@@ -750,8 +750,9 @@ test(
         }
         int main() {
             assert(generated_record_main() == 0);
-            // The records hold a handle and scalars: no traced edge, no node.
-            assert(retained_nodes == 0);
+            // Each record has a traceable owner field; aliases and scalars
+            // add no nodes beyond the two returned records.
+            assert(retained_nodes == 2);
             assert(bbl::js::managed_node_count() == 0);
         }
     `,

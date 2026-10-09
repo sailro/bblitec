@@ -895,8 +895,12 @@ export class DeclarationLowerer {
                 truthinessCpp: "true",
                 ...this.context.ui.hostCanvas(id, tag, hostLookup),
             };
-            this.context.pendingHostUiLookups.push(value);
             this.context.bindings.defineVariable(declaration.name, value);
+            // Binding may normalize the Value; attach the eventual owner to
+            // the same object later lexical reads and captures retain.
+            this.context.pendingHostUiLookups.push(
+                this.context.bindings.lookup(declaration.name),
+            );
             return;
         }
 
@@ -2292,7 +2296,7 @@ export class DeclarationLowerer {
             this.context.checker,
             this.context.checker.getReturnTypeOfSignature(signature),
             callback,
-            { unwrapPromise: false },
+            { unwrapPromise: !this.context.options.workers },
         );
         const returnType = returnTsType
             ? (this.context.dataTypes.fromTsType(returnTsType, callback) ??

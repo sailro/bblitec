@@ -99,6 +99,9 @@ test("document lookup activates retained ownership before construction and prese
             button.setAttribute("aria-pressed", "true");
         }
         if (clicked !== 0 || !button || button.textContent !== "retained") throw new Error("nullable retained writes");
+        const coalescedButton = button ?? null;
+        if (coalescedButton !== button || coalescedButton?.textContent !== "retained")
+            throw new Error("coalesced retained owner");
         let order = "";
         let selected: HTMLElement = panel;
         function receiver(): HTMLElement { order += "T"; return selected; }

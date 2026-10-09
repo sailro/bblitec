@@ -153,6 +153,6 @@ test("nullable resources do not treat an erased void callback result as absent",
                         ${binding}
                     }
                 `),
-            /does not produce a native value|Nullable ui-element assignment received void/,
+            /does not produce a native value|Nullable ui-element assignment received void|Optional storage requires a proven undefined completion/,
         );
 });
