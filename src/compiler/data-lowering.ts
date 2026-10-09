@@ -7827,18 +7827,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
-    /**
-     * Compiles `array.indexOf(value)`.
-     *
-     * Only element types JavaScript compares the way native code does
-     * are reached: numbers, booleans, and tags compare by value in both,
-     * a handle is an id, which is what makes two references the same
-     * object, a function stored in an array carries its declaration identity,
-     * and a reference struct is a `Ref` whose equality is its control block --
-     * the same object identity JavaScript compares. A value-backed struct or
-     * a nested container would compare by identity in JavaScript and field by
-     * field here, so those are rejected rather than answered differently.
-     */
     /** A query can miss a narrow enum domain; a stored-value sink cannot. */
     public compileLookupKey(
         value: Value,
@@ -7885,29 +7873,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Array.${method} expects a search value and an optional fromIndex.`,
             );
         }
-        // Optional and union lanes of plain values compare by value too.
-        const plain = (type: DataType): boolean =>
-            ["number", "boolean", "string", "enum"].includes(type.kind) ||
-            (type.kind === "optional" && plain(type.inner)) ||
-            (type.kind === "union" && type.members.every(plain));
-        const plainLanes =
-            (element.kind === "optional" || element.kind === "union") &&
-            plain(element);
-        if (
-            element.kind !== "number" &&
-            element.kind !== "boolean" &&
-            element.kind !== "string" &&
-            element.kind !== "enum" &&
-            element.kind !== "handle" &&
-            element.kind !== "function" &&
-            element.kind !== "symbol" &&
-            element.kind !== "bigint" &&
-            !plainLanes &&
-            !(
-                element.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(element.name)
-            )
-        ) {
+        // Stored objects compare through their retained identity, including
+        // nested collections. Borrowed views and value structs still refuse.
+        const comparable = (type: DataType): boolean =>
+            [
+                "number",
+                "boolean",
+                "string",
+                "enum",
+                "handle",
+                "function",
+                "symbol",
+                "bigint",
+                "event-target",
+                "error",
+                "json",
+                "arraybuffer",
+                "dataview",
+                "bufferview",
+                "vector",
+                "tuple",
+                "product",
+                "set",
+            ].includes(type.kind) ||
+            isOpaqueReference(type) ||
+            isTypedArrayType(type) ||
+            (type.kind === "map" && !type.weak) ||
+            (type.kind === "optional" && comparable(type.inner)) ||
+            (type.kind === "union" && type.members.every(comparable)) ||
+            (type.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(type.name));
+        if (!comparable(element)) {
             this.context.fail(
                 call,
                 `Array.${method} is supported for numbers, booleans, strings, tags, handles, functions, symbols, BigInts and shared objects, not ${element.kind}: JavaScript would compare by identity here.`,
@@ -7957,14 +7953,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const index = `bbl::js::array_index_of(${owner.cpp}, ${needle}${from})`;
         if (method === "indexOf")
             return { kind: "number", cpp: index, dataType: { kind: "number" } };
-        // `includes` is SameValueZero, which differs from `indexOf`'s strict
-        // equality only for a NaN needle.
+        // SameValueZero also reaches numeric lanes inside erased and union
+        // storage; native identity wrappers use their ordinary equality.
         return {
             kind: "boolean",
-            cpp:
-                element.kind === "number" || plainLanes
-                    ? `bbl::js::array_includes(${owner.cpp}, ${needle}${from})`
-                    : `${index} >= 0.0`,
+            cpp: `bbl::js::array_includes(${owner.cpp}, ${needle}${from})`,
             dataType: { kind: "boolean" },
         };
     }
