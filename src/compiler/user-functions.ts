@@ -51,6 +51,8 @@ import {
     type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
+import { isEngineScopedHandleKind } from "./data-types/handles.js";
+import { dataTypeKey } from "./data-types/operations.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import {
     renderClosure,
@@ -66,7 +68,10 @@ import {
     parameterOnlyRead,
 } from "./parameter-effects.js";
 import { nativeReturnTsType } from "./native-return-type.js";
-import { hasUndefinedCompletion } from "./undefined-values.js";
+import {
+    hasUndefinedCompletion,
+    hasNonThenableCompletion,
+} from "./undefined-values.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -181,24 +186,138 @@ function generationKnownStringArgument(value: Value): boolean {
 }
 
 /** Raw resource handles need their captured engine beside a returned value. */
-function carriesCapturedEngineOwner(value: Value): boolean {
+function carriesCapturedEngineOwner(
+    value: Value,
+    completed: Map<Value, boolean>,
+): boolean {
     const seen = new Set<Value>();
     const visit = (current: Value): boolean => {
+        const known = completed.get(current);
+        if (known !== undefined) return known;
         if (seen.has(current)) return false;
         seen.add(current);
-        if (
-            current.kind !== "engine" &&
-            isHandleKind(current.kind) &&
-            current.engineCpp !== undefined
-        )
-            return true;
-        return [
-            ...Object.values(current.recordProperties ?? {}),
-            ...(current.tupleElements ?? []),
-            ...(current.staticElements ?? []),
-        ].some(visit);
+        const result =
+            (isHandleKind(current.kind) &&
+                isEngineScopedHandleKind(current.kind) &&
+                current.engineCpp !== undefined) ||
+            [
+                ...Object.values(current.recordProperties ?? {}),
+                ...(current.tupleElements ?? []),
+                ...(current.staticElements ?? []),
+            ].some(visit);
+        if (result) completed.set(current, true);
+        return result;
     };
-    return visit(value);
+    const result = visit(value);
+    // A backedge is not a negative proof. Publish negatives only once the
+    // complete reachable query has ruled out every owner.
+    if (!result) for (const current of seen) completed.set(current, false);
+    return result;
+}
+
+/** Every returned engine-scoped handle must have a matching owned storage lane. */
+function storesReturnedOwners(
+    context: UserFunctionContext,
+    value: Value,
+    type: DataType,
+    node: ts.Node,
+    seen = new Map<Value, Set<string>>(),
+    owners = new Map<Value, boolean>(),
+): boolean {
+    if (!carriesCapturedEngineOwner(value, owners)) return true;
+    const key = dataTypeKey(type);
+    const types = seen.get(value) ?? new Set<string>();
+    if (types.has(key)) return true;
+    types.add(key);
+    seen.set(value, types);
+    switch (type.kind) {
+        case "handle":
+            return type.ownedEngine === true && type.handle === value.kind;
+        case "optional":
+        case "tagged":
+            return storesReturnedOwners(
+                context,
+                value,
+                type.inner,
+                node,
+                seen,
+                owners,
+            );
+        case "union":
+            return (
+                isHandleKind(value.kind) &&
+                type.members.some((member) =>
+                    storesReturnedOwners(
+                        context,
+                        value,
+                        member,
+                        node,
+                        seen,
+                        owners,
+                    ),
+                )
+            );
+        case "struct": {
+            if (!value.recordProperties) return false;
+            const fields = context.dataTypes.structFields(
+                type.name,
+                node,
+                "accessors",
+            );
+            return Object.entries(value.recordProperties).every(
+                ([name, member]) => {
+                    if (!carriesCapturedEngineOwner(member, owners))
+                        return true;
+                    const field = fields.find(
+                        (field) => field.sourceName === name,
+                    );
+                    if (!field || field.accessor) return false;
+                    context.dataTypes.requireEngineFieldStorage(field, node);
+                    return storesReturnedOwners(
+                        context,
+                        member,
+                        field.type,
+                        node,
+                        seen,
+                        owners,
+                    );
+                },
+            );
+        }
+        case "product":
+            return (
+                value.tupleElements?.every((member, index) => {
+                    const field = type.elements[index];
+                    return (
+                        field !== undefined &&
+                        storesReturnedOwners(
+                            context,
+                            member,
+                            field,
+                            node,
+                            seen,
+                            owners,
+                        )
+                    );
+                }) ?? false
+            );
+        case "vector":
+        case "span":
+            return (
+                (value.tupleElements ?? value.staticElements)?.every((member) =>
+                    storesReturnedOwners(
+                        context,
+                        member,
+                        type.element,
+                        node,
+                        seen,
+                        owners,
+                    ),
+                ) ?? false
+            );
+        default:
+            return false;
+    }
 }
 
 /** Plain-data field reads cannot invoke accessors; preserve real getter effects. */
@@ -1083,6 +1202,7 @@ export interface UserFunctionContext
             | "registerNativeTemporary"
             | "nativeEmission"
             | "captureManagedClosureLines"
+            | "capturedEngineOwnerIdentity"
             | "sourceProfileScopeDeclarations"
             | "callbackIdentity"
             | "emit"
@@ -1674,6 +1794,7 @@ export class UserFunctionLowerer {
                 this.checker,
                 this.checker.getReturnTypeOfSignature(signature),
                 ir.declaration,
+                { unwrapPromise: !context.options.workers },
             );
         const returnType =
             returned &&
@@ -1694,7 +1815,7 @@ export class UserFunctionLowerer {
                 group !== undefined,
                 pinArguments,
             );
-            if (result.kind !== "void")
+            if (result.kind !== "void" && !result.nativeBinding)
                 result = context.bindings.pinValueToTemporary(
                     result,
                     "shared_result",
@@ -2033,7 +2154,11 @@ export class UserFunctionLowerer {
             });
             const cpp = `${bound.cpp}(${argumentsCpp.join(", ")})`;
             return bound.nativeCallbackReturnType
-                ? context.dataValue(cpp, bound.nativeCallbackReturnType)
+                ? context.dataLowerer.storedCallResult(
+                      cpp,
+                      bound.nativeCallbackReturnType,
+                      "shared_result",
+                  )
                 : { kind: "void", cpp };
         }
         if (ts.isIdentifier(declaration)) {
@@ -2091,6 +2216,7 @@ export class UserFunctionLowerer {
                 this.checker,
                 this.checker.getReturnTypeOfSignature(signature),
                 declaration,
+                { unwrapPromise: !context.options.workers },
             );
             if (!returnTsType) {
                 return { kind: "void", cpp };
@@ -2306,7 +2432,11 @@ export class UserFunctionLowerer {
         });
         const cpp = `${bound.cpp}(${runtimeArguments.join(", ")})`;
         return bound.nativeCallbackReturnType
-            ? context.dataValue(cpp, bound.nativeCallbackReturnType)
+            ? context.dataLowerer.storedCallResult(
+                  cpp,
+                  bound.nativeCallbackReturnType,
+                  "shared_result",
+              )
             : { kind: "void", cpp };
     }
 
@@ -2814,12 +2944,13 @@ export class UserFunctionLowerer {
         rootArguments = rootArguments.map((value, index) => {
             const expression = argumentExpressions[index];
             return isHandleKind(value.kind) &&
-                expression &&
-                !ts.isIdentifier(unwrapExpression(expression))
+                ((expression !== undefined &&
+                    !ts.isIdentifier(unwrapExpression(expression))) ||
+                    !cppIdentifierPattern.test(value.cpp))
                 ? context.bindings.pinValueToTemporary(
                       value,
                       "resource_argument",
-                      expression,
+                      expression ?? (ts.isExpression(call) ? call : undefined),
                   )
                 : value;
         });
@@ -2854,6 +2985,7 @@ export class UserFunctionLowerer {
                       this.checker,
                       this.checker.getReturnTypeOfSignature(signature),
                       declaration,
+                      { unwrapPromise: !context.options.workers },
                   );
             const dynamicReturn =
                 returnTsType &&
@@ -3676,6 +3808,7 @@ export class UserFunctionLowerer {
                               type.kind === "optional" ? type.inner : type;
                           if (
                               resourceType.kind === "handle" &&
+                              !resourceType.ownedEngine &&
                               value.kind !== resourceType.handle &&
                               value.kind !== "json-null"
                           ) {
@@ -3687,7 +3820,12 @@ export class UserFunctionLowerer {
                               value.sceneNodeVector ||
                               value.borrowedData ||
                               value.materialUboArrayFields?.size ||
-                              carriesCapturedEngineOwner(value)
+                              !storesReturnedOwners(
+                                  context,
+                                  value,
+                                  type,
+                                  expression,
+                              )
                           ) {
                               throw new SharedCallRequiresInline();
                           }
@@ -3879,10 +4017,23 @@ export class UserFunctionLowerer {
                         returnedValues[0]!,
                         returnedValues,
                     );
+                    const ownerIdentities = returnedValues.map((value) =>
+                        context.capturedEngineOwnerIdentity(
+                            value,
+                            captured.nativeCaptures,
+                        ),
+                    );
+                    const engineOwnerIdentity = ownerIdentities[0];
                     // The caller owns its result storage and presence test. Callee
                     // locals and capture expressions cannot cross this boundary.
                     returnMetadata = valueForKind(common.kind, {
                         cpp: "",
+                        ...(engineOwnerIdentity &&
+                        ownerIdentities.every(
+                            (identity) => identity === engineOwnerIdentity,
+                        )
+                            ? { engineOwnerIdentity }
+                            : {}),
                         ...(returnedValues.every(
                             (value) =>
                                 value.handleIdentity === common.handleIdentity,
@@ -4393,6 +4544,14 @@ export class UserFunctionLowerer {
             context.fail(
                 expression,
                 "A stored callback requires a proven undefined completion after awaiting.",
+            );
+        if (
+            dataType.nonThenableCompletion &&
+            !hasNonThenableCompletion(this.checker, declaration)
+        )
+            context.fail(
+                expression,
+                "A stored callback requires a proven nonthenable completion.",
             );
         // A stored closure may be called before the later declaration runs.
         context.callbacks.hoistForwardCallbackBindings(declaration, true);
@@ -6590,6 +6749,10 @@ export class UserFunctionLowerer {
                     (spread.dataType?.kind === "vector" ||
                         spread.dataType?.kind === "span")
                 ) {
+                    // The array is copied, but its record elements still alias
+                    // the source and can be mutated by the callee.
+                    context.dataLowerer.invalidateRecordArrayFacts(spread);
+
                     const source =
                         context.allocateTemporaryCppName("rest_source");
                     context.emit({

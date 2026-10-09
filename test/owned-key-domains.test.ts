@@ -132,7 +132,21 @@ check(
 `,
 );
 
-test("unrepresented dictionary mutations and weak keys refuse", () => {
+check(
+    "fixed-field-dictionary-writes-retain-source-aliases",
+    `
+    type Table={small:number;large:number};
+    const table:Table={small:1,large:2};
+    const alias=table;
+    function write(value:Record<string,number>,key:string){value[key]=4;}
+    write(table,'small');
+    if(table.small!==4||alias.small!==4||table.large!==2)throw new Error('dictionary write alias');
+    table.small=7;
+    if(alias.small!==7)throw new Error('source alias after write');
+`,
+);
+
+test("unrepresented class membership and weak keys refuse", () => {
     for (const body of [
         "return key in value;",
         "return Object.hasOwn(value,key);",
@@ -145,14 +159,6 @@ test("unrepresented dictionary mutations and weak keys refuse", () => {
         `),
             /membership of class instances requires represented prototype descriptors/,
         );
-    assert.throws(
-        () =>
-            compileSource(`
-        type Table={small:number;large:number};const table:Table={small:1,large:2};
-        function write(value:Record<string,number>,key:string){value[key]=4;}write(table,'small');
-    `),
-        /Writing through an open dictionary view/,
-    );
     assert.throws(
         () =>
             compileSource(`

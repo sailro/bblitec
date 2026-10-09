@@ -15,6 +15,16 @@ test("array searches compare represented owners by identity and erased numbers b
         const rows: number[][] = [row, equalRow, row];
         if (!rows.includes(row) || rows.indexOf(row) !== 0 || rows.lastIndexOf(row) !== 2 ||
             rows.includes([1, 2]) || rows.indexOf(equalRow, 2) !== -1) throw new Error('array identity');
+        const tuple: [number, number] = [1, 2];
+        const equalTuple: [number, number] = [1, 2];
+        const tuples: [number, number][] = [tuple, equalTuple, tuple];
+        if (tuples.indexOf(tuples[0]!) !== 0 || tuples.indexOf(equalTuple) !== 1 ||
+            tuples.lastIndexOf(tuple) !== 2 || !tuples.includes(tuple) ||
+            tuples.includes([1, 2]) || tuples.indexOf([1, 2]) !== -1)
+            throw new Error('numeric tuple identity');
+        tuple[0] = 9;
+        if (tuples[2]![0] !== 9 || equalTuple[0] !== 1 || tuples.indexOf(tuple) !== 0 ||
+            tuples.indexOf([9, 2]) !== -1) throw new Error('numeric tuple aliases');
         const table = new Map<string, number>([['a', 1]]);
         const tables: Map<string, number>[] = [table];
         if (!tables.includes(table) || tables.includes(new Map<string, number>([['a', 1]]))) throw new Error('map identity');

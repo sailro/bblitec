@@ -250,6 +250,41 @@ check(
 `,
 );
 
+check(
+    "synthetic-accessor-json-key-snapshots",
+    `
+    interface Row { first: number; later?: { value: number }; added?: { value: number }; }
+    const child = { value: 2 };
+    const rows: Row[] = [{ first: 0, later: child }, { first: 9, added: undefined }];
+    const row = rows[0]!;
+    let reads = 0;
+    Object.defineProperty(row, 'first', {
+        get() { reads++; delete row.later; row.added = child; return 1; },
+        enumerable: true,
+        configurable: true,
+    });
+    if (JSON.stringify(row) !== '{"first":1}' || reads !== 1)
+        throw new Error('own-key snapshot or getter read count');
+    if (JSON.stringify(row) !== '{"first":1,"added":{"value":2}}' || reads !== 2)
+        throw new Error('next serialization observes installed key');
+    if (Object.hasOwn(row, 'later') || !Object.hasOwn(row, 'added'))
+        throw new Error('explicit own presence');
+    interface ProxyRow { leading: number; following?: { value: number }; inserted?: { value: number }; }
+    const target: ProxyRow = { leading: 0, following: child };
+    const observed = new Proxy(target, {});
+    let proxyReads = 0;
+    Object.defineProperty(observed, 'leading', {
+        get() { proxyReads++; delete observed.following; observed.inserted = child; return 3; },
+        enumerable: true,
+        configurable: true,
+    });
+    if (JSON.stringify(observed) !== '{"leading":3}' || proxyReads !== 1)
+        throw new Error('synthetic own-key snapshot or getter read count');
+    if (JSON.stringify(observed) !== '{"leading":3,"inserted":{"value":2}}' || proxyReads !== 2)
+        throw new Error('synthetic next serialization observes installed key');
+`,
+);
+
 test("dynamic callback domains refuse nonrepresented function payloads", () => {
     assert.throws(
         () =>

@@ -1970,6 +1970,13 @@ export function commonResourceValue(
 ): Value {
     const common = { ...value };
     const first = candidates[0];
+    if (
+        candidates.some(
+            (candidate) =>
+                candidate.engineOwnerIdentity !== value.engineOwnerIdentity,
+        )
+    )
+        delete common.engineOwnerIdentity;
     for (const key of ["ownedCpp", "resourceStorageCpp"] as const) {
         if (
             (value.dataType?.kind === "handle" &&
@@ -2066,6 +2073,29 @@ export function commonResourceValue(
     return common;
 }
 
+/** Restore common resource facts without replacing the selected native storage. */
+export function withCommonResourceMetadata(
+    value: Value,
+    candidates: readonly Value[],
+): Value {
+    const first = candidates[0];
+    if (!first) return value;
+    const facts = commonResourceValue(first, candidates);
+    const result = { ...value };
+    for (const key of metadataFieldsForKind(value.kind)) {
+        const metadata = facts[key];
+        if (metadata !== undefined) Object.assign(result, { [key]: metadata });
+    }
+    return result;
+}
+
+/** A nullable resource's native payload, including an engine owner when stored. */
+export interface NullableResourceType {
+    kind: ValueKind;
+    cppType: string;
+    dataType?: DataType<"handle">;
+}
+
 /** Storage, capture and expression facts shared by value kinds. */
 export type ValueBase = Omit<ValueFields, ValueMetadataKey>;
 
@@ -2091,6 +2121,8 @@ export interface ValueFields {
     engineOwnerParameter?: ts.ParameterDeclaration;
     /** One bound engine value; aliases and owning snapshots retain this identity. */
     engineIdentity?: symbol;
+    /** Proven immutable captured engine owning this resource, independent of its carrier. */
+    engineOwnerIdentity?: symbol;
     cpp: string;
     /** Owning materialization of a borrowed lookup result at a retained sink. */
     ownedCpp?: string;

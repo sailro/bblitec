@@ -55,7 +55,29 @@ test("short handle walks use native loops and conditional bodies retain identity
     );
     assert.match(divergent.cpp, /handle_table/);
     assert.equal(divergent.cpp.match(/\.position\.x \+=/g)?.length, 1);
-    assert.match(divergent.cpp, /\.value == v_a.value/);
+    const member = /for \(const bbl::MeshHandle (\w+) : \w+\)/.exec(
+        divergent.cpp,
+    );
+    assert.ok(member, "compact loop member");
+    const snapshots = [
+        ...divergent.cpp.matchAll(
+            /const auto (\w+) = std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{v_engine\}, (\w+)\};/g,
+        ),
+    ];
+    assert.equal(snapshots.length, 2);
+    assert.equal(snapshots[0]![2], member[1]);
+    assert.equal(snapshots[1]![2], "v_a");
+    assert.ok(
+        divergent.cpp.includes(
+            "bbl::handle_at(v_engine.meshes, " +
+                member[1] +
+                ").position.x += (bbl::js::detail::same_value_zero(" +
+                snapshots[0]![1] +
+                ", " +
+                snapshots[1]![1] +
+                ") ? 2.0 : 1.0);",
+        ),
+    );
 });
 
 test("loops over handle property names retain static key dispatch", () => {

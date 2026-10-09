@@ -1,4 +1,5 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { classChain, classMemberTable } from "./class-members.js";
@@ -35,6 +36,7 @@ import {
 } from "./parameter-effects.js";
 import {
     isAssignmentExpression,
+    isDeclaredInside,
     isUpdateExpression,
     rootIdentifier,
     unwrapExpression,
@@ -541,6 +543,24 @@ function reachesSpecializingEffect(
     keepsRetainedFacts: boolean,
     preservesDomFacts = keepsRetainedFacts,
 ): boolean {
+    const loop = root.parent;
+    const iteration =
+        loop &&
+        ts.isForOfStatement(loop) &&
+        loop.statement === root &&
+        ts.isVariableDeclarationList(loop.initializer)
+            ? loop.initializer.declarations[0]
+            : undefined;
+    const readsIteration = (node: ts.Node): boolean =>
+        someAnalysisNode(node, (child) => {
+            const declaration = ts.isIdentifier(child)
+                ? resolvedSymbol(context.checker, child)?.valueDeclaration
+                : undefined;
+            return (
+                declaration !== undefined &&
+                isDeclaredInside(declaration, iteration)
+            );
+        });
     let required = false;
     walkReachedLoopNodes(context, root, (node) => {
         if (required) return false;
@@ -648,6 +668,22 @@ function reachesSpecializingEffect(
         }
         if (ts.isCallExpression(node)) {
             const callee = unwrapExpression(node.expression);
+            // Listener names choose native callback families even in stored
+            // bodies. Expand the loop supplying a name, not an enclosing
+            // runtime owner loop or a loop registering one constant name.
+            if (
+                iteration &&
+                ts.isPropertyAccessExpression(callee) &&
+                ["addEventListener", "removeEventListener"].includes(
+                    callee.name.text,
+                ) &&
+                declaredInDomLibrary(resolvedSymbol(context.checker, callee)) &&
+                node.arguments[0] &&
+                readsIteration(node.arguments[0])
+            ) {
+                required = true;
+                return false;
+            }
             const imported = ts.isIdentifier(callee)
                 ? context.symbols.importedName(callee)
                 : undefined;

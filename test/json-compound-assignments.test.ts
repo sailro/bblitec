@@ -156,13 +156,25 @@ check(
 `,
 );
 
-test("unsupported compound value targets fail without recursive fallback", () => {
-    for (const source of [
-        `let value=1; console.log(value+=2);`,
-        `const value=JSON.parse('{"n":1}') as {n:number}; console.log(value.n ||= 2);`,
-    ])
-        assert.throws(
-            () => compileSource(source),
-            /compound assignment target has no represented expression value/,
-        );
+test("scalar compound value targets fail without recursive fallback", () => {
+    assert.throws(
+        () => compileSource("let value=1; console.log(value+=2);"),
+        /compound assignment target has no represented expression value/,
+    );
 });
+
+check(
+    "logical-json-assignment-values-are-selected-lazily",
+    `
+    const value=JSON.parse('{"n":1}') as {n:number};
+    console.log(value.n ||= 2);
+    let calls=0;
+    function right():number {calls++;return 2;}
+    function consume(result:number):number {value.n=9;return result;}
+    const present=consume(value.n ||= right());
+    if(present!==1||value.n!==9||calls!==0)throw new Error("present logical result");
+    value.n=0;
+    const assigned=consume(value.n ||= right());
+    if(assigned!==2||value.n!==9||calls!==1)throw new Error("assigned logical result");
+`,
+);

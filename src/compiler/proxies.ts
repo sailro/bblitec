@@ -22,7 +22,11 @@ export class RecordProxies {
         field: DataStructField,
         source: SupportedFunction | ts.Identifier,
     ): void {
-        if (field.accessorReceiver && this.usesDynamicThis(source))
+        if (
+            field.accessorReceiver &&
+            this.context.dataTypes.isProxyTarget(field.accessorReceiver) &&
+            this.usesDynamicThis(source)
+        )
             this.context.fail(
                 source,
                 "Proxy method forwarding requires a receiver-independent stored function.",

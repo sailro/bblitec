@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type { CompletionProof } from "./completion-storage.js";
 import type { AbsenceTagDeclaration } from "./absence-tag-storage.js";
 import type { EngineOwnerStorageDeclaration } from "./engine-owner-storage.js";
 import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
@@ -32,6 +33,7 @@ export type StorageRequest =
     | { kind: "generic"; demand: GenericFunctionDemand }
     | { kind: "absence-tag"; declaration: AbsenceTagDeclaration }
     | { kind: "engine-owner"; declaration: EngineOwnerStorageDeclaration }
+    | { kind: "completion"; signatureSite: string; proof: CompletionProof }
     | {
           kind: "tuple-array";
           declaration: ts.PropertySignature | ts.PropertyDeclaration;
@@ -65,6 +67,8 @@ export class ReplayStorage {
     readonly absenceTags = new Set<ts.Declaration>();
     /** @unjournaled Resource storages whose reached uses require their actual engine. */
     readonly engineOwners = new Set<ts.Declaration>();
+    /** @unjournaled Completion contracts are monotonic across replay attempts. */
+    readonly completions = new Map<string, CompletionProof>();
     /** @unjournaled Demands outlive the attempts that met them. Record properties storing their numeric tuples as growable arrays. */
     readonly tupleArraySlots = new Set<ts.Declaration>();
     /** @unjournaled Demands outlive the attempts that met them. `ArrayLike<number>` slots retyped for the numeric arrays they store. */
@@ -117,6 +121,13 @@ export class ReplayStorage {
                 return addNew(this.absenceTags, request.declaration);
             case "engine-owner":
                 return addNew(this.engineOwners, request.declaration);
+            case "completion": {
+                const known = this.completions.get(request.signatureSite);
+                if (known === "undefined" || known === request.proof)
+                    return false;
+                this.completions.set(request.signatureSite, request.proof);
+                return true;
+            }
             case "tuple-array":
                 return addNew(this.tupleArraySlots, request.declaration);
             case "numeric-slot": {

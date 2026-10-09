@@ -1117,6 +1117,13 @@ function compileKnownDataMethod(
     const recordType =
         dataType?.kind === "optional" ? dataType.inner : dataType;
     if (recordType?.kind === "struct") {
+        // A reference record owns its selected object across argument effects
+        // and temporary accessor results; an inline record still aliases it.
+        const receiverBinding = lowerer.context.dataTypes.isReferenceStruct(
+            recordType.name,
+        )
+            ? "const auto"
+            : "const auto&";
         const field = lowerer.context.dataTypes.findStructField(
             recordType.name,
             method,
@@ -1143,7 +1150,7 @@ function compileKnownDataMethod(
             if (member) {
                 lowerer.context.emit({
                     kind: "declaration",
-                    type: "const auto&",
+                    type: receiverBinding,
                     name: receiver,
                     initializer: narrowed.cpp,
                 });
@@ -1166,7 +1173,7 @@ function compileKnownDataMethod(
                 lowerer.context.allocateTemporaryCppName("callback_receiver");
             lowerer.context.emit({
                 kind: "declaration",
-                type: "const auto&",
+                type: receiverBinding,
                 name: receiver,
                 initializer: narrowed.cpp,
             });
@@ -1194,7 +1201,7 @@ function compileKnownDataMethod(
             const optional = dataType?.kind === "optional";
             lowerer.context.emit({
                 kind: "declaration",
-                type: "const auto&",
+                type: receiverBinding,
                 name: receiver,
                 initializer: narrowed.cpp,
             });

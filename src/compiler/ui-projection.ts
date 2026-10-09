@@ -500,15 +500,21 @@ export class UiProjection {
             ) {
                 return undefined;
             }
+            const present = this.context.dataLowerer.narrowOptional(
+                value,
+                expression,
+                true,
+            );
             return withTrackedTag(
                 valueForKind("ui-element", {
-                    ...value,
-
-                    cpp: `(*${value.cpp})`,
-                    dataType: value.dataType.inner,
+                    ...present,
                     optionalFoundCpp:
                         presenceFlagCpp(value) ?? optionalPresentCpp(value.cpp),
-                    engineCpp: value.engineCpp ?? this.documentEngine(owner),
+                    engineCpp: value.dataType.inner.ownedEngine
+                        ? this.context.requireEngine(present, expression)
+                        : (value.engineCpp ??
+                          present.engineCpp ??
+                          this.documentEngine(owner)),
                 }),
             );
         };
@@ -683,7 +689,8 @@ export class UiProjection {
         if (!ts.isCallExpression(this.context.unwrap(expression)))
             return undefined;
         const type = this.context.dataLowerer.dataTypeAt(expression);
-        if (type?.kind !== "handle" || type.handle !== "ui-element")
+        const inner = type?.kind === "optional" ? type.inner : type;
+        if (inner?.kind !== "handle" || inner.handle !== "ui-element")
             return undefined;
         const value = this.context.dataLowerer.narrowOptional(
             this.context.compileValue(expression),
@@ -694,6 +701,9 @@ export class UiProjection {
                 expression,
                 "A DOM helper must return a retained element.",
             );
+        // Nullable calls keep their safe storage until the admitted operation
+        // enters its presence branch; pinning the payload here dereferences it.
+        if (presenceFlagCpp(value) !== undefined) return value;
         return this.context.bindings.pinValueToTemporary(
             value,
             "ui_receiver",

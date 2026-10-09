@@ -186,6 +186,8 @@ interface DataKinds {
         result?: DataType;
         /** The represented callable's source completion is provably undefined. */
         undefinedCompletion?: true;
+        /** A synchronous completion cannot be a Promise or other thenable. */
+        nonThenableCompletion?: true;
         /** The concrete body completes with undefined after awaiting its result. */
         awaitedUndefinedCompletion?: true;
         /**

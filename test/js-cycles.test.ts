@@ -83,7 +83,8 @@ test(
                 "#include <bblite/runtime.hpp>",
                 cppRecord(result.cpp, "struct Untraced {"),
                 cppRecord(result.cpp, "struct Traced {"),
-                "static_assert(!bbl::js::gc_traceable<Untraced>);",
+                "static_assert(!bbl::js::gc_traceable<bbl::MeshHandle>);",
+                "static_assert(bbl::js::gc_traceable<Untraced>);",
                 "static_assert(bbl::js::gc_traceable<Traced>);",
             ].join("\n"),
         );

@@ -16,6 +16,7 @@ import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { argumentAt } from "./syntax.js";
 import { optionalPresentCpp, type Value } from "./types.js";
+import { isJsonValue } from "./json-bridge.js";
 import {
     MATH_CONSTANTS,
     mathMemberAccess,
@@ -61,6 +62,7 @@ export interface BooleanOptionsContext extends Pick<
     | "allocateTemporaryCppName"
     | "emit"
     | "emitDiscardedValue"
+    | "cppString"
     | "dataTypes"
     | "fail"
 > {}
@@ -127,6 +129,8 @@ export function compileBooleanOptions<N extends string>(
             );
         const fallback = spelling.undefinedDefaults?.[name];
         if (fallback === undefined) return converted;
+        if (isJsonValue(value))
+            return `(${value.cpp}.is_undefined() ? ${fallback} : ${converted})`;
         if (value.kind === "json-null" && value.cpp === "std::nullopt")
             return String(fallback);
         if (
@@ -199,6 +203,43 @@ export function compileBooleanOptions<N extends string>(
                     `${object}${member}${field.name}`,
                     field.type,
                 );
+        } else if (isJsonValue(owner)) {
+            const cpp = context.allocateTemporaryCppName(
+                `${spelling.temporary}s`,
+            );
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: cpp,
+                initializer: owner.cpp,
+            });
+            present = `(!${cpp}.is_undefined() && !${cpp}.is_null())`;
+            context.emit(
+                `if (${present} && !${cpp}.is_object() && !${cpp}.is_array()) std::rethrow_exception(bbl::js::make_error("TypeError", ${context.cppString(`${spelling.subject} require ${spelling.forms}.`)}));`,
+            );
+            const declared = context.checker.getNonNullableType(type);
+            for (const [name, message] of Object.entries(
+                spelling.refused ?? {},
+            ))
+                if (declared.getProperty(name))
+                    context.fail(expression, message);
+            for (const name of new Set([
+                ...names,
+                ...Object.keys(spelling.consume ?? {}).filter((name) =>
+                    declared.getProperty(name),
+                ),
+            ])) {
+                const member = context.allocateTemporaryCppName(
+                    spelling.temporary,
+                );
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: member,
+                    initializer: `${present} ? ${cpp}.read_property(${context.cppString(name)}) : bbl::js::JsonValue{}`,
+                });
+                properties[name] = values.leafValue(member, { kind: "json" });
+            }
         } else
             context.fail(
                 expression,

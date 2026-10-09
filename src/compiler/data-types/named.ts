@@ -31,11 +31,13 @@ export const namedKinds: DataKindOperations<"struct" | "enum" | "function"> = {
                   `${type.restParameter === undefined ? "" : `...${type.restParameter}`}` +
                   `${type.optionalParameters?.length ? `?${type.optionalParameters.join(",")}` : ""}` +
                   `${type.erasedParameters?.length ? `~${type.erasedParameters.join(",")}` : ""}->${type.result ? key(type.result) : "void"}${type.undefinedCompletion ? ":undefined" : ""}`) +
-            (type.awaitedUndefinedCompletion ? ":awaited-undefined" : ""),
+            (type.awaitedUndefinedCompletion ? ":awaited-undefined" : "") +
+            (type.nonThenableCompletion ? ":nonthenable" : ""),
         equal: (left, right, equal) =>
             left.generic === right.generic &&
             left.identity === right.identity &&
             left.undefinedCompletion === right.undefinedCompletion &&
+            left.nonThenableCompletion === right.nonThenableCompletion &&
             left.awaitedUndefinedCompletion ===
                 right.awaitedUndefinedCompletion &&
             left.restParameter === right.restParameter &&

@@ -20,11 +20,13 @@ export interface AnimationIntrinsicContext
             | "compileNumber"
             | "resolveStaticExpression"
             | "bindings"
+            | "describeNativeValue"
             | "requirePresentationHost"
             | "callbacks"
             | "requireCompatibleFrameConductor"
             | "requireEngine"
             | "expectSameEngine"
+            | "sameEngineOwner"
             | "fail"
             | "expectObjectLiteral"
             | "objectProperty"
@@ -89,12 +91,15 @@ export function requireGltfGroupSource(
 
 /** Bind a manager to its first reached engine and reject later crossings. */
 function associateManagerEngine(
-    context: { fail(node: ts.Node, message: string): never },
+    context: Pick<AnimationIntrinsicContext, "fail" | "sameEngineOwner">,
     manager: Value,
     engineCpp: string,
     node: ts.Node,
 ): void {
-    if (manager.engineCpp !== undefined && manager.engineCpp !== engineCpp) {
+    if (
+        manager.engineCpp !== undefined &&
+        !context.sameEngineOwner(manager.engineCpp, engineCpp)
+    ) {
         context.fail(
             node,
             "Animation manager and group/scene belong to different engines.",
@@ -129,8 +134,14 @@ export function compileAnimationIntrinsic(
             const engineExpression = context.objectProperty(options, "engine");
             let engineCpp: string | undefined;
             if (engineExpression) {
-                const engine = context.compileValue(engineExpression);
-                context.expectKind(engine, "engine", engineExpression);
+                const sourceEngine = context.compileValue(engineExpression);
+                context.expectKind(sourceEngine, "engine", engineExpression);
+                const engine = context.bindings.pinValueToTemporary(
+                    sourceEngine,
+                    "animation_manager_engine",
+                    engineExpression,
+                );
+                context.describeNativeValue(engine);
                 engineCpp = engine.cpp;
             }
             const fixedDelta = context.objectProperty(options, "fixedDeltaMs");
@@ -326,6 +337,12 @@ export function compileAnimationIntrinsic(
                 argumentAt(call, 1),
             );
             associateManagerEngine(context, manager, engine, call);
+            associateManagerEngine(
+                context,
+                manager,
+                context.requireEngine(toGroup, argumentAt(call, 2)),
+                call,
+            );
             const options = context.expectObjectLiteral(argumentAt(call, 3));
             validateObjectProperties(
                 context,

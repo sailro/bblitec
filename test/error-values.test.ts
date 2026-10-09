@@ -7,6 +7,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("error property writes refuse without mutable error storage", () => {
@@ -75,12 +76,9 @@ test("cleanup error arrays retain conditional pushes, order, identity and causes
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/error-values");
-    mkdirSync(directory, { recursive: true });
-    const cpp = join(directory, "check.cpp"),
-        exe = join(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "error-values",
         `#define main generated_main\n${result.cpp}\n#undef main
         #include <cassert>
         int main() {
@@ -100,21 +98,8 @@ test("cleanup error arrays retain conditional pushes, order, identity and causes
             catch (const std::exception& error) { std::cerr << error.what(); return 2; }
         }
     `,
+        { expectedOutput: "", timeoutMs: 10000 },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${exe}`,
-        cpp,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });
 
 test("callbacks retain catch bindings after the handler exits", (t) => {

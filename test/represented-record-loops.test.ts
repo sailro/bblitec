@@ -45,6 +45,41 @@ test("settled callback record tuples retain aliases and distinct loop captures",
     );
 });
 
+test("stored listener-name loops specialize names while owner loops remain native", () => {
+    const result = compileSource(`
+        let calls=0;
+        const listener=():void=>{calls++;};
+        function install(target:EventTarget):()=>void {
+            for(const type of ["pointerdown","keydown","input"] as const)
+                target.addEventListener(type,listener);
+            return ()=>{
+                for(const type of ["pointerdown","keydown","input"] as const)
+                    target.removeEventListener(type,listener);
+            };
+        }
+        function installAll(owners:readonly EventTarget[]):Array<()=>void>{
+            const removers:Array<()=>void>=[];
+            for(const owner of owners)removers.push(install(owner));
+            return removers;
+        }
+        const batches:Array<typeof installAll>=[installAll];
+        const removers=batches[0]!([window,document]);
+        removers[0]!();removers[1]!();
+    `);
+    assert.equal(result.cpp.match(/for \(/g)?.length, 1);
+    for (const event of ["pointerdown", "keydown", "input"])
+        for (const operation of ["on", "off"])
+            assert.equal(
+                result.cpp.match(
+                    new RegExp(
+                        `bbl::${operation}_dom_\\w+\\([^\\n]*"${event}"`,
+                        "g",
+                    ),
+                )?.length,
+                1,
+            );
+});
+
 test("nested represented tuples do not consume the static expansion budget", () => {
     const entries = Array.from({ length: 66 }, (_, index) =>
         index % 2 ? "second" : "first",

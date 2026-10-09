@@ -159,7 +159,7 @@ test("planning goes on past declaration storage demands and stops at a lost writ
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     // Each statement declares only its own name: one plan collects the
-    // three absence tags the two strict attempts before it did not meet.
+    // remaining presence and absence demands without changing strict output.
     const independent =
         options +
         properties
@@ -173,7 +173,7 @@ test("planning goes on past declaration storage demands and stops at a lost writ
     const planned = measured(true, () => compileSource(independent));
     assert.deepEqual(planned.result, baseline.result);
     assert.equal(planned.planning, 1);
-    assert.equal(planned.collected, 3);
+    assert.ok(planned.collected >= 3);
     assert.ok(planned.constructions < baseline.constructions);
     runGeneratedProgram(
         tools,

@@ -424,18 +424,36 @@ check(
 `,
 );
 
+check(
+    "labeled-jumps-over-retained-callback-records",
+    `
+    interface T { id: string; when?: (n: number) => boolean; }
+    const TS: readonly T[] = [
+        { id: "a" },
+        { id: "b", when: (n) => n > 1 },
+        { id: "c" },
+    ];
+    let continued = 0;
+    outer: for (const t of TS) {
+        for (let i = 0; i < 3; i++) {
+            if (t.when && t.when(i)) continue outer;
+            continued++;
+        }
+    }
+    if (continued !== 8) throw new Error("retained record continue " + continued);
+    let broken = 0;
+    outer: for (const t of TS) {
+        for (let i = 0; i < 3; i++) {
+            if (t.when && t.when(i)) break outer;
+            broken++;
+        }
+    }
+    if (broken !== 5) throw new Error("retained record break " + broken);
+`,
+);
+
 test("labeled jumps refuse what they cannot leave", () => {
-    const templates =
-        "interface T { id: string; when?: (n: number) => boolean; } const TS: readonly T[] = [{ id: 'a' }, { id: 'b', when: (n) => n > 1 }]; let c = 0;";
     for (const [source, message] of [
-        [
-            `${templates} outer: for (const t of TS) { for (let i = 0; i < 3; i++) { if (t.when && t.when(i)) continue outer; c++; } }`,
-            /labeled continue of a statically unrolled loop is not lowered/,
-        ],
-        [
-            `${templates} outer: for (const t of TS) { for (let i = 0; i < 3; i++) { if (t.when && t.when(i)) break outer; c++; } }`,
-            /labeled break out of a statically unrolled loop is not lowered/,
-        ],
         [
             "let n = 0; outer: for (let i = 0; i < 3; i++) { switch (i) { case 1: for (let j = 0; j < 2; j++) { if (j === 1) continue outer; n++; } break; default: n += 10; } }",
             /labeled continue cannot leave a switch or try statement/,
@@ -1505,8 +1523,18 @@ check(
     view["run"] = "L";
     if (entries["jump"] !== "K" || entries["run"] !== "L") throw new Error("keyed writes through the view");
     const partial: Partial<Profile> = entries as Partial<Profile>;
+    const typedEntries: { [key: string]: string } = entries;
+    const readRun = (): string | undefined => partial.run;
     partial.run = undefined;
     if (partial.jump !== "K" || partial.run !== undefined || entries["run"] !== undefined) throw new Error("optional view");
+    if (!Object.hasOwn(entries, "run") || !Object.hasOwn(partial, "run")) throw new Error("undefined remains an own entry");
+    if (!Object.keys(entries).includes("run") || !Object.keys(typedEntries).includes("run")) throw new Error("undefined entry enumerates through aliases");
+    if (typedEntries["run"] !== undefined || readRun() !== undefined) throw new Error("undefined entry reads through aliases");
+    delete partial.run;
+    if (Object.hasOwn(entries, "run") || Object.hasOwn(typedEntries, "run") || Object.keys(entries).includes("run")) throw new Error("delete removes backing entry");
+    if (partial.run !== undefined || readRun() !== undefined) throw new Error("deleted optional view reads undefined");
+    typedEntries["run"] = "again";
+    if (partial.run !== "again" || view.run !== "again" || entries["run"] !== "again" || readRun() !== "again") throw new Error("aliases retain backing identity");
 `,
 );
 
@@ -4066,18 +4094,16 @@ checkInRealm(
 `,
 );
 
-test("promise combinator literal spreads join settlement types and refuse raw values", () => {
+test("promise combinator literal spreads join settlement types and synchronous values", () => {
     assert.doesNotThrow(() =>
         compileSource(
             "async function n(): Promise<number> { return 1; } async function s(): Promise<string> { return ''; } const xs = [s()]; void Promise.all([n(), ...xs]);",
         ),
     );
-    assert.throws(
-        () =>
-            compileSource(
-                "async function n(): Promise<number> { return 1; } const xs = [1, 2]; void Promise.all([n(), ...xs]);",
-            ),
-        /Promise\.all literal spreads require promises and represented synchronous iterables of promises/,
+    assert.doesNotThrow(() =>
+        compileSource(
+            "async function n(): Promise<number> { return 1; } const xs = [1, 2]; void Promise.all([n(), ...xs]);",
+        ),
     );
 });
 
@@ -5217,25 +5243,32 @@ check(
 );
 
 test("unsupported language shapes refuse explicitly", () => {
-    for (const [source, message] of [
+    for (const [name, source, message] of [
         [
+            "generator delegation to a Set",
             "function* gen(): Generator<number> { yield* new Set([1]); } for (const v of gen()) {}",
             /yield\* delegates to a generator, an iterator or an array/,
         ],
         [
+            "Object.is over native plain records",
             "const a = { x: 1 }; const b = { x: 1 }; if (Object.is(a, b)) {}",
             /Object.is compares/,
         ],
         [
+            "in operator on a primitive number",
             'function f(n: number): boolean { return "x" in n; } f(1);',
             /'in' is decided/,
         ],
-        [
-            "function f(xs: number[]): void { xs[Math.trunc(Math.random())] ??= 2; } f([1]);",
-            /must not contain a call/,
-        ],
     ] as const)
-        assert.throws(() => compileSource(source), message);
+        assert.throws(() => compileSource(source), message, name);
+});
+
+test("supports logical assignment through a call in an array index", () => {
+    assert.doesNotThrow(() =>
+        compileSource(
+            "function f(xs: number[]): void { xs[Math.trunc(Math.random())] ??= 2; } f([1]);",
+        ),
+    );
 });
 
 check(
@@ -9531,22 +9564,28 @@ check(
 `,
 );
 
-test("absence tags, spread lanes and tuple storage refuse what no storage represents", () => {
-    for (const [source, message] of [
-        [
+test("stored callback results represent both null and undefined", () => {
+    assert.doesNotThrow(() =>
+        compileSource(
             "interface R { x: number } const gate = new Float32Array([1]); function pick(i: number): R | null | undefined { return i > 0 ? { x: 1 } : i < 0 ? null : undefined; } const roots: Array<typeof pick> = [pick]; let p: R | null | undefined = roots[0]!(gate[0]!); if (p === null) throw new Error('null');",
-            /stored where they are told apart only once one of them is ruled out/,
-        ],
+        ),
+    );
+});
+
+test("spread lanes and tuple storage refuse what no storage represents", () => {
+    for (const [name, source, message] of [
         [
+            "class method spread requires a fixed tuple",
             "class Placement { x = 0; set(a: number, b = 0): void { this.x = a + b; } } const numbers: number[] = [1, 2]; const placement = new Placement(); placement.set(...numbers);",
             /A spread argument of a class method expands a tuple of a fixed length/,
         ],
         [
+            "stored fixed tuple parameter cannot grow through an array alias",
             "function grow(t: [number, number]): number { const a: number[] = t; a.push(1); return a.length; } const roots: Array<typeof grow> = [grow]; if (roots[0]!([1, 2]) !== 3) throw new Error('grow');",
             /A fixed-length tuple stored as a number array could grow through that array/,
         ],
     ] as const)
-        assert.throws(() => compileSource(source), message);
+        assert.throws(() => compileSource(source), message, name);
 });
 
 check(
@@ -11834,24 +11873,27 @@ check(
 `,
 );
 
-test("a method reading this stays refused when picked by a runtime key", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            type Shape = "circle" | "square";
-            interface Costs { scale: number; circle(label: string): number; square(label: string): number; }
-            function pricing(costs: Costs) {
-                return { price(shape: Shape, label: string): number { return costs[shape](label); } };
-            }
-            const made = pricing({
-                scale: 10,
-                circle(label) { return this.scale * label.length; },
-                square(label) { return this.scale * 2 * label.length; },
-            });
-            if (made.price("circle", "ring") !== 40) throw new Error("x");`),
-        /reads `this`, and .* reads its function value, which could call it with another receiver/,
-    );
-});
+check(
+    "methods-reading-this-preserve-the-receiver-through-a-runtime-key",
+    `
+    type Shape = "circle" | "square";
+    interface Costs { scale: number; circle(label: string): number; square(label: string): number; }
+    function pricing(costs: Costs) {
+        return { price(shape: Shape, label: string): number { return costs[shape](label); } };
+    }
+    const costs: Costs = {
+        scale: 10,
+        circle(label) { return this.scale * label.length; },
+        square(label) { return this.scale * 2 * label.length; },
+    };
+    const made = pricing(costs);
+    if (made.price("circle", "ring") !== 40 || made.price("square", "ring") !== 80)
+        throw new Error("selected method receiver");
+    costs.scale = 3;
+    if (made.price("circle", "ring") !== 12 || made.price("square", "ring") !== 24)
+        throw new Error("live method receiver");
+`,
+);
 
 check(
     "stored-function-spread-of-an-optional-lane-tuple",
@@ -13315,15 +13357,25 @@ check(
 `,
 );
 
-test("collections refuse type arguments without a represented storage", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                "const pending = new Map<string, object>(); pending.set('a', {}); if (pending.size !== 1) throw new Error('x');",
-            ),
-        /new Map requires concrete data type arguments or a contextual container type/,
-    );
-});
+check(
+    "collections-retain-object-values-through-erased-type-arguments",
+    `
+    interface Payload { count:number; }
+    const payload:Payload={count:1},replacement:Payload={count:1};
+    const pending=new Map<string,object>();
+    pending.set("a",payload);
+    const held=pending.get("a") as Payload;
+    if(pending.size!==1||held!==payload||held===replacement)throw new Error("object value identity");
+    payload.count=2;
+    if(held.count!==2)throw new Error("producer mutation");
+    held.count=3;
+    if(payload.count!==3)throw new Error("retrieved alias mutation");
+    pending.set("a",replacement);
+    replacement.count=4;
+    if(pending.size!==1||pending.get("a")!==replacement||(pending.get("a") as Payload).count!==4||
+       held!==payload||held.count!==3)throw new Error("replaced entry and held alias");
+`,
+);
 
 // A parsed array read as a typed array copies its elements where the
 // source builds a new collection (a spread, a Set), and finds its own

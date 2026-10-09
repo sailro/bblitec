@@ -1399,7 +1399,9 @@ export class ExpressionLowerer {
             this.collectStringPlusOperands(unwrapped, operands);
             const pins = this.context.evaluationOrder.operandsToPin(operands);
             const values = operands.map((operand, index) => {
-                const text = this.context.evaluator.staticTextValue(operand);
+                const text = this.context.probeEmission(() =>
+                    this.context.evaluator.staticTextValue(operand),
+                );
                 const value =
                     text === undefined
                         ? this.compileValue(operand)
@@ -1958,8 +1960,8 @@ export class ExpressionLowerer {
         spans.forEach((span, index) => {
             // Resolve each substitution after its predecessors' effects. A
             // closed numeric expression keeps its fact alongside helper results.
-            const known = this.context.evaluator.staticTextValue(
-                span.expression,
+            const known = this.context.probeEmission(() =>
+                this.context.evaluator.staticTextValue(span.expression),
             );
             const compiled =
                 known === undefined
@@ -3181,6 +3183,22 @@ export class ExpressionLowerer {
         path: readonly string[],
         present = false,
     ): DataType | undefined {
+        // Rewritten conditional-owner reads currently distribute indexing
+        // into both arms. Only original single-owner reads can request this
+        // checked storage without admitting duplicate key evaluation.
+        if (
+            ts.isElementAccessExpression(node) &&
+            path.length === 0 &&
+            node.pos >= 0 &&
+            (node.flags & ts.NodeFlags.Synthesized) === 0 &&
+            !ts.isConditionalExpression(this.context.unwrap(node.expression))
+        ) {
+            const type = this.context.checker.getTypeAtLocation(node);
+            return (
+                this.context.dataTypes.fromStoredTsType(type, node) ??
+                this.context.dataTypes.dynamicJsonType(type)
+            );
+        }
         if (!ts.isConditionalExpression(node)) return undefined;
         const checker = this.context.checker;
         const at = (type: ts.Type | undefined): ts.Type | undefined => {
@@ -5421,6 +5439,47 @@ export class ExpressionLowerer {
             if (stored)
                 inferred =
                     this.context.dataTypes.markStoredObjectReferences(stored);
+        }
+        // A native handle union can describe a reference whose actual
+        // carrier keeps absence beside its payload, rather than in a union.
+        // Preserve that representation for the shared null-defaulted selection.
+        if (
+            inferred?.kind === "optional" &&
+            inferred.inner.kind === "union" &&
+            inferred.inner.members.every((member) => member.kind === "handle")
+        ) {
+            const nullArm = (arm: ts.Expression): boolean =>
+                this.context.unwrap(arm).kind === ts.SyntaxKind.NullKeyword;
+            const survivor = nullArm(unwrapped.whenTrue)
+                ? unwrapped.whenFalse
+                : nullArm(unwrapped.whenFalse)
+                  ? unwrapped.whenTrue
+                  : undefined;
+            if (
+                survivor &&
+                this.context.probeEmission(
+                    () => {
+                        const value = this.inRuntimeControlFlow(() =>
+                            this.compileValue(survivor),
+                        );
+                        return (
+                            value.dataType === undefined &&
+                            ![
+                                "number",
+                                "string",
+                                "boolean",
+                                "data",
+                                "void",
+                                "json-null",
+                            ].includes(value.kind) &&
+                            value.cpp.length > 0 &&
+                            presenceFlagCpp(value) !== undefined
+                        );
+                    },
+                    () => false,
+                )
+            )
+                inferred = undefined;
         }
         // A selected fresh readonly array, present or absent, must outlive
         // its branch's temporaries.

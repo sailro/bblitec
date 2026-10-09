@@ -77,19 +77,19 @@ test("async callable views preserve properties, call identity and nested erased 
     });
 });
 
-test("async raw resource callbacks refuse an unrepresented engine owner", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+test("stored async resource callbacks demand an owning parameter representation", () => {
+    const { cpp } = compileSource(`
             import {type Mesh} from '@babylonjs/lite';
             queueMicrotask(()=>{});
             function retain(mesh:Mesh):Promise<()=>boolean|undefined> {
                 return Promise.resolve(mesh).then(owner=>()=>owner.visible);
             }
             const callbacks:Array<typeof retain>=[retain];
-        `),
-        /engine|owner/,
-    );
+        `);
+    assert.match(cpp, /std::pair<bbl::StoredEngine,\s*bbl::MeshHandle>/);
+});
+
+test("a nullable assertion cannot fabricate an async resource owner", () => {
     assert.throws(
         () =>
             compileSource(`

@@ -8,6 +8,32 @@ import {
 import { hasNoValueCompletion } from "./native-return-type.js";
 import { unwrapExpression } from "./syntax.js";
 import type { Value } from "./types.js";
+import type { DataType } from "./data-types.js";
+
+/** Existing library operations with an actual undefined completion. */
+function undefinedLibraryCall(
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+): boolean {
+    const expression = unwrapExpression(node);
+    if (!ts.isCallExpression(expression)) return false;
+    const callee = unwrapExpression(expression.expression);
+    const signature = checker.getResolvedSignature(expression);
+    const declaration = signature?.declaration;
+    const global = libraryGlobal(checker, callee);
+    const consoleMethod =
+        ts.isPropertyAccessExpression(callee) &&
+        libraryGlobal(checker, callee.expression) === "console";
+    return (
+        !!signature &&
+        !!declaration &&
+        (global !== undefined || consoleMethod) &&
+        (ts.isFunctionDeclaration(declaration) ||
+            ts.isMethodSignature(declaration)) &&
+        declarationInDefaultLibrary(declaration) &&
+        hasNoValueCompletion(checker.getReturnTypeOfSignature(signature))
+    );
+}
 
 /** A void annotation alone does not constrain a JavaScript return value. */
 export function hasUndefinedCompletion(
@@ -38,6 +64,7 @@ export function hasUndefinedCompletion(
         return false;
     const isUndefined = (expression: ts.Expression): boolean =>
         ts.isVoidExpression(unwrapExpression(expression)) ||
+        undefinedLibraryCall(checker, expression) ||
         (checker.getTypeAtLocation(expression).flags &
             ts.TypeFlags.Undefined) !==
             0;
@@ -125,16 +152,7 @@ export function provenUndefinedValue(
         const callee = unwrapExpression(expression.expression);
         const signature = context.checker.getResolvedSignature(expression);
         const declaration = signature?.declaration;
-        if (
-            libraryGlobal(context.checker, callee) &&
-            declaration &&
-            ts.isFunctionDeclaration(declaration) &&
-            declarationInDefaultLibrary(declaration) &&
-            hasNoValueCompletion(
-                context.checker.getReturnTypeOfSignature(signature),
-            )
-        )
-            return true;
+        if (undefinedLibraryCall(context.checker, expression)) return true;
         if (ts.isIdentifier(callee)) {
             const bound = context.bindings.lookupOptional(callee);
             const stored = bound?.dataType;
@@ -170,4 +188,73 @@ export function provenUndefinedValue(
         return hasUndefinedCompletion(context.checker, declaration, awaited);
     };
     return visit(node);
+}
+
+/** Primitive return lanes cannot participate in thenable adoption. */
+export function isNonThenableDataType(type: DataType | undefined): boolean {
+    if (!type) return false;
+    if (type.kind === "optional" || type.kind === "tagged")
+        return isNonThenableDataType(type.inner);
+    if (type.kind === "union") return type.members.every(isNonThenableDataType);
+    return [
+        "number",
+        "boolean",
+        "string",
+        "enum",
+        "undefined",
+        "null",
+    ].includes(type.kind);
+}
+
+/** A concrete synchronous body may discard a scalar result in finally. */
+export function hasNonThenableCompletion(
+    checker: ts.TypeChecker,
+    declaration: ts.SignatureDeclaration | ts.JSDocSignature | undefined,
+): boolean {
+    if (
+        !declaration ||
+        !(
+            ts.isFunctionDeclaration(declaration) ||
+            ts.isFunctionExpression(declaration) ||
+            ts.isArrowFunction(declaration) ||
+            ts.isMethodDeclaration(declaration)
+        ) ||
+        !declaration.body ||
+        (!ts.isArrowFunction(declaration) && declaration.asteriskToken) ||
+        ts
+            .getModifiers(declaration)
+            ?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+    )
+        return false;
+    const scalar = (expression: ts.Expression): boolean => {
+        if (
+            ts.isVoidExpression(unwrapExpression(expression)) ||
+            undefinedLibraryCall(checker, expression)
+        )
+            return true;
+        const type = checker.getTypeAtLocation(expression);
+        return (type.isUnion() ? type.types : [type]).every(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.NumberLike |
+                        ts.TypeFlags.StringLike |
+                        ts.TypeFlags.BooleanLike |
+                        ts.TypeFlags.BigIntLike |
+                        ts.TypeFlags.ESSymbolLike |
+                        ts.TypeFlags.Null |
+                        ts.TypeFlags.Undefined |
+                        ts.TypeFlags.Never)) !==
+                0,
+        );
+    };
+    return ts.isBlock(declaration.body)
+        ? !someAnalysisNode(
+              declaration.body,
+              (node) =>
+                  ts.isReturnStatement(node) &&
+                  !!node.expression &&
+                  !scalar(node.expression),
+              { functions: "skip" },
+          )
+        : scalar(declaration.body);
 }

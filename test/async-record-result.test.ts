@@ -165,9 +165,31 @@ test("owned async records store opaque assets without changing synchronous recor
         }
         void main();
     `);
-    assert.match(result.cpp, /bbl::AssetHandle asset/);
-    assert.match(result.cpp, /bbl::SceneNodeHandle root/);
-    assert.match(result.cpp, /set_asset_root_position/);
+    assert.match(
+        result.cpp,
+        /std::pair<bbl::StoredEngine, bbl::AssetHandle> asset/,
+    );
+    assert.match(
+        result.cpp,
+        /std::pair<bbl::StoredEngine, bbl::SceneNodeHandle> root/,
+    );
+    const owner =
+        /std::pair<bbl::StoredEngine, bbl::AssetHandle>\{bbl::StoredEngine\{(\w+)\},/.exec(
+            result.cpp,
+        )?.[1];
+    assert.ok(owner, "asset result retains the actual engine");
+    assert.ok(
+        result.cpp.includes(
+            "std::pair<bbl::StoredEngine, bbl::SceneNodeHandle>{bbl::StoredEngine{" +
+                owner +
+                "},",
+        ),
+    );
+    assert.ok(
+        result.cpp.includes(
+            "set_asset_root_position_component((*" + owner + "),",
+        ),
+    );
 });
 
 test("awaited file textures retain the owned texture carrier through helper and promise results", () => {
@@ -187,7 +209,15 @@ test("awaited file textures retain the owned texture carrier through helper and 
         }
         void main();
     `);
-    assert.match(result.cpp, /Promise<bbl::StoredTexture>/);
+    assert.match(
+        result.cpp,
+        /Promise<std::pair<bbl::StoredEngine, bbl::StoredTexture>>/,
+    );
+    assert.match(
+        result.cpp,
+        /co_return std::pair<bbl::StoredEngine, bbl::StoredTexture>\{bbl::StoredEngine\{\w+\}, \w+\};/,
+    );
+    assert.match(result.cpp, /if \(\(\w+\)\.second != \(\w+\)\.second\)/);
     // A realm decodes the image in a native job; the load settles its promise.
     assert.match(result.cpp, /co_await bbl::pal::load_realm_file_texture\(/);
 });

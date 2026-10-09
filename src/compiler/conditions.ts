@@ -29,6 +29,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { isBigIntTyped } from "./bigint-values.js";
+import { isJsonValue } from "./json-bridge.js";
 import { pinSlotFound, strictEqualsCpp } from "./data-comparisons.js";
 import {
     isStringValue,
@@ -387,6 +388,13 @@ export class ConditionLowerer {
                     this.context.libraryGlobal(unwrapped.right) ?? "";
                 if (ERROR_CONSTRUCTORS.has(global)) {
                     const value = this.context.compileValue(unwrapped.left);
+                    if (isJsonValue(value)) {
+                        const branded =
+                            "candidate.instance_of<bbl::js::Error>()";
+                        return global === "Error"
+                            ? `(${value.cpp}).instance_of<bbl::js::Error>()`
+                            : `[](const bbl::js::JsonValue& candidate) { return ${branded} && bbl::js::error_is(candidate.asserted_instance<bbl::js::Error>(), ${this.context.cppString(global)}); }(${value.cpp})`;
+                    }
                     const base = authoredErrorBase(this.context, value);
                     if (base) {
                         if (global === "Error" || global === base)

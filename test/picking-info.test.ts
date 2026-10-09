@@ -67,6 +67,7 @@ async function main() {
  if(alias!==first || again===first) throw new Error("result identity");
  const rows:PickingInfo[]=[first,second];
  const record:{pick:PickingInfo|null}={pick:second};
+ const storedRecord:{pick:PickingInfo}={pick:second};
  if(!rows.includes(alias) || rows.includes(again!)) throw new Error("array identity");
  const indices=new Map<PickingInfo,number>();
  indices.set(first,7); indices.set(second,11);
@@ -74,6 +75,7 @@ async function main() {
  if(!record.pick?.hit) throw new Error("record optional result");
  if(record.pick.pickedMesh?.name!=="${twoEngines ? "second" : "first"}" || rows[0]!.pickedMesh?.name!=="first") throw new Error("engine provenance");
  if(normalY(rows[0]!)!==0 || normalY(record.pick!)!==${twoEngines ? 1 : 0}) throw new Error("normal provenance");
+ if(normalY(storedRecord.pick)!==${twoEngines ? 1 : 0}) throw new Error("stored record normal provenance");
  let index=0;
  if(rows[index++]!.pickedMesh?.name!=="first" || index!==1) throw new Error("owner evaluated twice");
  if(first.bu!==1/3 || first.bv!==1/7) throw new Error("barycentric precision");

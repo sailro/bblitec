@@ -1672,8 +1672,21 @@ export function emitPropertyAssignment(
     const trsVector = ts.isPropertyAccessExpression(left.expression)
         ? sceneNodeTransformDescriptor(left.expression.name.text)
         : undefined;
+    let trsOwner: Value | undefined;
     if (trsVector && ts.isPropertyAccessExpression(left.expression)) {
-        const root = context.compileValue(left.expression.expression);
+        const owner = left.expression.expression;
+        const compiled = context.compileValue(owner);
+        const root =
+            expressionHasEffects(owner) ||
+            (compiled.dataType?.kind === "handle" &&
+                compiled.dataType.ownedEngine)
+                ? context.bindings.pinValueToTemporary(
+                      compiled,
+                      "transform_owner",
+                      owner,
+                  )
+                : compiled;
+        trsOwner = root;
         if (root.kind === "asset-root") {
             context.assetRegistry.assertAssetRootWritable(root, expression);
             const vector = left.expression.name.text;
@@ -1740,7 +1753,8 @@ export function emitPropertyAssignment(
         ts.isIdentifier(targetExpression) ||
         (ts.isPropertyAccessExpression(targetExpression) &&
             !transformComponent) ||
-        ts.isElementAccessExpression(targetExpression)
+        ts.isElementAccessExpression(targetExpression) ||
+        ts.isCallExpression(targetExpression)
     ) {
         if (
             emitTargetPropertyAssignment(
@@ -1868,16 +1882,8 @@ export function emitPropertyAssignment(
         // The owner is compiled rather than looked up, so a mesh read
         // out of the data model (a handle stored in a struct or array)
         // writes its transform exactly like a mesh local. Every lane write
-        // below names it again, so one with effects is read once.
-        const owner = left.expression.expression;
-        const compiled = context.compileValue(owner);
-        const mesh = expressionHasEffects(owner)
-            ? context.bindings.pinValueToTemporary(
-                  compiled,
-                  "transform_owner",
-                  owner,
-              )
-            : compiled;
+        // below names it again, so the selected owner was pinned above.
+        const mesh = trsOwner!;
         const axis = trsAxisIndex(left.name.text);
         if (axis === undefined) {
             context.fail(

@@ -17,6 +17,8 @@ export interface NativeRecordStorageDemand {
     dynamicJsonStorage?: true;
     /** Every field must retain a receiver-aware accessor slot. */
     proxy?: true;
+    /** An actual Proxy forwards the record's methods through another receiver. */
+    proxyTarget?: true;
     /**
      * Records of this type are parsed documents the program reads as it:
      * every value of the type is stored as a document, which keeps the
@@ -25,6 +27,8 @@ export interface NativeRecordStorageDemand {
     document?: true;
     /** A plain fixed record stored as a homogeneous open scalar dictionary. */
     dictionary?: "string" | "number" | "boolean";
+    /** An open scalar dictionary retains undefined-valued own entries through document views. */
+    documentDictionary?: true;
     /** One retained record cannot change its dictionary value representation. */
     dictionaryConflict?: true;
     /** A structural interface retains the native owner whose checked type supplies it. */
@@ -74,7 +78,9 @@ const RECORD_STORAGE_FLAGS = [
     "stored",
     "dynamicJsonStorage",
     "proxy",
+    "proxyTarget",
     "document",
+    "documentDictionary",
     "armFields",
     "view",
     "nativeConflict",

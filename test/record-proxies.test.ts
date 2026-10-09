@@ -195,17 +195,22 @@ test("descriptor-inspecting traps refuse", () => {
         );
 });
 
-test("nullable own keys and absent definitions retain explicit runtime boundaries", (t) => {
+test("nullable own keys are represented and absent definitions retain their runtime boundary", (t) => {
     const result = compileSource(`
 setTimeout(()=>{},0);
-interface Item { label?:{n:number}|null; other?:string }
-const target:Item={label:null};
-const view=new Proxy(target,{});
-let refused=0;
-try{Object.hasOwn(view,"label");}catch(error){if(String(error).includes("may be absent or null"))refused++;}
-try{Object.defineProperty(view,"other",{value:"new"});}catch(error){if(String(error).includes("descriptor attributes"))refused++;}
-if(refused!==2||target.other!==undefined)throw new Error("explicit representation boundaries");
-globalThis.close();
+try {
+    interface Item { label?:{n:number}|null; other?:string }
+    const target:Item={label:null};
+    const view=new Proxy(target,{});
+    if(!Object.hasOwn(view,"label")||view.label!==null)throw new Error("own null presence");
+    delete target.label;
+    if(Object.hasOwn(view,"label"))throw new Error("deleted key presence");
+    let refused=0;
+    try{Object.defineProperty(view,"other",{value:"new"});}catch(error){if(String(error).includes("descriptor attributes"))refused++;}
+    if(refused!==1||target.other!==undefined)throw new Error("explicit representation boundary");
+} finally {
+    globalThis.close();
+}
 `);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {

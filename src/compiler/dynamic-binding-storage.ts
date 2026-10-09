@@ -43,6 +43,7 @@ export interface DemandedStorageContext {
         | "fromCallableRecordDemand"
         | "fromSharedReturnType"
         | "nativeRecordViewDemand"
+        | "hasNativeRecordView"
         | "markStoredObjectReferences"
         | "nullableType"
         | "withDynamicJsonTypes"
@@ -112,8 +113,22 @@ export function demandedStorageType(
             ? dataTypes.nullableType(mapped, !absent.null)
             : mapped;
     }
+    // A fresh authored record may share an annotation with an unrelated
+    // native view. Its one-object demand retains the literal's actual
+    // carrier; it does not turn that object or its aliases into the native
+    // owner. Later values must still pass the retained carrier's sink.
+    const actualSource =
+        storage === "source" &&
+        initializer &&
+        ts.isObjectLiteralExpression(initializer) &&
+        dataTypes.hasNativeRecordView(source)
+            ? checker.getTypeAtLocation(initializer)
+            : undefined;
     return (
-        dataTypes.fromStoredTsType(source, declaration) ??
+        dataTypes.fromStoredTsType(
+            actualSource ?? source,
+            actualSource ? initializer! : declaration,
+        ) ??
         // A fresh `{}` has no members to type: a parsed document holds it
         // as one object with identity.
         (initializer &&

@@ -44,6 +44,7 @@ import {
     commonResourceValue,
     isCompileTimeOnlyValue,
     isStringValue,
+    optionalPresentCpp,
     presenceFlagCpp,
     readsNativeStorage,
     representedStorage,
@@ -842,6 +843,7 @@ export class BindingScopes {
         )
             return;
         const destination: Value = { ...value, cpp: binding.value.cpp };
+        delete writable(destination).engineOwnerIdentity;
         delete writable(destination).ownedCpp;
         delete writable(destination).stableOwnerCpp;
         delete writable(destination).nativeOwnedRvalue;
@@ -968,8 +970,41 @@ export class BindingScopes {
             delete writable(value).regexpCaptureCount;
             delete writable(value).regexpUnicode;
         }
+        if (
+            value.engineOwnerIdentity &&
+            ts.isIdentifier(identifier) &&
+            this.context.sharedClosures.identifierIsRebound(identifier)
+        ) {
+            value = { ...value };
+            delete writable(value).engineOwnerIdentity;
+        }
         if (value.kind === "engine" && !value.engineIdentity)
             value = { ...value, engineIdentity: Symbol() };
+        const handleStorage = value.sharedStorageCpp ?? value.cpp;
+        if (
+            isHandleKind(value.kind) &&
+            value.kind !== "engine" &&
+            !(
+                value.dataType?.kind === "handle" && value.dataType.ownedEngine
+            ) &&
+            cppIdentifierPattern.test(handleStorage) &&
+            (value.cpp === handleStorage || value.cpp === `(*${handleStorage})`)
+        ) {
+            // A materialized handle captures its own local, not the optional
+            // slot from which its initializer selected the value.
+            value = { ...value };
+            delete writable(value).optionalStorageCpp;
+            delete writable(value).stableOwnerCpp;
+            if (value.kind === "picking-info") {
+                writable(value).engineCpp = `bbl::picking_engine(${value.cpp})`;
+                writable(value).nativeCompanionCaptures = {
+                    ...value.nativeCompanionCaptures,
+                    engineCpp: [
+                        this.context.registerNativeBinding(handleStorage),
+                    ],
+                };
+            }
+        }
         // A resource whose native value has one type declares it for the
         // local holding it, whichever declaration emitted that local, so a
         // closure capturing it has a concrete environment.
@@ -1746,6 +1781,47 @@ export class BindingScopes {
             };
         }
         if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
+            if (value.optionalStorageCpp) {
+                const cpp = this.context.allocateTemporaryCppName(label);
+                const source = this.context.allocateTemporaryCppName(
+                    `${label}_source`,
+                );
+                const type = this.context.dataTypes.cppType({
+                    kind: "optional",
+                    inner: value.dataType,
+                });
+                this.context.emit({
+                    kind: "declaration",
+                    type: `const ${type}`,
+                    name: cpp,
+                    initializer: `([&]() -> ${type} { const auto ${source} = ${value.optionalStorageCpp}; return ${source} ? ${type}{*${source}} : ${type}{std::nullopt}; }())`,
+                    attributes: "[[maybe_unused]] ",
+                });
+                const binding = this.context.registerNativeConstBinding(cpp);
+                const pinned: Value = {
+                    ...withNativeMetadata(
+                        this.context.dataLowerer.leafValue(
+                            `(*${cpp})`,
+                            value.dataType,
+                        ),
+                        value,
+                    ),
+                    optionalStorageCpp: cpp,
+                    optionalFoundCpp: optionalPresentCpp(cpp),
+                    truthinessCpp: optionalPresentCpp(cpp),
+                    stableOwnerCpp: cpp,
+                    nativeCaptures: [binding],
+                    nativeCompanionCaptures: {
+                        engineCpp: [binding],
+                        resourceStorageCpp: [binding],
+                        optionalStorageCpp: [binding],
+                        optionalFoundCpp: [binding],
+                        truthinessCpp: [binding],
+                    },
+                };
+                delete writable(pinned).sharedStorageCpp;
+                return pinned;
+            }
             const storage = representedStorage(value);
             if (!storage)
                 throw new Error(
@@ -1878,7 +1954,7 @@ export class BindingScopes {
             this.context.describeNativeValue(pinned);
             return pinned;
         }
-        if (isHandleKind(value.kind) && !value.nativeBinding) {
+        if (isHandleKind(value.kind)) {
             const cpp = this.context.allocateTemporaryCppName(label);
             // A scene snapshot owns its selected shared state while remaining
             // writable through the native Scene& APIs after source rebinding.
@@ -1899,6 +1975,15 @@ export class BindingScopes {
                 ...(value.kind === "engine" ? { engineCpp: cpp } : {}),
                 nativeBinding: true as const,
             };
+            delete pinned.optionalStorageCpp;
+            delete pinned.stableOwnerCpp;
+            if (pinned.kind === "picking-info") {
+                pinned.engineCpp = `bbl::picking_engine(${cpp})`;
+                pinned.nativeCompanionCaptures = {
+                    ...pinned.nativeCompanionCaptures,
+                    engineCpp: [this.context.registerNativeBinding(cpp)],
+                };
+            }
             if (type === "auto") this.context.registerNativeConstBinding(cpp);
             this.context.describeNativeValue(pinned);
             return pinned;

@@ -3073,10 +3073,14 @@ export class PropertyAccessLowerer {
             owner.kind === "texture" &&
             (property === "width" || property === "height")
         ) {
+            const storedTexture =
+                owner.dataType?.kind === "handle" &&
+                owner.dataType.handle === "texture";
             let size =
                 property === "width" ? owner.textureWidth : owner.textureHeight;
             if (
                 size === undefined &&
+                !storedTexture &&
                 owner.textureFile?.source &&
                 owner.textureFile.entryFileName
             ) {
@@ -3095,8 +3099,9 @@ export class PropertyAccessLowerer {
             }
             if (size === undefined) {
                 if (
-                    owner.textureStorage === "file" ||
-                    owner.textureStorage === "pixels"
+                    !storedTexture &&
+                    (owner.textureStorage === "file" ||
+                        owner.textureStorage === "pixels")
                 ) {
                     return {
                         kind: "number",
@@ -3104,11 +3109,7 @@ export class PropertyAccessLowerer {
                         dataType: { kind: "number" },
                     };
                 }
-                if (
-                    owner.textureStorage === "stored" ||
-                    (owner.dataType?.kind === "handle" &&
-                        owner.dataType.handle === "texture")
-                ) {
+                if (owner.textureStorage === "stored" || storedTexture) {
                     return {
                         kind: "number",
                         cpp: `std::visit([](const auto& texture) { return static_cast<double>(texture.${property}); }, ${owner.cpp})`,

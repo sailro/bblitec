@@ -28,6 +28,24 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
         classSelected.classList.toggle("selected", forcedClass());
         if (classEffects !== 2 || !retained.classList.contains("selected"))
             throw new Error("direct class receiver");
+        const classMap = new Map<string, HTMLElement>();
+        let classMapKeys = 0;
+        let classMapEffects = 0;
+        function classMapKey(): string { classMapKeys++; return "selected"; }
+        function forcedMapClass(): boolean {
+            classMapEffects++;
+            classMap.clear();
+            return true;
+        }
+        classMap.get(classMapKey())?.classList.toggle("selected", forcedMapClass());
+        if (classMapKeys !== 1 || classMapEffects !== 0)
+            throw new Error("absent Map class argument");
+        classMap.set("selected", retained);
+        retained.classList.remove("selected");
+        classMap.get(classMapKey())?.classList.toggle("selected", forcedMapClass());
+        if (classMapKeys !== 2 || classMapEffects !== 1 || classMap.size !== 0 ||
+            !retained.classList.contains("selected"))
+            throw new Error("Map class receiver survives argument clear");
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         document.getElementById("host")?.remove();

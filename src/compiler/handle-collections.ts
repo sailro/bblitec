@@ -410,6 +410,7 @@ interface HandleCollectionsContext
             | "resolveStaticExpression"
             | "probeStaticArrayLiteral"
             | "requireEngine"
+            | "sameEngineOwner"
             | "expectKind"
             | "expectSameEngine"
             | "expectArgumentCount"
@@ -1389,6 +1390,18 @@ export class HandleCollections {
                   expression,
                   "addAnimationGroups requires at least one group.",
               );
+        for (const group of groups) {
+            if (
+                !this.context.sameEngineOwner(
+                    engineCpp,
+                    this.context.requireEngine(group, expression),
+                )
+            )
+                this.context.fail(
+                    expression,
+                    "Animation groups belong to different engines.",
+                );
+        }
         return {
             cpp:
                 `std::vector<${handleCppType("animation-group")}>{` +

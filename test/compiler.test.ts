@@ -2649,7 +2649,16 @@ test("retains lexical constant-expression tuple arrays for runtime break", () =>
         result.cpp,
         /bbl::js::Array<bbl::js::Tuple<2>> v_fn\d+_shots = bbl::js::Array<bbl::js::Tuple<2>>/,
     );
-    assert.match(result.cpp, /for \([^\n]*auto&& v_bblite_item_/);
+    const range = /const auto (\w+) = v_fn\d+_shots;/.exec(result.cpp);
+    assert.ok(range);
+    const iteration = new RegExp(
+        `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] auto (\\w+) = ${range[1]}\\[\\1\\];`,
+    ).exec(result.cpp);
+    assert.ok(iteration);
+    assert.match(
+        result.cpp,
+        new RegExp(`if \\(${iteration[2]}\\[0\\] > 0\\.0\\) \\{\\s+break;`),
+    );
 });
 
 test("materializes runtime-valued static maps as native arrays", () => {
@@ -2750,9 +2759,29 @@ test("spreads a native partial struct into a wider struct", () => {
         options.enabled = item.label !== undefined;
     `);
 
-    assert.match(result.cpp, /if \(v_options\.label\.has_value\(\)\) \{/);
-    assert.match(result.cpp, /v_item\.label = \(\*v_options\.label\);/);
-    assert.match(result.cpp, /if \(v_options\.enabled\.has_value\(\)\) \{/);
+    const spread = /auto (\w+) = bbl::js::snapshot_value\(v_options\);/.exec(
+        result.cpp,
+    );
+    assert.ok(spread);
+    const owner = spread[1]!;
+    assert.match(result.cpp, /bbl::js::JsonValue v_item =/);
+    assert.ok(
+        result.cpp.includes(
+            'own.emplace_back("id", bbl::js::json_value(3.0));',
+        ),
+    );
+    for (const key of ["label", "enabled"]) {
+        assert.ok(
+            result.cpp.includes(
+                `if (${owner}.${key}.has_value()) own.emplace_back("${key}", bbl::js::json_value((*${owner}.${key})));`,
+            ),
+        );
+    }
+    assert.ok(
+        result.cpp.includes(
+            'v_options.enabled = bbl::js::Nullable<bool>{!(v_item.read_property("label").is_undefined())};',
+        ),
+    );
 });
 
 test("lowers array callbacks through one native iteration protocol", () => {
@@ -4110,15 +4139,15 @@ test("compares array members the way JavaScript compares objects", () => {
         /bbl::js::array_index_of\(v_points, bbl::js::array_at_or_default\(v_points, /,
     );
 
-    // A tuple is a value in both languages, so searching for one would
-    // answer a question JavaScript answers by identity.
-    assert.throws(
-        () =>
-            compileSource(`
-                const rows: [number, number][] = [[1, 2]];
-                const found = rows.indexOf(rows[0]!);
-            `),
-        /JavaScript would compare by identity here/,
+    // A numeric tuple keeps its retained array identity when read back.
+    const tuples = compileSource(`
+        const rows: [number, number][] = [[1, 2]];
+        const found = rows.indexOf(rows[0]!);
+    `);
+    assert.match(tuples.cpp, /bbl::js::Array<bbl::js::Tuple<2>> v_rows/);
+    assert.match(
+        tuples.cpp,
+        /bbl::js::array_index_of\(v_rows, bbl::js::array_index_checked\(v_rows, 0\.0, "[^"]+"\)\)/,
     );
 });
 
@@ -6866,7 +6895,7 @@ test("does not carry a folded continue into the next static iteration", () => {
     );
     assert.match(
         result.cpp,
-        /\.set\([^\n]+get\("name"\)\.to_string\(\), "loaded"\);/,
+        /\.set\([^\n]+read_property\("name"\)\.to_string\(\), "loaded"\);/,
     );
     assert.equal(result.cpp.match(/\.set\(/g)?.length, 1);
 });
@@ -7756,7 +7785,33 @@ test("compares handles read from runtime arrays by object identity", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /\.value != .*\.value/);
+    const snapshots = [
+        ...result.cpp.matchAll(
+            /const auto (\w+) = std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{v_engine\}, ([^\n]+)\};/g,
+        ),
+    ];
+    assert.equal(snapshots.length, 2);
+    const entry =
+        /auto (\w+) = bbl::js::snapshot_value\(v_bblite_some_source_\d+\[v_bblite_some_index_\d+\]\);/.exec(
+            result.cpp,
+        );
+    assert.ok(entry);
+    assert.equal(snapshots[0]![2], entry[1]);
+    assert.match(
+        result.cpp,
+        new RegExp(
+            String.raw`make_closure\(bblscene::\w+\{${entry[1]}, v_engine, v_meshes\}`,
+        ),
+    );
+    assert.match(
+        snapshots[1]![2]!,
+        /^bbl::js::array_at_or_default\(v_meshes, \w+\)$/,
+    );
+    assert.ok(
+        result.cpp.includes(
+            `return !bbl::js::detail::same_value_zero(${snapshots[0]![1]}, ${snapshots[1]![1]});`,
+        ),
+    );
 });
 
 test("rebinds JavaScript arrays through their shared native identity", () => {
@@ -7895,9 +7950,16 @@ test("iterates strings through their JavaScript characters", () => {
             const value = item;
         }
     `);
+    const range =
+        /const auto (\w+) = bbl::js::string_characters\("abc"\);/.exec(
+            result.cpp,
+        );
+    assert.ok(range);
     assert.match(
         result.cpp,
-        /for \(auto&& v_bblite_item_\d+ : bbl::js::string_characters\("abc"\)\)/,
+        new RegExp(
+            `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] auto (\\w+) = ${range[1]}\\[\\1\\];\\s+\\[\\[maybe_unused\\]\\] std::string \\w+ = \\2;`,
+        ),
     );
 });
 
@@ -8156,9 +8218,17 @@ test("snapshots scalar members of records retained by classes", () => {
     // method reads that field rather than the live mesh position.
     assert.match(
         result.cpp,
-        /VehicleData\{v_\w*body, \w+, bbl::handle_at\(v_engine\.meshes, v_\w*body\)\.position\.y\}/,
+        /VehicleData\{std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{(\w+)\}, (\w+)\}, std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{bbl::StoredEngine\{\1\}, \w+\}, bbl::handle_at\(\1\.meshes, \2\)\.position\.y\}/,
     );
-    assert.match(result.cpp, /return v_\w+_vehicle_\d+->bodyRestY;/);
+    const stored =
+        /bblscene::Vehicle (v_bblite_class_field_vehicle_\d+) = \w+;/.exec(
+            result.cpp,
+        );
+    assert.ok(stored);
+    assert.ok(result.cpp.includes(`return ${stored[1]}->bodyRestY;`));
+    const mutation = result.cpp.indexOf(".position.y = 10.0;");
+    assert.ok(mutation > result.cpp.indexOf(stored[0]));
+    assert.match(result.cpp, /double bodyRestY\{\};/);
 });
 
 test("reads mutated flat-entry variables from live generated state", () => {
@@ -9905,8 +9975,9 @@ test("lowers compound classes and add remove forced-toggle mutations", () => {
         assert.match(
             result.cpp,
             new RegExp(
-                `${temporary}\\.has_value\\(\\) \\? ` +
-                    `bbl::ui_toggle_class\\([^;]+\\(\\*${temporary}\\)`,
+                `if \\(${temporary}\\.has_value\\(\\)\\) \\{\\s+` +
+                    `\\[\\[maybe_unused\\]\\] auto (\\w+) = \\(\\*${temporary}\\);\\s+` +
+                    `bbl::ui_toggle_class\\([^,\\n]+, \\1, "active", (?:true|false)\\);\\s+\\}`,
             ),
         );
     }
@@ -9996,8 +10067,9 @@ test("preserves Map UI identity across dynamic grid geometry changes", () => {
     assert.match(
         safe.cpp,
         new RegExp(
-            `${get[1]}\\.has_value\\(\\) \\? ` +
-                `bbl::ui_toggle_class\\([^;]+\\(\\*${get[1]}\\)`,
+            `if \\(${get[1]}\\.has_value\\(\\)\\) \\{\\s+` +
+                `\\[\\[maybe_unused\\]\\] auto (\\w+) = \\(\\*${get[1]}\\);\\s+` +
+                `bbl::ui_toggle_class\\([^,\\n]+, \\1, "active", true\\);\\s+\\}`,
         ),
     );
     assert.equal(
@@ -14338,7 +14410,10 @@ test("mutates a Map array fallback before storing it back", () => {
     `);
 
     assert.match(result.cpp, /v_list\.push_back\(3\.0\)/);
-    assert.match(result.cpp, /v_groups\.set\("items", v_list\)/);
+    assert.match(
+        result.cpp,
+        /v_list\.push_back\(3\.0\)[\s\S]*const auto (v_bblite_map_key_\d+) = "items";\s+static_cast<void>\(v_groups\.set\(\1, v_list\)\)/,
+    );
 });
 
 test("serializes a runtime string enum for a string Set lookup", () => {
@@ -17981,7 +18056,7 @@ test("keeps generated scene locals and equality conditions warning-clean", () =>
     const discardedMarker = compileScene("scene175");
     assert.match(
         discardedMarker,
-        /static_cast<void>\(v_bblite_shared_result_\d+\);/,
+        /static_cast<void>\(\(v_bblite_shared_result_\d+\)\.second\);/,
     );
     assert.doesNotMatch(discardedMarker, /^\s*v_fn\d+_sphere;$/m);
 });
@@ -19533,6 +19608,62 @@ ${body}
     }
 `;
 
+/** The selected group's seek value is chosen by its owned handle identity. */
+function assertAnimationSeekSelection(
+    cpp: string,
+    receiver: string,
+    compared: string,
+): void {
+    const snapshots = [
+        ...cpp.matchAll(
+            /const auto (\w+) = std::pair<bbl::StoredEngine, bbl::AnimationGroupHandle>\{bbl::StoredEngine\{v_engine\}, (\w+)\};/g,
+        ),
+    ];
+    const isOwnedSharedResult = (name: string): boolean => {
+        const held = new RegExp(
+            `auto ${name} = (v_bblite_shared_result_\\d+);`,
+        ).exec(cpp);
+        const call =
+            held &&
+            new RegExp(
+                `auto ${held[1]} = bbl::js::make_closure\\([^\\n]+, bblscene::(\\w+)\\)\\(`,
+            ).exec(cpp);
+        return (
+            call !== null &&
+            cpp.includes(
+                `std::pair<bbl::StoredEngine, bbl::AnimationGroupHandle> ${call[1]}(`,
+            )
+        );
+    };
+    const ownedCompared = isOwnedSharedResult(compared);
+    if (isOwnedSharedResult(receiver) && ownedCompared) {
+        assert.ok(
+            cpp.includes(
+                `bbl::set_animation_current_time((*(${receiver}).first), (${receiver}).second, (bbl::js::detail::same_value_zero(${receiver}, ${compared}) ? 0.25 : 1.5));`,
+            ),
+        );
+        return;
+    }
+    assert.ok(
+        snapshots.some((left, index) => {
+            const right = snapshots[index + 1];
+            const rightCpp =
+                right?.[2] === compared
+                    ? right[1]
+                    : ownedCompared
+                      ? compared
+                      : undefined;
+            return (
+                left[2] === receiver &&
+                rightCpp !== undefined &&
+                cpp.includes(
+                    `bbl::set_animation_current_time(v_engine, ${receiver}, (bbl::js::detail::same_value_zero(${left[1]}, ${rightCpp}) ? 0.25 : 1.5));`,
+                )
+            );
+        }),
+    );
+}
+
 test("binds a loader group collection, resolves finds statically, and erases the proven-dead throw", () => {
     const result = compileWithAnimationFixture(
         HANDLE_COLLECTION_SCENE(`
@@ -19575,23 +19706,17 @@ test("binds a loader group collection, resolves finds statically, and erases the
     // The tuple local reaches addAnimationGroups as the selected pair.
     assert.match(
         result.cpp,
-        /bbl::add_animation_groups\([^;]*std::vector<bbl::AnimationGroupHandle>\{v_idle, v_sadPose\}\)/,
+        /bbl::add_animation_groups\(v_manager, \(\*\(v_idle\)\.first\), std::vector<bbl::AnimationGroupHandle>\{\(v_idle\)\.second, \(v_sadPose\)\.second\}\)/,
     );
     // setAnimationAdditive: frame zero through the pinned conversion.
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0\)/,
+        /bbl::set_animation_additive_from_frame\(\(\*\(v_sadPose\)\.first\), \(v_sadPose\)\.second, 0\.0\)/,
     );
-    // The handle ternary folded per unrolled element: the additive pose
-    // keeps its own time, the other group takes the seek value.
-    assert.match(
-        result.cpp,
-        /bbl::set_animation_current_time\(v_engine, [^,]+, 0\.25\)/,
-    );
-    assert.match(
-        result.cpp,
-        /bbl::set_animation_current_time\(v_engine, [^,]+, 1\.5\)/,
-    );
+    // Each selected receiver keeps the owner-aware identity branch
+    // that chooses its source seek value.
+    assertAnimationSeekSelection(result.cpp, "v_idle", "v_sadPose");
+    assertAnimationSeekSelection(result.cpp, "v_sadPose", "v_sadPose");
     assert.ok(result.manifest.features.includes("animation:gltf-additive"));
     assert.ok(result.manifest.features.includes("animation:gltf-group-time"));
 });
@@ -19624,19 +19749,13 @@ test("preserves animation group selection through mutable and readonly array ali
         assert.equal(
             [
                 ...result.cpp.matchAll(
-                    /bbl::add_animation_groups\([^;]*std::vector<bbl::AnimationGroupHandle>\{v_idle, v_sadPose\}\)/g,
+                    /bbl::add_animation_groups\(v_manager, \(\*\(v_idle\)\.first\), std::vector<bbl::AnimationGroupHandle>\{\(v_idle\)\.second, \(v_sadPose\)\.second\}\)/g,
                 ),
             ].length,
             2,
         );
-        assert.match(
-            result.cpp,
-            /bbl::set_animation_current_time\(v_engine, [^,]+, 0\.25\)/,
-        );
-        assert.match(
-            result.cpp,
-            /bbl::set_animation_current_time\(v_engine, [^,]+, 1\.5\)/,
-        );
+        assertAnimationSeekSelection(result.cpp, "v_idle", "v_sadPose");
+        assertAnimationSeekSelection(result.cpp, "v_sadPose", "v_sadPose");
         assert.ok(
             result.manifest.features.includes("animation:managed-groups"),
         );
@@ -19734,7 +19853,12 @@ test("handle identity compares at run time when a side has no generation-known s
         `),
         ["idle", "agree"],
     );
-    assert.match(result.cpp, /\.value == v_idle\.value\) \? 0\.25 : 1\.5\)/);
+    const loop =
+        /for \(const bbl::AnimationGroupHandle (\w+) : bbl::handle_at\(v_engine.assets, v_container\).animation_groups\)/.exec(
+            result.cpp,
+        );
+    assert.ok(loop);
+    assertAnimationSeekSelection(result.cpp, loop[1]!, "v_idle");
 });
 
 test("setAnimationAdditive resolves its options at generation exactly where the pin throws", () => {
@@ -20278,10 +20402,24 @@ test("bakes a Canvas2D helper reached through an inlined parameter", () => {
     // The setter is one record store: `alphaCutOff` is not a Standard
     // composition key, and every composed Standard fragment already
     // carries the discard the value feeds.
-    assert.match(
-        result.cpp,
-        /bbl::handle_at\(v_engine\.materials, [A-Za-z0-9_]+\)\.alpha_cutoff = 0\.25f;/,
-    );
+    const materials = [
+        ...result.cpp.matchAll(
+            /auto (\w+) = bbl::create_standard_material\((\w+)\);/g,
+        ),
+    ];
+    assert.equal(materials.length, 2);
+    for (const [, material, owner] of materials) {
+        assert.ok(
+            owner === "v_engine" ||
+                result.cpp.includes(`auto& ${owner} = v_engine;`),
+        );
+        assert.ok(
+            result.cpp.includes(
+                `bbl::handle_at(${owner}.materials, ${material}).alpha_cutoff = 0.25f;`,
+            ),
+        );
+    }
+    assert.equal(result.cpp.match(/\.alpha_cutoff = 0\.25f;/g)?.length, 2);
 });
 
 test("does not bake a sibling function in a file that draws elsewhere", () => {
@@ -21112,25 +21250,30 @@ test("a null-defaulted guard over a nullable pick conjoins its presence test", (
         guarded.cpp,
         /\w+\.hit && \(\w+\.picked_kind != bbl::PickedNodeKind::none\)/,
     );
-    // Two branches that BOTH carry native storage still have to match: the
-    // rule is about a value that already models absence, not about widening
-    // any pair a scene writes.
-    assert.throws(
-        () =>
-            compileSource(`
+    // Represented native alternatives keep their payloads and identities.
+    const mixed = compileSource(`
         import { createCylinder, createEngine, createSceneContext } from "babylon-lite";
         async function main() {
             const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
             const engine = await createEngine(canvas);
             const scene = createSceneContext(engine);
             const cylinder = createCylinder(engine, { height: 2, diameter: 1 });
-            const chosen = canvas.clientWidth > 100 ? cylinder : scene;
-            engine.setHardwareScalingLevel(chosen ? 1 : 2);
+            const chooseMesh = canvas.clientWidth > 100;
+            const chosen = chooseMesh ? cylinder : scene;
+            if (chooseMesh ? chosen !== cylinder : chosen !== scene) {
+                throw new Error("selected owner identity");
+            }
         }
         void main();
-    `),
-        /Conditional expressions require matching native value branches/,
+    `);
+    assert.match(
+        mixed.cpp,
+        /std::variant<bbl::MeshHandle, bbl::Scene> v_chosen = \(v_chooseMesh \?/,
     );
+    assert.match(mixed.cpp, /std::in_place_index<0>, v_cylinder/);
+    assert.match(mixed.cpp, /std::in_place_index<1>, v_scene/);
+    assert.match(mixed.cpp, /std::get<0>\(\w+\) == \w+/);
+    assert.match(mixed.cpp, /std::get<1>\(\w+\) == \w+/);
 });
 
 test("reaches the flow-graph feature for an asset's runtimes and pointer picking", () => {
@@ -21248,4 +21391,93 @@ test("fixed render targets snapshot runtime canvas dimensions", () => {
         result.cpp,
         /render_target_dimension\(std::floor\([^;]*v_engine.options.height/,
     );
+});
+
+test("animation owner proofs follow immutable shared returns and reject mutable owners", () => {
+    const fixture = (body: string): string => `
+        import {createAnimationManager,createPropertyAnimationClip,createPropertyAnimationGroup,
+            createBox,type EngineContext,type Mesh} from '@babylonjs/lite';
+        function install(first:EngineContext,second:EngineContext,choice:boolean):void {
+            const clip=createPropertyAnimationClip('move',[
+                {path:'position.x',keys:[{frame:0,value:0},{frame:1,value:1}]}
+            ],{frameRate:1});
+            ${body}
+        }
+        const installers:Array<typeof install>=[install];
+    `;
+    for (const body of [
+        `const manager=createAnimationManager({engine:first});
+          createPropertyAnimationGroup(manager,createBox(first),clip);`,
+        `const manager=createAnimationManager({engine:first});
+          const a=createBox(first),b=createBox(first);
+          function choose(flag:boolean):Mesh{return flag?a:b;}
+          createPropertyAnimationGroup(manager,choose(choice),clip);`,
+    ])
+        assert.match(
+            compileSource(fixture(body)).cpp,
+            /bbl::create_property_animation_group/,
+        );
+    for (const body of [
+        `const manager=createAnimationManager({engine:first});
+          createPropertyAnimationGroup(manager,createBox(second),clip);`,
+        `const manager=createAnimationManager({engine:first});
+          const a=createBox(first),b=createBox(second);
+          function choose(flag:boolean):Mesh{return flag?a:b;}
+          createPropertyAnimationGroup(manager,choose(choice),clip);`,
+        `const manager=createAnimationManager({engine:first});
+          const a=createBox(first),b=createBox(second);
+          function choose():Mesh{return a;}
+          let current=choose();if(choice)current=b;
+          createPropertyAnimationGroup(manager,current,clip);`,
+        `let engine:EngineContext|undefined=first;
+          const manager=createAnimationManager({engine});engine=second;
+          createPropertyAnimationGroup(manager,createBox(engine),clip);`,
+    ])
+        assert.throws(
+            () => compileSource(fixture(body)),
+            /Animation manager and group\/scene belong to different engines/,
+        );
+});
+
+test("animation lists and cross-fades require every selected group to share its owner", () => {
+    const fixture = (different: boolean, list: boolean): string => `
+        import {loadGltf,createAnimationManager,addAnimationGroups,crossFadeAnimationGroups} from '@babylonjs/lite';
+        import type {AnimationGroup,EngineContext} from '@babylonjs/lite';
+        function firstGroup(groups:readonly AnimationGroup[]):AnimationGroup {
+            const found=groups.find(group=>group.name==='idle');
+            if(!found)throw new Error('missing');return found;
+        }
+        async function install(first:EngineContext,other:EngineContext) {
+            const second=${different ? "other" : "first"};
+            const leftContainer=await loadGltf(first,'model.glb');
+            const rightContainer=await loadGltf(second,'model.glb');
+            const left=firstGroup(leftContainer.animationGroups??[]);
+            const right=firstGroup(rightContainer.animationGroups??[]);
+            const alias=right;
+            const manager=createAnimationManager({engine:first});
+            ${
+                list
+                    ? "addAnimationGroups(manager,[left,alias]);"
+                    : "crossFadeAnimationGroups(manager,left,alias,{durationMs:100,toWeight:1});"
+            }
+        }
+        const installers:Array<typeof install>=[install];
+    `;
+    for (const list of [true, false]) {
+        const { cpp } = compileWithAnimationFixture(fixture(false, list), [
+            "idle",
+        ]);
+        assert.match(
+            cpp,
+            list
+                ? /bbl::add_animation_groups/
+                : /bbl::cross_fade_animation_groups/,
+        );
+        assert.throws(
+            () => compileWithAnimationFixture(fixture(true, list), ["idle"]),
+            list
+                ? /Animation groups belong to different engines/
+                : /Animation manager and group\/scene belong to different engines/,
+        );
+    }
 });

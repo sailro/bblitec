@@ -494,6 +494,17 @@ function valueStruct(
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
         const sourceType = value.dataType;
+        // Receiver-aware slots retain presence independently of their payload.
+        // Their owner types must share one layout even for a fresh object.
+        if (
+            sourceType.name !== dataType.name &&
+            [sourceType, dataType].some((type) =>
+                lowerer.context.dataTypes
+                    .structFields(type.name, node, "accessors")
+                    .some((field) => field.accessorReceiver),
+            )
+        )
+            lowerer.context.dataTypes.joinSpreadTarget(sourceType, dataType);
         // JavaScript stores the same object under the other type. A record
         // nothing else reaches, or one whose copy nothing can tell apart, is
         // copied; any other source shares one layout with the target or

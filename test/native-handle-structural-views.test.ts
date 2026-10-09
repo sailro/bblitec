@@ -32,6 +32,8 @@ test("checked native handle views retain producer identity through methods, resu
             }
         }
         function retain(first: EngineContext, second: EngineContext): () => string {
+            function readStored(view: Named): string { return view.name; }
+            const storedReaders: Array<typeof readStored> = [readStored];
             const left = createBox(first);
             const leftParent = createBox(first);
             left.parent = leftParent;
@@ -51,6 +53,8 @@ test("checked native handle views retain producer identity through methods, resu
                 if (reader.move(left) !== 2 || left.rotation.x !== 1) throw new Error("live transform view");
                 if (original.name !== "10:2" || selected.name !== "10:3") throw new Error("rebound source");
                 if (view !== left || holder.item !== right) throw new Error("view identity");
+                if (storedReaders[0]!(view) !== "10:0" || storedReaders[0]!(holder.item) !== "20:0")
+                    throw new Error("stored structural reader owner");
                 return reader.read(view) + "/" + reader.read(holder.item);
             };
         }
@@ -126,7 +130,49 @@ test("structural annotations retain unsupported native member refusals", () => {
     );
 });
 
-test("stored structural views refuse mixed objects and missing producer owners", () => {
+test("separate structural locals preserve native and authored values", (t) => {
+    const { cpp } = compileSource(`${imports}
+        type View = Readonly<Pick<Mesh, "name">>;
+        function run(engine: EngineContext): string {
+            const native: View = createBox(engine);
+            const plain: View = {name: "plain"};
+            return native.name + plain.name;
+        }
+        const calls: Array<typeof run> = [run];
+    `);
+    const factory =
+        /std::string (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+\);/.exec(
+            cpp,
+        );
+    assert.ok(factory, "stored reader of separate structural locals");
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        native,
+        "native-handle-structural-views/separate-locals",
+        `
+        #define main generated_main
+        ${cpp}
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            MeshHandle create_box(Engine& engine, BoxOptions) {
+                engine.meshes.emplace_back();
+                engine.meshes.back().name = "native";
+                return {0, 0};
+            }
+        }
+        int main() {
+            const bbl::js::RealmScope realm;
+            auto engine = std::make_shared<bbl::Engine>();
+            bblscene::${factory[2]} environment{};
+            assert(bblscene::${factory[1]}(environment, bbl::StoredEngine{engine}) == "nativeplain");
+        }
+        `,
+    );
+});
+
+test("retained structural arrays refuse mixing native and plain values", () => {
     assert.throws(
         () =>
             compileSource(`${imports}
@@ -134,21 +180,23 @@ test("stored structural views refuse mixed objects and missing producer owners",
             function run(engine: EngineContext): string {
                 const native: View = createBox(engine);
                 const plain: View = {name: "plain"};
-                return native.name + plain.name;
+                const values: View[] = [native, plain];
+                return values[0]!.name + values[1]!.name;
             }
             const calls: Array<typeof run> = [run];
         `),
-        /Expected a mesh value, received record/,
+        /Compile-time record value does not match the expected data handle/,
     );
-    assert.throws(
-        () =>
-            compileSource(`${imports}
+});
+
+test("stored structural readers retain their parameter producer owner", () => {
+    assert.doesNotThrow(() =>
+        compileSource(`${imports}
             type View = Readonly<Pick<Mesh, "name">>;
             function read(view: View): string { return view.name; }
             const readers: Array<typeof read> = [read];
             function run(engine: EngineContext): string { return readers[0]!(createBox(engine)); }
             const calls: Array<typeof run> = [run];
         `),
-        /not associated with an engine/,
     );
 });

@@ -67,6 +67,12 @@ test("computed optional methods retain their receiver and lazy argument order", 
         const name:'first'|'second'=effects===3?'first':'second';
         callbacks[name]?.(5);
         if(effects!==8)throw new Error('computed callback call');
+        const previous=first.value++;
+        const next=++first.value;
+        if(previous!==16||next!==18||first.value!==18)throw new Error('numeric accessor updates');
+        function replaceValue():number{first.value=100;return 2;}
+        first.value+=replaceValue();
+        if(first.value!==20)throw new Error('accessor read precedes RHS');
     `;
     runInNewContext(
         ts.transpileModule(source, {

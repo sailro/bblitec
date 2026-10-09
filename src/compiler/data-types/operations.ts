@@ -38,6 +38,22 @@ export function dataTypesEqual<K extends DataKind>(
     );
 }
 
+/** Adding an undefined tag preserves the payload and every existing object identity. */
+export function isTaggedStorageWidening(
+    source: DataType,
+    target: DataType,
+): target is DataType<"tagged"> {
+    return (
+        target.kind === "tagged" &&
+        (dataTypesEqual(source, target.inner) ||
+            (source.kind === "optional" &&
+                target.inner.kind === "optional" &&
+                source.undefinedOnly === true &&
+                !target.inner.undefinedOnly &&
+                dataTypesEqual(source.inner, target.inner.inner)))
+    );
+}
+
 export function passesByReferenceKind(type: DataType): boolean {
     return kinds[type.kind].byReference;
 }

@@ -76,13 +76,13 @@ function expressionString(
 function expressionJson(
     dataType: DataType<"json">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
     return lowerer.compileKnownValueForSink(
         lowerer.context.compileValue(unwrapped),
         dataType,
-        unwrapped,
+        expression,
     );
 }
 
@@ -127,6 +127,15 @@ function valueJson(
     if (isJsonValue(value)) {
         lowerer.markEscaped(value);
         return value.cpp;
+    }
+    // Stored document members remain mutable through every retained alias.
+    // A native observation wrapper only supplies reads; a plain record
+    // therefore acquires the document owner before entering this storage.
+    if (value.dataType?.kind === "struct") {
+        const demand = lowerer.context.dataTypes.documentRecordDemand(
+            value.dataType.name,
+        );
+        if (demand) throw new NativeRecordStorageRequired(demand);
     }
     const errorExpression =
         value.dataType?.kind === "error"

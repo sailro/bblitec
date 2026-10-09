@@ -89,7 +89,20 @@ test("packaged graph text preserves fetch and async boolean options while specia
     assert.match(cpp, /http_response_text/);
     assert.match(cpp, /json_parse/);
     assert.match(cpp, /json_stringify/);
-    assert.match(cpp, /Promise<bbl::MaterialHandle>/);
+    assert.match(
+        cpp,
+        /Promise<std::pair<bbl::StoredEngine, bbl::MaterialHandle>>/,
+    );
+    const materialReturns = [
+        ...cpp.matchAll(
+            /co_return std::pair<bbl::StoredEngine, bbl::MaterialHandle>\{bbl::StoredEngine\{(\w+)\}, bbl::create_node_material\(\(\*\1\),/g,
+        ),
+    ];
+    assert.equal(
+        materialReturns.length,
+        3,
+        "each material result retains its construction engine",
+    );
     assert.match(cpp, /set_node_input_texture/);
     assert.match(cpp, /set_node_input_scalar/);
     const tools = optionalNativeFixtureTools();

@@ -65,8 +65,8 @@ test("unrepresented reached promise identity operations refuse instead of compar
             /Switch discriminants.*promise/,
         ],
         [
-            `const p=Promise.resolve(1),q=Promise.resolve(1);[p].includes(q);`,
-            /Array.includes.*not promise/,
+            `const p=Promise.resolve(1),q=Promise.resolve(1);const keys=new Set<object>([p,q]);if(keys.size!==2||!keys.has(p))throw new Error('typed keys');`,
+            /promise value does not match the expected data json/,
         ],
         [
             `Object.is(Promise.resolve(1),Promise.resolve(1));`,
@@ -76,12 +76,8 @@ test("unrepresented reached promise identity operations refuse instead of compar
             `const p=Promise.resolve(1);if(p===1)throw new Error('object comparison');`,
             /Strict Promise-to-primitive/,
         ],
-        [
-            `const p=Promise.resolve(1),q=Promise.resolve(1);new Set<object>([p,q]);`,
-            /new Set requires concrete/,
-        ],
     ] as const)
-        assert.throws(() => compileSource(source), message);
+        assert.throws(() => compileSource(source), message, source);
 });
 
 test("owned promise aliases retain identity before and after awaiting", async (t) => {
@@ -90,6 +86,7 @@ test("owned promise aliases retain identity before and after awaiting", async (t
             const a=Promise.resolve(1),b=Promise.resolve(1);
             if(typeof a!=='object')throw new Error('object observation');
             if(new Set([a,b]).size!==2||new Map([[a,1],[b,2]]).size!==2)throw new Error('keys');
+            if(![a].includes(a)||[a].includes(b))throw new Error('array identity search');
             const hidden:unknown=a,other:unknown=b;
             function equal(left:unknown,right:unknown){return left===right;}
             function hide():unknown{return Promise.resolve(1);}
@@ -104,6 +101,7 @@ test("owned promise aliases retain identity before and after awaiting", async (t
             const values=widen([a,b]);
             if(values[0]!==a||values[0]===values[1])throw new Error('returned collection');
             if(await a!==1||await b!==1)throw new Error('settlements');
+            if(![a].includes(a)||[a].includes(b))throw new Error('settled array identity search');
             globalThis.close();
         })();
     `;

@@ -251,6 +251,12 @@ export class EvaluationOrder {
         return touchesAnything(this.access(node).writes);
     }
 
+    /** Whether evaluation can change any array's elements or membership. */
+    public mayWriteArray(node: ts.Node): boolean {
+        const writes = this.access(node).writes;
+        return writes.any || writes.arrays;
+    }
+
     /**
      * Whether calling the function `callback` denotes can write an array or
      * `variable`: a function literal or a named function answers from its

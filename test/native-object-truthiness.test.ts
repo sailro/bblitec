@@ -29,7 +29,7 @@ test("native object conditions preserve presence, short circuits and call effect
         const callbacks: Array<typeof inspect> = [inspect];
     `);
     const entry =
-        /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::MeshHandle \w+, \[\[maybe_unused\]\] bbl::js::Nullable<bbl::MeshHandle> \w+\);/.exec(
+        /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] std::pair<bbl::StoredEngine, bbl::MeshHandle> \w+, \[\[maybe_unused\]\] bbl::js::Nullable<bbl::MeshHandle> \w+\);/.exec(
             cpp,
         );
     assert.ok(entry, "retained native condition function");
@@ -48,9 +48,11 @@ test("native object conditions preserve presence, short circuits and call effect
         #include <cassert>
         int main() {
             bblscene::${entry[2]} environment{};
+            bbl::Engine engine;
             const bbl::MeshHandle zero{0, 0};
-            assert(bblscene::${entry[1]}(environment, zero, {std::nullopt}) == 9);
-            assert(bblscene::${entry[1]}(environment, zero, {zero}) == 19);
+            const std::pair<bbl::StoredEngine, bbl::MeshHandle> owned{bbl::StoredEngine{engine}, zero};
+            assert(bblscene::${entry[1]}(environment, owned, {std::nullopt}) == 9);
+            assert(bblscene::${entry[1]}(environment, owned, {zero}) == 19);
         }
     `,
     );

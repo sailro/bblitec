@@ -7,6 +7,7 @@ import type {
 import ts from "typescript";
 import {
     hasUndefinedCompletion,
+    hasNonThenableCompletion,
     hasUndefinedCallbackCompletion,
     provenUndefinedValue,
 } from "./undefined-values.js";
@@ -1530,6 +1531,8 @@ export class AsyncLowerer {
                         ? context.bindings.lookupOptional(inline)
                         : undefined),
             );
+        const nonThenableCompletion =
+            cleanup && hasNonThenableCompletion(context.checker, declaration);
         const asynchronous =
             declaration &&
             ts
@@ -1661,21 +1664,31 @@ export class AsyncLowerer {
                         result.value,
                         context.checker.getReturnTypeOfSignature(signature),
                     );
+                // Stored callbacks use the checked storage contract, never an earlier initializer.
+                const completionProven =
+                    reportingOnly ||
+                    (stored
+                        ? stored.dataType?.kind === "function" &&
+                          (stored.dataType.undefinedCompletion ||
+                              (cleanup &&
+                                  stored.dataType.nonThenableCompletion))
+                        : undefinedCompletion || nonThenableCompletion);
                 if (
                     !neverReturns &&
                     result.value.kind === "void" &&
-                    (result.value.erasedVoidCompletion ||
-                        (!reportingOnly &&
-                            !undefinedCompletion &&
-                            !(
-                                stored?.dataType?.kind === "function" &&
-                                stored.dataType.undefinedCompletion
-                            )))
-                )
+                    (result.value.erasedVoidCompletion || !completionProven)
+                ) {
+                    // A generic family's result is known only after its concrete call is selected.
+                    if (stored?.dataType?.kind === "function")
+                        context.dataTypes.requireFunctionCompletion(
+                            stored.dataType,
+                            cleanup ? "nonthenable" : "undefined",
+                        );
                     context.fail(
                         callback,
                         "Promise reaction with a void result requires a proven undefined completion.",
                     );
+                }
                 if (cleanup && result.value.kind !== "promise") {
                     this.refuseThenable(result.value, callback);
                     context.emitDiscardedValue(result.value);

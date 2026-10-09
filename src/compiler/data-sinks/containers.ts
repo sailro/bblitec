@@ -229,6 +229,19 @@ function valueOptional(
             if (value.engineOwnerParameter)
                 writable(projected).engineOwnerParameter =
                     value.engineOwnerParameter;
+            if (
+                value.engineCpp &&
+                sourceType.kind === "handle" &&
+                !sourceType.ownedEngine
+            ) {
+                writable(projected).engineCpp = value.engineCpp;
+                const captures = value.nativeCompanionCaptures?.engineCpp;
+                if (captures)
+                    writable(projected).nativeCompanionCaptures = {
+                        ...projected.nativeCompanionCaptures,
+                        engineCpp: captures,
+                    };
+            }
             converted = lowerer.compileKnownValueForSink(
                 projected,
                 dataType.inner,
@@ -296,7 +309,7 @@ function valueVector(
         elements.forEach((entry, index) =>
             lowerer.context.sceneManifest.recordDataLightSlot(entry, index),
         );
-        return `bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}>{${elements
+        const cpp = `bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}>{${elements
             .map((entry, index) =>
                 lowerer.compileMemberForSink(
                     entry,
@@ -306,6 +319,8 @@ function valueVector(
                 ),
             )
             .join(", ")}}`;
+        lowerer.noteConstructedArray(node);
+        return cpp;
     }
     if (
         value.kind === "data" &&

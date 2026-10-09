@@ -11,6 +11,9 @@ test("Promise combinators resolve represented values while consuming synchronous
     const source = `
         queueMicrotask(()=>{});
         (async()=>{
+            function identity<T>(value:T):T{return value;}
+            const identities:Array<typeof identity>=[identity];
+            if(await Promise.resolve(7).then(value=>identities[0]!<number>(value))!==7)throw new Error('generic reaction value');
             const numbers=[2,3];
             if((await Promise.all(numbers)).join()!=='2,3')throw new Error('array values');
             const record={value:4};
@@ -154,7 +157,7 @@ test("Promise reactions refuse erased returned promises even when their settleme
             const clean:()=>void=()=>Promise.resolve().then(()=>{throw new Error('delayed');});
             void Promise.resolve().${operation}(clean);
         `),
-            /void result requires a proven undefined completion/,
+            /proven (?:undefined|nonthenable) completion/,
         );
     }
 });
@@ -184,4 +187,39 @@ test("Stored async callbacks cannot retain an undefined completion proof after r
         fn=replacement;
         void fn();
     `);
+});
+
+test("finally completion contracts reject later Promise and thenable producers", () => {
+    for (const initializer of ["()=>31", "()=>{}"]) {
+        for (const replacement of [
+            "()=>Promise.resolve().then(()=>{throw new Error('delayed');})",
+            "()=>({then(resolve:(value:number)=>void){resolve(7);}})",
+        ]) {
+            assert.throws(
+                () =>
+                    compileSource(`
+                queueMicrotask(()=>{});
+                let cleanup:()=>void=${initializer};
+                cleanup=${replacement};
+                void Promise.resolve(7).finally(cleanup);
+            `),
+                /proven (?:undefined|nonthenable) completion|thenable assimilation/,
+            );
+        }
+    }
+});
+
+test("stored imported Promise producers cannot acquire synchronous completion proofs", () => {
+    for (const operation of ["then", "catch", "finally"]) {
+        assert.throws(
+            () =>
+                compileSource(`
+            import {enablePbrLightmap} from '@babylonjs/lite';
+            queueMicrotask(()=>{});
+            const hidden:()=>void=enablePbrLightmap;
+            void Promise.resolve().${operation}(hidden);
+        `),
+            /proven (?:undefined|nonthenable) completion/,
+        );
+    }
 });

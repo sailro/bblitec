@@ -7,15 +7,20 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "../data-types.js";
-import { representedStorage, type Value } from "../types.js";
+import {
+    representedStorage,
+    withNativeMetadata,
+    type Value,
+} from "../types.js";
 
 import { pickedMeshHandleCpp } from "../properties.js";
 import { resolvedSymbol } from "../symbols.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import type { LoweringServices } from "../lowering-services.js";
 
 /** A singleton cloned-root container shares the clone's mesh-only asset record. */
 export function projectAssetContainer(
-    context: Pick<DataSinkHost["context"], "requireEngine">,
+    context: Pick<LoweringServices, "requireEngine" | "dataLowerer">,
     value: Value,
     node: ts.Node,
 ): Value | undefined {
@@ -32,14 +37,40 @@ export function projectAssetContainer(
     if (root?.kind === "asset-root" && root.assetRootClone)
         return { ...root, kind: "asset" };
     if (root?.kind === "scene-node" && root.sceneNodeClone) {
-        return {
+        const projected: Value = {
             kind: "asset",
             cpp: `bbl::cloned_asset_container(${root.cpp})`,
             engineCpp: context.requireEngine(root, node),
             assetKind: "gltf",
             assetRootClone: true,
             assetRootState: { reparented: false },
+            ...(root.nativeCaptures
+                ? { nativeCaptures: root.nativeCaptures }
+                : {}),
+            ...(root.nativeCompanionCaptures?.engineCpp
+                ? {
+                      nativeCompanionCaptures: {
+                          engineCpp: root.nativeCompanionCaptures.engineCpp,
+                      },
+                  }
+                : {}),
         };
+        const storage: DataType<"handle"> = {
+            kind: "handle",
+            handle: "asset",
+            ownedEngine: true,
+        };
+        return withNativeMetadata(
+            context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    projected,
+                    storage,
+                    node,
+                ),
+                storage,
+            ),
+            projected,
+        );
     }
     return undefined;
 }

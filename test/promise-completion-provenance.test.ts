@@ -124,6 +124,7 @@ test("unknown implementations and value-returning replacements retain the comple
         }
         const retained: Array<typeof install> = [install];
         if (retained.length !== 1) throw new Error('retained');
+        retained[0]!({failed:()=>Promise.resolve(9)});
     `),
         /proven undefined completion/,
     );
@@ -142,4 +143,91 @@ test("unknown implementations and value-returning replacements retain the comple
             /proven undefined completion/,
         );
     }
+});
+
+test("forward callback slots retain concrete completion proofs and captures", async (t) => {
+    const source = `
+        queueMicrotask(() => {});
+        const events: string[] = [];
+        let total = 0;
+        function create(delta: number): () => void {
+            return (value = events.push('default')) => {
+                events.push('cleanup'); total += delta + value - value;
+            };
+        }
+        function numeric(): () => void { return () => { events.push('scalar'); return 31; }; }
+        function named(): () => void {
+            function effect() { events.push('named'); }
+            return effect;
+        }
+        function wrap(effect: () => void): () => void { return () => { effect(); }; }
+        const cleanup = create(3);
+        const scalar = numeric();
+        const declared = named();
+        const delegated = wrap(() => { events.push('delegate'); });
+        (async () => {
+            const value = await Promise.resolve(7).finally(cleanup).finally(scalar).finally(declared).finally(delegated);
+            const completion = await Promise.resolve(9).then(declared);
+            if (value !== 7 || completion !== undefined || total !== 3 ||
+                events.join() !== 'default,cleanup,scalar,named,delegate,named')
+                throw new Error('forward callback proof/effects');
+            globalThis.close();
+        })();
+    `;
+    await assertAsyncSourceCloses(source);
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "promise-completion-provenance/forward",
+            result.cpp,
+            {
+                defines: ["BBLITE_WORKERS=1"],
+                timeoutMs: 10000,
+                expectedOutput: "",
+            },
+        );
+    });
+});
+
+test("forward callback slots preserve hidden adoption and replacement boundaries", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        queueMicrotask(() => {});
+        let defaults = 0;
+        function create(): () => void { return (value = ++defaults) => {}; }
+        const cleanup = create();
+        void Promise.resolve(9).then(cleanup);
+    `),
+        /reading arguments past its storage signature/,
+    );
+    for (const producer of [
+        "function create():()=>void{return()=>Promise.resolve().then(()=>{throw new Error('delayed');});} const cleanup=create();",
+        "function create():()=>void{function effect(){return Promise.resolve(9);}return effect;} const cleanup=create();",
+        "function create():()=>void{return()=>{};} const forward=create(); const hooks={cleanup:forward}; hooks.cleanup=()=>Promise.resolve(9); const cleanup=hooks.cleanup;",
+        "function create():()=>void{return()=>31;} const forward=create(); const hooks={cleanup:forward}; hooks.cleanup=()=>({then(resolve:(value:number)=>void){resolve(7);}}); const cleanup=hooks.cleanup;",
+    ]) {
+        assert.throws(
+            () =>
+                compileSource(`
+            queueMicrotask(() => {});
+            ${producer}
+            void Promise.resolve(7).finally(cleanup);
+        `),
+            /proven (?:undefined|nonthenable) completion|thenable assimilation/,
+        );
+    }
+    assert.throws(
+        () =>
+            compileSource(`
+        import { enablePbrLightmap } from '@babylonjs/lite';
+        queueMicrotask(() => {});
+        function create(): () => void { return () => enablePbrLightmap(); }
+        const cleanup = create();
+        void Promise.resolve(7).finally(cleanup);
+    `),
+        /proven (?:undefined|nonthenable) completion/,
+    );
 });
