@@ -119,6 +119,7 @@ interface DataKinds {
         name: (typeof DEFERRED_DOM_OBJECTS)[number] | "ReadableByteStream";
     };
     "http-response": { kind: "http-response" };
+    gpu: { kind: "gpu" };
     "gpu-adapter": { kind: "gpu-adapter" };
     "gpu-adapter-info": { kind: "gpu-adapter-info" };
     "search-params": { kind: "search-params" };

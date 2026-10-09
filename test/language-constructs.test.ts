@@ -4296,7 +4296,7 @@ test("Object.create, defineProperty and getPrototypeOf refuse unrepresented form
         ],
         [
             "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { value: 3 });",
-            /Object\.defineProperty represents a value with writable, enumerable and configurable all true only/,
+            /Object\.defineProperty represents a value with writable and enumerable true and an explicit boolean configurable attribute only/,
         ],
         [
             "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { get: () => 3, enumerable: true, configurable: true });",
@@ -7589,7 +7589,13 @@ check(
 `,
 );
 
-test("absent property reads refuse properties a converted record may carry", () => {
+for (const [index, body] of [
+    "list.push(make(1)); const read = readB(list[0]!);",
+    "const read = readB(list[0]!); list.push(make(1));",
+    "list.push(make(1)); const mids: { a: number; z?: string }[] = []; for (const item of list) mids.push(item); const read = readB(mids[0]!);",
+    "list.push(make(1)); function bOf({ b }: View): number { return b ?? -1; } const read = bOf(list[0]!);",
+    "list.push(make(1)); const views: readonly View[] = list; let read = 0; for (const { b } of views) read += b ?? -1;",
+].entries()) {
     const declarations = `
     interface Narrow { a: number }
     interface View { a: number; b?: number }
@@ -7597,32 +7603,32 @@ test("absent property reads refuse properties a converted record may carry", () 
     function make(a: number): { a: number; b: number } { return { a, b: a * 2 }; }
     const list: Narrow[] = [{ a: 3 }];
     `;
-    for (const body of [
-        "list.push(make(1)); const read = readB(list[0]!);",
-        "const read = readB(list[0]!); list.push(make(1));",
-        "list.push(make(1)); const mids: { a: number; z?: string }[] = []; for (const item of list) mids.push(item); const read = readB(mids[0]!);",
-        // Destructuring reads the property as a property access does.
-        "list.push(make(1)); function bOf({ b }: View): number { return b ?? -1; } const read = bOf(list[0]!);",
-        "list.push(make(1)); const views: readonly View[] = list; let read = 0; for (const { b } of views) read += b ?? -1;",
-    ])
-        assert.throws(
-            () => compileSource(declarations + body),
-            /Property 'b' is not stored by '\w+' records, but a record converted into that storage may carry it/,
-        );
-    assert.throws(
-        () =>
-            compileSource(`
+    check(
+        `converted-record-property-presence-${index}`,
+        declarations +
+            body +
+            `
+            if (read !== ${index === 4 ? 1 : -1} || readB(list[1]!) !== 2)
+                throw new Error("converted field");
+            if ("b" in list[0]! || !("b" in list[1]!)) throw new Error("own presence");
+        `,
+    );
+}
+
+check(
+    "asserted-optional-record-property-keeps-absence",
+    `
             interface Source { a: number; b?: number }
             interface Shape { a: number }
             function make(): Shape { return { a: 1 }; }
             const read = (make() as Source).b;
-            `),
-        /has no field 'b'/,
-    );
-    // An object rest copies what a converted record carried too.
-    assert.throws(
-        () =>
-            compileSource(`
+            if (read !== undefined || "b" in make()) throw new Error("absent field");
+    `,
+);
+
+check(
+    "object-rest-retains-converted-record-properties",
+    `
             interface Source { a: number; c: number }
             interface View { a: number; b?: number }
             function readB(v: View): number { return v.b ?? -1; }
@@ -7631,10 +7637,9 @@ test("absent property reads refuse properties a converted record may carry", () 
             list.push(make(1));
             const { c, ...rest } = list[1]!;
             const read = readB(rest) + c;
-            `),
-        /Property 'b' is not stored by 'rest' records, but a record converted into that storage may carry it/,
-    );
-});
+            if (read !== 2 || "c" in rest || !("c" in list[1]!)) throw new Error("rest fields");
+    `,
+);
 
 check(
     "union-tags-admitting-several-literals",
@@ -14220,13 +14225,9 @@ check(
 `,
 );
 
-test("incompatible nested dictionary record views refuse stored identity", () => {
-    // A union of literals whose arm declares a field as a record, stored as
-    // a type holding that field as a dictionary, has no one layout.
-    assert.throws(
-        () =>
-            compileSource(
-                `type Kind = "hint" | "error" | "success";
+check(
+    "nested-dictionary-record-views-retain-stored-identity",
+    `type Kind = "hint" | "error" | "success";
                 interface StatusMessage {
                   key: string;
                   params?: Record<string, string>;
@@ -14291,10 +14292,7 @@ test("incompatible nested dictionary record views refuse stored identity", () =>
                 if (c.text() !== "press;action=q") throw new Error("bad press");
                 c.press(3, "q");
                 if (c.text() !== "hint") throw new Error("bad reset");`,
-            ),
-        /record stored as 'StatusMessage' would be a copy of the one object JavaScript keeps, and the program writes 'kind' of such records; no shared layout holds both record types\./,
-    );
-});
+);
 
 test("module records and tokens refuse what one object cannot represent", () => {
     const directory = resolve("artifacts/imported-module-record-refusals");

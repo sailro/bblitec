@@ -42,6 +42,16 @@ public:
         else
             value_ = std::move(value);
     }
+    void define(Accessor replacement, bool configurable, bool preserve_setter = false) {
+        if (preserve_setter)
+            replacement.setter_ = setter_;
+        if (!configurable_ &&
+            (configurable || getter_ != replacement.getter_ || setter_ != replacement.setter_))
+            std::rethrow_exception(
+                make_error("TypeError", "Cannot redefine a nonconfigurable property"));
+        replacement.configurable_ = configurable;
+        *this = std::move(replacement);
+    }
     void gc_trace(const TraceVisitor& visitor) const {
         if constexpr (gc_traceable<T>)
             visitor(value_);
@@ -53,6 +63,7 @@ private:
     T value_{};
     Callback<T()> getter_;
     Callback<void(T)> setter_;
+    bool configurable_ = true;
 };
 
 /** A finite record slot whose authored accessor observes the supplied receiver. */

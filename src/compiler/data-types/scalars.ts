@@ -52,6 +52,7 @@ export const scalarKinds: DataKindOperations<
     | "file-list"
     | "search-params"
     | "http-response"
+    | "gpu"
     | "gpu-adapter"
     | "gpu-adapter-info"
     | "storage"
@@ -117,6 +118,10 @@ export const scalarKinds: DataKindOperations<
         reseats: true,
     },
     "http-response": opaqueLeaf("bbl::pal::HttpResponse", "http-response"),
+    gpu: {
+        ...reseatingLeaf("const void*", "gpu"),
+        opaqueReference: true,
+    },
     "gpu-adapter": opaqueLeaf("bbl::pal::GpuAdapterHandle", "gpu-adapter"),
     "gpu-adapter-info": opaqueLeaf(
         "bbl::pal::GpuAdapterInfoHandle",

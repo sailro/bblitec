@@ -912,29 +912,60 @@ function compileObjectAssign(
     }
     if (target.kind === "data" && target.dataType?.kind === "struct") {
         const structType = target.dataType;
+        context.dataTypes.markStoredObjectReferences(structType);
+        const owner = context.bindings.pinValueToTemporary(
+            target,
+            "assign_target",
+            targetExpression,
+        );
         const access = context.dataTypes.isReferenceStruct(structType.name)
             ? "->"
             : ".";
-        for (const source of sources) {
-            const sourceValue = context.compileValue(source);
+        // Evaluate the complete argument list before getters or target setters
+        // run. Stored sources retain identity, so later arguments may mutate them.
+        const values = sources.map((source) => {
+            const value = context.compileValue(source);
+            if (value.kind === "record") {
+                readPairs(source, value, true);
+                const declaration = context.bindings.recordDeclaration(
+                    value,
+                    source,
+                );
+                if (declaration)
+                    throw new DynamicBindingStorageRequired(
+                        declaration,
+                        "source",
+                    );
+            }
+            if (value.dataType?.kind === "struct")
+                context.dataTypes.markStoredObjectReferences(value.dataType);
+            return context.bindings.pinValueToTemporary(
+                value,
+                "assign_source",
+                source,
+            );
+        });
+        sources.forEach((source, index) => {
+            const sourceValue = values[index]!;
             if (
                 sourceValue.kind === "data" &&
                 sourceValue.dataType?.kind === "struct"
             ) {
                 context.dataLowerer.copyStructOwnProperties(
-                    { cpp: target.cpp, type: structType },
+                    { cpp: owner.cpp, type: structType },
                     sourceValue,
                     sourceValue.dataType,
                     source,
                     "Object.assign",
                 );
-                continue;
+                return;
             }
             for (const [key, value] of sourcePairs(source, sourceValue)) {
                 const field = context.dataTypes.structField(
                     structType.name,
                     key,
                     source,
+                    "accessors",
                 );
                 const stored = context.dataLowerer.compileKnownValueForSink(
                     value,
@@ -943,10 +974,12 @@ function compileObjectAssign(
                 );
                 context.emit({
                     kind: "expression",
-                    code: `${target.cpp}${access}${field.name} = ${stored};`,
+                    code: field.accessor
+                        ? `${owner.cpp}${access}${field.name}.set(${stored});`
+                        : `${owner.cpp}${access}${field.name} = ${stored};`,
                 });
             }
-        }
+        });
         // The stores changed fields whose generation snapshot lives on the
         // binding the target was read from, not only on this read of it.
         context.bindings.invalidateRecordProperties(target);
@@ -956,7 +989,7 @@ function compileObjectAssign(
         if (bound) {
             context.bindings.invalidateRecordProperties(bound);
         }
-        return target;
+        return owner;
     }
     // Nothing else has stored fields to copy into: an engine handle's
     // properties are setters with native effects, which a copy of plain
@@ -1018,6 +1051,7 @@ interface PropertyDefinition {
     >;
     accessor: boolean;
     setter: boolean;
+    configurable: boolean;
 }
 
 type DefinitionOperation = "defineProperty" | "defineProperties";
@@ -1035,6 +1069,7 @@ function propertyDefinition(
         return refuse("needs literal property descriptors.");
     const members: PropertyDefinition["members"] = [];
     const attributes = new Set<string>();
+    let configurable = true;
     const names = new Set<string>();
     for (const property of literal.properties) {
         if (
@@ -1062,6 +1097,15 @@ function propertyDefinition(
                 return refuse("requires literal getter and setter functions.");
             members.push({ name, callback });
         } else if (
+            name === "configurable" &&
+            ts.isPropertyAssignment(property) &&
+            (property.initializer.kind === ts.SyntaxKind.TrueKeyword ||
+                property.initializer.kind === ts.SyntaxKind.FalseKeyword)
+        ) {
+            configurable =
+                property.initializer.kind === ts.SyntaxKind.TrueKeyword;
+            attributes.add(name);
+        } else if (
             ["writable", "enumerable", "configurable"].includes(name) &&
             ts.isPropertyAssignment(property) &&
             property.initializer.kind === ts.SyntaxKind.TrueKeyword
@@ -1069,7 +1113,7 @@ function propertyDefinition(
             attributes.add(name);
         else
             return refuse(
-                `does not represent descriptor attribute '${name}' unless it is literally true.`,
+                `does not represent descriptor attribute '${name}' unless it is ${name === "configurable" ? "a literal boolean" : "literally true"}.`,
             );
     }
     const accessor = names.has("get") || names.has("set");
@@ -1084,11 +1128,11 @@ function propertyDefinition(
             );
         if (!attributes.has("enumerable") || !attributes.has("configurable"))
             return refuse(
-                "requires accessor enumerable and configurable attributes to be explicitly true.",
+                "requires enumerable true and an explicit boolean configurable attribute for accessors.",
             );
     } else if (!names.has("value") || attributes.size !== 3)
         return refuse(
-            "represents a value with writable, enumerable and configurable all true only.",
+            "represents a value with writable and enumerable true and an explicit boolean configurable attribute only.",
         );
     return {
         key,
@@ -1096,6 +1140,7 @@ function propertyDefinition(
         members,
         accessor,
         setter: names.has("set"),
+        configurable,
     };
 }
 
@@ -1141,7 +1186,12 @@ function applyPropertyDefinitions(
 ): Value {
     const collected = new Map<
         string,
-        { field: DataStructField; cpp: string }
+        {
+            field: DataStructField;
+            cpp: string;
+            configurable: boolean;
+            preserveSetter: boolean;
+        }
     >();
     for (const definition of definitions) {
         const field = context.dataTypes.structField(
@@ -1159,11 +1209,11 @@ function applyPropertyDefinitions(
                 definition.node,
                 `Object.${operation} does not redefine proxy or prototype accessor fields.`,
             );
-        if (definition.accessor) {
+        if (definition.accessor || !definition.configurable) {
             if (context.dataTypes.isClassStruct(target.dataType.name))
                 context.fail(
                     definition.node,
-                    `Object.${operation} does not define class instance accessors.`,
+                    `Object.${operation} does not define class instance descriptor slots.`,
                 );
             if (
                 field.optionalProperty ||
@@ -1173,7 +1223,7 @@ function applyPropertyDefinitions(
             )
                 context.fail(
                     definition.node,
-                    `Object.${operation} requires an accessor property that is always own.`,
+                    `Object.${operation} requires an accessor property that is always own or a nonconfigurable data property that is always own.`,
                 );
             if (
                 !field.accessor ||
@@ -1185,13 +1235,6 @@ function applyPropertyDefinitions(
                     definition.setter,
                     definition.node,
                     "own",
-                );
-            // An omitted setter preserves a previous accessor's setter in
-            // JavaScript. Replacing the native pair would erase it.
-            if (!definition.setter && field.accessor === "get-set")
-                context.fail(
-                    definition.node,
-                    `Object.${operation} requires an explicit setter when the property can already hold one.`,
                 );
         }
         const values = new Map<string, string>();
@@ -1233,14 +1276,22 @@ function applyPropertyDefinitions(
                   field,
                   values.get("value")!,
               );
-        collected.set(definition.key, { field, cpp });
+        collected.set(definition.key, {
+            field,
+            cpp,
+            configurable: definition.configurable,
+            preserveSetter: definition.accessor && !definition.setter,
+        });
     }
     // Object.keys also places integer-index keys before other string keys.
     for (const key of Object.keys(Object.fromEntries(collected))) {
-        const { field, cpp } = collected.get(key)!;
+        const { field, cpp, configurable, preserveSetter } =
+            collected.get(key)!;
         context.emit({
             kind: "expression",
-            code: `${target.cpp}->${field.name} = ${cpp};`,
+            code: field.accessor
+                ? `${target.cpp}->${field.name}.define(${cpp}, ${configurable}, ${preserveSetter});`
+                : `${target.cpp}->${field.name} = ${cpp};`,
         });
     }
     context.bindings.invalidateRecordProperties(target);

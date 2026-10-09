@@ -4,6 +4,7 @@ import {
     deferredWindowFunctionSymbol,
 } from "./deferred-capabilities.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { gpuValue } from "./gpu-value.js";
 import {
     emissionArray,
     EmissionSet,
@@ -480,22 +481,7 @@ function nativeNavigatorProperties(): Record<string, Value> {
         onLine: { kind: "boolean", cpp: "true", staticBoolean: true },
         userAgentData: { kind: "json-null", cpp: "std::nullopt" },
         deviceMemory: { kind: "json-null", cpp: "std::nullopt" },
-        gpu: {
-            kind: "record",
-            nativeGpu: true,
-            cpp: graphics,
-            objectIdentityCpp: graphics,
-            optionalFoundCpp: `(${graphics} != nullptr)`,
-            truthinessCpp: `(${graphics} != nullptr)`,
-            requiresApplicationRealm: true,
-            recordProperties: {
-                requestAdapter: {
-                    kind: "callback",
-                    cpp: "",
-                    hostFunction: "gpu-request-adapter",
-                },
-            },
-        },
+        gpu: gpuValue(graphics),
         clipboard: {
             kind: "record",
             cpp: "",
@@ -1126,6 +1112,14 @@ export class BrowserErasure {
         ) {
             return true;
         }
+        const type = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(unwrapped),
+        );
+        if (
+            type.symbol?.name === "Storage" &&
+            declaredInDomLibrary(type.symbol)
+        )
+            return true;
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
@@ -1752,7 +1746,11 @@ export class BrowserErasure {
             const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound !== undefined) {
                 if (bound.browserValue !== undefined) return bound.browserValue;
-                if (bound.kind === "json-null") return { kind: "null" };
+                if (bound.kind === "json-null")
+                    return {
+                        kind:
+                            bound.cpp === "std::nullopt" ? "undefined" : "null",
+                    };
                 // Inlining can bind a module constant before a browser
                 // helper evaluates it. Its native binding still carries
                 // the same immutable value; mutable parameters do not.
