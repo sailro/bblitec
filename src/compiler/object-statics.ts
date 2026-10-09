@@ -11,6 +11,7 @@ import {
     type OwnPresence,
 } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
+import { pinOperand } from "./evaluation-order.js";
 import { refuseErrorReflection } from "./error-values.js";
 import { isSupportedFunction } from "./user-functions.js";
 import { isSymbolPropertyKey } from "./symbols.js";
@@ -46,6 +47,8 @@ type ObjectStaticContext = Pick<
     | "libraryGlobal"
     | "fail"
     | "emitUiDatasetProperty"
+    | "registerNativeConstBinding"
+    | "registerNativeBindingType"
 >;
 
 /** What the own-entry walks read. */
@@ -379,16 +382,26 @@ export function ownObjectEntries(
 }
 
 /**
- * `Object.is(a, b)`: SameValue over the scalar kinds, where it differs from
- * `===` only for NaN (equal) and signed zeros (different).
+ * SameValue over scalars and erased values, preserving operand reads before
+ * later argument effects. Native object carriers still require an identity
+ * representation before they can take part in this comparison.
  */
 function compileObjectIs(
     context: ObjectStaticContext,
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const left = context.compileValue(argumentAt(call, 0));
-    const right = context.compileValue(argumentAt(call, 1));
+    const read = (index: number): Value => {
+        const argument = argumentAt(call, index);
+        return pinOperand(
+            context,
+            context.compileValue(argument),
+            argument,
+            "same_value_operand",
+        );
+    };
+    const left = read(0);
+    const right = read(1);
     if (left.staticNumber !== undefined && right.staticNumber !== undefined) {
         return booleanValue(
             Object.is(left.staticNumber, right.staticNumber) ? "true" : "false",
@@ -412,9 +425,33 @@ function compileObjectIs(
     if (boolean(left) && boolean(right)) {
         return booleanValue(`(${left.cpp} == ${right.cpp})`);
     }
+    // JsonValue already retains erased object identity and distinguishes
+    // absent values. Its strict equality supplies every nonnumeric case.
+    const erased = (value: Value, node: ts.Expression): string | undefined => {
+        if (isJsonValue(value)) return value.cpp;
+        if (value.kind === "json-null")
+            return value.cpp === "std::nullopt"
+                ? "bbl::js::JsonValue{}"
+                : "bbl::js::JsonValue::null_value()";
+        if (numeric(value))
+            return `bbl::js::JsonValue::from_number(${value.cpp})`;
+        if (textual(value))
+            return `bbl::js::JsonValue::from_string(${stringCpp(context, value, node)})`;
+        if (boolean(value))
+            return `bbl::js::JsonValue::from_boolean(${value.cpp})`;
+        return undefined;
+    };
+    const erasedLeft = erased(left, argumentAt(call, 0));
+    const erasedRight = erased(right, argumentAt(call, 1));
+    if (erasedLeft && erasedRight) {
+        context.reachJson();
+        return booleanValue(
+            `[](const bbl::js::JsonValue& left, const bbl::js::JsonValue& right) { return left.is_number() && right.is_number() ? bbl::js::same_value(left.to_number(), right.to_number()) : left.strict_equals(right); }(${erasedLeft}, ${erasedRight})`,
+        );
+    }
     return context.fail(
         call,
-        "Object.is compares numbers, strings and booleans; object identity takes `===`.",
+        "Object.is compares numbers, strings and booleans, nullish and represented erased values; other object identity takes `===`.",
     );
 }
 

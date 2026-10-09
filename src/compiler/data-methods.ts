@@ -66,6 +66,7 @@ import { callsFreshArrayBuiltin } from "./fresh-records.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
+import { representedResultType } from "./represented-result.js";
 import {
     arrayElementType,
     declaredContextualType,
@@ -2621,11 +2622,15 @@ function compileArrayMap(
                 });
             },
             (result, callback) => {
-                if (!mappedType && method === "map") {
+                if (!mappedType) {
                     const element =
                         result.kind === "void" && result.abruptCompletion
                             ? { kind: "undefined" as const }
-                            : representedCallbackResult(lowerer, result);
+                            : representedArrayResult(
+                                  lowerer.context.dataTypes,
+                                  result,
+                                  method,
+                              );
                     if (element) mappedType = { kind: "vector", element };
                 }
                 if (!mappedType)
@@ -2646,6 +2651,90 @@ function compileArrayMap(
                             callback,
                         ),
                     };
+                if (method === "flatMap" && isJsonValue(result)) {
+                    const owner = lowerer.context.bindings.pinValueToTemporary(
+                        result,
+                        "flat_map_value",
+                        callback,
+                    );
+                    const item =
+                        lowerer.context.allocateTemporaryCppName(
+                            "flat_map_item",
+                        );
+                    const append = (value: Value): void => {
+                        const converted = lowerer.compileKnownValueForSink(
+                            value,
+                            mappedType!.element,
+                            callback,
+                        );
+                        lowerer.context.emit({
+                            kind: "expression",
+                            code: `${output}.push_back(${converted});`,
+                        });
+                    };
+                    lowerer.context.emit({
+                        kind: "open",
+                        code: `if (${owner.cpp}.is_array()) {`,
+                    });
+                    lowerer.context.increaseIndent();
+                    lowerer.context.emit({
+                        kind: "open",
+                        code: `for (const auto& ${item} : ${owner.cpp}.elements()) {`,
+                        iteration: true,
+                    });
+                    lowerer.context.increaseIndent();
+                    append(lowerer.leafValue(item, { kind: "json" }));
+                    lowerer.context.decreaseIndent();
+                    lowerer.context.emit({ kind: "close", code: "}" });
+                    lowerer.context.decreaseIndent();
+                    lowerer.context.emit({ kind: "branch", code: "} else {" });
+                    lowerer.context.increaseIndent();
+                    append(owner);
+                    lowerer.context.decreaseIndent();
+                    lowerer.context.emit({ kind: "close", code: "}" });
+                    return;
+                }
+                if (
+                    method === "flatMap" &&
+                    result.dataType?.kind === "product"
+                ) {
+                    if (
+                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
+                            mappedType.element,
+                        )
+                    )
+                        lowerer.context.refuseBorrowedPlatformEventEscape(
+                            result,
+                            callback,
+                            "Array.flatMap result",
+                        );
+                    const tuple = lowerer.context.bindings.pinValueToTemporary(
+                        result,
+                        "flat_map_tuple",
+                        callback,
+                    );
+                    for (
+                        let index = 0;
+                        index < result.dataType.elements.length;
+                        ++index
+                    ) {
+                        const member = lowerer.fixedTupleElement(
+                            tuple,
+                            index,
+                            callback,
+                        )!;
+                        const value = lowerer.compileKnownValueForSink(
+                            member,
+                            mappedType.element,
+                            callback,
+                        );
+                        lowerer.context.emit({
+                            kind: "expression",
+                            code: `${output}.push_back(${value});`,
+                        });
+                    }
+                    return;
+                }
                 if (
                     method === "flatMap" &&
                     (result.kind === "tuple" ||
@@ -2728,36 +2817,24 @@ function compileArrayMap(
     return collectedArray(state, output, mappedType);
 }
 
-/** Checked array predicates can erase a callback's field types; its lowered values retain them. */
-function representedCallbackResult(
-    lowerer: DataLowerer,
+/** flatMap stores one level of elements from an array result, or the scalar result itself. */
+function representedArrayResult(
+    dataTypes: DataLowerer["context"]["dataTypes"],
     value: Value,
+    method: "map" | "flatMap",
 ): DataType | undefined {
-    if (value.dataType) return value.dataType;
-    if (
-        value.kind === "number" ||
-        value.kind === "string" ||
-        value.kind === "boolean"
-    )
-        return { kind: value.kind };
-    if (
-        value.kind !== "record" ||
-        Object.keys(value.recordGetters ?? {}).length > 0 ||
-        Object.keys(value.recordSetters ?? {}).length > 0 ||
-        value.classDeclaration
-    )
-        return undefined;
-    const fields = [];
-    for (const [sourceName, member] of Object.entries(
-        value.recordProperties ?? {},
-    )) {
-        const type = representedCallbackResult(lowerer, member);
-        if (!type) return undefined;
-        fields.push({ sourceName, type });
+    const type = representedResultType(dataTypes, value);
+    if (method === "map") return type;
+    if (type?.kind === "vector" || type?.kind === "span") return type.element;
+    if (type?.kind === "tuple") return { kind: "number" };
+    if (type?.kind === "product") {
+        const first = type.elements[0];
+        return first &&
+            type.elements.every((member) => dataTypesEqual(member, first))
+            ? first
+            : undefined;
     }
-    return fields.length
-        ? lowerer.context.dataTypes.ownedRecordType(fields)
-        : undefined;
+    return type;
 }
 
 function compileArrayForEach(state: ArrayMethodState): Value {

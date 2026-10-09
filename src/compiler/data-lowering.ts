@@ -101,6 +101,7 @@ import {
     isCppPath,
 } from "../cpp-literals.js";
 import { pinOperand } from "./evaluation-order.js";
+import { representedResultType } from "./represented-result.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
 import {
@@ -3155,19 +3156,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   ? this.context.dataTypes.fromTsType(tupleElement, expression)
                   : undefined;
         const inferred = (known.tupleElements ?? []).map(
-            (entry): DataType | undefined => {
-                if (entry.dataType) return entry.dataType;
-                switch (entry.kind) {
-                    case "number":
-                        return { kind: "number" };
-                    case "boolean":
-                        return { kind: "boolean" };
-                    case "string":
-                        return { kind: "string" };
-                    default:
-                        return undefined;
-                }
-            },
+            (entry) => representedResultType(this.context.dataTypes, entry),
         );
         const first = inferred[0];
         const inferredElement =
