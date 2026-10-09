@@ -1,0 +1,66 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "RegExp origin analysis reuses wrapper traversal and rejects ineligible receivers before indexing program facts.",
+      "applied": true
+    },
+    {
+      "summary": "GPU sinks and optional calls reuse shared sink and optional-access lowering.",
+      "applied": true
+    },
+    {
+      "summary": "Shared record view matching indexes source fields once and reuses cycle-safe source traversal.",
+      "applied": true
+    },
+    {
+      "summary": "Promise completion fixtures share the async oracle harness.",
+      "applied": true
+    },
+    {
+      "summary": "Async iterable typing reuses isTypeReference.",
+      "applied": true
+    },
+    {
+      "summary": "Resource index snapshots reuse pinOperand and logical JSON guards reuse logicalAssignmentGuard.",
+      "applied": true
+    },
+    {
+      "summary": "Nullable collection construction allocates only the selected owner; receiver snapshots follow shared effect analysis.",
+      "applied": true
+    },
+    {
+      "summary": "Promise.any reserves error storage for sized inputs.",
+      "applied": true
+    },
+    {
+      "summary": "Synchronous and awaited completion metadata share one body proof.",
+      "applied": true
+    },
+    {
+      "summary": "Indexed and ordinary array iteration share the retained-owner loop emitter.",
+      "applied": true
+    },
+    {
+      "summary": "Bindings and resource stores share representedStorage for backing carrier selection.",
+      "applied": true
+    },
+    {
+      "summary": "Direct and optional resource identity reuse the runtime pair equality contract.",
+      "applied": true
+    },
+    {
+      "summary": "Default Map entry projectors use empty storage; custom projectors remain stateless.",
+      "applied": true
+    },
+    {
+      "summary": "Class owner-return lowering reuses final-return analysis and retains recursion guards.",
+      "applied": true
+    }
+  ]
+}
