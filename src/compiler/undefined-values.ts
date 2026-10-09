@@ -8,6 +8,7 @@ import type { Value } from "./types.js";
 export function hasUndefinedCompletion(
     checker: ts.TypeChecker,
     declaration: ts.SignatureDeclaration | ts.JSDocSignature | undefined,
+    awaited = false,
 ): boolean {
     if (
         !declaration ||
@@ -18,6 +19,16 @@ export function hasUndefinedCompletion(
             ts.isMethodDeclaration(declaration)
         ) ||
         !declaration.body
+    )
+        return false;
+    if (
+        (!ts.isArrowFunction(declaration) && declaration.asteriskToken) ||
+        (!awaited &&
+            ts
+                .getModifiers(declaration)
+                ?.some(
+                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+                ))
     )
         return false;
     const isUndefined = (expression: ts.Expression): boolean =>
@@ -41,6 +52,7 @@ export function hasUndefinedCompletion(
 export function hasUndefinedCallbackCompletion(
     checker: ts.TypeChecker,
     value: Value | undefined,
+    awaited = false,
 ): boolean {
     if (value?.kind !== "callback" || value.cpp) return false;
     const declaration = value.callbackDeclaration;
@@ -54,7 +66,7 @@ export function hasUndefinedCallbackCompletion(
             ts.isFunctionExpression(source) ||
             ts.isArrowFunction(source) ||
             ts.isMethodDeclaration(source)) &&
-        hasUndefinedCompletion(checker, source)
+        hasUndefinedCompletion(checker, source, awaited)
     );
 }
 
@@ -74,7 +86,7 @@ export function provenUndefinedValue(
     node: ts.Node,
 ): boolean {
     const seen = new Set<ts.Node>();
-    const visit = (source: ts.Node): boolean => {
+    const visit = (source: ts.Node, awaited = false): boolean => {
         if (!ts.isExpression(source)) return false;
         const expression = unwrapExpression(source);
         if (seen.has(expression)) return false;
@@ -90,7 +102,7 @@ export function provenUndefinedValue(
         )
             return true;
         if (ts.isAwaitExpression(expression))
-            return visit(expression.expression);
+            return visit(expression.expression, true);
         if (ts.isIdentifier(expression)) {
             const declaration = declaredSymbol(
                 context.checker,
@@ -101,7 +113,7 @@ export function provenUndefinedValue(
                 ts.isVariableDeclaration(declaration) &&
                 context.bindings.isImmutableVariable(declaration) &&
                 !!declaration.initializer &&
-                visit(declaration.initializer)
+                visit(declaration.initializer, awaited)
             );
         }
         if (!ts.isCallExpression(expression)) return false;
@@ -115,7 +127,7 @@ export function provenUndefinedValue(
                 return false;
             // A name bound at generation to one function literal or
             // declaration (a specialized callback parameter) calls it.
-            if (hasUndefinedCallbackCompletion(context.checker, bound))
+            if (hasUndefinedCallbackCompletion(context.checker, bound, awaited))
                 return true;
             const declaration = declaredSymbol(
                 context.checker,
@@ -137,6 +149,7 @@ export function provenUndefinedValue(
         return hasUndefinedCompletion(
             context.checker,
             context.checker.getResolvedSignature(expression)?.declaration,
+            awaited,
         );
     };
     return visit(node);

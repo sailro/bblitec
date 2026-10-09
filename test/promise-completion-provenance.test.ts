@@ -27,6 +27,9 @@ test("stored Promise recovery callbacks retain concrete undefined completions", 
             try { await Promise.resolve(1).finally(() => { throw new Error("cleanup"); }); }
             catch { caught++; }
             if (caught !== 2) throw new Error("reaction throws");
+            async function empty(): Promise<void> { await Promise.resolve(); }
+            const emptyResult = await empty();
+            if (emptyResult !== undefined) throw new Error("awaited concrete completion");
             globalThis.close();
         })();
     `;
@@ -113,6 +116,50 @@ test("erased callback views cannot fabricate undefined or drop adoption", async 
     }
 });
 
+test("async replacements preserve the adoption boundary of a void callback slot", async () => {
+    for (const rejects of [false, true]) {
+        const source = `
+            queueMicrotask(() => {});
+            const events: string[] = [];
+            const hooks = { failed() {} };
+            hooks.failed = async () => {
+                await Promise.resolve();
+                events.push('adopted');
+                ${rejects ? "throw new Error('delayed');" : ""}
+            };
+            (async () => {
+                let rejected = false;
+                try {
+                    const result = await Promise.reject<boolean>(new Error('source')).catch(hooks.failed).finally(() => { events.push('finally'); });
+                    if (result !== undefined) throw new Error('completion');
+                } catch { rejected = true; }
+                if (rejected !== ${rejects} || events.join() !== 'adopted,finally') throw new Error('async adoption');
+                globalThis.close();
+            })();
+        `;
+        let closed = false;
+        await runInNewContext(
+            ts.transpileModule(source, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ES2022,
+                    module: ts.ModuleKind.None,
+                },
+            }).outputText,
+            {
+                queueMicrotask,
+                close: () => {
+                    closed = true;
+                },
+            },
+        );
+        assert.equal(closed, true);
+        assert.throws(
+            () => compileSource(source),
+            /proven undefined completion/,
+        );
+    }
+});
+
 test("unknown implementations and value-returning replacements retain the completion boundary", () => {
     assert.throws(
         () =>
@@ -126,13 +173,16 @@ test("unknown implementations and value-returning replacements retain the comple
     `),
         /proven undefined completion/,
     );
-    for (const body of ["return 7;", "return Promise.resolve(9);"]) {
+    for (const replacement of [
+        "() => { return 7; }",
+        "() => { return Promise.resolve(9); }",
+    ]) {
         assert.throws(
             () =>
                 compileSource(`
             queueMicrotask(() => {});
             const hooks = {failed() {}};
-            hooks.failed = () => { ${body} };
+            hooks.failed = ${replacement};
             void Promise.reject<boolean>(new Error('source')).catch(hooks.failed);
         `),
             /proven undefined completion/,
