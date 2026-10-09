@@ -38,6 +38,7 @@ import {
     type NativeFunctionContext,
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import { nullability } from "./type-facts.js";
 import { provenUndefinedValue } from "./undefined-values.js";
@@ -1167,6 +1168,16 @@ export class DeclarationLowerer {
                 declaration.initializer,
                 `Expression assigned to '${sourceName}' does not produce a native value.`,
             );
+        }
+        if (isNativeOwnerRecord(value)) {
+            this.context.bindings.bindLocalOrParameterValue(
+                declaration.name,
+                value,
+                false,
+                cppName,
+                sharedClosureStorage,
+            );
+            return;
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
             const accessors = [

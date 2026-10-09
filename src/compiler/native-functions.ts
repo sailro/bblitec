@@ -888,6 +888,9 @@ export class NativeFunctionLowerer {
         )
             return false;
         if (target.kind === "struct") {
+            const known = this.context.knownValueWithoutEvaluation(argument);
+            if (known && this.context.bindings.containsPlatformEvent(known))
+                return false;
             if (carries(argument, isOpaqueReference)) return false;
             const path = this.context.unwrap(argument);
             if (
@@ -988,6 +991,19 @@ export class NativeFunctionLowerer {
             );
         }
         if (parameter.byReference) {
+            if (isOpaqueReference(dataType)) {
+                // These parameters borrow an owning handle, not the caller's
+                // replaceable slot. Retain the selected owner before later
+                // arguments or the callee can replace that slot.
+                return this.context.bindings.pinValueToTemporary(
+                    this.context.dataLowerer.requireDataValue(
+                        expression,
+                        dataType,
+                    ),
+                    "function_argument",
+                    expression,
+                ).cpp;
+            }
             if (parameter.borrowedWrapper) {
                 const rawValue =
                     this.context.dataLowerer.compileDataPath(

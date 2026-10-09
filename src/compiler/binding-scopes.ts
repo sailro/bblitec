@@ -60,6 +60,7 @@ import {
 } from "./parameter-effects.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
@@ -1173,6 +1174,7 @@ export class BindingScopes {
         sharedStorage = false,
     ): void {
         this.context.useNativeValue(value);
+        const nativeRecordOwner = isNativeOwnerRecord(value);
         // A private name is never a parameter.
         const parameterDeclaration =
             parameter && ts.isIdentifier(identifier)
@@ -1302,7 +1304,7 @@ export class BindingScopes {
                 (!parameter ||
                     (readOnlyParameter && !readsNativeStorage(value)))) ||
             value.kind === "callback" ||
-            isCompileTimeOnlyValue(value.kind)
+            (isCompileTimeOnlyValue(value.kind) && !nativeRecordOwner)
         ) {
             this.defineVariable(identifier, value);
             return;
@@ -1459,6 +1461,9 @@ export class BindingScopes {
             !value.parameterBinding;
         const stored: Value = {
             ...value,
+            ...(nativeRecordOwner && value.dataType
+                ? this.context.dataLowerer.leafValue(storedCpp, value.dataType)
+                : {}),
             cpp: storedCpp,
             ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
             ...(parameter ? { parameterBinding: !constantParameter } : {}),
@@ -1601,7 +1606,7 @@ export class BindingScopes {
         label: string,
         node?: ts.Expression,
     ): Value {
-        if (value.ownedCpp !== undefined) {
+        if (value.ownedCpp !== undefined || isNativeOwnerRecord(value)) {
             return this.pinValueToTemporary(value, label, node);
         }
         if (value.kind === "callback") {
@@ -1776,7 +1781,7 @@ export class BindingScopes {
             };
         }
         const snapshotsData =
-            value.kind === "data" &&
+            (value.kind === "data" || isNativeOwnerRecord(value)) &&
             value.dataType !== undefined &&
             (isOpaqueReference(value.dataType) ||
                 isTypedArrayType(value.dataType) ||

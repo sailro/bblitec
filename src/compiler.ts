@@ -1,6 +1,7 @@
 import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
 import { provenUndefinedValue } from "./compiler/undefined-values.js";
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
+import { isNativeOwnerRecord } from "./compiler/native-owner-carrier.js";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
 import {
@@ -6029,7 +6030,8 @@ class Compiler implements LoweringServices {
                   value.optionalStorageCpp ??
                   value.cpp));
         if (
-            isCompileTimeOnlyValue(value.kind) ||
+            (isCompileTimeOnlyValue(value.kind) &&
+                !isNativeOwnerRecord(value)) ||
             value.kind === "browser" ||
             !cppIdentifierPattern.test(storage) ||
             ["true", "false", "nullptr"].includes(storage)

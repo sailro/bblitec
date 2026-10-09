@@ -28,6 +28,7 @@ import {
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { storageValue } from "./web-storage.js";
+import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import {
     accessedPropertySymbol,
@@ -10706,7 +10707,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   )
                 : raw;
         if (
-            value.kind === "data" &&
+            (value.kind === "data" || isNativeOwnerRecord(value)) &&
             value.dataType &&
             (dataTypesEqual(value.dataType, dataType) ||
                 this.spanCompatible(value.dataType, dataType))

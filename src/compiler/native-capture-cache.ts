@@ -4,6 +4,7 @@ import {
     type NativeCaptureBinding,
 } from "./closure-captures.js";
 import type { Value } from "./types.js";
+import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 
 /** Captures follow the current value graph, including rolled-back mutations. */
 export class NativeCaptureCache {
@@ -62,7 +63,10 @@ export class NativeCaptureCache {
                 if (seen.has(current)) return;
                 seen.add(current);
                 observe(current);
-                if (current.kind !== "record" && current.kind !== "tuple") {
+                if (
+                    (current.kind !== "record" && current.kind !== "tuple") ||
+                    isNativeOwnerRecord(current)
+                ) {
                     captures(current.nativeCaptures);
                     named(current.cpp);
                 }
