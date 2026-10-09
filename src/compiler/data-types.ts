@@ -1763,7 +1763,8 @@ export class DataTypeRegistry {
                     );
                     if (
                         !type ||
-                        !isOpaqueReference(type) ||
+                        (!isOpaqueReference(type) &&
+                            type.kind !== "borrowed-platform-event") ||
                         demand.document ||
                         demand.dictionary
                     )
@@ -1816,7 +1817,8 @@ export class DataTypeRegistry {
         if (
             !source ||
             this.isClassStruct(name) ||
-            !isOpaqueReference(actual) ||
+            (!isOpaqueReference(actual) &&
+                actual.kind !== "borrowed-platform-event") ||
             !ts.isExpression(node)
         )
             return undefined;
@@ -2401,7 +2403,12 @@ export class DataTypeRegistry {
             );
             if (demand.dictionary && type?.kind === "map" && type.dictionary)
                 return;
-            if (demand.native && isOpaqueReference(type)) return;
+            if (
+                demand.native &&
+                (isOpaqueReference(type) ||
+                    type?.kind === "borrowed-platform-event")
+            )
+                return;
             if (type?.kind !== "struct")
                 this.fail(
                     demand.node,

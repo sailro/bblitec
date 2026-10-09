@@ -137,6 +137,8 @@ function expressionStruct(
         const known = lowerer.context.compileValue(unwrapped);
         if (
             known.kind === "record" ||
+            known.kind === "platform-keyboard-event" ||
+            known.kind === "platform-mouse-event" ||
             ((known.kind === "json-null" ||
                 known.dataType?.kind === "optional") &&
                 lowerer.context.dataTypes.isReferenceStruct(dataType.name))
@@ -308,10 +310,27 @@ function valueStruct(
     ) {
         return value.ownedCpp ?? value.cpp;
     }
-    if (isOpaqueReference(value.dataType)) {
+    const represented =
+        value.dataType ??
+        (value.kind === "platform-keyboard-event" ||
+        value.kind === "platform-mouse-event"
+            ? ({
+                  kind: "borrowed-platform-event",
+                  event: value.platformEventBase
+                      ? "event"
+                      : value.kind === "platform-keyboard-event"
+                        ? "keyboard"
+                        : "mouse",
+              } satisfies DataType)
+            : undefined);
+    if (
+        represented &&
+        (isOpaqueReference(represented) ||
+            represented.kind === "borrowed-platform-event")
+    ) {
         const demand = lowerer.context.dataTypes.nativeRecordViewDemand(
             dataType.name,
-            value.dataType!,
+            represented,
             node,
         );
         if (demand) throw new NativeRecordStorageRequired(demand);

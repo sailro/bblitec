@@ -2959,14 +2959,16 @@ export class UserFunctionLowerer {
             )
                 throw new SharedCallRequiresInline();
             // A structural projection allocates a new record. Both shared
-            // methods and functions must retain the caller's object identity.
+            // methods and functions must retain the caller's object identity;
+            // borrowed events additionally keep their dispatch lifetime.
             if (
                 !recursive &&
-                (argumentType?.kind === "struct" ||
-                    isOpaqueReference(argumentType)) &&
                 parameterType?.kind === "struct" &&
-                argumentType !== undefined &&
-                !dataTypesEqual(argumentType, parameterType)
+                (argumentType?.kind === "struct" ||
+                    isOpaqueReference(argumentType) ||
+                    (argument &&
+                        context.bindings.containsPlatformEvent(argument))) &&
+                (!argumentType || !dataTypesEqual(argumentType, parameterType))
             )
                 throw new SharedCallRequiresInline();
             if (

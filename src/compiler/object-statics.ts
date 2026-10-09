@@ -16,6 +16,7 @@ import { refuseErrorReflection } from "./error-values.js";
 import { isSupportedFunction } from "./user-functions.js";
 import { isSymbolPropertyKey } from "./symbols.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 import {
     compileCollectionEntries,
@@ -27,6 +28,11 @@ type ObjectStaticContext = Pick<
     | "checker"
     | "compileValue"
     | "compileStoredDataFunction"
+    | "compileCallbackWithValues"
+    | "captureManagedClosureLines"
+    | "registerNativeBinding"
+    | "activeThis"
+    | "defineThis"
     | "moduleNamespaces"
     | "captureEmittedLines"
     | "probeEmission"
@@ -1213,6 +1219,70 @@ function definitionTarget(
     };
 }
 
+/** Descriptor functions on receiver-aware slots observe Reflect.get's receiver. */
+function definitionAccessor(
+    context: ObjectStaticContext,
+    member: Exclude<PropertyDefinition["members"][number], { name: "value" }>,
+    field: DataStructField,
+    target: Value,
+): string {
+    const { callback } = member;
+    if (!field.accessorReceiver)
+        return context.compileStoredDataFunction(
+            callback,
+            member.name === "get"
+                ? { kind: "function", parameters: [], result: field.type }
+                : { kind: "function", parameters: [field.type] },
+            undefined,
+            false,
+            ts.isArrowFunction(callback) ? undefined : target,
+        );
+    const receiverType: DataType<"struct"> = {
+        kind: "struct",
+        name: field.accessorReceiver,
+    };
+    const receiverCpp = context.dataTypes.cppType(receiverType);
+    const valueCpp = context.dataTypes.cppType(field.type);
+    const receiverName = context.allocateTemporaryCppName("defined_receiver");
+    const valueName = context.allocateTemporaryCppName("defined_value");
+    const body = context.captureManagedClosureLines(() => {
+        const argument = (name: string, type: DataType): Value => ({
+            ...context.dataLowerer.leafValue(name, type),
+            nativeCaptures: [
+                context.registerNativeBinding(
+                    name,
+                    false,
+                    false,
+                    context.dataTypes.cppType(type),
+                ),
+            ],
+        });
+        const receiver = argument(receiverName, receiverType);
+        const values =
+            member.name === "get" ? [] : [argument(valueName, field.type)];
+        const previousThis = context.activeThis();
+        if (!ts.isArrowFunction(callback)) context.defineThis(receiver);
+        try {
+            const value = context.compileCallbackWithValues(
+                callback,
+                values,
+                callback,
+                member.name === "set",
+            );
+            context.emit(
+                member.name === "get"
+                    ? `return ${context.dataLowerer.compileKnownValueForSink(value, field.type, callback)};`
+                    : "return true;",
+            );
+        } finally {
+            context.defineThis(previousThis);
+        }
+    });
+    return member.name === "get"
+        ? `bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)})`
+        : `bbl::js::Callback<bool(${receiverCpp}, ${valueCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}, [[maybe_unused]] ${valueCpp} ${valueName}`, "bool")})`;
+}
+
 /** Evaluate all descriptors before applying any definition to the held object. */
 function applyPropertyDefinitions(
     context: ObjectStaticContext,
@@ -1238,15 +1308,18 @@ function applyPropertyDefinitions(
             "accessors",
         );
         if (
-            field.accessorReceiver ||
-            (field.accessor &&
-                context.dataTypes.holdsPrototypeAccessors(target.dataType.name))
+            field.accessor &&
+            context.dataTypes.holdsPrototypeAccessors(target.dataType.name)
         )
             context.fail(
                 definition.node,
-                `Object.${operation} does not redefine proxy or prototype accessor fields.`,
+                `Object.${operation} does not redefine prototype accessor fields.`,
             );
-        if (definition.accessor || !definition.configurable) {
+        if (
+            definition.accessor ||
+            !definition.configurable ||
+            field.accessorReceiver
+        ) {
             if (context.dataTypes.isClassStruct(target.dataType.name))
                 context.fail(
                     definition.node,
@@ -1283,19 +1356,11 @@ function applyPropertyDefinitions(
                     field.type,
                 );
             } else {
-                const { callback } = member;
-                initializer = context.compileStoredDataFunction(
-                    callback,
-                    member.name === "get"
-                        ? {
-                              kind: "function",
-                              parameters: [],
-                              result: field.type,
-                          }
-                        : { kind: "function", parameters: [field.type] },
-                    undefined,
-                    false,
-                    ts.isArrowFunction(callback) ? undefined : target,
+                initializer = definitionAccessor(
+                    context,
+                    member,
+                    field,
+                    target,
                 );
             }
             const name = context.allocateTemporaryCppName("defined_property");
@@ -1327,7 +1392,7 @@ function applyPropertyDefinitions(
         context.emit({
             kind: "expression",
             code: field.accessor
-                ? `${target.cpp}->${field.name}.define(${cpp}, ${configurable}, ${preserveSetter});`
+                ? `${target.cpp}->${field.name}.define(${cpp}, ${configurable}, ${preserveSetter}${field.accessorReceiver ? `, ${target.cpp}` : ""});`
                 : `${target.cpp}->${field.name} = ${cpp};`,
         });
     }
