@@ -81,6 +81,34 @@
     {
       "summary": "Numeric accessor lowering runs the shared admission check before speculative lowering.",
       "applied": true
+    },
+    {
+      "summary": "Owned and observing JSON records share one plain-record admission predicate.",
+      "applied": true
+    },
+    {
+      "summary": "Copied-field presence analysis filters eligible fields before querying source types.",
+      "applied": true
+    },
+    {
+      "summary": "Field-fact invalidation skips computed-key analysis when no record facts exist.",
+      "applied": true
+    },
+    {
+      "summary": "Optional closed-map serialization borrows its evaluated value instead of copying it.",
+      "applied": true
+    },
+    {
+      "summary": "JSON ownership rejects ineligible record shapes before traversing freshness proofs.",
+      "applied": true
+    },
+    {
+      "summary": "Union mapping skips record-identity analysis when no document demands exist.",
+      "applied": true
+    },
+    {
+      "summary": "Literal membership demands skip stored-field indexing and stop at the first declared match.",
+      "applied": true
     }
   ]
 }
