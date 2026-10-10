@@ -167,6 +167,7 @@ export function compileErrorConstruction(
         LoweringServices,
         | "compileValue"
         | "dataLowerer"
+        | "dataTypes"
         | "allocateTemporaryCppName"
         | "emit"
         | "cppString"
@@ -225,7 +226,7 @@ export function compileErrorConstruction(
     }
     context.reachJsData();
     const cause = compileErrorCause(context, options);
-    let cpp = `bbl::js::make_error(${context.cppString(name)}, ${message.cpp}, ${cause})`;
+    let cpp = `bbl::js::make_error(${context.cppString(name)}, ${message.cpp}, ${cause}${argument ? "" : ", false"})`;
     if (consumer === "held") {
         const temporary = context.allocateTemporaryCppName("error_value");
         context.emit({
@@ -254,10 +255,22 @@ function compileAggregateError(
             "AggregateError requires an error iterable, optional message and cause.",
         );
     context.reachJsData();
-    const errors = context.dataLowerer.compileForSink(args[0]!, {
-        kind: "vector",
-        element: { kind: "error" },
-    });
+    const input = context.compileValue(args[0]!);
+    const projectedElement =
+        input.dataType?.kind === "vector" &&
+        input.dataType.element.kind !== "error"
+            ? input.dataType.element
+            : undefined;
+    const errors = projectedElement
+        ? input.cpp
+        : context.dataLowerer.compileKnownValueForSink(
+              input,
+              {
+                  kind: "vector",
+                  element: { kind: "error" },
+              },
+              args[0]!,
+          );
     const list = context.allocateTemporaryCppName("aggregate_errors");
     const snapshotsErrors = args.slice(1).some(expressionMayRunCode);
     context.emit(
@@ -276,12 +289,41 @@ function compileAggregateError(
         initializer: message,
     });
     const cause = compileErrorCause(context, args[2]);
+    // AggregateError copies its iterable after all arguments have run. Keep
+    // the selected array alive, then convert each error into the copied list.
+    let copiedErrors = list;
+    if (projectedElement) {
+        const item = context.allocateTemporaryCppName("aggregate_error_item");
+        const conversion = context.dataLowerer.compileArm(() =>
+            context.dataLowerer.compileKnownValueForSink(
+                context.dataLowerer.leafValue(item, projectedElement),
+                { kind: "error" },
+                args[0]!,
+            ),
+        );
+        const converted = context.dataLowerer.armExpression(
+            args[0]!,
+            conversion.lines,
+            conversion.value,
+            { kind: "error" },
+        );
+        copiedErrors =
+            "bbl::js::array_from_iterable<bbl::js::Error>(" +
+            list +
+            ", [](const " +
+            context.dataTypes.cppType(projectedElement) +
+            "& " +
+            item +
+            ") { return " +
+            converted +
+            "; })";
+    }
     const cpp = context.allocateTemporaryCppName("aggregate_error");
     context.emit({
         kind: "declaration",
         type: "const bbl::js::Error",
         name: cpp,
-        initializer: `bbl::js::make_aggregate_error(${list}, ${text}, ${cause})`,
+        initializer: `bbl::js::make_aggregate_error(${copiedErrors}, ${text}, ${cause})`,
     });
     return errorValue(
         { kind: "string", cpp: text },

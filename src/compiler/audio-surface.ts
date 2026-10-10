@@ -5,6 +5,7 @@ import { AUDIO_CODECS, audioCodecForBytes } from "../audio-codecs.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 
 import { readProperty, type PropertyContext } from "./properties.js";
 import type { Feature, Value } from "./types.js";
@@ -96,6 +97,31 @@ const FILTER_KINDS: Readonly<Record<string, string>> = {
     notch: "Notch",
     allpass: "Allpass",
 };
+
+/**
+ * Whether `member` is an oscillator's or filter's `type`: a closed string
+ * enum the graph composes at generation from a static string.
+ */
+export function isComposedAudioEnum(
+    checker: ts.TypeChecker,
+    member: ts.Expression,
+): boolean {
+    const symbol = ts.isPropertyAccessExpression(member)
+        ? resolvedSymbol(checker, member)
+        : undefined;
+    return (
+        symbol !== undefined &&
+        symbol.name === "type" &&
+        declaredInDomLibrary(symbol) &&
+        (symbol.declarations ?? []).some(
+            (declaration) =>
+                ts.isInterfaceDeclaration(declaration.parent) &&
+                ["OscillatorNode", "BiquadFilterNode"].includes(
+                    declaration.parent.name.text,
+                ),
+        )
+    );
+}
 
 /** `ctx.create*()`, mapped to the PAL factory each names. */
 const NODE_FACTORIES: Readonly<

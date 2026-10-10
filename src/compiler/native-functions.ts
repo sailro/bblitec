@@ -26,6 +26,7 @@ import {
 import {
     dataTypesEqual,
     isOpaqueReference,
+    isNativeStructuralView,
     isTypedArrayType,
     passesByReference,
     type DataType,
@@ -37,6 +38,7 @@ import {
     localClassOfSymbol,
 } from "./class-members.js";
 import { readsNativeStorage, type Value } from "./types.js";
+import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import {
     bindingIsOnlyCalledDirectly,
@@ -888,7 +890,14 @@ export class NativeFunctionLowerer {
         )
             return false;
         if (target.kind === "struct") {
-            if (carries(argument, isOpaqueReference)) return false;
+            const known = this.context.knownValueWithoutEvaluation(argument);
+            if (
+                known &&
+                (nativeStructuralViewType(known) ||
+                    this.context.bindings.containsPlatformEvent(known))
+            )
+                return false;
+            if (carries(argument, isNativeStructuralView)) return false;
             const path = this.context.unwrap(argument);
             if (
                 (ts.isPropertyAccessExpression(path) ||
@@ -901,7 +910,7 @@ export class NativeFunctionLowerer {
                             argument,
                             "read",
                         )?.dataType;
-                        return isOpaqueReference(
+                        return isNativeStructuralView(
                             type?.kind === "optional" ? type.inner : type,
                         );
                     },
@@ -931,7 +940,7 @@ export class NativeFunctionLowerer {
             argument,
         );
         if (
-            isOpaqueReference(
+            isNativeStructuralView(
                 argumentType?.kind === "optional"
                     ? argumentType.inner
                     : argumentType,
@@ -988,6 +997,19 @@ export class NativeFunctionLowerer {
             );
         }
         if (parameter.byReference) {
+            if (isOpaqueReference(dataType)) {
+                // These parameters borrow an owning handle, not the caller's
+                // replaceable slot. Retain the selected owner before later
+                // arguments or the callee can replace that slot.
+                return this.context.bindings.pinValueToTemporary(
+                    this.context.dataLowerer.requireDataValue(
+                        expression,
+                        dataType,
+                    ),
+                    "function_argument",
+                    expression,
+                ).cpp;
+            }
             if (parameter.borrowedWrapper) {
                 const rawValue =
                     this.context.dataLowerer.compileDataPath(
@@ -1500,6 +1522,7 @@ export class NativeFunctionLowerer {
                 !mapped ||
                 mapped.kind === "function" ||
                 this.context.dataTypes.carriesHandle(mapped) ||
+                this.context.dataTypes.carriesBorrowedPlatformEvent(mapped) ||
                 (options.rejectCarriedFunctionReturn &&
                     this.context.dataTypes.carriesFunction(mapped))
             ) {

@@ -123,6 +123,12 @@ check(
     let fromReads=0;
     function from():number {fromReads++;return 1;}
     if(values.lastIndexOf("outside" as Key,from())!==-1||fromReads!==1)throw new Error("missing query still evaluates fromIndex");
+    let searchOrder="";
+    function needle(query:string):string {searchOrder+="n";return query;}
+    function start():number {searchOrder+="f";return 1;}
+    if(values.includes(needle("outside") as Key,start())||searchOrder!=="nf")throw new Error("absent includes argument order");
+    searchOrder="";
+    if(!values.includes(needle("first") as Key,start())||searchOrder!=="nf")throw new Error("present includes argument order");
     const records:Array<{size:number}>=[{size:1}];
     if(records.indexOf(records[0]!)!==0||records.indexOf(records[4]!)!==-1)throw new Error("record query identity and absence");
 `,

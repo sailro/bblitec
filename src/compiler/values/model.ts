@@ -1,4 +1,5 @@
 import { cppIdentifierPattern } from "../../cpp-literals.js";
+import type { DataType } from "../data-types/model.js";
 import type { ValueBase, ValueFields, ValueKind } from "../types.js";
 import type { ValuePayloads } from "./payloads.js";
 import {
@@ -78,6 +79,19 @@ export function snapshotReadCpp(value: Value): string {
     return readsNativeStorage(value)
         ? `bbl::js::snapshot_value(${value.cpp})`
         : value.cpp;
+}
+
+/** The backing value to store, before projecting a handle or other data leaf. */
+export function representedStorage(
+    value: Value,
+): { cpp: string; type: DataType } | undefined {
+    const type = value.dataType;
+    if (!type) return undefined;
+    const storage =
+        type.kind === "handle" && type.ownedEngine
+            ? value.resourceStorageCpp
+            : value.cpp;
+    return storage ? { cpp: value.ownedCpp ?? storage, type } : undefined;
 }
 
 /** The native test that an optional expression holds a value. */

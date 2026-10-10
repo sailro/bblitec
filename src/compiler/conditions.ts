@@ -24,11 +24,12 @@ import {
     ERROR_CONSTRUCTORS,
 } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { unwrapExpression } from "./syntax.js";
+import { isAssignmentExpression, unwrapExpression } from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { isBigIntTyped } from "./bigint-values.js";
+import { isJsonValue } from "./json-bridge.js";
 import { pinSlotFound, strictEqualsCpp } from "./data-comparisons.js";
 import {
     isStringValue,
@@ -279,11 +280,8 @@ export class ConditionLowerer {
             if (right === identity) return left;
             return `(${left} ${isAnd ? "&&" : "||"} ${right})`;
         }
-        // `if (a[i++] = v)`: the assignment's value (compileAssignmentValue).
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        ) {
+        // Assignment conditions read the value returned by the shared store.
+        if (isAssignmentExpression(unwrapped)) {
             const value = this.context.compileValue(unwrapped);
             return (
                 this.context.dataLowerer.truthinessCondition(value) ??
@@ -390,6 +388,13 @@ export class ConditionLowerer {
                     this.context.libraryGlobal(unwrapped.right) ?? "";
                 if (ERROR_CONSTRUCTORS.has(global)) {
                     const value = this.context.compileValue(unwrapped.left);
+                    if (isJsonValue(value)) {
+                        const branded =
+                            "candidate.instance_of<bbl::js::Error>()";
+                        return global === "Error"
+                            ? `(${value.cpp}).instance_of<bbl::js::Error>()`
+                            : `[](const bbl::js::JsonValue& candidate) { return ${branded} && bbl::js::error_is(candidate.asserted_instance<bbl::js::Error>(), ${this.context.cppString(global)}); }(${value.cpp})`;
+                    }
                     const base = authoredErrorBase(this.context, value);
                     if (base) {
                         if (global === "Error" || global === base)
@@ -508,16 +513,12 @@ export class ConditionLowerer {
                 // selected value is the condition — the call arm's
                 // delegate-and-kind-check shape below.
                 const value = this.context.compileValue(unwrapped);
-                if (value.staticBoolean !== undefined) {
-                    return value.staticBoolean ? "true" : "false";
-                }
-                if (value.kind === "boolean") {
-                    return value.cpp;
-                }
-                this.context.fail(
-                    unwrapped.operatorToken,
-                    "'??' in a condition must select a boolean, " +
-                        `received ${value.kind}.`,
+                return (
+                    this.context.dataLowerer.truthinessCondition(value) ??
+                    this.context.fail(
+                        unwrapped.operatorToken,
+                        `Nullish selection has no represented truthiness: ${value.kind}.`,
+                    )
                 );
             }
             const comparison = conditionComparison(

@@ -7,6 +7,7 @@ import { renderClosure } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
 import { isDataTuple, tupleComponents } from "../data-types.js";
+import { handleCppType } from "../data-types/handles.js";
 import { retainedOptions, emitPresentOption } from "./retained-options.js";
 import {
     addressModeByPin,
@@ -687,9 +688,17 @@ function spriteHandleLayerCpp(
 
 /** Preserve a renderer's native layer vector; materialize only JS arrays. */
 function spriteLayerVectorCpp(layers: Value): string {
-    return layers.nativeVectorData === true
-        ? layers.cpp
-        : `bbl::js::array_to_vector(${layers.cpp})`;
+    if (layers.nativeVectorData === true) return layers.cpp;
+    const element =
+        layers.dataType?.kind === "vector"
+            ? layers.dataType.element
+            : undefined;
+    // Engine-owned layer storage passes the layers its pairs hold.
+    if (element?.kind === "handle" && element.ownedEngine) {
+        const handle = handleCppType(element.handle);
+        return `([&] { std::vector<${handle}> layers; for (const auto& layer : ${layers.cpp}) layers.push_back(layer.second); return layers; }())`;
+    }
+    return `bbl::js::array_to_vector(${layers.cpp})`;
 }
 
 export function compileSpriteIntrinsic(

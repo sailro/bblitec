@@ -19,7 +19,7 @@ import { functionUsesDynamicThis } from "./user-functions.js";
 import { isNullishLiteral } from "./symbols.js";
 
 import type { DataType } from "./data-types.js";
-import type { Value } from "./types.js";
+import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 
 /** The narrow slice of the expression context this bridge needs. */
 interface JsonBridgeContext extends Pick<
@@ -85,6 +85,18 @@ export function compileJsonPropertyKey(
     value: Value,
     node: ts.Node,
 ): string {
+    if (value.absenceTagStorageCpp && value.absenceTagType) {
+        const tagged = context.dataTypes.jsonValueCpp(
+            value.absenceTagType,
+            value.absenceTagStorageCpp,
+            node,
+        );
+        if (tagged) return `${tagged}.to_string()`;
+        return context.fail(
+            node,
+            "Dynamic property keys require a represented string conversion.",
+        );
+    }
     if (value.dataType?.kind === "enum")
         return context.dataTypes.enumToStringCpp(
             value.dataType,
@@ -109,6 +121,49 @@ export function compileJsonPropertyKey(
             node,
         );
         if (cpp) return `${cpp}.to_string()`;
+    }
+    // A key with a member no document holds (a native handle or function)
+    // converts the member it holds. An absent key that can only be
+    // undefined spells "undefined".
+    if (
+        value.dataType?.kind === "optional" &&
+        value.dataType.undefinedOnly &&
+        value.dataType.inner.kind === "union"
+    ) {
+        const present = compileJsonPropertyKey(
+            context,
+            {
+                kind: "data",
+                cpp: optionalValueCpp(value.cpp),
+                dataType: value.dataType.inner,
+            },
+            node,
+        );
+        return `(${optionalPresentCpp(value.cpp)} ? std::string(${present}) : std::string("undefined"))`;
+    }
+    // A native handle or function member has no represented string
+    // conversion and refuses where it runs.
+    if (value.dataType?.kind === "union") {
+        const source = "property_key_source";
+        const arms = value.dataType.members.map((member, index) => {
+            const body =
+                member.kind === "handle" || member.kind === "function"
+                    ? `throw std::runtime_error("Dynamic property keys require a represented string conversion.");`
+                    : `return std::string(${compileJsonPropertyKey(
+                          context,
+                          {
+                              kind: "data",
+                              cpp: `std::get<${index}>(${source})`,
+                              dataType: member,
+                          },
+                          node,
+                      )});`;
+            return `case ${index}: ${body}`;
+        });
+        return (
+            `([&]() -> std::string { const auto& ${source} = ${value.cpp}; ` +
+            `switch (${source}.index()) { ${arms.join(" ")} default: throw std::runtime_error("Value is outside the property key union."); } }())`
+        );
     }
     return context.fail(
         node,
@@ -136,7 +191,7 @@ export function compileJsonElementRead(
     const key = context.compileValue(index);
     return {
         ...jsonValue(
-            `${receiver.cpp}.get(${compileJsonPropertyKey(context, key, index)})`,
+            `${receiver.cpp}.read_property(${compileJsonPropertyKey(context, key, index)})`,
         ),
         nativeCaptures: [
             ...(receiver.nativeCaptures ?? []),
@@ -367,12 +422,13 @@ export function hasDynamicObjectSpread(
     return literal.properties.some((property) => {
         if (!ts.isSpreadAssignment(property)) return false;
         if (isJsonRootedExpression(context, property.expression)) return true;
-        const type = context.checker.getTypeAtLocation(
-            context.unwrap(property.expression),
-        );
+        const source = context.unwrap(property.expression);
+        const type = context.checker.getTypeAtLocation(source);
         return (
             (type.flags & ts.TypeFlags.Any) !== 0 ||
-            context.dataTypes.dynamicJsonType(type) !== undefined
+            context.dataTypes.dynamicJsonType(type) !== undefined ||
+            // A concrete record can acquire document storage through a retained view.
+            context.dataTypes.fromTsType(type, source)?.kind === "json"
         );
     });
 }
@@ -384,7 +440,7 @@ export function hasDynamicObjectSpread(
  * Only descent is handled here, because descent is what has no static type
  * to consult: `file.parts[0].s` is three reads over a document whose shape
  * the source has not proven yet. Everything the chain reaches is another
- * dynamic value, except `length`, which JavaScript answers as a number.
+ * dynamic value, including an object's own `length` property.
  */
 export function compileJsonRead(
     context: JsonBridgeContext,
@@ -400,27 +456,28 @@ export function compileJsonRead(
         if (!isJsonValue(owner)) {
             return undefined;
         }
-        if (unwrapped.name.text === "length") {
-            return {
-                kind: "number",
-                cpp: `${owner.cpp}.length()`,
-                dataType: { kind: "number" },
-            };
-        }
-        return jsonValue(
-            `${owner.cpp}.get(${context.cppString(unwrapped.name.text)})`,
-        );
+        const read = (selected: Value): Value =>
+            jsonValue(
+                `${selected.cpp}.read_property(${context.cppString(unwrapped.name.text)})`,
+            );
+        return ts.isOptionalChain(unwrapped)
+            ? context.dataLowerer.optionalAccess(owner, unwrapped, read)
+            : read(owner);
     }
     if (ts.isElementAccessExpression(unwrapped)) {
         const owner = compileJsonRead(context, unwrapped.expression);
         if (!isJsonValue(owner)) {
             return undefined;
         }
-        return compileJsonElementRead(
-            context,
-            owner,
-            unwrapped.argumentExpression,
-        );
+        const read = (selected: Value): Value =>
+            compileJsonElementRead(
+                context,
+                selected,
+                unwrapped.argumentExpression,
+            );
+        return ts.isOptionalChain(unwrapped)
+            ? context.dataLowerer.optionalAccess(owner, unwrapped, read)
+            : read(owner);
     }
     if (ts.isCallExpression(unwrapped)) {
         const parsed = compileJsonCall(context, unwrapped);

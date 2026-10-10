@@ -119,6 +119,7 @@ interface DataKinds {
         name: (typeof DEFERRED_DOM_OBJECTS)[number] | "ReadableByteStream";
     };
     "http-response": { kind: "http-response" };
+    gpu: { kind: "gpu" };
     "gpu-adapter": { kind: "gpu-adapter" };
     "gpu-adapter-info": { kind: "gpu-adapter-info" };
     "search-params": { kind: "search-params" };
@@ -170,6 +171,8 @@ interface DataKinds {
     handle: {
         kind: "handle";
         handle: HandleKind;
+        /** The stored resource carries its proved engine owner beside the handle. */
+        ownedEngine?: true;
     };
     function: {
         kind: "function";
@@ -183,6 +186,10 @@ interface DataKinds {
         result?: DataType;
         /** The represented callable's source completion is provably undefined. */
         undefinedCompletion?: true;
+        /** A synchronous completion cannot be a Promise or other thenable. */
+        nonThenableCompletion?: true;
+        /** The concrete body completes with undefined after awaiting its result. */
+        awaitedUndefinedCompletion?: true;
         /**
          * The container this function is stored in observes its JavaScript
          * identity -- a Set membership, a Map key. Such a value carries the
@@ -199,9 +206,8 @@ interface DataKinds {
         /** Native parameter positions which accept an omitted source argument. */
         optionalParameters?: number[];
         /**
-         * Per native parameter that can be passed both `null` and
-         * `undefined`, the source declaration's site (empty otherwise):
-         * where a stored body telling them apart demands tagged storage.
+         * Source sites for parameters whose bodies can demand nullish tags
+         * or a retained resource owner (empty for other parameters).
          * Not part of the signature's identity.
          */
         parameterSites?: readonly string[];

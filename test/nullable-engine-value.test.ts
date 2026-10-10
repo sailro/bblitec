@@ -51,7 +51,7 @@ test("a lazily created gizmo held by a stored listener shares one cell", () => {
     assert.doesNotMatch(result.cpp, /std::ref\(v_gizmo\)/);
     assert.match(
         result.cpp,
-        /if \(!\(v_gizmo->has_value\(\)\)\) \{/,
+        /if \(!\(\(\*v_gizmo\)\.has_value\(\)\)\) \{/,
         "the source's own guard reads the storage's presence",
     );
     assert.match(
@@ -61,12 +61,12 @@ test("a lazily created gizmo held by a stored listener shares one cell", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::set_composite_gizmo_local_coordinates\(v_engine, \(\*\*v_gizmo\)/,
+        /bbl::set_composite_gizmo_local_coordinates\(v_engine, \(\*\(\*v_gizmo\)\)/,
         "a narrowed read dereferences the cell",
     );
     assert.match(
         result.cpp,
-        /bbl::attach_composite_gizmo_to_node\(v_engine, \(\*\*v_gizmo\), v_cube\)/,
+        /bbl::attach_composite_gizmo_to_node\(v_engine, \(\*\(\*v_gizmo\)\), v_cube\)/,
         "the engine the assignment carried reaches the later attach call",
     );
 });

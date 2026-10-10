@@ -214,10 +214,19 @@ test("JSON.stringify emits codecs for the records it reaches, in order", () => {
         ["s", "p", "q", "c", "sh"],
         "keys are written in the record's declaration order, not sorted",
     );
+    const ownKey = codec[1]!.match(
+        /const bool (\w+) = value\.sh\.has_value\(\);/,
+    );
+    assert.ok(ownKey, "the optional key is snapshotted before reading values");
+    assert.ok(
+        codec[1]!.indexOf(ownKey[0]) < codec[1]!.indexOf('writer.key("s")'),
+    );
     assert.match(
         codec[1]!,
-        /if \(value\.sh\.has_value\(\)\) \{/,
-        "a property the source declared optional is omitted when absent",
+        new RegExp(
+            String.raw`if \(${ownKey[1]}\) \{\s*const auto (\w+) = value\.sh;\s*if \(\1\.has_value\(\)\) \{\s*writer\.key\("sh"\);\s*json_write\(writer, \1\);`,
+        ),
+        "the snapshotted key reads its value once and omits an absent payload",
     );
     assert.match(
         result.cpp,
@@ -298,29 +307,34 @@ test("JSON.parse answers a dynamic document the source's guards decide over", ()
     // `!file` is JavaScript truthiness over the whole document.
     assert.match(result.cpp, /\.truthy\(\)/);
     // `file.version !== 1` is a strict comparison, not a coercion.
-    assert.match(result.cpp, /\.get\("version"\)\.strict_equals\(1\.0\)/);
+    assert.match(
+        result.cpp,
+        /\.read_property\("version"\)\.strict_equals\(1\.0\)/,
+    );
     // `Array.isArray(file.parts)` asks the document.
-    assert.match(result.cpp, /\.get\("parts"\)\.is_array\(\)/);
+    assert.match(result.cpp, /\.read_property\("parts"\)\.is_array\(\)/);
     // `for (const entry of file.parts)` walks the document's own elements.
-    assert.match(result.cpp, /\.get\("parts"\)\.elements\(\)/);
+    assert.match(result.cpp, /\.read_property\("parts"\)\.elements\(\)/);
     // `typeof x === "number"` and `Number.isFinite(x)` over an element.
     assert.match(result.cpp, /\.type_of\(\)/);
     assert.match(result.cpp, /std::isfinite\(\w+\.to_number\(\)\)/);
     // `.length === n` and the indexed reads inside the guard.
-    assert.match(result.cpp, /\.length\(\)/);
+    assert.match(result.cpp, /\.read_property\("length"\)/);
     const receivers = [
-        ...result.cpp.matchAll(/\bauto (\w+) = [^;\n]+\.get\("s"\);/g),
+        ...result.cpp.matchAll(
+            /\bauto (\w+) = [^;\n]+\.read_property\("s"\);/g,
+        ),
     ];
     assert.ok(
         receivers.some(([, name]) =>
             result.cpp.includes(
-                `${name}.get(bbl::js::number_to_string(0.0)).to_number()`,
+                `${name}.read_property(bbl::js::number_to_string(0.0)).to_number()`,
             ),
         ),
         "indexed reads use the retained receiver and JavaScript property-key conversion",
     );
     // The optional `sh` is a strict comparison over a possibly-absent key.
-    assert.match(result.cpp, /\.get\("sh"\)\.strict_equals\(1\.0\)/);
+    assert.match(result.cpp, /\.read_property\("sh"\)\.strict_equals\(1\.0\)/);
 });
 
 test("JSON.parse refuses a reviver reading its holder rather than ignoring it", () => {

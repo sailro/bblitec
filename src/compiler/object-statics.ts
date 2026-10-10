@@ -5,17 +5,20 @@ import { argumentAt, propertyNameText } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { booleanValue, staticStringValue, type Value } from "./types.js";
 import {
-    callMember,
     type DataStructField,
     type DataType,
     type OwnPresence,
 } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
+import { pinOperand } from "./evaluation-order.js";
+import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
 import { isSupportedFunction } from "./user-functions.js";
 import { isSymbolPropertyKey } from "./symbols.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
+import { callableRecordValue } from "./callable-records.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -26,6 +29,12 @@ type ObjectStaticContext = Pick<
     | "checker"
     | "compileValue"
     | "compileStoredDataFunction"
+    | "callbacks"
+    | "compileCallbackWithValues"
+    | "captureManagedClosureLines"
+    | "registerNativeBinding"
+    | "activeThis"
+    | "defineThis"
     | "moduleNamespaces"
     | "captureEmittedLines"
     | "probeEmission"
@@ -46,6 +55,9 @@ type ObjectStaticContext = Pick<
     | "libraryGlobal"
     | "fail"
     | "emitUiDatasetProperty"
+    | "emitUiStyleValue"
+    | "registerNativeConstBinding"
+    | "registerNativeBindingType"
 >;
 
 /** What the own-entry walks read. */
@@ -143,6 +155,15 @@ export function structOwnEntries(
     const fields = excludedKeys?.size
         ? sourceFields.filter((field) => !excludedKeys.has(field.sourceName))
         : sourceFields;
+    if (
+        !owner.recordOwnKeys &&
+        context.dataTypes.structCall(dataType.name) &&
+        fields.length > 1
+    )
+        context.fail(
+            node,
+            "Enumerating multiple callable properties requires their runtime insertion order.",
+        );
     // Accessor slots are own and enumerable (a getter runs as its key is
     // read) unless they may hold a class's prototype accessor.
     const accessor = fields.find(
@@ -379,16 +400,26 @@ export function ownObjectEntries(
 }
 
 /**
- * `Object.is(a, b)`: SameValue over the scalar kinds, where it differs from
- * `===` only for NaN (equal) and signed zeros (different).
+ * SameValue over scalars and erased values, preserving operand reads before
+ * later argument effects. Native object carriers still require an identity
+ * representation before they can take part in this comparison.
  */
 function compileObjectIs(
     context: ObjectStaticContext,
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const left = context.compileValue(argumentAt(call, 0));
-    const right = context.compileValue(argumentAt(call, 1));
+    const read = (index: number): Value => {
+        const argument = argumentAt(call, index);
+        return pinOperand(
+            context,
+            context.compileValue(argument),
+            argument,
+            "same_value_operand",
+        );
+    };
+    const left = read(0);
+    const right = read(1);
     if (left.staticNumber !== undefined && right.staticNumber !== undefined) {
         return booleanValue(
             Object.is(left.staticNumber, right.staticNumber) ? "true" : "false",
@@ -412,9 +443,33 @@ function compileObjectIs(
     if (boolean(left) && boolean(right)) {
         return booleanValue(`(${left.cpp} == ${right.cpp})`);
     }
+    // JsonValue already retains erased object identity and distinguishes
+    // absent values. Its strict equality supplies every nonnumeric case.
+    const erased = (value: Value, node: ts.Expression): string | undefined => {
+        if (isJsonValue(value)) return value.cpp;
+        if (value.kind === "json-null")
+            return value.cpp === "std::nullopt"
+                ? "bbl::js::JsonValue{}"
+                : "bbl::js::JsonValue::null_value()";
+        if (numeric(value))
+            return `bbl::js::JsonValue::from_number(${value.cpp})`;
+        if (textual(value))
+            return `bbl::js::JsonValue::from_string(${stringCpp(context, value, node)})`;
+        if (boolean(value))
+            return `bbl::js::JsonValue::from_boolean(${value.cpp})`;
+        return undefined;
+    };
+    const erasedLeft = erased(left, argumentAt(call, 0));
+    const erasedRight = erased(right, argumentAt(call, 1));
+    if (erasedLeft && erasedRight) {
+        context.reachJson();
+        return booleanValue(
+            `[](const bbl::js::JsonValue& left, const bbl::js::JsonValue& right) { return left.is_number() && right.is_number() ? bbl::js::same_value(left.to_number(), right.to_number()) : left.strict_equals(right); }(${erasedLeft}, ${erasedRight})`,
+        );
+    }
     return context.fail(
         call,
-        "Object.is compares numbers, strings and booleans; object identity takes `===`.",
+        "Object.is compares numbers, strings and booleans, nullish and represented erased values; other object identity takes `===`.",
     );
 }
 
@@ -525,21 +580,15 @@ function compileObjectEntries(
             : undefined;
     if (array) return array;
     if (isJsonValue(owner)) {
-        // A document's values are documents too, also where TypeScript
-        // types them `any` (the entries of an `object`).
-        const typed = context.dataTypes.withDynamicJsonTypes(true, () =>
-            context.dataLowerer.dataTypeAt(call),
-        );
-        const documentType: DataType<"vector"> =
-            typed?.kind === "vector"
-                ? typed
-                : {
-                      kind: "vector",
-                      element: {
-                          kind: "product",
-                          elements: [{ kind: "string" }, { kind: "json" }],
-                      },
-                  };
+        // A document's values keep their represented storage even when its
+        // source type names a narrower union. Each entry is a fresh array.
+        const documentType: DataType<"vector"> = {
+            kind: "vector",
+            element: context.dataTypes.tupleStorage([
+                { kind: "string" },
+                { kind: "json" },
+            ]),
+        };
         // A parsed document's own pairs, in property order.
         return pairArray(
             context,
@@ -616,7 +665,11 @@ function compileObjectFromEntries(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 1, 1);
-    const resultType = context.dataLowerer.dataTypeAt(call);
+    const resultType =
+        context.dataLowerer.dataTypeAt(call) ??
+        context.dataTypes.withDynamicJsonTypes(true, () =>
+            context.dataLowerer.dataTypeAt(call),
+        );
     const record = context.probeEmission(() => {
         const entries = compileCollectionEntries(
             context.dataLowerer,
@@ -684,7 +737,12 @@ function compileObjectAssign(
     // whose call is that function, filled below as a struct target is. It
     // is built as the callable type its result is stored as, when it has
     // one, so the record needs no conversion there.
-    const contextual = context.checker.getContextualType(call);
+    const contextualType = context.checker.getContextualType(call);
+    // An async return is checked against T | PromiseLike<T>; its function
+    // object still uses T's callable layout before promise resolution.
+    const contextual =
+        contextualType &&
+        (context.checker.getAwaitedType(contextualType) ?? contextualType);
     const callable = context.dataTypes.fromStoredTsType(
         contextual &&
             context.checker.getNonNullableType(contextual).getCallSignatures()
@@ -702,21 +760,18 @@ function compileObjectAssign(
         callType &&
         (target.kind === "callback" || target.dataType?.kind === "function")
     ) {
-        const record = context.allocateTemporaryCppName("callable_record");
-        context.emit({
-            kind: "declaration",
-            type: "auto",
-            name: record,
-            initializer: `bbl::js::make_ref<bblscene::${callable.name}Data>()`,
-        });
-        context.emit({
-            kind: "expression",
-            code: `${record}->${callMember} = ${context.dataLowerer.compileKnownValueForSink(target, callType, targetExpression)};`,
-        });
-        target = {
-            ...context.dataLowerer.leafValue(record, callable),
-            freshData: true,
-        };
+        target =
+            callableRecordValue(
+                context.dataLowerer,
+                target,
+                callable,
+                targetExpression,
+                true,
+            ) ??
+            context.fail(
+                targetExpression,
+                "Object.assign requires a represented callable target.",
+            );
     }
     const fresh = ts.isObjectLiteralExpression(targetExpression);
     const readPairs = (
@@ -816,10 +871,11 @@ function compileObjectAssign(
         });
         return owner;
     }
-    if (target.kind === "ui-element" && target.uiDataset) {
-        const owner = context.bindings.pinValueToTemporary(
+    if (target.kind === "ui-element" && (target.uiDataset || target.uiStyle)) {
+        const owner = pinDetached(
+            context,
             target,
-            "dataset_target",
+            "assign_target",
             targetExpression,
         );
         // Call arguments are evaluated before Object.assign starts writing.
@@ -842,13 +898,16 @@ function compileObjectAssign(
             }
             return context.bindings.pinValueToTemporary(
                 value,
-                "dataset_source",
+                "assign_source",
                 source,
             );
         });
         sources.forEach((source, index) => {
-            for (const [key, value] of readPairs(source, values[index]))
-                context.emitUiDatasetProperty(owner, key, value, source);
+            for (const [key, value] of readPairs(source, values[index])) {
+                if (target.uiStyle)
+                    context.emitUiStyleValue(owner, key, value, source);
+                else context.emitUiDatasetProperty(owner, key, value, source);
+            }
         });
         return owner;
     }
@@ -912,30 +971,72 @@ function compileObjectAssign(
     }
     if (target.kind === "data" && target.dataType?.kind === "struct") {
         const structType = target.dataType;
+        context.dataTypes.markStoredObjectReferences(structType);
+        const owner = context.bindings.pinValueToTemporary(
+            target,
+            "assign_target",
+            targetExpression,
+        );
         const access = context.dataTypes.isReferenceStruct(structType.name)
             ? "->"
             : ".";
-        for (const source of sources) {
-            const sourceValue = context.compileValue(source);
+        // Evaluate the complete argument list before getters or target setters
+        // run. Stored sources retain identity, so later arguments may mutate them.
+        const values = sources.map((source) => {
+            const value = context.compileValue(source);
+            if (value.kind === "record") {
+                readPairs(source, value, true);
+                const declaration = context.bindings.recordDeclaration(
+                    value,
+                    source,
+                );
+                if (declaration)
+                    throw new DynamicBindingStorageRequired(
+                        declaration,
+                        "source",
+                    );
+            }
+            if (value.dataType?.kind === "struct")
+                context.dataTypes.markStoredObjectReferences(value.dataType);
+            return context.bindings.pinValueToTemporary(
+                value,
+                "assign_source",
+                source,
+            );
+        });
+        sources.forEach((source, index) => {
+            const sourceValue = values[index]!;
             if (
                 sourceValue.kind === "data" &&
                 sourceValue.dataType?.kind === "struct"
             ) {
                 context.dataLowerer.copyStructOwnProperties(
-                    { cpp: target.cpp, type: structType },
+                    { cpp: owner.cpp, type: structType },
                     sourceValue,
                     sourceValue.dataType,
                     source,
                     "Object.assign",
                 );
-                continue;
+                return;
             }
             for (const [key, value] of sourcePairs(source, sourceValue)) {
                 const field = context.dataTypes.structField(
                     structType.name,
                     key,
                     source,
+                    "accessors",
                 );
+                const property = context.checker
+                    .getTypeAtLocation(source)
+                    .getProperty(key);
+                context.dataTypes.requireEngineFieldStorage(field, source);
+                if (property)
+                    context.dataTypes.requireOwnUndefinedField(
+                        structType.name,
+                        field,
+                        context.checker.getTypeOfSymbol(property),
+                        source,
+                    );
                 const stored = context.dataLowerer.compileKnownValueForSink(
                     value,
                     field.type,
@@ -943,10 +1044,12 @@ function compileObjectAssign(
                 );
                 context.emit({
                     kind: "expression",
-                    code: `${target.cpp}${access}${field.name} = ${stored};`,
+                    code: field.accessor
+                        ? `${owner.cpp}${access}${field.name}.set(${stored});`
+                        : `${owner.cpp}${access}${field.name} = ${stored};`,
                 });
             }
-        }
+        });
         // The stores changed fields whose generation snapshot lives on the
         // binding the target was read from, not only on this read of it.
         context.bindings.invalidateRecordProperties(target);
@@ -956,7 +1059,7 @@ function compileObjectAssign(
         if (bound) {
             context.bindings.invalidateRecordProperties(bound);
         }
-        return target;
+        return owner;
     }
     // Nothing else has stored fields to copy into: an engine handle's
     // properties are setters with native effects, which a copy of plain
@@ -1018,6 +1121,7 @@ interface PropertyDefinition {
     >;
     accessor: boolean;
     setter: boolean;
+    configurable: boolean;
 }
 
 type DefinitionOperation = "defineProperty" | "defineProperties";
@@ -1035,6 +1139,7 @@ function propertyDefinition(
         return refuse("needs literal property descriptors.");
     const members: PropertyDefinition["members"] = [];
     const attributes = new Set<string>();
+    let configurable = true;
     const names = new Set<string>();
     for (const property of literal.properties) {
         if (
@@ -1062,6 +1167,15 @@ function propertyDefinition(
                 return refuse("requires literal getter and setter functions.");
             members.push({ name, callback });
         } else if (
+            name === "configurable" &&
+            ts.isPropertyAssignment(property) &&
+            (property.initializer.kind === ts.SyntaxKind.TrueKeyword ||
+                property.initializer.kind === ts.SyntaxKind.FalseKeyword)
+        ) {
+            configurable =
+                property.initializer.kind === ts.SyntaxKind.TrueKeyword;
+            attributes.add(name);
+        } else if (
             ["writable", "enumerable", "configurable"].includes(name) &&
             ts.isPropertyAssignment(property) &&
             property.initializer.kind === ts.SyntaxKind.TrueKeyword
@@ -1069,7 +1183,7 @@ function propertyDefinition(
             attributes.add(name);
         else
             return refuse(
-                `does not represent descriptor attribute '${name}' unless it is literally true.`,
+                `does not represent descriptor attribute '${name}' unless it is ${name === "configurable" ? "a literal boolean" : "literally true"}.`,
             );
     }
     const accessor = names.has("get") || names.has("set");
@@ -1084,11 +1198,11 @@ function propertyDefinition(
             );
         if (!attributes.has("enumerable") || !attributes.has("configurable"))
             return refuse(
-                "requires accessor enumerable and configurable attributes to be explicitly true.",
+                "requires enumerable true and an explicit boolean configurable attribute for accessors.",
             );
     } else if (!names.has("value") || attributes.size !== 3)
         return refuse(
-            "represents a value with writable, enumerable and configurable all true only.",
+            "represents a value with writable and enumerable true and an explicit boolean configurable attribute only.",
         );
     return {
         key,
@@ -1096,6 +1210,7 @@ function propertyDefinition(
         members,
         accessor,
         setter: names.has("set"),
+        configurable,
     };
 }
 
@@ -1131,6 +1246,75 @@ function definitionTarget(
     };
 }
 
+/** Descriptor functions on receiver-aware slots observe Reflect.get's receiver. */
+function definitionAccessor(
+    context: ObjectStaticContext,
+    member: Exclude<PropertyDefinition["members"][number], { name: "value" }>,
+    field: DataStructField,
+    target: Value,
+): string {
+    const { callback } = member;
+    if (!field.accessorReceiver)
+        return context.compileStoredDataFunction(
+            callback,
+            member.name === "get"
+                ? { kind: "function", parameters: [], result: field.type }
+                : { kind: "function", parameters: [field.type] },
+            undefined,
+            false,
+            ts.isArrowFunction(callback) ? undefined : target,
+        );
+    context.bindings.refuseEscapingPlatformEventCapturesIn(
+        callback,
+        context.bindings.variableScopes.length,
+    );
+    context.callbacks.hoistForwardCallbackBindings(callback, true);
+    const receiverType: DataType<"struct"> = {
+        kind: "struct",
+        name: field.accessorReceiver,
+    };
+    const receiverCpp = context.dataTypes.cppType(receiverType);
+    const valueCpp = context.dataTypes.cppType(field.type);
+    const receiverName = context.allocateTemporaryCppName("defined_receiver");
+    const valueName = context.allocateTemporaryCppName("defined_value");
+    const body = context.captureManagedClosureLines(() => {
+        const argument = (name: string, type: DataType): Value => ({
+            ...context.dataLowerer.leafValue(name, type),
+            nativeCaptures: [
+                context.registerNativeBinding(
+                    name,
+                    false,
+                    false,
+                    context.dataTypes.cppType(type),
+                ),
+            ],
+        });
+        const receiver = argument(receiverName, receiverType);
+        const values =
+            member.name === "get" ? [] : [argument(valueName, field.type)];
+        const previousThis = context.activeThis();
+        if (!ts.isArrowFunction(callback)) context.defineThis(receiver);
+        try {
+            const value = context.compileCallbackWithValues(
+                callback,
+                values,
+                callback,
+                member.name === "set",
+            );
+            context.emit(
+                member.name === "get"
+                    ? `return ${context.dataLowerer.compileKnownValueForSink(value, field.type, callback)};`
+                    : "return true;",
+            );
+        } finally {
+            context.defineThis(previousThis);
+        }
+    });
+    return member.name === "get"
+        ? `bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)})`
+        : `bbl::js::Callback<bool(${receiverCpp}, ${valueCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}, [[maybe_unused]] ${valueCpp} ${valueName}`, "bool")})`;
+}
+
 /** Evaluate all descriptors before applying any definition to the held object. */
 function applyPropertyDefinitions(
     context: ObjectStaticContext,
@@ -1141,7 +1325,12 @@ function applyPropertyDefinitions(
 ): Value {
     const collected = new Map<
         string,
-        { field: DataStructField; cpp: string }
+        {
+            field: DataStructField;
+            cpp: string;
+            configurable: boolean;
+            preserveSetter: boolean;
+        }
     >();
     for (const definition of definitions) {
         const field = context.dataTypes.structField(
@@ -1150,20 +1339,24 @@ function applyPropertyDefinitions(
             definition.node,
             "accessors",
         );
+        context.dataTypes.requireEngineFieldStorage(field, definition.node);
         if (
-            field.accessorReceiver ||
-            (field.accessor &&
-                context.dataTypes.holdsPrototypeAccessors(target.dataType.name))
+            field.accessor &&
+            context.dataTypes.holdsPrototypeAccessors(target.dataType.name)
         )
             context.fail(
                 definition.node,
-                `Object.${operation} does not redefine proxy or prototype accessor fields.`,
+                `Object.${operation} does not redefine prototype accessor fields.`,
             );
-        if (definition.accessor) {
+        if (
+            definition.accessor ||
+            !definition.configurable ||
+            field.accessorReceiver
+        ) {
             if (context.dataTypes.isClassStruct(target.dataType.name))
                 context.fail(
                     definition.node,
-                    `Object.${operation} does not define class instance accessors.`,
+                    `Object.${operation} does not define class instance descriptor slots.`,
                 );
             if (
                 field.optionalProperty ||
@@ -1173,7 +1366,7 @@ function applyPropertyDefinitions(
             )
                 context.fail(
                     definition.node,
-                    `Object.${operation} requires an accessor property that is always own.`,
+                    `Object.${operation} requires an accessor property that is always own or a nonconfigurable data property that is always own.`,
                 );
             if (
                 !field.accessor ||
@@ -1186,13 +1379,6 @@ function applyPropertyDefinitions(
                     definition.node,
                     "own",
                 );
-            // An omitted setter preserves a previous accessor's setter in
-            // JavaScript. Replacing the native pair would erase it.
-            if (!definition.setter && field.accessor === "get-set")
-                context.fail(
-                    definition.node,
-                    `Object.${operation} requires an explicit setter when the property can already hold one.`,
-                );
         }
         const values = new Map<string, string>();
         for (const member of definition.members) {
@@ -1203,19 +1389,11 @@ function applyPropertyDefinitions(
                     field.type,
                 );
             } else {
-                const { callback } = member;
-                initializer = context.compileStoredDataFunction(
-                    callback,
-                    member.name === "get"
-                        ? {
-                              kind: "function",
-                              parameters: [],
-                              result: field.type,
-                          }
-                        : { kind: "function", parameters: [field.type] },
-                    undefined,
-                    false,
-                    ts.isArrowFunction(callback) ? undefined : target,
+                initializer = definitionAccessor(
+                    context,
+                    member,
+                    field,
+                    target,
                 );
             }
             const name = context.allocateTemporaryCppName("defined_property");
@@ -1233,14 +1411,22 @@ function applyPropertyDefinitions(
                   field,
                   values.get("value")!,
               );
-        collected.set(definition.key, { field, cpp });
+        collected.set(definition.key, {
+            field,
+            cpp,
+            configurable: definition.configurable,
+            preserveSetter: definition.accessor && !definition.setter,
+        });
     }
     // Object.keys also places integer-index keys before other string keys.
     for (const key of Object.keys(Object.fromEntries(collected))) {
-        const { field, cpp } = collected.get(key)!;
+        const { field, cpp, configurable, preserveSetter } =
+            collected.get(key)!;
         context.emit({
             kind: "expression",
-            code: `${target.cpp}->${field.name} = ${cpp};`,
+            code: field.accessor
+                ? `${target.cpp}->${field.name}.define(${cpp}, ${configurable}, ${preserveSetter}${field.accessorReceiver ? `, ${target.cpp}` : ""});`
+                : `${target.cpp}->${field.name} = ${cpp};`,
         });
     }
     context.bindings.invalidateRecordProperties(target);

@@ -1,4 +1,5 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { classChain, classMemberTable } from "./class-members.js";
@@ -35,6 +36,7 @@ import {
 } from "./parameter-effects.js";
 import {
     isAssignmentExpression,
+    isDeclaredInside,
     isUpdateExpression,
     rootIdentifier,
     unwrapExpression,
@@ -48,6 +50,7 @@ import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
 import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
 import { resizingArrayMethods } from "./receiver-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
+import { isComposedAudioEnum } from "./audio-surface.js";
 
 interface ResourceLoopContext
     extends
@@ -517,8 +520,15 @@ export function requiresStaticDataIteration(
     context: ResourceLoopContext,
     statement: ts.Node,
     callEffects = false,
+    preservesDomFacts = true,
 ): boolean {
-    return reachesSpecializingEffect(context, statement, callEffects, true);
+    return reachesSpecializingEffect(
+        context,
+        statement,
+        callEffects,
+        true,
+        preservesDomFacts,
+    );
 }
 
 /**
@@ -532,7 +542,26 @@ function reachesSpecializingEffect(
     root: ts.Node,
     callEffects: boolean,
     keepsRetainedFacts: boolean,
+    preservesDomFacts = keepsRetainedFacts,
 ): boolean {
+    const loop = root.parent;
+    const iteration =
+        loop &&
+        ts.isForOfStatement(loop) &&
+        loop.statement === root &&
+        ts.isVariableDeclarationList(loop.initializer)
+            ? loop.initializer.declarations[0]
+            : undefined;
+    const readsIteration = (node: ts.Node): boolean =>
+        someAnalysisNode(node, (child) => {
+            const declaration = ts.isIdentifier(child)
+                ? resolvedSymbol(context.checker, child)?.valueDeclaration
+                : undefined;
+            return (
+                declaration !== undefined &&
+                isDeclaredInside(declaration, iteration)
+            );
+        });
     let required = false;
     walkReachedLoopNodes(context, root, (node) => {
         if (required) return false;
@@ -563,10 +592,20 @@ function reachesSpecializingEffect(
                 return false;
             }
         }
+        // An audio node's wave or filter type is a closed string enum the
+        // graph composes at generation, inside runtime control flow too.
+        if (
+            writesThroughTrackedRoot(node, (target) =>
+                isComposedAudioEnum(context.checker, unwrapExpression(target)),
+            )
+        ) {
+            required = true;
+            return false;
+        }
         // Canvas extents have native reads; writes still belong to their
         // normal DOM/retained-canvas lowering and cannot use this exemption.
         if (
-            keepsRetainedFacts &&
+            preservesDomFacts &&
             writesThroughTrackedRoot(node, (target) => {
                 const member = unwrapExpression(target);
                 const symbol = ts.isPropertyAccessExpression(member)
@@ -584,7 +623,7 @@ function reachesSpecializingEffect(
               ? resolvedSymbol(context.checker, node.expression)
               : undefined;
         if (
-            keepsRetainedFacts &&
+            preservesDomFacts &&
             symbol &&
             declaredInDomLibrary(symbol) &&
             !(
@@ -640,6 +679,22 @@ function reachesSpecializingEffect(
         }
         if (ts.isCallExpression(node)) {
             const callee = unwrapExpression(node.expression);
+            // Listener names choose native callback families even in stored
+            // bodies. Expand the loop supplying a name, not an enclosing
+            // runtime owner loop or a loop registering one constant name.
+            if (
+                iteration &&
+                ts.isPropertyAccessExpression(callee) &&
+                ["addEventListener", "removeEventListener"].includes(
+                    callee.name.text,
+                ) &&
+                declaredInDomLibrary(resolvedSymbol(context.checker, callee)) &&
+                node.arguments[0] &&
+                readsIteration(node.arguments[0])
+            ) {
+                required = true;
+                return false;
+            }
             const imported = ts.isIdentifier(callee)
                 ? context.symbols.importedName(callee)
                 : undefined;

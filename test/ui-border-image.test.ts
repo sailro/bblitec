@@ -99,7 +99,7 @@ test("border image shorthand expansion preserves widths and explicit unsupported
         }
         void main();
     `),
-        /Expected a string literal/,
+        /UI border-image requires a generation-known string\./,
     );
     assert.equal(compileStyle("border-image:none;").manifest.assets.length, 0);
     assert.throws(

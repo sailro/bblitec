@@ -413,7 +413,8 @@ function observe(program: ts.Program): ProgramObservations {
             if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)) {
                 if (!readsOnlyAsMember(node))
                     read(key.text, node, node.expression);
-            } else wholesaleReads.push(node.expression);
+            } else if (!readsOnlyAsMember(node))
+                wholesaleReads.push(node.expression);
         } else if (
             ts.isBindingElement(node) &&
             ts.isObjectBindingPattern(node.parent)

@@ -45,12 +45,26 @@ for (const mode of ["window", "window-with-engine", "scene"] as const) {
                 .split("\n")
                 .filter((line) => line.includes("bbl::ui_set_text("));
             assert.equal(writes.length, 3);
+            const paired = writes.filter((line) => line.includes(".second,"));
+            assert.equal(paired.length, 2);
+            assert.ok(paired.every((line) => line.includes(".first)")));
+            const direct = writes.filter((line) => !paired.includes(line));
             assert.ok(
-                writes.every((line) =>
+                direct.every((line) =>
                     line.includes(
                         "bbl::ui_set_text(bbl::pal::window_document_engine(),",
                     ),
                 ),
+            );
+            // Both record fields store the document owner beside the handle,
+            // including when a rendering engine is also in scope.
+            assert.equal(
+                [
+                    ...result.cpp.matchAll(
+                        /std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{bbl::StoredEngine\{bbl::pal::window_document_engine\(\)\},/g,
+                    ),
+                ].length,
+                2,
             );
         }
         // The CPU fixture exercises Window and scene ownership independently.

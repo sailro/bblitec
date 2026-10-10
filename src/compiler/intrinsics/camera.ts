@@ -322,8 +322,9 @@ export function compileCameraIntrinsic(
             return {
                 kind: "data",
                 cpp:
-                    `std::function<void()>{[&${engine}, camera = ${camera.cpp}]() { ` +
-                    `${recordAt(`${engine}.cameras`, "camera")}.controls_enabled = false; }}`,
+                    // An init-capture names an engine spelled as an expression.
+                    `std::function<void()>{[&camera_engine = ${engine}, camera = ${camera.cpp}]() { ` +
+                    `${recordAt("camera_engine.cameras", "camera")}.controls_enabled = false; }}`,
                 dataType: { kind: "function", parameters: [] },
             };
         }

@@ -116,8 +116,6 @@ export function compileSpriteAtlasRecord(
         `${atlas}.sampler = ${cpp}.data.sampler; ` +
         `} else { throw std::runtime_error("This scene was built without image decoding."); } `;
     const variantTexture =
-        texture.textureStorage !== "file" &&
-        texture.textureStorage !== "pixels" &&
         texture.dataType?.kind === "handle" &&
         texture.dataType.handle === "texture";
     /**
@@ -126,17 +124,16 @@ export function compileSpriteAtlasRecord(
      * the registered helper); the pixels arm emits no decode.
      */
     const reachTextureArm = (): void => {
-        if (texture.textureStorage === "file") {
+        if (variantTexture) {
+            // Typed texture storage is a variant even when producer facts
+            // remain known. Both arms must compile; the visitor selects the
+            // alternative actually stored at runtime.
+            context.reachFeature("texture:file", node);
+            context.reachImageDecode();
+        } else if (texture.textureStorage === "file") {
             context.reachImageDecode();
         } else if (texture.textureStorage === "pixels") {
             // Pixels come pre-decoded; nothing extra to reach.
-        } else if (variantTexture) {
-            // A Texture2D stored behind a plain-data field is a variant
-            // whose concrete producer is no longer visible here. Keep both
-            // source arms valid; the visitor selects only the one actually
-            // stored at runtime.
-            context.reachFeature("texture:file", node);
-            context.reachImageDecode();
         } else {
             context.fail(
                 node,
@@ -149,10 +146,10 @@ export function compileSpriteAtlasRecord(
         atlas: string,
         stored: string,
     ): string => {
-        if (texture.textureStorage === "file") {
+        if (!variantTexture && texture.textureStorage === "file") {
             return fileTextureSetup(source, atlas);
         }
-        if (texture.textureStorage === "pixels") {
+        if (!variantTexture && texture.textureStorage === "pixels") {
             return (
                 `${atlas}.rgba = bbl::share_texels(${source}.rgba); ` +
                 `${atlas}.sampler = ${source}.sampler; `

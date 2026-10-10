@@ -1,5 +1,6 @@
 import {
     metadataFieldsForKind,
+    spelledMetadataFields,
     type ValueMetadataKey,
 } from "./values/metadata.js";
 import type { Value } from "./values/model.js";
@@ -14,6 +15,7 @@ export {
     presenceCpp,
     presenceFlagCpp,
     readsNativeStorage,
+    representedStorage,
     snapshotReadCpp,
     statedTruthinessCpp,
     valueForKind,
@@ -1893,6 +1895,23 @@ export function runtimeMeshValue(value: Value): Value {
             ? { engineCpp: value.engineCpp }
             : {}),
         ...(value.dataType ? { dataType: value.dataType } : {}),
+        ...(value.dataType?.kind === "handle" && value.dataType.ownedEngine
+            ? {
+                  ...(value.resourceStorageCpp
+                      ? { resourceStorageCpp: value.resourceStorageCpp }
+                      : {}),
+                  ...(value.ownedCpp ? { ownedCpp: value.ownedCpp } : {}),
+                  ...(value.nativeCaptures
+                      ? { nativeCaptures: value.nativeCaptures }
+                      : {}),
+                  ...(value.nativeCompanionCaptures
+                      ? {
+                            nativeCompanionCaptures:
+                                value.nativeCompanionCaptures,
+                        }
+                      : {}),
+              }
+            : {}),
         ...(value.runtimeIteration ? { runtimeIteration: true } : {}),
         ...(value.runtimeMeshStreams ? { runtimeMeshStreams: true } : {}),
         ...(value.directMorphCompatible ? { directMorphCompatible: true } : {}),
@@ -1951,6 +1970,64 @@ export function commonResourceValue(
     candidates: readonly Value[],
 ): Value {
     const common = { ...value };
+    const first = candidates[0];
+    if (
+        candidates.some(
+            (candidate) =>
+                candidate.engineOwnerIdentity !== value.engineOwnerIdentity,
+        )
+    )
+        delete common.engineOwnerIdentity;
+    for (const key of ["ownedCpp", "resourceStorageCpp"] as const) {
+        if (
+            (value.dataType?.kind === "handle" &&
+                !value.dataType.ownedEngine) ||
+            candidates.some((candidate) => candidate[key] !== value[key])
+        ) {
+            delete common[key];
+            if (
+                key === "resourceStorageCpp" &&
+                common.nativeCompanionCaptures
+            ) {
+                common.nativeCompanionCaptures = {
+                    ...common.nativeCompanionCaptures,
+                };
+                delete common.nativeCompanionCaptures.resourceStorageCpp;
+            }
+        }
+    }
+    if (
+        value.kind !== "engine" &&
+        first?.engineCpp &&
+        candidates.every((candidate) => candidate.engineCpp === first.engineCpp)
+    ) {
+        common.engineCpp = first.engineCpp;
+        common.nativeCompanionCaptures = {
+            ...common.nativeCompanionCaptures,
+        };
+        const captures = first.nativeCompanionCaptures?.engineCpp;
+        if (captures) common.nativeCompanionCaptures.engineCpp = captures;
+        else delete common.nativeCompanionCaptures.engineCpp;
+        delete common.engineCarriersDisagree;
+    } else if (value.kind !== "engine") {
+        delete common.engineCpp;
+        // Carriers that each name an engine spell aliases of the entry
+        // point's one engine; a carrier without one proves nothing.
+        if (
+            value.engineCarriersDisagree ||
+            candidates.some((candidate) => candidate.engineCarriersDisagree) ||
+            (candidates.length > 0 &&
+                candidates.every((candidate) => candidate.engineCpp))
+        )
+            common.engineCarriersDisagree = true;
+        else delete common.engineCarriersDisagree;
+        if (common.nativeCompanionCaptures) {
+            common.nativeCompanionCaptures = {
+                ...common.nativeCompanionCaptures,
+            };
+            delete common.nativeCompanionCaptures.engineCpp;
+        }
+    }
     for (const key of metadataFieldsForKind(value.kind)) {
         if (candidates.some((candidate) => candidate[key] !== value[key]))
             delete common[key];
@@ -2008,6 +2085,48 @@ export function commonResourceValue(
     return common;
 }
 
+/** Restore common resource facts without replacing the selected native storage. */
+export function withCommonResourceMetadata(
+    value: Value,
+    candidates: readonly Value[],
+): Value {
+    const first = candidates[0];
+    if (!first) return value;
+    const facts = commonResourceValue(first, candidates);
+    const result = { ...value };
+    for (const key of metadataFieldsForKind(value.kind)) {
+        const metadata = facts[key];
+        if (metadata !== undefined) Object.assign(result, { [key]: metadata });
+    }
+    return result;
+}
+
+/**
+ * `value` with the plain generation facts (numbers, booleans and named
+ * strings) of its kind that `source` holds. Spelled facts name the source's
+ * own storage and do not follow the value into other storage.
+ */
+export function withKindValueFacts(value: Value, source: Value): Value {
+    const result = { ...value };
+    for (const key of metadataFieldsForKind(source.kind)) {
+        const fact: unknown = source[key];
+        if (
+            typeof fact === "number" ||
+            typeof fact === "boolean" ||
+            (typeof fact === "string" && !spelledMetadataFields.has(key))
+        )
+            Object.assign(result, { [key]: fact });
+    }
+    return result;
+}
+
+/** A nullable resource's native payload, including an engine owner when stored. */
+export interface NullableResourceType {
+    kind: ValueKind;
+    cppType: string;
+    dataType?: DataType<"handle">;
+}
+
 /** Storage, capture and expression facts shared by value kinds. */
 export type ValueBase = Omit<ValueFields, ValueMetadataKey>;
 
@@ -2027,8 +2146,16 @@ export interface ValueFields {
     ownedEngineCpp?: string;
     /** Owned data wrapper for an engine reference crossing a stored boundary. */
     storedEngineCpp?: string;
+    /** Stored engine/handle pair; cpp reads its raw handle member. */
+    resourceStorageCpp?: string;
+    /** Stored parameter whose reached owner use can request an owning carrier. */
+    engineOwnerParameter?: ts.ParameterDeclaration;
+    /** Joined from resources of different engine carriers; its engine is the one unambiguous engine context. */
+    engineCarriersDisagree?: true;
     /** One bound engine value; aliases and owning snapshots retain this identity. */
     engineIdentity?: symbol;
+    /** Proven immutable captured engine owning this resource, independent of its carrier. */
+    engineOwnerIdentity?: symbol;
     cpp: string;
     /** Owning materialization of a borrowed lookup result at a retained sink. */
     ownedCpp?: string;
@@ -2648,6 +2775,8 @@ export interface ValueFields {
     /** A value bound by a native runtime iteration, not a static unroll. */
     runtimeIteration?: true;
     staticString?: string;
+    /** A retained const initializer's text; reading its lexical home may still throw. */
+    lexicalStaticString?: string;
     /**
      * The generation-known contents of a `string[]`, carried on the value the
      * way `staticString` carries one string.

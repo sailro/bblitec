@@ -7,6 +7,7 @@ import {
 } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { propertyNameText } from "./syntax.js";
 import {
     tryResolveFunctionDeclaration,
     functionUsesDynamicThis,
@@ -21,7 +22,11 @@ export class RecordProxies {
         field: DataStructField,
         source: SupportedFunction | ts.Identifier,
     ): void {
-        if (field.accessorReceiver && this.usesDynamicThis(source))
+        if (
+            field.accessorReceiver &&
+            this.context.dataTypes.isProxyTarget(field.accessorReceiver) &&
+            this.usesDynamicThis(source)
+        )
             this.context.fail(
                 source,
                 "Proxy method forwarding requires a receiver-independent stored function.",
@@ -207,7 +212,11 @@ export class RecordProxies {
                     { kind: "boolean" },
                     node,
                 );
-                context.emit(`return ${condition};`);
+                context.emit(`if (!(${condition})) return false;`);
+                context.useNativeValue(target);
+                context.emit(
+                    `return ${target.cpp}->${field.name}.check_proxy_set();`,
+                );
             } else {
                 context.useNativeValue(target);
                 context.emit(
@@ -233,8 +242,16 @@ export class RecordProxies {
                     node,
                 );
                 if (result) {
+                    const accepted =
+                        context.dataLowerer.compileKnownValueForSink(
+                            result,
+                            { kind: "boolean" },
+                            node,
+                        );
+                    context.emit(`if (!(${accepted})) return false;`);
+                    context.useNativeValue(target);
                     context.emit(
-                        `return ${context.dataLowerer.compileKnownValueForSink(result, { kind: "boolean" }, node)};`,
+                        `return ${target.cpp}->${field.name}.${name === "defineProperty" ? "check_proxy_value_definition" : "check_proxy_delete"}();`,
                     );
                 } else {
                     context.useNativeValue(target);
@@ -247,7 +264,42 @@ export class RecordProxies {
                 ? `bbl::js::Callback<bool()>(${renderClosure(body, "", "bool")})`
                 : `bbl::js::Callback<bool(${valueCpp})>(${renderClosure(body, `[[maybe_unused]] ${valueCpp} ${valueName}`, "bool")})`;
         };
-        return `${context.dataTypes.structFieldCppType(field)}(bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(getter, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)}), bbl::js::Callback<bool(${receiverCpp}, ${valueCpp})>(${renderClosure(setter, `[[maybe_unused]] ${receiverCpp} ${receiverName}, [[maybe_unused]] ${valueCpp} ${valueName}`, "bool")}), bbl::js::Callback<bool()>(${renderClosure(presence, "", "bool")}), ${mutation("deleteProperty")}, ${mutation("defineProperty")})`;
+        const slotCpp = context.dataTypes.structFieldCppType(field);
+        const replacement =
+            context.allocateTemporaryCppName("proxy_descriptor");
+        const configurable =
+            context.allocateTemporaryCppName("proxy_configurable");
+        const preserveSetter = context.allocateTemporaryCppName(
+            "proxy_preserve_setter",
+        );
+        const definition = context.captureManagedClosureLines(() => {
+            context.registerNativeBinding(replacement, false, false, slotCpp);
+            context.registerNativeBinding(configurable, false, false, "bool");
+            context.registerNativeBinding(preserveSetter, false, false, "bool");
+            const result = this.invokeTrap(
+                handler,
+                "defineProperty",
+                [target, key],
+                node,
+            );
+            if (result)
+                context.emit(
+                    `if (!(${context.dataLowerer.compileKnownValueForSink(result, { kind: "boolean" }, node)})) return false;`,
+                );
+            context.useNativeValue(target);
+            context.emit(
+                result
+                    ? `return ${target.cpp}->${field.name}.check_proxy_definition(${replacement}, ${configurable}, ${preserveSetter});`
+                    : `return ${target.cpp}->${field.name}.try_define(std::move(${replacement}), ${configurable}, ${preserveSetter}, ${target.cpp});`,
+            );
+        });
+        const descriptor = context.captureManagedClosureLines(() => {
+            context.useNativeValue(target);
+            context.emit(
+                `return ${target.cpp}->${field.name}.descriptor_state();`,
+            );
+        });
+        return `${slotCpp}(bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(getter, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)}), bbl::js::Callback<bool(${receiverCpp}, ${valueCpp})>(${renderClosure(setter, `[[maybe_unused]] ${receiverCpp} ${receiverName}, [[maybe_unused]] ${valueCpp} ${valueName}`, "bool")}), bbl::js::Callback<bool()>(${renderClosure(presence, "", "bool")}), ${mutation("deleteProperty")}, ${mutation("defineProperty")}, bbl::js::Callback<bool(${slotCpp}, bool, bool)>(${renderClosure(definition, `${slotCpp} ${replacement}, bool ${configurable}, bool ${preserveSetter}`, "bool")}), bbl::js::Callback<${slotCpp}::DescriptorState()>(${renderClosure(descriptor, "", `${slotCpp}::DescriptorState`)}))`;
     }
 
     private trap(handler: Value, name: string) {
@@ -427,6 +479,17 @@ export class RecordProxies {
                 );
             if (operation === "defineProperty") {
                 context.expectArgumentCount(call, 3, 3);
+                const literal = context.unwrap(valueNode);
+                // Full literal descriptors use Object's shared collection and definition path.
+                if (
+                    strict &&
+                    ts.isObjectLiteralExpression(literal) &&
+                    (literal.properties.length !== 1 ||
+                        !ts.isPropertyAssignment(literal.properties[0]!) ||
+                        propertyNameText(literal.properties[0].name) !==
+                            "value")
+                )
+                    return undefined;
                 const descriptor = context.compileValue(valueNode);
                 if (
                     descriptor.kind !== "record" ||

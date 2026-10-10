@@ -9,6 +9,10 @@ import { resolvedSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 import { nullability } from "./type-facts.js";
 import type { Value } from "./types.js";
+import {
+    NativeRecordStorageRequired,
+    type NativeRecordStorageDemand,
+} from "./native-record-storage.js";
 
 /** Storage choices survive replay; generated type names belong to one registry. */
 export type DynamicBindingStorage =
@@ -16,6 +20,8 @@ export type DynamicBindingStorage =
     | "array"
     | "error-array"
     | "callback"
+    | { nativeHandle: DataType<"handle"> }
+    | { callable: NativeRecordStorageDemand }
     | { nativeType: ts.Type; node: ts.Expression };
 
 /** A reached assignment proves that a lexical binding must retain dynamic object storage. */
@@ -33,7 +39,14 @@ export interface DemandedStorageContext {
     readonly checker: ts.TypeChecker;
     readonly dataTypes: Pick<
         DataTypeRegistry,
-        "fromStoredTsType" | "nullableType" | "withDynamicJsonTypes"
+        | "fromStoredTsType"
+        | "fromCallableRecordDemand"
+        | "fromSharedReturnType"
+        | "nativeRecordViewDemand"
+        | "hasNativeRecordView"
+        | "markStoredObjectReferences"
+        | "nullableType"
+        | "withDynamicJsonTypes"
     >;
 }
 
@@ -46,7 +59,7 @@ export function demandedStorageType(
     context: DemandedStorageContext,
     declaration: ts.VariableDeclaration,
     storage: DynamicBindingStorage,
-    initializer: ts.Expression,
+    initializer: ts.Expression | undefined,
 ): DataType | undefined {
     const { checker, dataTypes } = context;
     const source = checker.getTypeAtLocation(declaration.name);
@@ -63,26 +76,63 @@ export function demandedStorageType(
                 ts.IndexKind.Number,
             );
             const element =
-                indexed && dataTypes.fromStoredTsType(indexed, declaration);
-            return element ? { kind: "vector", element } : undefined;
+                indexed &&
+                (dataTypes.fromStoredTsType(indexed, declaration) ??
+                    dataTypes.fromSharedReturnType(indexed, declaration));
+            return element
+                ? {
+                      kind: "vector",
+                      element: dataTypes.markStoredObjectReferences(element),
+                  }
+                : undefined;
         });
     if (storage === "error-array")
         return { kind: "vector", element: { kind: "error" } };
     if (typeof storage === "object") {
+        if ("nativeHandle" in storage)
+            return dataTypes.nullableType(storage.nativeHandle);
+        if ("callable" in storage)
+            return dataTypes.fromCallableRecordDemand(storage.callable);
         const mapped = dataTypes.fromStoredTsType(
             storage.nativeType,
             storage.node,
         );
+        const declared = dataTypes.fromStoredTsType(source, declaration);
+        const target =
+            declared?.kind === "optional" ? declared.inner : declared;
+        if (mapped && target?.kind === "struct") {
+            const demand = dataTypes.nativeRecordViewDemand(
+                target.name,
+                mapped,
+                storage.node,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
+        }
         const absent = nullability(source);
         return mapped && (absent.null || absent.undefined)
             ? dataTypes.nullableType(mapped, !absent.null)
             : mapped;
     }
+    // A fresh authored record may share an annotation with an unrelated
+    // native view. Its one-object demand retains the literal's actual
+    // carrier; it does not turn that object or its aliases into the native
+    // owner. Later values must still pass the retained carrier's sink.
+    const actualSource =
+        storage === "source" &&
+        initializer &&
+        ts.isObjectLiteralExpression(initializer) &&
+        dataTypes.hasNativeRecordView(source)
+            ? checker.getTypeAtLocation(initializer)
+            : undefined;
     return (
-        dataTypes.fromStoredTsType(source, declaration) ??
+        dataTypes.fromStoredTsType(
+            actualSource ?? source,
+            actualSource ? initializer! : declaration,
+        ) ??
         // A fresh `{}` has no members to type: a parsed document holds it
         // as one object with identity.
-        (ts.isObjectLiteralExpression(initializer) &&
+        (initializer &&
+        ts.isObjectLiteralExpression(initializer) &&
         initializer.properties.length === 0
             ? { kind: "json" as const }
             : undefined)
@@ -123,6 +173,45 @@ export interface OneObjectContext
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
+}
+
+/** Replay a mutable compile-time array using its declared or represented source storage. */
+export function requireMutableTupleStorage(
+    context: OneObjectContext,
+    value: Value,
+    expression: ts.Expression,
+): void {
+    const declaration = context.bindings.tupleDeclaration(value, expression);
+    if (!declaration?.initializer || context.dynamicBindings.has(declaration))
+        return;
+    const initializer = unwrapExpression(declaration.initializer);
+    const declared = demandedStorageType(
+        context,
+        declaration,
+        "array",
+        initializer,
+    );
+    // Generation-known handle lists retain their composition metadata.
+    if (declared?.kind === "vector") {
+        if (declared.element.kind !== "handle")
+            throw new DynamicBindingStorageRequired(declaration, "array");
+        return;
+    }
+    // A wider annotation can mention unrepresented owners while the actual
+    // initializer has a concrete array type. Every later write still passes
+    // through that native element sink and refuses an incompatible value.
+    const storage = {
+        nativeType: context.checker.getTypeAtLocation(initializer),
+        node: initializer,
+    };
+    const represented = demandedStorageType(
+        context,
+        declaration,
+        storage,
+        initializer,
+    );
+    if (represented?.kind === "vector" && represented.element.kind !== "handle")
+        throw new DynamicBindingStorageRequired(declaration, storage);
 }
 
 /**

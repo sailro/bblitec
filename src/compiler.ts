@@ -1,5 +1,11 @@
 import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
+import {
+    provenUndefinedValue,
+    isNonThenableDataType,
+} from "./compiler/undefined-values.js";
+import { hasNoValueCompletion } from "./compiler/native-return-type.js";
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
+import { isNativeOwnerRecord } from "./compiler/native-owner-carrier.js";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
 import {
@@ -8,7 +14,13 @@ import {
     optionalValueCpp,
     presenceFlagCpp,
     valueForKind,
+    withCommonResourceMetadata,
+    type NullableResourceType,
 } from "./compiler/types.js";
+import {
+    belongsToEntryEngine,
+    isEngineScopedHandleKind,
+} from "./compiler/data-types/handles.js";
 import {
     forEachAnalysisNode,
     someAnalysisNode,
@@ -69,7 +81,6 @@ import {
     requireDynamicBindingStorage,
     type DynamicBindingStorage,
 } from "./compiler/dynamic-binding-storage.js";
-import type { NativeRecordStorageDemand } from "./compiler/native-record-storage.js";
 import {
     isStorageDemand,
     recordStorageCompileAttempt,
@@ -365,12 +376,6 @@ const CANVAS_SIZE_AXES = new EmissionMap<string, CanvasSizeProperty>([
     ["clientHeight", { axis: "height", client: true }],
 ]);
 
-const NULLABLE_UI_ELEMENT = {
-    origin: "dom",
-    kind: "ui-element",
-    cppType: handleCppType("ui-element"),
-} as const;
-
 /**
  * The resources a nullable name holds as optional native storage beyond the
  * pinned handles and Web Audio identities the data model's own classifiers
@@ -405,11 +410,6 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
         "AssetContainer",
         { origin: "babylon", kind: "asset", cppType: handleCppType("asset") },
     ],
-    // The element interfaces a scene declares empty and fills from a lookup.
-    ["Element", NULLABLE_UI_ELEMENT],
-    ["HTMLElement", NULLABLE_UI_ELEMENT],
-    ["HTMLDivElement", NULLABLE_UI_ELEMENT],
-    ["HTMLCanvasElement", NULLABLE_UI_ELEMENT],
 ]);
 
 /**
@@ -887,6 +887,8 @@ class Compiler implements LoweringServices {
         string,
         readonly NativeCaptureBinding[]
     >();
+    private readonly realmEngineStorage = new EmissionMap<string, string>();
+    private readonly realmEngineIdentities = new EmissionMap<string, symbol>();
     public readonly managedCaptures: ClosureCaptures[] = emissionArray([]);
     public readonly body: NativeEmission[] = emissionArray([]);
     @journaled private accessor emissionSource: string | undefined;
@@ -938,10 +940,7 @@ class Compiler implements LoweringServices {
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
-    private readonly ownedRecords: ReadonlyMap<
-        NativeRecordStorageDemand["identity"],
-        NativeRecordStorageDemand
-    >;
+    private readonly ownedRecords: Readonly<ReplayStorage["records"]>;
     public readonly absenceTags: ReadonlySet<ts.Declaration>;
     public readonly tupleArraySlots: ReadonlySet<ts.Declaration>;
 
@@ -1911,6 +1910,60 @@ class Compiler implements LoweringServices {
     public nullableResourceKind(
         node: ts.Node,
         allowDirect = false,
+    ): NullableResourceType | undefined {
+        const resource = this.rawNullableResourceKind(node, allowDirect);
+        if (
+            !resource ||
+            !isHandleKind(resource.kind) ||
+            !isEngineScopedHandleKind(resource.kind) ||
+            resource.cppType !== handleCppType(resource.kind)
+        )
+            return resource;
+        const dataType: DataType<"handle"> = {
+            kind: "handle",
+            handle: resource.kind,
+            ownedEngine: true,
+        };
+        return {
+            ...resource,
+            cppType: this.dataTypes.cppType(dataType),
+            dataType,
+        };
+    }
+
+    /** Reconstruct a nullable resource from the slot holding its current owner. */
+    public nullableResourceValue(
+        resource: NullableResourceType,
+        storage: string,
+        source?: Value,
+    ): Value {
+        const present = resource.dataType
+            ? withCommonResourceMetadata(
+                  this.dataLowerer.leafValue(
+                      `(*${storage})`,
+                      resource.dataType,
+                  ),
+                  source ? [source] : [],
+              )
+            : valueForKind(resource.kind, {
+                  ...(source ??
+                      nullableResourceEngine(
+                          resource.kind,
+                          this.options.workers,
+                          this.defaultEngineCpp,
+                      )),
+                  cpp: `(*${storage})`,
+              });
+        return {
+            ...present,
+            optionalFoundCpp: optionalPresentCpp(storage),
+            optionalStorageCpp: storage,
+        };
+    }
+
+    private rawNullableResourceKind(
+        node: ts.Node,
+        allowDirect: boolean,
     ): { kind: ValueKind; cppType: string } | undefined {
         const type = this.checker.getTypeAtLocation(node);
         const present = presentMembers(type);
@@ -1961,7 +2014,8 @@ class Compiler implements LoweringServices {
         const mappedHandle = this.dataTypes.fromTsType(member, node);
         if (
             mappedHandle?.kind === "handle" &&
-            (mappedHandle.handle === "pointer-drag" ||
+            (mappedHandle.handle === "ui-element" ||
+                mappedHandle.handle === "pointer-drag" ||
                 (this.options.workers &&
                     mappedHandle.handle === "offscreen-canvas"))
         ) {
@@ -2124,6 +2178,7 @@ class Compiler implements LoweringServices {
     public hasStableNativeBinding(value: Value): boolean {
         const storage =
             value.stableOwnerCpp ??
+            value.resourceStorageCpp ??
             (value.kind === "engine" ? value.storedEngineCpp : undefined) ??
             value.cpp;
         if (
@@ -2219,6 +2274,7 @@ class Compiler implements LoweringServices {
         source: ts.Expression,
         destination: ts.Expression | undefined,
         kind: "vector" | "map" | "set",
+        constructedArray: boolean,
     ): void {
         const left = destination && this.unwrap(destination);
         const binding =
@@ -2239,7 +2295,8 @@ class Compiler implements LoweringServices {
             : undefined;
         const fresh =
             kind === "vector"
-                ? ts.isArrayLiteralExpression(right) ||
+                ? constructedArray ||
+                  ts.isArrayLiteralExpression(right) ||
                   nativeConstructor === "Array"
                 : nativeConstructor === (kind === "map" ? "Map" : "Set");
         const literalCount = ts.isArrayLiteralExpression(right)
@@ -2358,6 +2415,7 @@ class Compiler implements LoweringServices {
         target: Value,
         source: ts.Expression,
         destination?: ts.Expression,
+        constructedArray = false,
     ): boolean {
         const dataType = target.dataType;
         const storedType =
@@ -2372,6 +2430,7 @@ class Compiler implements LoweringServices {
                 source,
                 destination,
                 storedType.kind,
+                constructedArray,
             );
             return true;
         }
@@ -2490,6 +2549,15 @@ class Compiler implements LoweringServices {
         this.ui.emitUiDatasetProperty(element, property, value, site);
     }
 
+    public emitUiStyleValue(
+        element: Value,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void {
+        this.ui.emitUiStyleProperty(element, property, site, site, value);
+    }
+
     public emitWindowLogicalAssignment(
         expression: ts.BinaryExpression,
     ): boolean {
@@ -2551,6 +2619,21 @@ class Compiler implements LoweringServices {
         }
         if (retained.size && !this.nativeStoredValues.has(value))
             writable(value).nativeCaptures = [...retained];
+        if (
+            value.kind === "engine" &&
+            (value.storedEngineCpp || value.ownedEngineCpp) &&
+            expression.parent !== undefined &&
+            ts.isCallExpression(expression.parent) &&
+            expression.parent.arguments.includes(expression)
+        ) {
+            // A call receives this owner before later arguments or statements
+            // can replace the source slot; resources keep the same snapshot.
+            value = this.bindings.pinValueToTemporary(
+                value,
+                "engine_argument",
+                expression,
+            );
+        }
         this.describeEngineCaptures(value);
         this.useNativeValue(value);
         // A generation-known list of strings travels on the value, exactly
@@ -2799,9 +2882,13 @@ class Compiler implements LoweringServices {
                             node,
                         )?.declarations?.some(ts.isGetAccessorDeclaration) &&
                         this.evaluationOrder.writesStorage(node)) ||
-                    writesThroughTrackedRoot(node, (target) => {
-                        return names(this.unwrap(target));
-                    }) ||
+                    writesThroughTrackedRoot(
+                        node,
+                        (target) => names(this.unwrap(target)),
+                        undefined,
+                        this.checker,
+                        this.program.getSourceFiles(),
+                    ) ||
                     (ts.isCallExpression(node) &&
                         node.arguments.some(
                             (argument, index) =>
@@ -4526,6 +4613,7 @@ class Compiler implements LoweringServices {
         const result = executeApplicationFunction(
             {
                 checker: this.checker,
+                sourceFiles: this.program.getSourceFiles(),
                 fail: (node, message) => this.fail(node, message),
                 foldEnclosing: (identifier) => {
                     closed = false;
@@ -5214,20 +5302,10 @@ class Compiler implements LoweringServices {
                     ? `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>()`
                     : "{}",
             });
-            this.bindings.defineVariable(
-                name,
-                valueForKind(nullableResource.kind, {
-                    cpp: `(*${storage})`,
-                    ...nullableResourceEngine(
-                        nullableResource.kind,
-                        this.options.workers,
-                        this.defaultEngineCpp,
-                    ),
-                    optionalFoundCpp: optionalPresentCpp(storage),
-                    optionalStorageCpp: storage,
-                    ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
-                }),
-            );
+            this.bindings.defineVariable(name, {
+                ...this.nullableResourceValue(nullableResource, storage),
+                ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
+            });
             return;
         }
         if (this.bindClassDataField(name, initializer, declared)) {
@@ -5281,17 +5359,10 @@ class Compiler implements LoweringServices {
                 ? `bbl::js::make_gc_shared<std::optional<${resource.cppType}>>()`
                 : "{}",
         });
-        const value: Value = valueForKind(resource.kind, {
-            cpp: `(*${storage})`,
-            ...nullableResourceEngine(
-                resource.kind,
-                this.options.workers,
-                this.defaultEngineCpp,
-            ),
-            optionalFoundCpp: optionalPresentCpp(storage),
-            optionalStorageCpp: storage,
+        const value: Value = {
+            ...this.nullableResourceValue(resource, storage),
             ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
-        });
+        };
         this.bindings.defineVariable(name, value);
         return value;
     }
@@ -5351,16 +5422,7 @@ class Compiler implements LoweringServices {
             name: cppName,
             initializer: "{}",
         });
-        const value: Value = valueForKind(resource.kind, {
-            cpp: `(*${cppName})`,
-            ...nullableResourceEngine(
-                resource.kind,
-                this.options.workers,
-                this.defaultEngineCpp,
-            ),
-            optionalFoundCpp: optionalPresentCpp(cppName),
-            optionalStorageCpp: cppName,
-        });
+        const value = this.nullableResourceValue(resource, cppName);
         this.bindings.defineVariable(name, value);
         return value;
     }
@@ -6008,10 +6070,44 @@ class Compiler implements LoweringServices {
 
     private describeEngineCaptures(value: Value): void {
         if (!value.engineCpp) return;
-        if (value.kind === "engine" && value.ownedEngineCpp) {
-            const owner = this.nativeBindings.get(value.ownedEngineCpp);
-            if (owner) this.realmEngineCaptures.set(value.engineCpp, [owner]);
+        if (value.kind === "engine") {
+            if (value.engineIdentity)
+                this.realmEngineIdentities.set(
+                    value.engineCpp,
+                    value.engineIdentity,
+                );
+            else this.realmEngineIdentities.delete(value.engineCpp);
+            const storage =
+                value.storedEngineCpp ??
+                (value.ownedEngineCpp
+                    ? `bbl::StoredEngine{${value.ownedEngineCpp}}`
+                    : undefined);
+            if (storage) this.realmEngineStorage.set(value.engineCpp, storage);
+            const owned =
+                value.ownedEngineCpp &&
+                this.nativeBindings.get(value.ownedEngineCpp);
+            if (owned) this.realmEngineCaptures.set(value.engineCpp, [owned]);
+            if (value.storedEngineCpp) {
+                const stored = this.nativeBindings.get(value.storedEngineCpp);
+                const captures = stored
+                    ? [stored]
+                    : (value.nativeCompanionCaptures?.storedEngineCpp ??
+                      value.nativeCaptures);
+                if (captures?.length)
+                    this.realmEngineCaptures.set(value.engineCpp, captures);
+            }
         }
+        if (
+            value.engineOwnerIdentity &&
+            (this.hasStableNativeBinding(value) ||
+                (value.nativeOwnedRvalue &&
+                    value.dataType?.kind === "handle" &&
+                    value.dataType.ownedEngine))
+        )
+            this.realmEngineIdentities.set(
+                value.engineCpp,
+                value.engineOwnerIdentity,
+            );
         const owners = this.realmEngineCaptures.get(value.engineCpp);
         if (owners)
             writable(value).nativeCompanionCaptures = {
@@ -6026,6 +6122,11 @@ class Compiler implements LoweringServices {
         const counter = integerCounterOf(value);
         const storage =
             value.sharedStorageCpp ??
+            (value.optionalStorageCpp &&
+            cppIdentifierPattern.test(value.optionalStorageCpp)
+                ? value.optionalStorageCpp
+                : undefined) ??
+            value.resourceStorageCpp ??
             counter ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
@@ -6033,7 +6134,8 @@ class Compiler implements LoweringServices {
                   value.optionalStorageCpp ??
                   value.cpp));
         if (
-            isCompileTimeOnlyValue(value.kind) ||
+            (isCompileTimeOnlyValue(value.kind) &&
+                !isNativeOwnerRecord(value)) ||
             value.kind === "browser" ||
             !cppIdentifierPattern.test(storage) ||
             ["true", "false", "nullptr"].includes(storage)
@@ -6107,7 +6209,9 @@ class Compiler implements LoweringServices {
      * does not make constant.
      */
     public markImmutableNativeStorage(value: Value, immutable: boolean): void {
-        const binding = this.nativeBindings.get(value.cpp);
+        const binding = this.nativeBindings.get(
+            value.resourceStorageCpp ?? value.cpp,
+        );
         if (
             binding &&
             !value.sharedStorageCpp &&
@@ -6130,6 +6234,7 @@ class Compiler implements LoweringServices {
                     this.nativeConstBindings.add(capture);
             }
         }
+        if (value.engineOwnerIdentity) this.describeEngineCaptures(value);
     }
 
     /**
@@ -6275,6 +6380,17 @@ class Compiler implements LoweringServices {
     private trackRetainedCaptureName(name: string): void {
         const binding = this.nativeBindings.get(name);
         if (binding) this.useNativeBinding(binding);
+        // A spelling read through storage (an owned field's engine) names
+        // the bindings it reads; each is captured where the spelling is used.
+        else
+            for (const identifier of cppIdentifiers(name, {
+                unqualified: true,
+            })) {
+                const read = this.nativeBindings.get(identifier);
+                if (read) this.useNativeBinding(read);
+            }
+        for (const owner of this.realmEngineCaptures.get(name) ?? [])
+            this.useNativeBinding(owner);
     }
 
     public emitInlinedBody<T>(
@@ -6893,44 +7009,74 @@ class Compiler implements LoweringServices {
         value: Value,
         node: ts.Node,
     ): void {
-        if (target.kind === "engine")
+        if (target.kind === "engine") {
+            if (target.engineCpp)
+                this.realmEngineIdentities.delete(target.engineCpp);
             writable(target).engineIdentity = Symbol();
+        }
         const storage =
             target.optionalStorageCpp ??
             this.fail(
                 node,
                 `Nullable ${target.kind} value has no optional storage.`,
             );
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "optional" &&
-            value.dataType.inner.kind === "handle" &&
-            value.dataType.inner.handle === target.kind
-        ) {
-            this.emit({
-                kind: "open",
-                code: `if (${optionalPresentCpp(value.cpp)}) {`,
-            });
+        const ownedType =
+            target.dataType?.kind === "handle" && target.dataType.ownedEngine
+                ? target.dataType
+                : undefined;
+        if (ownedType) {
+            const type: DataType<"optional"> = {
+                kind: "optional",
+                inner: ownedType,
+            };
+            const converted = this.dataLowerer.compileKnownValueForSink(
+                value,
+                type,
+                node,
+            );
             this.emit({
                 kind: "expression",
-                code: `    ${storage} = *${value.cpp};`,
+                code: `${storage} = ${this.dataTypes.cppType(type)}{${converted}}.to_optional();`,
             });
-            this.emit({ kind: "branch", code: "} else {" });
-            this.emit({ kind: "expression", code: `    ${storage}.reset();` });
-            this.emit({ kind: "close", code: "}" });
-            return;
+        } else {
+            if (
+                value.kind === "data" &&
+                value.dataType?.kind === "optional" &&
+                value.dataType.inner.kind === "handle" &&
+                value.dataType.inner.handle === target.kind
+            ) {
+                this.emit({
+                    kind: "open",
+                    code: `if (${optionalPresentCpp(value.cpp)}) {`,
+                });
+                this.emit({
+                    kind: "expression",
+                    code: `    ${storage} = *${value.cpp};`,
+                });
+                this.emit({ kind: "branch", code: "} else {" });
+                this.emit({
+                    kind: "expression",
+                    code: `    ${storage}.reset();`,
+                });
+                this.emit({ kind: "close", code: "}" });
+                return;
+            }
+            if (value.kind !== target.kind) {
+                this.fail(
+                    node,
+                    `Nullable ${target.kind} assignment received ${value.kind}.`,
+                );
+            }
+            this.emit({
+                kind: "expression",
+                code: `${storage} = ${this.optionalResourceCpp(value)};`,
+            });
         }
-        if (value.kind !== target.kind) {
-            this.fail(
-                node,
-                `Nullable ${target.kind} assignment received ${value.kind}.`,
-            );
-        }
-        this.emit({
-            kind: "expression",
-            code: `${storage} = ${this.optionalResourceCpp(value)};`,
-        });
-        if (value.engineCpp !== undefined && target.kind !== "engine") {
+        if (
+            !ownedType &&
+            value.engineCpp !== undefined &&
+            target.kind !== "engine"
+        ) {
             writable(target).engineCpp = value.engineCpp;
         }
         if (target.kind === "scene") {
@@ -7052,8 +7198,15 @@ class Compiler implements LoweringServices {
         const storage = target.optionalStorageCpp;
         if (!storage) return false;
         const value = this.compileValue(expression.right);
-        if (value.kind === "json-null") {
+        if (
+            value.kind === "json-null" ||
+            (value.kind === "void" &&
+                provenUndefinedValue(this, expression.right))
+        ) {
+            this.emitDiscardedValue(value);
             this.emit({ kind: "expression", code: `${storage}.reset();` });
+            if (target.kind === "engine" && target.engineCpp)
+                this.realmEngineIdentities.delete(target.engineCpp);
             delete writable(target).engineIdentity;
             delete writable(target).spriteDepthMode;
             return true;
@@ -7076,7 +7229,16 @@ class Compiler implements LoweringServices {
     }
 
     public requiresStaticDataIteration(statement: ts.Node): boolean {
-        return requiresStaticDataIteration(this, statement);
+        // Runtime control flow and stored bodies cannot retain one settled
+        // DOM subtree for all invocations. Their loops need no static expansion.
+        return requiresStaticDataIteration(
+            this,
+            statement,
+            false,
+            !this.isInRuntimeControlFlow() &&
+                !this.isInFrameCallback() &&
+                !this.isInNativeFunctionBody(),
+        );
     }
 
     public canShareFunctionBody(body: ts.Node): boolean {
@@ -8003,10 +8165,12 @@ class Compiler implements LoweringServices {
         imported: string,
         type: DataType<"function">,
     ): string {
-        const declaration = this.checker
+        const signature = this.checker
             .getTypeAtLocation(expression)
-            .getCallSignatures()[0]?.declaration;
+            .getCallSignatures()[0];
+        const declaration = signature?.declaration;
         if (
+            !signature ||
             !declaration ||
             type.erasedParameters?.length ||
             type.restParameter !== undefined
@@ -8014,6 +8178,19 @@ class Compiler implements LoweringServices {
             this.fail(
                 expression,
                 "Stored intrinsics require one fixed native signature.",
+            );
+        const sourceReturn = this.checker.getReturnTypeOfSignature(signature);
+        const awaitedReturn = this.checker.getAwaitedType(sourceReturn);
+        const synchronous = awaitedReturn === sourceReturn;
+        if (
+            (type.undefinedCompletion || type.nonThenableCompletion) &&
+            !synchronous
+        )
+            this.fail(
+                expression,
+                type.undefinedCompletion
+                    ? "A stored callback requires a proven undefined completion."
+                    : "A stored callback requires a proven nonthenable completion.",
             );
         const parameters = type.parameters.map((parameter, index) => {
             const source = declaration.parameters[index];
@@ -8060,6 +8237,49 @@ class Compiler implements LoweringServices {
                     this.fail(
                         expression,
                         `Stored Babylon Lite intrinsic '${imported}' is not supported.`,
+                    );
+                const undefinedValue = (result: Value | undefined): boolean =>
+                    !!result &&
+                    !result.erasedVoidCompletion &&
+                    (result.kind === "void" ||
+                        (result.kind === "json-null" &&
+                            result.cpp === "std::nullopt") ||
+                        result.dataType?.kind === "undefined");
+                const undefinedCompletion =
+                    synchronous &&
+                    hasNoValueCompletion(sourceReturn) &&
+                    undefinedValue(value);
+                if (type.undefinedCompletion && !undefinedCompletion)
+                    this.fail(
+                        expression,
+                        "A stored callback requires a proven undefined completion.",
+                    );
+                if (
+                    type.awaitedUndefinedCompletion &&
+                    !(
+                        awaitedReturn &&
+                        hasNoValueCompletion(awaitedReturn) &&
+                        (undefinedCompletion ||
+                            (value.kind === "promise" &&
+                                undefinedValue(value.promiseResult)))
+                    )
+                )
+                    this.fail(
+                        expression,
+                        "A stored callback requires a proven undefined completion after awaiting.",
+                    );
+                const scalarValue =
+                    isNonThenableDataType(value.dataType) ||
+                    ["number", "boolean", "string", "json-null"].includes(
+                        value.kind,
+                    );
+                if (
+                    type.nonThenableCompletion &&
+                    !(synchronous && (undefinedCompletion || scalarValue))
+                )
+                    this.fail(
+                        expression,
+                        "A stored callback requires a proven nonthenable completion.",
                     );
                 if (!type.result) {
                     this.emitDiscardedValue(value);
@@ -8371,6 +8591,41 @@ class Compiler implements LoweringServices {
         }
     }
 
+    /** Only an immutable outer capture can describe every invocation of a shared body. */
+    public capturedEngineOwnerIdentity(
+        value: Value,
+        captures: readonly NativeCaptureBinding[],
+    ): symbol | undefined {
+        if (!value.engineCpp) return undefined;
+        const identity =
+            value.engineOwnerIdentity ??
+            this.realmEngineIdentities.get(value.engineCpp);
+        const binding = this.nativeBindings.get(value.engineCpp);
+        const owners =
+            value.nativeCompanionCaptures?.engineCpp ??
+            this.realmEngineCaptures.get(value.engineCpp) ??
+            (binding ? [binding] : []);
+        return identity &&
+            owners.length > 0 &&
+            owners.every(
+                (owner) =>
+                    this.nativeConstBindings.has(owner) &&
+                    captures.includes(owner),
+            )
+            ? identity
+            : undefined;
+    }
+
+    /** Immutable aliases and owning snapshots retain the source engine identity. */
+    public sameEngineOwner(left: string, right: string): boolean {
+        if (left === right) return true;
+        const identity = this.realmEngineIdentities.get(left);
+        return (
+            identity !== undefined &&
+            identity === this.realmEngineIdentities.get(right)
+        );
+    }
+
     public expectSameEngine(left: Value, right: Value, node: ts.Node): void {
         void node;
         // Entry points can construct only one engine. Different spellings
@@ -8381,13 +8636,119 @@ class Compiler implements LoweringServices {
 
     public requireEngine(value: Value, node: ts.Node): string {
         if (!value.engineCpp) {
+            this.dataTypes.requireEngineParameterStorage(
+                value.engineOwnerParameter,
+            );
+            // Resources whose carriers disagree belong to the one
+            // unambiguous engine context (one engine per entry point).
+            if (value.engineCarriersDisagree)
+                return this.requireDefaultEngine(node);
             this.fail(
                 node,
                 `A ${value.kind} value is not associated with an engine.`,
             );
         }
+        // One engine per entry point: where the entry's own binding is in
+        // scope, an owned pair of a kind it holds names it without reading
+        // the pair's stored owner.
+        if (
+            value.dataType?.kind === "handle" &&
+            value.dataType.ownedEngine &&
+            belongsToEntryEngine(value.dataType.handle)
+        ) {
+            const entry = this.entryEngineInScope();
+            if (entry) return entry;
+        }
+        for (const binding of value.nativeCompanionCaptures?.engineCpp ?? [])
+            this.useNativeBinding(binding);
         this.trackRetainedCaptureName(value.engineCpp);
         return value.engineCpp;
+    }
+
+    /**
+     * The entry's engine binding, where no explicit engine parameter scopes
+     * the body and the code is not namespace-scope (`requireDefaultEngine`).
+     */
+    public entryEngineInScope(): string | undefined {
+        const engine = this.defaultEngineCpp;
+        if (
+            !engine ||
+            this.returnFrames.some(
+                (frame) => frame.kind === "native" && frame.namespaceScope,
+            ) ||
+            this.scopedEngineContexts().length > 0
+        )
+            return undefined;
+        this.trackRetainedCaptureName(engine);
+        return engine;
+    }
+
+    /** Preserve the actual stored owner when a resource leaves its source scope. */
+    public storedResourceEngine(value: Value, node: ts.Node): string {
+        this.useNativeValue(value);
+        const engine = this.requireEngine(value, node);
+        if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
+            if (!value.resourceStorageCpp)
+                return this.fail(
+                    node,
+                    "An owned resource requires its represented storage.",
+                );
+            return `(${value.resourceStorageCpp}).first`;
+        }
+        return (
+            this.realmEngineStorage.get(engine) ??
+            `bbl::StoredEngine{${engine}}`
+        );
+    }
+
+    /** A tracked resource choice retains only the selected engine owner. */
+    public selectResourceOwner(
+        value: Value,
+        candidates: readonly Value[],
+        index: Value,
+        node: ts.Node,
+    ): Value {
+        this.useNativeValue(index);
+        const owners = candidates.map((candidate) => {
+            return this.storedResourceEngine(candidate, node);
+        });
+        let selected = owners.at(-1)!;
+        for (let position = owners.length - 2; position >= 0; --position)
+            selected = `(${index.cpp} == ${position} ? ${owners[position]} : ${selected})`;
+        const owner = this.allocateTemporaryCppName("resource_owner");
+        this.emit({
+            kind: "declaration",
+            type: "const bbl::StoredEngine",
+            name: owner,
+            initializer: selected,
+            attributes: "[[maybe_unused]] ",
+        });
+        const capture = this.registerNativeConstBinding(owner);
+        this.registerNativeBindingType(owner, "bbl::StoredEngine");
+        const engineCpp = `(*${owner})`;
+        this.realmEngineStorage.set(engineCpp, owner);
+        this.realmEngineCaptures.set(engineCpp, [capture]);
+        const selectedValue: Value = {
+            ...value,
+            engineCpp,
+            nativeCompanionCaptures: {
+                ...value.nativeCompanionCaptures,
+                engineCpp: [capture],
+            },
+        };
+        const identities = candidates.map(
+            (candidate) =>
+                candidate.engineOwnerIdentity ??
+                (candidate.engineCpp
+                    ? this.realmEngineIdentities.get(candidate.engineCpp)
+                    : undefined),
+        );
+        const identity = identities[0];
+        if (identity && identities.every((current) => current === identity)) {
+            writable(selectedValue).engineOwnerIdentity = identity;
+            this.realmEngineIdentities.set(engineCpp, identity);
+        } else delete writable(selectedValue).engineOwnerIdentity;
+        return selectedValue;
     }
 
     public engineFor(value: Value, node: ts.Node): string {
@@ -8447,6 +8808,7 @@ class Compiler implements LoweringServices {
                       )
                     : source;
             engine = retained.cpp;
+            this.describeEngineCaptures(retained);
             this.realmEngineCaptures.set(
                 engine,
                 this.nativeValueCaptures.bindingsOf(retained),

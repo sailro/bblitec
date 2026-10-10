@@ -2,6 +2,7 @@
 
 #include <bblite/js_aggregate_error.hpp>
 #include <bblite/js_gc.hpp>
+#include <string_view>
 
 namespace bbl::js {
 
@@ -31,10 +32,13 @@ inline bool is_throw_completion(const std::exception_ptr& value) {
 
 class NamedError final : public std::runtime_error {
 public:
-    NamedError(std::string name, std::string message, std::exception_ptr cause = {})
-        : std::runtime_error(message), name(std::move(name)), cause(cause) {}
+    NamedError(std::string name, std::string message, std::exception_ptr cause = {},
+               bool messagePresent = true)
+        : std::runtime_error(message), name(std::move(name)), cause(cause),
+          message_present(messagePresent) {}
     std::string name;
     std::exception_ptr cause;
+    bool message_present;
     const std::shared_ptr<const bool> identity = std::make_shared<const bool>(true);
 };
 
@@ -103,6 +107,19 @@ public:
     }
     void gc_trace(const TraceVisitor& visitor) const { visitor(object_); }
     const std::shared_ptr<ErrorObject>& object() const { return object_; }
+    const void* identity() const {
+        if (object_)
+            return object_->identity();
+        if (!value_)
+            return nullptr;
+        if (const auto token = error_identity(value_))
+            return token.get();
+        try {
+            std::rethrow_exception(value_);
+        } catch (const std::exception& value) {
+            return &value;
+        }
+    }
     friend bool operator==(const Error& left, const Error& right) {
         if (left.object_ || right.object_)
             return left.object_ && right.object_ &&
@@ -133,9 +150,35 @@ inline void require_builtin_error_payload(const Error& error) {
             "Authored Error payloads require traced cause and AggregateError storage.");
 }
 
-inline Error make_error(std::string name, std::string message, std::exception_ptr cause = {}) {
+inline Error make_error(std::string name, std::string message, std::exception_ptr cause = {},
+                        bool messagePresent = true) {
     require_builtin_error_payload(cause);
-    return std::make_exception_ptr(NamedError(std::move(name), std::move(message), cause));
+    return std::make_exception_ptr(
+        NamedError(std::move(name), std::move(message), cause, messagePresent));
+}
+
+inline bool error_has_own(const Error& error, std::string_view key) {
+    try {
+        std::rethrow_exception(error);
+    } catch (const NamedError& value) {
+        return (key == "message" && value.message_present) || (key == "cause" && value.cause);
+    } catch (const AggregateError& value) {
+        return key == "message" || key == "errors" || (key == "cause" && value.cause);
+    } catch (const std::exception&) {
+        return key == "message";
+    }
+}
+
+inline Error error_cause(const Error& error) {
+    try {
+        std::rethrow_exception(error);
+    } catch (const NamedError& value) {
+        return value.cause;
+    } catch (const AggregateError& value) {
+        return value.cause;
+    } catch (const std::exception&) {
+        return {};
+    }
 }
 inline std::string error_message(const std::exception_ptr& error) {
     if (!error)

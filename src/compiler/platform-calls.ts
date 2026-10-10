@@ -1299,7 +1299,7 @@ export class PlatformCalls {
         )
             return { kind: "void", cpp: "" };
         const element: Value | undefined =
-            preparedElement ??
+            (classListMutation ? undefined : preparedElement) ??
             (rootAppend
                 ? {
                       kind: "ui-element",
@@ -2259,17 +2259,21 @@ export class PlatformCalls {
         }
         if (classListMutation) {
             const classOwner = callee.expression.expression;
-            let classElement = this.ui.uiElementValue(classOwner);
-            if (
-                !classElement &&
-                ts.isCallExpression(this.context.unwrap(classOwner))
-            ) {
-                const compiled = this.context.compileValue(classOwner);
-                if (compiled.kind === "ui-element") {
-                    classElement = compiled;
-                }
-            }
+            let classElement =
+                preparedElement ?? this.ui.compileUiElementReceiver(classOwner);
             if (classElement) {
+                if (!preparedElement && ts.isOptionalChain(call))
+                    return this.context.dataLowerer.optionalAccess(
+                        classElement,
+                        call,
+                        (element) => this.compileUiCall(call, callee, element),
+                    );
+                classElement = pinDetached(
+                    this.context,
+                    classElement,
+                    "class_receiver",
+                    classOwner,
+                );
                 const method = callee.name.text;
                 this.context.expectArgumentCount(
                     call,

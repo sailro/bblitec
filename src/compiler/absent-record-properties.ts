@@ -33,6 +33,12 @@ export class AbsentRecordProperties {
 
     public constructor(
         private readonly fail: (node: ts.Node, message: string) => never,
+        private readonly retain?: (
+            target: string,
+            sources: readonly string[],
+            property: string,
+            node: ts.Node,
+        ) => void,
     ) {}
 
     /** Whether a plain record can lack `property` at all. */
@@ -80,11 +86,18 @@ export class AbsentRecordProperties {
         node: ts.Node,
     ): void {
         const carried = this.carriedInto(struct);
-        if (carried.has(property) || carried.has(UNKNOWN_PROPERTIES))
+        if (carried.has(property) || carried.has(UNKNOWN_PROPERTIES)) {
+            this.retain?.(
+                struct,
+                [...this.sourceRecords(struct)],
+                property,
+                node,
+            );
             this.fail(
                 node,
                 `Property '${property}' is not stored by '${struct}' records, but a record converted into that storage may carry it.`,
             );
+        }
     }
 
     /** Everything conversions carried into `struct`, directly or through converted structs. */
@@ -92,8 +105,17 @@ export class AbsentRecordProperties {
         const known = this.closure.get(struct);
         if (known) return known;
         const result = new Set<string>();
+        for (const source of [struct, ...this.sourceRecords(struct)])
+            for (const property of this.carried.get(source) ?? [])
+                result.add(property);
+        this.closure.set(struct, result);
+        return result;
+    }
+
+    /** Every source whose conversions can reach this struct, including cycles. */
+    private sourceRecords(struct: string): ReadonlySet<string> {
         const visited = new Set<string>();
-        const pending = [struct];
+        const pending = [...(this.sources.get(struct) ?? [])];
         for (
             let next = pending.pop();
             next !== undefined;
@@ -101,11 +123,8 @@ export class AbsentRecordProperties {
         ) {
             if (visited.has(next)) continue;
             visited.add(next);
-            for (const property of this.carried.get(next) ?? [])
-                result.add(property);
             pending.push(...(this.sources.get(next) ?? []));
         }
-        this.closure.set(struct, result);
-        return result;
+        return visited;
     }
 }

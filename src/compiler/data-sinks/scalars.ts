@@ -1,21 +1,30 @@
 import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
+import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
 import { hasNonNullAssertion, unwrapExpression } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
+import { yieldsFreshObject } from "../fresh-records.js";
+import { objectIdentityCallArgument } from "../static-evaluator.js";
 
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { eventTargetCpp } from "../dom-targets.js";
-import { authoredErrorValue, thrownMessage } from "../error-values.js";
+import {
+    authoredErrorValue,
+    errorConstructor,
+    thrownMessage,
+} from "../error-values.js";
 import { provenUndefinedValue } from "../undefined-values.js";
 import { rejectionOnlyPromiseCpp, settlesNever } from "../promises.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
+import { requireAbsenceTag } from "../absence-tag-storage.js";
 import {
     compileJsonRecordView,
     compileJsonTupleView,
+    isPlainJsonRecord,
 } from "../json-record-views.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -70,18 +79,18 @@ function expressionString(
 function expressionJson(
     dataType: DataType<"json">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
+    expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
     return lowerer.compileKnownValueForSink(
         lowerer.context.compileValue(unwrapped),
         dataType,
-        unwrapped,
+        expression,
     );
 }
 
 /**
- * An object literal stored straight into a document slot is the document
+ * A fresh plain object stored straight into a document slot is the document
  * itself: an owned object of its own keys, in creation order, each member
  * stored as a document value (a key a conditional spread wrote only while
  * it is own). Undefined for a record with methods or accessors, or one
@@ -92,14 +101,17 @@ function ownedDocument(
     record: Value,
     node: ts.Node,
 ): string | undefined {
-    const literal = lowerer.convertedExpression(node);
-    if (
-        !literal ||
-        !ts.isObjectLiteralExpression(unwrapExpression(literal)) ||
-        Object.keys(record.recordMethods ?? {}).length ||
-        Object.keys(record.recordGetters ?? {}).length ||
-        Object.keys(record.recordSetters ?? {}).length
-    )
+    if (!isPlainJsonRecord(record)) return undefined;
+    let expression = lowerer.convertedExpression(node);
+    while (expression) {
+        const argument = objectIdentityCallArgument(
+            unwrapExpression(expression),
+            (value) => lowerer.context.libraryGlobal(value),
+        );
+        if (!argument) break;
+        expression = argument;
+    }
+    if (!expression || !yieldsFreshObject(lowerer.context.checker, expression))
         return undefined;
     const entries = ownEntries(lowerer.ownObjectContext(), record, node);
     if (!entries) return undefined;
@@ -122,6 +134,32 @@ function valueJson(
         lowerer.markEscaped(value);
         return value.cpp;
     }
+    // Stored document members remain mutable through every retained alias.
+    // A native observation wrapper only supplies reads; a plain record
+    // therefore acquires the document owner before entering this storage.
+    // A pinned record type has no document form; the document holds a copy.
+    if (value.dataType?.kind === "struct") {
+        const demand = lowerer.context.dataTypes.documentRecordDemand(
+            value.dataType.name,
+        );
+        if (demand) throw new NativeRecordStorageRequired(demand);
+    }
+    const errorExpression =
+        value.dataType?.kind === "error"
+            ? lowerer.convertedExpression(node)
+            : undefined;
+    if (
+        errorExpression &&
+        (ts.isNewExpression(errorExpression) ||
+            ts.isCallExpression(errorExpression)) &&
+        errorConstructor(errorExpression, (expression) =>
+            lowerer.context.libraryGlobal(expression),
+        ) === "AggregateError"
+    )
+        lowerer.context.fail(
+            node,
+            "AggregateError reflection requires represented property descriptors.",
+        );
     const expression =
         value.kind === "record" || value.dataType?.kind === "struct"
             ? lowerer.convertedExpression(node)
@@ -185,6 +223,13 @@ function valueJson(
             return `bbl::js::json_value_or_null(${value.cpp})`;
         if (absence === "undefined" || value.dataType.undefinedOnly)
             return `bbl::js::json_value(${value.cpp})`;
+        if (absence === "either" || absence === undefined)
+            requireAbsenceTag(
+                lowerer.context.checker,
+                lowerer.context.absenceTags,
+                expression ?? node,
+                value,
+            );
     }
     if (value.kind === "json-null")
         return value.cpp === "std::nullopt"
@@ -225,6 +270,7 @@ function valuePromise(
     const result = type.result;
     const expected = result ? types.cppType(result) : "bbl::js::PromiseVoid";
     if (value.promiseType === expected) return value.cpp;
+    const parameter = lowerer.context.allocateTemporaryCppName("promise_value");
     let converted: string | undefined;
     if (
         value.promiseResult?.kind === "void" &&
@@ -239,7 +285,7 @@ function valuePromise(
         result?.kind === "optional" &&
         value.promiseType === types.cppType(result.inner)
     ) {
-        converted = `${expected}{value}`;
+        converted = `${expected}{${parameter}}`;
     }
     if (
         !converted &&
@@ -256,13 +302,20 @@ function valuePromise(
         payload?.kind === "string" ||
         payload?.kind === "boolean"
             ? { kind: payload.kind }
-            : undefined);
+            : payload && isHandleKind(payload.kind)
+              ? { kind: "handle" as const, handle: payload.kind }
+              : undefined);
+    if (source && types.cppType(source) !== value.promiseType)
+        return lowerer.context.fail(
+            node,
+            "A Promise result view requires its payload's exact owned storage.",
+        );
     if (!converted && result && source) {
         // A result view reads the original settlement; ordinary storage
         // conversion must therefore keep every retained object's identity.
         const lines = lowerer.context.captureEmittedLines(() => {
             converted = lowerer.compileKnownValueForSink(
-                lowerer.leafValue("value", source),
+                lowerer.leafValue(parameter, source),
                 result,
                 node,
             );
@@ -278,7 +331,7 @@ function valuePromise(
             node,
             `Promise storage requires ${expected}, received ${value.promiseType}.`,
         );
-    return `bbl::js::Promise<${expected}>::view(${value.cpp}, []([[maybe_unused]] const ${value.promiseType}& value) -> ${expected} { return ${converted}; })`;
+    return `bbl::js::Promise<${expected}>::view(${value.cpp}, []([[maybe_unused]] const ${value.promiseType}& ${parameter}) -> ${expected} { return ${converted}; })`;
 }
 
 function valueNumber(
@@ -386,15 +439,15 @@ const opaqueSink = {
 };
 
 /** A leaf only a value of its own kind converts to. */
-function sameKindSink<K extends "symbol" | "bigint" | "i64array" | "u64array">(
-    kind: K,
-): DataSinkOperations<K>[K] {
+function sameKindSink<
+    K extends "symbol" | "bigint" | "i64array" | "u64array" | "gpu",
+>(kind: K): DataSinkOperations<K>[K] {
     return {
-        expression: (type, lowerer, _expression, unwrapped) =>
+        expression: (type, lowerer, expression, unwrapped) =>
             lowerer.compileKnownValueForSink(
                 lowerer.context.compileValue(unwrapped),
                 type,
-                unwrapped,
+                expression,
             ),
         value: (_type, _lowerer, value) =>
             value.dataType?.kind === kind ? value.cpp : undefined,
@@ -415,6 +468,7 @@ export const scalarsSinks: DataSinkOperations<
     | "search-params"
     | "http-response"
     | "gpu-adapter"
+    | "gpu"
     | "gpu-adapter-info"
     | "promise"
     | "storage"
@@ -545,6 +599,7 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     "gpu-adapter": opaqueSink,
+    gpu: sameKindSink("gpu"),
     file: opaqueSink,
     blob: opaqueSink,
     "file-list": opaqueSink,
@@ -559,6 +614,8 @@ export const scalarsSinks: DataSinkOperations<
             ),
         value: (_type, lowerer, value, node) => {
             if (value.dataType?.kind === "error") return value.cpp;
+            if (isJsonValue(value))
+                return `${value.cpp}.asserted_instance<bbl::js::Error>()`;
             const authored = authoredErrorValue(lowerer.context, value);
             if (authored) return authored.cpp;
             if (!value.nativeError) return undefined;

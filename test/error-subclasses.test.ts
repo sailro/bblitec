@@ -129,6 +129,28 @@ test("authored Error reflection refuses unrepresented descriptors", () => {
         );
 });
 
+test("authored Error erasure refuses direct and nested dynamic views", () => {
+    for (const body of [
+        "document.value = new Failure('bad');",
+        `const rows: Array<{error: Failure}> = [];
+        rows.push({error: new Failure('bad')});
+        document.value = rows[0]!;`,
+        `class Detailed extends Failure { detail = 'extra'; }
+        const rows: Detailed[] = [];
+        rows.push(new Detailed('bad'));
+        document.value = rows[0]!;`,
+    ])
+        assert.throws(
+            () =>
+                compileSource(`
+                    class Failure extends Error { label = 'tag'; }
+                    const document = JSON.parse('{}') as Record<string, unknown>;
+                    ${body}
+                `),
+            /Authored Error reflection requires represented property descriptors/,
+        );
+});
+
 test("opaque cause and aggregate storage refuse authored payloads after argument effects", (t) => {
     const result = compileSource(`
         class Failure extends Error {}

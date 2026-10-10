@@ -78,6 +78,34 @@ check(
 `,
 );
 
+for (const absence of ["null", "undefined"] as const)
+    check(
+        `stored callbacks widen ${absence} results without replacing identities`,
+        `
+        interface Handler {run(mode:number):number[]|null|undefined}
+        const values=[3];
+        let calls=0;
+        function read(mode:number):number[]|${absence} {
+            calls++;
+            return mode>0?values:${absence};
+        }
+        const stored:Array<typeof read>=[read];
+        const original={run:stored[0]!};
+        const handlers:Handler[]=[original];
+        const held=handlers[0]!;
+        if(held!==original || held.run!==stored[0])
+            throw new Error('callback identity');
+        const result=held.run(1);
+        if(result!==values || held.run(0)!==${absence} || calls!==2)
+            throw new Error('result identity and absence');
+        result![0]=8;
+        if(values[0]!==8)throw new Error('shared returned array');
+        const alias=held.run;
+        if(alias!==stored[0] || alias(1)!==values || Number(calls)!==3)
+            throw new Error('adapted alias and one evaluation');
+        `,
+    );
+
 test("stored callable record views refuse incompatible result storage", () => {
     assert.throws(
         () =>

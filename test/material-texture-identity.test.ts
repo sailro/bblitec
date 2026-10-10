@@ -57,6 +57,30 @@ async function main() {
     if(resolveAlbedo(engine,standard)!==pixels || held[0]!==solid) throw new Error("replacement retains original arm and old alias");
     const fallback=createPbrMaterial({baseColorFactor:[.25,.5,.75,1]});
     if(resolveAlbedo(engine,fallback)===resolveAlbedo(engine,fallback)) throw new Error("fresh solid fallback identity");
+    function collect(materials:Material[]) {
+        let payload:unknown;
+        for(const material of materials) {
+            const view=material as unknown as {baseColorTexture?:unknown};
+            payload??=view.baseColorTexture;
+        }
+        return {payload};
+    }
+    if(collect([fallback,pbr,distinct]).payload!==solid || collect([]).payload!==undefined)
+        throw new Error("erased texture accumulator");
+    let selected:unknown;
+    selected??=solid;
+    selected??=pixels;
+    if(selected!==solid)throw new Error("first texture identity");
+    selected=null;
+    if(selected!==null)throw new Error("texture null reset");
+    selected??=pixels;
+    if(selected!==pixels)throw new Error("replacement texture identity");
+    let initialized:unknown=undefined;
+    initialized??=solid;
+    if(initialized!==solid)throw new Error("initialized erased texture");
+    let assigned:unknown;
+    assigned=solid;
+    if(assigned!==solid)throw new Error("assigned erased texture");
 }
 main();`;
 

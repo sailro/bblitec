@@ -11,6 +11,41 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     const result = compileSource(
         `
+        let classSelected: HTMLDivElement | null = null;
+        let classEffects = 0;
+        function forcedClass(): boolean { classEffects++; classSelected = null; return true; }
+        const updateClass = (): void => { classSelected?.classList.toggle("selected", forcedClass()); };
+        updateClass();
+        if (classEffects !== 0) throw new Error("absent class argument");
+        const retained = document.createElement("div");
+        classSelected = retained;
+        updateClass();
+        if (classEffects !== 1 || classSelected !== null || !retained.classList.contains("selected"))
+            throw new Error("selected class receiver");
+        classSelected?.classList.remove("selected");
+        if (!retained.classList.contains("selected")) throw new Error("absent class removal");
+        classSelected = retained;
+        classSelected.classList.toggle("selected", forcedClass());
+        if (classEffects !== 2 || !retained.classList.contains("selected"))
+            throw new Error("direct class receiver");
+        const classMap = new Map<string, HTMLElement>();
+        let classMapKeys = 0;
+        let classMapEffects = 0;
+        function classMapKey(): string { classMapKeys++; return "selected"; }
+        function forcedMapClass(): boolean {
+            classMapEffects++;
+            classMap.clear();
+            return true;
+        }
+        classMap.get(classMapKey())?.classList.toggle("selected", forcedMapClass());
+        if (classMapKeys !== 1 || classMapEffects !== 0)
+            throw new Error("absent Map class argument");
+        classMap.set("selected", retained);
+        retained.classList.remove("selected");
+        classMap.get(classMapKey())?.classList.toggle("selected", forcedMapClass());
+        if (classMapKeys !== 2 || classMapEffects !== 1 || classMap.size !== 0 ||
+            !retained.classList.contains("selected"))
+            throw new Error("Map class receiver survives argument clear");
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         document.getElementById("host")?.remove();

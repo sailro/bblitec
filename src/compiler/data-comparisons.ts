@@ -280,6 +280,7 @@ export function dataUnionEquality(
                     "product",
                     "iterator",
                     "json",
+                    "handle",
                 ].includes(type.kind) ||
                 (type.kind === "struct" &&
                     lowerer.context.dataTypes.isReferenceStruct(type.name)));
@@ -298,7 +299,7 @@ export function dataUnionEquality(
             return bound?.dataType ?? lowerer.dataTypeAt(node);
         }
         if (ts.isElementAccessExpression(node)) {
-            let owner = lowerer.dataTypeAt(node.expression);
+            let owner = storageType(node.expression);
             if (owner?.kind === "optional") owner = owner.inner;
             if (owner?.kind === "vector" || owner?.kind === "span")
                 return owner.element;
@@ -347,7 +348,9 @@ export function dataUnionEquality(
                 ? `${lowerer.context.dataTypes.cppType(type)}{std::nullopt}`
                 : type.kind === "optional"
                   ? `(${value.cpp}).to_optional()`
-                  : value.cpp;
+                  : type.kind === "handle"
+                    ? lowerer.compileKnownValueForSink(value, type, node)
+                    : value.cpp;
         lowerer.context.emit({
             kind: "declaration",
             type: "const auto",

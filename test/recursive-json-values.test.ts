@@ -643,6 +643,47 @@ test("typed dictionaries retain scalar, enum and record aliases through dynamic 
     );
 });
 
+test("record dictionary views retain identity and refuse unrepresented dynamic writes", (t) => {
+    nativeCheck(
+        "record-dictionary-write-boundary",
+        `
+        function retain(value: unknown, depth: number): unknown {
+            return depth > 0 ? retain(value, depth - 1) : value;
+        }
+        const records: Record<string, {size: number}> = {first: {size: 1}};
+        const viewed = retain(records, 1) as Record<string, unknown>;
+        const held = records.first!;
+        const viewedHeld = viewed.first;
+        let refused = 0;
+        try {
+            viewed.first = {size: 9};
+        } catch (error) {
+            if (!(error instanceof Error) ||
+                error.message !== "Dynamic property assignment requires an owned object.") throw error;
+            refused++;
+        }
+        try {
+            delete viewed.first;
+        } catch (error) {
+            if (!(error instanceof Error) ||
+                error.message !== "Dynamic property deletion requires an owned object.") throw error;
+            refused++;
+        }
+        if (refused !== 2 || records.first !== held || viewed.first !== viewedHeld ||
+            held.size !== 1 || Object.keys(viewed).length !== 1)
+            throw new Error("refused writes preserve backing storage");
+        held.size = 3;
+        records.second = {size: 2};
+        if (Object.keys(viewed).length !== 2 ||
+            (viewedHeld as {size: number}).size !== 3 ||
+            (viewed.second as {size: number}).size !== 2 ||
+            retain(records, 1) !== viewed)
+            throw new Error("typed writes preserve observing aliases");
+    `,
+        t,
+    );
+});
+
 test("a guarded parse returned as its record type keeps the document", (t) => {
     nativeCheck(
         "guarded-record-return",

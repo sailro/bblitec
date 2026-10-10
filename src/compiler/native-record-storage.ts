@@ -1,9 +1,13 @@
 import type ts from "typescript";
-import type { RecordJoin } from "./record-components.js";
+import type { InstantiatedRecord, RecordJoin } from "./record-components.js";
+import type { DataType } from "./data-types/model.js";
+import { dataTypesEqual } from "./data-types/operations.js";
 
 /** The source type and generic environment that produced a native record. */
 export interface NativeRecordStorageDemand {
     identity: ts.Symbol | ts.Type | string;
+    /** Stable identity when a generic source is mapped under concrete arguments. */
+    instantiation?: InstantiatedRecord;
     type: ts.Type;
     node: ts.Node;
     frames: readonly ReadonlyMap<ts.Symbol, ts.Type>[];
@@ -13,6 +17,8 @@ export interface NativeRecordStorageDemand {
     dynamicJsonStorage?: true;
     /** Every field must retain a receiver-aware accessor slot. */
     proxy?: true;
+    /** An actual Proxy forwards the record's methods through another receiver. */
+    proxyTarget?: true;
     /**
      * Records of this type are parsed documents the program reads as it:
      * every value of the type is stored as a document, which keeps the
@@ -21,12 +27,20 @@ export interface NativeRecordStorageDemand {
     document?: true;
     /** A plain fixed record stored as a homogeneous open scalar dictionary. */
     dictionary?: "string" | "number" | "boolean";
+    /** An open scalar dictionary retains undefined-valued own entries through document views. */
+    documentDictionary?: true;
     /** One retained record cannot change its dictionary value representation. */
     dictionaryConflict?: true;
     /** A structural interface retains the native owner whose checked type supplies it. */
-    native?: { readonly type: ts.Type; readonly node: ts.Node };
+    native?: {
+        readonly type: ts.Type;
+        readonly node: ts.Node;
+        readonly storage: DataType;
+    };
     /** Distinct checked native owners cannot overwrite one structural demand. */
     nativeConflict?: true;
+    /** A function can enter this callable record before any named property is installed. */
+    bareCallable?: true;
     /**
      * Record types a record was stored as where a copy could be told apart:
      * each joins its source's record component (`record-components.ts`), so
@@ -64,11 +78,14 @@ const RECORD_STORAGE_FLAGS = [
     "stored",
     "dynamicJsonStorage",
     "proxy",
+    "proxyTarget",
     "document",
+    "documentDictionary",
     "armFields",
     "view",
     "nativeConflict",
     "dictionaryConflict",
+    "bareCallable",
 ] as const;
 
 /**
@@ -85,7 +102,7 @@ export function mergeNativeRecordStorage(
         next.nativeConflict ||
         (previous?.native !== undefined &&
             next.native !== undefined &&
-            previous.native.type !== next.native.type);
+            !dataTypesEqual(previous.native.storage, next.native.storage));
     const dictionaryConflict =
         previous?.dictionaryConflict ||
         next.dictionaryConflict ||
@@ -98,6 +115,7 @@ export function mergeNativeRecordStorage(
                 (known) =>
                     known.source === join.source &&
                     known.target === join.target &&
+                    known.sourceInstantiation === join.sourceInstantiation &&
                     known.targetInstantiation === join.targetInstantiation &&
                     known.kind === join.kind,
             ),

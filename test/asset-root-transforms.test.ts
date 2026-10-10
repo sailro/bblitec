@@ -285,10 +285,11 @@ test("a widened cloned root is checked when projected to an asset container", ()
 
 test("stored asset containers check the actual loader's synthetic-root ownership", () => {
     const result = compileSource(`
-        import {createEngine, loadGltf, type AssetContainer} from "@babylonjs/lite";
+        import {createEngine, loadGltf, loadBabylon, type AssetContainer} from "@babylonjs/lite";
         const engine = await createEngine({});
         const containers: AssetContainer[] = [];
         containers.push(await loadGltf(engine, "first.glb"));
+        containers.push(await loadBabylon(engine, "second.babylon", {loadCamera:false,loadTextures:false}));
         const index = Math.floor(performance.now()) % containers.length;
         containers[index]!.entities[0]!.position.set(1, 2, 3);
     `);

@@ -1,9 +1,16 @@
 import ts from "typescript";
 
 import { callMember, dataTypesEqual, type DataType } from "../data-types.js";
+import { isTaggedStorageWidening } from "../data-types/operations.js";
+import { nullability } from "../type-facts.js";
 import { isNullishLiteral } from "../symbols.js";
 import type { Value } from "../types.js";
 import { hasFixedTupleRest } from "../user-functions.js";
+import {
+    hasUndefinedCompletion,
+    hasNonThenableCompletion,
+    isNonThenableDataType,
+} from "../undefined-values.js";
 
 import { plainLane } from "./containers.js";
 
@@ -71,7 +78,12 @@ function expressionFunction(
     ) {
         return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     }
-    if (value.kind === "data" && value.dataType?.kind === "function") {
+    if (
+        value.kind === "data" &&
+        (value.dataType?.kind === "function" ||
+            (value.dataType?.kind === "struct" &&
+                lowerer.context.dataTypes.structCall(value.dataType.name)))
+    ) {
         return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     }
     lowerer.context.fail(
@@ -92,8 +104,7 @@ function storedSignature(
     value: Value,
 ): DataType<"function"> | undefined {
     if (value.cpp.length === 0) return undefined;
-    if (value.kind === "data")
-        return value.dataType?.kind === "function" ? value.dataType : undefined;
+    if (value.dataType?.kind === "function") return value.dataType;
     if (value.kind !== "callback") return undefined;
     const parameters = value.nativeCallbackParameterTypes;
     const declared = value.callbackDeclaration
@@ -102,12 +113,30 @@ function storedSignature(
     if (parameters === undefined) {
         return declared?.kind === "function" ? declared : undefined;
     }
+    const declaration =
+        value.callbackDeclaration && !ts.isIdentifier(value.callbackDeclaration)
+            ? value.callbackDeclaration
+            : undefined;
+    const undefinedCompletion =
+        !value.nativeCallbackReturnType &&
+        hasUndefinedCompletion(lowerer.context.checker, declaration);
     return parameters.every(
         (parameter): parameter is DataType => parameter !== undefined,
     )
         ? {
               kind: "function",
               parameters: [...parameters],
+              ...(undefinedCompletion
+                  ? {
+                        undefinedCompletion: true as const,
+                        awaitedUndefinedCompletion: true as const,
+                    }
+                  : {}),
+              ...(undefinedCompletion ||
+              isNonThenableDataType(value.nativeCallbackReturnType) ||
+              hasNonThenableCompletion(lowerer.context.checker, declaration)
+                  ? { nonThenableCompletion: true as const }
+                  : {}),
               ...(declared?.kind === "function"
                   ? { signatureSite: declared.signatureSite }
                   : {}),
@@ -149,6 +178,12 @@ function widenedLane(
     lines: string[],
 ): string | undefined {
     if (dataTypesEqual(from, to)) return cpp;
+    if (
+        from.kind === "function" &&
+        to.kind === "function" &&
+        completionProofWidens(from, to)
+    )
+        return cpp;
     if (!plainLaneWidens(from, to)) return undefined;
     let converted = "";
     lines.push(
@@ -156,6 +191,89 @@ function widenedLane(
             converted = lowerer.compileKnownValueForSink(
                 lowerer.leafValue(cpp, from),
                 to,
+                node,
+            );
+        }),
+    );
+    return converted;
+}
+
+/** Completion facts can be forgotten when the same callback storage reaches a wider contract. */
+function completionProofWidens(
+    from: DataType<"function">,
+    to: DataType<"function">,
+): boolean {
+    if (
+        (to.undefinedCompletion && !from.undefinedCompletion) ||
+        (to.nonThenableCompletion &&
+            !from.nonThenableCompletion &&
+            !from.undefinedCompletion &&
+            !isNonThenableDataType(from.result)) ||
+        (to.awaitedUndefinedCompletion && !from.awaitedUndefinedCompletion)
+    )
+        return false;
+    return dataTypesEqual(
+        {
+            ...from,
+            identity: true,
+            undefinedCompletion: true,
+            awaitedUndefinedCompletion: true,
+            nonThenableCompletion: true,
+        },
+        {
+            ...to,
+            identity: true,
+            undefinedCompletion: true,
+            awaitedUndefinedCompletion: true,
+            nonThenableCompletion: true,
+        },
+    );
+}
+
+/** A checked single-absence return gains a tag without copying its payload. */
+function widenedTaggedResult(
+    lowerer: DataSinkHost,
+    cpp: string,
+    source: DataType,
+    target: DataType,
+    origin: ts.Node,
+    node: ts.Node,
+    lines: string[],
+): string | undefined {
+    if (!isTaggedStorageWidening(source, target)) return undefined;
+    const checkedNode = ts.isExpression(origin)
+        ? lowerer.context.unwrap(origin)
+        : origin;
+    const checker = lowerer.context.checker;
+    const signatures = checker
+        .getNonNullableType(checker.getTypeAtLocation(checkedNode))
+        .getCallSignatures();
+    const mapped = lowerer.dataTypeAt(checkedNode);
+    if (
+        signatures.length !== 1 ||
+        signatures[0]!.typeParameters?.length ||
+        mapped?.kind !== "function" ||
+        !mapped.result ||
+        !dataTypesEqual(mapped.result, source)
+    )
+        return undefined;
+    const absent = nullability(
+        checker.getReturnTypeOfSignature(signatures[0]!),
+    );
+    if (absent.null && absent.undefined) return undefined;
+    const defined = absent.undefined
+        ? lowerer.context.dataTypes.slotPresentCpp(source, cpp)
+        : "true";
+    if (defined === undefined) return undefined;
+    let converted = "";
+    lines.push(
+        ...lowerer.context.captureEmittedLines(() => {
+            converted = lowerer.compileKnownValueForSink(
+                {
+                    ...lowerer.leafValue(cpp, source),
+                    slotFoundCpp: defined,
+                },
+                target,
                 node,
             );
         }),
@@ -180,6 +298,7 @@ function adaptedCall(
     source: DataType<"function">,
     sink: DataType<"function">,
     node: ts.Node,
+    origin: ts.Node,
 ): { named: number; body: string } | undefined {
     if (
         sink.restParameter !== undefined ||
@@ -235,14 +354,17 @@ function adaptedCall(
     if (dataTypesEqual(source.result, sink.result))
         return { named, body: [...lines, `return ${call};`].join(" ") };
     lines.push(`const auto result = ${call};`);
-    const result = widenedLane(
-        lowerer,
-        "result",
-        source.result,
-        sink.result,
-        node,
-        lines,
-    );
+    const result =
+        widenedTaggedResult(
+            lowerer,
+            "result",
+            source.result,
+            sink.result,
+            origin,
+            node,
+            lines,
+        ) ??
+        widenedLane(lowerer, "result", source.result, sink.result, node, lines);
     return result === undefined
         ? undefined
         : { named, body: [...lines, `return ${result};`].join(" ") };
@@ -252,9 +374,9 @@ function adaptedCall(
  * The runtime's signature adapter around a stored value: a capture-less
  * invoker receives the sink's parameters, the first `named` by name, and
  * runs `body` (`adaptedCall`) over the value; the value keeps its
- * identity and environment. The invoker spells its parameter from the
- * storage itself, because materialized storage may declare parameters by
- * reference where the data type spells them by value.
+ * identity and environment. The invoker deduces the storage by reference,
+ * because materialized storage may declare parameters by reference where
+ * the data type spells them by value.
  */
 function renderSignatureAdapter(
     lowerer: DataSinkHost,
@@ -272,7 +394,7 @@ function renderSignatureAdapter(
         )
         .join("");
     const result = sink.result ? cppType(sink.result) : "void";
-    return `bbl::js::adapt_callback<${cppType(sink)}>(${cpp}, [](std::remove_cvref_t<decltype(${cpp})>& callback${parameters}) -> ${result} { ${body} })`;
+    return `bbl::js::adapt_callback<${cppType(sink)}>(${cpp}, [](auto& callback${parameters}) -> ${result} { ${body} })`;
 }
 
 function valueFunction(
@@ -315,6 +437,24 @@ function valueFunction(
                 "A stored callback requires a proven undefined completion.",
             );
         if (
+            dataType.awaitedUndefinedCompletion &&
+            !stored.awaitedUndefinedCompletion
+        )
+            lowerer.context.fail(
+                node,
+                "A stored callback requires a proven undefined completion after awaiting.",
+            );
+        if (
+            dataType.nonThenableCompletion &&
+            !stored.nonThenableCompletion &&
+            !stored.undefinedCompletion &&
+            !isNonThenableDataType(stored.result)
+        )
+            lowerer.context.fail(
+                node,
+                "A stored callback requires a proven nonthenable completion.",
+            );
+        if (
             dataTypesEqual(
                 { ...stored, identity: true },
                 { ...dataType, identity: true },
@@ -326,7 +466,16 @@ function valueFunction(
                 node,
                 "Stored generic function conversion requires matching concrete signature families.",
             );
-        const adapted = adaptedCall(lowerer, stored, dataType, node);
+        lowerer.context.dataTypes.joinCallableRecordTypes([
+            { source: stored, target: dataType },
+        ]);
+        const adapted = adaptedCall(
+            lowerer,
+            stored,
+            dataType,
+            node,
+            value.callbackDeclaration ?? node,
+        );
         if (adapted) {
             // Parameters the sink does not declare read only what it passes;
             // arguments the value does not declare are dropped.

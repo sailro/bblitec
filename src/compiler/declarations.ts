@@ -38,9 +38,15 @@ import {
     type NativeFunctionContext,
 } from "./native-functions.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import { nullability } from "./type-facts.js";
-import { provenUndefinedValue } from "./undefined-values.js";
+import {
+    provenUndefinedValue,
+    isNonThenableDataType,
+    hasUndefinedCallbackCompletion,
+    hasNonThenableCompletion,
+} from "./undefined-values.js";
 import { localClassOfSymbol } from "./class-members.js";
 import { ownKeysKnown } from "./object-statics.js";
 import {
@@ -48,6 +54,7 @@ import {
     type PositiveIntegerContext,
 } from "./option-helpers.js";
 import { readProperty, type PropertyContext } from "./properties.js";
+import { isPlainRecord, isRecordUnion } from "./record-components.js";
 import { walkReachedLoopNodes } from "./resource-loops.js";
 import {
     type CompilerSymbols,
@@ -61,6 +68,7 @@ import {
     propertyNameText,
 } from "./syntax.js";
 import {
+    commonResourceValue,
     isCompileTimeOnlyValue,
     nativeDataMetadata,
     optionalPresentCpp,
@@ -72,10 +80,9 @@ import {
     valueForKind,
     withNativeMetadata,
     type Value,
-    type ValueKind,
+    type NullableResourceType,
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
-import { nullableResourceEngine } from "./window-events.js";
 import { withLiteralSelfBinding } from "./home-object-methods.js";
 import {
     inferPromiseRejectStorage,
@@ -162,7 +169,12 @@ interface DeclarationContext
     nullableResourceKind(
         node: ts.Node,
         allowDirect?: boolean,
-    ): { kind: ValueKind; cppType: string } | undefined;
+    ): NullableResourceType | undefined;
+    nullableResourceValue(
+        resource: NullableResourceType,
+        storage: string,
+        source?: Value,
+    ): Value;
     optionalResourceCpp(value: Value): string;
     unwrappedValueSymbol(expression: ts.Expression): ts.Symbol | undefined;
 }
@@ -220,9 +232,9 @@ export class DeclarationLowerer {
     private bindOptionalResource(
         name: ts.Identifier,
         cppName: string,
-        resource: { kind: ValueKind; cppType: string },
+        resource: NullableResourceType,
         shared: boolean,
-        value: Value,
+        value?: Value,
         initializer = "",
     ): void {
         const type = `std::optional<${resource.cppType}>`;
@@ -245,14 +257,11 @@ export class DeclarationLowerer {
                       attributes: "[[maybe_unused]] ",
                   },
         );
-        const stored: Value = {
-            ...value,
-            cpp: shared ? `(**${cppName})` : optionalValueCpp(cppName),
-            optionalFoundCpp: shared
-                ? `${cppName}->has_value()`
-                : optionalPresentCpp(cppName),
-            optionalStorageCpp: shared ? `(*${cppName})` : cppName,
-        };
+        const stored = this.context.nullableResourceValue(
+            resource,
+            shared ? `(*${cppName})` : cppName,
+            value,
+        );
         if (shared) writable(stored).sharedStorageCpp = cppName;
         else delete writable(stored).sharedStorageCpp;
         this.context.bindings.defineVariable(name, stored);
@@ -323,6 +332,9 @@ export class DeclarationLowerer {
                 this.context.checker.getTypeAtLocation(name),
                 name,
             ) ??
+            this.context.dataTypes.dynamicJsonType(
+                this.context.checker.getTypeAtLocation(name),
+            ) ??
             (typeof deployed === "string"
                 ? { kind: "string" }
                 : typeof deployed === "boolean"
@@ -360,10 +372,11 @@ export class DeclarationLowerer {
     }
 
     private initializeLexicalBinding(
-        initializer: ts.Expression,
+        declaration: ts.VariableDeclaration,
         cppName: string,
         type: DataType,
     ): void {
+        const initializer = declaration.initializer!;
         const value = this.context.compileValue(initializer);
         if (value.kind === "void" && value.abruptCompletion) {
             this.context.emitDiscardedValue(value);
@@ -373,6 +386,16 @@ export class DeclarationLowerer {
             kind: "expression",
             code: `${cppName}->initialize(${this.context.dataLowerer.compileKnownValueForSink(value, type, initializer)});`,
         });
+        if (
+            type.kind === "string" &&
+            value.staticString !== undefined &&
+            !value.parameterBinding &&
+            ts.isIdentifier(declaration.name) &&
+            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0
+        ) {
+            const stored = this.context.bindings.lookup(declaration.name);
+            writable(stored).lexicalStaticString = value.staticString;
+        }
     }
 
     /**
@@ -592,7 +615,7 @@ export class DeclarationLowerer {
             this.forwardBindings.delete(declarationSymbol);
             if (forward !== "hoisted")
                 this.initializeLexicalBinding(
-                    declaration.initializer!,
+                    declaration,
                     forward.cppName,
                     forward.type,
                 );
@@ -621,7 +644,7 @@ export class DeclarationLowerer {
                     "A binding captured by its initializer requires an owned data type.",
                 );
             this.initializeLexicalBinding(
-                declaration.initializer,
+                declaration,
                 this.declareLexicalBinding(
                     declaration.name,
                     declarationSymbol,
@@ -657,54 +680,29 @@ export class DeclarationLowerer {
                 true,
             );
             if (resource) {
-                this.context.emit(
-                    sharedClosureStorage
-                        ? {
-                              kind: "declaration",
-                              type: `std::shared_ptr<std::optional<${resource.cppType}>>`,
-                              name: cppName,
-                              initializer: `bbl::js::make_gc_shared<std::optional<${resource.cppType}>>()`,
-                          }
-                        : {
-                              kind: "declaration",
-                              type: `std::optional<${resource.cppType}>`,
-                              name: cppName,
-                              initializer: "",
-                              initialization: "default",
-                              attributes: "[[maybe_unused]] ",
-                          },
-                );
-                this.context.bindings.defineVariable(
+                this.bindOptionalResource(
                     declaration.name,
-                    valueForKind(resource.kind, {
-                        cpp: sharedClosureStorage
-                            ? `(**${cppName})`
-                            : optionalValueCpp(cppName),
-                        ...nullableResourceEngine(
-                            resource.kind,
-                            this.context.options.workers,
-                            this.context.defaultEngineCpp,
-                        ),
-                        optionalFoundCpp: sharedClosureStorage
-                            ? `${cppName}->has_value()`
-                            : optionalPresentCpp(cppName),
-                        ...(sharedClosureStorage
-                            ? { sharedStorageCpp: cppName }
-                            : {}),
-                        optionalStorageCpp: sharedClosureStorage
-                            ? `(*${cppName})`
-                            : cppName,
-                    }),
+                    cppName,
+                    resource,
+                    sharedClosureStorage,
                 );
                 return;
             }
             const declaredType = this.context.checker.getTypeAtLocation(
                 declaration.name,
             );
-            let dataType = this.context.dataTypes.fromTsType(
-                declaredType,
-                declaration.name,
-            );
+            const demanded = this.context.dynamicBindings.get(declaration);
+            let dataType = demanded
+                ? demandedStorageType(
+                      this.context,
+                      declaration,
+                      demanded,
+                      undefined,
+                  )
+                : this.context.dataTypes.fromTsType(
+                      declaredType,
+                      declaration.name,
+                  );
             // Only an assignment gives this binding a value.
             if (dataType)
                 dataType = this.reboundBindingStorage(dataType, declaredType);
@@ -800,7 +798,7 @@ export class DeclarationLowerer {
                 (ts.isArrowFunction(declaration.initializer) ||
                     ts.isFunctionExpression(declaration.initializer))) ||
                 this.isReassignedFunctionLiteral(declaration) ||
-                this.context.dynamicBindings.get(declaration) === "callback") &&
+                this.context.dynamicBindings.has(declaration)) &&
             this.emitAnnotatedDataDeclaration(
                 declaration,
                 cppName,
@@ -867,27 +865,23 @@ export class DeclarationLowerer {
         const nullableResource = this.context.nullableResourceKind(
             declaration.name,
         );
+        // A literal null settles the binding before any declaration path
+        // reads its annotation as a record; other absent initializers are
+        // proven after their value compiles, below.
         if (
-            declaration.initializer.kind === ts.SyntaxKind.NullKeyword &&
-            nullableResource
+            this.context.unwrap(declaration.initializer).kind ===
+                ts.SyntaxKind.NullKeyword &&
+            nullableResource &&
+            !this.context.dynamicBindings.has(declaration)
         ) {
             this.bindOptionalResource(
                 declaration.name,
                 cppName,
                 nullableResource,
                 sharedClosureStorage,
-                valueForKind(nullableResource.kind, {
-                    cpp: "",
-                    ...nullableResourceEngine(
-                        nullableResource.kind,
-                        this.context.options.workers,
-                        this.context.defaultEngineCpp,
-                    ),
-                }),
             );
             return;
         }
-
         const hostLookup = this.context.unwrap(declaration.initializer);
         const id =
             !this.context.defaultEngineCpp &&
@@ -909,8 +903,12 @@ export class DeclarationLowerer {
                 truthinessCpp: "true",
                 ...this.context.ui.hostCanvas(id, tag, hostLookup),
             };
-            this.context.pendingHostUiLookups.push(value);
             this.context.bindings.defineVariable(declaration.name, value);
+            // Binding may normalize the Value; attach the eventual owner to
+            // the same object later lexical reads and captures retain.
+            this.context.pendingHostUiLookups.push(
+                this.context.bindings.lookup(declaration.name),
+            );
             return;
         }
 
@@ -986,6 +984,25 @@ export class DeclarationLowerer {
         );
         const initializerBoundary = this.context.nativeBindingCheckpoint();
         let value = this.context.compileValue(declaration.initializer);
+        if (
+            nullableResource &&
+            !this.context.dynamicBindings.has(declaration) &&
+            (value.kind === "json-null" ||
+                (value.kind === "void" &&
+                    provenUndefinedValue(
+                        this.context,
+                        declaration.initializer,
+                    )))
+        ) {
+            this.context.emitDiscardedValue(value);
+            this.bindOptionalResource(
+                declaration.name,
+                cppName,
+                nullableResource,
+                sharedClosureStorage,
+            );
+            return;
+        }
         requireOneObject(this.context, declaration, value);
         if (value.kind === "record" && declaration.type) {
             value = this.context.bindings.materializeDeclaredRecordContainers(
@@ -1058,7 +1075,14 @@ export class DeclarationLowerer {
                     value,
                     declaration.initializer,
                 ) ?? value;
-        if (nullableResource && value.kind === nullableResource.kind) {
+        if (
+            nullableResource &&
+            (value.kind === nullableResource.kind ||
+                (nullableResource.dataType &&
+                    value.dataType?.kind === "optional" &&
+                    value.dataType.inner.kind === "handle" &&
+                    value.dataType.inner.handle === nullableResource.kind))
+        ) {
             // Copy nullable resource STORAGE, not its present-value spelling.
             // A bound nullable resource exposes `(*storage)` for code that a
             // source guard has narrowed, but `const current = context` must
@@ -1071,9 +1095,22 @@ export class DeclarationLowerer {
             // empty when nothing matched, and copying the bare handle would
             // hand a later guard an indeterminate one -- the pin's
             // `undefined` -- as present.
+            const ownedType = nullableResource.dataType;
+            const optionalType: DataType<"optional"> | undefined = ownedType
+                ? { kind: "optional", inner: ownedType }
+                : undefined;
+            const ownedInitializer = optionalType
+                ? this.context.dataLowerer.compileKnownValueForSink(
+                      value,
+                      optionalType,
+                      declaration.initializer,
+                  )
+                : undefined;
             const initializerCpp = this.context.takeNativeTemporary(
-                value.optionalStorageCpp ??
-                    this.context.optionalResourceCpp(value),
+                optionalType
+                    ? `${this.context.dataTypes.cppType(optionalType)}{${ownedInitializer!}}.to_optional()`
+                    : (value.optionalStorageCpp ??
+                          this.context.optionalResourceCpp(value)),
                 initializerBoundary,
             );
             this.bindOptionalResource(
@@ -1159,6 +1196,19 @@ export class DeclarationLowerer {
                 declaration.initializer,
                 `Expression assigned to '${sourceName}' does not produce a native value.`,
             );
+        }
+        if (
+            isNativeOwnerRecord(value) ||
+            (value.dataType?.kind === "handle" && value.dataType.ownedEngine)
+        ) {
+            this.context.bindings.bindLocalOrParameterValue(
+                declaration.name,
+                value,
+                false,
+                cppName,
+                sharedClosureStorage,
+            );
+            return;
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
             const accessors = [
@@ -1401,92 +1451,120 @@ export class DeclarationLowerer {
                           narrowed.dataType.inner,
                       )
                     : undefined;
+            const taggedValue =
+                narrowed.dataType.kind === "tagged"
+                    ? this.context.dataLowerer.leafValue(
+                          boundCpp,
+                          narrowed.dataType,
+                      )
+                    : undefined;
             this.context.bindings.defineVariable(
                 declaration.name,
-                valueForKind(optionalHandle?.kind ?? "data", {
-                    ...(optionalHandle ??
-                        (narrowed.dataType.kind === "error" ||
-                        narrowed.dataType.kind === "module-namespace"
-                            ? this.context.dataLowerer.leafValue(
-                                  boundCpp,
-                                  narrowed.dataType,
-                              )
-                            : {
-                                  kind: "data" as const,
-                                  cpp: boundCpp,
-                                  dataType: narrowed.dataType,
-                              })),
-                    ...(sharedDataBinding ? { sharedStorageCpp: cppName } : {}),
-                    ...(staticElementsOwner
-                        ? {
-                              staticElements:
-                                  staticElementsOwner.staticElements ??
-                                  narrowed.staticElements,
-                              staticElementsOwner,
-                          }
-                        : {}),
-                    ...(referenceStruct && narrowed.staticElementsOwner
-                        ? {
-                              staticElementsOwner: narrowed.staticElementsOwner,
-                              ...(narrowed.staticElementIndex !== undefined
-                                  ? {
-                                        staticElementIndex:
-                                            narrowed.staticElementIndex,
-                                    }
-                                  : {}),
-                          }
-                        : {}),
-                    ...(!narrowed.freshData && narrowed.collectionCardinality
-                        ? {
-                              collectionCardinality:
-                                  narrowed.collectionCardinality,
-                          }
-                        : {}),
-                    ...(!narrowed.freshData && narrowed.runtimeElementTemplate
-                        ? {
-                              runtimeElementTemplate:
-                                  narrowed.runtimeElementTemplate,
-                          }
-                        : {}),
-                    ...(narrowed.recordProperties &&
-                    narrowed.dataType.kind !== "error"
-                        ? {
-                              recordProperties: narrowed.recordProperties,
-                          }
-                        : {}),
-                    ...(narrowed.borrowedData
-                        ? { borrowedData: true as const }
-                        : {}),
-                    ...(narrowed.packagedBodySource &&
-                    !this.context.sharedClosures.identifierIsRebound(
-                        declaration.name,
-                    )
-                        ? { packagedBodySource: narrowed.packagedBodySource }
-                        : {}),
-                    ...(narrowed.nativeVectorData
-                        ? { nativeVectorData: true as const }
-                        : {}),
-                    ...(narrowed.preserveUncheckedLookup
-                        ? { preserveUncheckedLookup: true as const }
-                        : {}),
-                    ...(slotFoundCpp ? { slotFoundCpp } : {}),
-                    ...(optionalHandle
-                        ? {
-                              optionalStorageCpp: boundCpp,
-                              optionalFoundCpp: optionalPresentCpp(boundCpp),
-                              truthinessCpp: optionalPresentCpp(boundCpp),
-                          }
-                        : optionalFoundCpp
-                          ? { optionalFoundCpp }
-                          : {}),
-                    ...(statedTruthinessCpp(narrowed)
-                        ? {
-                              truthinessCpp: statedTruthinessCpp(
-                                  narrowed,
-                              )!.replaceAll(narrowed.cpp, boundCpp),
-                          }
-                        : {}),
-                }),
+                valueForKind(
+                    optionalHandle?.kind ?? taggedValue?.kind ?? "data",
+                    {
+                        ...(optionalHandle ??
+                            taggedValue ??
+                            (narrowed.dataType.kind === "error" ||
+                            narrowed.dataType.kind === "module-namespace"
+                                ? this.context.dataLowerer.leafValue(
+                                      boundCpp,
+                                      narrowed.dataType,
+                                  )
+                                : {
+                                      kind: "data" as const,
+                                      cpp: boundCpp,
+                                      dataType: narrowed.dataType,
+                                  })),
+                        ...(sharedDataBinding
+                            ? { sharedStorageCpp: cppName }
+                            : {}),
+                        ...(narrowed.dataType.kind === "string" &&
+                        narrowed.staticString !== undefined &&
+                        !narrowed.parameterBinding &&
+                        (ts.getCombinedNodeFlags(declaration) &
+                            ts.NodeFlags.Const) !==
+                            0
+                            ? { staticString: narrowed.staticString }
+                            : {}),
+                        ...(staticElementsOwner
+                            ? {
+                                  staticElements:
+                                      staticElementsOwner.staticElements ??
+                                      narrowed.staticElements,
+                                  staticElementsOwner,
+                              }
+                            : {}),
+                        ...(referenceStruct && narrowed.staticElementsOwner
+                            ? {
+                                  staticElementsOwner:
+                                      narrowed.staticElementsOwner,
+                                  ...(narrowed.staticElementIndex !== undefined
+                                      ? {
+                                            staticElementIndex:
+                                                narrowed.staticElementIndex,
+                                        }
+                                      : {}),
+                              }
+                            : {}),
+                        ...(!narrowed.freshData &&
+                        narrowed.collectionCardinality
+                            ? {
+                                  collectionCardinality:
+                                      narrowed.collectionCardinality,
+                              }
+                            : {}),
+                        ...(!narrowed.freshData &&
+                        narrowed.runtimeElementTemplate
+                            ? {
+                                  runtimeElementTemplate:
+                                      narrowed.runtimeElementTemplate,
+                              }
+                            : {}),
+                        ...(narrowed.recordProperties &&
+                        narrowed.dataType.kind !== "error"
+                            ? {
+                                  recordProperties: narrowed.recordProperties,
+                              }
+                            : {}),
+                        ...(narrowed.borrowedData
+                            ? { borrowedData: true as const }
+                            : {}),
+                        ...(narrowed.packagedBodySource &&
+                        !this.context.sharedClosures.identifierIsRebound(
+                            declaration.name,
+                        )
+                            ? {
+                                  packagedBodySource:
+                                      narrowed.packagedBodySource,
+                              }
+                            : {}),
+                        ...(narrowed.nativeVectorData
+                            ? { nativeVectorData: true as const }
+                            : {}),
+                        ...(narrowed.preserveUncheckedLookup
+                            ? { preserveUncheckedLookup: true as const }
+                            : {}),
+                        ...(slotFoundCpp ? { slotFoundCpp } : {}),
+                        ...(optionalHandle
+                            ? {
+                                  optionalStorageCpp: boundCpp,
+                                  optionalFoundCpp:
+                                      optionalPresentCpp(boundCpp),
+                                  truthinessCpp: optionalPresentCpp(boundCpp),
+                              }
+                            : optionalFoundCpp
+                              ? { optionalFoundCpp }
+                              : {}),
+                        ...(statedTruthinessCpp(narrowed)
+                            ? {
+                                  truthinessCpp: statedTruthinessCpp(
+                                      narrowed,
+                                  )!.replaceAll(narrowed.cpp, boundCpp),
+                              }
+                            : {}),
+                    },
+                ),
             );
             return;
         }
@@ -1937,8 +2015,23 @@ export class DeclarationLowerer {
                 kind: "expression",
                 code: `${forward.storageCpp} = ${value.cpp};`,
             });
+            const {
+                result: _result,
+                awaitedUndefinedCompletion: _awaited,
+                ...contract
+            } = value.dataType;
             this.context.bindings.rebindVariable(name, {
                 kind: "callback",
+                dataType: {
+                    ...contract,
+                    parameters: [...forward.parameterTypes],
+                    ...(value.dataType.undefinedCompletion
+                        ? { awaitedUndefinedCompletion: true as const }
+                        : {}),
+                    ...(isNonThenableDataType(value.dataType.result)
+                        ? { nonThenableCompletion: true as const }
+                        : {}),
+                },
                 cpp: forward.storageCpp,
                 nativeCallbackParameterTypes: forward.parameterTypes,
             });
@@ -1953,6 +2046,61 @@ export class DeclarationLowerer {
                     `data=${JSON.stringify(value.dataType)}).`,
             );
         }
+        const declared = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(name),
+            name,
+        );
+        const source = !value.cpp
+            ? ts.isIdentifier(value.callbackDeclaration)
+                ? tryResolveFunctionDeclaration(
+                      this.context.checker,
+                      value.callbackDeclaration,
+                  )
+                : value.callbackDeclaration
+            : undefined;
+        const undefinedCompletion = hasUndefinedCallbackCompletion(
+            this.context.checker,
+            value,
+        );
+        const nonThenableCompletion =
+            undefinedCompletion ||
+            hasNonThenableCompletion(this.context.checker, source);
+        if (declared?.kind === "function") {
+            if (
+                (declared.undefinedCompletion ||
+                    declared.awaitedUndefinedCompletion) &&
+                !undefinedCompletion
+            )
+                this.context.fail(
+                    declaration.initializer!,
+                    "A stored callback requires a proven undefined completion.",
+                );
+            if (declared.nonThenableCompletion && !nonThenableCompletion)
+                this.context.fail(
+                    declaration.initializer!,
+                    "A stored callback requires a proven nonthenable completion.",
+                );
+        }
+        const callbackType: DataType<"function"> = {
+            kind: "function",
+            parameters: [...forward.parameterTypes],
+            ...(declared?.kind === "function"
+                ? { signatureSite: declared.signatureSite }
+                : {}),
+            ...(undefinedCompletion
+                ? {
+                      undefinedCompletion: true,
+                      awaitedUndefinedCompletion: true,
+                  }
+                : {}),
+            ...(nonThenableCompletion ? { nonThenableCompletion: true } : {}),
+        };
+        if (source && source.parameters.length > forward.parameterTypes.length)
+            this.context.dataLowerer.noteArgumentsPastSignature(
+                callbackType,
+                "reads",
+                source,
+            );
         const arguments_ = forward.parameterTypes.map((type, index) =>
             this.context.dataValue(forward.parameterNames[index]!, type),
         );
@@ -1987,6 +2135,7 @@ export class DeclarationLowerer {
         });
         this.context.bindings.rebindVariable(name, {
             kind: "callback",
+            dataType: callbackType,
             cpp: forward.storageCpp,
             nativeCallbackParameterTypes: forward.parameterTypes,
             platformCallbackIdentity: this.context.callbackIdentity(
@@ -2148,7 +2297,7 @@ export class DeclarationLowerer {
             this.context.checker,
             this.context.checker.getReturnTypeOfSignature(signature),
             callback,
-            { unwrapPromise: false },
+            { unwrapPromise: !this.context.options.workers },
         );
         const returnType = returnTsType
             ? (this.context.dataTypes.fromTsType(returnTsType, callback) ??
@@ -2167,7 +2316,7 @@ export class DeclarationLowerer {
                     "Recursive callback parameters must be non-rest identifiers.",
                 );
             }
-            const type =
+            const mapped =
                 this.context.dataTypes.fromTsType(
                     this.context.checker.getTypeAtLocation(parameter),
                     parameter,
@@ -2175,12 +2324,16 @@ export class DeclarationLowerer {
                 this.context.dataTypes.dynamicJsonType(
                     this.context.checker.getTypeAtLocation(parameter),
                 );
-            if (!type) {
+            if (!mapped) {
                 this.context.fail(
                     parameter,
                     "Recursive callback parameters must have plain-data types.",
                 );
             }
+            const type = this.context.dataTypes.engineParameterStorage(
+                parameter,
+                mapped,
+            );
             const byReference = passesByReference(this.context.dataTypes, type);
             const readOnly = parameterIsReadOnly(
                 this.context.checker,
@@ -2473,12 +2626,28 @@ export class DeclarationLowerer {
                     literal.elements.every(ts.isObjectLiteralExpression)
                         ? this.context.compileValue(literal)
                         : undefined;
-                const engineRecordSnapshot =
-                    this.hasReadonlyEngineField(type, declaration) &&
+                const resourceRecordSnapshot =
+                    this.hasReadonlyResourceField(type, declaration) &&
                     !this.context.sharedClosures.identifierIsRebound(name)
                         ? this.context.compileValue(declaration.initializer)
                         : undefined;
-                const snapshot = arraySnapshot ?? engineRecordSnapshot;
+                const resourceArraySnapshot =
+                    type.kind === "vector" &&
+                    type.element.kind === "handle" &&
+                    !sharedClosureStorage &&
+                    !this.context.sharedClosures.identifierIsRebound(name)
+                        ? this.context.compileValue(declaration.initializer)
+                        : undefined;
+                const snapshot =
+                    arraySnapshot ??
+                    resourceRecordSnapshot ??
+                    resourceArraySnapshot;
+                if (snapshot)
+                    type = this.context.dataLowerer.retainedResultType(
+                        snapshot,
+                        type,
+                        declaration.initializer,
+                    );
                 const initializer = snapshot
                     ? this.context.dataLowerer.compileKnownValueForSink(
                           snapshot,
@@ -2515,16 +2684,23 @@ export class DeclarationLowerer {
                         ? { sharedStorageCpp: cppName }
                         : {}),
                 };
-                if (engineRecordSnapshot) {
-                    const properties = this.projectReadonlyEngineProperties(
+                if (resourceRecordSnapshot) {
+                    const properties = this.projectReadonlyResourceProperties(
                         bound.cpp,
                         type,
-                        engineRecordSnapshot,
+                        resourceRecordSnapshot,
                         declaration,
                     );
                     if (properties)
                         writable(bound).recordProperties = properties;
                 }
+                const resourceElements =
+                    resourceArraySnapshot?.tupleElements ??
+                    resourceArraySnapshot?.staticElementsOwner
+                        ?.staticElements ??
+                    resourceArraySnapshot?.staticElements;
+                if (resourceElements)
+                    writable(bound).staticElements = resourceElements;
                 this.context.bindings.defineVariable(name, bound);
                 if (arraySnapshot)
                     this.context.dataLowerer.retainArrayLiteralFacts(
@@ -2563,11 +2739,47 @@ export class DeclarationLowerer {
         // representation here exactly as it would as a field or an element;
         // otherwise `let c: C | null = null` would keep the initializer's
         // null as the binding's only representation.
-        let annotated = this.context.sharedClosures.identifierIsRebound(name)
+        const rebound = this.context.sharedClosures.identifierIsRebound(name);
+        let annotated = rebound
             ? this.context.dataTypes.fromStoredTsType(declaredType, typeSite)
             : this.context.dataTypes.fromTsType(declaredType, typeSite);
+        if (!annotated && rebound) {
+            const record =
+                this.context.checker.getNonNullableType(declaredType);
+            if (
+                isPlainRecord(this.context.checker, record) ||
+                isRecordUnion(this.context.checker, record)
+            )
+                annotated = this.context.dataTypes.withDynamicJsonTypes(
+                    true,
+                    () =>
+                        this.context.dataTypes.fromStoredTsType(
+                            declaredType,
+                            typeSite,
+                        ),
+                );
+        }
+        if (
+            !annotated &&
+            ((this.context.checker.getNonNullableType(declaredType).flags &
+                ts.TypeFlags.NonPrimitive) !==
+                0 ||
+                (rebound && (declaredType.flags & ts.TypeFlags.Unknown) !== 0))
+        )
+            annotated = this.context.dataTypes.dynamicJsonType(declaredType);
         const declaredRecord =
             annotated?.kind === "optional" ? annotated.inner : annotated;
+        // An unrelated source-authored object keeps its own identity even
+        // when the same structural annotation also views a native service.
+        // Rebound or later retained storage still has to admit every value.
+        if (
+            !rebound &&
+            ts.isObjectLiteralExpression(
+                this.context.unwrap(declaration.initializer),
+            ) &&
+            this.context.dataTypes.hasNativeRecordView(declaredType)
+        )
+            return false;
         if (declaredRecord?.kind === "struct") {
             const sourceType = this.context.checker.getTypeAtLocation(
                 declaration.initializer,
@@ -2866,7 +3078,7 @@ export class DeclarationLowerer {
                       staticNumber: value,
                   }))
                 : undefined;
-        const staticElements =
+        let staticElements: readonly Value[] | undefined =
             annotated.kind === "vector" &&
             ts.isArrayLiteralExpression(initializer) &&
             initializer.elements.length === 0
@@ -2936,13 +3148,32 @@ export class DeclarationLowerer {
             });
         }
         const initializerBoundary = this.context.nativeBindingCheckpoint();
-        const readonlyEngineCall =
+        const readonlyResourceCall =
             ts.isCallExpression(initializer) &&
             !this.context.sharedClosures.identifierIsRebound(name) &&
-            this.hasReadonlyEngineField(annotated, initializer);
+            this.hasReadonlyResourceField(annotated, initializer);
+        const recordArrayLiteral =
+            annotated.kind === "vector" &&
+            annotated.element.kind === "struct" &&
+            !sharedClosureStorage &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            ts.isArrayLiteralExpression(initializer) &&
+            initializer.elements.every(ts.isObjectLiteralExpression);
         const initializerSnapshot =
-            readonlyEngineCall ||
+            readonlyResourceCall ||
+            recordArrayLiteral ||
+            (annotated.kind === "vector" &&
+                annotated.element.kind === "handle" &&
+                ts.isArrayLiteralExpression(initializer)) ||
+            (ts.isCallExpression(initializer) &&
+                this.context.dataTypes.carriesHandle(annotated) &&
+                !this.context.sharedClosures.identifierIsRebound(name)) ||
             (annotated.kind === "http-response" &&
+                !this.context.sharedClosures.identifierIsRebound(name)) ||
+            // A literal stored as a document keeps its evaluated facts.
+            (annotated.kind === "json" &&
+                ts.isObjectLiteralExpression(initializer) &&
+                !initializer.properties.some(ts.isSpreadAssignment) &&
                 !this.context.sharedClosures.identifierIsRebound(name)) ||
             (spreadTarget &&
                 ((ts.isObjectLiteralExpression(initializer) &&
@@ -2950,6 +3181,24 @@ export class DeclarationLowerer {
                     ts.isConditionalExpression(initializer)))
                 ? this.context.compileValue(initializer)
                 : undefined;
+        if (initializerSnapshot && !selfLiteral && !selfReferentialBinding)
+            annotated = this.context.dataLowerer.retainedResultType(
+                initializerSnapshot,
+                annotated,
+                initializer,
+            );
+        const returnedElements =
+            initializerSnapshot?.tupleElements ??
+            initializerSnapshot?.staticElementsOwner?.staticElements ??
+            initializerSnapshot?.staticElements;
+        if (
+            staticElements === undefined &&
+            staticHandleElementType &&
+            returnedElements?.every(
+                (element) => element.kind === staticHandleElementType.handle,
+            )
+        )
+            staticElements = returnedElements;
         const boundCpp =
             sharedDataBinding || selfReferentialBinding
                 ? `(*${cppName})`
@@ -3070,14 +3319,14 @@ export class DeclarationLowerer {
                 : "copy",
         );
         const staticRecordProperties: Record<string, Value> = {
-            ...(readonlyEngineCall
+            ...(readonlyResourceCall
                 ? {}
                 : (initializerSnapshot?.recordProperties ?? {})),
         };
-        if (readonlyEngineCall && initializerSnapshot)
+        if (readonlyResourceCall && initializerSnapshot)
             Object.assign(
                 staticRecordProperties,
-                this.projectReadonlyEngineProperties(
+                this.projectReadonlyResourceProperties(
                     boundCpp,
                     annotated,
                     initializerSnapshot,
@@ -3104,6 +3353,34 @@ export class DeclarationLowerer {
                 ) {
                     staticRecordProperties[property.name.text] = value;
                 }
+            }
+        }
+        // Give nested handle arrays the native field's one invalidatable snapshot.
+        // Later reads share it; aliases, element writes and escapes withdraw it.
+        if (annotated.kind === "struct") {
+            const reference = this.context.dataTypes.isReferenceStruct(
+                annotated.name,
+            );
+            for (const field of this.context.dataTypes.structFields(
+                annotated.name,
+                initializer,
+                "accessors",
+            )) {
+                const source = staticRecordProperties[field.sourceName];
+                if (
+                    field.accessor ||
+                    field.type.kind !== "vector" ||
+                    field.type.element.kind !== "handle" ||
+                    !source?.tupleElements
+                )
+                    continue;
+                staticRecordProperties[field.sourceName] = {
+                    ...this.context.dataLowerer.leafValue(
+                        `${boundCpp}${reference ? "->" : "."}${field.name}`,
+                        field.type,
+                    ),
+                    staticElements: source.tupleElements,
+                };
             }
         }
         // A selected object's settled presence: a record is there, a
@@ -3176,24 +3453,35 @@ export class DeclarationLowerer {
                 : {}),
         };
         const represented =
-            annotated.kind === "error"
+            annotated.kind === "tagged"
                 ? withNativeMetadata(
-                      boundValue,
                       this.context.dataLowerer.leafValue(boundCpp, annotated),
+                      boundValue,
                   )
-                : annotated.kind === "promise" ||
-                    annotated.kind === "module-namespace"
+                : annotated.kind === "error"
                   ? withNativeMetadata(
-                        this.context.dataValue(boundCpp, annotated),
                         boundValue,
+                        this.context.dataLowerer.leafValue(boundCpp, annotated),
                     )
-                  : boundValue;
+                  : annotated.kind === "promise" ||
+                      annotated.kind === "module-namespace"
+                    ? withNativeMetadata(
+                          this.context.dataValue(boundCpp, annotated),
+                          boundValue,
+                      )
+                    : boundValue;
         // The literal or the shared cell already bound the name.
         if (selfReferentialBinding || selfLiteral) {
             this.context.bindings.rebindVariable(name, represented);
         } else {
             this.context.bindings.defineVariable(name, represented);
         }
+        if (recordArrayLiteral && initializerSnapshot)
+            this.context.dataLowerer.retainArrayLiteralFacts(
+                represented,
+                initializerSnapshot,
+                declaration.initializer,
+            );
         return true;
     }
 
@@ -3216,22 +3504,17 @@ export class DeclarationLowerer {
             : owned;
     }
 
-    private hasReadonlyEngineField(type: DataType, node: ts.Node): boolean {
+    private hasReadonlyResourceField(type: DataType, node: ts.Node): boolean {
         return (
             type.kind === "struct" &&
             this.context.dataTypes
                 .structFields(type.name, node, "accessors")
-                .some(
-                    (field) =>
-                        field.readOnly &&
-                        field.type.kind === "handle" &&
-                        field.type.handle === "engine",
-                )
+                .some((field) => field.readOnly && field.type.kind === "handle")
         );
     }
 
     /** Read live fields from storage; only proven readonly owners keep identity. */
-    private projectReadonlyEngineProperties(
+    private projectReadonlyResourceProperties(
         cpp: string,
         type: DataType,
         source: Value,
@@ -3257,7 +3540,15 @@ export class DeclarationLowerer {
                 : undefined;
             if (identity && member.kind === "engine")
                 writable(member).engineIdentity = identity;
-            properties[field.sourceName] = member;
+            const known = field.readOnly
+                ? source.recordProperties?.[field.sourceName]
+                : undefined;
+            properties[field.sourceName] =
+                known && field.type.kind === "handle" && !field.type.ownedEngine
+                    ? commonResourceValue(withNativeMetadata(member, known), [
+                          known,
+                      ])
+                    : member;
         }
         return properties;
     }
@@ -4074,7 +4365,9 @@ export class DeclarationLowerer {
                     element,
                     this.context.dataLowerer.leafValue(
                         `${temporary}.at(${index}.0)`,
-                        { kind: "json" },
+                        {
+                            kind: "json",
+                        },
                     ),
                 );
             });

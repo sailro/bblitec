@@ -275,7 +275,8 @@ const assignmentControls = [
 
 test("ordinary array assignment shares cardinality after static elements are withdrawn", () => {
     const result = compileSource(assignmentControls[0]);
-    assert.match(result.cpp, /for \(auto&& .* : v_values\)/);
+    assert.match(result.cpp, /const auto& \w+ = v_values;/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.match(result.cpp, /v_total \+=/);
 });
 
@@ -300,7 +301,8 @@ test("array rebinding detaches only the destination's cardinality", () => {
 test("unproven assignment aliases cannot retain an empty-collection shortcut", () => {
     for (const source of assignmentControls.slice(4, 6)) {
         const result = compileSource(`async function main() { ${source} }`);
-        assert.match(result.cpp, /for \(auto&& .* : v_values\)/);
+        assert.match(result.cpp, /const auto& \w+ = v_values;/);
+        assert.match(result.cpp, /for \(std::size_t/);
         assert.match(result.cpp, /v_total \+=/);
     }
 });
@@ -652,7 +654,8 @@ test("parameterizes nested counted and homogeneous static for-of resource loops"
     );
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.manifest.sceneMeshes.length, 4096);
-    assert.match(result.cpp, /for \(auto&& \w+ : v_columns\)/);
+    assert.match(result.cpp, /const auto& \w+ = v_columns;/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.ok(Buffer.byteLength(result.cpp) < 6000);
 });
 
@@ -666,7 +669,7 @@ test("parameterizes a static literal resource for-of without replaying its data 
     );
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.manifest.sceneMeshes.length, 300);
-    assert.match(result.cpp, /for \(auto&&/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.ok(Buffer.byteLength(result.cpp) < 6000);
 });
 
@@ -711,7 +714,8 @@ test("keeps collected runtime handles live rather than snapshotting one loop ite
     );
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.cpp.match(/\.rotation\.y \+=/g)?.length, 1);
-    assert.match(result.cpp, /for \(auto&& \w+ : v_meshes\)/);
+    assert.match(result.cpp, /const auto& \w+ = v_meshes;/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.doesNotMatch(result.cpp, /handle_table/);
     assert.equal(result.manifest.sceneMeshes.length, 300);
 });
@@ -1427,7 +1431,7 @@ test("small sign loops do not duplicate an expensive data callback", () => {
         };
         for (const sign of [1, -1] as const) patch(sign);
     `);
-    assert.match(result.cpp, /for \([^\n]*auto&&/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 80);
 });
 
@@ -1442,7 +1446,7 @@ test("materializing a literal data iteration evaluates each operand only once", 
             }
         }
     `);
-    assert.match(result.cpp, /for \(auto&&/);
+    assert.match(result.cpp, /for \(std::size_t/);
     assert.equal(result.cpp.match(/v_calls\+\+;/g)?.length, 1);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 80);
 });

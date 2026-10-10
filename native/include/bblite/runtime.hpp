@@ -766,6 +766,14 @@ struct VatData {
 struct BillboardSpriteHandle {
     BillboardSystemHandle system{};
     std::uint32_t id = invalid_handle;
+
+    /** IDs are never reused within a system, including after removal or clear. */
+    [[nodiscard]] std::pair<std::uint32_t, std::uint32_t> identity() const noexcept {
+        return {system.value, id};
+    }
+    [[nodiscard]] bool operator==(const BillboardSpriteHandle& other) const noexcept {
+        return identity() == other.identity();
+    }
 };
 
 /** Which sprite family a frame animation drives. */
@@ -4449,6 +4457,13 @@ public:
         : pointer_(engine.get()),
           lifetime_(engine ? engine->lifetime.token() : std::weak_ptr<const int>{}),
           owner_(std::move(engine)) {}
+
+    /** A lookup key naming `engine` by identity alone; it is never dereferenced or stored. */
+    [[nodiscard]] static StoredEngine borrowed(Engine& engine) noexcept {
+        StoredEngine key;
+        key.pointer_ = &engine;
+        return key;
+    }
 
     [[nodiscard]] Engine& operator*() const {
         if (!pointer_ || lifetime_.expired())

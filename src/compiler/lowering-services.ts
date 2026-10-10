@@ -167,10 +167,17 @@ export interface LoweringServices {
         target: Value,
         source: ts.Expression,
         destination?: ts.Expression,
+        constructedArray?: boolean,
     ): boolean;
     isNativeUiValueExpression(expression: ts.Expression): boolean;
     emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
     emitUiDatasetProperty(
+        element: Value,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void;
+    emitUiStyleValue(
         element: Value,
         property: string,
         value: Value,
@@ -435,6 +442,7 @@ export interface LoweringServices {
         site: ts.Node,
     ): string[];
     useNativeValue(value: Value, seen?: Set<Value>): void;
+    describeNativeValue(value: Value): void;
     captureNativeExpression(compile: () => string): NativeExpression;
     captureNativeDependencies<T>(compile: () => T): {
         value: T;
@@ -609,11 +617,25 @@ export interface LoweringServices {
     recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
     recordCollectionClear(value: Value): void;
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
+    sameEngineOwner(left: string, right: string): boolean;
+    capturedEngineOwnerIdentity(
+        value: Value,
+        captures: readonly NativeCaptureBinding[],
+    ): symbol | undefined;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     requireEngine(value: Value, node: ts.Node): string;
+    storedResourceEngine(value: Value, node: ts.Node): string;
+    selectResourceOwner(
+        value: Value,
+        candidates: readonly Value[],
+        index: Value,
+        node: ts.Node,
+    ): Value;
     engineFor(value: Value, node: ts.Node): string;
     audioSessionCpp(): string;
     requireDefaultEngine(node: ts.Node): string;
+    /** The entry's engine binding where no explicit engine parameter scopes the body. */
+    entryEngineInScope(): string | undefined;
     requirePresentationHost(node: ts.Node): string;
     pbrLightmapEnabled(): boolean;
     reachFeature(feature: Feature, site?: ts.Node | string): void;

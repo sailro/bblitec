@@ -7,15 +7,21 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "../data-types.js";
-import type { Value } from "../types.js";
+import { convertsToSceneNode } from "../data-types/handles.js";
+import {
+    representedStorage,
+    withNativeMetadata,
+    type Value,
+} from "../types.js";
 
 import { pickedMeshHandleCpp } from "../properties.js";
 import { resolvedSymbol } from "../symbols.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import type { LoweringServices } from "../lowering-services.js";
 
 /** A singleton cloned-root container shares the clone's mesh-only asset record. */
 export function projectAssetContainer(
-    context: Pick<DataSinkHost["context"], "requireEngine">,
+    context: Pick<LoweringServices, "requireEngine" | "dataLowerer">,
     value: Value,
     node: ts.Node,
 ): Value | undefined {
@@ -32,14 +38,40 @@ export function projectAssetContainer(
     if (root?.kind === "asset-root" && root.assetRootClone)
         return { ...root, kind: "asset" };
     if (root?.kind === "scene-node" && root.sceneNodeClone) {
-        return {
+        const projected: Value = {
             kind: "asset",
             cpp: `bbl::cloned_asset_container(${root.cpp})`,
             engineCpp: context.requireEngine(root, node),
             assetKind: "gltf",
             assetRootClone: true,
             assetRootState: { reparented: false },
+            ...(root.nativeCaptures
+                ? { nativeCaptures: root.nativeCaptures }
+                : {}),
+            ...(root.nativeCompanionCaptures?.engineCpp
+                ? {
+                      nativeCompanionCaptures: {
+                          engineCpp: root.nativeCompanionCaptures.engineCpp,
+                      },
+                  }
+                : {}),
         };
+        const storage: DataType<"handle"> = {
+            kind: "handle",
+            handle: "asset",
+            ownedEngine: true,
+        };
+        return withNativeMetadata(
+            context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    projected,
+                    storage,
+                    node,
+                ),
+                storage,
+            ),
+            projected,
+        );
     }
     return undefined;
 }
@@ -69,7 +101,7 @@ function expressionHandle(
     }
     if (
         dataType.handle === "scene-node" &&
-        ["mesh", "transform-node", "asset-root"].includes(rawValue.kind)
+        convertsToSceneNode(rawValue.kind)
     ) {
         return lowerer.compileKnownValueForSink(rawValue, dataType, unwrapped);
     }
@@ -235,6 +267,32 @@ function valueResource(
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    if (dataType.kind === "handle" && dataType.ownedEngine) {
+        if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
+            const storage = representedStorage(value);
+            if (!storage)
+                return lowerer.context.fail(
+                    node,
+                    "An owned resource requires its represented storage.",
+                );
+            return storage.cpp;
+        }
+        const rawType = { kind: "handle", handle: dataType.handle } as const;
+        const raw = lowerer.compileKnownValueForSink(value, rawType, node);
+        // A SpriteAtlas without an engine is a record, which materializes
+        // into the entry point's engine (compileSpriteAtlasRecord), which
+        // therefore owns the pair.
+        const owner = lowerer.context.storedResourceEngine(
+            !value.engineCpp && dataType.handle === "sprite-atlas"
+                ? {
+                      ...value,
+                      engineCpp: lowerer.context.requireDefaultEngine(node),
+                  }
+                : value,
+            node,
+        );
+        return `${lowerer.context.dataTypes.cppType(dataType)}{${owner}, ${raw}}`;
+    }
     if (
         dataType.kind === "handle" &&
         dataType.handle === "dom-event-identity"
@@ -285,9 +343,7 @@ function valueResource(
     if (
         dataType.kind === "handle" &&
         dataType.handle === "scene-node" &&
-        (value.kind === "mesh" ||
-            value.kind === "transform-node" ||
-            value.kind === "asset-root")
+        convertsToSceneNode(value.kind)
     ) {
         return `bbl::SceneNodeHandle{${value.cpp}}`;
     }

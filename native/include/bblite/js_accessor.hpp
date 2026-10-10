@@ -3,6 +3,7 @@
 #include <bblite/js_callback.hpp>
 #include <bblite/js_error.hpp>
 
+#include <cstddef>
 #include <exception>
 #include <string>
 #include <tuple>
@@ -42,6 +43,16 @@ public:
         else
             value_ = std::move(value);
     }
+    void define(Accessor replacement, bool configurable, bool preserve_setter = false) {
+        if (preserve_setter)
+            replacement.setter_ = setter_;
+        if (!configurable_ &&
+            (configurable || getter_ != replacement.getter_ || setter_ != replacement.setter_))
+            std::rethrow_exception(
+                make_error("TypeError", "Cannot redefine a nonconfigurable property"));
+        replacement.configurable_ = configurable;
+        *this = std::move(replacement);
+    }
     void gc_trace(const TraceVisitor& visitor) const {
         if constexpr (gc_traceable<T>)
             visitor(value_);
@@ -53,18 +64,31 @@ private:
     T value_{};
     Callback<T()> getter_;
     Callback<void(T)> setter_;
+    bool configurable_ = true;
 };
 
 /** A finite record slot whose authored accessor observes the supplied receiver. */
 template <typename T, typename Receiver> class ReceiverAccessor {
 public:
+    struct DescriptorState {
+        bool configurable;
+        std::size_t getter_identity;
+        std::size_t setter_identity;
+        bool has_getter;
+        bool has_setter;
+    };
+
     ReceiverAccessor() = default;
-    explicit ReceiverAccessor(T value) : value_(std::move(value)) {}
+    explicit ReceiverAccessor(T value) : value_(std::move(value)), own_(true) {}
     ReceiverAccessor(Callback<T(Receiver)> getter, Callback<bool(Receiver, T)> setter,
                      Callback<bool()> presence = {}, Callback<bool()> remove = {},
-                     Callback<bool(T)> define = {})
+                     Callback<bool(T)> define = {},
+                     Callback<bool(ReceiverAccessor, bool, bool)> define_descriptor = {},
+                     Callback<DescriptorState()> descriptor = {})
         : getter_(std::move(getter)), setter_(std::move(setter)), presence_(std::move(presence)),
-          remove_(std::move(remove)), define_(std::move(define)) {}
+          remove_(std::move(remove)), define_(std::move(define)),
+          define_descriptor_(std::move(define_descriptor)), descriptor_(std::move(descriptor)),
+          own_(true) {}
 
     void bind_receiver(const Receiver& receiver) {
         if (getter_ || setter_)
@@ -86,24 +110,21 @@ public:
         if (getter_)
             return false;
         value_ = std::move(value);
+        own_ = true;
         return true;
     }
     [[nodiscard]] bool has_own() const {
         if (presence_)
             return presence_();
-        if (getter_ || setter_)
-            return true;
-        if constexpr (requires(T value) { value.is_undefined(); })
-            return !value_.is_undefined();
-        else if constexpr (requires(T value) { static_cast<bool>(value); })
-            return static_cast<bool>(value_);
-        else
-            return true;
+        return own_;
     }
     [[nodiscard]] bool erase() {
         if (remove_)
             return remove_();
+        if (!configurable_)
+            return false;
         replace(T{});
+        own_ = false;
         return true;
     }
     [[nodiscard]] bool define_value(T value, bool optional_property = false) {
@@ -115,6 +136,64 @@ public:
         replace(std::move(value));
         return true;
     }
+    [[nodiscard]] DescriptorState descriptor_state() const {
+        return descriptor_
+                   ? descriptor_()
+                   : DescriptorState{configurable_, getter_.identity(), setter_.identity(),
+                                     static_cast<bool>(getter_), static_cast<bool>(setter_)};
+    }
+    [[nodiscard]] bool try_define(ReceiverAccessor replacement, bool configurable,
+                                  bool preserve_setter, const Receiver& receiver) {
+        if (define_descriptor_)
+            return define_descriptor_(std::move(replacement), configurable, preserve_setter);
+        if (preserve_setter)
+            replacement.setter_ = setter_;
+        if (!configurable_ &&
+            (configurable || getter_ != replacement.getter_ || setter_ != replacement.setter_))
+            return false;
+        replacement.configurable_ = configurable;
+        replacement.own_ = true;
+        replacement.bind_receiver(receiver);
+        *this = std::move(replacement);
+        return true;
+    }
+    void define(ReceiverAccessor replacement, bool configurable, bool preserve_setter,
+                const Receiver& receiver) {
+        if (!try_define(std::move(replacement), configurable, preserve_setter, receiver))
+            std::rethrow_exception(make_error("TypeError", "Cannot redefine the property"));
+    }
+    /** A successful trap cannot invent a nonconfigurable property or change a locked accessor. */
+    [[nodiscard]] bool check_proxy_definition(const ReceiverAccessor& replacement,
+                                              bool configurable, bool preserve_setter) const {
+        const auto state = descriptor_state();
+        if ((!configurable && state.configurable) ||
+            (!state.configurable &&
+             (configurable || state.getter_identity != replacement.getter_.identity() ||
+              (!preserve_setter && state.setter_identity != replacement.setter_.identity()))))
+            std::rethrow_exception(
+                make_error("TypeError", "Proxy trap violated property invariants"));
+        return true;
+    }
+    [[nodiscard]] bool check_proxy_set() const {
+        const auto state = descriptor_state();
+        if (!state.configurable && state.has_getter && !state.has_setter)
+            std::rethrow_exception(
+                make_error("TypeError", "Proxy trap violated property invariants"));
+        return true;
+    }
+    [[nodiscard]] bool check_proxy_delete() const {
+        if (!descriptor_state().configurable)
+            std::rethrow_exception(
+                make_error("TypeError", "Proxy trap violated property invariants"));
+        return true;
+    }
+    [[nodiscard]] bool check_proxy_value_definition() const {
+        const auto state = descriptor_state();
+        if (!state.configurable && (state.has_getter || state.has_setter))
+            std::rethrow_exception(
+                make_error("TypeError", "Proxy trap violated property invariants"));
+        return true;
+    }
     void gc_trace(const TraceVisitor& visitor) const {
         if constexpr (gc_traceable<T>)
             visitor(value_);
@@ -124,6 +203,8 @@ public:
         visitor(presence_);
         visitor(remove_);
         visitor(define_);
+        visitor(define_descriptor_);
+        visitor(descriptor_);
     }
 
 private:
@@ -134,8 +215,13 @@ private:
     Callback<bool()> presence_;
     Callback<bool()> remove_;
     Callback<bool(T)> define_;
+    Callback<bool(ReceiverAccessor, bool, bool)> define_descriptor_;
+    Callback<DescriptorState()> descriptor_;
+    bool configurable_ = true;
+    bool own_ = false;
     void replace(T value) {
         value_ = std::move(value);
+        own_ = true;
         receiver_ = {};
         getter_ = {};
         setter_ = {};

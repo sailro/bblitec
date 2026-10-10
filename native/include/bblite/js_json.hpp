@@ -384,6 +384,20 @@ struct JsonNativeObject {
     [[nodiscard]] virtual bbl::js::Array<std::string> own_keys() const = 0;
     [[nodiscard]] virtual const std::type_info& type() const = 0;
     [[nodiscard]] virtual const void* identity() const = 0;
+    [[nodiscard]] virtual bool has_own(std::string_view key) const {
+        for (const auto& name : own_keys())
+            if (name == key)
+                return true;
+        return false;
+    }
+    [[nodiscard]] virtual bool has_property(std::string_view key) const { return has_own(key); }
+    [[nodiscard]] virtual std::string to_string() const { return "[object Object]"; }
+    virtual void set(std::string_view, const JsonValue&) {
+        throw std::runtime_error("Dynamic property assignment requires an owned object.");
+    }
+    virtual void remove(std::string_view) {
+        throw std::runtime_error("Dynamic property deletion requires an owned object.");
+    }
     virtual void gc_trace(const TraceVisitor& visitor) const = 0;
 };
 
@@ -648,6 +662,19 @@ public:
         return {};
     }
 
+    /** JavaScript member reads reject nullish receivers; dictionary lookups use get/at. */
+    [[nodiscard]] JsonValue read_property(std::string_view key) const {
+        if (is_null() || is_undefined())
+            throw_nullish_access();
+        return get(key);
+    }
+
+    [[nodiscard]] JsonValue read_index(double index) const {
+        if (is_null() || is_undefined())
+            throw_nullish_access();
+        return at(index);
+    }
+
     template <typename Visitor> void for_each_entry(Visitor&& visitor) const {
         if (native_) {
             for (const auto& key : own_keys())
@@ -669,21 +696,29 @@ public:
                 (*array_)[*index] = std::move(value);
             return;
         }
-        if (kind_ != Kind::object || native_)
+        if (kind_ != Kind::object)
             throw std::runtime_error("Dynamic property assignment requires an owned object.");
+        if (native_) {
+            native_->set(key, value);
+            return;
+        }
         set_entry(*object_, key, std::move(value));
     }
 
     /** Deletes an owned object's own property. */
     void remove(std::string_view key) const {
-        if (kind_ != Kind::object || native_)
+        if (kind_ != Kind::object)
             throw std::runtime_error("Dynamic property deletion requires an owned object.");
+        if (native_) {
+            native_->remove(key);
+            return;
+        }
         std::erase_if(*object_, [&](const Entry& entry) { return entry.first == key; });
     }
 
     /** Object.assign keeps the target identity; arguments are already evaluated. */
     void assign(std::initializer_list<JsonValue> sources) const {
-        if (kind_ != Kind::object || native_)
+        if (kind_ != Kind::object)
             throw std::runtime_error("Object.assign requires an owned dynamic object target.");
         const auto copy_entry = [this](std::string_view key, const JsonValue& value) {
             if (key == "__proto__" && !has_own(key))
@@ -760,10 +795,7 @@ public:
             throw std::runtime_error("Cannot inspect null or undefined.");
         if (is_object()) {
             if (native_) {
-                for (const auto& name : native_->own_keys())
-                    if (name == key)
-                        return true;
-                return false;
+                return native_->has_own(key);
             }
             for (const auto& entry : *object_)
                 if (entry.first == key)
@@ -781,7 +813,7 @@ public:
     [[nodiscard]] bool has_property(std::string_view key) const {
         if (!is_object() && !is_array())
             throw std::runtime_error("The right side of in must be an object.");
-        if (has_own(key))
+        if (native_ ? native_->has_property(key) : has_own(key))
             return true;
         if (object_prototype_has_property(key))
             return true;
@@ -852,7 +884,7 @@ public:
         case Kind::object:
             break;
         }
-        return "[object Object]";
+        return native_ ? native_->to_string() : "[object Object]";
     }
 
     [[nodiscard]] const std::string& string_value() const {
@@ -980,6 +1012,20 @@ inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue
 }
 
 [[nodiscard]] inline JsonValue json_value(const JsonValue& value) { return value; }
+[[nodiscard]] inline JsonValue json_value(const Error& value) {
+    if (value.object())
+        throw std::runtime_error(
+            "Authored Error reflection requires represented property descriptors.");
+    try {
+        std::rethrow_exception(value);
+    } catch (const AggregateError&) {
+        throw std::runtime_error(
+            "AggregateError reflection requires represented property descriptors.");
+    } catch (const std::exception&) {
+        // Any other builtin Error serializes through its native view.
+        return JsonValue::from_native(value);
+    }
+}
 [[nodiscard]] inline JsonValue json_value(Undefined) { return {}; }
 
 [[nodiscard]] inline JsonValue json_value(Null) { return JsonValue::null_value(); }
@@ -1081,6 +1127,46 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
         else
             return value.get();
     }
+    void set(std::string_view key, const JsonValue& member) override {
+        if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>)
+            value.set(std::string(key), member);
+        else
+            JsonNativeObject::set(key, member);
+    }
+    void remove(std::string_view key) override {
+        if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>)
+            static_cast<void>(value.erase(std::string(key)));
+        else
+            JsonNativeObject::remove(key);
+    }
+    void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
+};
+
+/** Error views retain the exception owner; its standard fields are not enumerable. */
+template <> struct JsonNativeBox<Error> final : JsonNativeObject {
+    Error value;
+    explicit JsonNativeBox(Error source) : value(std::move(source)) {}
+    JsonValue get(std::string_view key) const override {
+        if (key == "name")
+            return json_value(error_name(value));
+        if (key == "message")
+            return json_value(error_message(value));
+        if (key == "cause" && error_has_own(value, key))
+            return json_value(error_cause(value));
+        if (key == "errors" && error_has_own(value, key))
+            throw std::runtime_error("AggregateError.errors requires a retained error-array view.");
+        return {};
+    }
+    bbl::js::Array<std::string> own_keys() const override { return {}; }
+    bool has_own(std::string_view key) const override { return error_has_own(value, key); }
+    bool has_property(std::string_view key) const override {
+        return key == "name" || key == "message" || has_own(key);
+    }
+    std::string to_string() const override {
+        return error_to_string(error_name(value), error_message(value));
+    }
+    const std::type_info& type() const override { return typeid(Error); }
+    const void* identity() const override { return value.identity(); }
     void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
 };
 
@@ -1185,7 +1271,9 @@ public:
     bool null() { return append(JsonValue::null_value()); }
     bool boolean(bool value) { return append(JsonValue::from_boolean(value)); }
     bool number_integer(nlohmann::json::number_integer_t value) {
-        return append(JsonValue::from_number(static_cast<double>(value)));
+        // The JSON lexer sends positive integer tokens to number_unsigned;
+        // a signed integer token starts with '-', so its zero is exactly -0.
+        return append(JsonValue::from_number(value == 0 ? -0.0 : static_cast<double>(value)));
     }
     bool number_unsigned(nlohmann::json::number_unsigned_t value) {
         return append(JsonValue::from_number(static_cast<double>(value)));

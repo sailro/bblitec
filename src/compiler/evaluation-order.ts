@@ -206,6 +206,8 @@ export class EvaluationOrder {
     private readonly direct = new Map<Unit, DirectAccess>();
     /** @unjournaled A cache of one unit's reachable accesses, from source alone. */
     private readonly summaries = new Map<Unit, Access>();
+    /** @unjournaled A cache of one node's reachable accesses, from source alone. */
+    private readonly accesses = new WeakMap<ts.Node, Access>();
     /** @unjournaled A cache of whether one unit answers from its arguments alone. */
     private readonly deterministic = new Map<Unit, boolean>();
     /** @unjournaled Module effects depend only on checked source bodies. */
@@ -249,6 +251,12 @@ export class EvaluationOrder {
     /** Whether evaluating `node` can write any variable or object state. */
     public writesStorage(node: ts.Node): boolean {
         return touchesAnything(this.access(node).writes);
+    }
+
+    /** Whether evaluation can change any array's elements or membership. */
+    public mayWriteArray(node: ts.Node): boolean {
+        const writes = this.access(node).writes;
+        return writes.any || writes.arrays;
     }
 
     /**
@@ -702,6 +710,8 @@ export class EvaluationOrder {
 
     /** Everything evaluating `node` touches, the functions it calls included. */
     private access(node: ts.Node): Access {
+        const known = this.accesses.get(node);
+        if (known) return known;
         const direct = this.walk([node], undefined);
         const access: Access = {
             reads: direct.reads,
@@ -712,6 +722,7 @@ export class EvaluationOrder {
             merge(access.reads, summary.reads);
             merge(access.writes, summary.writes);
         });
+        this.accesses.set(node, access);
         return access;
     }
 

@@ -1,0 +1,102 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Map.set keys, method receivers and for...of arrays decide a copy with operandsToPin and copy through the existing pin helpers; the receiver check includes the called body.",
+      "applied": true
+    },
+    {
+      "summary": "Engine-carrier disagreement is decided once inside commonResourceValue instead of by two call sites with different rules.",
+      "applied": true
+    },
+    {
+      "summary": "trackRetainedCaptureName reuses the cppIdentifiers tokenizer, and requireEngine uses a value's own engine companion captures.",
+      "applied": true
+    },
+    {
+      "summary": "A SpriteAtlas owner pair names the entry engine its record materializes into; the const-initializer re-read is removed.",
+      "applied": true
+    },
+    {
+      "summary": "Engine-owned parameter storage is one helper (engineParameterStorage) instead of four hand-written rules.",
+      "applied": true
+    },
+    {
+      "summary": "Completion facts share one key list for stripping and joining function storage.",
+      "applied": true
+    },
+    {
+      "summary": "requireCopiedOwnUndefinedFields takes its source value instead of two optional parameters.",
+      "applied": true
+    },
+    {
+      "summary": "Stored class-field stores share storeClassField; scene-node source kinds share convertsToSceneNode.",
+      "applied": true
+    },
+    {
+      "summary": "JSON union member choice filters document members once; property keys try jsonValueCpp before the handle and function arms.",
+      "applied": true
+    },
+    {
+      "summary": "Owned-to-plain array spreads use the per-element conversion; the plain-to-owned engine proof uses commonResourceValue.",
+      "applied": true
+    },
+    {
+      "summary": "Absent nullable resources use nullableResourceValue's default value; the retained-result element demand passes its constant.",
+      "applied": true
+    },
+    {
+      "summary": "Await results register an owned engine pair once, as a const binding.",
+      "applied": true
+    },
+    {
+      "summary": "Record types the pinned package declares never demand document storage, decided in documentRecordDemand for every caller.",
+      "applied": true
+    },
+    {
+      "summary": "withKindValueFacts copies named string facts; the metadata strings bound to the source's own storage are listed in spelledMetadataFields.",
+      "applied": true
+    },
+    {
+      "summary": "The picking-result engine rebase, the audio closed-enum write test and the literal-null shortcut reuse one helper each.",
+      "applied": true
+    },
+    {
+      "summary": "Single-handle storage and entry-engine ownership are handle-kind properties in handles.ts.",
+      "applied": true
+    },
+    {
+      "summary": "describeEngineCaptures merges its engine-only blocks; completion walkers share everyCompletion and fresh return walks share returnsOnly.",
+      "applied": true
+    },
+    {
+      "summary": "EvaluationOrder caches each node's access; requireOwnUndefinedWrite resolves its source type only for struct owners.",
+      "applied": true
+    },
+    {
+      "summary": "RegExp effect analysis indexes only references of constant symbols, the only ones it reads.",
+      "applied": true
+    },
+    {
+      "summary": "for...of array elements are read in place when the body changes no array and never reassigns the loop variable.",
+      "applied": true
+    },
+    {
+      "summary": "An own undefined written to an optional scalar field demands document storage only where the record's presence is read.",
+      "applied": true
+    },
+    {
+      "summary": "Owned pairs of entry-engine kinds name the in-scope entry engine, and conditional owned selections pick plain handles there.",
+      "applied": true
+    },
+    {
+      "summary": "Map, Set and array lookups of engine-owned handle keys borrow the engine identity instead of constructing an owner.",
+      "applied": true
+    }
+  ]
+}

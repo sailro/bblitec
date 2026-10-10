@@ -332,7 +332,55 @@ for (const [label, parameter, depth] of [
     });
 }
 
-test("implicit constructors refuse ambiguous contexts and unowned raw handles", () => {
+test("stored resource parameters retain their producer rather than a neighboring engine", (t) => {
+    const { cpp } = compileSource(
+        retain(
+            "engine: EngineContext, mesh: Mesh",
+            "mesh.position.x += 1; return mesh.position.x;",
+        ),
+    );
+    const factory =
+        /bbl::js::Callback<double\(\)> (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+, \[\[maybe_unused\]\] std::pair<bbl::StoredEngine, bbl::MeshHandle> \w+\);/.exec(
+            cpp,
+        );
+    assert.ok(factory, "stored callback receives the resource owner");
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        tools,
+        "engine-context-boundaries/stored-resource-parameter",
+        `
+        #define main generated_main
+        ${cpp}
+        #undef main
+        #include <cassert>
+        namespace bbl { void mark_mesh_dirty(Engine&, MeshHandle) {} }
+        int main() {
+            const bbl::js::RealmScope realm;
+            auto unrelated = std::make_shared<bbl::Engine>();
+            auto producer = std::make_shared<bbl::Engine>();
+            unrelated->meshes.emplace_back();
+            producer->meshes.emplace_back();
+            unrelated->meshes[0].position.x = 100;
+            producer->meshes[0].position.x = 7;
+            std::weak_ptr<bbl::Engine> unused = unrelated, owner = producer;
+            bblscene::${factory[2]} environment{};
+            auto callback = bblscene::${factory[1]}(
+                environment, bbl::StoredEngine{unrelated},
+                std::pair<bbl::StoredEngine, bbl::MeshHandle>{bbl::StoredEngine{producer}, {0, 0}});
+            unrelated.reset(); producer.reset();
+            assert(unused.expired() && !owner.expired());
+            assert(callback() == 8 && callback() == 9);
+            assert(owner.lock()->meshes[0].position.x == 9);
+            callback = {};
+            bbl::js::collect_cycles();
+            assert(owner.expired());
+        }
+        `,
+    );
+});
+
+test("implicit constructors refuse ambiguous or missing contexts", () => {
     for (const parameter of [
         "first: EngineContext, second: EngineContext",
         "state: {first: EngineContext, second: EngineContext}",
@@ -354,16 +402,6 @@ test("implicit constructors refuse ambiguous contexts and unowned raw handles", 
                 ),
             ),
         /requires createEngine to run first/,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                retain(
-                    "engine: EngineContext, mesh: Mesh",
-                    "mesh.position.x += 1; return mesh.position.x;",
-                ),
-            ),
-        /not associated with an engine/,
     );
 });
 

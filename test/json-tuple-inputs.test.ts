@@ -42,6 +42,39 @@ test("JSON stringify accepts represented tuple members after optional unknown ca
     });
 });
 
+test("JSON callback results retain one source record identity", async (t) => {
+    const source = `
+        function read(callback:()=>unknown):unknown { return callback(); }
+        const record={value:1};
+        const alias=record;
+        let effects=0;
+        const first=read(()=>{effects++;return record;});
+        const second=read(()=>{effects++;return alias;});
+        if(first!==second||effects!==2)throw new Error('retained identity');
+        alias.value=2;
+        if(JSON.stringify([first,second])!=='[{"value":2},{"value":2}]')throw new Error('retained mutation');
+        const other=read(()=>({value:2}));
+        if(other===first)throw new Error('distinct owner');
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "json-tuple-inputs/callback-record-identity",
+            result.cpp,
+        );
+    });
+});
+
 test("JSON tuple input still refuses unrepresented function members", () => {
     assert.throws(
         () => compileSource(`JSON.stringify([()=>1]);`),

@@ -1,5 +1,6 @@
 import {
     optionalPresentCpp,
+    representedStorage,
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
@@ -13,6 +14,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
+import { isEngineScopedHandleKind } from "./data-types/handles.js";
 import type { DataStructField, DataType } from "./data-types.js";
 import {
     classTagMember,
@@ -74,6 +76,25 @@ const successfulConstructorResourceKinds = new EmissionSet([
 interface StoredClassField extends DataStructField {
     /** The property name in the source. */
     source: string;
+}
+
+/** Store `source` into a class field slot the shared object layout allocated. */
+export function storeClassField(
+    context: Pick<LoweringServices, "emit" | "fail" | "compileForDataSink">,
+    field: Value,
+    source: ts.Expression,
+    node: ts.Node,
+): void {
+    const storage = representedStorage(field);
+    if (!storage || !field.dataType)
+        return context.fail(
+            node,
+            "Stored class field requires represented storage.",
+        );
+    context.emit({
+        kind: "expression",
+        code: `${storage.cpp} = ${context.compileForDataSink(source, field.dataType)};`,
+    });
 }
 
 /** The `super(...)` call a constructor statement consists of. */
@@ -1274,17 +1295,13 @@ export class ClassLowerer {
             // object is storage; its declaration initializer is a
             // store into that slot rather than a second binding.
             if (stored?.classStoredField) {
-                if (member.initializer) {
-                    this.context.emit({
-                        kind: "expression",
-                        code:
-                            `${stored.cpp} = ` +
-                            `${this.context.compileForDataSink(
-                                member.initializer,
-                                stored.dataType!,
-                            )};`,
-                    });
-                }
+                if (member.initializer)
+                    storeClassField(
+                        this.context,
+                        stored,
+                        member.initializer,
+                        member,
+                    );
                 continue;
             }
             if (!member.initializer) {
@@ -1392,6 +1409,7 @@ export class ClassLowerer {
                 source,
             );
             if (field) {
+                this.context.dataTypes.requireEngineFieldStorage(field, member);
                 if (!sources.has(source)) {
                     layout.push({ ...field, source });
                     sources.add(source);
@@ -1467,7 +1485,7 @@ export class ClassLowerer {
     }
 
     /** The lvalue one stored field of a shared instance names. */
-    private storedFieldValue(
+    public storedFieldValue(
         instanceCpp: string,
         field: DataStructField,
     ): Value {
@@ -2416,8 +2434,30 @@ export class ClassLowerer {
                 : mappedReturnType
                   ? this.context.dataTypes.ownReturnedArray(mappedReturnType)
                   : undefined;
-        if (!returnsVoid && !returnType) {
-            const finalStatement = method.body.statements.at(-1);
+        const lastStatement = method.body.statements.at(-1);
+        const inlineOwnerReturn =
+            returnType?.kind === "handle" &&
+            !returnType.ownedEngine &&
+            isEngineScopedHandleKind(returnType.handle) &&
+            lastStatement !== undefined &&
+            ts.isReturnStatement(lastStatement) &&
+            lastStatement.expression !== undefined &&
+            !firstReturn(method.body.statements.slice(0, -1), {
+                valued: true,
+            }) &&
+            !this.methodRecurses(
+                declaration,
+                method,
+                instance.classCandidates,
+            ) &&
+            !(
+                this.isStoredInstance(instance) &&
+                this.recursesThroughReceivers(declaration, method)
+            );
+        // A final resource return keeps the actual field owner alongside its
+        // handle instead of reducing it to the declared raw return type.
+        if (!returnsVoid && (!returnType || inlineOwnerReturn)) {
+            const finalStatement = lastStatement;
             if (
                 !finalStatement ||
                 !ts.isReturnStatement(finalStatement) ||
@@ -2429,7 +2469,9 @@ export class ClassLowerer {
                 );
             }
             const leading = method.body.statements.slice(0, -1);
-            const earlierValueReturn = firstReturn(leading, { valued: true });
+            const earlierValueReturn = inlineOwnerReturn
+                ? undefined
+                : firstReturn(leading, { valued: true });
             if (earlierValueReturn) {
                 const nullableRecord = this.compileGuardedNullableRecordMethod(
                     instance,
@@ -3415,10 +3457,7 @@ export class ClassLowerer {
     ): void {
         const stored = properties[name.text];
         if (stored?.classStoredField) {
-            this.context.emit({
-                kind: "expression",
-                code: `${stored.cpp} = ${this.context.compileForDataSink(name, stored.dataType!)};`,
-            });
+            storeClassField(this.context, stored, name, name);
         } else {
             writable(properties)[name.text] = this.context.compileValue(name);
         }

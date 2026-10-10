@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
+import { writable } from "../emission-transaction.js";
 import { isJsonValue } from "../json-bridge.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -17,12 +18,14 @@ function unionValue(
         const arms = value.dataType.members.map((member, index) => {
             let converted: string | undefined;
             const lines = lowerer.context.captureEmittedLines(() => {
-                converted = unionValue(
-                    type,
-                    lowerer,
-                    lowerer.leafValue(`std::get<${index}>(${source})`, member),
-                    node,
+                const projected = lowerer.leafValue(
+                    `std::get<${index}>(${source})`,
+                    member,
                 );
+                if (value.engineOwnerParameter)
+                    writable(projected).engineOwnerParameter =
+                        value.engineOwnerParameter;
+                converted = unionValue(type, lowerer, projected, node);
             });
             return converted === undefined
                 ? ""
@@ -76,8 +79,24 @@ function unionValue(
     // A record stored as the union's one record type converts through
     // the record sink, which decides how the two types share the object.
     const records = type.members.filter((member) => member.kind === "struct");
-    if (memberIndex < 0 && source?.kind === "struct" && records.length === 1)
+    if (
+        memberIndex < 0 &&
+        (source?.kind === "struct" || value.kind === "record") &&
+        records.length === 1
+    )
         memberIndex = type.members.indexOf(records[0]!);
+    // A parsed value never holds a native handle or function: beside those
+    // members it is the union's one scalar member, converted as it is read.
+    if (memberIndex < 0 && isJsonValue(value)) {
+        const documentMembers = type.members.filter(
+            (member) => member.kind !== "handle" && member.kind !== "function",
+        );
+        if (
+            documentMembers.length === 1 &&
+            ["string", "number", "boolean"].includes(documentMembers[0]!.kind)
+        )
+            memberIndex = type.members.indexOf(documentMembers[0]!);
+    }
     if (memberIndex < 0) return undefined;
     const cpp = lowerer.compileKnownValueForSink(
         value,

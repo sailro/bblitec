@@ -3,7 +3,7 @@ import { libraryGlobal } from "./symbols.js";
 import { nullability } from "./type-facts.js";
 
 interface NativeReturnTypeOptions {
-    /** Leave promises opaque while still recognizing a declared Promise<void>. */
+    /** Preserve the Promise object when the runtime owns asynchronous values. */
     unwrapPromise?: boolean;
 }
 
@@ -24,6 +24,7 @@ export function nativeReturnTsType(
 ): ts.Type | undefined {
     const declaredReturn = declaration?.type;
     if (
+        options.unwrapPromise !== false &&
         declaredReturn &&
         ts.isTypeReferenceNode(declaredReturn) &&
         ts.isIdentifier(declaredReturn.typeName) &&

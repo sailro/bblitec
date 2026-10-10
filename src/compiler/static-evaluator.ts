@@ -27,7 +27,7 @@ export function isObjectIdentityFunction(
 }
 
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
-function objectIdentityCallArgument(
+export function objectIdentityCallArgument(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
 ): ts.Expression | undefined {
@@ -825,7 +825,7 @@ export class StaticEvaluator {
             return `(${operator}${cast.startsWith(operator) ? " " : ""}${cast})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
-            if (unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            if (isAssignmentExpression(unwrapped)) {
                 const value = this.resolveValue(unwrapped);
                 if (isNumericValue(value)) {
                     return this.castNumber(value, precision);
@@ -1251,6 +1251,9 @@ export class StaticEvaluator {
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
+            if (value.lexicalStaticString !== undefined) {
+                return this.resolveValue(unwrapped).staticString!;
+            }
             if (value.staticString !== undefined && !value.parameterBinding) {
                 return value.staticString;
             }
@@ -1865,6 +1868,9 @@ export class StaticEvaluator {
             const value = ts.isIdentifier(unwrapped)
                 ? this.lookup(unwrapped)
                 : this.resolveProperty(unwrapped);
+            if (value?.lexicalStaticString !== undefined) {
+                return this.resolveValue(unwrapped).staticString;
+            }
             if (value?.staticString !== undefined && !value.parameterBinding) {
                 return value.staticString;
             }

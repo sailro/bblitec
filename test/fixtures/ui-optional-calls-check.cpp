@@ -48,9 +48,10 @@ int main() {
         if (index != roots.html.value && index != roots.head.value && index != roots.body.value)
             authored.push_back(&engine.ui_elements.at(index));
     }
-    assert(authored.size() == 6);
-    assert(authored[0]->children.size() == 1 && authored[1]->text == "child");
-    assert(authored[2]->children.size() == 1 &&
-           &engine.ui_elements.at(authored[2]->children.front().value) == authored[3]);
-    assert(authored[5]->attributes.at("class") == "swatch active");
+    assert(authored.size() == 7);
+    assert(authored[0]->attributes.at("class") == "selected");
+    assert(authored[1]->children.size() == 1 && authored[2]->text == "child");
+    assert(authored[3]->children.size() == 1 &&
+           &engine.ui_elements.at(authored[3]->children.front().value) == authored[4]);
+    assert(authored[6]->attributes.at("class") == "swatch active");
 }

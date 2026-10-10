@@ -43,6 +43,7 @@ import {
 } from "./search-params.js";
 import { compileCollectionForEach } from "./collection-methods.js";
 import { pinOperand } from "./evaluation-order.js";
+import { requireMutableTupleStorage } from "./dynamic-binding-storage.js";
 
 import {
     dataTypesEqual,
@@ -66,6 +67,7 @@ import { callsFreshArrayBuiltin } from "./fresh-records.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
+import { representedResultType } from "./represented-result.js";
 import {
     arrayElementType,
     declaredContextualType,
@@ -506,6 +508,12 @@ export function compileDataMethodCall(
             true,
         );
     }
+    if (dynamicOwner?.kind === "tuple" && mutatingArrayMethods.has(method))
+        requireMutableTupleStorage(
+            lowerer.context,
+            dynamicOwner,
+            ownerExpression,
+        );
     // A query bag the fold answered stays a browser value until a read it
     // cannot answer arrives here; that read parses the deployment query.
     if (
@@ -1109,6 +1117,19 @@ function compileKnownDataMethod(
     const recordType =
         dataType?.kind === "optional" ? dataType.inner : dataType;
     if (recordType?.kind === "struct") {
+        // A reference record owns its selected object across argument effects,
+        // the called body and temporary accessor results, unless a binding
+        // nothing reassigns holds it or nothing the call runs can write what
+        // selected it; an inline record aliases it.
+        const receiverBinding =
+            lowerer.context.dataTypes.isReferenceStruct(recordType.name) &&
+            !lowerer.context.hasStableNativeBinding(narrowed) &&
+            lowerer.context.evaluationOrder.operandsToPin([
+                callee.expression,
+                call,
+            ])[0]
+                ? "const auto"
+                : "const auto&";
         const field = lowerer.context.dataTypes.findStructField(
             recordType.name,
             method,
@@ -1135,7 +1156,7 @@ function compileKnownDataMethod(
             if (member) {
                 lowerer.context.emit({
                     kind: "declaration",
-                    type: "const auto&",
+                    type: receiverBinding,
                     name: receiver,
                     initializer: narrowed.cpp,
                 });
@@ -1158,7 +1179,7 @@ function compileKnownDataMethod(
                 lowerer.context.allocateTemporaryCppName("callback_receiver");
             lowerer.context.emit({
                 kind: "declaration",
-                type: "const auto&",
+                type: receiverBinding,
                 name: receiver,
                 initializer: narrowed.cpp,
             });
@@ -1186,7 +1207,7 @@ function compileKnownDataMethod(
             const optional = dataType?.kind === "optional";
             lowerer.context.emit({
                 kind: "declaration",
-                type: "const auto&",
+                type: receiverBinding,
                 name: receiver,
                 initializer: narrowed.cpp,
             });
@@ -2562,19 +2583,13 @@ function compileArrayMap(
           (identity
               ? { kind: "vector", element: dataType.element }
               : undefined));
-    if (requested?.kind !== "vector") {
-        lowerer.context.fail(
-            call,
-            `Array.${method} callback results must belong to the native data model.`,
-        );
-    }
     let mappedType = requested;
     if (
         method === "map" &&
         call.arguments.length === 1 &&
         callback &&
         lowerer.context.libraryGlobal(callback) === "Number" &&
-        mappedType.element.kind === "number" &&
+        mappedType?.element.kind === "number" &&
         (dataType.element.kind === "string" ||
             dataType.element.kind === "number")
     ) {
@@ -2627,6 +2642,26 @@ function compileArrayMap(
                 });
             },
             (result, callback) => {
+                if (!mappedType) {
+                    const element =
+                        result.kind === "void" && result.abruptCompletion
+                            ? { kind: "undefined" as const }
+                            : representedArrayResult(
+                                  lowerer.context.dataTypes,
+                                  result,
+                                  method,
+                              );
+                    if (element) mappedType = { kind: "vector", element };
+                }
+                if (!mappedType)
+                    lowerer.context.fail(
+                        call,
+                        `Array.${method} callback results must belong to the native data model.`,
+                    );
+                if (result.kind === "void" && result.abruptCompletion) {
+                    lowerer.context.emitDiscardedValue(result);
+                    return;
+                }
                 if (method === "map")
                     mappedType = {
                         ...mappedType,
@@ -2636,6 +2671,102 @@ function compileArrayMap(
                             callback,
                         ),
                     };
+                if (method === "flatMap" && isJsonValue(result)) {
+                    const owner = lowerer.context.bindings.pinValueToTemporary(
+                        result,
+                        "flat_map_value",
+                        callback,
+                    );
+                    if (mappedType.element.kind === "json") {
+                        const value = lowerer.compileKnownValueForSink(
+                            owner,
+                            mappedType.element,
+                            callback,
+                        );
+                        lowerer.context.emit({
+                            kind: "expression",
+                            code: `bbl::js::json_flatten_into(${output}, ${value}, 1);`,
+                        });
+                        return;
+                    }
+                    const item =
+                        lowerer.context.allocateTemporaryCppName(
+                            "flat_map_item",
+                        );
+                    const append = (value: Value): void => {
+                        const converted = lowerer.compileKnownValueForSink(
+                            value,
+                            mappedType!.element,
+                            callback,
+                        );
+                        lowerer.context.emit({
+                            kind: "expression",
+                            code: `${output}.push_back(${converted});`,
+                        });
+                    };
+                    lowerer.context.emit({
+                        kind: "open",
+                        code: `if (${owner.cpp}.is_array()) {`,
+                    });
+                    lowerer.context.increaseIndent();
+                    lowerer.context.emit({
+                        kind: "open",
+                        code: `for (const auto& ${item} : ${owner.cpp}.elements()) {`,
+                        iteration: true,
+                    });
+                    lowerer.context.increaseIndent();
+                    append(lowerer.leafValue(item, { kind: "json" }));
+                    lowerer.context.decreaseIndent();
+                    lowerer.context.emit({ kind: "close", code: "}" });
+                    lowerer.context.decreaseIndent();
+                    lowerer.context.emit({ kind: "branch", code: "} else {" });
+                    lowerer.context.increaseIndent();
+                    append(owner);
+                    lowerer.context.decreaseIndent();
+                    lowerer.context.emit({ kind: "close", code: "}" });
+                    return;
+                }
+                if (
+                    lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
+                        mappedType.element,
+                    )
+                )
+                    lowerer.context.refuseBorrowedPlatformEventEscape(
+                        result,
+                        callback,
+                        `Array.${method} result`,
+                    );
+                if (
+                    method === "flatMap" &&
+                    result.dataType?.kind === "product"
+                ) {
+                    const tuple = lowerer.context.bindings.pinValueToTemporary(
+                        result,
+                        "flat_map_tuple",
+                        callback,
+                    );
+                    for (
+                        let index = 0;
+                        index < result.dataType.elements.length;
+                        ++index
+                    ) {
+                        const member = lowerer.fixedTupleElement(
+                            tuple,
+                            index,
+                            callback,
+                        )!;
+                        const value = lowerer.compileKnownValueForSink(
+                            member,
+                            mappedType.element,
+                            callback,
+                        );
+                        lowerer.context.emit({
+                            kind: "expression",
+                            code: `${output}.push_back(${value});`,
+                        });
+                    }
+                    return;
+                }
                 if (
                     method === "flatMap" &&
                     (result.kind === "tuple" ||
@@ -2643,16 +2774,6 @@ function compileArrayMap(
                         result.dataType?.kind === "vector" ||
                         result.dataType?.kind === "span")
                 ) {
-                    if (
-                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                            mappedType.element,
-                        )
-                    )
-                        lowerer.context.refuseBorrowedPlatformEventEscape(
-                            result,
-                            callback,
-                            "Array.flatMap result",
-                        );
                     // flatMap reads the returned array's elements once and
                     // keeps none of the array itself.
                     const values = lowerer.compileKnownValueForSink(
@@ -2683,17 +2804,6 @@ function compileArrayMap(
                     }
                     value = "true";
                 } else {
-                    if (
-                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                            mappedType.element,
-                        )
-                    ) {
-                        lowerer.context.refuseBorrowedPlatformEventEscape(
-                            result,
-                            callback,
-                            "Array.map result",
-                        );
-                    }
                     value = lowerer.compileKnownValueForSink(
                         result,
                         mappedType.element,
@@ -2705,12 +2815,37 @@ function compileArrayMap(
                     code: `${output}.push_back(${value});`,
                 });
             },
-            method === "map" ? requested.element : undefined,
+            method === "map" ? requested?.element : undefined,
         ),
     );
+    if (!mappedType)
+        lowerer.context.fail(
+            call,
+            `Array.${method} callback results must belong to the native data model.`,
+        );
     lowerer.context.emit(`${collectorCppType(state, mappedType)} ${output};`);
     for (const line of lines) lowerer.context.emit(line);
     return collectedArray(state, output, mappedType);
+}
+
+/** flatMap stores one level of elements from an array result, or the scalar result itself. */
+function representedArrayResult(
+    dataTypes: DataLowerer["context"]["dataTypes"],
+    value: Value,
+    method: "map" | "flatMap",
+): DataType | undefined {
+    const type = representedResultType(dataTypes, value);
+    if (method === "map") return type;
+    if (type?.kind === "vector" || type?.kind === "span") return type.element;
+    if (type?.kind === "tuple") return { kind: "number" };
+    if (type?.kind === "product") {
+        const first = type.elements[0];
+        return first &&
+            type.elements.every((member) => dataTypesEqual(member, first))
+            ? first
+            : undefined;
+    }
+    return type;
 }
 
 function compileArrayForEach(state: ArrayMethodState): Value {
@@ -3151,6 +3286,19 @@ function compileMapDataMethod(
         lowerer.context.fail(call, `WeakMap.${method} is not represented.`);
     if (method === "forEach")
         return compileCollectionForEach(lowerer, call, narrowed, dataType);
+    if (
+        ["has", "get", "delete", "set"].includes(method) &&
+        lowerer.context.evaluationOrder.operandsToPin([
+            callee.expression,
+            ...call.arguments,
+        ])[0]
+    )
+        narrowed = pinOperand(
+            lowerer.context,
+            narrowed,
+            callee.expression,
+            "map_receiver",
+        );
     lowerer.context.reachJsData();
     if (method === "clear") {
         if (call.arguments.length !== 0) {
@@ -3275,7 +3423,6 @@ function compileMapDataMethod(
             );
         }
         const keyValue = lowerer.context.compileValue(argumentAt(call, 0));
-        const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
         lowerer.context.recordCollectionKey(narrowed, keyValue);
         if (
             lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.key)
@@ -3286,6 +3433,29 @@ function compileMapDataMethod(
                 "Map.set key",
             );
         }
+        // A key is read before the value argument can replace its source
+        // binding; one a binding nothing reassigns holds is already read.
+        // Its retained sink also snapshots an engine-owned key.
+        const keyNode = argumentAt(call, 0);
+        const readKey =
+            lowerer.context.evaluationOrder.operandsToPin([
+                keyNode,
+                argumentAt(call, 1),
+            ])[0] && !lowerer.context.hasStableNativeBinding(keyValue)
+                ? pinOperand(lowerer.context, keyValue, keyNode, "map_key")
+                : keyValue;
+        const key = lowerer.context.allocateTemporaryCppName("map_key");
+        lowerer.context.emit({
+            kind: "declaration",
+            type: "const auto&",
+            name: key,
+            initializer: lowerer.compileKnownValueForSink(
+                readKey,
+                dataType.key,
+                keyNode,
+            ),
+        });
+        const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
         if (
             lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.value,
@@ -3297,11 +3467,6 @@ function compileMapDataMethod(
                 "Map.set value",
             );
         }
-        const key = lowerer.compileKnownValueForSink(
-            keyValue,
-            dataType.key,
-            argumentAt(call, 0),
-        );
         const value = lowerer.compileKnownValueForSink(
             assignedValue,
             dataType.value,
@@ -3345,8 +3510,33 @@ function compileMapDataMethod(
                   ? dataType.value
                   : dataType.key;
         lowerer.context.reachJsData();
+        let projector = "";
+        if (
+            method === "entries" &&
+            element.kind === "vector" &&
+            (!dataTypesEqual(dataType.key, element.element) ||
+                !dataTypesEqual(dataType.value, element.element))
+        ) {
+            const parameters = [dataType.key, dataType.value].map((type) => ({
+                type,
+                name: lowerer.context.allocateTemporaryCppName("entry_lane"),
+            }));
+            const lines = lowerer.context.captureEmittedLines(() => {
+                const lanes = parameters.map(({ type, name }) =>
+                    lowerer.compileLaneForSink(
+                        lowerer.leafValue(name, type),
+                        element.element,
+                        call,
+                    ),
+                );
+                lowerer.context.emit(
+                    `return ${lowerer.context.dataTypes.cppType(element)}{${lanes.join(", ")}};`,
+                );
+            });
+            projector = `, [](${parameters.map(({ type, name }) => `[[maybe_unused]] const ${lowerer.context.dataTypes.cppType(type)}& ${name}`).join(", ")}) { ${lines.join("\n")} }`;
+        }
         return lowerer.leafValue(
-            `bbl::js::map_iterator<${lowerer.context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${narrowed.cpp})`,
+            `bbl::js::map_iterator<${lowerer.context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${narrowed.cpp}${projector})`,
             { kind: "iterator", element, traced: true },
         );
     }
@@ -3381,6 +3571,19 @@ function compileSetDataMethod(
     }
     if (method === "forEach")
         return compileCollectionForEach(lowerer, call, narrowed, dataType);
+    if (
+        ["has", "delete", "add"].includes(method) &&
+        lowerer.context.evaluationOrder.operandsToPin([
+            callee.expression,
+            ...call.arguments,
+        ])[0]
+    )
+        narrowed = pinOperand(
+            lowerer.context,
+            narrowed,
+            callee.expression,
+            "set_receiver",
+        );
     lowerer.context.reachJsData();
     if (method === "clear") {
         if (call.arguments.length !== 0) {

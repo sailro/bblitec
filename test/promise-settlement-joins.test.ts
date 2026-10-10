@@ -3,6 +3,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { assertAsyncSourceCloses } from "./async-oracle.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -92,7 +93,7 @@ test("Promise recovery refuses erased void values with unproved completion", () 
         const callbacks:Array<()=>void>=[handler];
         void Promise.resolve(1).catch(callbacks[0]!).then(value=>{if(value===undefined)throw new Error('erased');globalThis.close();});
     `),
-        /void result requires a proven undefined completion|stored void|Promise.*result/,
+        /proven undefined completion|stored void|Promise.*result/,
     );
 });
 
@@ -152,15 +153,25 @@ test("Promise resolve uses its checked result for explicit settlement types", as
     });
 });
 
-test("Promise joins refuse reference settlements with collapsed mixed absence", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+test("Promise joins refuse observed record settlements without distinct nullish storage", async () => {
+    const source = `
         queueMicrotask(()=>{});
-        const original:Promise<{value:number}|null>=Promise.resolve(null);
-        const mixed=original.catch(()=>undefined);
-        void mixed.then(value=>{if(value===undefined||value===null)globalThis.close();});
-    `),
-        /recovery must preserve|settlement|Promise result|native data type/,
+        (async()=>{
+            const original:Promise<{value:number}|null>=Promise.resolve(null);
+            const empty=await original.catch(()=>undefined);
+            const absent=await Promise.reject<{value:number}|null>(new Error('source')).catch(()=>undefined);
+            const record={value:1};
+            const kept=await Promise.resolve<{value:number}|null>(record).catch(()=>undefined);
+            if(empty!==null||absent!==undefined||empty===absent)throw new Error('distinct absence');
+            if(kept===null||kept===undefined||kept!==record)throw new Error('record identity');
+            kept.value=7;
+            if(record.value!==7)throw new Error('record alias');
+            globalThis.close();
+        })();
+    `;
+    await assertAsyncSourceCloses(source);
+    assert.throws(
+        () => compileSource(source),
+        /may be null or undefined.*stored where they are told apart/,
     );
 });

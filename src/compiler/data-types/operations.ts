@@ -38,6 +38,22 @@ export function dataTypesEqual<K extends DataKind>(
     );
 }
 
+/** Adding an undefined tag preserves the payload and every existing object identity. */
+export function isTaggedStorageWidening(
+    source: DataType,
+    target: DataType,
+): target is DataType<"tagged"> {
+    return (
+        target.kind === "tagged" &&
+        (dataTypesEqual(source, target.inner) ||
+            (source.kind === "optional" &&
+                target.inner.kind === "optional" &&
+                source.undefinedOnly === true &&
+                !target.inner.undefinedOnly &&
+                dataTypesEqual(source.inner, target.inner.inner)))
+    );
+}
+
 export function passesByReferenceKind(type: DataType): boolean {
     return kinds[type.kind].byReference;
 }
@@ -52,6 +68,15 @@ export function isUndefinedDataType(type: DataType | undefined): boolean {
 
 export function isOpaqueReference(type: DataType | undefined): boolean {
     return type !== undefined && kinds[type.kind].opaqueReference === true;
+}
+
+/** Structural annotations can retain these existing native object carriers. */
+export function isNativeStructuralView(type: DataType | undefined): boolean {
+    return (
+        isOpaqueReference(type) ||
+        type?.kind === "borrowed-platform-event" ||
+        type?.kind === "handle"
+    );
 }
 
 /** Whether native copies of this kind share storage (`sharesStorage`). */

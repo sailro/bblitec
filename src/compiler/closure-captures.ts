@@ -21,6 +21,7 @@ export const nativeCompanionKeys = [
     "engineCpp",
     "ownedEngineCpp",
     "storedEngineCpp",
+    "resourceStorageCpp",
     "optionalStorageCpp",
     "optionalFoundCpp",
     "slotFoundCpp",

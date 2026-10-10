@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
+import { CompileError, compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -424,18 +424,36 @@ check(
 `,
 );
 
+check(
+    "labeled-jumps-over-retained-callback-records",
+    `
+    interface T { id: string; when?: (n: number) => boolean; }
+    const TS: readonly T[] = [
+        { id: "a" },
+        { id: "b", when: (n) => n > 1 },
+        { id: "c" },
+    ];
+    let continued = 0;
+    outer: for (const t of TS) {
+        for (let i = 0; i < 3; i++) {
+            if (t.when && t.when(i)) continue outer;
+            continued++;
+        }
+    }
+    if (continued !== 8) throw new Error("retained record continue " + continued);
+    let broken = 0;
+    outer: for (const t of TS) {
+        for (let i = 0; i < 3; i++) {
+            if (t.when && t.when(i)) break outer;
+            broken++;
+        }
+    }
+    if (broken !== 5) throw new Error("retained record break " + broken);
+`,
+);
+
 test("labeled jumps refuse what they cannot leave", () => {
-    const templates =
-        "interface T { id: string; when?: (n: number) => boolean; } const TS: readonly T[] = [{ id: 'a' }, { id: 'b', when: (n) => n > 1 }]; let c = 0;";
     for (const [source, message] of [
-        [
-            `${templates} outer: for (const t of TS) { for (let i = 0; i < 3; i++) { if (t.when && t.when(i)) continue outer; c++; } }`,
-            /labeled continue of a statically unrolled loop is not lowered/,
-        ],
-        [
-            `${templates} outer: for (const t of TS) { for (let i = 0; i < 3; i++) { if (t.when && t.when(i)) break outer; c++; } }`,
-            /labeled break out of a statically unrolled loop is not lowered/,
-        ],
         [
             "let n = 0; outer: for (let i = 0; i < 3; i++) { switch (i) { case 1: for (let j = 0; j < 2; j++) { if (j === 1) continue outer; n++; } break; default: n += 10; } }",
             /labeled continue cannot leave a switch or try statement/,
@@ -1427,6 +1445,25 @@ check(
 );
 
 check(
+    "plain-record-membership-distinguishes-inherited-and-own-keys",
+    `
+    interface Row { value: number }
+    function inspect(row: Row): number {
+        if (Object.hasOwn(row, "toString") || Object.hasOwn(row, "constructor"))
+            throw new Error("inherited names are not own keys");
+        if (!("toString" in row) || !("constructor" in row))
+            throw new Error("inherited names remain present");
+        if (!Object.hasOwn(row, "value") || !("value" in row) || Object.hasOwn(row, "missing") || "missing" in row)
+            throw new Error("declared and absent own keys");
+        return row.value;
+    }
+    const inspectors: Array<typeof inspect> = [inspect];
+    const rows: Row[] = [{ value: 3 }];
+    if (inspectors[0]!(rows[0]!) !== 3) throw new Error("stored record membership");
+`,
+);
+
+check(
     "callback-factory-record-assignment",
     `
     let count = 0;
@@ -1505,8 +1542,18 @@ check(
     view["run"] = "L";
     if (entries["jump"] !== "K" || entries["run"] !== "L") throw new Error("keyed writes through the view");
     const partial: Partial<Profile> = entries as Partial<Profile>;
+    const typedEntries: { [key: string]: string } = entries;
+    const readRun = (): string | undefined => partial.run;
     partial.run = undefined;
     if (partial.jump !== "K" || partial.run !== undefined || entries["run"] !== undefined) throw new Error("optional view");
+    if (!Object.hasOwn(entries, "run") || !Object.hasOwn(partial, "run")) throw new Error("undefined remains an own entry");
+    if (!Object.keys(entries).includes("run") || !Object.keys(typedEntries).includes("run")) throw new Error("undefined entry enumerates through aliases");
+    if (typedEntries["run"] !== undefined || readRun() !== undefined) throw new Error("undefined entry reads through aliases");
+    delete partial.run;
+    if (Object.hasOwn(entries, "run") || Object.hasOwn(typedEntries, "run") || Object.keys(entries).includes("run")) throw new Error("delete removes backing entry");
+    if (partial.run !== undefined || readRun() !== undefined) throw new Error("deleted optional view reads undefined");
+    typedEntries["run"] = "again";
+    if (partial.run !== "again" || view.run !== "again" || entries["run"] !== "again" || readRun() !== "again") throw new Error("aliases retain backing identity");
 `,
 );
 
@@ -2447,6 +2494,32 @@ check(
 );
 
 check(
+    "class-accessor-field-writes-refresh-live-array-slots",
+    `
+    interface View { value: number; readonly label: string; }
+    class Samples {
+        private values: number[] = [1];
+        get value(): number { return this.values[0]!; }
+        set value(next: number) {
+            this.values = [next];
+            this.values.push(next + 1);
+            this.values = [next + 2];
+        }
+        get label(): string { return this.values.length + ":" + this.values[0]; }
+        view(): View { return this; }
+    }
+    function createView(): View { return new Samples().view(); }
+    const view = createView();
+    const alias = view;
+    if (view.value !== 1 || view.label !== "1:1") throw new Error("initial fields");
+    view.value = 3;
+    if (alias.value !== 5 || alias.label !== "1:5") throw new Error("replacement fields");
+    alias.value = 9;
+    if (view.value !== 11 || view.label !== "1:11") throw new Error("repeated setter");
+`,
+);
+
+check(
     "spreads-read-own-accessors-once",
     `
     interface Save { cx: number; cz: number; name: string; }
@@ -2535,16 +2608,64 @@ check(
 `,
 );
 
-test("union arms told apart by a field that admits null refuse", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+check(
+    "overlapping-nullable-union-values-retain-array-length",
+    `
+    type R = { ok: false; a: string | null } | { ok: false; b: number } | { ok: true };
+    const rs: R[] = [{ ok: false, a: null }, { ok: false, b: 1 }, { ok: true }];
+    if (rs.length !== 3) throw new Error("n");
+`,
+);
+
+test("overlapping nullable union membership refuses unrepresented arm fields", () => {
+    const source = `
+        type R = { ok: false; a: string | null } | { ok: false; b: number } | { ok: true };
+        function describe(row: R): string {
+            if (row.ok) return "ok";
+            if ("a" in row) {
+                if (!Object.hasOwn(row, "a") || Object.hasOwn(row, "b")) throw new Error("a own key");
+                return row.a === null ? "null" : row.a;
+            }
+            if (Object.hasOwn(row, "a") || !Object.hasOwn(row, "b")) throw new Error("b own key");
+            return String(row.b);
+        }
+        const observers: Array<typeof describe> = [describe];
+        const rs: R[] = [{ ok: false, a: null }, { ok: false, b: 1 }, { ok: true }];
+    `;
+    const refuses = (observed: string): void => {
+        runInNewContext(
+            ts.transpileModule(observed, {
+                compilerOptions: { target: ts.ScriptTarget.ES2022 },
+            }).outputText,
+        );
+        assert.throws(
+            () => compileSource(observed),
+            (error: unknown) =>
+                error instanceof CompileError &&
+                error.detail ===
+                    "Own-property membership requires represented field 'a'.",
+        );
+    };
+    refuses(
+        source +
+            `
+            if (observers[0]!(rs[0]!) !== "null" || observers[0]!(rs[1]!) !== "1" ||
+                observers[0]!(rs[2]!) !== "ok") throw new Error("union presence oracle");
+        `,
+    );
+    for (const membership of [
+        "Object.hasOwn(row, 'a')",
+        "key in row",
+        "Object.hasOwn(row, key)",
+    ])
+        refuses(`
             type R = { ok: false; a: string | null } | { ok: false; b: number } | { ok: true };
             const rs: R[] = [{ ok: false, a: null }, { ok: false, b: 1 }, { ok: true }];
-            if (rs.length !== 3) throw new Error("n");
-            `),
-        /Struct literal has unknown field 'a'/,
-    );
+            function observe(row: R, key: string): boolean { return ${membership}; }
+            const observers: Array<typeof observe> = [observe];
+            if (!observers[0]!(rs[0]!, 'a') || observers[0]!(rs[1]!, 'a') || observers[0]!(rs[2]!, 'a'))
+                throw new Error("own null and missing arm keys differ");
+        `);
 });
 
 check(
@@ -4066,18 +4187,16 @@ checkInRealm(
 `,
 );
 
-test("promise combinator literal spreads join settlement types and refuse raw values", () => {
+test("promise combinator literal spreads join settlement types and synchronous values", () => {
     assert.doesNotThrow(() =>
         compileSource(
             "async function n(): Promise<number> { return 1; } async function s(): Promise<string> { return ''; } const xs = [s()]; void Promise.all([n(), ...xs]);",
         ),
     );
-    assert.throws(
-        () =>
-            compileSource(
-                "async function n(): Promise<number> { return 1; } const xs = [1, 2]; void Promise.all([n(), ...xs]);",
-            ),
-        /Promise\.all literal spreads require promises and represented synchronous iterables of promises/,
+    assert.doesNotThrow(() =>
+        compileSource(
+            "async function n(): Promise<number> { return 1; } const xs = [1, 2]; void Promise.all([n(), ...xs]);",
+        ),
     );
 });
 
@@ -4296,7 +4415,7 @@ test("Object.create, defineProperty and getPrototypeOf refuse unrepresented form
         ],
         [
             "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { value: 3 });",
-            /Object\.defineProperty represents a value with writable, enumerable and configurable all true only/,
+            /Object\.defineProperty represents a value with writable and enumerable true and an explicit boolean configurable attribute only/,
         ],
         [
             "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { get: () => 3, enumerable: true, configurable: true });",
@@ -5217,25 +5336,32 @@ check(
 );
 
 test("unsupported language shapes refuse explicitly", () => {
-    for (const [source, message] of [
+    for (const [name, source, message] of [
         [
+            "generator delegation to a Set",
             "function* gen(): Generator<number> { yield* new Set([1]); } for (const v of gen()) {}",
             /yield\* delegates to a generator, an iterator or an array/,
         ],
         [
+            "Object.is over native plain records",
             "const a = { x: 1 }; const b = { x: 1 }; if (Object.is(a, b)) {}",
             /Object.is compares/,
         ],
         [
+            "in operator on a primitive number",
             'function f(n: number): boolean { return "x" in n; } f(1);',
             /'in' is decided/,
         ],
-        [
-            "function f(xs: number[]): void { xs[Math.trunc(Math.random())] ??= 2; } f([1]);",
-            /must not contain a call/,
-        ],
     ] as const)
-        assert.throws(() => compileSource(source), message);
+        assert.throws(() => compileSource(source), message, name);
+});
+
+test("supports logical assignment through a call in an array index", () => {
+    assert.doesNotThrow(() =>
+        compileSource(
+            "function f(xs: number[]): void { xs[Math.trunc(Math.random())] ??= 2; } f([1]);",
+        ),
+    );
 });
 
 check(
@@ -7589,7 +7715,13 @@ check(
 `,
 );
 
-test("absent property reads refuse properties a converted record may carry", () => {
+for (const [index, body] of [
+    "list.push(make(1)); const read = readB(list[0]!);",
+    "const read = readB(list[0]!); list.push(make(1));",
+    "list.push(make(1)); const mids: { a: number; z?: string }[] = []; for (const item of list) mids.push(item); const read = readB(mids[0]!);",
+    "list.push(make(1)); function bOf({ b }: View): number { return b ?? -1; } const read = bOf(list[0]!);",
+    "list.push(make(1)); const views: readonly View[] = list; let read = 0; for (const { b } of views) read += b ?? -1;",
+].entries()) {
     const declarations = `
     interface Narrow { a: number }
     interface View { a: number; b?: number }
@@ -7597,32 +7729,32 @@ test("absent property reads refuse properties a converted record may carry", () 
     function make(a: number): { a: number; b: number } { return { a, b: a * 2 }; }
     const list: Narrow[] = [{ a: 3 }];
     `;
-    for (const body of [
-        "list.push(make(1)); const read = readB(list[0]!);",
-        "const read = readB(list[0]!); list.push(make(1));",
-        "list.push(make(1)); const mids: { a: number; z?: string }[] = []; for (const item of list) mids.push(item); const read = readB(mids[0]!);",
-        // Destructuring reads the property as a property access does.
-        "list.push(make(1)); function bOf({ b }: View): number { return b ?? -1; } const read = bOf(list[0]!);",
-        "list.push(make(1)); const views: readonly View[] = list; let read = 0; for (const { b } of views) read += b ?? -1;",
-    ])
-        assert.throws(
-            () => compileSource(declarations + body),
-            /Property 'b' is not stored by '\w+' records, but a record converted into that storage may carry it/,
-        );
-    assert.throws(
-        () =>
-            compileSource(`
+    check(
+        `converted-record-property-presence-${index}`,
+        declarations +
+            body +
+            `
+            if (read !== ${index === 4 ? 1 : -1} || readB(list[1]!) !== 2)
+                throw new Error("converted field");
+            if ("b" in list[0]! || !("b" in list[1]!)) throw new Error("own presence");
+        `,
+    );
+}
+
+check(
+    "asserted-optional-record-property-keeps-absence",
+    `
             interface Source { a: number; b?: number }
             interface Shape { a: number }
             function make(): Shape { return { a: 1 }; }
             const read = (make() as Source).b;
-            `),
-        /has no field 'b'/,
-    );
-    // An object rest copies what a converted record carried too.
-    assert.throws(
-        () =>
-            compileSource(`
+            if (read !== undefined || "b" in make()) throw new Error("absent field");
+    `,
+);
+
+check(
+    "object-rest-retains-converted-record-properties",
+    `
             interface Source { a: number; c: number }
             interface View { a: number; b?: number }
             function readB(v: View): number { return v.b ?? -1; }
@@ -7631,10 +7763,9 @@ test("absent property reads refuse properties a converted record may carry", () 
             list.push(make(1));
             const { c, ...rest } = list[1]!;
             const read = readB(rest) + c;
-            `),
-        /Property 'b' is not stored by 'rest' records, but a record converted into that storage may carry it/,
-    );
-});
+            if (read !== 2 || "c" in rest || !("c" in list[1]!)) throw new Error("rest fields");
+    `,
+);
 
 check(
     "union-tags-admitting-several-literals",
@@ -9526,22 +9657,28 @@ check(
 `,
 );
 
-test("absence tags, spread lanes and tuple storage refuse what no storage represents", () => {
-    for (const [source, message] of [
-        [
+test("stored callback results represent both null and undefined", () => {
+    assert.doesNotThrow(() =>
+        compileSource(
             "interface R { x: number } const gate = new Float32Array([1]); function pick(i: number): R | null | undefined { return i > 0 ? { x: 1 } : i < 0 ? null : undefined; } const roots: Array<typeof pick> = [pick]; let p: R | null | undefined = roots[0]!(gate[0]!); if (p === null) throw new Error('null');",
-            /stored where they are told apart only once one of them is ruled out/,
-        ],
+        ),
+    );
+});
+
+test("spread lanes and tuple storage refuse what no storage represents", () => {
+    for (const [name, source, message] of [
         [
+            "class method spread requires a fixed tuple",
             "class Placement { x = 0; set(a: number, b = 0): void { this.x = a + b; } } const numbers: number[] = [1, 2]; const placement = new Placement(); placement.set(...numbers);",
             /A spread argument of a class method expands a tuple of a fixed length/,
         ],
         [
+            "stored fixed tuple parameter cannot grow through an array alias",
             "function grow(t: [number, number]): number { const a: number[] = t; a.push(1); return a.length; } const roots: Array<typeof grow> = [grow]; if (roots[0]!([1, 2]) !== 3) throw new Error('grow');",
             /A fixed-length tuple stored as a number array could grow through that array/,
         ],
     ] as const)
-        assert.throws(() => compileSource(source), message);
+        assert.throws(() => compileSource(source), message, name);
 });
 
 check(
@@ -10023,6 +10160,35 @@ check(
     const doors: Door[] = [{ kind: "a", y: 3 }, { kind: "b" }];
     const door = commit(doors[0]!, doors[1]!);
     if (door !== doors[0] || door.kind !== "b" || "y" in door) throw new Error("door commit");
+`,
+);
+
+check(
+    "document-entries-preserve-value-lanes-and-row-identity",
+    `
+    const owner = JSON.parse('{"2":4,"text":"t","flag":true}') as { "2": number; text: string; flag: boolean };
+    let reads = 0;
+    function read(): typeof owner { reads++; return owner; }
+    const entries = Object.entries(read());
+    if (reads !== 1 || entries.map(([key, value]) => key + "=" + value).join() !== "2=4,text=t,flag=true")
+        throw new Error("ordered represented entries");
+    const first = entries[0]!;
+    if (first !== entries[0] || first === entries[1] || first.length !== 2) throw new Error("row identity");
+    owner["2"] = 9;
+    if (first[1] !== 4) throw new Error("entry snapshots primitive value");
+    first[1] = "changed";
+    if (entries[0]![1] !== "changed" || owner["2"] !== 9) throw new Error("row alias is independent of owner");
+    const again = Object.entries(owner);
+    if (again === entries || again[0] === first || again[0]![1] !== 9) throw new Error("fresh entry arrays");
+    const document = JSON.parse('{"empty":null,"child":{"x":2}}') as Record<string, unknown>;
+    document["unset"] = undefined;
+    const rows = Object.entries(document);
+    if (rows.map(([key]) => key).join() !== "empty,child,unset" || rows[0]![1] !== null || rows[2]![1] !== undefined)
+        throw new Error("document tags and own undefined");
+    const child = rows[1]![1] as { x: number };
+    if (child !== document["child"]) throw new Error("nested member identity");
+    child.x = 7;
+    if ((document["child"] as { x: number }).x !== 7) throw new Error("nested member mutation");
 `,
 );
 
@@ -11829,24 +11995,27 @@ check(
 `,
 );
 
-test("a method reading this stays refused when picked by a runtime key", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            type Shape = "circle" | "square";
-            interface Costs { scale: number; circle(label: string): number; square(label: string): number; }
-            function pricing(costs: Costs) {
-                return { price(shape: Shape, label: string): number { return costs[shape](label); } };
-            }
-            const made = pricing({
-                scale: 10,
-                circle(label) { return this.scale * label.length; },
-                square(label) { return this.scale * 2 * label.length; },
-            });
-            if (made.price("circle", "ring") !== 40) throw new Error("x");`),
-        /reads `this`, and .* reads its function value, which could call it with another receiver/,
-    );
-});
+check(
+    "methods-reading-this-preserve-the-receiver-through-a-runtime-key",
+    `
+    type Shape = "circle" | "square";
+    interface Costs { scale: number; circle(label: string): number; square(label: string): number; }
+    function pricing(costs: Costs) {
+        return { price(shape: Shape, label: string): number { return costs[shape](label); } };
+    }
+    const costs: Costs = {
+        scale: 10,
+        circle(label) { return this.scale * label.length; },
+        square(label) { return this.scale * 2 * label.length; },
+    };
+    const made = pricing(costs);
+    if (made.price("circle", "ring") !== 40 || made.price("square", "ring") !== 80)
+        throw new Error("selected method receiver");
+    costs.scale = 3;
+    if (made.price("circle", "ring") !== 12 || made.price("square", "ring") !== 24)
+        throw new Error("live method receiver");
+`,
+);
 
 check(
     "stored-function-spread-of-an-optional-lane-tuple",
@@ -11962,6 +12131,44 @@ check(
     if (bound(trace("c", 3)) !== 123 || bound(4) !== 124 || order.join(",") !== "a,b,c")
         throw new Error("bound arguments read once " + order.join(","));
     if (inc === add.bind(null, 1)) throw new Error("bind identity");
+`,
+);
+
+check(
+    "this-field-writes-invalidate-shared-row-facts",
+    `
+    interface Counter { k: number; untouched: number }
+    function assign(this: Counter, value: number): number {
+        this.k = value;
+        return this.k;
+    }
+    function assignValue(this: Counter, value: number): number {
+        return this["k"] = value;
+    }
+    function add(this: Counter, by: number): number {
+        this.k += by;
+        return this.k;
+    }
+    function addKey(this: Counter, by: number): number {
+        this["k"] += by;
+        return this["k"];
+    }
+    const assigned: Counter[] = [{k:1,untouched:7}];
+    const assignedAlias = assigned[0]!;
+    if (assign.call(assigned[0]!,4)!==4 || assignedAlias.k!==4 || assigned[0]!.k!==4 || assignedAlias.untouched!==7)
+        throw new Error("this assignment alias");
+    const assignedValue: Counter[] = [{k:2,untouched:8}];
+    const valueAlias = assignedValue[0]!;
+    if (assignValue.call(assignedValue[0]!,5)!==5 || valueAlias.k!==5 || assignedValue[0]!.k!==5 || valueAlias.untouched!==8)
+        throw new Error("this assignment expression alias");
+    const compounded: Counter[] = [{k:3,untouched:9}];
+    const compoundAlias = compounded[0]!;
+    if (add.call(compounded[0]!,4)!==7 || compoundAlias.k!==7 || compounded[0]!.k!==7 || compoundAlias.untouched!==9)
+        throw new Error("this compound alias");
+    const computed: Counter[] = [{k:4,untouched:10}];
+    const computedAlias = computed[0]!;
+    if (addKey.call(computed[0]!,5)!==9 || computedAlias.k!==9 || computed[0]!.k!==9 || computedAlias.untouched!==10)
+        throw new Error("this computed compound alias");
 `,
 );
 
@@ -13310,15 +13517,25 @@ check(
 `,
 );
 
-test("collections refuse type arguments without a represented storage", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                "const pending = new Map<string, object>(); pending.set('a', {}); if (pending.size !== 1) throw new Error('x');",
-            ),
-        /new Map requires concrete data type arguments or a contextual container type/,
-    );
-});
+check(
+    "collections-retain-object-values-through-erased-type-arguments",
+    `
+    interface Payload { count:number; }
+    const payload:Payload={count:1},replacement:Payload={count:1};
+    const pending=new Map<string,object>();
+    pending.set("a",payload);
+    const held=pending.get("a") as Payload;
+    if(pending.size!==1||held!==payload||held===replacement)throw new Error("object value identity");
+    payload.count=2;
+    if(held.count!==2)throw new Error("producer mutation");
+    held.count=3;
+    if(payload.count!==3)throw new Error("retrieved alias mutation");
+    pending.set("a",replacement);
+    replacement.count=4;
+    if(pending.size!==1||pending.get("a")!==replacement||(pending.get("a") as Payload).count!==4||
+       held!==payload||held.count!==3)throw new Error("replaced entry and held alias");
+`,
+);
 
 // A parsed array read as a typed array copies its elements where the
 // source builds a new collection (a spread, a Set), and finds its own
@@ -14220,13 +14437,9 @@ check(
 `,
 );
 
-test("incompatible nested dictionary record views refuse stored identity", () => {
-    // A union of literals whose arm declares a field as a record, stored as
-    // a type holding that field as a dictionary, has no one layout.
-    assert.throws(
-        () =>
-            compileSource(
-                `type Kind = "hint" | "error" | "success";
+check(
+    "nested-dictionary-record-views-retain-stored-identity",
+    `type Kind = "hint" | "error" | "success";
                 interface StatusMessage {
                   key: string;
                   params?: Record<string, string>;
@@ -14291,10 +14504,7 @@ test("incompatible nested dictionary record views refuse stored identity", () =>
                 if (c.text() !== "press;action=q") throw new Error("bad press");
                 c.press(3, "q");
                 if (c.text() !== "hint") throw new Error("bad reset");`,
-            ),
-        /record stored as 'StatusMessage' would be a copy of the one object JavaScript keeps, and the program writes 'kind' of such records; no shared layout holds both record types\./,
-    );
-});
+);
 
 test("module records and tokens refuse what one object cannot represent", () => {
     const directory = resolve("artifacts/imported-module-record-refusals");

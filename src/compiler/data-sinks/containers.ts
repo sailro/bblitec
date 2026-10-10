@@ -7,6 +7,7 @@ import {
     type DataType,
 } from "../data-types.js";
 import { optionalValueCpp, presenceFlagCpp, type Value } from "../types.js";
+import { writable } from "../emission-transaction.js";
 
 import {
     DynamicBindingStorageRequired,
@@ -35,6 +36,7 @@ import { requireTupleArraySlot } from "../tuple-array-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { isJsonValue } from "../json-bridge.js";
+import { provenUndefinedValue } from "../undefined-values.js";
 
 function expressionOptional(
     dataType: DataType<"optional">,
@@ -188,6 +190,17 @@ function valueOptional(
         return absent;
     }
     if (value.kind === "void") {
+        // An abrupt completion (a suspended coroutine call) never yields
+        // this value; its result settles through the activation.
+        if (
+            !value.abruptCompletion &&
+            (value.erasedVoidCompletion ||
+                !provenUndefinedValue(lowerer.context, node))
+        )
+            lowerer.context.fail(
+                node,
+                "Optional storage requires a proven undefined completion.",
+            );
         lowerer.context.emitDiscardedValue(value);
         return absent;
     }
@@ -221,8 +234,28 @@ function valueOptional(
             lowerer.context.allocateTemporaryCppName("optional_source");
         let converted = "";
         const lines = lowerer.context.captureEmittedLines(() => {
+            const projected = lowerer.leafValue(
+                optionalValueCpp(source),
+                sourceType,
+            );
+            if (value.engineOwnerParameter)
+                writable(projected).engineOwnerParameter =
+                    value.engineOwnerParameter;
+            if (
+                value.engineCpp &&
+                sourceType.kind === "handle" &&
+                !sourceType.ownedEngine
+            ) {
+                writable(projected).engineCpp = value.engineCpp;
+                const captures = value.nativeCompanionCaptures?.engineCpp;
+                if (captures)
+                    writable(projected).nativeCompanionCaptures = {
+                        ...projected.nativeCompanionCaptures,
+                        engineCpp: captures,
+                    };
+            }
             converted = lowerer.compileKnownValueForSink(
-                lowerer.leafValue(optionalValueCpp(source), sourceType),
+                projected,
                 dataType.inner,
                 node,
             );
@@ -288,7 +321,7 @@ function valueVector(
         elements.forEach((entry, index) =>
             lowerer.context.sceneManifest.recordDataLightSlot(entry, index),
         );
-        return `bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}>{${elements
+        const cpp = `bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}>{${elements
             .map((entry, index) =>
                 lowerer.compileMemberForSink(
                     entry,
@@ -298,6 +331,8 @@ function valueVector(
                 ),
             )
             .join(", ")}}`;
+        lowerer.noteConstructedArray(node);
+        return cpp;
     }
     if (
         value.kind === "data" &&
@@ -470,6 +505,11 @@ function convertedElementsCopy(
                       target,
                   );
         if (observed !== undefined) {
+            // A retained array keeps one element representation through every view.
+            lowerer.context.dataTypes.requireSharedValueViews(
+                element,
+                dataType.element,
+            );
             // An array of ArrayLike slots takes the kind of its elements.
             lowerer.requireNumericSlot(value, dataType, node);
             requireStringElements(lowerer, element, dataType.element);

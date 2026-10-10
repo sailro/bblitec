@@ -1,13 +1,50 @@
 import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol } from "./symbols.js";
+import {
+    declarationInDefaultLibrary,
+    declaredSymbol,
+    libraryGlobal,
+} from "./symbols.js";
+import { hasNoValueCompletion } from "./native-return-type.js";
 import { unwrapExpression } from "./syntax.js";
 import type { Value } from "./types.js";
+import type { DataType } from "./data-types.js";
 
-/** A void annotation alone does not constrain a JavaScript return value. */
-export function hasUndefinedCompletion(
+/** Existing library operations with an actual undefined completion. */
+function undefinedLibraryCall(
     checker: ts.TypeChecker,
+    node: ts.Expression,
+): boolean {
+    const expression = unwrapExpression(node);
+    if (!ts.isCallExpression(expression)) return false;
+    const callee = unwrapExpression(expression.expression);
+    const signature = checker.getResolvedSignature(expression);
+    const declaration = signature?.declaration;
+    const global = libraryGlobal(checker, callee);
+    const consoleMethod =
+        ts.isPropertyAccessExpression(callee) &&
+        libraryGlobal(checker, callee.expression) === "console";
+    return (
+        !!signature &&
+        !!declaration &&
+        (global !== undefined || consoleMethod) &&
+        (ts.isFunctionDeclaration(declaration) ||
+            ts.isMethodSignature(declaration)) &&
+        declarationInDefaultLibrary(declaration) &&
+        hasNoValueCompletion(checker.getReturnTypeOfSignature(signature))
+    );
+}
+
+/**
+ * Whether a concrete non-generator body (an async one only when `awaited`)
+ * completes only through values `completes` accepts: each returned
+ * expression, or an arrow's expression body. Running off the end completes
+ * with undefined.
+ */
+function everyCompletion(
     declaration: ts.SignatureDeclaration | ts.JSDocSignature | undefined,
+    awaited: boolean,
+    completes: (expression: ts.Expression) => boolean,
 ): boolean {
     if (
         !declaration ||
@@ -20,21 +57,66 @@ export function hasUndefinedCompletion(
         !declaration.body
     )
         return false;
-    const isUndefined = (expression: ts.Expression): boolean =>
-        ts.isVoidExpression(unwrapExpression(expression)) ||
-        (checker.getTypeAtLocation(expression).flags &
-            ts.TypeFlags.Undefined) !==
-            0;
+    if (
+        (!ts.isArrowFunction(declaration) && declaration.asteriskToken) ||
+        (!awaited &&
+            ts
+                .getModifiers(declaration)
+                ?.some(
+                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+                ))
+    )
+        return false;
     return ts.isBlock(declaration.body)
         ? !someAnalysisNode(
               declaration.body,
               (node) =>
                   ts.isReturnStatement(node) &&
                   !!node.expression &&
-                  !isUndefined(node.expression),
+                  !completes(node.expression),
               { functions: "skip" },
           )
-        : isUndefined(declaration.body);
+        : completes(declaration.body);
+}
+
+/** A void annotation alone does not constrain a JavaScript return value. */
+export function hasUndefinedCompletion(
+    checker: ts.TypeChecker,
+    declaration: ts.SignatureDeclaration | ts.JSDocSignature | undefined,
+    awaited = false,
+): boolean {
+    return everyCompletion(
+        declaration,
+        awaited,
+        (expression) =>
+            ts.isVoidExpression(unwrapExpression(expression)) ||
+            undefinedLibraryCall(checker, expression) ||
+            (checker.getTypeAtLocation(expression).flags &
+                ts.TypeFlags.Undefined) !==
+                0,
+    );
+}
+
+/** A source-specialized callback retains the body behind an immutable alias. */
+export function hasUndefinedCallbackCompletion(
+    checker: ts.TypeChecker,
+    value: Value | undefined,
+    awaited = false,
+): boolean {
+    if (value?.kind !== "callback" || value.cpp) return false;
+    const declaration = value.callbackDeclaration;
+    if (!declaration) return false;
+    const source = ts.isIdentifier(declaration)
+        ? declaredSymbol(checker, declaration)?.valueDeclaration
+        : declaration;
+    return (
+        !!source &&
+        (ts.isFunctionDeclaration(source) ||
+            ts.isFunctionExpression(source) ||
+            ts.isArrowFunction(source) ||
+            ts.isMethodDeclaration(source)) &&
+        hasUndefinedCompletion(checker, source, awaited)
+    );
 }
 
 interface UndefinedContext {
@@ -53,7 +135,7 @@ export function provenUndefinedValue(
     node: ts.Node,
 ): boolean {
     const seen = new Set<ts.Node>();
-    const visit = (source: ts.Node): boolean => {
+    const visit = (source: ts.Node, awaited = false): boolean => {
         if (!ts.isExpression(source)) return false;
         const expression = unwrapExpression(source);
         if (seen.has(expression)) return false;
@@ -69,7 +151,7 @@ export function provenUndefinedValue(
         )
             return true;
         if (ts.isAwaitExpression(expression))
-            return visit(expression.expression);
+            return visit(expression.expression, true);
         if (ts.isIdentifier(expression)) {
             const declaration = declaredSymbol(
                 context.checker,
@@ -80,36 +162,28 @@ export function provenUndefinedValue(
                 ts.isVariableDeclaration(declaration) &&
                 context.bindings.isImmutableVariable(declaration) &&
                 !!declaration.initializer &&
-                visit(declaration.initializer)
+                visit(declaration.initializer, awaited)
             );
         }
         if (!ts.isCallExpression(expression)) return false;
         const callee = unwrapExpression(expression.expression);
+        const signature = context.checker.getResolvedSignature(expression);
+        const declaration = signature?.declaration;
+        if (undefinedLibraryCall(context.checker, expression)) return true;
         if (ts.isIdentifier(callee)) {
             const bound = context.bindings.lookupOptional(callee);
             const stored = bound?.dataType;
-            if (stored?.kind === "function" && stored.undefinedCompletion)
+            if (
+                stored?.kind === "function" &&
+                (stored.undefinedCompletion ||
+                    (awaited && stored.awaitedUndefinedCompletion))
+            )
                 return true;
             if (context.sharedClosures.identifierIsRebound(callee))
                 return false;
             // A name bound at generation to one function literal or
             // declaration (a specialized callback parameter) calls it.
-            const callback =
-                bound?.kind === "callback" && bound.callbackDeclaration
-                    ? ts.isIdentifier(bound.callbackDeclaration)
-                        ? declaredSymbol(
-                              context.checker,
-                              bound.callbackDeclaration,
-                          )?.valueDeclaration
-                        : bound.callbackDeclaration
-                    : undefined;
-            if (
-                callback &&
-                (ts.isFunctionDeclaration(callback) ||
-                    ts.isFunctionExpression(callback) ||
-                    ts.isArrowFunction(callback)) &&
-                hasUndefinedCompletion(context.checker, callback)
-            )
+            if (hasUndefinedCallbackCompletion(context.checker, bound, awaited))
                 return true;
             const declaration = declaredSymbol(
                 context.checker,
@@ -128,10 +202,51 @@ export function provenUndefinedValue(
             !ts.isFunctionExpression(callee)
         )
             return false;
-        return hasUndefinedCompletion(
-            context.checker,
-            context.checker.getResolvedSignature(expression)?.declaration,
-        );
+        return hasUndefinedCompletion(context.checker, declaration, awaited);
     };
     return visit(node);
+}
+
+/** Primitive return lanes cannot participate in thenable adoption. */
+export function isNonThenableDataType(type: DataType | undefined): boolean {
+    if (!type) return false;
+    if (type.kind === "optional" || type.kind === "tagged")
+        return isNonThenableDataType(type.inner);
+    if (type.kind === "union") return type.members.every(isNonThenableDataType);
+    return [
+        "number",
+        "boolean",
+        "string",
+        "enum",
+        "undefined",
+        "null",
+    ].includes(type.kind);
+}
+
+/** A concrete synchronous body may discard a scalar result in finally. */
+export function hasNonThenableCompletion(
+    checker: ts.TypeChecker,
+    declaration: ts.SignatureDeclaration | ts.JSDocSignature | undefined,
+): boolean {
+    return everyCompletion(declaration, false, (expression) => {
+        if (
+            ts.isVoidExpression(unwrapExpression(expression)) ||
+            undefinedLibraryCall(checker, expression)
+        )
+            return true;
+        const type = checker.getTypeAtLocation(expression);
+        return (type.isUnion() ? type.types : [type]).every(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.NumberLike |
+                        ts.TypeFlags.StringLike |
+                        ts.TypeFlags.BooleanLike |
+                        ts.TypeFlags.BigIntLike |
+                        ts.TypeFlags.ESSymbolLike |
+                        ts.TypeFlags.Null |
+                        ts.TypeFlags.Undefined |
+                        ts.TypeFlags.Never)) !==
+                0,
+        );
+    });
 }

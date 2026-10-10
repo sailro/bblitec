@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     nativeFixtureVcpkgRoot,
@@ -26,7 +28,31 @@ async function inspect(gpu: Source | undefined = typeof navigator === "undefined
 }
 `;
 
-const adapterSource = `${inspectSource}
+const optionalSource = `
+async function optionalRequests(): Promise<void> {
+    let owners = 0;
+    let options = 0;
+    function owner(present: boolean): GPU | undefined { owners++; return present ? navigator.gpu : undefined; }
+    function settings(): GPURequestAdapterOptions { options++; return {powerPreference: 'high-performance'}; }
+    const readers: Array<typeof owner> = [owner];
+    const absent = readers[0]!(false)?.requestAdapter(settings());
+    if (absent !== undefined || owners !== 1 || options !== 0) throw new Error('absent optional owner');
+    const request = readers[0]!(true)?.requestAdapter(settings());
+    if (request === undefined || owners !== 2 || options !== 1) throw new Error('present optional owner');
+    const saved = request;
+    if (saved !== request || !(await saved)) throw new Error('optional promise identity');
+    let current: GPU | undefined = navigator.gpu;
+    function clear(): GPURequestAdapterOptions { current = undefined; options++; return {}; }
+    const held = current?.requestAdapter(clear());
+    if (current !== undefined || !(await held) || options !== 2) throw new Error('owner before options');
+    let thrown = 0;
+    try { readers[0]!(false)!.requestAdapter(settings()); } catch { thrown++; }
+    try { readers[0]!(false)!.requestAdapter?.(settings()); } catch { thrown++; }
+    if (thrown !== 2 || owners !== 4 || options !== 2) throw new Error('required owner before options');
+}
+`;
+
+const adapterSource = `${inspectSource}${optionalSource}
 async function main(): Promise<void> {
     const gpu = window.navigator.gpu;
     let evaluations = 0;
@@ -55,6 +81,12 @@ async function main(): Promise<void> {
         typeof info.device !== "string" || typeof info.description !== "string") throw new Error("info storage");
     if (vendor(info) !== info.vendor.trim().toLowerCase() || await inspect() !== vendor(info))
         throw new Error("structural metadata view");
+    const inspectors: Array<typeof inspect> = [inspect];
+    if (await inspectors[0]!() !== vendor(info) || await inspectors[0]!(navigator.gpu) !== vendor(info))
+        throw new Error("retained structural default owner");
+    const owners: GPU[] = [navigator.gpu];
+    const retained = owners[0]!;
+    if (retained !== gpu || !(await retained.requestAdapter())) throw new Error("retained owner identity");
     const withIgnored = await gpu.requestAdapter({powerPreference:"high-performance", ignored: ++evaluations});
     if (!withIgnored || evaluations !== 2) throw new Error("ignored dictionary argument evaluation");
     let rejected = 0;
@@ -64,10 +96,24 @@ async function main(): Promise<void> {
     try { await gpu.requestAdapter({xrCompatible:true}); } catch { ++rejected; }
     try { await gpu.requestAdapter({powerPreference:""}); } catch { ++rejected; }
     if (rejected !== 5) throw new Error("unsupported selection policy");
+    function owner(): GPU { ++evaluations; return navigator.gpu; }
+    const readers: Array<typeof owner> = [owner];
+    if (!(await readers[0]!().requestAdapter(options())) || evaluations !== 4)
+        throw new Error("evaluated owner and options");
+    await optionalRequests();
     globalThis.close();
 }
 void main();
 `;
+
+test("optional GPU owners preserve JavaScript evaluation and promise identity", async () => {
+    await runInNewContext(
+        ts.transpile(optionalSource + "optionalRequests();"),
+        {
+            navigator: { gpu: { requestAdapter: () => Promise.resolve({}) } },
+        },
+    );
+});
 
 test("adapter requests preserve asynchronous settlement, info identity and structural helper views", (t) => {
     const result = compileSource(adapterSource);
@@ -143,7 +189,7 @@ test("adapter options refuse accessor records", () => {
             compileSource(
                 `void navigator.gpu.requestAdapter({get powerPreference(){return "high-performance" as const;}});`,
             ),
-        /plain data properties/,
+        /named data properties/,
     );
 });
 
@@ -172,10 +218,22 @@ test("GPU adapter info refuses structured cloning into another realm", () => {
 for (const setup of [
     "const request = navigator.gpu.requestAdapter; void request();",
     "const object = { request: navigator.gpu.requestAdapter }; void object.request();",
+    "const owners: GPU[] = [navigator.gpu]; const request = owners[0]!.requestAdapter; void request();",
+    "const owners: GPU[] = [navigator.gpu]; const object = {requestAdapter: owners[0]!.requestAdapter}; void object.requestAdapter();",
+    "const gpu: GPU | undefined = undefined; void (gpu?.requestAdapter)();",
 ])
     test(`GPU requests require the original receiver: ${setup}`, () => {
         assert.throws(() => compileSource(setup));
     });
+
+test("a retained structural GPU helper refuses a fabricated GPU owner", () => {
+    assert.throws(() =>
+        compileSource(`${inspectSource}
+            const inspectors: Array<typeof inspect> = [inspect];
+            void inspectors[0]!({requestAdapter: async () => null});
+        `),
+    );
+});
 
 for (const backend of ["sdl", "dawn"] as const)
     test(`${backend} queries the real selected GPU device before generated adapter requests`, (t) => {

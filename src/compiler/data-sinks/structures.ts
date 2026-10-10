@@ -2,7 +2,7 @@ import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
-    isOpaqueReference,
+    isAbsentSpreadProperty,
     propertyIsReadOnly,
     type DataStructField,
     type DataType,
@@ -18,6 +18,8 @@ import { isJsonValue } from "../json-bridge.js";
 import { declaredSymbol, isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
+import { nativeStructuralViewType } from "../native-owner-carrier.js";
+import { callableRecordValue } from "../callable-records.js";
 import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 import { recordPropertyKeys } from "../object-statics.js";
 import {
@@ -128,6 +130,8 @@ function expressionStruct(
     }
     if (
         ts.isCallExpression(unwrapped) ||
+        ts.isArrowFunction(unwrapped) ||
+        ts.isFunctionExpression(unwrapped) ||
         ts.isNewExpression(unwrapped) ||
         ts.isIdentifier(unwrapped) ||
         unwrapped.kind === ts.SyntaxKind.ThisKeyword ||
@@ -137,11 +141,20 @@ function expressionStruct(
         const known = lowerer.context.compileValue(unwrapped);
         if (
             known.kind === "record" ||
+            ((known.kind === "callback" ||
+                known.dataType?.kind === "function") &&
+                lowerer.context.dataTypes.structCall(dataType.name) !==
+                    undefined) ||
+            nativeStructuralViewType(known) !== undefined ||
             ((known.kind === "json-null" ||
                 known.dataType?.kind === "optional") &&
                 lowerer.context.dataTypes.isReferenceStruct(dataType.name))
         ) {
-            return lowerer.compileKnownValueForSink(known, dataType, unwrapped);
+            return lowerer.compileKnownValueForSink(
+                known,
+                dataType,
+                expression,
+            );
         }
         if (
             known.kind === "data" &&
@@ -220,12 +233,104 @@ function valueEnum(
     return undefined;
 }
 
+/** A copied own undefined field needs the same presence storage as a direct initializer. */
+function requireCopiedOwnUndefinedFields(
+    lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
+    node: ts.Node,
+    value: Value,
+): void {
+    const storedSource =
+        value.kind === "data" && value.dataType?.kind === "struct"
+            ? value.dataType
+            : undefined;
+    const fields = lowerer.context.dataTypes
+        .structFields(dataType.name, node, "accessors")
+        .filter((field) => field.optionalProperty && !field.accessorReceiver)
+        // A compile-time record's generation-known scalar is present: its
+        // key can never hold an own undefined.
+        .filter((field) => {
+            const fact =
+                value.kind === "record"
+                    ? value.recordProperties?.[field.sourceName]
+                    : undefined;
+            return (
+                fact?.staticString === undefined &&
+                fact?.staticNumber === undefined &&
+                fact?.staticBoolean === undefined
+            );
+        });
+    if (!fields.length) return;
+    const expression = lowerer.convertedExpression(node);
+    if (!expression) return;
+    const source = lowerer.context.checker.getNonNullableType(
+        lowerer.context.checker.getTypeAtLocation(expression),
+    );
+    // A value of the struct's own type carries no new own-undefined fact:
+    // its initializers already decided that type's presence storage.
+    const sourceType = lowerer.context.dataTypes.fromStoredTsType(
+        source,
+        expression,
+    );
+    if (sourceType?.kind === "struct" && sourceType.name === dataType.name)
+        return;
+    const members = source.isUnion() ? source.types : [source];
+    const storedFields = storedSource
+        ? new Map(
+              lowerer.context.dataTypes
+                  .structFields(storedSource.name, node, "accessors")
+                  .map((field) => [field.sourceName, field]),
+          )
+        : undefined;
+    for (const field of fields) {
+        const original = storedFields?.get(field.sourceName);
+        // In this source slot, an empty payload already means a missing key.
+        if (
+            storedSource &&
+            original?.type.kind === "optional" &&
+            ["number", "string", "boolean", "enum"].includes(
+                original.type.inner.kind,
+            ) &&
+            !original.accessorReceiver &&
+            lowerer.context.dataTypes.ownPropertyPresence(
+                storedSource.name,
+                original,
+            ) === "stored"
+        )
+            continue;
+        const properties = members.flatMap((member) => {
+            const property = lowerer.context.checker.getPropertyOfType(
+                member,
+                field.sourceName,
+            );
+            return property ? [property] : [];
+        });
+        const types = properties.map((property) =>
+            lowerer.context.checker.getTypeOfSymbolAtLocation(
+                property,
+                expression,
+            ),
+        );
+        types.forEach((type, index) => {
+            if (isAbsentSpreadProperty(properties, types, index)) return;
+            lowerer.context.dataTypes.requireOwnUndefinedField(
+                dataType.name,
+                field,
+                type,
+                expression,
+            );
+        });
+    }
+}
+
 function valueStruct(
     dataType: DataType<"struct">,
     lowerer: DataSinkHost,
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    const callable = callableRecordValue(lowerer, value, dataType, node);
+    if (callable) return callable.cpp;
     value = lowerer.context.classLowerer.errorView(value, node) ?? value;
     const wrapped = value.dataType?.kind === "optional";
     const sourceType =
@@ -308,10 +413,11 @@ function valueStruct(
     ) {
         return value.ownedCpp ?? value.cpp;
     }
-    if (isOpaqueReference(value.dataType)) {
+    const represented = nativeStructuralViewType(value);
+    if (represented) {
         const demand = lowerer.context.dataTypes.nativeRecordViewDemand(
             dataType.name,
-            value.dataType!,
+            represented,
             node,
         );
         if (demand) throw new NativeRecordStorageRequired(demand);
@@ -325,6 +431,7 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
+        requireCopiedOwnUndefinedFields(lowerer, dataType, node, value);
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
@@ -390,6 +497,10 @@ function valueStruct(
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
+                lowerer.context.dataTypes.requireEngineFieldStorage(
+                    field,
+                    node,
+                );
                 const getter = value.recordGetters?.[field.sourceName];
                 const setter = value.recordSetters?.[field.sourceName];
                 if (getter || setter)
@@ -435,6 +546,13 @@ function valueStruct(
                         field,
                         property.callbackDeclaration,
                     );
+                if (field.accessorReceiver && property?.conditionalOwnKey)
+                    return conditionalOwnFieldInitializer(
+                        lowerer,
+                        property,
+                        field,
+                        node,
+                    );
                 const stored = property
                     ? field.defaultWhenMissing &&
                       property.dataType?.kind === "optional" &&
@@ -446,7 +564,9 @@ function valueStruct(
                               node,
                               field.sourceName,
                           )
-                    : field.defaultWhenMissing
+                    : field.defaultWhenMissing ||
+                        (field.accessorReceiver &&
+                            field.type.kind === "optional")
                       ? "{}"
                       : field.type.kind === "optional"
                         ? "std::nullopt"
@@ -472,7 +592,19 @@ function valueStruct(
             : aggregate;
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
+        requireCopiedOwnUndefinedFields(lowerer, dataType, node, value);
         const sourceType = value.dataType;
+        // Receiver-aware slots retain presence independently of their payload.
+        // Their owner types must share one layout even for a fresh object.
+        if (
+            sourceType.name !== dataType.name &&
+            [sourceType, dataType].some((type) =>
+                lowerer.context.dataTypes
+                    .structFields(type.name, node, "accessors")
+                    .some((field) => field.accessorReceiver),
+            )
+        )
+            lowerer.context.dataTypes.joinSpreadTarget(sourceType, dataType);
         // JavaScript stores the same object under the other type. A record
         // nothing else reaches, or one whose copy nothing can tell apart, is
         // copied; any other source shares one layout with the target or
@@ -511,6 +643,10 @@ function valueStruct(
         );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
+                lowerer.context.dataTypes.requireEngineFieldStorage(
+                    field,
+                    node,
+                );
                 const source = sourceFields.get(field.sourceName);
                 if (!source) {
                     if (field.defaultWhenMissing) {
@@ -524,6 +660,10 @@ function valueStruct(
                         `Struct ${sourceType.name} is missing required destination field '${field.sourceName}'.`,
                     );
                 }
+                lowerer.context.dataTypes.requireEngineFieldStorage(
+                    source,
+                    node,
+                );
                 const sourceCpp = `${value.cpp}${sourceArrow ? "->" : "."}${source.name}`;
                 // One object seen through two record types keeps its
                 // accessors; a stored value becomes the target's cell.
@@ -556,6 +696,12 @@ function valueStruct(
         value.dataType.key.kind === "string"
     ) {
         const sourceMap = value.dataType;
+        if (sourceMap.dictionary && sourceMap.value.kind === "json") {
+            const demand = lowerer.context.dataTypes.documentRecordDemand(
+                dataType.name,
+            );
+            if (demand) throw new NativeRecordStorageRequired(demand);
+        }
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
@@ -564,6 +710,8 @@ function valueStruct(
         lowerer.context.dataTypes.noteRecordConversion(dataType, [
             UNKNOWN_PROPERTIES,
         ]);
+        for (const field of fields)
+            lowerer.context.dataTypes.requireEngineFieldStorage(field, node);
         // A parsed entry converts, checked, to a scalar field type.
         const parsedEntry = (field: DataStructField): boolean => {
             const stored =
@@ -622,11 +770,50 @@ function valueStruct(
     return undefined;
 }
 
-/**
- * The expression a converted struct value is the value of, or the array an
- * element was read out of: a copy handed to a callee that only reads that
- * argument lives for the call.
- */
+// Conditional spreads must choose an absent slot, not an own slot with an
+// empty payload. Snapshot the source once before testing its presence.
+function conditionalOwnFieldInitializer(
+    lowerer: DataSinkHost,
+    property: Value,
+    field: DataStructField,
+    node: ts.Node,
+): string {
+    let held!: Value;
+    let own = "";
+    const snapshots = lowerer.context.captureEmittedLines(() => {
+        held = lowerer.context.bindings.pinValueToTemporary(
+            property,
+            "conditional_field",
+        );
+        own = lowerer.recordMemberEntry(field.sourceName, held, node).presence!
+            .ownCpp;
+    });
+    let stored = "";
+    const conversion = lowerer.context.captureEmittedLines(() => {
+        stored =
+            field.defaultWhenMissing &&
+            held.dataType?.kind === "optional" &&
+            field.type.kind !== "optional"
+                ? armFieldOrDefault(lowerer, held, field, node)
+                : lowerer.compileMemberForSink(
+                      held,
+                      field.type,
+                      node,
+                      field.sourceName,
+                  );
+    });
+    const slot = lowerer.context.dataTypes.structFieldCppType(field);
+    const initialized = lowerer.context.dataTypes.structFieldInitializerCpp(
+        field,
+        stored,
+    );
+    return (
+        `([&]() -> ${slot} { ${snapshots.join(" ")} ` +
+        `if (!(${own})) return {}; ${conversion.join(" ")} ` +
+        `return ${initialized}; }())`
+    );
+}
+
 /**
  * A field only some union arms hold, from a record whose selected arm may
  * lack it (a conditional between two arms' literals): the value where the
@@ -665,6 +852,11 @@ function armFieldOrDefault(
     );
 }
 
+/**
+ * The expression a converted struct value is the value of, or the array an
+ * element was read out of: a copy handed to a callee that only reads that
+ * argument lives for the call.
+ */
 function recordExpression(
     lowerer: DataSinkHost,
     value: Value,
