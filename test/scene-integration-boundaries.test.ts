@@ -66,13 +66,7 @@ int main() {assert(source_main()==0); assert(factories==2);}
 `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         "/Od",
-        `/I${resolve("native/include")}`,
         input,
         `/Fe:${executable}`,
         `/Fo:${resolve(directory, "check.obj")}`,

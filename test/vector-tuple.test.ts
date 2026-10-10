@@ -83,19 +83,10 @@ test(
         writeFileSync(join(output, "scene.hpp"), result.cpp);
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(native!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             output,
-            "/I",
-            "native\\include",
             "test\\fixtures\\vector-tuple-check.cpp",
         ]);
         assert.match(

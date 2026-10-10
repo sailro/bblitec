@@ -144,7 +144,7 @@ test("deferred media preserves typed bodies, optional evaluation and explicit fa
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(tools, "deferred-media/family", result.cpp + runtime, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
         expectedOutput: "",
     });

@@ -42,16 +42,8 @@ test("stored imported roots retain clone dispatch and recursive SceneNode traver
     const file = join(output, "check.cpp");
     writeFileSync(file, compiled.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/permissive-",
         "/c",
         `/Fo:${output}\\`,
-        "/I",
-        "native/include",
         "/I",
         join(output, "upstream/include"),
         file,

@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -10,8 +7,8 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
     sharedGpuSource,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
@@ -45,12 +42,9 @@ test(
                 cppFunction(lowered.replaceAll("\r\n", "\n"), signature),
             )
             .join("\n");
-        const output = resolve("artifacts/thin-instance-matrix-lifetime");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            source,
+        runGeneratedProgram(
+            native!,
+            "thin-instance-matrix-lifetime",
             `#include <bblite/runtime.hpp>
 #include <cassert>
 namespace bbl { ${functions} }
@@ -70,19 +64,6 @@ int main() {
     assert(engine.meshes[0].instance_matrices[0][12] == 9);
 }`,
         );
-        runNativeFixtureCompiler(native!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/I",
-            "native/include",
-            source,
-            `/Fe:${executable}`,
-            `/Fo:${output}/`,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );
 
@@ -140,12 +121,9 @@ test(
         ]
             .map((name) => cppFunction(lowered, `void ${name}(`))
             .join("\n");
-        const output = resolve("artifacts/thin-instance-colors");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            source,
+        runGeneratedProgram(
+            native!,
+            "thin-instance-colors",
             `#include <bblite/checked_handles.hpp>
 #include <bblite/js_data.hpp>
 #include <cassert>
@@ -184,20 +162,6 @@ int main() {
     }
 }`,
         );
-        runNativeFixtureCompiler(native!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${output}/`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
         const result = compileSource(`
         import { createEngine, createBox, setThinInstances, setThinInstanceColors, setThinInstanceColor,
             setThinInstanceCullBoundsPad } from "@babylonjs/lite";

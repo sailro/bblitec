@@ -166,13 +166,7 @@ int main() {
         executable = join(output, "check.exe");
     writeFileSync(path, source);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         `/I${resolve("native/src")}`,
-        `/I${resolve("native/include")}`,
         `/I${sdlInclude}`,
         path,
         `/Fe:${executable}`,

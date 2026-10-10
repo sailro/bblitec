@@ -18,11 +18,6 @@ test("renderer phases preserve update timing and stop after unavailable surfaces
     mkdirSync(directory, { recursive: true });
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/I",
         "native/src",
         `/Fo:${directory}/`,

@@ -22,12 +22,6 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "audio-lifetime-check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
             "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
             "/DBBLITE_HAS_AUDIO_OSCILLATOR=1",
@@ -38,11 +32,7 @@ test(
             `/Fe:${executable}`,
             "/I",
             "native/src",
-            "/I",
-            "native/include",
-            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
             `/external:I${join(labsound, "include")}`,
-            "/external:W0",
             "test/fixtures/audio-lifetime-check.cpp",
             "/link",
             `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,

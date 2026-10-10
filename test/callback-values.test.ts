@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -39,16 +38,7 @@ function nativeCheck(
         exe = join(directory, "check.exe");
     writeFileSync(cpp, compiled.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         ...(workers ? ["/DBBLITE_WORKERS=1"] : []),
-        "/I",
-        "native/include",
-        `/I${join(nativeFixtureVcpkgRoot, "include")}`,
         `/Fo:${directory}/`,
         `/Fe:${exe}`,
         cpp,

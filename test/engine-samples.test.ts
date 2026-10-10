@@ -7,7 +7,6 @@ import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -66,15 +65,6 @@ test("runtime engine samples preserve strict selection, one evaluation and scene
     );
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
-        "/I",
-        "native/include",
-        `/I${nativeFixtureVcpkgRoot}/include`,
         resolve(directory, "main.cpp"),
         resolve(directory, "factories.cpp"),
         `/Fo:${directory}/`,

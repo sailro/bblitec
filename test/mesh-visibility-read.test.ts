@@ -60,17 +60,6 @@ test("mesh visibility reads preserve unset, true and false through stored handle
     `,
     );
     const exe = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${output}/`,
-        `/Fe${exe}`,
-    ]);
+    runNativeFixtureCompiler(tools, [cpp, `/Fo${output}/`, `/Fe${exe}`]);
     execFileSync(exe, { encoding: "utf8", timeout: 10000 });
 });

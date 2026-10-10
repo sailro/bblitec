@@ -57,7 +57,7 @@ test("suspending cleanup preserves and overrides abrupt completions", (t) => {
         { fileName: join(directory, "entry.ts") },
     );
     runGeneratedProgram(tools, "async-cleanup-check", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
         expectedOutput: "",
     });

@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
     sceneBackendSource,
@@ -102,27 +101,17 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
     }
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
         "/DBBLITE_HAS_SPRITE_RENDERER=1",
         "/DBBLITE_HAS_BILLBOARDS=1",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
         "/DSDL_STATIC_LIB",
         `/Fo:${output}/`,
         `/Fe:${executable}`,
         "/I",
-        "native/include",
-        "/I",
         "native/src",
         "/I",
         output,
         `/external:I${dawnInclude}`,
-        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        "/external:W0",
         "test/fixtures/scene-stage-contracts-check.cpp",
     ]);
     assert.equal(execFileSync(executable, { encoding: "utf8" }), "");

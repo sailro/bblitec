@@ -1,13 +1,12 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerNodeInputScalarSetter } from "../src/lowering/node-input-uniform-lowerer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("Dawn node draw buffers refresh each changed owner once while scalar slots retain source rounding", (t) => {
@@ -76,20 +75,7 @@ test("Dawn node draw buffers refresh each changed owner once while scalar slots 
         DawnDrawState geometry;fill_node_draw_buffers(state,geometry,view,nullptr);fill_node_draw_buffers(state,geometry,view,nullptr);assert(geometry.material_uniforms->writes==1);
     }
     `;
-    const path = join(output, "check.cpp"),
-        exe = join(output, "check.exe");
-    writeFileSync(path, code);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        path,
-        `/Fo${output}/`,
-        `/Fe${exe}`,
-    ]);
-    execFileSync(exe, { encoding: "utf8", timeout: 10000 });
+    runGeneratedProgram(tools, "node-input-uniform-runtime", code, {
+        timeoutMs: 10000,
+    });
 });

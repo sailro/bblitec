@@ -26,12 +26,6 @@ test("Window compositor heartbeats survive absent frame statistics and coalesce 
     );
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         `/I${resolve("native/src")}`,
         `/I${directory}`,
         `/Fo${directory}/`,

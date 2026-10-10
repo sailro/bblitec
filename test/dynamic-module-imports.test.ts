@@ -66,7 +66,7 @@ test("finite imports retain namespace identity, live exports and asynchronous re
         return;
     }
     runGeneratedProgram(tools, "dynamic-module-imports-native", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
     });
 });
 
@@ -156,7 +156,7 @@ test("lazy modules retain activation order, live state, cycles and cached failur
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(tools, "dynamic-module-activation-native", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
     });
 });
 
@@ -190,7 +190,7 @@ test("lazy module bindings of deployment constants hold their folded values", (t
         return;
     }
     runGeneratedProgram(tools, "dynamic-module-deployment-native", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
     });
 });
 

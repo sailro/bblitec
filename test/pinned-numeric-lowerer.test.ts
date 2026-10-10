@@ -13,12 +13,9 @@
 //     `depths` rather than from the f64 it computed.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 import ts from "typescript";
 import {
@@ -303,13 +300,9 @@ test("a string set and a composed throw message lower as JavaScript's", (t) => {
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const output = resolve("artifacts/pinned-numeric-strings");
-    mkdirSync(output, { recursive: true });
-    const file = join(output, "check.cpp"),
-        executable = join(output, "check.exe");
-    // JavaScript's default sort compares UTF-16 code units, so "Z" < "a".
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "pinned-numeric-strings",
         `#include <bblite/js_data.hpp>
         #include <cstdio>
         #include <stdexcept>
@@ -324,26 +317,13 @@ test("a string set and a composed throw message lower as JavaScript's", (t) => {
                 std::fputs(error.what(), stdout);
             }
         }`,
-    );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        file,
-    ]);
-    assert.equal(
-        execFileSync(executable, { encoding: "utf8" }),
-        `missing: ${Array.from(new Set(["text", "Zone", "text"]))
-            .sort()
-            .join(", ")}. Register them.`,
+        {
+            expectedOutput: `missing: ${Array.from(
+                new Set(["text", "Zone", "text"]),
+            )
+                .sort()
+                .join(", ")}. Register them.`,
+        },
     );
 });
 
@@ -368,12 +348,9 @@ test("native typed-array chains capture indices before writes and preserve unrou
     values[values[0]!] = values[0] = 1;
     values[2] = bytes[0] = 257.25;
     words[0] = words[1] = -1;
-    const output = resolve("artifacts/pinned-numeric-chains");
-    mkdirSync(output, { recursive: true });
-    const file = join(output, "check.cpp"),
-        executable = join(output, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "pinned-numeric-chains",
         `#include <bblite/js_data.hpp>
         #include <cassert>
         int main() {
@@ -384,23 +361,8 @@ test("native typed-array chains capture indices before writes and preserve unrou
             assert(bytes[0] == ${bytes[0]});
             assert((words == std::vector<std::uint32_t>{${[...words].map((word) => `${word}u`).join(",")}}));
         }`,
+        { flags: ["/O2"], expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/O2",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        file,
-    ]);
-    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
     for (const source of [
         "values[0] = values[1] = next();",
         "values[bytes[0]++] = values[0] = 1;",
@@ -474,12 +436,9 @@ test("compound bitwise stores, array literals and written const records run as J
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const output = resolve("artifacts/pinned-numeric-bitwise-stores");
-    mkdirSync(output, { recursive: true });
-    const file = join(output, "check.cpp"),
-        executable = join(output, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "pinned-numeric-bitwise-stores",
         `#include <bblite/js_data.hpp>
         #include <bblite/runtime.hpp>
         #include <cassert>
@@ -490,23 +449,8 @@ test("compound bitwise stores, array literals and written const records run as J
             const double expected[] = {${expected.join(", ")}};
             for (int index = 0; index < 6; ++index) assert(seen[index] == expected[index]);
         }`,
+        { flags: ["/Od"], expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/Od",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        file,
-    ]);
-    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
     // An integer loop index would narrow the stored number again.
     assert.throws(
         () => lower("for (let i = 0; i < 4; i++) { i |= 1; }"),
@@ -869,12 +813,9 @@ test("logical values and switch selectors preserve lazy, single evaluation nativ
         ],
         { calls: new Map([["next", () => "next()"]]) },
     );
-    const output = resolve("artifacts/pinned-numeric-logical-values");
-    mkdirSync(output, { recursive: true });
-    const file = join(output, "check.cpp"),
-        executable = join(output, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "pinned-numeric-logical-values",
         `#include <bblite/js_data.hpp>
         #include <cassert>
         #include <cmath>
@@ -887,23 +828,8 @@ test("logical values and switch selectors preserve lazy, single evaluation nativ
             assert(text == "ok" && selected == 20 && calls == 3 && mixedCondition == 2);
             assert(!gated && branch == 0);
         }`,
+        { flags: ["/Od"], expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/Od",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        file,
-    ]);
-    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
     assert.throws(
         () => lower(`const value = 1 || "text";`),
         /incompatible representations/,

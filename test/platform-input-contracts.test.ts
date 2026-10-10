@@ -81,24 +81,14 @@ test("every native driver routes DOM input, replay, UI consumption and window ev
     for (const ui of [0, 1]) {
         const executable = join(output, `check-${ui}.exe`);
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
             `/DBBLITE_HAS_UI=${ui}`,
             `/Fo:${output}/`,
             `/Fe:${executable}`,
             "/I",
-            "native/include",
-            "/I",
             "native/src",
             "/I",
             output,
-            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-            "/external:W0",
             "test/fixtures/platform-input-contracts-check.cpp",
             join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
         ]);

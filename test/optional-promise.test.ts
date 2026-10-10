@@ -45,7 +45,7 @@ test("awaited nullable promises compare their settled scalars in operand order",
     const tools = optionalNativeFixtureTools(false);
     if (!tools) return t.skip("Native fixture compiler unavailable.");
     runGeneratedProgram(tools, "optional-promise/comparisons", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
         expectedOutput: "",
     });
@@ -100,27 +100,11 @@ test("generic optional promise results retain identity, aliases and reaction ord
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const cpp = join(directory, "check.cpp"),
-        executable = join(directory, "check.exe");
-    writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        cpp,
-    ]);
-    assert.equal(
-        execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
-        "",
-    );
+    runGeneratedProgram(tools, "generic-optional-promise", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
 });
 
 test("stored callbacks preserve promise and synchronous void outcomes", (t) => {
@@ -171,15 +155,7 @@ test("stored callbacks preserve promise and synchronous void outcomes", (t) => {
         executable = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        "/I",
-        "native/include",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         cpp,

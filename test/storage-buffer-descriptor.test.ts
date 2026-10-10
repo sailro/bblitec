@@ -1,14 +1,10 @@
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { storageBufferDescriptorCpp } from "../src/lowering/storage-buffer-descriptor.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("storage allocation alignment, limits and role flags match the pinned factory", async (t) => {
@@ -83,12 +79,9 @@ test("storage allocation alignment, limits and role flags match the pinned facto
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/storage-buffer-descriptor-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "storage-buffer-descriptor-check",
         `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/pal_storage_buffer.hpp>
@@ -97,18 +90,6 @@ test("storage allocation alignment, limits and role flags match the pinned facto
 namespace bbl::upstream {${storageBufferDescriptorCpp(new LoweringContext())}}
 int main(){${checks.join("\n")}}
 `,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

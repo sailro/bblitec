@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("local storage can be injected through nullable method records", async (t) => {
@@ -53,10 +52,9 @@ test("local storage can be injected through nullable method records", async (t) 
             const directory = resolve("artifacts/injected-web-storage");
             mkdirSync(directory, { recursive: true });
             writeFileSync(join(directory, "program.hpp"), result.cpp);
-            const source = join(directory, "check.cpp"),
-                executable = join(directory, "check.exe");
-            writeFileSync(
-                source,
+            runGeneratedProgram(
+                native!,
+                "injected-web-storage",
                 `
             #define main generated_main
             #include "program.hpp"
@@ -71,21 +69,6 @@ test("local storage can be injected through nullable method records", async (t) 
             int main() { assert(generated_main() == 0); assert(saved == "default" && reads == 2 && writes == 2); }
         `,
             );
-            runNativeFixtureCompiler(native!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
-                `/Fo:${directory}/`,
-                `/Fe:${executable}`,
-                "/I",
-                "native/include",
-                source,
-            ]);
-            execFileSync(executable, { stdio: "pipe" });
         },
     );
 });

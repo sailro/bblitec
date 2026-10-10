@@ -206,18 +206,7 @@ int main() {
 }
 `,
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
+    runNativeFixtureCompiler(tools, [cpp, `/Fo${directory}/`, `/Fe${exe}`]);
     const actual = execFileSync(exe, { encoding: "utf8", timeout: 10000 })
         .trim()
         .split(/\s+/)

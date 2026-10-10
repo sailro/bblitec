@@ -8505,7 +8505,7 @@ function checkInRealm(name: string, source: string): void {
                     native!,
                     `language-constructs/${name}`,
                     result.cpp,
-                    { defines: ["BBLITE_WORKERS=1"] },
+                    { flags: ["/DBBLITE_WORKERS=1"] },
                 );
             },
         );

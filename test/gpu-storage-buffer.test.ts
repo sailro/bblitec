@@ -1,13 +1,9 @@
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerStorageBuffer } from "../src/lowering/storage-buffer-lowerer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("GPU storage buffers preserve source mirrors, updates and disposal ownership", (t) => {
@@ -16,12 +12,9 @@ test("GPU storage buffers preserve source mirrors, updates and disposal ownershi
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/gpu-storage-buffer-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "gpu-storage-buffer-check",
         `${lowerStorageBuffer(new LoweringContext()).source}
 #include <cassert>
 struct Buffer final : bbl::pal::StorageBufferAllocation {
@@ -80,20 +73,10 @@ int main() {
     assert(second->destroys==1&&engine->resource_epoch==2&&!engine->dispose_storage_buffers);
 }
 `,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

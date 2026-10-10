@@ -41,7 +41,10 @@ function check(name: string, source: string, realm = false): void {
             `#define main generated_main\n${result.cpp}\n#undef main\n` +
                 `int main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();` +
                 `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("recursive union ownership leak");return result;}\n`,
-            { defines: realm ? ["BBLITE_WORKERS=1"] : [], timeoutMs: 10000 },
+            {
+                flags: realm ? ["/DBBLITE_WORKERS=1"] : [],
+                timeoutMs: 10000,
+            },
         );
     });
 }

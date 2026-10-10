@@ -198,17 +198,7 @@ test(
         ]);
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O2",
-            "/Gy",
-            "/I",
-            "native/include",
             "/I",
             join(output, "upstream/include"),
             `/Fo:${output}\\`,
@@ -216,8 +206,6 @@ test(
             join(output, "upstream/src/scene_core.cpp"),
             join(output, "upstream/src/animation_property.cpp"),
             "test/fixtures/animation-manager-seek-check.cpp",
-            "/link",
-            "/OPT:REF",
         ]);
         execFileSync(executable, { stdio: "pipe" });
     },
@@ -257,25 +245,13 @@ test(
             );
             const executable = join(output, `check-${named}.exe`);
             runNativeFixtureCompiler(tools!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
                 "/O2",
-                "/Gy",
-                "/I",
-                "native/include",
                 "/I",
                 output,
                 `/Fo:${output}\\`,
                 `/Fe:${executable}`,
                 join(output, "property_animation.cpp"),
                 "test/fixtures/animation-manager-capture-check.cpp",
-                "/link",
-                "/OPT:REF",
             ]);
             execFileSync(executable, { stdio: "pipe" });
         }
@@ -296,25 +272,13 @@ test(
         writeFileSync(join(output, "property_animation.cpp"), lowered.source);
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O2",
-            "/Gy",
-            "/I",
-            "native/include",
             "/I",
             output,
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             join(output, "property_animation.cpp"),
             "test/fixtures/animation-manager-clock-check.cpp",
-            "/link",
-            "/OPT:REF",
         ]);
         assert.match(
             execFileSync(executable, { encoding: "utf8" }),

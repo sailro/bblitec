@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("application errors dispatch before engine creation with native cancellation and rejection timing", (t) => {
@@ -107,10 +106,9 @@ test("application errors dispatch before engine creation with native cancellatio
         return;
     }
     writeFileSync(resolve(directory, "program.hpp"), result.cpp);
-    const cpp = resolve(directory, "check.cpp"),
-        executable = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "application-errors",
         `
         #define main generated_main
         #include "program.hpp"
@@ -166,24 +164,15 @@ test("application errors dispatch before engine creation with native cancellatio
             }
         }
     `,
+        {
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
+                "/DBBLITE_HAS_UI=1",
+            ],
+            timeoutMs: 10000,
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        "/DBBLITE_HAS_UI=1",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        cpp,
-    ]);
-    execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });
 
 test("generated main reports every escaping value through the application reporter", (t) => {
@@ -202,12 +191,9 @@ test("generated main reports every escaping value through the application report
         result.cpp,
         /\} catch \(\.\.\.\) \{\s*return bbl::report_uncaught_error\(std::current_exception\(\)\);/,
     );
-    const directory = resolve("artifacts/uncaught-error-report");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp");
-    const executable = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "uncaught-error-report",
         `#define main generated_main
 ${result.cpp}
 #undef main
@@ -225,19 +211,6 @@ int main() {
     assert(reports.str() == "Uncaught application error: failure\\nUncaught application error: Unknown native exception\\n");
 }
 `,
+        { timeoutMs: 10000 },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        cpp,
-    ]);
-    execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });

@@ -17,13 +17,6 @@ test("settled glTF promises allocate no wrapper storage and retain values and re
     writeFileSync(resolve(directory, "load-promise.hpp"), gltfLoadPromise);
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         `/I${directory}`,
         `/Fo${directory}\\`,
         `/Fe${executable}`,

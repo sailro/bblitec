@@ -69,15 +69,9 @@ inline RenderItem bind_render_item(RenderItem item, const Engine&, int) { return
     const executable = join(output, "check.exe");
     for (const velocity of [0, 1]) {
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/O2",
             `/DFIXTURE_VELOCITY=${velocity}`,
             "/DBBLITE_HAS_PBR_RENDERER=1",
-            "/Inative/include",
             "/Inative/src",
             `/Fo:${output}/`,
             `/Fe:${executable}`,

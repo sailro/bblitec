@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerComputeOneShot } from "../src/lowering/compute-one-shot-lowerer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 import { compileSource } from "../src/compiler.js";
 
@@ -17,12 +14,9 @@ test("one-shot source preserves armed identity, submission generations, GPU comp
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/compute-one-shot-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "compute-one-shot-check",
         `${lowerComputeOneShot(new LoweringContext()).source}
 #include <cassert>
 struct Device final:bbl::pal::OffscreenDevice {
@@ -88,22 +82,12 @@ bbl::js::Promise<bbl::js::PromiseVoid> checks(bbl::pal::EventLoop& loop,bool& do
 }
 int main(){bbl::js::RealmScope realm;bbl::pal::EventLoop loop;bool done=false;loop.run([&]{checks(loop,done);});assert(done);}
 `,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });
 
 test("one-shot completion remains a real promise through typed source records", () => {

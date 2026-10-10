@@ -103,7 +103,7 @@ test("deferred byte pipelines retain every typed boundary and throw before later
         }
     `,
         {
-            defines: ["BBLITE_WORKERS=1"],
+            flags: ["/DBBLITE_WORKERS=1"],
             expectedOutput: "",
             timeoutMs: 10000,
         },

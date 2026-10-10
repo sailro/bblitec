@@ -79,16 +79,8 @@ test(
         );
         const executable = join(output, "scene-node-transform-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/permissive-",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             output,
             "test/fixtures/js-callback/scene-node-transform-check.cpp",

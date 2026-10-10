@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import {
-    mkdirSync,
-    readdirSync,
-    readFileSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
@@ -15,6 +9,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 /**
@@ -496,26 +491,7 @@ test(
         if(String(condition ? typeof read() : "absent") !== "number" || calls !== 2)
             throw new Error("selected typeof branch");
     `);
-        const directory = resolve("artifacts/json-typeof-sinks");
-        mkdirSync(directory, { recursive: true });
-        const source = join(directory, "check.cpp"),
-            executable = join(directory, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${directory}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            `/I${nativeFixtureVcpkgRoot}/include`,
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(nativeTools!, "json-typeof-sinks", result.cpp);
     },
 );
 
@@ -536,26 +512,7 @@ test(
             throw new Error("null-typed union");
     `);
         assert.match(result.cpp, /"object"/);
-        const directory = resolve("artifacts/typeof-null-absence");
-        mkdirSync(directory, { recursive: true });
-        const source = join(directory, "check.cpp"),
-            executable = join(directory, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${directory}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            `/I${nativeFixtureVcpkgRoot}/include`,
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(nativeTools!, "typeof-null-absence", result.cpp);
     },
 );
 
@@ -578,26 +535,7 @@ test(
         const phases:Phase[] = ["ready", "running"];
         if (JSON.stringify(phases) !== '["ready","running"]') throw new Error("enum array");
     `);
-        const directory = resolve("artifacts/json-enum-check");
-        mkdirSync(directory, { recursive: true });
-        const source = join(directory, "check.cpp"),
-            executable = join(directory, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${directory}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            `/I${nativeFixtureVcpkgRoot}/include`,
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(nativeTools!, "json-enum-check", result.cpp);
     },
 );
 
@@ -609,18 +547,8 @@ test(
         rmSync(output, { recursive: true, force: true });
         mkdirSync(output, { recursive: true });
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${output}\\js-json-check.exe`,
-            "/I",
-            "native/include",
-            "/I",
-            `${nativeFixtureVcpkgRoot}\\include`,
             "test/fixtures/js-json/js-json-storage-check.cpp",
             "test/fixtures/js-json/pal-environment-stub.cpp",
             "native/src/pal_storage.cpp",

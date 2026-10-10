@@ -24,13 +24,7 @@ test("text GPU capture retains actual write ranges, allocation identities and in
     );
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         `/I${resolve("native/src")}`,
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve("test/fixtures/text-gpu-capture-check.cpp"),
         `/Fo${resolve(directory, "check.obj")}`,

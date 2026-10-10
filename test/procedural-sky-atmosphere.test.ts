@@ -142,15 +142,8 @@ ${cases.map((options) => `{{${options.sunDirection.join(",")}},${options.luminan
 `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/O2",
-        "/fp:precise",
         `/I${directory}`,
-        `/I${resolve("native/include")}`,
         cpp,
         `/Fo${directory}/`,
         `/Fe${executable}`,

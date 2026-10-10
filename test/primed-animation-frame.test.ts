@@ -42,17 +42,8 @@ test(
         writeFileSync(join(output, "primed.hpp"), compileSource(source).cpp);
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native\\include",
             "/I",
             output,
             "test/fixtures/primed-animation-frame-check.cpp",
@@ -115,17 +106,8 @@ test(
             );
             const executable = join(output, `check-${postStart}.exe`);
             runNativeFixtureCompiler(nativeTools!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
                 `/Fo:${output}\\`,
                 `/Fe:${executable}`,
-                "/I",
-                "native\\include",
                 "/I",
                 output,
                 "test/fixtures/primed-animation-frame-phases-check.cpp",

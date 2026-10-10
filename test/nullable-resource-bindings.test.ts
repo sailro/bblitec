@@ -92,16 +92,7 @@ test("nullable DOM subtype bindings retain separate closure cells and initialize
     `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_HAS_UI=1",
-        "/I",
-        "native/include",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         file,

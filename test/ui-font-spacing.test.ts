@@ -28,16 +28,8 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "ui-font-spacing-check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             "native/src",
             "/I",
@@ -72,16 +64,8 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "ui-system-font-check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             "native/src",
             "/I",

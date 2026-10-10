@@ -28,16 +28,10 @@ test("awaited scene registration executes statement-valued setup before suspensi
     const cpp = resolve(directory, "check.cpp");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/Zs",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
         "/DBBLITE_HAS_UI=1",
-        `/I${resolve("native/include")}`,
         cpp,
     ]);
 });

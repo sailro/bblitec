@@ -34,17 +34,8 @@ function runNative(name: string, cpp: string, include?: string): void {
     const executable = join(output, "check.exe");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(nativeTools!, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         ...(include ? ["/I", include] : []),
         source,
     ]);

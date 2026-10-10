@@ -8,7 +8,7 @@ import {
     cppFunction,
     developmentVcpkgRoot,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
@@ -124,25 +124,8 @@ test(
         if (!formatter || alias !== formatter || fresh === formatter) throw new Error("formatter identity");
         if (fresh.resolvedOptions().timeZone !== formatter.resolvedOptions().timeZone) throw new Error("formatter construction");
     `);
-        const directory = resolve("artifacts/date-values");
-        mkdirSync(directory, { recursive: true });
-        const source = join(directory, "check.cpp"),
-            executable = join(directory, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(native!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            `/Fo:${directory}/`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+        runGeneratedProgram(native!, "date-values", result.cpp, {
+            expectedOutput: "",
+        });
     },
 );

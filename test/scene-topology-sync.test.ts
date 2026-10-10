@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -28,15 +27,7 @@ test("both renderers synchronize a scene in one order, keep surviving uploads, a
         .map((name) => join(upstreamSources, name));
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
-        "/Gy",
-        "/permissive-",
         "/DSDL_STATIC_LIB",
         "/DBBLITE_HAS_PBR_RENDERER=1",
         "/DBBLITE_MESH_ATTRIBUTE_UPDATE=1",
@@ -44,21 +35,15 @@ test("both renderers synchronize a scene in one order, keep surviving uploads, a
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
         "/I",
-        "native/include",
-        "/I",
         "native/src",
         "/I",
         join(output, "upstream/include"),
         "/I",
         upstreamSources,
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
         "test/fixtures/scene-topology-sync-check.cpp",
         "native/src/pal_gpu_shared.cpp",
         "native/src/pal_gpu_images.cpp",
         ...units,
-        "/link",
-        "/OPT:REF",
     ]);
     assert.match(
         execFileSync(executable, { encoding: "utf8" }),

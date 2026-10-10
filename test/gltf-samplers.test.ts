@@ -20,7 +20,6 @@ import {
 import { doctoredContext } from "./doctored-store.js";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -264,17 +263,6 @@ test("glTF sampler lookup, descriptors and sharing execute the pinned source", (
         }`,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        "/external:W0",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         file,

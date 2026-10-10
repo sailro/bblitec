@@ -336,20 +336,11 @@ test("material output publication and captured draw identity follow source frame
     `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${directory}/`,
         `/Fe:${integratedExecutable}`,
         "/I",
         resolve(directory, "include"),
-        "/I",
-        "native/include",
         integrated,
     ]);
     console.log(execFileSync(integratedExecutable, { encoding: "utf8" }));

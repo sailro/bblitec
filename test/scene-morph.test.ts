@@ -502,17 +502,9 @@ ${checks.join("\n")}
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
             "/DBBLITE_HAS_PBR_RENDERER=1",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             output,
             source,

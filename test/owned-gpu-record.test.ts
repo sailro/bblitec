@@ -20,12 +20,6 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "owned-gpu-record-check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",

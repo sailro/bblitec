@@ -39,7 +39,9 @@ function check(name: string, source: string, realm = false): void {
             tools,
             `undefined-record-fields/${name}`,
             result.cpp,
-            { defines: realm ? ["BBLITE_WORKERS=1"] : [] },
+            {
+                flags: realm ? ["/DBBLITE_WORKERS=1"] : [],
+            },
         );
     });
 }
@@ -189,7 +191,7 @@ test("cloned undefined fields retain required keys and aliases", (t) => {
         return;
     }
     runGeneratedProgram(tools, "undefined-record-fields/clone", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
     });
 });

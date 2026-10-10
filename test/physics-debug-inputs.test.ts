@@ -18,22 +18,13 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
             "/DBBLITE_PHYSICS_VIEWER=1",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             "native/src",
-            "/I",
-            "native/include",
             `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`,
-            "/external:W0",
             "test/fixtures/physics-debug-inputs-check.cpp",
             "/link",
             `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,

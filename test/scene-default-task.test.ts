@@ -127,19 +127,10 @@ for (const { name, source } of cases) {
             );
             const executable = join(output, "check.exe");
             runNativeFixtureCompiler(tools!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
                 `/Fo:${output}\\`,
                 `/Fe:${executable}`,
                 "/I",
                 output,
-                "/I",
-                "native\\include",
                 "test\\fixtures\\scene-default-task-check.cpp",
             ]);
             assert.match(

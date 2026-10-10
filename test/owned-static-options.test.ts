@@ -128,14 +128,6 @@ int main(){const auto before=bbl::js::managed_node_count();assert(generated_main
     );
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
         "/I",
         directory,
         join(directory, "check.cpp"),

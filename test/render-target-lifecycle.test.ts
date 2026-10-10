@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerGpuRetirement } from "../src/lowering/gpu-retirement-lowerer.js";
@@ -9,7 +6,7 @@ import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 interface TextureDescriptor {
@@ -144,12 +141,9 @@ test("surface resize observers match pinned retries, cancellation, reentry and r
     assert.throws(() => target.rt._syncEager(engine));
 
     const context = new LoweringContext();
-    const directory = resolve("artifacts/render-target-lifecycle-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "render-target-lifecycle-check",
         lowerGpuRetirement(context).source +
             new RenderTargetLowerer(context, true).lower().source +
             `
@@ -204,22 +198,10 @@ static pal::GpuCompletion check(pal::EventLoop& loop, std::string& events) {
 }
 int main() {const js::RealmScope realm; pal::EventLoop loop; std::string events; loop.run([&] {check(loop, events);}); std::cout << events;}
 `,
-    );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(
-        execFileSync(exe, { encoding: "utf8", timeout: 10000 }),
-        events.join(","),
+        {
+            flags: ["/DBBLITE_WORKERS=1"],
+            timeoutMs: 10000,
+            expectedOutput: events.join(","),
+        },
     );
 });

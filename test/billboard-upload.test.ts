@@ -170,18 +170,9 @@ test(
         );
         for (const floatingOrigin of [0, 1]) {
             runNativeFixtureCompiler(tools!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
                 `/DBBLITE_FLOATING_ORIGIN=${floatingOrigin}`,
                 `/Fo:${output}\\`,
                 `/Fe:${executable}`,
-                "/I",
-                "native/include",
                 "/I",
                 "native/src",
                 file,
@@ -352,19 +343,10 @@ test(
     `,
         );
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             // Disposal empties the billboard lists only where sprites are reached.
             "/DBBLITE_HAS_SPRITES=1",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             "native/src",
             "/I",

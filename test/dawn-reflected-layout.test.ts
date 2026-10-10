@@ -47,19 +47,12 @@ test("Dawn lays a group out from its stages' reflected .slots lines and the site
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${output}/`,
         `/Fe:${executable}`,
         "/I",
         output,
         `/external:I${dawnInclude}`,
-        "/external:W0",
         "test/fixtures/dawn-reflected-layout-check.cpp",
     ]);
     assert.equal(execFileSync(executable, { encoding: "utf8" }), "");

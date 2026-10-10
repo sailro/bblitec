@@ -4,7 +4,6 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -19,21 +18,12 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/DSDL_STATIC_LIB",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             "native/src",
-            `/I${resolve("native/include")}`,
             `/I${output}`,
-            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-            "/external:W0",
             "test/fixtures/transient-gpu-commands-check.cpp",
         ]);
         assert.equal(

@@ -155,17 +155,6 @@ function check(name: string, source: string): void {
                 const exe = join(directory, "check.exe");
                 writeFileSync(cpp, result.cpp);
                 runNativeFixtureCompiler(native!, [
-                    "/nologo",
-                    "/std:c++20",
-                    "/W4",
-                    "/WX",
-                    "/permissive-",
-                    "/EHsc",
-                    "/MD",
-                    "/fp:precise",
-                    "/utf-8",
-                    "/I",
-                    "native/include",
                     `/Fo:${directory}/`,
                     `/Fe:${exe}`,
                     cpp,

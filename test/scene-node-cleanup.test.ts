@@ -43,16 +43,8 @@ test("SceneNode removal dispatches retained nodes and snapshots children before 
     const application = join(output, "application.cpp");
     writeFileSync(application, compiled.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/permissive-",
         "/c",
         `/Fo:${output}\\`,
-        "/I",
-        "native/include",
         "/I",
         join(output, "upstream/include"),
         application,
@@ -176,16 +168,8 @@ ${sceneNodeTraversalSource(new LoweringContext())}
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/permissive-",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         "/I",
         join(output, "upstream/include"),
         file,

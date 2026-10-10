@@ -327,12 +327,6 @@ ${steps.join("\n")}
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         `/Fo:${directory}\\`,
         `/Fe:${executable}`,
         sourcePath,

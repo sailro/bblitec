@@ -297,16 +297,8 @@ int main() {
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         sourcePath,
     ]);
     execFileSync(executable);

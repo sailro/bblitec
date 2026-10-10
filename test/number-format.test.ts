@@ -6,7 +6,6 @@ import { developmentTriplet } from "../src/build-options.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
 import {
     developmentVcpkgRoot,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -84,17 +83,6 @@ test("native numeric strings, concatenation and JSON match JavaScript across bin
     writeFileSync(input, cases.join("\n") + "\n");
     if (tools) {
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            "/I",
-            "native/include",
-            "/I",
-            join(nativeFixtureVcpkgRoot, "include"),
             `/Fo:${directory}/`,
             `/Fe:${executable}`,
             "test/fixtures/number-format-check.cpp",

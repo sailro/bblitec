@@ -138,16 +138,9 @@ int main(){assert(generated_main()==0);assert(attachments==3);}
     );
     const exe = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/O2",
         `/Fo:${output}/`,
         `/Fe:${exe}`,
-        "/I",
-        "native/include",
         join(output, "check.cpp"),
     ]);
     assert.equal(execFileSync(exe, { encoding: "utf8" }), "");

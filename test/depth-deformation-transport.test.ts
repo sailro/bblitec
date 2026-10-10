@@ -59,12 +59,6 @@ int main() {
     );
     for (const deformation of [0, 1]) {
         runNativeFixtureCompiler(native, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             `/DBBLITE_GPU_DEFORMATION=${deformation}`,
             `/Fo:${directory}/`,
             `/Fe:${executable}`,

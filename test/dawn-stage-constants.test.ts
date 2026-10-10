@@ -94,11 +94,6 @@ int main() {
 `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         `/I${resolve("native/src")}`,
         `/I${dawnInclude}`,
         source,

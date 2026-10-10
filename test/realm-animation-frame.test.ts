@@ -63,17 +63,10 @@ test("application RAF returns cancellable IDs and preserves one-shot repaint sch
     }
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/O2",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
         "/DBBLITE_HAS_UI=1",
-        `/I${resolve("native/include")}`,
         "test/fixtures/realm-animation-frame-check.cpp",
         `/Fo${directory}/`,
         `/Fe${executable}`,

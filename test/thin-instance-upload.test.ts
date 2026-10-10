@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -11,8 +10,8 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
     sharedGpuSource,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
@@ -241,10 +240,9 @@ test(
             join(output, "world.hpp"),
             pinnedWorldTransformHeader(context),
         );
-        const file = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            file,
+        runGeneratedProgram(
+            tools!,
+            "thin-instance-world",
             `#define BBLITE_GPU_INSTANCING 1
 #define BBLITE_FLOATING_ORIGIN 0
 #include "matrix.hpp"
@@ -270,25 +268,8 @@ int main() {
     engine.transform_nodes.push_back(parent_node);
     ${rows.join("\n")}
 }`,
+            { flags: ["/DBBLITE_HAS_PBR_RENDERER=1", "/I", output] },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/DBBLITE_HAS_PBR_RENDERER=1",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            output,
-            "/I",
-            "native/include",
-            file,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );
 
@@ -351,29 +332,14 @@ test(
             `namespace bbl { ${readFileSync("test/fixtures/gpu-writer-recorder.hpp", "utf8")}
 ${helpers}\n${refresh}\n${updates.join("\n")} }`,
         );
-        const file = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            file,
-            readFileSync("test/fixtures/thin-instance-upload-check.cpp"),
+        runGeneratedProgram(
+            tools!,
+            "thin-instance-upload",
+            readFileSync(
+                "test/fixtures/thin-instance-upload-check.cpp",
+                "utf8",
+            ),
+            { flags: ["/DBBLITE_HAS_PICKING=1", "/I", output] },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/DBBLITE_HAS_PICKING=1",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            output,
-            "/I",
-            "native/include",
-            file,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );

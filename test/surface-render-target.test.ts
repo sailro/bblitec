@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -10,7 +7,6 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
-    runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const setup = `import {createEngine, createRenderTargetTexture, createSurfaceRenderTargetTexture, withSampledDepthTexture} from "@babylonjs/lite";
@@ -236,12 +232,9 @@ test("surface extent arithmetic matches the pin and sampled facades retain disti
             }),
         );
     }
-    const directory = resolve("artifacts/surface-render-target-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "surface-render-target-check",
         `${new RenderTargetLowerer(new LoweringContext()).lower().source}
         #include <cassert>
         #include <limits>
@@ -268,18 +261,6 @@ test("surface extent arithmetic matches the pin and sampled facades retain disti
             assert(plain.rt.value != sampled.rt.value);
         }
     `,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

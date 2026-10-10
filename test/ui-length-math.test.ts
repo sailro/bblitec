@@ -18,12 +18,6 @@ test("the CSS length parser converts decimals exactly as MSVC's std::from_chars,
     mkdirSync(directory, { recursive: true });
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         `/I${resolve("native/src")}`,
         `/Fo${directory}/`,
         `/Fe${executable}`,

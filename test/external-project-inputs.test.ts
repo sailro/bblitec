@@ -19,7 +19,6 @@ import {
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
-    runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 test("effectful module tables retain their native entry owners during dynamic lookup", (t) => {
@@ -111,25 +110,7 @@ test("module namespace records enumerate value exports and retain live bindings"
     `,
         { fileName: join(directory, "entry.ts") },
     );
-    const output = resolve("artifacts/module-namespace");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp"),
-        executable = join(output, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        source,
-    ]);
-    execFileSync(executable, { stdio: "pipe" });
+    runGeneratedProgram(native, "module-namespace", result.cpp);
 });
 
 test("external project modules and raw files remain generation inputs", (t) => {

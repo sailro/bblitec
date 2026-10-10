@@ -131,19 +131,7 @@ test("constructed promises settle, reject and end pending activations natively",
     const cpp = join(directory, "check.cpp");
     const exe = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${exe}`,
-        cpp,
-    ]);
+    runNativeFixtureCompiler(tools, [`/Fo:${directory}/`, `/Fe:${exe}`, cpp]);
     const execution = spawnSync(exe, { encoding: "utf8", timeout: 10000 });
     assert.equal(execution.stderr, "");
     assert.equal(execution.status, 0);

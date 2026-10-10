@@ -14,6 +14,7 @@ import { renderCppExpression } from "../src/lowering/gltf/cpp-expression.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 function render(
@@ -128,12 +129,6 @@ test(
     }\n`,
         );
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             `/Fo:${directory}\\`,
             `/Fe:${executable}`,
             source,
@@ -193,12 +188,9 @@ test(
     "lowered Math.max, Math.min and Uint32Array stores keep JavaScript's results natively",
     { skip: !headerTools },
     () => {
-        const directory = resolve("artifacts/pinned-math-extreme");
-        mkdirSync(directory, { recursive: true });
-        const source = resolve(directory, "check.cpp"),
-            executable = resolve(directory, "check.exe");
-        writeFileSync(
-            source,
+        runGeneratedProgram(
+            headerTools!,
+            "pinned-math-extreme",
             `#include <bblite/js_data.hpp>
 #include <array>
 #include <cassert>
@@ -228,19 +220,5 @@ ${lowerStatements("mask[0] = 4294967296.5;")}
 }
 `,
         );
-        runNativeFixtureCompiler(headerTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            `/I${resolve("native/include")}`,
-            `/Fo:${directory}\\`,
-            `/Fe:${executable}`,
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );

@@ -103,7 +103,7 @@ test("Abort nominal results preserve later sites and callback diagnostics after 
         "deferred-dom-lifetimes/abort",
         result.cpp + runtime,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_HAS_UI=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
             expectedOutput: "",
             timeoutMs: 10000,
         },
@@ -148,7 +148,7 @@ test("signal dictionaries preserve optional receivers, eager options and lazy or
         "deferred-dom-lifetimes/absent-signal",
         result.cpp + runtime,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_HAS_UI=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
             expectedOutput: "",
             timeoutMs: 10000,
         },

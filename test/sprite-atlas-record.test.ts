@@ -94,20 +94,11 @@ int main() {
     for (const decoder of [0, 1]) {
         const executable = join(directory, `decoder-${decoder}.exe`);
         runNativeFixtureCompiler(native, [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
-            "/permissive-",
             "/O1",
             "/Ob1",
             "/GL",
-            "/MD",
             `/DBBLITE_HAS_IMAGE_DECODER=${decoder}`,
-            `/I${resolve("native/include")}`,
             `/I${resolve("native/src")}`,
-            `/I${join(nativeFixtureVcpkgRoot, "include")}`,
             source,
             `/Fo${join(directory, `decoder-${decoder}.obj`)}`,
             `/Fe${executable}`,

@@ -76,14 +76,6 @@ test("runtime record layouts agree across feature sets and translation units", (
                 `/DBBLITE_HAS_${family}=${enabled === "all" || enabled === family ? 1 : 0}`,
         );
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/permissive-",
-            "/I",
-            "native/include",
             ...defines,
             `/Fo:${output}\\`,
             `/Fe:${executable}`,

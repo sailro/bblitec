@@ -90,17 +90,8 @@ test("Date standardized strings share parsing, clipping and local-time disambigu
         executable = join(directory, "check.exe");
     writeFileSync(source, result.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/utf-8",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         source,
         "native/src/pal_locale.cpp",
         "icu.lib",

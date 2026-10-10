@@ -79,15 +79,7 @@ for (const present of [false, true])
             exe = join(directory, "check.exe");
         writeFileSync(cpp, program);
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/DBBLITE_WORKERS=1",
-            "/I",
-            "native/include",
             `/Fo:${directory}/`,
             `/Fe:${exe}`,
             cpp,

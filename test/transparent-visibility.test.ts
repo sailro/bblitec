@@ -74,25 +74,14 @@ test(
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/O2",
-            "/Gy",
-            "/permissive-",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             join(output, "upstream/include"),
             "/I",
             join(output, "upstream/src"),
             join(output, "check.cpp"),
-            "/link",
-            "/OPT:REF",
         ]);
         execFileSync(executable, { encoding: "utf8" });
     },

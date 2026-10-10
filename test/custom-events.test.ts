@@ -6,7 +6,6 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { isCustomDomEventName } from "../src/compiler/dom-listeners.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -83,21 +82,10 @@ test("CustomEvent dispatch shares detail identity through Event helpers and hono
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         "/I",
-        "native/include",
-        "/I",
         directory,
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
         "test/fixtures/custom-events-check.cpp",
     ]);
     assert.equal(
@@ -116,20 +104,9 @@ test("custom dispatch reports listener errors without interleaving microtasks an
     mkdirSync(directory, { recursive: true });
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
         "test/fixtures/custom-event-loop-check.cpp",
     ]);
     assert.equal(

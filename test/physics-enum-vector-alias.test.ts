@@ -51,16 +51,8 @@ function runProgram(name: string, source: string): string {
         }`,
     );
     runNativeFixtureCompiler(tools!, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/permissive-",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         file,
         dirty,
         "test/fixtures/js-callback/data-engine-stubs.cpp",

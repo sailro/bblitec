@@ -28,16 +28,9 @@ test("SDL text uniform writes preserve captured group identity and untouched lan
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         "/DBBLITE_VISUAL_CAPTURE=0",
-        `/I${resolve("native/include")}`,
         `/I${resolve("native/src")}`,
         `/I${includes}`,
-        `/I${join(nativeFixtureVcpkgRoot, "include")}`,
         resolve("test/fixtures/text-sdl-resources-check.cpp"),
         `/Fe:${executable}`,
         `/Fo:${join(output, "check.obj")}`,

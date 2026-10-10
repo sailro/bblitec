@@ -72,16 +72,9 @@ int main(){
 `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
         "/DBBLITE_COMPUTE_BINDINGS=1",
-        `/I${resolve("native/include")}`,
         cpp,
         `/Fo${directory}/`,
         `/Fe${exe}`,

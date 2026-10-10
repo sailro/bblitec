@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -30,10 +29,9 @@ test(
         const output = resolve("artifacts/rebound-mesh-capture-check");
         mkdirSync(output, { recursive: true });
         writeFileSync(join(output, "program.hpp"), result.cpp);
-        const source = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            source,
+        runGeneratedProgram(
+            tools!,
+            "rebound-mesh-capture-check",
             `
         #define main generated_main
         #include "program.hpp"
@@ -63,20 +61,6 @@ test(
         }
     `,
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { encoding: "utf8" });
     },
 );
 
@@ -173,7 +157,7 @@ test(
         }
         int main() { return generated_main(); }
         `,
-            { defines: ["BBLITE_HAS_UI=1"], timeoutMs: 10000 },
+            { flags: ["/DBBLITE_HAS_UI=1"], timeoutMs: 10000 },
         );
     },
 );
@@ -212,18 +196,11 @@ test(
         // Compile the generated closures themselves; text assertions cannot prove
         // that all native identifiers resolve inside an explicit environment.
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/c",
             "/DBBLITE_HAS_UI=1",
             "/DBBLITE_WORKERS=1",
             "/DBBLITE_OFFSCREEN_SURFACES=1",
             `/Fo:${output}\\`,
-            "/I",
-            "native/include",
             source,
         ]);
     },
@@ -276,12 +253,9 @@ test(
         const output = resolve("artifacts/frame-storage-capture-check");
         mkdirSync(output, { recursive: true });
         writeFileSync(join(output, "program.hpp"), result.cpp);
-        const source = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        // Only the engine and scheduling seam is replaced. Generated closures
-        // and native buffer allocation, mutation and disposal execute unchanged.
-        writeFileSync(
-            source,
+        runGeneratedProgram(
+            tools!,
+            "frame-storage-capture-check",
             `
         #define main generated_main
         #include "program.hpp"
@@ -320,20 +294,7 @@ test(
         }
         int main() { return generated_main(); }
     `,
+            { timeoutMs: 10000 },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
-            `/Fo:${output}/`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { encoding: "utf8", timeout: 10000 });
     },
 );

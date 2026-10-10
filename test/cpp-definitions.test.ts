@@ -54,12 +54,6 @@ int main() {
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        `/I${resolve("native/include")}`,
         join(output, "effect.cpp"),
         join(output, "main.cpp"),
         `/Fe:${executable}`,
@@ -151,14 +145,8 @@ int main(){
 `,
         );
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
             "/O2",
             `/I${join(output, "upstream/include")}`,
-            `/I${resolve("native/include")}`,
             join(output, "upstream/src/variant_data.cpp"),
             ...(lit ? [join(output, "upstream/src/light_matrix.cpp")] : []),
             main,

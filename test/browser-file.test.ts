@@ -291,16 +291,8 @@ test("FileReader decodes a Blob as the Encoding Standard does, natively", async 
     const exe = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_HAS_UI=0",
         "/DBBLITE_HAS_BROWSER_FILE=1",
-        "/I",
-        "native/include",
         `/Fo:${directory}/`,
         `/Fe:${exe}`,
         cpp,
@@ -384,7 +376,7 @@ test("Blob containers and promise results preserve shared identity", (t) => {
         return;
     }
     runGeneratedProgram(tools, "blob-owned-storage", result.cpp, {
-        defines: ["BBLITE_HAS_UI=0", "BBLITE_HAS_BROWSER_FILE=1"],
+        flags: ["/DBBLITE_HAS_UI=0", "/DBBLITE_HAS_BROWSER_FILE=1"],
     });
 });
 
@@ -756,59 +748,37 @@ test(
             generatedListener.cpp,
             "utf8",
         );
-        const common = [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-        ];
         try {
             runNativeFixtureCompiler(nativeTools!, [
-                ...common,
                 "/DBBLITE_HAS_UI=0",
                 "/DBBLITE_HAS_BROWSER_FILE=1",
                 `/Fo:${output}\\blob-only.obj`,
-                "/I",
-                "native/include",
                 "test/fixtures/js-file/browser-file-blob-only.cpp",
                 "/c",
             ]);
             runNativeFixtureCompiler(nativeTools!, [
-                ...common,
                 "/DBBLITE_HAS_UI=1",
                 "/DBBLITE_HAS_BROWSER_FILE=1",
                 `/Fo:${output}\\generated-listener.obj`,
-                "/I",
-                "native/include",
                 join(output, "generated-listener.cpp"),
                 "/c",
             ]);
             runNativeFixtureCompiler(nativeTools!, [
-                ...common,
                 "/DBBLITE_HAS_UI=1",
                 "/DBBLITE_HAS_BROWSER_FILE=1",
                 `/Fo:${output}\\`,
                 `/Fe:${output}\\browser-file-check.exe`,
                 "/I",
-                "native/include",
-                "/I",
                 "native/src",
                 "test/fixtures/js-file/browser-file-check.cpp",
             ]);
             runNativeFixtureCompiler(nativeTools!, [
-                ...common,
                 "/DBBLITE_HAS_UI=0",
                 "/DBBLITE_HAS_BROWSER_FILE=1",
                 `/Fo:${output}\\`,
                 `/Fe:${output}\\browser-file-pal-check.exe`,
                 "/I",
-                "native/include",
-                "/I",
                 "native/src",
-                "/I",
-                `${nativeFixtureVcpkgRoot}\\include`,
                 "/DBBLITE_PHYSICS_VIEWER=1",
                 "test/fixtures/js-file/browser-file-pal-check.cpp",
                 "native/src/pal_file.cpp",

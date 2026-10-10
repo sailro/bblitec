@@ -381,17 +381,8 @@ for (const compiler of ["msvc", "clangcl"] as const) {
         `,
             );
             runNativeFixtureCompiler(tools, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
                 `/Fo:${output}\\`,
                 `/Fe:${executable}`,
-                "/I",
-                "native\\include",
                 source,
             ]);
             execFileSync(executable, { encoding: "utf8" });

@@ -12,7 +12,6 @@ import {
 } from "../src/compiler/data-types/operations.js";
 import {
     cppRecord,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -88,17 +87,7 @@ test(
                 "static_assert(bbl::js::gc_traceable<Traced>);",
             ].join("\n"),
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
-            "/Zs",
-            `/I${resolve("native/include")}`,
-            `/I${join(nativeFixtureVcpkgRoot, "include")}`,
-            source,
-        ]);
+        runNativeFixtureCompiler(tools!, ["/Zs", source]);
     },
 );
 
@@ -150,17 +139,7 @@ test(
                 "",
             ].join("\n"),
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
-            "/Zs",
-            `/I${resolve("native/include")}`,
-            `/I${join(nativeFixtureVcpkgRoot, "include")}`,
-            source,
-        ]);
+        runNativeFixtureCompiler(tools!, ["/Zs", source]);
     },
 );
 test(
@@ -254,16 +233,9 @@ function checkGeneratedCycles(
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools!, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/O2",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         source,
     ]);
     execFileSync(executable);
@@ -625,16 +597,9 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "js-cycles-check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/O2",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "test/fixtures/js-cycles-check.cpp",
         ]);
         assert.match(

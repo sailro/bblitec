@@ -76,7 +76,7 @@ test("Promise reactions join owned results without changing scheduling or aliase
             "promise-settlement-joins/owned",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },
@@ -145,7 +145,7 @@ test("Promise resolve uses its checked result for explicit settlement types", as
             "promise-settlement-joins/explicit",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

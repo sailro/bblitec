@@ -66,24 +66,13 @@ test(
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
-            "/Gy",
-            "/I",
-            "native/include",
             "/I",
             output,
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             source,
             join(output, "splat_sort.cpp"),
-            "/link",
-            "/OPT:REF",
         ]);
         assert.match(
             execFileSync(executable, { encoding: "utf8" }),

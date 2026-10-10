@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -8,7 +7,7 @@ import { stringLiteral } from "../src/cpp-literals.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("Window startup separates capture queries and retains navigation across fresh realms", (t) => {
@@ -86,10 +85,9 @@ test("Window startup separates capture queries and retains navigation across fre
             return `assert(location_query(std::string(${stringLiteral(input)})) == ${stringLiteral(url.search)});`;
         })
         .join("\n");
-    const cpp = resolve(directory, "check.cpp"),
-        executable = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "window-navigation-check",
         generated.cpp +
             `
         #include <bblite/pal_location.hpp>
@@ -140,24 +138,10 @@ test("Window startup separates capture queries and retains navigation across fre
             }
         }
     `,
-    );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/utf-8",
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_HAS_UI=1",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${executable}`,
-    ]);
-    assert.equal(
-        execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
-        "",
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
 });

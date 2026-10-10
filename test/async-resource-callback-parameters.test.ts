@@ -84,6 +84,6 @@ test("stored async callbacks retain collection key owners through typed result h
                 }
             }
         `,
-        { defines: ["BBLITE_WORKERS=1"], timeoutMs: 10000, expectedOutput: "" },
+        { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000, expectedOutput: "" },
     );
 });

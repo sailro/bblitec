@@ -70,7 +70,7 @@ int main(){
 }
 `,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
             timeoutMs: 10000,
             expectedOutput: "",
         },

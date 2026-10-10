@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("runtime query reads and mutations match URLSearchParams ordering, identity and encoding", (t) => {
@@ -137,26 +134,10 @@ test("runtime query reads and mutations match URLSearchParams ordering, identity
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/runtime-search-params");
-    mkdirSync(directory, { recursive: true });
-    const cpp = join(directory, "check.cpp"),
-        exe = join(directory, "check.exe");
-    writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/utf-8",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${exe}`,
-        cpp,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
+    runGeneratedProgram(tools, "runtime-search-params", result.cpp, {
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
 });
 
 test("runtime query operations outside represented reads refuse", () => {

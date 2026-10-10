@@ -177,16 +177,8 @@ test(
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(compilerNativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             join(output, "check.cpp"),
         ]);
         execFileSync(executable, { stdio: "pipe" });
@@ -244,21 +236,11 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "gamepad-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
             "/DBBLITE_HAS_GAMEPAD=1",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
-            "native/include",
-            "/I",
             "native/src",
-            "/I",
-            join(nativeFixtureVcpkgRoot, "include"),
             "test/fixtures/js-callback/gamepad-check.cpp",
             join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
         ]);

@@ -50,16 +50,8 @@ function runDataProgram(name: string, source: string): string {
     const executable = join(output, `${name}.exe`);
     writeFileSync(sourceFile, cpp);
     runNativeFixtureCompiler(nativeTools!, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/permissive-",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         sourceFile,
         "test/fixtures/js-callback/data-engine-stubs.cpp",
     ]);
@@ -191,16 +183,8 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "typed-array-boundary-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/permissive-",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "test/fixtures/js-callback/typed-array-boundary-check.cpp",
         ]);
         assert.match(

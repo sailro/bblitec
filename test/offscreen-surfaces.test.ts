@@ -17,14 +17,7 @@ test("offscreen surfaces isolate owners and retain GPU leases through backpressu
     mkdirSync(directory, { recursive: true });
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
         resolve("test/fixtures/offscreen-surface-check.cpp"),
         `/Fo${directory}/`,
         `/Fe${executable}`,

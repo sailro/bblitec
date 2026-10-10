@@ -57,13 +57,6 @@ first[0]=12;if(second[0]===12)throw new Error("Color tuple identity shared");`;
     writeFileSync(join(directory, "check.cpp"), result.cpp);
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         `/Fo${directory}/`,
         `/Fe${executable}`,
@@ -115,16 +108,10 @@ settings.luminance=0.7;const applied=await update(holder.environment);if(!applie
     const cpp = join(directory, "async.cpp");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/Zs",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
         "/DBBLITE_HAS_UI=1",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         cpp,
     ]);

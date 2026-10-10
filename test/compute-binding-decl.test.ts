@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -12,7 +9,7 @@ import {
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 type Scalar = string | number | boolean;
@@ -162,25 +159,10 @@ test("compute binding declarations match pinned defaults, layouts and validation
         }
         checks.push("}");
     }
-    const directory = resolve("artifacts/compute-binding-decl-check");
-    mkdirSync(directory, { recursive: true });
-    const file = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "compute-binding-decl-check",
         `${lowerComputeBindingDecl(new LoweringContext()).source}\n#include <cassert>\nint main(){${checks.join("\n")} }`,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        file,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

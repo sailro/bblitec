@@ -68,19 +68,10 @@ assert(geometry.attribute_version==2&&engine.meshes[0].transform_version==2);
 }`,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/Gy",
-        `/I${resolve("native/include")}`,
         file,
         `/Fo${directory}/`,
         `/Fe${exe}`,
-        "/link",
-        "/OPT:REF",
     ]);
     execFileSync(exe, { stdio: "pipe", timeout: 10000 });
 });

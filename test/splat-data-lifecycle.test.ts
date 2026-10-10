@@ -361,16 +361,7 @@ test(
         // Compile the actual getter-only translation unit; no numeric array
         // constructor or other JS-data use can supply its header indirectly.
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/c",
-            "/I",
-            "native/include",
             `/Fo:${output}\\`,
             source,
         ]);
@@ -408,16 +399,7 @@ test(
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
-            "/Gy",
-            "/I",
-            "native/include",
             "/I",
             output,
             `/Fo:${output}\\`,
@@ -426,8 +408,6 @@ test(
             ...["geometry", "sort", "loader", "bake"].map((name) =>
                 join(output, `splat_${name}.cpp`),
             ),
-            "/link",
-            "/OPT:REF",
         ]);
         assert.match(
             execFileSync(executable, [output], { encoding: "utf8" }),

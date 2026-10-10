@@ -98,18 +98,10 @@ test(
 
         const executable = join(output, "pinned-look-direction-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             includeRoot,
-            "/I",
-            "native/include",
             "test/fixtures/pinned-look-direction-check.cpp",
             "test/fixtures/pinned-math-link-peer.cpp",
         ]);

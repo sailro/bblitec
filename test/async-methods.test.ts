@@ -125,15 +125,7 @@ test("async methods preserve activation timing, receivers and conditional evalua
             `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("async method ownership leak");return result;}\n`,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        "/I",
-        "native/include",
         `/Fo:${directory}/`,
         `/Fe:${exe}`,
         cpp,

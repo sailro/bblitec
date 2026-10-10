@@ -18,13 +18,6 @@ test("realm event loops run computation and ordered messages without rendering",
     mkdirSync(directory, { recursive: true });
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
-        `/I${resolve("native/include")}`,
         resolve("test/fixtures/worker-event-loop-check.cpp"),
         `/Fo${directory}/`,
         `/Fe${executable}`,

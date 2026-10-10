@@ -12,9 +12,9 @@ import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("geometry access returns nullable typed records through ordinary data sinks", () => {
@@ -75,12 +75,9 @@ test("mesh CPU aliases survive GPU-only writes, clones and geometry replacement"
         resizeMeshGeometry(engine, selected(), positions, normalData(), indexData(), uvData());
         if (order.join(",") !== "1,2,3,4,5,6,7,5,2,3,4" || getMeshGeometry(mesh)!.positions[0] !== 0) throw new Error("resize argument order");
     `);
-    const directory = resolve("artifacts/mesh-cpu-streams-check");
-    mkdirSync(directory, { recursive: true });
-    const file = resolve(directory, "check.cpp");
-    const executable = resolve(directory, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        native,
+        "mesh-cpu-streams-check",
         `#include <bblite/mesh_cpu_streams.hpp>
 ${factories}
 #include <cassert>
@@ -134,24 +131,8 @@ int main() {
     assert(optional && optional->uvs && optional->uvs->empty() && !optional->uvs2 && !optional->tangents && !optional->colors);
 }
 `,
+        { flags: ["/Gy"], timeoutMs: 10000 },
     );
-    runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/Gy",
-        `/I${resolve("native/include")}`,
-        file,
-        `/Fo${directory}/`,
-        `/Fe${executable}`,
-        "/link",
-        "/OPT:REF",
-    ]);
-    execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });
 
 test("geometry snapshots preserve optional streams, caller ownership and source winding", (t) => {
@@ -216,20 +197,9 @@ if(absent_uvs.uvs||absent_uvs.uvs.copy()[0]!=0.25f||original::get_mesh_geometry(
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        resolve(nativeFixtureVcpkgRoot, "include"),
         file,
     ]);
     assert.equal(

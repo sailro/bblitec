@@ -9,7 +9,7 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { TestContext } from "node:test";
 
 import type { Feature } from "../src/compiler/types.js";
@@ -290,30 +290,95 @@ function fixtureMacroFolder(overrides: ReadonlyMap<string, boolean>): string {
     return folder;
 }
 
+interface ProductCompileOptions {
+    readonly msvc: readonly string[];
+    readonly clang: readonly string[];
+}
+
+let productOptions: ProductCompileOptions | undefined;
+
 /**
- * A compile's flags as the product build would give them: the fixture's
- * feature macros as headers, the build options it leaves unset, third-party
+ * The product's compile options as `native/CMakeLists.txt` gives
+ * `bblite_core`: its C++ standard and options for MSVC or for clang-cl, with
+ * CMake's default dynamic runtime. The float model and source charset stay
+ * at their defaults, as the product leaves them.
+ */
+function productCompileOptions(): ProductCompileOptions {
+    if (productOptions) return productOptions;
+    const cmake = readFileSync(resolve("native/CMakeLists.txt"), "utf8");
+    const standard =
+        /target_compile_features\(bblite_core INTERFACE cxx_std_(\d+)\)/.exec(
+            cmake,
+        );
+    const options =
+        /if\(MSVC\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)\s*if\(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)\s*else\(\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)/.exec(
+            cmake,
+        );
+    if (!standard || !options)
+        throw new Error(
+            "native/CMakeLists.txt no longer spells bblite_core's standard and MSVC options as the fixture harness reads them.",
+        );
+    const shared = [
+        `/std:c++${standard[1]}`,
+        ...options[1]!.split(/\s+/),
+        "/MD",
+    ];
+    productOptions = {
+        msvc: [...shared, ...options[2]!.split(/\s+/)],
+        clang: [...shared, ...options[3]!.split(/\s+/)],
+    };
+    return productOptions;
+}
+
+/**
+ * Flags that restate or override what the harness owns: the product's
+ * language, warning, exception, runtime and object options, the float model
+ * and source charset, and the external-header rules.
+ */
+const ownedFlag =
+    /^[/-](?:nologo|std:|[wW]|permissive|Zc:|EH|M[DT]d?$|bigobj$|fp:|utf-8$|(?:source|execution)-charset|external:(?:W|env)|clang:-W)/;
+
+/** `bblite_core`'s include folder and the dependency headers. */
+const productIncludes = [
+    resolve("native/include"),
+    join(nativeFixtureVcpkgRoot, "include"),
+] as const;
+const productIncludeKeys = new Set(
+    productIncludes.map((path) => path.toLowerCase()),
+);
+
+/** A command compiles when it names a source; otherwise it only links. */
+const sourceArgument = /\.(?:c|cc|cpp|cxx|mm)$|^[/-]T[pc]/i;
+
+/**
+ * A compile's flags as the product build would give them: its options, the
+ * fixture's feature macros as headers, the build options it leaves unset,
+ * the fixture's own include folders ahead of the product's, third-party
  * headers external, and an undefined name in a `#if` an error.
  */
-function nativeFixtureArguments(
+export function nativeFixtureArguments(
     tools: WindowsBuildTools,
     arguments_: readonly string[],
 ): readonly string[] {
-    if (!arguments_.some((argument) => /\.(?:cpp|cc|mm)$/i.test(argument)))
+    const linkAt = arguments_.indexOf("/link");
+    const compile = linkAt < 0 ? arguments_ : arguments_.slice(0, linkAt);
+    const owned = compile.find((argument) => ownedFlag.test(argument));
+    if (owned !== undefined)
+        throw new Error(`The fixture harness owns '${owned}'.`);
+    if (!compile.some((argument) => sourceArgument.test(argument)))
         return arguments_;
     const tableMacros = new Set(featureMacros.map((row) => row.macro));
     const overrides = new Map<string, boolean>();
     const defined = new Set<string>();
     const rest: string[] = [];
-    for (let index = 0; index < arguments_.length; ++index) {
-        const argument = arguments_[index]!;
+    for (let index = 0; index < compile.length; ++index) {
+        const argument = compile[index]!;
         const definition = /^[/-]D(\w*)(?:=(.*))?$/.exec(argument);
         if (definition) {
             const [spelled, value] = definition[1]
                 ? [definition[1], definition[2]]
                 : (
-                      /^(\w+)(?:=(.*))?$/.exec(arguments_[index + 1] ?? "") ??
-                      []
+                      /^(\w+)(?:=(.*))?$/.exec(compile[index + 1] ?? "") ?? []
                   ).slice(1, 3);
             if (spelled && tableMacros.has(spelled)) {
                 if (value !== undefined && value !== "0" && value !== "1")
@@ -324,10 +389,12 @@ function nativeFixtureArguments(
             }
             if (spelled) defined.add(spelled);
         }
-        const include = /^[/-]I(.*)$/.exec(argument);
-        if (include) {
-            const path = include[1] || arguments_[index + 1];
-            if (path !== undefined && isThirdPartyInclude(path)) {
+        const include = /^[/-](?:external:)?I(.*)$/.exec(argument);
+        const path = include && (include[1] || compile[index + 1]);
+        if (path) {
+            if (productIncludeKeys.has(resolve(path).toLowerCase()))
+                throw new Error(`The fixture harness owns '${path}'.`);
+            if (isThirdPartyInclude(path)) {
                 rest.push(`/external:I${path}`);
                 if (!include[1]) ++index;
                 continue;
@@ -336,22 +403,21 @@ function nativeFixtureArguments(
         rest.push(argument);
     }
     const clang = /clang-cl(?:\.exe)?$/i.test(tools.compiler);
+    const product = productCompileOptions();
     const macroFolder = fixtureMacroFolder(overrides);
+    // A target's own include folders come before its dependencies' (CMake).
     return [
+        ...(clang ? product.clang : product.msvc),
         `/I${macroFolder}`,
         `/FI${join(macroFolder, fixtureMacroPrelude)}`,
         ...[...nativeFixtureBuildOptions]
             .filter(([name]) => !defined.has(name))
             .map(([name, value]) => `/D${name}=${value}`),
-        ...(clang
-            ? [
-                  "-Wundef",
-                  "-Werror=undef",
-                  "/DBT_USE_SSE",
-                  "/DBT_NO_SIMD_OPERATOR_OVERLOADS",
-              ]
-            : ["/we4668", "/external:env:INCLUDE", "/external:W0"]),
+        ...(clang ? ["/DBT_USE_SSE", "/DBT_NO_SIMD_OPERATOR_OVERLOADS"] : []),
         ...rest,
+        `/I${productIncludes[0]}`,
+        `/external:I${productIncludes[1]}`,
+        ...arguments_.slice(compile.length),
     ];
 }
 
@@ -367,23 +433,22 @@ export function runNativeFixtureCompiler(
     runFixtureCompiler(
         tools.compiler,
         tools.environment,
-        nativeFixtureArguments(tools, arguments_),
+        ["/nologo", ...nativeFixtureArguments(tools, arguments_)],
         resolve("."),
     );
 }
 
 /**
- * Compiles one generated translation unit in `artifacts/<name>` and runs it:
- * a failed assertion or an uncaught throw in the program fails the caller.
- * Returns what the program printed.
+ * Compiles one generated translation unit in `artifacts/<name>` with the
+ * fixture's own `flags` and runs it: a failed assertion or an uncaught throw
+ * in the program fails the caller. Returns what the program printed.
  */
 export function runGeneratedProgram(
     tools: WindowsBuildTools,
     name: string,
     cpp: string,
     options: {
-        defines?: readonly string[];
-        includeDirectories?: readonly string[];
+        flags?: readonly string[];
         timeoutMs?: number;
         expectedOutput?: string;
     } = {},
@@ -394,21 +459,7 @@ export function runGeneratedProgram(
         executable = join(directory, "check.exe");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/fp:precise",
-        "/utf-8",
-        ...(options.defines ?? []).map((define) => `/D${define}`),
-        ...(options.includeDirectories ?? []).flatMap((path) => ["/I", path]),
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
+        ...(options.flags ?? []),
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         source,
@@ -440,11 +491,7 @@ export function buildNativeFixture(
         ]);
         return object;
     });
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        ...objects,
-        `/Fe${executable}`,
-    ]);
+    runNativeFixtureCompiler(tools, [...objects, `/Fe${executable}`]);
 }
 
 /** Build a retained-UI fixture against the same pinned library and platform fonts. */
@@ -469,40 +516,44 @@ export function runRmlUiFixture(
     const output = resolve("artifacts", name);
     mkdirSync(output, { recursive: true });
     const executable = join(output, "check.exe");
+    const rmlFlags = [
+        "/DRMLUI_STATIC_LIB",
+        "/DRMLUI_SDL_VERSION_MAJOR=3",
+        `/external:I${join(rml, "include")}`,
+        `/external:I${join(rml, "Backends")}`,
+    ];
+    // Units that read no fixture macro compile under one command, so every
+    // RmlUi fixture after the first restores their objects from the cache.
+    const shared = [
+        "native/src/pal_system_fonts.cpp",
+        join(rml, "Backends/RmlUi_Platform_SDL.cpp"),
+    ].map((source) => {
+        runNativeFixtureCompiler(tools, [
+            "/O2",
+            ...rmlFlags,
+            "/c",
+            source,
+            `/Fo:${output}/`,
+        ]);
+        return join(output, `${basename(source, ".cpp")}.obj`);
+    });
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/bigobj",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
-        "/Gy",
         "/DBBLITE_HAS_UI=1",
         `/DBBLITE_HAS_IMAGE_DECODER=${options.imageDecoder ? 1 : 0}`,
         ...Object.entries(options.macros ?? {}).map(
             ([macro, value]) => `/D${macro}=${value}`,
         ),
-        "/DRMLUI_STATIC_LIB",
-        "/DRMLUI_SDL_VERSION_MAJOR=3",
+        ...rmlFlags,
         `/Fo:${output}/`,
         `/Fe:${executable}`,
         "/I",
-        "native/include",
-        "/I",
         "native/src",
         ...(options.includeDirectories ?? []).flatMap((path) => ["/I", path]),
-        `/external:I${join(rml, "include")}`,
-        `/external:I${join(rml, "Backends")}`,
-        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        "/external:W0",
         `test/fixtures/${name}-check.cpp`,
-        "native/src/pal_system_fonts.cpp",
         ...(options.imageDecoder ? ["native/src/pal_image.cpp"] : []),
-        join(rml, "Backends/RmlUi_Platform_SDL.cpp"),
+        ...shared,
         "/link",
-        "/OPT:REF",
         join(rml, "lib/rmlui.lib"),
         join(nativeFixtureVcpkgRoot, "lib/freetype.lib"),
         join(nativeFixtureVcpkgRoot, "lib/lunasvg.lib"),

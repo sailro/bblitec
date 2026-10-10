@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 import {
     outlineEmittedBody,
@@ -170,25 +167,7 @@ test(
         if (first !== ${count} || skipped !== ${count} || second !== ${count * 3}) throw new Error("outlined mutations");
     `);
         assert.match(result.cpp, /bbl_outlined_\d+/);
-        const output = resolve("artifacts/structured-outlining-check");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { encoding: "utf8" });
+        runGeneratedProgram(tools!, "structured-outlining-check", result.cpp);
     },
 );
 

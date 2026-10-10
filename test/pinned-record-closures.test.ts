@@ -212,13 +212,6 @@ int main() {
     );
     const exe = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve(directory, "check.cpp"),
         `/Fo${resolve(directory, "check.obj")}`,
@@ -260,13 +253,6 @@ int main() {
     );
     const earlyExe = resolve(directory, "early.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve(directory, "early.cpp"),
         `/Fo${resolve(directory, "early.obj")}`,

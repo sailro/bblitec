@@ -12,7 +12,6 @@ import {
 } from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -204,20 +203,9 @@ for(std::size_t lane=0;lane<result.size();++lane)if(std::bit_cast<std::uint32_t>
 `,
         );
         runNativeFixtureCompiler(native, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O2",
             `/Fo:${directory}/`,
             `/Fe:${exe}`,
-            "/I",
-            "native/include",
-            "/I",
-            resolve(nativeFixtureVcpkgRoot, "include"),
             file,
         ]);
         assert.equal(

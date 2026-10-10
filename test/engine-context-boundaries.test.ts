@@ -96,8 +96,12 @@ test("camera callbacks retain construction owners after nullable engine reset", 
         }
         `,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
-            includeDirectories: [resolve(output, "upstream/include")],
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
+                "/I",
+                resolve(output, "upstream/include"),
+            ],
             timeoutMs: 10000,
         },
     );
@@ -212,9 +216,9 @@ for (const [owned, demanded] of [
             {
                 ...(owned
                     ? {
-                          defines: [
-                              "BBLITE_WORKERS=1",
-                              "BBLITE_OFFSCREEN_SURFACES=1",
+                          flags: [
+                              "/DBBLITE_WORKERS=1",
+                              "/DBBLITE_OFFSCREEN_SURFACES=1",
                           ],
                       }
                     : {}),
@@ -325,7 +329,7 @@ for (const [label, parameter, depth] of [
             }
         `,
             {
-                defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
+                flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
                 timeoutMs: 10000,
             },
         );
@@ -483,7 +487,7 @@ test("stored engine Promise results preserve the owned ABI and source identity",
         }
     `,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
             timeoutMs: 10000,
         },
     );

@@ -351,18 +351,8 @@ test("authored moving-emitter modes carry pinned build facts without freezing na
             );
             const executable = join(output, "check.exe");
             runNativeFixtureCompiler(nativeTools, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
                 "/O2",
-                "/Gy",
                 `/DAUTO_START=${search === "" ? 1 : 0}`,
-                "/I",
-                "native/include",
                 "/I",
                 output,
                 `/Fo:${output}\\`,
@@ -370,8 +360,6 @@ test("authored moving-emitter modes carry pinned build facts without freezing na
                 join(output, "node_particles.cpp"),
                 join(output, "billboard_system.cpp"),
                 "test/fixtures/node-particle-provider-bridge-check.cpp",
-                "/link",
-                "/OPT:REF",
             ]);
             assert.match(
                 execFileSync(executable, { encoding: "utf8" }),
@@ -395,17 +383,8 @@ test(
         writeFileSync(join(output, "provider.hpp"), compileSource(program).cpp);
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native\\include",
             "/I",
             output,
             "test/fixtures/native-particle-provider-check.cpp",

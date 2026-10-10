@@ -992,10 +992,12 @@ endif()
 # Dependency headers are external -- imported and SYSTEM include directories,
 # and for MSVC also the INCLUDE directories (the SDK and the standard library,
 # which test undefined names themselves) -- so the check never fires there.
+# Sources, generated ones included, are UTF-8 and strings are stored as UTF-8:
+# clang does both by default, MSVC with /utf-8 (otherwise it uses the code page).
 if(MSVC)
     target_compile_options(bblite_core INTERFACE /W4 /WX /permissive- /EHsc /bigobj)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-        target_compile_options(bblite_core INTERFACE /we4668 /external:env:INCLUDE /external:W0)
+        target_compile_options(bblite_core INTERFACE /we4668 /external:env:INCLUDE /external:W0 /utf-8)
     else()
         target_compile_options(bblite_core INTERFACE -Wundef -Werror=undef)
     endif()

@@ -111,7 +111,7 @@ for (const [name, workerSource, send, expected] of [
             `worker-message-results/${name}`,
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

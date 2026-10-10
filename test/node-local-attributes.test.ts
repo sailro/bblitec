@@ -158,14 +158,6 @@ int main() {
 `,
         );
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
-            "/I",
-            "native/include",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             fixture,

@@ -39,7 +39,7 @@ test("async records retain concrete erased field owners and shared identities", 
             "promise-spread-settlement/erased-fields",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },
@@ -100,7 +100,7 @@ ${cppFunction(factory, "FileTexture solid_texture_file(")}
 }
 `,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
             timeoutMs: 10000,
             expectedOutput: "",
         },

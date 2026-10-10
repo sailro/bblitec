@@ -11,7 +11,6 @@ import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
 import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -278,18 +277,9 @@ int main() {
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/O2",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
         source,
     ]);
     assert.match(

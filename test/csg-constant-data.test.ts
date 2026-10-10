@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -10,6 +9,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("CSG binary transport preserves float bits, integer lanes and empty streams", () => {
@@ -95,12 +95,9 @@ test(
             uvs: new Float32Array(),
             indices: Uint32Array.of(0xffffffff),
         });
-        const output = resolve("artifacts/csg-binary-transport-check");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            source,
+        runGeneratedProgram(
+            nativeTools!,
+            "csg-binary-transport-check",
             `
         #include <bblite/baked_mesh.hpp>
         #include <cassert>
@@ -125,20 +122,6 @@ test(
         }
     `,
         );
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );
 
@@ -161,20 +144,11 @@ test(
             compileSource(readFileSync(path, "utf8"), { fileName: path }).cpp,
         );
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O2",
             "/c",
             `/Fo:${output}\\`,
             "/I",
             output,
-            "/I",
-            "native\\include",
             source,
         ]);
     },
@@ -209,25 +183,10 @@ test(
             result.cpp.match(/f32_array_from\(bblscene::/g)?.length,
             2,
         );
-        const output = resolve("artifacts/shared-literal-storage-check");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp");
-        const executable = join(output, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native\\include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(
+            nativeTools!,
+            "shared-literal-storage-check",
+            result.cpp,
+        );
     },
 );

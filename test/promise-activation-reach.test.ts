@@ -125,7 +125,7 @@ test("owned promise aliases retain identity before and after awaiting", async (t
             "promise-activation-reach/aliases",
             compiled.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 20_000,
             },
         );

@@ -1,11 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
@@ -67,24 +64,10 @@ test(
             }
         }
     `;
-        const output = resolve("artifacts/numeric-conditional");
-        mkdirSync(output, { recursive: true });
-        const file = join(output, "check.cpp");
-        const executable = join(output, "check.exe");
-        writeFileSync(file, compileSource(source).cpp);
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/permissive-",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            file,
-        ]);
-        execFileSync(executable, { encoding: "utf8" });
+        runGeneratedProgram(
+            tools!,
+            "numeric-conditional",
+            compileSource(source).cpp,
+        );
     },
 );

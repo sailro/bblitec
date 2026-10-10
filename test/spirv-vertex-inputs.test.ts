@@ -4,7 +4,6 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -19,20 +18,12 @@ test("SPIR-V vertex inputs compact independently of stage outputs and builtins",
     mkdirSync(output, { recursive: true });
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${output}/`,
         `/Fe:${executable}`,
         "/I",
         "tools/tint-sdl",
         `/I${resolve("native/src")}`,
-        `/I${resolve("native/include")}`,
-        `/I${join(nativeFixtureVcpkgRoot, "include")}`,
         "test/fixtures/spirv-vertex-inputs-check.cpp",
     ]);
     assert.equal(

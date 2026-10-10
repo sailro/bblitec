@@ -1,13 +1,9 @@
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerComputeBufferBinding } from "../src/lowering/compute-buffer-binding-lowerer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("compute buffer bindings retain ranges, dynamic limits and live registrations", (t) => {
@@ -16,12 +12,9 @@ test("compute buffer bindings retain ranges, dynamic limits and live registratio
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/compute-buffer-binding-check");
-    mkdirSync(directory, { recursive: true });
-    const file = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "compute-buffer-binding-check",
         `${lowerComputeBufferBinding(new LoweringContext()).source}
 #include <cassert>
 struct Allocation final:bbl::pal::StorageBufferAllocation{
@@ -57,20 +50,10 @@ int main(){
  registry->buffers.erase(uniform);bool dead=false;try{(void)bbl::get_compute_buffer_binding_resource(engine,resolved.state,registered);}catch(const std::exception& error){dead=std::string(error.what())=="#867";}assert(dead);
 }
 `,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
-        file,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

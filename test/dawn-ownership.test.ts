@@ -21,12 +21,6 @@ test("Dawn resource owners unwind failed creation and transfer each reference on
     mkdirSync(output, { recursive: true });
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        `/I${resolve("native/include")}`,
         `/I${resolve("native/src")}`,
         `/I${dawnInclude}`,
         resolve("test/fixtures/dawn-ownership-check.cpp"),

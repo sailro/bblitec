@@ -1,13 +1,9 @@
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerComputeBindings } from "../src/lowering/compute-bindings-lowerer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("compute binding sets preserve dynamic slots, cached groups and volatile invalidation", (t) => {
@@ -16,12 +12,9 @@ test("compute binding sets preserve dynamic slots, cached groups and volatile in
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/compute-bindings-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "compute-bindings-check",
         `${lowerComputeBindings(new LoweringContext()).source}
 #include <cassert>
 int resolves=0,gets=0,validations=0;bool invalidate=false;
@@ -65,20 +58,10 @@ int main(){
  bool disposed=false;try{(void)bbl::ensure_compute_binding_groups(binding);}catch(const std::exception& e){disposed=std::string(e.what())=="#855";}assert(disposed);
 }
 `,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

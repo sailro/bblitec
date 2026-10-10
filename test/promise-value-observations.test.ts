@@ -40,7 +40,7 @@ test("reached promises retain identity without another asynchronous API", (t) =>
         "promise-value-observations/identity",
         result.cpp,
         {
-            defines: ["BBLITE_WORKERS=1"],
+            flags: ["/DBBLITE_WORKERS=1"],
             timeoutMs: 20_000,
         },
     );
@@ -139,7 +139,7 @@ test("awaited values retain settled storage in member and comparison expressions
         "promise-value-observations/awaited-storage",
         result.cpp,
         {
-            defines: ["BBLITE_WORKERS=1"],
+            flags: ["/DBBLITE_WORKERS=1"],
             timeoutMs: 20_000,
         },
     );

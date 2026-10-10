@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
@@ -10,7 +7,7 @@ import {
 } from "../src/pinned-compute-uniform.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("compute uniform layouts execute pinned vector and matrix packing", async () => {
@@ -61,22 +58,8 @@ if(caught!==2)throw new Error("uniform layout validation");
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/compute-uniform-layout-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
+    runGeneratedProgram(tools, "compute-uniform-layout-check", result.cpp, {
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
 });

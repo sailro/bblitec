@@ -17,13 +17,6 @@ test("structured worker messages preserve isolated graphs and exclusive transfer
     mkdirSync(directory, { recursive: true });
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
-        `/I${resolve("native/include")}`,
         resolve("test/fixtures/worker-clone-check.cpp"),
         `/Fo${directory}/`,
         `/Fe${executable}`,

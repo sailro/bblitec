@@ -48,7 +48,7 @@ test("retained callback collections observe registrations after empty iteration 
         return;
     }
     runGeneratedProgram(native, "callback-collection-iteration", compiled.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
     });
 });

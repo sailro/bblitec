@@ -22,21 +22,12 @@ test(
         mkdirSync(directory, { recursive: true });
         const executable = join(directory, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
             `/Fo:${directory}\\`,
             `/Fe:${executable}`,
             "/I",
             "native/src",
-            "/I",
-            "native/include",
             `/external:I${nativeFixtureVcpkgRoot}/include/bullet`,
-            "/external:W0",
             "test/fixtures/physics-contact-recovery-check.cpp",
             "/link",
             `/LIBPATH:${nativeFixtureVcpkgRoot}/lib`,

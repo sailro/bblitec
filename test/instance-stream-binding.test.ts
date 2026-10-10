@@ -13,7 +13,6 @@ import {
     cppDeclaration,
     cppFunction,
     cppRecord,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
     sceneBackendSource,
@@ -150,23 +149,13 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
         "/DSDL_STATIC_LIB",
         `/Fo:${output}/`,
         `/Fe:${executable}`,
         "/I",
-        "native/include",
-        "/I",
         output,
         `/external:I${dawnInclude}`,
-        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        "/external:W0",
         "test/fixtures/instance-stream-binding-check.cpp",
     ]);
     assert.equal(execFileSync(executable, { encoding: "utf8" }), "");

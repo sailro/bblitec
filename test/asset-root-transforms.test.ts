@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -12,7 +11,7 @@ import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transfo
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
@@ -129,10 +128,9 @@ test(
         snapshot(
             "bbl::set_asset_root_scaling(engine, asset, {-2,3,4}); bbl::set_asset_root_rotation_quaternion_component(engine, asset, 3, .8);",
         );
-        const file = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            file,
+        runGeneratedProgram(
+            tools!,
+            "asset-root-transforms-check",
             `#include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
 #include <cassert>
@@ -169,23 +167,8 @@ int main() {
     assert(bbl::upstream::light_world_matrix(engine.lights[0])[12] == -.5f);
 }
 `,
+            { flags: ["/O2", "/I", output] },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/O2",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            "/I",
-            output,
-            file,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );
 

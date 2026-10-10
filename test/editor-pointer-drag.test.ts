@@ -8,7 +8,6 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { GizmoLowerer } from "../src/lowering/gizmo-lowerer.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
     sceneBackendSource,
@@ -203,22 +202,12 @@ test(
         const sources = cameraSources(output);
         const executable = join(output, "editor-pointer-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             "native/src",
             "/I",
             join(output, "include"),
-            "/I",
-            join(nativeFixtureVcpkgRoot, "include"),
             "test/fixtures/js-callback/editor-pointer-check.cpp",
             ...sources,
         ]);

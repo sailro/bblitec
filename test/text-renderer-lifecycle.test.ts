@@ -485,14 +485,7 @@ test("standalone text source and native agree on affine uploads, layer order, sh
     writeFileSync(resolve(directory, "actions.hpp"), actions.join("\n"));
     const exe = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/fp:strict",
         `/I${directory}`,
-        `/I${resolve("native/include")}`,
         resolve("test/fixtures/text-renderer-lifecycle-check.cpp"),
         `/Fo${resolve(directory, "check.obj")}`,
         `/Fe${exe}`,

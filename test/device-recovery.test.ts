@@ -393,18 +393,11 @@ test(
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/O2",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             output,
-            "/I",
-            "native/include",
             "test/fixtures/device-recovery-check.cpp",
         ]);
         assert.match(

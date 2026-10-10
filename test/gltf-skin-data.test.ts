@@ -14,7 +14,6 @@ import {
 import { doctoredContext } from "./doctored-store.js";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -115,20 +114,9 @@ test("inverse bind selection, count and initialization execute the pinned source
         }`,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${output}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
         file,
     ]);
     assert.equal(

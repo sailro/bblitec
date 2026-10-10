@@ -7,6 +7,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
@@ -43,10 +44,9 @@ test(
         const directory = resolve("artifacts/audio-temporary-ownership");
         mkdirSync(directory, { recursive: true });
         writeFileSync(join(directory, "program.hpp"), result.cpp);
-        const source = join(directory, "check.cpp");
-        const executable = join(directory, "check.exe");
-        writeFileSync(
-            source,
+        runGeneratedProgram(
+            tools!,
+            "audio-temporary-ownership",
             `
         #define main generated_main
         #include "program.hpp"
@@ -72,21 +72,6 @@ test(
         int main() { assert(generated_main() == 0 && reads == 6); }
     `,
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            `/Fo:${directory}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );
 
@@ -150,19 +135,10 @@ test(
     `,
         );
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             output,
-            "/I",
-            "native/include",
             file,
         ]);
         assert.equal(execFileSync(executable, { encoding: "utf8" }).trim(), "");

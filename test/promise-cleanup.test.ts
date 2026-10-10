@@ -88,15 +88,7 @@ test("promise cleanup preserves settlement, owns callbacks and follows JavaScrip
             `bbl::js::collect_cycles(); if(bbl::js::managed_node_count()!=baseline) throw std::runtime_error("cleanup ownership leak"); return result; }\n`,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        "/I",
-        "native/include",
         `/Fo:${directory}/`,
         `/Fe:${exe}`,
         cpp,

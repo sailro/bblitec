@@ -125,18 +125,9 @@ test(
             executable = join(output, "check.exe");
         writeFileSync(file, compileSource(source).cpp);
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O2",
             `/Fo:${output}/`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             file,
         ]);
         assert.equal(execFileSync(executable, { encoding: "utf8" }), "");

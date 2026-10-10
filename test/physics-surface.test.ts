@@ -78,15 +78,7 @@ test(
         const path = join(output, "check.cpp");
         writeFileSync(path, compiled.cpp);
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/permissive-",
             "/c",
-            "/I",
-            "native/include",
             "/I",
             join(output, "upstream/include"),
             `/Fo:${join(output, "check.obj")}`,

@@ -155,17 +155,8 @@ int main() {
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(native!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/permissive-",
-            "/fp:precise",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             output,
             join(output, "check.cpp"),

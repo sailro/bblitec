@@ -1,13 +1,11 @@
-import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { billboardOrderHelpers } from "../src/lowering/billboard-order-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 
@@ -41,10 +39,9 @@ ${billboardOrderHelpers(
 )}
 }`,
     );
-    const source = resolve(directory, "check.cpp");
-    const exe = resolve(directory, "check.exe");
-    writeFileSync(
-        source,
+    runGeneratedProgram(
+        tools,
+        "billboard-order",
         `
         #include <bblite/runtime.hpp>
         #include <cassert>
@@ -111,21 +108,13 @@ ${billboardOrderHelpers(
             assert(bbl::upstream::billboard_system_order(options,"transparent")==220);
         }
     `,
+        {
+            flags: [
+                "/DBBLITE_HAS_BILLBOARDS=1",
+                `/I${directory}`,
+                `/I${resolve("native/src")}`,
+            ],
+            expectedOutput: "",
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_HAS_BILLBOARDS=1",
-        `/I${directory}`,
-        `/I${resolve("native/include")}`,
-        `/I${resolve("native/src")}`,
-        source,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8" }), "");
 });

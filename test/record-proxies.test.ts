@@ -27,7 +27,7 @@ function check(name: string, source: string): void {
             return;
         }
         runGeneratedProgram(tools, `record-proxies/${name}`, result.cpp, {
-            defines: ["BBLITE_WORKERS=1"],
+            flags: ["/DBBLITE_WORKERS=1"],
             expectedOutput: "",
             timeoutMs: 10000,
         });
@@ -221,6 +221,6 @@ try {
         tools,
         "record-proxies/explicit-runtime-boundaries",
         result.cpp,
-        { defines: ["BBLITE_WORKERS=1"], expectedOutput: "", timeoutMs: 10000 },
+        { flags: ["/DBBLITE_WORKERS=1"], expectedOutput: "", timeoutMs: 10000 },
     );
 });

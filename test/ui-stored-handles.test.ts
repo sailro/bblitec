@@ -121,18 +121,10 @@ for (const mode of ["window", "window-with-engine", "scene"] as const) {
         `,
         );
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/DBBLITE_HAS_UI=1",
             ...(window
                 ? ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"]
                 : []),
-            "/I",
-            "native/include",
             `/Fo:${directory}/`,
             `/Fe:${executable}`,
             cpp,

@@ -9,7 +9,6 @@ import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { compileSource } from "../src/compiler.js";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
     sharedGpuSource,
@@ -47,11 +46,6 @@ int main() {
 }`,
         );
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             file,
@@ -82,25 +76,15 @@ test(
         );
         const executable = join(output, "camera-scene-delta-check.exe");
         runNativeFixtureCompiler(cameraTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             "/DSDL_STATIC_LIB",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             "native/src",
             "/I",
             join(output, "include"),
             "/I",
             output,
-            "/I",
-            join(nativeFixtureVcpkgRoot, "include"),
             "test/fixtures/camera-scene-delta-check.cpp",
             ...sources,
         ]);

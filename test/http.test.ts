@@ -7,7 +7,6 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -138,15 +137,7 @@ async function checkRuntimeHttp(
         executable = resolve(directory, "check.exe");
     writeFileSync(cpp, compiled.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
-        `/I${nativeFixtureVcpkgRoot}/include`,
         cpp,
         "native/src/pal_http.cpp",
         `/Fo${directory}/`,

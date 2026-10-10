@@ -4,7 +4,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -81,16 +80,8 @@ int main() {
 `,
         );
         runNativeFixtureCompiler(native!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             `/Fo:${directory}/`,
             `/Fe:${executable}`,
-            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-            "/external:W0",
             "/Inative/src",
             source,
         ]);

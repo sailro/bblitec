@@ -144,15 +144,6 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings, scene insert
     writeFileSync(join(directory, "functions.hpp"), functions);
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
         "/I",
         "native/src",
         "/I",

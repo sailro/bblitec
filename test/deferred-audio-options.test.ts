@@ -111,7 +111,7 @@ test("audio options evaluate once and only present options reject asynchronously
             void audio_connect(AudioNodeHandle,AudioNodeHandle) {}
         }
     `,
-        { defines: ["BBLITE_WORKERS=1"], timeoutMs: 10000 },
+        { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000 },
     );
 });
 
@@ -144,7 +144,7 @@ test("missing audio graph operations retain declared results and later authored 
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(tools, "deferred-audio-options/family", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
     });
 });

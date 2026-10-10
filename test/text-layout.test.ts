@@ -129,15 +129,7 @@ int main() {
 `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/fp:strict",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
-        `/I${resolve(nativeFixtureVcpkgRoot, "include")}`,
         `/I${resolve(nativeFixtureVcpkgRoot, "include/harfbuzz")}`,
         source,
         `/Fo${resolve(directory, "check.obj")}`,

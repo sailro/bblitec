@@ -21,12 +21,6 @@ test("Dawn text bindings retain their captured resources and retire before the d
     mkdirSync(output, { recursive: true });
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        `/I${resolve("native/include")}`,
         `/I${resolve("native/src")}`,
         `/I${dawnInclude}`,
         resolve("test/fixtures/text-dawn-resources-check.cpp"),

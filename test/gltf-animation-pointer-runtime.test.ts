@@ -23,7 +23,6 @@ import {
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -411,20 +410,9 @@ int main(int argc, char** argv) {
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        resolve(nativeFixtureVcpkgRoot, "include"),
         file,
     ]);
     execFileSync(executable, [resolve(directory, "cases.json")], {

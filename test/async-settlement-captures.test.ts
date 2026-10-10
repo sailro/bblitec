@@ -45,7 +45,7 @@ test("owned Promise tuple arguments survive destructured async activations", asy
     const native = optionalNativeFixtureTools(false);
     await t.test("native assertions", { skip: !native }, () => {
         runGeneratedProgram(native!, "async-settlement-captures", result.cpp, {
-            defines: ["BBLITE_WORKERS=1"],
+            flags: ["/DBBLITE_WORKERS=1"],
             timeoutMs: 10000,
             expectedOutput: "",
         });

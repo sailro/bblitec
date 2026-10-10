@@ -117,18 +117,10 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
     // and runs it.
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
         "/DBBLITE_HAS_PBR_RENDERER=1",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${output}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         "/I",
         output,
         "test/fixtures/local-geometry-contracts-check.cpp",

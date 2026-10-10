@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const source = `
@@ -57,10 +56,9 @@ test(
         const output = resolve("artifacts/shared-platform-handles-check");
         mkdirSync(output, { recursive: true });
         writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
-        const file = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            file,
+        runGeneratedProgram(
+            tools!,
+            "shared-platform-handles-check",
             `
         #define main generated_main
         #include "program.hpp"
@@ -89,23 +87,7 @@ test(
         }
         int main() { assert(generated_main() == 0); assert(samples == 3); }
     `,
+            { flags: ["/I", output] },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            output,
-            "/I",
-            "native\\include",
-            file,
-        ]);
-        execFileSync(executable, { encoding: "utf8" });
     },
 );

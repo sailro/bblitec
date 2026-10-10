@@ -36,15 +36,6 @@ for (const [name, fixture, expected] of [
         mkdirSync(directory, { recursive: true });
         const executable = join(directory, "check.exe");
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/MD",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/I",
-            resolve("native", "include"),
             `/Fo${directory}\\`,
             `/Fe${executable}`,
             resolve("test", "fixtures", `${fixture}.cpp`),

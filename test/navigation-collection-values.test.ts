@@ -143,19 +143,10 @@ test("navigation copies current owned connection fields once in argument order",
     `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
         "/I",
         output,
-        "/I",
-        "native/include",
         file,
     ]);
     assert.equal(

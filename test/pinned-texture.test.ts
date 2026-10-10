@@ -209,19 +209,11 @@ test(
         );
         const executable = join(output, "pinned-texture-check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/O2",
-            "/fp:precise",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             output,
-            "/I",
-            "native/include",
             "test/fixtures/pinned-texture-check.cpp",
         ]);
         assert.match(

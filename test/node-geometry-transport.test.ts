@@ -362,15 +362,7 @@ int main() {
 `,
         );
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
             "/DBBLITE_HAS_PBR_RENDERER=1",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
-            "/I",
-            "native/include",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             fixture,

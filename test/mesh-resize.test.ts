@@ -88,19 +88,10 @@ int main(){using namespace bbl;Engine engine;
 `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/Gy",
-        `/I${resolve("native/include")}`,
         source,
         `/Fo${directory}/`,
         `/Fe${exe}`,
-        "/link",
-        "/OPT:REF",
     ]);
     assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

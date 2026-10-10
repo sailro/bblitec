@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -14,7 +13,7 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 interface Root {
@@ -185,10 +184,9 @@ test(
         ]
             .map((signature) => cppFunction(render, signature))
             .join("\n");
-        const file = join(directory, "check.cpp");
-        const executable = join(directory, "check.exe");
-        writeFileSync(
-            file,
+        runGeneratedProgram(
+            tools!,
+            "hierarchy-instance-pool-check",
             `#include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
@@ -211,22 +209,7 @@ int main() {
     ${cases.join("\n")}
 }
 `,
+            { flags: ["/O2", "/I", directory] },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/O2",
-            `/Fo:${directory}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            "/I",
-            directory,
-            file,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );

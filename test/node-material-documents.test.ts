@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -114,18 +113,10 @@ test("packaged graph text preserves fetch and async boolean options while specia
     const source = resolve(directory, "check.cpp");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/c",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_HAS_UI=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
-        `/external:I${resolve(nativeFixtureVcpkgRoot, "include")}`,
         source,
         `/Fo${directory}/`,
     ]);

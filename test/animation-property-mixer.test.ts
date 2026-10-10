@@ -12,7 +12,6 @@ import {
 } from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runGeneratedProgram,
     runNativeFixtureCompiler,
@@ -156,25 +155,11 @@ int main(){using namespace bbl;Engine engine;auto manager=create_animation_manag
 }`,
         );
         runNativeFixtureCompiler(native, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O2",
-            "/Gy",
             `/Fo:${directory}/`,
             `/Fe:${exe}`,
-            "/I",
-            resolve("native/include"),
-            "/I",
-            resolve(nativeFixtureVcpkgRoot, "include"),
             source,
             file,
-            "/link",
-            "/OPT:REF",
         ]);
         assert.equal(
             execFileSync(exe, { cwd: directory, encoding: "utf8" }),

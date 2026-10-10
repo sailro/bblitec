@@ -8,7 +8,6 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -143,19 +142,8 @@ test("CPU picking rays preserve pinned projection, nullability and live tuple st
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/permissive-",
-        "/fp:precise",
         `/Fo:${output}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
         "/I",
         output,
         join(output, "check.cpp"),

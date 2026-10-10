@@ -107,7 +107,7 @@ for (const [name, source] of Object.entries(cases)) {
             `error-subclasses/${name}`,
             `#define main generated_main\n${result.cpp}\n#undef main\nint main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)return 91;return result;}`,
             {
-                defines: name.startsWith("promise") ? ["BBLITE_WORKERS=1"] : [],
+                flags: name.startsWith("promise") ? ["/DBBLITE_WORKERS=1"] : [],
                 timeoutMs: 10000,
             },
         );
