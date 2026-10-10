@@ -318,17 +318,8 @@ test(
         writeFileSync(source, compileSource(input).cpp);
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native\\include",
             source,
         ]);
         execFileSync(executable, { encoding: "utf8" });
@@ -348,19 +339,10 @@ test(
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             output,
-            "/I",
-            "native\\include",
             "test\\fixtures\\resource-loop-runtime-check.cpp",
         ]);
         assert.match(

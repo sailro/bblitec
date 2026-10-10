@@ -284,25 +284,14 @@ test(
             `#define main generated_scene_main\n${compileSource(program()).cpp}\n#undef main\n${readFileSync("test/fixtures/picking-info-check.cpp", "utf8")}`,
         );
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
-            "/Gy",
             "/DBBLITE_HAS_PICKING=1",
-            "/I",
-            "native/include",
             "/I",
             output,
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             source,
             join(output, "picking.cpp"),
-            "/link",
-            "/OPT:REF",
         ]);
         assert.match(
             execFileSync(executable, { encoding: "utf8" }),

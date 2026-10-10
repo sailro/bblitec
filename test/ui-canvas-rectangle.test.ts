@@ -160,17 +160,9 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "ui-canvas-rectangle-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             "/DBBLITE_HAS_UI=1",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             "native/src",
             "test/fixtures/ui-canvas-rectangle-check.cpp",

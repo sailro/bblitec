@@ -10,6 +10,7 @@ import { lowerGpuRetirement } from "../src/lowering/gpu-retirement-lowerer.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("pinned retirement waits, claims each batch once, and drains nested releases", async (t) => {
@@ -100,14 +101,7 @@ int main() {
         return;
     }
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
         cpp,
         `/Fo${directory}/`,
         `/Fe${exe}`,
@@ -128,12 +122,9 @@ test("GPU fences settle on the realm without blocking its tasks", (t) => {
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/gpu-completion-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp");
-    const exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "gpu-completion-check",
         `
 #include <bblite/pal_async_engine.hpp>
 #include <bblite/js_realm_state.hpp>
@@ -201,20 +192,10 @@ int main() {
     }
 }
 `,
+        {
+            flags: ["/DBBLITE_OFFSCREEN_SURFACES=1", "/DBBLITE_WORKERS=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

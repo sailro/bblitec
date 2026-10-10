@@ -14,7 +14,6 @@ import {
 import { doctoredContext } from "./doctored-store.js";
 import { meshPlanFixture } from "./gltf-mesh-fixture.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -196,20 +195,9 @@ ${contexts.map((_, index) => `    assert(variant_${index}::check() == cases.at($
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        resolve(nativeFixtureVcpkgRoot, "include"),
-        "/I",
-        resolve("native/include"),
         file,
     ]);
     assert.equal(

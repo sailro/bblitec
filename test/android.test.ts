@@ -406,14 +406,8 @@ test("Dawn Android surfaces negotiate worker formats and retain native windows a
         [1, 0],
     ]) {
         runNativeFixtureCompiler(native, [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
             `/DBBLITE_HAS_DAWN=${dawn}`,
             `/DBBLITE_HAS_SDL_GPU=${sdl}`,
-            `/I${resolve("native/include")}`,
             `/I${resolve("native/src")}`,
             `/I${dawnInclude}`,
             `/I${directory}`,

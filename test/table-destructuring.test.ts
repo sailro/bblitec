@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const positions = [
@@ -105,34 +103,13 @@ test(
     "native table destructuring preserves every matrix lane and evaluates indices once",
     { skip: !nativeTools },
     () => {
-        const output = resolve("artifacts/table-destructuring-check");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp");
-        const executable = join(output, "check.exe");
-        writeFileSync(
-            source,
+        runGeneratedProgram(
+            nativeTools!,
+            "table-destructuring-check",
             `${compileSource(matrixSource).cpp}
         namespace bbl { Engine create_engine(EngineOptions options) { Engine engine; engine.options = options; return engine; } }
     `,
+            { flags: ["/O2"] },
         );
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            "/O2",
-            "/Gy",
-            "/I",
-            "native/include",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            source,
-            "/link",
-            "/OPT:REF",
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );

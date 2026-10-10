@@ -109,7 +109,7 @@ test("asynchronous generators await producers, yield lazily, and close through a
         { fileName: join(directory, "entry.ts") },
     );
     runGeneratedProgram(tools, "async-generator-check", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
         expectedOutput: "",
     });

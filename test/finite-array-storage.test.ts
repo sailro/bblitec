@@ -79,7 +79,7 @@ test("host queues retain Arguments identities across concrete stored callback sp
         "finite-array-storage/host-arguments",
         result.cpp + windowRuntime,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_HAS_UI=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
             expectedOutput: "",
             timeoutMs: 10000,
         },

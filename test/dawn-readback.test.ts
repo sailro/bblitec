@@ -66,12 +66,6 @@ int main() {
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/Iartifacts/tools/dawn/include",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,

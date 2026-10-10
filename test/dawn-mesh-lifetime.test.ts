@@ -86,23 +86,14 @@ test("Dawn mesh teardown releases bindings before resources and shared layouts",
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${output}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         "/I",
         "native/src",
         "/I",
         output,
         `/external:I${dawnInclude}`,
-        "/external:W0",
         "test/fixtures/dawn-mesh-lifetime-check.cpp",
     ]);
     assert.equal(execFileSync(executable, { encoding: "utf8" }), "");

@@ -49,7 +49,7 @@ for (const [name, handler, setup] of [
             return;
         }
         runGeneratedProgram(tools, `entry-reporter-${name}`, result.cpp, {
-            defines: ["BBLITE_WORKERS=1"],
+            flags: ["/DBBLITE_WORKERS=1"],
             timeoutMs: 10000,
             expectedOutput: "",
         });
@@ -252,7 +252,7 @@ test("empty and value-returning rejection handlers retain native recovery", (t) 
             `entry-reporter-recovery-${handler.includes("42") ? "value" : "empty"}`,
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

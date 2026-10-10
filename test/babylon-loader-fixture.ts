@@ -7,11 +7,7 @@ import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import type { WindowsBuildTools } from "../src/development-tools.js";
-import {
-    cppFunction,
-    nativeFixtureVcpkgRoot,
-    runNativeFixtureCompiler,
-} from "./native-fixture.js";
+import { cppFunction, runNativeFixtureCompiler } from "./native-fixture.js";
 
 /**
  * Build and run a check over the complete generated `.babylon` loader, as
@@ -75,20 +71,11 @@ ${main}
 }`,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/O2",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         "/I",
         include,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
         source,
     ]);
     execFileSync(executable, [], {

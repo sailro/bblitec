@@ -66,15 +66,7 @@ test("qualified realm timers and microtasks run without a scene engine", (t) => 
         executable = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        "/I",
-        "native/include",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         cpp,

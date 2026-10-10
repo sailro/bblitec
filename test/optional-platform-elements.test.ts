@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -9,7 +8,6 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
-    runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const source = `
@@ -89,10 +87,9 @@ test("optional platform array elements guard short arrays and evaluate receiver 
     const output = resolve("artifacts/optional-platform-elements");
     mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "program.hpp"), result.cpp);
-    const file = join(output, "check.cpp");
-    const executable = join(output, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "optional-platform-elements",
         `
         #define main generated_main
         #include "program.hpp"
@@ -126,22 +123,8 @@ test("optional platform array elements guard short arrays and evaluate receiver 
             assert(button_reads == 10u && pressed_reads == 5u && index_reads == 2u);
         }
         `,
+        { timeoutMs: 10000 },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        `/Fo:${output}\\`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        file,
-    ]);
-    execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });
 
 test("guarded data elements snapshot receivers across index rebinding and retain optional results", (t) => {

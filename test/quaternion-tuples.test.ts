@@ -39,13 +39,6 @@ test("public quaternion tuples preserve argument order, array identity and Euler
         exe = resolve(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         cpp,
         `/Fo${directory}/`,

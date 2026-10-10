@@ -402,14 +402,7 @@ int main() {
         exe = resolve(directory, "check.exe");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/fp:strict",
         "/DBBLITE_HAS_TEXT=1",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         source,
         `/Fo${resolve(directory, "check.obj")}`,
@@ -701,13 +694,7 @@ int main(){
         exe = resolve(directory, "check.exe");
     writeFileSync(path, cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         "/DBBLITE_HAS_TEXT=1",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         path,
         `/Fo${resolve(directory, "check.obj")}`,
@@ -831,13 +818,7 @@ int main(){
         exe = resolve(directory, "check.exe");
     writeFileSync(path, cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         "/DBBLITE_HAS_TEXT=1",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         path,
         `/Fo${resolve(directory, "check.obj")}`,
@@ -1030,13 +1011,7 @@ int main(){
         exe = resolve(directory, "check.exe");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         "/DBBLITE_HAS_TEXT=1",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         source,
         `/Fo${resolve(directory, "check.obj")}`,

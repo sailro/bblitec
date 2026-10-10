@@ -76,6 +76,6 @@ test("failed lazy modules retain authored Error identity and release captured im
             return result;
         }
     `,
-        { defines: ["BBLITE_WORKERS=1"], timeoutMs: 10000 },
+        { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000 },
     );
 });

@@ -33,7 +33,7 @@ test("retained aggregates and promises preserve lazy accessor callbacks", (t) =>
         return;
     }
     runGeneratedProgram(tools, "retained-accessors", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
     });
 });

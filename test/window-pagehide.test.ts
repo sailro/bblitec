@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("Window beforeunload and pagehide preserve targets, flags, callback ordering and storage before cleanup", (t) => {
@@ -51,10 +50,9 @@ test("Window beforeunload and pagehide preserve targets, flags, callback orderin
     const directory = resolve("artifacts/window-pagehide-check");
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "program.hpp"), generated.cpp);
-    const cpp = join(directory, "check.cpp"),
-        executable = join(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "window-pagehide-check",
         `
         #define main generated_main
         #include "program.hpp"
@@ -99,23 +97,14 @@ test("Window beforeunload and pagehide preserve targets, flags, callback orderin
             bbl::pal::document.dom_input.reset();
         }
     `,
+        {
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
+                "/DBBLITE_HAS_UI=1",
+                "/DBBLITE_HAS_DOM_INPUT=1",
+            ],
+            timeoutMs: 10000,
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        "/DBBLITE_HAS_UI=1",
-        "/DBBLITE_HAS_DOM_INPUT=1",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        cpp,
-    ]);
-    execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });

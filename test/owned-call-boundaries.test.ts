@@ -53,7 +53,7 @@ namespace bbl::pal {
 `
             : result.cpp;
         runGeneratedProgram(tools, `owned-call-boundaries/${name}`, cpp, {
-            defines: realm ? ["BBLITE_WORKERS=1"] : [],
+            flags: realm ? ["/DBBLITE_WORKERS=1"] : [],
             timeoutMs: 10000,
             expectedOutput: "",
         });

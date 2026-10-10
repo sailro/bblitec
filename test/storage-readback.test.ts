@@ -32,15 +32,8 @@ test("storage readback source coalesces, serializes, reuses staging and rejects 
         ].join("\n"),
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
         file,
         `/Fo${directory}/`,
         `/Fe${exe}`,

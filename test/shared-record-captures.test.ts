@@ -9,6 +9,7 @@ import { NavigationLowerer } from "../src/lowering/navigation-lowerer.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const source = `
@@ -90,17 +91,8 @@ test(
         const executable = join(output, "check.exe");
         writeFileSync(source, result.cpp);
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native\\include",
             source,
         ]);
         assert.equal(
@@ -127,10 +119,9 @@ test(
             new NavigationLowerer(new LoweringContext()).lowerNavigation(false)
                 .header,
         );
-        const file = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            file,
+        runGeneratedProgram(
+            tools!,
+            "shared-record-captures-check",
             `
         #define main generated_main
         #include "program.hpp"
@@ -164,23 +155,7 @@ test(
             assert(constructions == 5 && plugins == 1 && rays == 2 && closest_queries == 1);
         }
     `,
+            { flags: ["/I", output], expectedOutput: "" },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            output,
-            "/I",
-            "native/include",
-            file,
-        ]);
-        assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
     },
 );

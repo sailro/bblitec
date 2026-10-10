@@ -23,7 +23,6 @@ import {
 import {
     cppFunction,
     cppRecord,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -1047,21 +1046,10 @@ for (const [variant, context] of [
         }`,
         );
         runNativeFixtureCompiler(native, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${directory}\\`,
             `/Fe:${executable}`,
             "/I",
-            "native/include",
-            "/I",
             "test/fixtures",
-            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-            "/external:W0",
             source,
         ]);
         execFileSync(executable, { cwd: directory, stdio: "pipe" });

@@ -45,7 +45,7 @@ function check(name: string, source: string, realm = false): void {
             `generic-function-storage/${name}`,
             result.cpp,
             {
-                defines: realm ? ["BBLITE_WORKERS=1"] : [],
+                flags: realm ? ["/DBBLITE_WORKERS=1"] : [],
             },
         );
     });

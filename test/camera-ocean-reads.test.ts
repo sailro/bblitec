@@ -14,6 +14,7 @@ import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("async configurable control attachment retains tracked versions while repeated attachments refuse", () => {
@@ -111,13 +112,6 @@ int main(){return generated_main();}`,
     );
     const exe = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
         `/I${join(directory, "include")}`,
         `/Fo${directory}/`,
         `/Fe${exe}`,
@@ -225,23 +219,11 @@ ${[0.5, 1, 2.7].map((aspect, ai) => `{const auto actual=bbl::upstream::build_sce
     })
     .join("\n")}
 }`;
-    const cpp = join(directory, "check.cpp"),
-        exe = join(directory, "check.exe");
-    writeFileSync(cpp, body);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        `/I${directory}`,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-        cpp,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
+    runGeneratedProgram(tools, "camera-ocean-orthographic", body, {
+        flags: [`/I${directory}`],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
 });
 
 test("orthographic extent math is lowered from the source projector", () => {

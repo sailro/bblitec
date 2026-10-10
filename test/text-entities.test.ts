@@ -235,16 +235,8 @@ int main(){if(bbl::upstream::text_pipeline_rows.size()!=5)return 2;return genera
     );
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/fp:strict",
-        "/MD",
         "/O2",
         "/DBBLITE_HAS_TEXT=1",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve(directory, "check.cpp"),
         `/Fo${resolve(directory, "check.obj")}`,
@@ -482,14 +474,8 @@ test("exact text source projects unchanged shaders, observed descriptors and com
         return;
     }
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/c",
         "/DBBLITE_HAS_TEXT=1",
-        `/I${resolve("native/include")}`,
         `/I${resolve(output, "upstream/include")}`,
         `/Fo${output}\\`,
         resolve(output, "main.cpp"),
@@ -506,13 +492,7 @@ test("exact text source projects unchanged shaders, observed descriptors and com
     );
     writeFileSync(resolve(directory, "type-only.cpp"), typeOnly.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/c",
-        `/I${resolve("native/include")}`,
         resolve(directory, "type-only.cpp"),
         `/Fo${resolve(directory, "type-only.obj")}`,
     ]);

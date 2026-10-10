@@ -17,14 +17,7 @@ test("dedicated worker services isolate instances and own nested-worker shutdown
     mkdirSync(directory, { recursive: true });
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
         resolve("test/fixtures/worker-service-check.cpp"),
         `/Fo${directory}/`,
         `/Fe${executable}`,

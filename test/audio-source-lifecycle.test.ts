@@ -7,7 +7,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     buildNativeFixture,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("stored audio APIs preserve routing, optional node calls, and source disposal ownership", (t) => {
@@ -55,12 +55,9 @@ test("stored audio APIs preserve routing, optional node calls, and source dispos
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/audio-source-lifecycle-check");
-    mkdirSync(directory, { recursive: true });
-    const source = resolve(directory, "check.cpp");
-    const executable = resolve(directory, "check.exe");
-    writeFileSync(
-        source,
+    runGeneratedProgram(
+        tools,
+        "audio-source-lifecycle-check",
         `
         #define main generated_main
         ${result.cpp}
@@ -87,23 +84,7 @@ test("stored audio APIs preserve routing, optional node calls, and source dispos
             assert(nodes == 6 && closed && disconnected == expectedDisconnects && edges == expectedEdges);
         }
     `,
-    );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        source,
-        `/Fo${directory}/`,
-        `/Fe${executable}`,
-    ]);
-    assert.equal(
-        execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
-        "",
+        { timeoutMs: 10000, expectedOutput: "" },
     );
 });
 
@@ -176,15 +157,7 @@ test("imported audio callbacks declare every shared disposal helper in their sou
             stubs,
         ],
         executable,
-        [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
-            `/I${resolve("native/include")}`,
-        ],
+        [],
     );
     assert.equal(
         execFileSync(executable, { encoding: "utf8", timeout: 10000 }),

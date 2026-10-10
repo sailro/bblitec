@@ -19,7 +19,6 @@ import { doctoredContext } from "./doctored-store.js";
 import {
     cppFunction,
     cppRecord,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -320,18 +319,6 @@ test("glTF material and extension image caches retain identities, null results a
         }`,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/bigobj",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        "/external:W0",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         file,

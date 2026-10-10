@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -12,7 +11,7 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 interface Vector {
@@ -121,10 +120,9 @@ test(
             .map((signature) => cppFunction(render, signature))
             .join("\n");
         const scene = new SceneLowerer(context).lowerCore().source;
-        const file = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            file,
+        runGeneratedProgram(
+            tools!,
+            "imported-node-transforms-check",
             `#include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
@@ -173,23 +171,8 @@ int main() {
         .join("\n    ")}
 }
 `,
+            { flags: ["/O2", "/I", output] },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/O2",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            "/I",
-            output,
-            file,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );
 
@@ -269,10 +252,9 @@ test(
         const scene = new SceneLowerer(context).lowerCore({
             transformNodes: true,
         }).source;
-        const file = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            file,
+        runGeneratedProgram(
+            tools!,
+            "imported-node-hierarchy-check",
             `#include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
@@ -335,22 +317,7 @@ int main() {
     assert(!engine.transform_nodes[locked.value].local_matrix.has_value());
 }
 `,
+            { flags: ["/O2", "/I", output] },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/O2",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            "/I",
-            output,
-            file,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );

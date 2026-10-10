@@ -4,7 +4,6 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -19,13 +18,6 @@ test("native runtime preserves vector conversions, scene identity, callback trac
     mkdirSync(output, { recursive: true });
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        `/I${resolve("native/include")}`,
-        `/I${join(nativeFixtureVcpkgRoot, "include")}`,
         resolve("test/fixtures/runtime-value-contracts-check.cpp"),
         `/Fe:${executable}`,
         `/Fo:${join(output, "check.obj")}`,

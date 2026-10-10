@@ -102,7 +102,7 @@ for (const [label, body] of Object.entries(mutations))
         }
         `,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

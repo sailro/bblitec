@@ -200,16 +200,7 @@ message.amount = 100;
         return;
     }
     const executable = resolve(directory, "check.exe");
-    const flags = [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
-    ];
+    const flags = ["/DBBLITE_WORKERS=1"];
     buildNativeFixture(tools, sources, executable, flags);
     assert.equal(
         execFileSync(executable, {
@@ -305,14 +296,7 @@ test("stored async callbacks own suspended state and return retained promises", 
         executable = resolve(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
         cpp,
         `/Fo${directory}/`,
         `/Fe${executable}`,
@@ -474,14 +458,7 @@ worker.postMessage({ok: true, value: 7});
     }
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
         cpp,
         `/Fo${directory}/`,
         `/Fe${executable}`,
@@ -533,14 +510,7 @@ worker.postMessage({ type: "resize", width: 80 });
     }
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
         cpp,
         `/Fo${directory}/`,
         `/Fe${executable}`,

@@ -87,17 +87,9 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "csm-subscription-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
             "/DBBLITE_SHADOWS_CSM=1",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "test/fixtures/js-callback/csm-subscription-check.cpp",
         ]);
         assert.match(

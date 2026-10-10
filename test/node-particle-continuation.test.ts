@@ -158,17 +158,7 @@ test(
         writeFileSync(join(output, "expected.hpp"), expected.join("\n"));
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O2",
-            "/Gy",
-            "/I",
-            "native/include",
             "/I",
             output,
             `/Fo:${output}\\`,
@@ -176,8 +166,6 @@ test(
             join(output, "node_particles.cpp"),
             join(output, "sprite_layer.cpp"),
             "test/fixtures/node-particle-continuation-check.cpp",
-            "/link",
-            "/OPT:REF",
         ]);
         for (const sample of [0, 1])
             assert.match(

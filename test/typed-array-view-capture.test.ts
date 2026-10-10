@@ -36,19 +36,7 @@ test("escaped tuple views retain their constructed typed array and shared backin
     const source = join(directory, "check.cpp"),
         exe = join(directory, "check.exe");
     writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        source,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
+    runNativeFixtureCompiler(tools, [source, `/Fo${directory}/`, `/Fe${exe}`]);
     assert.equal(
         execFileSync(exe, {
             encoding: "utf8",

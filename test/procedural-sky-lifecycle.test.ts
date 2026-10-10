@@ -1,5 +1,3 @@
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -11,7 +9,7 @@ import { proceduralSkyGpuSource } from "../src/lowering/procedural-sky-gpu.js";
 import { lowerComputeTextureMipmaps } from "../src/lowering/compute-texture-mipmaps-lowerer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("source sky lifecycle preserves publication, revision cancellation, resource ownership and failure cleanup", (t) => {
@@ -29,10 +27,9 @@ test("source sky lifecycle preserves publication, revision cancellation, resourc
         join(directory, "bblite/upstream/procedural_sky_atmosphere.hpp"),
         atmosphere.header,
     );
-    const source = join(directory, "check.cpp"),
-        exe = join(directory, "check.exe");
-    writeFileSync(
-        source,
+    runGeneratedProgram(
+        tools,
+        "procedural-sky-lifecycle-check",
         [
             atmosphere.source,
             lowerProceduralSkyLoader(
@@ -47,25 +44,15 @@ test("source sky lifecycle preserves publication, revision cancellation, resourc
                 "utf8",
             ),
         ].join("\n"),
+        {
+            flags: [
+                "/O2",
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
+                `/I${directory}`,
+            ],
+            timeoutMs: 30000,
+            expectedOutput: "",
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/O2",
-        "/Gy",
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
-        `/I${directory}`,
-        source,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-        "/link",
-        "/OPT:REF",
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 30000 }), "");
 });

@@ -522,19 +522,10 @@ test("iOS SDL entry accepts both generated main signatures and preserves a faili
     ]) {
         writeFileSync(entry, body);
         runNativeFixtureCompiler(native, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
             `/DBBLITE_IOS_ENTRY="${entry.replaceAll("\\", "/")}"`,
             `/Fo:${directory}/`,
             `/Fe:${executable}`,
-            "/Inative/include",
-            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-            "/external:W0",
             "native/src/pal_ios_main.cpp",
             join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
         ]);
@@ -605,17 +596,7 @@ int main() {
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
-        "/I",
-        "native/include",
-        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        "/external:W0",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         fixture,
@@ -725,16 +706,8 @@ int main() {
     for (const offscreen of [0, 1]) {
         const executable = join(directory, `initial-${offscreen}.exe`);
         runNativeFixtureCompiler(native, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             `/DBBLITE_OFFSCREEN_SURFACES=${offscreen}`,
             "/DBBLITE_PHYSICS_VIEWER=1",
-            "/I",
-            "native/include",
             `/Fo:${directory}/`,
             `/Fe:${executable}`,
             source,

@@ -11,7 +11,6 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -130,15 +129,6 @@ test(
         );
         assert.ok(nativeTools);
         runNativeFixtureCompiler(nativeTools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/I",
-            "native/include",
-            "/I",
-            join(nativeFixtureVcpkgRoot, "include"),
             `/Fo:${directory}\\`,
             `/Fe:${executable}`,
             source,

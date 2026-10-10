@@ -65,7 +65,7 @@ for (const [label, expression, expectedEffects] of [
                 `int main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();` +
                 `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("void promise ownership leak");return result;}\n`,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },
@@ -154,15 +154,7 @@ test("promise constructors own escaping resolvers and races preserve settlement 
             `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("promise construction ownership leak");return result;}\n`,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        "/I",
-        "native/include",
         `/Fo:${directory}/`,
         `/Fe:${exe}`,
         cpp,

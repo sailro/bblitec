@@ -59,7 +59,7 @@ test("nested and erased async records retain concrete owners through callbacks a
             "async-erased-owners/records",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },
@@ -98,7 +98,7 @@ test("nested erased async fields retain present and absent native owners", (t) =
         ${result.cpp}
     `,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
             timeoutMs: 10000,
             expectedOutput: "",
         },

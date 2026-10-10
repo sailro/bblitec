@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
     sceneBackendSource,
@@ -59,26 +58,16 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
     }
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
         "/DBBLITE_HAS_UI=0",
         "/DBBLITE_DEVICE_RECOVERY=0",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DSDL_STATIC_LIB",
-        "/I",
-        "native/include",
         "/I",
         "native/src",
         "/I",
         directory,
         "/I",
         dawnInclude,
-        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        "/external:W0",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         "test/fixtures/main-frame-phases-check.cpp",

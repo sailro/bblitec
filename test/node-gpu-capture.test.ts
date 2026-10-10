@@ -24,13 +24,7 @@ test("node GPU receipts keep independent view uniforms and actual layout and bin
     );
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         `/I${resolve("native/src")}`,
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve("test/fixtures/node-gpu-capture-check.cpp"),
         `/Fo${resolve(directory, "check.obj")}`,

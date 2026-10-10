@@ -26,7 +26,7 @@ test("authored timer startup activates its realm before the named entry runs", (
         return;
     }
     runGeneratedProgram(tools, "timer-module-startup", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
         expectedOutput: "",
     });
@@ -89,8 +89,8 @@ for (const [name, source] of [
             return;
         }
         runGeneratedProgram(tools, `terminal-entry-${name}`, result.cpp, {
-            defines: result.manifest.features.includes("platform:workers")
-                ? ["BBLITE_WORKERS=1"]
+            flags: result.manifest.features.includes("platform:workers")
+                ? ["/DBBLITE_WORKERS=1"]
                 : [],
             timeoutMs: 10000,
         });
@@ -161,16 +161,7 @@ for (const variant of [
                 resolve(directory, path),
             ),
             executable,
-            [
-                "/nologo",
-                "/std:c++20",
-                "/EHsc",
-                "/W4",
-                "/WX",
-                "/MD",
-                "/DBBLITE_WORKERS=1",
-                `/I${resolve("native/include")}`,
-            ],
+            ["/DBBLITE_WORKERS=1"],
         );
         assert.equal(
             execFileSync(executable, {

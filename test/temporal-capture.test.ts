@@ -76,14 +76,6 @@ int main() {
         );
         const executable = join(directory, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
-            "/I",
-            "native/include",
             `/Fo:${directory}\\`,
             `/Fe:${executable}`,
             source,

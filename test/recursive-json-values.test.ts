@@ -6,7 +6,6 @@ import test from "node:test";
 import { jsonObject } from "./json.js";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -29,15 +28,6 @@ function nativeCheck(
         executable = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/I${nativeFixtureVcpkgRoot}/include`,
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         cpp,

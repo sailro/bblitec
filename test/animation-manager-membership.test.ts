@@ -6,7 +6,6 @@ import test from "node:test";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -120,25 +119,11 @@ int main(){using namespace bbl;Engine engine;Json expected;std::ifstream("cases.
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/O2",
-        "/Gy",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        resolve("native/include"),
-        "/I",
-        resolve(nativeFixtureVcpkgRoot, "include"),
         source,
         file,
-        "/link",
-        "/OPT:REF",
     ]);
     assert.equal(
         execFileSync(executable, { cwd: directory, encoding: "utf8" }),

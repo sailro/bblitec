@@ -18,13 +18,6 @@ test("native threads join, cancel, and transfer ownership through moves", (t) =>
     mkdirSync(directory, { recursive: true });
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
         `/Fo${directory}/`,
         `/Fe${executable}`,
         "test/fixtures/joining-thread-check.cpp",

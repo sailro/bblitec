@@ -681,13 +681,7 @@ int main() {
 `,
         );
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
             "/Od",
-            `/I${resolve("native/include")}`,
             source,
             `/Fe:${executable}`,
             `/Fo:${join(directory, "check.obj")}`,
@@ -764,19 +758,10 @@ test(
             );
             const executable = join(output, `gizmo-geometry-${index}.exe`);
             runNativeFixtureCompiler(nativeTools!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
                 `/Fo:${output}\\`,
                 `/Fe:${executable}`,
                 "/I",
                 output,
-                "/I",
-                "native\\include",
                 "test\\fixtures\\pinned-gizmo-geometry-check.cpp",
             ]);
             const lines = execFileSync(executable, [], {
@@ -854,17 +839,8 @@ test(
                     .source,
             );
             runNativeFixtureCompiler(nativeTools!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
                 "/c",
                 `/Fo:${output}\\`,
-                "/I",
-                "native\\include",
                 "/I",
                 "generated\\scene224\\upstream\\include",
                 source,
@@ -901,17 +877,8 @@ int main() {
         );
         const executable = join(output, "math.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native\\include",
             fixture,
         ]);
         const input = [

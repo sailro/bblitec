@@ -38,17 +38,10 @@ for (const placement of ["before", "after", "callback"] as const) {
         const cpp = join(directory, `${placement}.cpp`);
         writeFileSync(cpp, result.cpp);
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/Zs",
             "/DBBLITE_WORKERS=1",
             "/DBBLITE_OFFSCREEN_SURFACES=1",
             "/DBBLITE_HAS_UI=1",
-            "/I",
-            "native/include",
             cpp,
         ]);
     });

@@ -77,14 +77,7 @@ test("Doom USE lowers and raises lifts while manual doors retain their sector", 
         tools,
         result.manifest.sourceUnits.map(({ path }) => resolve(directory, path)),
         executable,
-        [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
-            `/I${resolve("native/include")}`,
-        ],
+        [],
     );
     assert.equal(
         execFileSync(executable, { encoding: "utf8", timeout: 10000 }),

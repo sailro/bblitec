@@ -36,7 +36,7 @@ function check(name: string, source: string, realm = false): void {
             return;
         }
         runGeneratedProgram(tools, `owned-value-storage/${name}`, result.cpp, {
-            defines: realm ? ["BBLITE_WORKERS=1"] : [],
+            flags: realm ? ["/DBBLITE_WORKERS=1"] : [],
             timeoutMs: 10000,
         });
     });

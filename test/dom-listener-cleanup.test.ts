@@ -41,17 +41,8 @@ test("deferred Window, Document and canvas listener cleanup captures the scene e
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         "/I",
         directory,
         "test/fixtures/dom-listener-cleanup-check.cpp",

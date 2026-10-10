@@ -27,7 +27,7 @@ test("stored null-only callbacks widened to void preserve finally settlement", a
     const native = optionalNativeFixtureTools(false);
     if (!native) return t.skip("Native fixture compiler unavailable.");
     runGeneratedProgram(native, "null-only-finally-completions", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
         expectedOutput: "",
     });

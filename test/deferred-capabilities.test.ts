@@ -176,7 +176,7 @@ test("optional Window receivers suppress arguments and deferred failures", () =>
         }
     `,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_HAS_UI=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
             expectedOutput: "",
             timeoutMs: 10000,
         },
@@ -226,7 +226,7 @@ test("deferred promise methods reject on the realm reaction queue", () => {
         }
         }
     `,
-        { defines: ["BBLITE_WORKERS=1"], expectedOutput: "", timeoutMs: 10000 },
+        { flags: ["/DBBLITE_WORKERS=1"], expectedOutput: "", timeoutMs: 10000 },
     );
 });
 
@@ -395,7 +395,7 @@ test("worker application manifests join all deferred realm sites", () => {
         "deferred-capabilities/worker-sites",
         result.cpp,
         {
-            defines: ["BBLITE_WORKERS=1"],
+            flags: ["/DBBLITE_WORKERS=1"],
             expectedOutput: "",
             timeoutMs: 10000,
         },

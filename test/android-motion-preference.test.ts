@@ -121,18 +121,11 @@ test("Android motion JNI polls live state, cleans references and refuses failed 
     );
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/D__ANDROID__=1",
         `/I${directory}`,
         `/I${resolve("native/src")}`,
         `/external:I${join(javaHome, "include")}`,
         `/external:I${join(javaHome, "include/win32")}`,
-        "/external:W0",
         "test/fixtures/android-motion-preference-check.cpp",
         `/Fo${directory}/`,
         `/Fe${executable}`,

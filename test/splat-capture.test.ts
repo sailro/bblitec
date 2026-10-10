@@ -77,15 +77,7 @@ int main(int argc, char** argv) {
 `,
             );
             runNativeFixtureCompiler(nativeTools!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/EHsc",
-                "/MD",
                 `/DBBLITE_SPLAT_SH=${shDegree}`,
-                "/I",
-                "native/include",
                 "/I",
                 output,
                 `/Fo:${output}\\`,
@@ -212,14 +204,6 @@ int main(int argc, char** argv) {
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
-            "/I",
-            "native/include",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             source,

@@ -88,24 +88,14 @@ test("Window media queries retain typed nullable values, live matches and change
     }
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/O2",
-        "/Gy",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
         "/DBBLITE_HAS_UI=1",
-        `/I${resolve("native/include")}`,
         "test/fixtures/media-query-check.cpp",
         "native/src/pal_media_query.cpp",
         `/Fo${directory}/`,
         `/Fe${executable}`,
-        "/link",
-        "/OPT:REF",
     ]);
     assert.equal(
         execFileSync(executable, { encoding: "utf8", timeout: 15000 }),

@@ -129,14 +129,7 @@ function buildAndRun(directory: string, cpp: string): void {
     const executable = resolve(directory, "check.exe");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
         source,
         `/Fo${directory}/`,
         `/Fe${executable}`,
@@ -218,13 +211,6 @@ test("buffer-view clone codecs share received buffers and validate views", (t) =
     mkdirSync(directory, { recursive: true });
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
-        `/I${resolve("native/include")}`,
         resolve("test/fixtures/worker-clone-types-check.cpp"),
         `/Fo${directory}/`,
         `/Fe${executable}`,

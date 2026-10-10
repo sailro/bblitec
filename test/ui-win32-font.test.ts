@@ -26,16 +26,8 @@ test("Windows UI fonts preserve OpenType shaping, browser coverage, accumulated 
     mkdirSync(output, { recursive: true });
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         "/I",
         "native/src",
         "/I",

@@ -64,14 +64,6 @@ test("native frame clocks, continuation drains and capture budgets preserve fram
     );
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
         "/I",
         directory,
         `/Fo:${directory}/`,

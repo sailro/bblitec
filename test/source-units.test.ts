@@ -10,7 +10,6 @@ import {
 } from "../src/compiler/source-units.js";
 import {
     buildNativeFixture,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
 } from "./native-fixture.js";
 
@@ -92,14 +91,7 @@ test("source units link shared types, tables and calls across equal module basen
         tools,
         units.map(({ path }) => resolve(directory, path)),
         executable,
-        [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
-            `/I${resolve("native/include")}`,
-        ],
+        [],
     );
     assert.equal(
         execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
@@ -236,15 +228,7 @@ test("repeated factories share callback bodies while native loops retain indepen
         tools,
         result.manifest.sourceUnits.map(({ path }) => resolve(directory, path)),
         executable,
-        [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
-            `/I${resolve("native/include")}`,
-            `/I${resolve(nativeFixtureVcpkgRoot, "include")}`,
-        ],
+        [],
     );
     assert.equal(
         execFileSync(executable, { encoding: "utf8", timeout: 10000 }),

@@ -20,19 +20,10 @@ test("parallel physics preserves bounded contacts, worker ownership, sums and fa
     mkdirSync(directory, { recursive: true });
     const executable = join(directory, "check.exe");
     const arguments_ = [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/O2",
         "/I",
         "native/src",
-        "/I",
-        "native/include",
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`,
-        "/external:W0",
         `/Fo:${directory}\\`,
         `/Fe:${executable}`,
         "test/fixtures/physics-multithreading-check.cpp",

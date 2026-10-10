@@ -159,20 +159,10 @@ ${checks.join("\n")}
 `,
         );
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/Gy",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             source,
-            "/link",
-            "/OPT:REF",
         ]);
         execFileSync(executable, { stdio: "pipe" });
     },

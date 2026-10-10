@@ -1,13 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
-    runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 /**
@@ -294,25 +290,11 @@ test(
             result.cpp,
             /const auto& (\w+) = [^;\n]+;\s*\[\[maybe_unused\]\] auto \w+ = \1\.lifetime_owner\(\);/,
         );
-        const output = resolve("artifacts/class-parameter-properties");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(
+            nativeTools!,
+            "class-parameter-properties",
+            result.cpp,
+        );
     },
 );
 
@@ -358,25 +340,7 @@ test(
         }
         if (hits !== 5 || active.reads !== 4 || inactive.reads !== 4) throw new Error("container getter evaluation");
     `);
-        const output = resolve("artifacts/optional-class-getters");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp");
-        const executable = join(output, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(nativeTools!, "optional-class-getters", result.cpp);
     },
 );
 
@@ -687,25 +651,7 @@ test(
                 alarms.splice(0, 2);
                 first();
     `);
-        const output = resolve("artifacts/stored-class-callbacks");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(nativeTools!, "stored-class-callbacks", result.cpp);
     },
 );
 

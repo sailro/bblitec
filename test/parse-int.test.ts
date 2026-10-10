@@ -68,15 +68,8 @@ test(
             `#include <bblite/js_data.hpp>\n#include <cassert>\n#include <cmath>\nint main() {${statements}}\n`,
         );
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             source,
         ]);
         execFileSync(executable, { env: tools!.environment });

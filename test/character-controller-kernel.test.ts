@@ -320,14 +320,7 @@ ${runs.join("\n")}
         );
         const executable = join(directory, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/O2",
-            "/I",
-            "native/include",
             `/Fo:${directory}\\`,
             `/Fe:${executable}`,
             join(directory, "check.cpp"),

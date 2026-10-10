@@ -647,18 +647,8 @@ ${cases.join("\n")}
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            "/fp:strict",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native\\include",
             fixture,
         ]);
         assert.match(
@@ -776,21 +766,11 @@ ${matrices
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            "/fp:strict",
             "/DBBLITE_SHADOWS_CSM=1",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             output,
-            "/I",
-            "native\\include",
             fixture,
         ]);
         assert.match(
@@ -819,21 +799,11 @@ int main() {
 `,
         );
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            "/fp:strict",
             "/DBBLITE_SHADOWS_CSM=0",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
             output,
-            "/I",
-            "native\\include",
             fixture,
         ]);
         execFileSync(executable, { stdio: "pipe" });

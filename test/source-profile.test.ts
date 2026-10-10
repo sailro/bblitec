@@ -18,17 +18,9 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "source-profile-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "test/fixtures/source-profile-check.cpp",
             "native/src/pal_source_profile.cpp",
         ]);

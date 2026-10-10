@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("closed string helpers retain literal results through stylesheet installation", () => {
@@ -278,25 +277,7 @@ test("static string specialization evaluates argument effects once and preserves
         }
         main();
     `);
-    const output = resolve("artifacts/static-string-helpers");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp"),
-        executable = join(output, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        source,
-    ]);
-    execFileSync(executable, { stdio: "pipe" });
+    runGeneratedProgram(tools, "static-string-helpers", result.cpp);
 });
 
 test("pure replacement arguments do not copy a stable named string receiver", () => {

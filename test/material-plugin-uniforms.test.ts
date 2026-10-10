@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
@@ -14,7 +11,7 @@ import { inlineCpp } from "./generated-cpp.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("PBR plugin writers use live closures, byte offsets and retained UBO views", async (t) => {
@@ -71,12 +68,9 @@ test("PBR plugin writers use live closures, byte offsets and retained UBO views"
     const start = header.indexOf("struct PbrTestMaterialUniforms"),
         end = header.indexOf("inline void write_PbrTest_material", start);
     assert.ok(start >= 0 && end > start);
-    const directory = resolve("artifacts/material-plugin-uniforms-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "material-plugin-uniforms-check",
         `#include <bblite/pal_material_plugin.hpp>\n#include <cassert>\nnamespace bbl::upstream {\n${header.slice(start, end)}\n${cppFunction(header, "inline void write_PbrTest_material(")}\n${cppFunction(header, "void write_pbr_variant_material(")}\n}
 int main(){
  bbl::MaterialRecord material;material.alpha=0.75f;
@@ -93,18 +87,6 @@ int main(){
  bbl::upstream::write_pbr_variant_material(0,material,&block,sizeof(block));assert(block.pluginScalar==7);
 }
 `,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

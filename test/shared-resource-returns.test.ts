@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -12,7 +11,7 @@ import {
 } from "../src/lowering/resource-profiles.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const source = `
@@ -137,10 +136,9 @@ test(
         namespace bbl::upstream { void begin_scene_mesh_profile(Engine&, std::uint32_t); }
     `,
         );
-        const file = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(
-            file,
+        runGeneratedProgram(
+            tools!,
+            "shared-resource-returns-check",
             `
         #define main generated_main
         #include "program.hpp"
@@ -169,23 +167,7 @@ ${meshCompositionRowsCpp({ sceneRows: [0, 1, 2], staticRows: [1], rowCount: 3 })
         }
         int main() { assert(generated_main() == 0); assert(constructions == 7); }
     `,
+            { flags: ["/I", output] },
         );
-        runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            output,
-            "/I",
-            "native\\include",
-            file,
-        ]);
-        execFileSync(executable, { encoding: "utf8" });
     },
 );

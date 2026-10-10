@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerGltfOrmComposition } from "../src/lowering/gltf/orm-composition.js";
@@ -12,7 +9,7 @@ import {
 import { doctoredContext } from "./doctored-store.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const module = "src/loader-gltf/gltf-ext-orm.ts";
@@ -109,12 +106,9 @@ test("ORM pixel output follows the pinned body and changed source stores", async
         ) as (mr: Bitmap, occ: Bitmap) => Promise<Bitmap>;
         expected.push(await execute(mr, occ));
     }
-    const output = resolve("artifacts/gltf-orm-composition");
-    mkdirSync(output, { recursive: true });
-    const file = join(output, "check.cpp"),
-        executable = join(output, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "gltf-orm-composition",
         `#include <bblite/pal_image_canvas.hpp>
         #include <cassert>
         namespace bbl {
@@ -148,23 +142,8 @@ test("ORM pixel output follows the pinned body and changed source stores", async
             refuses([&] { pal::ImageCanvas invalid(0, 2); });
         }
     `,
+        { flags: ["/O2"], expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/O2",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        file,
-    ]);
-    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
 });
 
 test("unrepresented ORM canvas operations refuse at the pinned source", () => {

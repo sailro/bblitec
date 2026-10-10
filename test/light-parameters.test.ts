@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -13,7 +12,7 @@ import { lightUniformsBlock } from "../src/pinned-pbr-variant-cpp.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("light parameter setters validate, preserve no-op writes and update the source light", (t) => {
@@ -22,12 +21,9 @@ test("light parameter setters validate, preserve no-op writes and update the sou
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/light-parameters-check");
-    mkdirSync(directory, { recursive: true });
-    const source = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        source,
+    runGeneratedProgram(
+        tools,
+        "light-parameters-check",
         lightParameterHeader(new LoweringContext()) +
             `
 #include <cassert>
@@ -47,20 +43,8 @@ int main(){
  }
 }
 `,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        source,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
     const result = compileSource(
         `import {createEngine,createDirectionalLight,setLightDiffuseColor,setLightIntensity} from '@babylonjs/lite';const engine=await createEngine(document.querySelector('canvas')!);const light=createDirectionalLight([0,-1,0]);setLightIntensity(light,0.5);setLightDiffuseColor(light,[0.25,0.5,0.75]);`,
     );
@@ -142,10 +126,9 @@ test("light setters and source UBO retain doubles until the pinned Float32 store
         resolve(directory, "factory.cpp"),
         lowerer.lowerDirectionalFactory().source,
     );
-    const file = resolve(directory, "check.cpp"),
-        executable = resolve(directory, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "light-parameters-width",
         lightParameterHeader(context) +
             `
 #include <bblite/upstream/light_matrix.hpp>
@@ -168,24 +151,14 @@ int main(){
      .join("\n")}
 }
 `,
-    );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        `/I${directory}`,
-        `/Fo${directory}/`,
-        `/Fe${executable}`,
-        file,
-        resolve(directory, "matrix.cpp"),
-        resolve(directory, "factory.cpp"),
-    ]);
-    assert.equal(
-        execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
-        "",
+        {
+            flags: [
+                `/I${directory}`,
+                resolve(directory, "matrix.cpp"),
+                resolve(directory, "factory.cpp"),
+            ],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
 });

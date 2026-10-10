@@ -145,16 +145,8 @@ test(
     `,
             );
             runNativeFixtureCompiler(tools!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
                 `/Fo:${directory}\\`,
                 `/Fe:${executable}`,
-                "/I",
-                "native/include",
                 path,
             ]);
             execFileSync(executable, { stdio: "pipe" });

@@ -47,10 +47,10 @@ test("Window object URLs retain the document owner across engine creation and de
         readFileSync("test/fixtures/js-file/browser-file-realm.cpp", "utf8") +
             result.cpp,
         {
-            defines: [
-                "BBLITE_WORKERS=1",
-                "BBLITE_HAS_UI=1",
-                "BBLITE_HAS_BROWSER_FILE=1",
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_HAS_UI=1",
+                "/DBBLITE_HAS_BROWSER_FILE=1",
             ],
             timeoutMs: 10000,
             expectedOutput: "",

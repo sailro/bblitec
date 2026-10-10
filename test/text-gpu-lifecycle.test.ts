@@ -600,13 +600,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     writeFileSync(resolve(directory, "actions.hpp"), actions.join("\n"));
     const exe = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         "/DBBLITE_HAS_TEXT=1",
-        `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve("test/fixtures/text-gpu-lifecycle-check.cpp"),
         `/Fo${resolve(directory, "check.obj")}`,

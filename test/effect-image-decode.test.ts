@@ -66,13 +66,6 @@ test("standalone effect builds decode RGBA images and refuse unavailable or malf
     for (const decoder of [0, 1]) {
         const executable = join(directory, `decoder-${decoder}.exe`);
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O1",
             "/GL",
             "/DBBLITE_HAS_EFFECT_RENDERER=1",
@@ -80,11 +73,7 @@ test("standalone effect builds decode RGBA images and refuse unavailable or malf
             "/DBBLITE_HAS_SPRITE_RENDERER=0",
             `/DBBLITE_HAS_IMAGE_DECODER=${decoder}`,
             "/I",
-            "native/include",
-            "/I",
             "native/src",
-            "/I",
-            join(nativeFixtureVcpkgRoot, "include"),
             "/I",
             directory,
             `/Fo:${directory}/`,

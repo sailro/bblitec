@@ -107,7 +107,7 @@ test("idle aliases preserve owned callbacks and throw after argument evaluation"
         tools,
         "platform-boundaries/idle",
         result.cpp + runtime,
-        { defines: ["BBLITE_WORKERS=1"], expectedOutput: "" },
+        { flags: ["/DBBLITE_WORKERS=1"], expectedOutput: "" },
     );
 });
 
@@ -232,7 +232,7 @@ void disable_device_recovery(const std::shared_ptr<DeviceRecoveryRegistration>&)
 }
 `,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
             expectedOutput: "",
         },
     );

@@ -41,7 +41,7 @@ test("stored Promise recovery callbacks retain concrete undefined completions", 
             "promise-completion-provenance/concrete",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },
@@ -183,7 +183,7 @@ test("forward callback slots retain concrete completion proofs and captures", as
             "promise-completion-provenance/forward",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

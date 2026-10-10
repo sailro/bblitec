@@ -12,7 +12,6 @@ import {
     transpileCommonJs,
 } from "../src/typescript-transpile.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -102,20 +101,9 @@ int main(){
 }`,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_SHADOWS_CSM=1",
         `/Fo:${directory}/`,
         `/Fe:${exe}`,
-        "/I",
-        resolve("native/include"),
-        "/I",
-        resolve(nativeFixtureVcpkgRoot, "include"),
         cpp,
     ]);
     assert.equal(execFileSync(exe, { cwd: directory, encoding: "utf8" }), "");
@@ -216,22 +204,7 @@ int main(){
  nlohmann::json expected;std::ifstream("expected.json")>>expected;assert(actual==expected);
 }`,
     );
-    runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        `/Fo:${directory}/`,
-        `/Fe:${exe}`,
-        "/I",
-        resolve("native/include"),
-        "/I",
-        resolve(nativeFixtureVcpkgRoot, "include"),
-        cpp,
-    ]);
+    runNativeFixtureCompiler(native, [`/Fo:${directory}/`, `/Fe:${exe}`, cpp]);
     assert.equal(execFileSync(exe, { cwd: directory, encoding: "utf8" }), "");
 });
 

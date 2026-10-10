@@ -1,13 +1,9 @@
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { computeTaskDispatchRecordingCpp } from "../src/lowering/compute-task-recording.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("compute task recording preserves dispatch order, binding caches and dynamic offsets", (t) => {
@@ -16,12 +12,9 @@ test("compute task recording preserves dispatch order, binding caches and dynami
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/compute-task-recording-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "compute-task-recording-check",
         `#include <bblite/js_data.hpp>
 #include <cassert>
 #include <functional>
@@ -84,18 +77,6 @@ int main(){
     assert(bbl::compute_offsets_equal(std::optional<Offsets>{Offsets{-0.0}},Offsets{0}));
 }
 `,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

@@ -31,8 +31,8 @@ function check(name: string, source: string): void {
             `object-storage-expansion/${name}`,
             result.cpp,
             {
-                defines: result.manifest.features.includes("platform:workers")
-                    ? ["BBLITE_WORKERS=1"]
+                flags: result.manifest.features.includes("platform:workers")
+                    ? ["/DBBLITE_WORKERS=1"]
                     : [],
                 timeoutMs: 10_000,
             },

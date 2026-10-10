@@ -198,13 +198,7 @@ int main() {
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         "/Od",
-        `/I${resolve("native/include")}`,
         source,
         `/Fe:${executable}`,
         `/Fo:${resolve(directory, "check.obj")}`,

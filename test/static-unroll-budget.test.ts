@@ -7,6 +7,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 // The nest-aware unroll budget (`MAX_STATIC_UNROLL_PRODUCT`) and the
@@ -314,14 +315,6 @@ test(
             );
             const executable = join(output, "check.exe");
             runNativeFixtureCompiler(nativeTools!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/I",
-                "native/include",
                 `/Fo:${output}\\`,
                 `/Fe:${executable}`,
                 join(output, "check.cpp"),
@@ -335,12 +328,9 @@ test(
     "native numeric nests preserve all 1024 uniform and 512 indexed values in order",
     { skip: !nativeTools },
     () => {
-        const output = resolve("artifacts/static-unroll-data-check");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp");
-        const executable = join(output, "check.exe");
-        writeFileSync(
-            source,
+        runGeneratedProgram(
+            nativeTools!,
+            "static-unroll-data-check",
             `
         #define main uniform_nest
         ${compileSource(uniformNest).cpp}
@@ -351,25 +341,7 @@ test(
         namespace bbl { Engine create_engine(EngineOptions options) { Engine engine; engine.options = options; return engine; } }
         int main() { return uniform_nest() || indexed_nest(); }
     `,
+            { flags: ["/O2"] },
         );
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            "/O2",
-            "/Gy",
-            "/I",
-            "native/include",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            source,
-            "/link",
-            "/OPT:REF",
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
     },
 );

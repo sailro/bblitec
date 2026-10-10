@@ -1,0 +1,54 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "The harness reads bblite_core's C++ standard and its MSVC and clang-cl options from native/CMakeLists.txt instead of keeping two hand-written copies of them.",
+      "applied": true
+    },
+    {
+      "summary": "/nologo belongs to the runner, not the product options; a link-only command passes through unchanged.",
+      "applied": true
+    },
+    {
+      "summary": "The guard rejects everything the harness owns: warning levels and per-warning switches (/w, /wd, -W, /clang:-W), /Zc, /fp, /utf-8 and the charsets, /external:W and :env, and the product include folders.",
+      "applied": true
+    },
+    {
+      "summary": "A command compiles when it names any C or C++ source spelling (.c, .cxx, /Tp, /Tc); the guard and the macro loop read only the arguments before /link.",
+      "applied": true
+    },
+    {
+      "summary": "Restated /external:W0, the default /fp:precise, and the /fp:strict and /utf-8 the product does not build with are removed, so fixtures prove the product's float model and charset.",
+      "applied": true
+    },
+    {
+      "summary": "The harness owns native/include and the dependency headers, searched after a fixture's own folders as CMake orders interface includes; 548 hand-written spellings are removed.",
+      "applied": true
+    },
+    {
+      "summary": "Restated linker and compiler defaults are removed: /Gy under /O2 and /OPT:REF without /DEBUG.",
+      "applied": true
+    },
+    {
+      "summary": "96 hand-built generated-program checks (check.cpp in an artifacts folder, one compile, one run) call runGeneratedProgram, whose single flags option replaces defines and includeDirectories; checks that run in their own folder, trim the output or read files afterwards stay explicit.",
+      "applied": true
+    },
+    {
+      "summary": "The RmlUi fixtures compile pal_system_fonts.cpp and RmlUi_Platform_SDL.cpp, which read no fixture macro, under one fixed command each, so every fixture after the first restores those objects from the cache instead of recompiling them.",
+      "applied": true
+    },
+    {
+      "summary": "The development guide points at the CMake source instead of copying the flag list, and the paragraph is reflowed.",
+      "applied": true
+    },
+    {
+      "summary": "A unit test checks the derived options, the include order, link-only pass-through and the guard without a compiler, so a restatement is caught on every machine.",
+      "applied": true
+    }
+  ]
+}

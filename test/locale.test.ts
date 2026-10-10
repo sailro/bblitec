@@ -170,16 +170,8 @@ test("native Unicode normalization and collation match JavaScript", (t) => {
         executable = join(directory, "check.exe");
     writeFileSync(source, result.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         source,
         "native/src/pal_locale.cpp",
         "icu.lib",
@@ -302,17 +294,8 @@ test("native number formatting matches JavaScript", (t) => {
         executable = join(directory, "check.exe");
     writeFileSync(source, result.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/utf-8",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         source,
         "native/src/pal_locale.cpp",
         "icu.lib",
@@ -420,17 +403,8 @@ test("native locale case mapping matches JavaScript", (t) => {
         executable = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/utf-8",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         cpp,
         "native/src/pal_locale.cpp",
         "icu.lib",
@@ -457,17 +431,8 @@ function runWithLocale(
         executable = join(directory, "check.exe");
     writeFileSync(file, result.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/utf-8",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         file,
         "native/src/pal_locale.cpp",
         "icu.lib",
@@ -729,16 +694,8 @@ test("native local-time Date getters match JavaScript in the host zone", (t) => 
         executable = join(directory, "check.exe");
     writeFileSync(file, result.cpp);
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         file,
         "native/src/pal_locale.cpp",
         "icu.lib",

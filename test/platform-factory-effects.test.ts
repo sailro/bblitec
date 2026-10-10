@@ -53,7 +53,7 @@ test("factories with void methods retain native lifecycle effects", (t) => {
         return;
     }
     runGeneratedProgram(tools, "platform-factory-effects", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
     });
 });

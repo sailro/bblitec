@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
@@ -44,25 +41,11 @@ test(
             alias.ceilHeight !== 130 || alias.tag !== 1 || !movers.dirty)
             throw new Error("narrowed optional records must retain caller identity");
     `);
-        const directory = resolve("artifacts/shared-method-optional-alias");
-        mkdirSync(directory, { recursive: true });
-        const source = join(directory, "check.cpp");
-        const executable = join(directory, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${directory}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(
+            nativeTools!,
+            "shared-method-optional-alias",
+            result.cpp,
+        );
     },
 );
 
@@ -132,24 +115,6 @@ test(
             bodies.length > 0 && bodies.length <= 4,
             "the method body must be shared across repeated calls",
         );
-        const directory = resolve("artifacts/shared-data-methods");
-        mkdirSync(directory, { recursive: true });
-        const source = join(directory, "check.cpp");
-        const executable = join(directory, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${directory}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(nativeTools!, "shared-data-methods", result.cpp);
     },
 );

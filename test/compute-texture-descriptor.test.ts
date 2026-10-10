@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { computeTextureDescriptorCpp } from "../src/lowering/compute-texture-descriptor.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 interface Options {
@@ -124,30 +121,15 @@ test("compute texture extent and mip arithmetic match pinned allocation", async 
         );
         pin.disposeComputeStorageTexture(resource);
     }
-    const directory = resolve("artifacts/compute-texture-descriptor-check");
-    mkdirSync(directory, { recursive: true });
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "compute-texture-descriptor-check",
         `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <cassert>
 #include <limits>
 namespace bbl::upstream { ${computeTextureDescriptorCpp(new LoweringContext())} }
 int main() {${checks.join("\n")}}`,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

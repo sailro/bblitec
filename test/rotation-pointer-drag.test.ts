@@ -60,17 +60,8 @@ int main() {
         );
         const executable = join(output, "rotation.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             source,
         ]);
         const native = execFileSync(executable, { encoding: "utf8" })

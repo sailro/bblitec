@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -47,21 +46,10 @@ test("mixed primitive absence retains null and undefined through fields, loops a
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         "/I",
-        "native/include",
-        "/I",
         directory,
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
         "test/fixtures/mixed-absence-check.cpp",
     ]);
     assert.equal(

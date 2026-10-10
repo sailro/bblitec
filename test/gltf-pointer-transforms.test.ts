@@ -23,16 +23,8 @@ function runFixture(name: string, source: string): void {
     const executable = join(output, "check.exe");
     writeFileSync(fixture, source);
     runNativeFixtureCompiler(tools!, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         fixture,
     ]);
     assert.ok(

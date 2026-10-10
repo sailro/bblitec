@@ -330,12 +330,15 @@ Each native macro has one owner and is defined, 0 or 1, wherever it is tested: C
 generation writes each feature-keyed macro to its own `bblite/features/<name>.hpp` (`src/feature-macros.ts`),
 which every file testing it includes, and its composition decisions to `render_capabilities.hpp`. Guards are
 plain `#if X`; an undefined name in a project unit's `#if` is a compile error (`-Wundef`, MSVC `/we4668` with
-SDK and dependency headers external). Native test fixtures (`test/native-fixture.ts`) build the same way:
-their `/D` feature macros become those headers, and `/we4668` applies. A successful fixture build is
-reused by later runs (`artifacts/native-fixture-cache/`, unused entries pruned after 30 days) while the
-compiler, `INCLUDE`/`LIB`, its arguments and the bytes of its sources, objects, libraries and every header
-`/showIncludes` reported are unchanged. Failed builds always compile; `BBLITE_FIXTURE_CACHE=0` compiles
-every fixture.
+SDK and dependency headers external). Sources, generated ones included, are UTF-8 and strings are stored as
+UTF-8: clang does both by default, MSVC with `/utf-8`. Native test fixtures (`test/native-fixture.ts`) build
+the same way: the harness reads `bblite_core`'s standard and options from `native/CMakeLists.txt`, adds its
+include folder and the dependency headers after the fixture's own, and refuses a fixture that restates or
+overrides them, so a fixture names only its sources, outputs, own folders, macros and optimization. Its `/D`
+feature macros become those headers. A successful fixture build is reused by later runs
+(`artifacts/native-fixture-cache/`, unused entries pruned after 30 days) while the compiler, `INCLUDE`/`LIB`,
+its arguments and the bytes of its sources, objects, libraries and every header `/showIncludes` reported are
+unchanged. Failed builds always compile; `BBLITE_FIXTURE_CACHE=0` compiles every fixture.
 
 Development shares `artifacts/vcpkg-installed/development-full-<key>`, keyed by `native/vcpkg.json`,
 its configuration and the overlay ports; `BBLITE_VCPKG_INSTALLED_ROOT` relocates the root. Each

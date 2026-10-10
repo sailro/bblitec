@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -17,7 +16,7 @@ import {
 import { doctoredContext } from "./doctored-store.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 test("glTF texture cache follows source keying, image identity and upload retry", (t) => {
@@ -131,10 +130,9 @@ test("glTF texture cache follows source keying, image identity and upload retry"
             }
         }`;
     });
-    const file = join(directory, "check.cpp"),
-        executable = join(directory, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "gltf-texture-cache",
         `#include <bblite/js_data.hpp>
         using GltfMaterialImage = std::shared_ptr<int>;
         struct GltfMaterialTexture {
@@ -147,21 +145,6 @@ test("glTF texture cache follows source keying, image identity and upload retry"
         int main() { variant0::check(); variant1::check(); variant2::check(); }
     `,
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        file,
-    ]);
-    execFileSync(executable, { stdio: "pipe" });
 });
 
 test("sampled wrappers and extension caches follow source branching, keys and upload retry", (t) => {
@@ -377,10 +360,9 @@ test("sampled wrappers and extension caches follow source branching, keys and up
             }
         }`;
     });
-    const file = join(directory, "check.cpp"),
-        executable = join(directory, "check.exe");
-    writeFileSync(
-        file,
+    runGeneratedProgram(
+        tools,
+        "gltf-texture-wrappers",
         `#include <bblite/js_data.hpp>
         #include <functional>
         namespace ts { struct JsonValue { int index; }; }
@@ -398,19 +380,4 @@ test("sampled wrappers and extension caches follow source branching, keys and up
         int main() { ${contexts.map((_context, index) => `variant${index}::check();`).join(" ")} }
     `,
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        file,
-    ]);
-    execFileSync(executable, { stdio: "pipe" });
 });

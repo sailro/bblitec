@@ -81,13 +81,6 @@ test("compiled helper and alias operations address the scene's original engine",
     const executable = resolve(directory, "check.exe");
     writeFileSync(generated, compileSource(source).cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
-        `/I${resolve("native/include")}`,
         generated,
         resolve("test/fixtures/engine-alias-check.cpp"),
         `/Fo${directory}/`,
@@ -161,15 +154,8 @@ int main() {
 `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
         fixture,
         `/Fo${directory}/`,
         `/Fe${executable}`,

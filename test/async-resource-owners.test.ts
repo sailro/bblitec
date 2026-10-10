@@ -32,7 +32,7 @@ test("async results retain callable identity and independent captured state", as
     const tools = optionalNativeFixtureTools(false);
     if (!tools) return t.skip("Native fixture compiler unavailable.");
     runGeneratedProgram(tools, "async-resource-owners/callable", cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
         expectedOutput: "",
     });
@@ -71,7 +71,7 @@ test("async callable views preserve properties, call identity and nested erased 
     const tools = optionalNativeFixtureTools(false);
     if (!tools) return t.skip("Native fixture compiler unavailable.");
     runGeneratedProgram(tools, "async-resource-owners/callable-views", cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
         timeoutMs: 10000,
         expectedOutput: "",
     });
@@ -219,7 +219,7 @@ for (const [label, prepare, select] of [
                 }
             `,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

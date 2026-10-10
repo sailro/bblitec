@@ -7,7 +7,6 @@ import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-document.js";
 import { recordAt } from "../src/compiler/record-access.js";
 import {
     cppFunction,
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -123,19 +122,9 @@ int main() {
 `,
         );
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/O2",
-            "/fp:precise",
             `/Fo:${directory}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            "/I",
-            join(nativeFixtureVcpkgRoot, "include"),
             source,
         ]);
         assert.match(

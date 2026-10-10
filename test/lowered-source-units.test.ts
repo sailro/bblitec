@@ -83,14 +83,7 @@ int main() { assert(fixture::first() == 5785100); assert(fixture::second() == 23
             .map((path) => resolve(directory, path))
             .concat(main),
         executable,
-        [
-            "/nologo",
-            "/std:c++20",
-            "/EHsc",
-            "/W4",
-            "/WX",
-            `/I${resolve(directory, "upstream/include")}`,
-        ],
+        [`/I${resolve(directory, "upstream/include")}`],
     );
     execFileSync(executable, { timeout: 10000 });
 });

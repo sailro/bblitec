@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -9,9 +8,7 @@ import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
-    nativeFixtureVcpkgRoot,
     runGeneratedProgram,
-    runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 test("contextual maps store mesh and scene-node unions through the shared node handle", () => {
@@ -112,10 +109,9 @@ test("async record results retain object identity and independent method capture
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const cpp = resolve(directory, "check.cpp"),
-        exe = resolve(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "async-record-result-check",
         result.cpp +
             `
 namespace bbl::pal {
@@ -128,23 +124,12 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
 }
 }
 `,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_HAS_UI=1",
-        `/I${resolve("native/include")}`,
-        `/external:I${resolve(nativeFixtureVcpkgRoot, "include")}`,
-        cpp,
-        `/Fo${directory}/`,
-        `/Fe${exe}`,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });
 
 test("owned async records store opaque assets without changing synchronous record specialization", () => {
@@ -308,7 +293,7 @@ ${cppFunction(factory, "FileTexture solid_texture_file(")}
 }
 `,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_OFFSCREEN_SURFACES=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
             timeoutMs: 10000,
             expectedOutput: "",
         },

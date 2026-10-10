@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
     runGeneratedProgram,
 } from "./native-fixture.js";
 
@@ -120,25 +116,10 @@ test("callbacks retain catch bindings after the handler exits", (t) => {
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/catch-binding-callbacks");
-    mkdirSync(directory, { recursive: true });
-    const cpp = join(directory, "check.cpp"),
-        exe = join(directory, "check.exe");
-    writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${exe}`,
-        cpp,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
+    runGeneratedProgram(tools, "catch-binding-callbacks", result.cpp, {
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
 });
 
 test("AggregateError selects its iterable before later arguments rebind it", (t) => {
@@ -157,12 +138,9 @@ test("AggregateError selects its iterable before later arguments rebind it", (t)
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/aggregate-error-arguments");
-    mkdirSync(directory, { recursive: true });
-    const cpp = join(directory, "check.cpp"),
-        exe = join(directory, "check.exe");
-    writeFileSync(
-        cpp,
+    runGeneratedProgram(
+        tools,
+        "aggregate-error-arguments",
         `#define main generated_main\n${result.cpp}\n#undef main
         #include <cassert>
         int main() {
@@ -177,19 +155,6 @@ test("AggregateError selects its iterable before later arguments rebind it", (t)
             }
         }
     `,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
-        `/Fo:${directory}/`,
-        `/Fe:${exe}`,
-        cpp,
-    ]);
-    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

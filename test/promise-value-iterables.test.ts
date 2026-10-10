@@ -66,7 +66,7 @@ test("Promise combinators resolve represented values while consuming synchronous
             "promise-value-iterables/values",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },
@@ -114,7 +114,7 @@ test("Promise iterable resolution observes each yield before advancing and rejec
             "promise-value-iterables/timing",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

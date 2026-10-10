@@ -22,14 +22,7 @@ test("SDL material and geometry owners unwind partial uploads and cache publicat
     mkdirSync(output, { recursive: true });
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
         `/I${resolve("native/src")}`,
-        `/I${resolve("native/include")}`,
-        `/I${sdlInclude}`,
         resolve("test/fixtures/sdl-ownership-check.cpp"),
         `/Fe:${executable}`,
         `/Fo:${join(output, "check.obj")}`,

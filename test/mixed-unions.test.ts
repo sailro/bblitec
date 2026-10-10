@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
@@ -48,25 +45,7 @@ test(
         if (keys.size !== 2 || !keys.has(entry)) throw new Error("union key identity");
     `);
         assert.match(result.cpp, /std::variant/);
-        const output = resolve("artifacts/mixed-unions");
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp"),
-            executable = join(output, "check.exe");
-        writeFileSync(source, result.cpp);
-        runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            "/I",
-            "native/include",
-            source,
-        ]);
-        execFileSync(executable, { stdio: "pipe" });
+        runGeneratedProgram(nativeTools!, "mixed-unions", result.cpp);
     },
 );
 

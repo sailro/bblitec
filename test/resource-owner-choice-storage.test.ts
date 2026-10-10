@@ -118,7 +118,7 @@ for (const [label, prepare, select, mutate] of [
             }
             `,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

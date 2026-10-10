@@ -110,18 +110,10 @@ test(
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
             "/DBBLITE_PHYSICS_VIEWER=1",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             join(output, "check.cpp"),
             join(output, "catalog.cpp"),
             "native/src/pal_physics_debug.cpp",

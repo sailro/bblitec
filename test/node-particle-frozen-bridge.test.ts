@@ -293,17 +293,7 @@ test(
         );
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O2",
-            "/Gy",
-            "/I",
-            "native/include",
             "/I",
             output,
             `/Fo:${output}\\`,
@@ -311,8 +301,6 @@ test(
             join(output, "node_particles.cpp"),
             join(output, "sprite_layer.cpp"),
             "test/fixtures/node-particle-frozen-bridge-check.cpp",
-            "/link",
-            "/OPT:REF",
         ]);
         assert.match(
             execFileSync(executable, { encoding: "utf8" }),

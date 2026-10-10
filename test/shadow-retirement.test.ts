@@ -81,13 +81,6 @@ int main() {
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/Inative/include",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         source,

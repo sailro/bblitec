@@ -114,17 +114,9 @@ int main() {
         );
         const executable = join(directory, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
             "/O2",
-            "/fp:precise",
             `/Fo:${directory}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             cpp,
         ]);
         execFileSync(executable);

@@ -156,7 +156,7 @@ test("retained text reads preserve activation, TDZ, mutable aliases and concaten
         return;
     }
     runGeneratedProgram(tools, "retained-static-string-reads", result.cpp, {
-        defines: ["BBLITE_WORKERS=1"],
+        flags: ["/DBBLITE_WORKERS=1"],
     });
 });
 

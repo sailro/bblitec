@@ -96,7 +96,7 @@ for (const { name, source, realm } of cases) {
             `static-call-membership/${name}`,
             result.cpp,
             {
-                defines: realm ? ["BBLITE_WORKERS=1"] : [],
+                flags: realm ? ["/DBBLITE_WORKERS=1"] : [],
                 timeoutMs: 10000,
             },
         );

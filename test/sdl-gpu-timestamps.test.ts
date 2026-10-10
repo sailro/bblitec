@@ -160,18 +160,8 @@ test("SDL D3D12 timestamps retain readbacks and command reuse with validation en
     `,
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        "/I",
-        "native/include",
         "/I",
         "native/src",
-        `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        "/external:W0",
         `/Fo${directory}/`,
         `/Fe${executable}`,
         cpp,

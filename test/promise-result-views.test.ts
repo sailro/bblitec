@@ -58,7 +58,7 @@ test("Promise result views retain settlement and promise identities", async (t) 
             "promise-result-views/identity",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

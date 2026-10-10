@@ -379,10 +379,10 @@ test("retained loop operations preserve filtering, continue and captured element
         int main(){const int result=generated_main();assert(bbl::created==5&&bbl::writes==8);return result;}
         `,
         {
-            defines: [
-                "BBLITE_HAS_UI=1",
-                "BBLITE_WORKERS=1",
-                "BBLITE_OFFSCREEN_SURFACES=1",
+            flags: [
+                "/DBBLITE_HAS_UI=1",
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
             ],
         },
     );

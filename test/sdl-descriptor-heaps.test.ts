@@ -67,14 +67,7 @@ cbuffer Slot : register(b0, space2) { uint slot; };
         }
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
-            `/I${join(nativeFixtureVcpkgRoot, "include")}`,
             resolve("test/fixtures/sdl-descriptor-heaps-check.cpp"),
             `/Fe:${executable}`,
             `/Fo:${join(output, "check.obj")}`,

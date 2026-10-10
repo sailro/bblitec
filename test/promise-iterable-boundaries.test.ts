@@ -108,7 +108,7 @@ test("Promise all consumes live iterables and registers reactions between yields
             "promise-iterable-boundaries/live-iteration",
             result.cpp,
             {
-                defines: ["BBLITE_WORKERS=1"],
+                flags: ["/DBBLITE_WORKERS=1"],
                 timeoutMs: 10000,
                 expectedOutput: "",
             },

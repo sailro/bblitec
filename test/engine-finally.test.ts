@@ -93,17 +93,8 @@ test(
         writeFileSync(join(output, "finally.hpp"), compileSource(source).cpp);
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native\\include",
             "/I",
             output,
             "test/fixtures/engine-finally-check.cpp",

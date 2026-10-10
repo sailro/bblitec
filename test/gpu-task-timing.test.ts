@@ -35,17 +35,10 @@ test("GPU timing queries use runtime capability and typed task snapshots", (t) =
     const cpp = join(directory, "entry.cpp");
     writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
         "/Zs",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
         "/DBBLITE_HAS_UI=1",
-        "/I",
-        "native/include",
         cpp,
     ]);
 });
@@ -70,15 +63,8 @@ test("pinned GPU timer preserves async enable, capacity, readback, failure and d
             ),
     );
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
         cpp,
         `/Fo${directory}/`,
         `/Fe${exe}`,

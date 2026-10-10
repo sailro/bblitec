@@ -22,12 +22,6 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/MD",
             "/O2",
             "/DBBLITE_HAS_PHYSICS_FLOATING_ORIGIN=1",
             "/DBBLITE_HAS_PHYSICS_TRIGGER=1",
@@ -35,10 +29,7 @@ test(
             `/Fe:${executable}`,
             "/I",
             "native/src",
-            "/I",
-            "native/include",
             `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`,
-            "/external:W0",
             "test/fixtures/physics-body-contracts-check.cpp",
             "/link",
             `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,

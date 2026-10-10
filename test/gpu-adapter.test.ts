@@ -145,7 +145,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
 }
 `,
         {
-            defines: ["BBLITE_WORKERS=1", "BBLITE_HAS_UI=1"],
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
             timeoutMs: 10000,
             expectedOutput: "",
         },
@@ -162,7 +162,7 @@ test("adapter host absence and metadata errors settle on the owner realm", (t) =
         tools,
         "gpu-adapter/host-boundaries",
         readFileSync("test/fixtures/gpu-adapter-host-check.cpp", "utf8"),
-        { defines: ["BBLITE_WORKERS=1"], timeoutMs: 10000, expectedOutput: "" },
+        { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000, expectedOutput: "" },
     );
 });
 
@@ -255,23 +255,12 @@ for (const backend of ["sdl", "dawn"] as const)
         );
         const exe = join(directory, "check.exe");
         runNativeFixtureCompiler(tools, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
-            "/utf-8",
             "/DBBLITE_WORKERS=1",
             "/DBBLITE_HAS_UI=1",
             `/DADAPTER_${backend.toUpperCase()}=1`,
-            "/Inative/include",
             "/Inative/src",
             `/I${directory}`,
-            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
             `/external:I${join(dawnRoot, "include")}`,
-            "/external:W0",
             `/Fo:${directory}/`,
             `/Fe:${exe}`,
             "test/fixtures/gpu-adapter-device-check.cpp",

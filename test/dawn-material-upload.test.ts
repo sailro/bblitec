@@ -88,12 +88,6 @@ int main() {
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_HAS_STANDARD_UV_TRANSFORM=1",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,

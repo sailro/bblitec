@@ -319,17 +319,8 @@ int main() {
 `,
             );
             runNativeFixtureCompiler(optionalNativeFixtureTools(false)!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
                 `/Fo:${output}\\`,
                 `/Fe:${executable}`,
-                "/I",
-                "native/include",
                 fixture,
             ]);
             execFileSync(executable, { stdio: "pipe" });

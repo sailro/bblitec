@@ -258,25 +258,13 @@ test(
         writeFileSync(join(output, "program.hpp"), compiled);
         const executable = join(output, "check.exe");
         runNativeFixtureCompiler(tools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
-            "/MD",
             "/O2",
-            "/Gy",
-            "/I",
-            "native/include",
             "/I",
             output,
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             join(output, "property_animation.cpp"),
             "test/fixtures/property-animation-data-check.cpp",
-            "/link",
-            "/OPT:REF",
         ]);
         assert.match(
             execFileSync(executable, { encoding: "utf8" }),

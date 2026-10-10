@@ -101,14 +101,7 @@ test("non-void coroutine finally preserves abrupt results and rejection cleanup"
         exe = join(directory, "check.exe");
     writeFileSync(source, result.cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
         "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`,
         source,
         `/Fo${directory}/`,
         `/Fe${exe}`,

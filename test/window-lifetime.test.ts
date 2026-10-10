@@ -18,22 +18,12 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "device-owner-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
-            "/I",
-            "native/include",
             "/I",
             "native/src",
             "/I",
             "artifacts/tools/dawn/include",
-            "/I",
-            join(nativeFixtureVcpkgRoot, "include"),
             "test/fixtures/js-callback/device-owner-check.cpp",
             join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
         ]);
@@ -59,20 +49,10 @@ test(
         mkdirSync(output, { recursive: true });
         const executable = join(output, "window-run-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
-            "/nologo",
-            "/std:c++20",
-            "/W4",
-            "/WX",
-            "/permissive-",
-            "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",
-            "native/include",
-            "/I",
             "native/src",
-            "/I",
-            join(nativeFixtureVcpkgRoot, "include"),
             "test/fixtures/js-callback/window-run-check.cpp",
             join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
         ]);

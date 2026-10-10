@@ -808,17 +808,9 @@ function runCpp(
     const executable = join(output, "check.exe");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(nativeTools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
         ...definitions,
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
         source,
     ]);
     execFileSync(executable, { stdio: "pipe" });

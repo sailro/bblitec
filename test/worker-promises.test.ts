@@ -18,15 +18,8 @@ test("realm promises schedule reactions, adopt results, recover and release susp
     mkdirSync(directory, { recursive: true });
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/EHsc",
-        "/W4",
-        "/WX",
-        "/MD",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        `/I${resolve("native/include")}`,
         resolve("test/fixtures/worker-promise-check.cpp"),
         `/Fo${directory}/`,
         `/Fe${executable}`,

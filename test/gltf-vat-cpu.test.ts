@@ -14,7 +14,6 @@ import {
 } from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -397,20 +396,9 @@ ${contexts.map((_, index) => `const auto result_${index}=variant_${index}::run(c
 `,
     );
     runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/permissive-",
-        "/EHsc",
-        "/MD",
         "/O2",
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        resolve(nativeFixtureVcpkgRoot, "include"),
         file,
     ]);
     assert.equal(

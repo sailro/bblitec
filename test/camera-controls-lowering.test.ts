@@ -62,13 +62,6 @@ function compileAndRun(
     writeFileSync(check, main);
     const exe = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/MD",
-        `/I${resolve("native/include")}`,
         `/I${join(directory, "include")}`,
         `/Fo${directory}/`,
         `/Fe${exe}`,
