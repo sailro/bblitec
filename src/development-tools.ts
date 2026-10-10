@@ -62,7 +62,7 @@ export interface DevelopmentTools {
     visualStudioRoot: string | undefined;
 }
 
-function environmentValue(
+export function environmentValue(
     environment: NodeJS.ProcessEnv,
     name: string,
 ): string | undefined {

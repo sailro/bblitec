@@ -42,7 +42,7 @@
 //     digest keeps that contract, since a rewritten or missing output is a
 //     miss.
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { createRequire } from "node:module";
 import { browserIdentity } from "./bake-cache.js";
 import {
@@ -55,10 +55,9 @@ import {
 import { GeneratedTree, isCompiledShaderOutput } from "./generated-tree.js";
 import {
     contentFingerprint,
-    contentIdentity,
     hashEntries,
+    inputIdentity,
     metadataFingerprint,
-    toolIdentity,
     writeJsonRecord,
 } from "./tooling/records.js";
 import { artifactDirectory } from "./tooling/artifacts.js";
@@ -151,20 +150,6 @@ function sharedGenerationInputs(repositoryRoot: string): string | undefined {
         : undefined;
     sharedInputsByRoot.set(repositoryRoot, shared);
     return shared;
-}
-
-/**
- * One reached input's identity. A repository file is its bytes; a file
- * outside the repository is a tool (the physics-viewer specialization
- * lists the CMake and compiler executables it ran), which no checkout
- * rewrites and which is too large to read for nothing.
- */
-function inputIdentity(input: string, repositoryRoot: string): string {
-    const path = resolve(repositoryRoot, input);
-    const inside = relative(repositoryRoot, path);
-    return inside.startsWith("..") || isAbsolute(inside)
-        ? toolIdentity(path)
-        : contentIdentity(path);
 }
 
 /**

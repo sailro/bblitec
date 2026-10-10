@@ -10,10 +10,10 @@ import {
     nativeCompilationFiles,
     nativeFormatFiles,
     nativeHeaderFilter,
-    newerPrecompiledHeaderInput,
     precompiledHeaderOutputs,
     standaloneSceneCommands,
 } from "../src/code-quality.js";
+import { newerInput } from "../src/lint-cache.js";
 import { createJavaScriptFunction } from "../src/typescript-transpile.js";
 import {
     jsonArray,
@@ -443,12 +443,10 @@ test("native lint finds each precompiled header a build creates and its stale in
         { path: "old.hpp", modified: 10 },
         { path: "new.hpp", modified: 30 },
     ];
-    assert.equal(newerPrecompiledHeaderInput(20, inputs), "new.hpp");
-    assert.equal(newerPrecompiledHeaderInput(30, inputs), undefined);
+    assert.equal(newerInput(20, inputs), "new.hpp");
+    assert.equal(newerInput(30, inputs), undefined);
     assert.equal(
-        newerPrecompiledHeaderInput(30, [
-            { path: "gone.hpp", modified: undefined },
-        ]),
+        newerInput(30, [{ path: "gone.hpp", modified: undefined }]),
         "gone.hpp",
     );
 });

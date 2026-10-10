@@ -42,6 +42,10 @@ export const ARTIFACT_ROOTS = [
     { name: "capture", owner: "scene -- capture/diff" },
     { name: "check", owner: "scene -- check" },
     { name: "code-quality", owner: "npm run lint:cpp" },
+    {
+        name: "code-quality-cache",
+        owner: "npm run lint:cpp clean results (src/lint-cache.ts)",
+    },
     { name: "generation-stamps", owner: "scene -- compile" },
     { name: "ios", owner: "tools/ios.ps1" },
     { name: "ios-vcpkg", owner: "tools/ios.ps1 dependency install" },
@@ -50,6 +54,10 @@ export const ARTIFACT_ROOTS = [
     {
         name: "native-cache",
         owner: "native ccache (native/compiler-cache.cmake)",
+    },
+    {
+        name: "native-fixture-cache",
+        owner: "npm test fixture builds (test/native-fixture-cache.ts)",
     },
     { name: "neutrality", owner: "generated-tree neutrality runs" },
     { name: "parity", owner: "scene -- parity" },

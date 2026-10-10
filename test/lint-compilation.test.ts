@@ -129,12 +129,19 @@ test("lint keys refuse ambiguous or working-directory-dependent commands", () =>
         );
     const first = command("first"),
         second = command("second");
+    const groups = lintCompilationGroups(
+        [first, second, changed("-MD", "-MT"), undefined, undefined],
+        digest,
+    );
     assert.deepEqual(
-        lintCompilationGroups(
-            [first, second, changed("-MD", "-MT"), undefined, undefined],
-            digest,
-        ),
+        groups.map((group) => group.indices),
         [[0, 1], [2], [3], [4]],
+    );
+    // A group carries the key its members share; incomparable commands none.
+    assert.equal(groups[0]!.key, lintCompilationKey(first, digest));
+    assert.deepEqual(
+        groups.slice(2).map((group) => group.key),
+        [undefined, undefined],
     );
 });
 

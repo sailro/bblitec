@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import {
     canonicalCompiledBackend,
     compiledBuildDirectory,
@@ -14,23 +15,39 @@ import {
 import {
     discoverClangTool,
     discoverWindowsBuildTools,
+    environmentValue,
     clangToolsMajor,
 } from "./development-tools.js";
 import { holdDistLock } from "./dist-lock.js";
 import {
     commandArguments,
+    commandOutput,
     commandTokens,
     lintCompilationGroups,
     lintEnvironmentAllowsDedup,
     type CompilationCommand,
 } from "./lint-compilation.js";
+import {
+    currentLintInputs,
+    LintResultCache,
+    lintResultKey,
+    newerInput,
+    ninjaDependencies,
+} from "./lint-cache.js";
 import { findRepositoryRoot } from "./repository-root.js";
 import { runConcurrently } from "./run-concurrently.js";
 import { sceneAggregateSources } from "./native-scene-sources.js";
 import { scenes } from "./scene-registry.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
-import { contentDigest, writeJsonRecord } from "./tooling/records.js";
+import { artifactDirectory } from "./tooling/artifacts.js";
+import {
+    contentDigest,
+    toolIdentity,
+    writeJsonRecord,
+} from "./tooling/records.js";
+
+const execFileAsync = promisify(execFile);
 
 interface LintUnit {
     build: string;
@@ -42,6 +59,8 @@ interface LintUnit {
     fixes: string;
     exitCode: number | undefined;
     command: CompilationCommand | undefined;
+    /** The build's dependency log: object path -> the inputs it read. */
+    dependencies: ReadonlyMap<string, readonly string[]>;
 }
 
 function compilationCommands(database: unknown): CompilationCommand[] {
@@ -223,49 +242,26 @@ export function precompiledHeaderOutputs(
     for (const entry of compilationCommands(database)) {
         const directory = resolve(buildDirectory, entry.directory);
         const argumentsList = commandArguments(entry);
-        const flag = (prefix: string): string | undefined =>
-            argumentsList
-                .find(
-                    (argument) =>
-                        argument.startsWith(`/${prefix}`) ||
-                        argument.startsWith(`-${prefix}`),
-                )
-                ?.slice(prefix.length + 1);
+        const output = commandOutput({ ...entry, directory });
+        if (!output) continue;
         if (argumentsList.some((argument) => /^[/-]Yc/.test(argument))) {
-            const object = flag("Fo");
-            const header = flag("Fp");
-            if (object && header)
+            const header = argumentsList
+                .map((argument) => /^[/-]Fp:?(.+)$/.exec(argument)?.[1])
+                .find((path) => path !== undefined);
+            if (header)
                 outputs.push({
-                    target: ninjaPath(
-                        relative(buildDirectory, resolve(directory, object)),
-                    ),
+                    target: ninjaPath(relative(buildDirectory, output)),
                     header: resolve(directory, header),
                 });
             continue;
         }
-        if (argumentsList.includes("-emit-pch")) {
-            const index = argumentsList.indexOf("-o");
-            const header = index >= 0 ? argumentsList[index + 1] : flag("Fo");
-            if (header)
-                outputs.push({
-                    target: ninjaPath(
-                        relative(buildDirectory, resolve(directory, header)),
-                    ),
-                    header: resolve(directory, header),
-                });
-        }
+        if (argumentsList.includes("-emit-pch"))
+            outputs.push({
+                target: ninjaPath(relative(buildDirectory, output)),
+                header: output,
+            });
     }
     return outputs;
-}
-
-/** The first input newer than its precompiled header, if any. */
-export function newerPrecompiledHeaderInput(
-    headerModified: number,
-    inputs: readonly { path: string; modified: number | undefined }[],
-): string | undefined {
-    return inputs.find(
-        ({ modified }) => modified === undefined || modified > headerModified,
-    )?.path;
 }
 
 /**
@@ -277,11 +273,11 @@ export function newerPrecompiledHeaderInput(
 function requireCurrentPrecompiledHeaders(
     build: string,
     database: unknown,
-    ninja: string | undefined,
+    dependencies: ReadonlyMap<string, readonly string[]> | undefined,
 ): void {
     const outputs = precompiledHeaderOutputs(database, build);
     if (outputs.length === 0) return;
-    if (!ninja)
+    if (!dependencies)
         throw new Error(
             `${build} has precompiled headers but no CMAKE_MAKE_PROGRAM to read their dependencies.`,
         );
@@ -291,26 +287,17 @@ function requireCurrentPrecompiledHeaders(
             throw new Error(
                 `${build} has not built ${header}; build the scene first.`,
             );
-        const log = execFileSync(ninja, ["-C", build, "-t", "deps", target], {
-            encoding: "utf8",
-            windowsHide: true,
-        });
-        const inputs = log
-            .split(/\r?\n/)
-            .filter((line) => /^\s+\S/.test(line))
-            .map((line) => {
-                const path = resolve(build, line.trim());
-                return {
-                    path,
-                    modified: statSync(path, { throwIfNoEntry: false })
-                        ?.mtimeMs,
-                };
-            });
+        const inputs = (
+            dependencies.get(pathKey(resolve(build, target))) ?? []
+        ).map((path) => ({
+            path,
+            modified: statSync(path, { throwIfNoEntry: false })?.mtimeMs,
+        }));
         if (inputs.length === 0)
             throw new Error(
                 `Ninja records no dependencies for ${target} in ${build}; build the scene first.`,
             );
-        const newer = newerPrecompiledHeaderInput(modified, inputs);
+        const newer = newerInput(modified, inputs);
         if (newer)
             throw new Error(
                 `${header} is older than ${newer}; rebuild ${build} before linting it.`,
@@ -318,7 +305,10 @@ function requireCurrentPrecompiledHeaders(
     }
 }
 
-function clangTool(command: "clang-format" | "clang-tidy"): string {
+function clangTool(command: "clang-format" | "clang-tidy"): {
+    path: string;
+    version: string;
+} {
     const tool = discoverClangTool(command);
     const override = command === "clang-format" ? "CLANG_FORMAT" : "CLANG_TIDY";
     if (!tool) {
@@ -335,7 +325,7 @@ function clangTool(command: "clang-format" | "clang-tidy"): string {
             `${command} requires LLVM ${clangToolsMajor} for reproducible checks; set ${override}. Found: ${version.trim()}`,
         );
     }
-    return tool;
+    return { path: tool, version: version.trim() };
 }
 
 function trackedNativeFiles(root: string): string[] {
@@ -384,7 +374,7 @@ function formatCommand(args: readonly string[]): void {
         throw new Error(`Not a maintained native source: ${selected}.`);
     }
     holdDistLock("code-quality format");
-    const tool = clangTool("clang-format");
+    const tool = clangTool("clang-format").path;
     const inputs = files.filter(
         (file) =>
             selectedKey === undefined ||
@@ -414,7 +404,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
     const parsed = parseFlags(
         args,
         {
-            boolean: ["--help", "--generated"],
+            boolean: ["--help", "--generated", "--no-cache"],
             value: ["--file", "--jobs", "--backend"],
             positionals: Number.MAX_SAFE_INTEGER,
         },
@@ -422,10 +412,11 @@ async function lintCommand(args: readonly string[]): Promise<void> {
     );
     if (parsed.flags.has("--help")) {
         console.log(
-            "code-quality lint <scene|build-directory|all> [...] [--generated] [--backend sdl_gpu|dawn|both] [--file <source>] [--jobs <count>]",
+            "code-quality lint <scene|build-directory|all> [...] [--generated] [--backend sdl_gpu|dawn|both] [--file <source>] [--jobs <count>] [--no-cache]",
         );
         return;
     }
+    const reuseResults = !parsed.flags.has("--no-cache");
     if (parsed.positionals.length === 0) {
         throw new Error(
             "Pass a configured native build directory containing compile_commands.json, " +
@@ -450,7 +441,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
             ? undefined
             : canonicalCompiledBackend(backendValue, "code-quality lint");
     holdDistLock("code-quality lint");
-    const tool = clangTool("clang-tidy");
+    const { path: tool, version: toolVersion } = clangTool("clang-tidy");
     const environment =
         process.platform === "win32"
             ? discoverWindowsBuildTools("auto").environment
@@ -472,11 +463,39 @@ async function lintCommand(args: readonly string[]): Promise<void> {
         "code-quality",
         `${Date.now()}-${process.pid}`,
     );
+    const directoryOf = (target: (typeof targets)[number]): string =>
+        typeof target === "string"
+            ? target
+            : compiledBuildDirectory(target.buildDirectory, backend);
+    // A full run spans hundreds of builds; their dependency logs are read
+    // concurrently. A build that cannot answer is refused below, by name.
+    const dependencyLogs = new Map<string, string>();
+    await runConcurrently(
+        targets,
+        jobs,
+        (target) => `ninja -t deps ${directoryOf(target)}`,
+        async (target) => {
+            const build = resolve(directoryOf(target));
+            const ninja = readCacheConfiguration(build)?.CMAKE_MAKE_PROGRAM;
+            if (!ninja) return;
+            try {
+                const { stdout } = await execFileAsync(
+                    ninja,
+                    ["-C", build, "-t", "deps"],
+                    {
+                        encoding: "utf8",
+                        windowsHide: true,
+                        maxBuffer: 1024 * 1024 * 1024,
+                    },
+                );
+                dependencyLogs.set(build, stdout);
+            } catch {
+                // An unconfigured build has no log; its database check reports it.
+            }
+        },
+    );
     const batches = targets.map((target, batch) => {
-        const directory =
-            typeof target === "string"
-                ? target
-                : compiledBuildDirectory(target.buildDirectory, backend);
+        const directory = directoryOf(target);
         const build = resolve(directory);
         const cache = readCacheConfiguration(build);
         if (backend !== undefined && cache?.BBLITE_BACKEND !== backend) {
@@ -515,11 +534,11 @@ async function lintCommand(args: readonly string[]): Promise<void> {
             );
         }
         const database: unknown = JSON.parse(contents);
-        requireCurrentPrecompiledHeaders(
-            build,
-            database,
-            cache?.CMAKE_MAKE_PROGRAM,
-        );
+        // The build's dependency log names every header each object read.
+        const log = dependencyLogs.get(build);
+        const dependencies =
+            log === undefined ? undefined : ninjaDependencies(log, build);
+        requireCurrentPrecompiledHeaders(build, database, dependencies);
         const commands = standaloneSceneCommands(database, build);
         const commandsByFile = new Map<string, CompilationCommand[]>();
         for (const command of commands) {
@@ -566,34 +585,50 @@ async function lintCommand(args: readonly string[]): Promise<void> {
             sources,
             commandsByFile,
             headerRoots,
+            dependencies: dependencies ?? new Map<string, string[]>(),
             scene: typeof target === "string" ? undefined : target.id,
         };
     });
     mkdirSync(logs, { recursive: true });
     const units: LintUnit[] = batches.flatMap(
         (
-            { build, database, sources, commandsByFile, headerRoots, scene },
+            {
+                build,
+                database,
+                sources,
+                commandsByFile,
+                headerRoots,
+                dependencies,
+                scene,
+            },
             batch,
         ) => {
             console.log(
                 `clang-tidy: ${relative(root, build)} (${sources.length} translation units).`,
             );
-            return sources.map((file, index) => ({
-                build,
-                database,
-                file,
-                headerRoots,
-                scene,
-                log: join(logs, `${batch}-${index}-${basename(file)}.log`),
-                fixes: join(logs, `${batch}-${index}-${basename(file)}.yaml`),
-                exitCode: undefined,
+            return sources.map((file, index) => {
                 // clang-tidy may run several commands for one source; keep such
                 // database entries independent rather than choose one silently.
-                command:
+                const command =
                     commandsByFile.get(pathKey(file))?.length === 1
                         ? commandsByFile.get(pathKey(file))![0]
-                        : undefined,
-            }));
+                        : undefined;
+                return {
+                    build,
+                    database,
+                    file,
+                    headerRoots,
+                    scene,
+                    log: join(logs, `${batch}-${index}-${basename(file)}.log`),
+                    fixes: join(
+                        logs,
+                        `${batch}-${index}-${basename(file)}.yaml`,
+                    ),
+                    exitCode: undefined,
+                    command,
+                    dependencies,
+                };
+            });
         },
     );
     const digests = new Map<string, string>();
@@ -606,10 +641,36 @@ async function lintCommand(args: readonly string[]): Promise<void> {
         return digest;
     };
     const canShare = lintEnvironmentAllowsDedup(environment);
+    const results = new LintResultCache(
+        resolve(root, artifactDirectory("code-quality-cache")),
+    );
+    const configFile = join(root, ".clang-tidy");
+    const checkArguments = (headerFilter: string): string[] => [
+        "--quiet",
+        `--config-file=${configFile}`,
+        `--header-filter=${headerFilter}`,
+    ];
+    // A shared compilation key requires an environment adding no implicit
+    // inputs; its absolute header search still enters the result key.
+    const invocation = [
+        toolIdentity(tool),
+        toolVersion,
+        contentDigest(configFile),
+        environmentValue(environment, "INCLUDE") ?? "",
+    ];
+    const modifiedTimes = new Map<string, number | undefined>();
+    const modified = (path: string): number | undefined => {
+        if (!modifiedTimes.has(path))
+            modifiedTimes.set(
+                path,
+                statSync(path, { throwIfNoEntry: false })?.mtimeMs,
+            );
+        return modifiedTimes.get(path);
+    };
     const work = lintCompilationGroups(
         units.map((unit) => (canShare ? unit.command : undefined)),
         pchDigest,
-    ).map((indices) => {
+    ).map(({ key: compilation, indices }) => {
         const members = indices.map((index) => units[index]!);
         const primary = members[0]!;
         for (const member of members) {
@@ -619,6 +680,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
         return {
             primary,
             members,
+            compilation,
             headerFilter: nativeHeaderFilter(
                 members.flatMap((unit) => unit.headerRoots),
             ),
@@ -627,6 +689,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
     console.log(
         `clang-tidy: ${work.length} invocations cover ${units.length} compilation contexts.`,
     );
+    let reused = 0;
     try {
         await runConcurrently(
             work,
@@ -634,13 +697,42 @@ async function lintCommand(args: readonly string[]): Promise<void> {
             ({ primary: { build, file } }) =>
                 `${relative(root, build)}: ${relative(root, file)}`,
             async (item) => {
-                const { database, file, log, fixes } = item.primary;
+                const { command, database, dependencies, file, log, fixes } =
+                    item.primary;
+                const inputs =
+                    item.compilation &&
+                    command &&
+                    currentLintInputs(
+                        file,
+                        commandOutput(command),
+                        dependencies,
+                        modified,
+                    );
+                const key =
+                    item.compilation && inputs
+                        ? lintResultKey(
+                              [
+                                  ...invocation,
+                                  checkArguments(item.headerFilter),
+                                  item.compilation,
+                              ],
+                              inputs,
+                              root,
+                          )
+                        : undefined;
+                if (key && reuseResults && results.has(key)) {
+                    writeFileSync(
+                        log,
+                        `clang-tidy: clean result ${key} reused; no input changed.\n`,
+                    );
+                    for (const member of item.members) member.exitCode = 0;
+                    ++reused;
+                    return;
+                }
                 const code = await runLoggedProcess(
                     tool,
                     [
-                        "--quiet",
-                        `--config-file=${join(root, ".clang-tidy")}`,
-                        `--header-filter=${item.headerFilter}`,
+                        ...checkArguments(item.headerFilter),
                         `--export-fixes=${fixes}`,
                         "-p",
                         database,
@@ -655,6 +747,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
                         `clang-tidy exited ${code}; ${relative(root, log)}`,
                     );
                 }
+                if (key) results.store(key, relative(root, file));
             },
         );
     } finally {
@@ -684,7 +777,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
         );
     }
     console.log(
-        `clang-tidy: ${work.length} invocations checked ${units.length} compilation contexts; logs in ${relative(root, logs).split(sep).join("/")}.`,
+        `clang-tidy: ${work.length} invocations checked ${units.length} compilation contexts (${reused} clean results reused); logs in ${relative(root, logs).split(sep).join("/")}.`,
     );
 }
 

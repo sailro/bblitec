@@ -35,6 +35,8 @@ $junctions = @(
     "artifacts\shader-cache",
     "artifacts\bake-cache",
     "artifacts\native-cache",
+    "artifacts\code-quality-cache",
+    "artifacts\native-fixture-cache",
     "tools\shader-compiler\vcpkg_installed"
 )
 
