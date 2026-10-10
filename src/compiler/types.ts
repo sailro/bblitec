@@ -1,5 +1,6 @@
 import {
     metadataFieldsForKind,
+    spelledMetadataFields,
     type ValueMetadataKey,
 } from "./values/metadata.js";
 import type { Value } from "./values/model.js";
@@ -2007,8 +2008,19 @@ export function commonResourceValue(
         const captures = first.nativeCompanionCaptures?.engineCpp;
         if (captures) common.nativeCompanionCaptures.engineCpp = captures;
         else delete common.nativeCompanionCaptures.engineCpp;
+        delete common.engineCarriersDisagree;
     } else if (value.kind !== "engine") {
         delete common.engineCpp;
+        // Carriers that each name an engine spell aliases of the entry
+        // point's one engine; a carrier without one proves nothing.
+        if (
+            value.engineCarriersDisagree ||
+            candidates.some((candidate) => candidate.engineCarriersDisagree) ||
+            (candidates.length > 0 &&
+                candidates.every((candidate) => candidate.engineCpp))
+        )
+            common.engineCarriersDisagree = true;
+        else delete common.engineCarriersDisagree;
         if (common.nativeCompanionCaptures) {
             common.nativeCompanionCaptures = {
                 ...common.nativeCompanionCaptures,
@@ -2090,15 +2102,19 @@ export function withCommonResourceMetadata(
 }
 
 /**
- * `value` with the plain generation facts (numbers and booleans) of its kind
- * that `source` holds. Spelled facts name the source's own storage and do
- * not follow the value into other storage.
+ * `value` with the plain generation facts (numbers, booleans and named
+ * strings) of its kind that `source` holds. Spelled facts name the source's
+ * own storage and do not follow the value into other storage.
  */
 export function withKindValueFacts(value: Value, source: Value): Value {
     const result = { ...value };
     for (const key of metadataFieldsForKind(source.kind)) {
         const fact: unknown = source[key];
-        if (typeof fact === "number" || typeof fact === "boolean")
+        if (
+            typeof fact === "number" ||
+            typeof fact === "boolean" ||
+            (typeof fact === "string" && !spelledMetadataFields.has(key))
+        )
             Object.assign(result, { [key]: fact });
     }
     return result;

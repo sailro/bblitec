@@ -101,7 +101,7 @@ import { renderNativeEmission } from "./native-statements.js";
 interface StatementLoweringContext extends Pick<
     LoweringServices,
     | "absenceTags"
-    | "hasStableNativeBinding"
+    | "sharedClosures"
     | "classLowerer"
     | "resolveRecordValue"
     | "admissions"
@@ -4388,9 +4388,23 @@ export class StatementLowerer {
                 ? indexed.indexCpp
                 : context.allocateTemporaryCppName("item");
         const container = target.container.dataType;
+        // An array element is read in place while the body can change no
+        // array and never reassigns the loop variable; otherwise the loop
+        // yields a snapshot the body's writes cannot change.
+        const borrowsElement =
+            container?.kind === "vector" &&
+            !context.evaluationOrder.mayWriteArray(statement.statement) &&
+            !(
+                ts.isIdentifier(declaration.name) &&
+                context.sharedClosures.identifierIsRebound(declaration.name)
+            );
         // A span views a constant table: its items are constant, and a
-        // closure capturing one borrows it as such.
-        if (container?.kind === "span" && indexed?.kind !== "array-index")
+        // closure capturing one borrows it as such; so does a borrowed
+        // array element.
+        if (
+            (container?.kind === "span" || borrowsElement) &&
+            indexed?.kind !== "array-index"
+        )
             context.registerNativeBindingType(
                 item,
                 `const ${context.dataTypes.cppType(container.element)}`,
@@ -4429,28 +4443,29 @@ export class StatementLowerer {
                 context.allocateTemporaryCppName("array_index");
             const range = context.allocateTemporaryCppName("range");
             const span = container?.kind === "span";
-            // A binding the body cannot rebind already retains the array.
-            const retainsArray =
+            // The iterated array is retained only where the body can rebind
+            // what selected it; otherwise its binding already retains it.
+            const iterated =
                 container?.kind === "vector" &&
-                !context.hasStableNativeBinding(target.container) &&
-                context.evaluationOrder
-                    .operandsToPin([statement.expression, statement.statement])
-                    .at(0) === true;
+                context.evaluationOrder.operandsToPin([
+                    statement.expression,
+                    statement.statement,
+                ])[0]
+                    ? context.bindings.pinValueToTemporary(
+                          target.container,
+                          "range_owner",
+                          statement.expression,
+                      )
+                    : target.container;
             context.emit({
                 kind: "declaration",
                 type: span
                     ? "auto"
                     : container?.kind === "vector"
-                      ? retainsArray
-                          ? "const auto"
-                          : "const auto&"
+                      ? "const auto&"
                       : "auto&&",
                 name: range,
-                initializer: span
-                    ? `std::span{${target.container.cpp}}`
-                    : retainsArray
-                      ? `bbl::js::snapshot_value(${target.container.cpp})`
-                      : target.container.cpp,
+                initializer: span ? `std::span{${iterated.cpp}}` : iterated.cpp,
             });
             context.emit({
                 kind: "open",
@@ -4459,17 +4474,20 @@ export class StatementLowerer {
             });
             context.increaseIndent();
             if (indexed?.kind !== "array-index") {
-                if (container?.kind === "vector") context.reachJsData();
+                const snapshot =
+                    container?.kind === "vector" && !borrowsElement;
+                if (snapshot) context.reachJsData();
                 context.emit({
                     kind: "declaration",
-                    type: container?.kind === "vector" ? "auto" : "auto&&",
+                    type: borrowsElement
+                        ? "const auto&"
+                        : snapshot
+                          ? "auto"
+                          : "auto&&",
                     name: item,
-                    // The yielded value is a copy the body's writes to the
-                    // array cannot change, taken as a snapshot.
-                    initializer:
-                        container?.kind === "vector"
-                            ? `bbl::js::snapshot_value(${range}[${indexCpp}])`
-                            : `${range}[${indexCpp}]`,
+                    initializer: snapshot
+                        ? `bbl::js::snapshot_value(${range}[${indexCpp}])`
+                        : `${range}[${indexCpp}]`,
                     // `for (const [index] of list.entries())` binds no value.
                     attributes: "[[maybe_unused]] ",
                 });

@@ -911,17 +911,19 @@ function holdsRecordStorage(type: DataType): boolean {
     );
 }
 
-/** A function type without the completion facts its declaration proves. */
+/** The completion facts a function type's declaration proves. */
+const completionFacts = [
+    "undefinedCompletion",
+    "awaitedUndefinedCompletion",
+    "nonThenableCompletion",
+] as const;
+
+/** A function type without its declaration site and completion facts. */
 function withoutCompletionFacts(
     type: DataType<"function">,
 ): DataType<"function"> {
-    const {
-        signatureSite: _site,
-        undefinedCompletion: _undefined,
-        awaitedUndefinedCompletion: _awaited,
-        nonThenableCompletion: _nonThenable,
-        ...signature
-    } = type;
+    const { signatureSite: _site, ...signature } = type;
+    for (const fact of completionFacts) delete signature[fact];
     return signature;
 }
 
@@ -1146,6 +1148,13 @@ export class DataTypeRegistry {
             node: ts.Node;
         }
     >();
+    /** Structs a scalar field of which was written an own undefined before any of their presence was read. */
+    private readonly ownUndefinedWrites = new EmissionMap<
+        string,
+        { field: DataStructField; node: ts.Node }
+    >();
+    /** Structs some field presence of which was read. */
+    private readonly presenceReadStructs = new EmissionSet<string>();
     private readonly jsonBoxedEnums = new EmissionSet<string>();
     private readonly jsonSerializedEnums = new EmissionSet<string>();
     /**
@@ -1948,25 +1957,26 @@ export class DataTypeRegistry {
         return { ...source, dictionary: value.kind };
     }
 
-    /** Whether struct `name` is a record type a declaration file declares. */
-    public isDeclarationFileRecord(name: string): boolean {
+    /** Whether struct `name` is a record type the pinned package declares. */
+    private isPackageRecord(name: string): boolean {
         const type = this.nativeRecordSources.get(name)?.type;
-        const symbol = type && (type.aliasSymbol ?? type.getSymbol());
-        return (
-            symbol?.declarations?.some(
-                (declaration) => declaration.getSourceFile().isDeclarationFile,
-            ) ?? false
+        return declaredIn(
+            type && (type.aliasSymbol ?? type.getSymbol()),
+            "babylon",
         );
     }
 
     /**
      * The demand that stores every record of struct `name` as a document,
      * for a parsed document reaching it: a plain-data record or synthetic
-     * dictionary view (no stored functions or authored accessors), not a class.
+     * dictionary view (no stored functions or authored accessors), not a
+     * class, and not a record type the pinned package declares, which keeps
+     * the struct its engine intrinsics exchange.
      */
     public documentRecordDemand(
         name: string,
     ): NativeRecordStorageDemand | undefined {
+        if (this.isPackageRecord(name)) return undefined;
         const source = this.nativeRecordSources.get(name);
         const fields = this.structsByName.get(name)?.fields;
         // A synthetic dictionary view has no source accessor to preserve.
@@ -2610,6 +2620,18 @@ export class DataTypeRegistry {
         return this.storage.engineOwners.has(declaration);
     }
 
+    /** A parameter's storage: one whose resources need their engine stores it. */
+    public engineParameterStorage(
+        declaration: ts.Node | undefined,
+        type: DataType,
+    ): DataType {
+        return declaration &&
+            ts.isParameter(declaration) &&
+            this.requiresEngineParameterStorage(declaration)
+            ? this.collectionKeyStorage(type)
+            : type;
+    }
+
     public requireEngineParameterStorage(
         declaration: ts.ParameterDeclaration | undefined,
     ): void {
@@ -3221,31 +3243,19 @@ export class DataTypeRegistry {
         if (dataTypesEqual(left, right)) return left;
         // One signature declared twice is stored once; the storage keeps
         // only the completion facts every value it holds proves.
-        if (
-            left.kind === "function" &&
-            right.kind === "function" &&
-            dataTypesEqual(
-                withoutCompletionFacts(left),
-                withoutCompletionFacts(right),
-            )
-        )
-            return {
-                ...withoutCompletionFacts(left),
-                ...(left.signatureSite &&
-                left.signatureSite === right.signatureSite
-                    ? { signatureSite: left.signatureSite }
-                    : {}),
-                ...(left.undefinedCompletion && right.undefinedCompletion
-                    ? { undefinedCompletion: true }
-                    : {}),
-                ...(left.awaitedUndefinedCompletion &&
-                right.awaitedUndefinedCompletion
-                    ? { awaitedUndefinedCompletion: true }
-                    : {}),
-                ...(left.nonThenableCompletion && right.nonThenableCompletion
-                    ? { nonThenableCompletion: true }
-                    : {}),
-            };
+        if (left.kind === "function" && right.kind === "function") {
+            const joined = withoutCompletionFacts(left);
+            if (dataTypesEqual(joined, withoutCompletionFacts(right))) {
+                if (
+                    left.signatureSite &&
+                    left.signatureSite === right.signatureSite
+                )
+                    joined.signatureSite = left.signatureSite;
+                for (const fact of completionFacts)
+                    if (left[fact] && right[fact]) joined[fact] = true;
+                return joined;
+            }
+        }
         if (
             left.kind === "function" &&
             right.kind === "function" &&
@@ -4493,12 +4503,10 @@ export class DataTypeRegistry {
                         this.ownReadonlyArray(mapped, parameterType),
                     ),
                 );
-                const retained =
-                    declaration &&
-                    ts.isParameter(declaration) &&
-                    this.requiresEngineParameterStorage(declaration)
-                        ? this.collectionKeyStorage(owned)
-                        : owned;
+                const retained = this.engineParameterStorage(
+                    declaration,
+                    owned,
+                );
                 return [
                     this.absenceTaggedStorage(
                         declaration,
@@ -7084,6 +7092,20 @@ export class DataTypeRegistry {
             )
         )
             return;
+        // An empty scalar slot reads undefined either way: an own undefined
+        // differs from a missing key only where the program reads the
+        // record's presence, which then a document records for every field.
+        if (this.presenceReadStructs.has(structName))
+            this.requireUndefinedPresenceDocument(structName, field, node);
+        else this.ownUndefinedWrites.set(structName, { field, node });
+    }
+
+    /** A record holding an own undefined whose presence is read needs a document. */
+    private requireUndefinedPresenceDocument(
+        structName: string,
+        field: DataStructField,
+        node: ts.Node,
+    ): void {
         const demand = this.documentRecordDemand(structName);
         if (demand && !demand.type.isUnion())
             throw new NativeRecordStorageRequired(demand);
@@ -7121,6 +7143,16 @@ export class DataTypeRegistry {
         const tags = this.tagPresenceCpp(structName, field, ownerCpp, access);
         const arms = tags !== undefined;
         const presence = this.ownPropertyPresence(structName, field, arms);
+        if (arms || presence !== "own") {
+            this.presenceReadStructs.add(structName);
+            const written = this.ownUndefinedWrites.get(structName);
+            if (written)
+                this.requireUndefinedPresenceDocument(
+                    structName,
+                    written.field,
+                    written.node,
+                );
+        }
         if (presence === "ambiguous") this.refuseAmbiguousPresence(field, node);
         if (arms || presence !== "own")
             this.presenceReads.set(`${structName}.${field.sourceName}`, {

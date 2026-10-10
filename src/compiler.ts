@@ -17,7 +17,10 @@ import {
     withCommonResourceMetadata,
     type NullableResourceType,
 } from "./compiler/types.js";
-import { isEngineScopedHandleKind } from "./compiler/data-types/handles.js";
+import {
+    belongsToEntryEngine,
+    isEngineScopedHandleKind,
+} from "./compiler/data-types/handles.js";
 import {
     forEachAnalysisNode,
     someAnalysisNode,
@@ -6080,6 +6083,19 @@ class Compiler implements LoweringServices {
                     ? `bbl::StoredEngine{${value.ownedEngineCpp}}`
                     : undefined);
             if (storage) this.realmEngineStorage.set(value.engineCpp, storage);
+            const owned =
+                value.ownedEngineCpp &&
+                this.nativeBindings.get(value.ownedEngineCpp);
+            if (owned) this.realmEngineCaptures.set(value.engineCpp, [owned]);
+            if (value.storedEngineCpp) {
+                const stored = this.nativeBindings.get(value.storedEngineCpp);
+                const captures = stored
+                    ? [stored]
+                    : (value.nativeCompanionCaptures?.storedEngineCpp ??
+                      value.nativeCaptures);
+                if (captures?.length)
+                    this.realmEngineCaptures.set(value.engineCpp, captures);
+            }
         }
         if (
             value.engineOwnerIdentity &&
@@ -6092,19 +6108,6 @@ class Compiler implements LoweringServices {
                 value.engineCpp,
                 value.engineOwnerIdentity,
             );
-        if (value.kind === "engine" && value.ownedEngineCpp) {
-            const owner = this.nativeBindings.get(value.ownedEngineCpp);
-            if (owner) this.realmEngineCaptures.set(value.engineCpp, [owner]);
-        }
-        if (value.kind === "engine" && value.storedEngineCpp) {
-            const owner = this.nativeBindings.get(value.storedEngineCpp);
-            const captures = owner
-                ? [owner]
-                : (value.nativeCompanionCaptures?.storedEngineCpp ??
-                  value.nativeCaptures);
-            if (captures?.length)
-                this.realmEngineCaptures.set(value.engineCpp, captures);
-        }
         const owners = this.realmEngineCaptures.get(value.engineCpp);
         if (owners)
             writable(value).nativeCompanionCaptures = {
@@ -6380,7 +6383,9 @@ class Compiler implements LoweringServices {
         // A spelling read through storage (an owned field's engine) names
         // the bindings it reads; each is captured where the spelling is used.
         else
-            for (const identifier of name.match(/[A-Za-z_]\w*/g) ?? []) {
+            for (const identifier of cppIdentifiers(name, {
+                unqualified: true,
+            })) {
                 const read = this.nativeBindings.get(identifier);
                 if (read) this.useNativeBinding(read);
             }
@@ -8643,8 +8648,39 @@ class Compiler implements LoweringServices {
                 `A ${value.kind} value is not associated with an engine.`,
             );
         }
+        // One engine per entry point: where the entry's own binding is in
+        // scope, an owned pair of a kind it holds names it without reading
+        // the pair's stored owner.
+        if (
+            value.dataType?.kind === "handle" &&
+            value.dataType.ownedEngine &&
+            belongsToEntryEngine(value.dataType.handle)
+        ) {
+            const entry = this.entryEngineInScope();
+            if (entry) return entry;
+        }
+        for (const binding of value.nativeCompanionCaptures?.engineCpp ?? [])
+            this.useNativeBinding(binding);
         this.trackRetainedCaptureName(value.engineCpp);
         return value.engineCpp;
+    }
+
+    /**
+     * The entry's engine binding, where no explicit engine parameter scopes
+     * the body and the code is not namespace-scope (`requireDefaultEngine`).
+     */
+    public entryEngineInScope(): string | undefined {
+        const engine = this.defaultEngineCpp;
+        if (
+            !engine ||
+            this.returnFrames.some(
+                (frame) => frame.kind === "native" && frame.namespaceScope,
+            ) ||
+            this.scopedEngineContexts().length > 0
+        )
+            return undefined;
+        this.trackRetainedCaptureName(engine);
+        return engine;
     }
 
     /** Preserve the actual stored owner when a resource leaves its source scope. */

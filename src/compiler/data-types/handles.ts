@@ -133,6 +133,35 @@ export function isEngineScopedHandleKind(kind: HandleKind): boolean {
 }
 
 /**
+ * Whether a plain handle of this kind lives in the entry point's engine. A
+ * picking result names its picker's engine, a UI element the Window
+ * document's, and text runs and node inputs belong to no engine.
+ */
+export function belongsToEntryEngine(kind: HandleKind): boolean {
+    return (
+        !kind.startsWith("text-") &&
+        kind !== "node-input" &&
+        kind !== "picking-info" &&
+        kind !== "ui-element"
+    );
+}
+
+/**
+ * Whether a stored handle of this kind is one native handle. A texture's
+ * storage converts between its stored, file and solid forms.
+ */
+export function storesOneHandle(kind: HandleKind): boolean {
+    return kind !== "texture";
+}
+
+/** The node value kinds a `scene-node` handle slot holds. */
+export function convertsToSceneNode(kind: string): boolean {
+    return (
+        kind === "mesh" || kind === "transform-node" || kind === "asset-root"
+    );
+}
+
+/**
  * Resource values outside the data model whose native value has exactly one
  * type: every intrinsic that produces the kind returns it
  * (`bbl::create_sprite_renderer`, `bbl::create_animation_manager`,

@@ -7,6 +7,7 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "../data-types.js";
+import { convertsToSceneNode } from "../data-types/handles.js";
 import {
     representedStorage,
     withNativeMetadata,
@@ -17,35 +18,6 @@ import { pickedMeshHandleCpp } from "../properties.js";
 import { resolvedSymbol } from "../symbols.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import type { LoweringServices } from "../lowering-services.js";
-
-/**
- * The texture a stored sprite atlas was built over, read from its `const`
- * record initializer as the expression sink reads it: the atlas belongs to
- * that texture's engine.
- */
-function spriteAtlasTexture(
-    lowerer: DataSinkHost,
-    node: ts.Node,
-): Value | undefined {
-    const expression = lowerer.convertedExpression(node);
-    const name = expression && lowerer.context.unwrap(expression);
-    const declaration =
-        name && ts.isIdentifier(name)
-            ? resolvedSymbol(lowerer.context.checker, name)?.valueDeclaration
-            : undefined;
-    if (
-        !declaration ||
-        !ts.isVariableDeclaration(declaration) ||
-        !declaration.initializer ||
-        !ts.isVariableDeclarationList(declaration.parent) ||
-        (declaration.parent.flags & ts.NodeFlags.Const) === 0
-    )
-        return undefined;
-    const record = lowerer.context.compileValue(declaration.initializer);
-    const texture =
-        record.kind === "record" ? record.recordProperties?.texture : undefined;
-    return texture?.engineCpp ? texture : undefined;
-}
 
 /** A singleton cloned-root container shares the clone's mesh-only asset record. */
 export function projectAssetContainer(
@@ -129,7 +101,7 @@ function expressionHandle(
     }
     if (
         dataType.handle === "scene-node" &&
-        ["mesh", "transform-node", "asset-root"].includes(rawValue.kind)
+        convertsToSceneNode(rawValue.kind)
     ) {
         return lowerer.compileKnownValueForSink(rawValue, dataType, unwrapped);
     }
@@ -307,10 +279,16 @@ function valueResource(
         }
         const rawType = { kind: "handle", handle: dataType.handle } as const;
         const raw = lowerer.compileKnownValueForSink(value, rawType, node);
+        // A SpriteAtlas without an engine is a record, which materializes
+        // into the entry point's engine (compileSpriteAtlasRecord), which
+        // therefore owns the pair.
         const owner = lowerer.context.storedResourceEngine(
-            (!value.engineCpp && dataType.handle === "sprite-atlas"
-                ? spriteAtlasTexture(lowerer, node)
-                : undefined) ?? value,
+            !value.engineCpp && dataType.handle === "sprite-atlas"
+                ? {
+                      ...value,
+                      engineCpp: lowerer.context.requireDefaultEngine(node),
+                  }
+                : value,
             node,
         );
         return `${lowerer.context.dataTypes.cppType(dataType)}{${owner}, ${raw}}`;
@@ -365,9 +343,7 @@ function valueResource(
     if (
         dataType.kind === "handle" &&
         dataType.handle === "scene-node" &&
-        (value.kind === "mesh" ||
-            value.kind === "transform-node" ||
-            value.kind === "asset-root")
+        convertsToSceneNode(value.kind)
     ) {
         return `bbl::SceneNodeHandle{${value.cpp}}`;
     }

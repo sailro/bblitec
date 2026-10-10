@@ -1000,18 +1000,9 @@ export class BindingScopes {
         ) {
             // A materialized handle captures its own local, not the optional
             // slot from which its initializer selected the value.
-            value = { ...value };
+            value = this.withPickingEngine({ ...value }, handleStorage);
             delete writable(value).optionalStorageCpp;
             delete writable(value).stableOwnerCpp;
-            if (value.kind === "picking-info") {
-                writable(value).engineCpp = `bbl::picking_engine(${value.cpp})`;
-                writable(value).nativeCompanionCaptures = {
-                    ...value.nativeCompanionCaptures,
-                    engineCpp: [
-                        this.context.registerNativeBinding(handleStorage),
-                    ],
-                };
-            }
         }
         // A resource whose native value has one type declares it for the
         // local holding it, whichever declaration emitted that local, so a
@@ -1073,6 +1064,17 @@ export class BindingScopes {
             name: identifier.text,
             value,
         });
+    }
+
+    /** A picking result's engine, read through the storage now holding it. */
+    private withPickingEngine<T extends Value>(value: T, storage: string): T {
+        if (value.kind !== "picking-info") return value;
+        writable(value).engineCpp = `bbl::picking_engine(${value.cpp})`;
+        writable(value).nativeCompanionCaptures = {
+            ...value.nativeCompanionCaptures,
+            engineCpp: [this.context.registerNativeBinding(storage)],
+        };
+        return value;
     }
 
     public isImmutableVariable(declaration: ts.Node | undefined): boolean {
@@ -1979,21 +1981,17 @@ export class BindingScopes {
                         : snapshotReadCpp(value),
                 attributes: "[[maybe_unused]] ",
             });
-            const pinned = {
-                ...value,
+            const pinned = this.withPickingEngine(
+                {
+                    ...value,
+                    cpp,
+                    ...(value.kind === "engine" ? { engineCpp: cpp } : {}),
+                    nativeBinding: true as const,
+                },
                 cpp,
-                ...(value.kind === "engine" ? { engineCpp: cpp } : {}),
-                nativeBinding: true as const,
-            };
+            );
             delete pinned.optionalStorageCpp;
             delete pinned.stableOwnerCpp;
-            if (pinned.kind === "picking-info") {
-                pinned.engineCpp = `bbl::picking_engine(${cpp})`;
-                pinned.nativeCompanionCaptures = {
-                    ...pinned.nativeCompanionCaptures,
-                    engineCpp: [this.context.registerNativeBinding(cpp)],
-                };
-            }
             if (type === "auto") this.context.registerNativeConstBinding(cpp);
             this.context.describeNativeValue(pinned);
             return pinned;

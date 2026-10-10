@@ -50,6 +50,7 @@ import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
 import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
 import { resizingArrayMethods } from "./receiver-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
+import { isComposedAudioEnum } from "./audio-surface.js";
 
 interface ResourceLoopContext
     extends
@@ -594,24 +595,9 @@ function reachesSpecializingEffect(
         // An audio node's wave or filter type is a closed string enum the
         // graph composes at generation, inside runtime control flow too.
         if (
-            writesThroughTrackedRoot(node, (target) => {
-                const member = unwrapExpression(target);
-                const symbol = ts.isPropertyAccessExpression(member)
-                    ? resolvedSymbol(context.checker, member)
-                    : undefined;
-                return (
-                    symbol !== undefined &&
-                    symbol.name === "type" &&
-                    declaredInDomLibrary(symbol) &&
-                    (symbol.declarations ?? []).some(
-                        (declaration) =>
-                            ts.isInterfaceDeclaration(declaration.parent) &&
-                            ["OscillatorNode", "BiquadFilterNode"].includes(
-                                declaration.parent.name.text,
-                            ),
-                    )
-                );
-            })
+            writesThroughTrackedRoot(node, (target) =>
+                isComposedAudioEnum(context.checker, unwrapExpression(target)),
+            )
         ) {
             required = true;
             return false;

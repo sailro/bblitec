@@ -634,6 +634,8 @@ export interface LoweringServices {
     engineFor(value: Value, node: ts.Node): string;
     audioSessionCpp(): string;
     requireDefaultEngine(node: ts.Node): string;
+    /** The entry's engine binding where no explicit engine parameter scopes the body. */
+    entryEngineInScope(): string | undefined;
     requirePresentationHost(node: ts.Node): string;
     pbrLightmapEnabled(): boolean;
     reachFeature(feature: Feature, site?: ts.Node | string): void;

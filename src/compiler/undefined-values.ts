@@ -35,11 +35,16 @@ function undefinedLibraryCall(
     );
 }
 
-/** A void annotation alone does not constrain a JavaScript return value. */
-export function hasUndefinedCompletion(
-    checker: ts.TypeChecker,
+/**
+ * Whether a concrete non-generator body (an async one only when `awaited`)
+ * completes only through values `completes` accepts: each returned
+ * expression, or an arrow's expression body. Running off the end completes
+ * with undefined.
+ */
+function everyCompletion(
     declaration: ts.SignatureDeclaration | ts.JSDocSignature | undefined,
-    awaited = false,
+    awaited: boolean,
+    completes: (expression: ts.Expression) => boolean,
 ): boolean {
     if (
         !declaration ||
@@ -62,22 +67,34 @@ export function hasUndefinedCompletion(
                 ))
     )
         return false;
-    const isUndefined = (expression: ts.Expression): boolean =>
-        ts.isVoidExpression(unwrapExpression(expression)) ||
-        undefinedLibraryCall(checker, expression) ||
-        (checker.getTypeAtLocation(expression).flags &
-            ts.TypeFlags.Undefined) !==
-            0;
     return ts.isBlock(declaration.body)
         ? !someAnalysisNode(
               declaration.body,
               (node) =>
                   ts.isReturnStatement(node) &&
                   !!node.expression &&
-                  !isUndefined(node.expression),
+                  !completes(node.expression),
               { functions: "skip" },
           )
-        : isUndefined(declaration.body);
+        : completes(declaration.body);
+}
+
+/** A void annotation alone does not constrain a JavaScript return value. */
+export function hasUndefinedCompletion(
+    checker: ts.TypeChecker,
+    declaration: ts.SignatureDeclaration | ts.JSDocSignature | undefined,
+    awaited = false,
+): boolean {
+    return everyCompletion(
+        declaration,
+        awaited,
+        (expression) =>
+            ts.isVoidExpression(unwrapExpression(expression)) ||
+            undefinedLibraryCall(checker, expression) ||
+            (checker.getTypeAtLocation(expression).flags &
+                ts.TypeFlags.Undefined) !==
+                0,
+    );
 }
 
 /** A source-specialized callback retains the body behind an immutable alias. */
@@ -211,22 +228,7 @@ export function hasNonThenableCompletion(
     checker: ts.TypeChecker,
     declaration: ts.SignatureDeclaration | ts.JSDocSignature | undefined,
 ): boolean {
-    if (
-        !declaration ||
-        !(
-            ts.isFunctionDeclaration(declaration) ||
-            ts.isFunctionExpression(declaration) ||
-            ts.isArrowFunction(declaration) ||
-            ts.isMethodDeclaration(declaration)
-        ) ||
-        !declaration.body ||
-        (!ts.isArrowFunction(declaration) && declaration.asteriskToken) ||
-        ts
-            .getModifiers(declaration)
-            ?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-    )
-        return false;
-    const scalar = (expression: ts.Expression): boolean => {
+    return everyCompletion(declaration, false, (expression) => {
         if (
             ts.isVoidExpression(unwrapExpression(expression)) ||
             undefinedLibraryCall(checker, expression)
@@ -246,15 +248,5 @@ export function hasNonThenableCompletion(
                         ts.TypeFlags.Never)) !==
                 0,
         );
-    };
-    return ts.isBlock(declaration.body)
-        ? !someAnalysisNode(
-              declaration.body,
-              (node) =>
-                  ts.isReturnStatement(node) &&
-                  !!node.expression &&
-                  !scalar(node.expression),
-              { functions: "skip" },
-          )
-        : scalar(declaration.body);
+    });
 }

@@ -114,7 +114,17 @@ export function compileJsonPropertyKey(
             value.cpp === "std::nullopt" ? "undefined" : "null",
         );
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
-    // An absent key that can only be undefined spells "undefined".
+    if (value.dataType) {
+        const cpp = context.dataTypes.jsonValueCpp(
+            value.dataType,
+            value.cpp,
+            node,
+        );
+        if (cpp) return `${cpp}.to_string()`;
+    }
+    // A key with a member no document holds (a native handle or function)
+    // converts the member it holds. An absent key that can only be
+    // undefined spells "undefined".
     if (
         value.dataType?.kind === "optional" &&
         value.dataType.undefinedOnly &&
@@ -131,8 +141,8 @@ export function compileJsonPropertyKey(
         );
         return `(${optionalPresentCpp(value.cpp)} ? std::string(${present}) : std::string("undefined"))`;
     }
-    // A union key converts the member it holds; a native handle or function
-    // member has no represented string conversion and refuses where it runs.
+    // A native handle or function member has no represented string
+    // conversion and refuses where it runs.
     if (value.dataType?.kind === "union") {
         const source = "property_key_source";
         const arms = value.dataType.members.map((member, index) => {
@@ -154,14 +164,6 @@ export function compileJsonPropertyKey(
             `([&]() -> std::string { const auto& ${source} = ${value.cpp}; ` +
             `switch (${source}.index()) { ${arms.join(" ")} default: throw std::runtime_error("Value is outside the property key union."); } }())`
         );
-    }
-    if (value.dataType) {
-        const cpp = context.dataTypes.jsonValueCpp(
-            value.dataType,
-            value.cpp,
-            node,
-        );
-        if (cpp) return `${cpp}.to_string()`;
     }
     return context.fail(
         node,

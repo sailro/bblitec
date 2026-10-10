@@ -46,7 +46,7 @@ import {
     rejectionOnlyPromiseCpp,
     settlesNever,
 } from "./promises.js";
-import { isHandleKind } from "./data-types/handles.js";
+import { convertsToSceneNode, isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { hasNoValueCompletion } from "./native-return-type.js";
 import { representedResultType } from "./represented-result.js";
@@ -231,13 +231,23 @@ export class AsyncLowerer {
                 initializer: `co_await ${awaited.cpp}`,
                 attributes: "[[maybe_unused]] ",
             });
-            const binding = context.registerNativeBinding(
-                temporary,
-                false,
-                false,
-                awaited.promiseType,
-            );
             const settled = awaited.promiseResult!;
+            // An owned engine pair is never taken or rebound, so a
+            // declaration it initializes aliases it.
+            const binding =
+                settled.dataType?.kind === "handle" &&
+                settled.dataType.ownedEngine
+                    ? context.registerNativeConstBinding(
+                          temporary,
+                          false,
+                          awaited.promiseType,
+                      )
+                    : context.registerNativeBinding(
+                          temporary,
+                          false,
+                          false,
+                          awaited.promiseType,
+                      );
             if (settled.kind === "void")
                 return {
                     kind: "json-null",
@@ -253,13 +263,6 @@ export class AsyncLowerer {
                     temporary,
                     settled.dataType ?? { kind: "string" },
                 );
-            // An owned engine pair is never taken or rebound, so a
-            // declaration aliases it.
-            if (
-                settled.dataType?.kind === "handle" &&
-                settled.dataType.ownedEngine
-            )
-                context.registerNativeConstBinding(temporary);
             return this.resultAt(settled, temporary, binding);
         }
         if (
@@ -2378,9 +2381,7 @@ export class AsyncLowerer {
             (value.kind === result.inner.handle ||
                 // A scene node slot holds the node kinds its sink converts.
                 (result.inner.handle === "scene-node" &&
-                    ["mesh", "transform-node", "asset-root"].includes(
-                        value.kind,
-                    )) ||
+                    convertsToSceneNode(value.kind)) ||
                 value.kind === "json-null" ||
                 value.kind === "void")
         ) {

@@ -238,16 +238,22 @@ function requireCopiedOwnUndefinedFields(
     lowerer: DataSinkHost,
     dataType: DataType<"struct">,
     node: ts.Node,
-    storedSource?: DataType<"struct">,
-    record?: Value,
+    value: Value,
 ): void {
+    const storedSource =
+        value.kind === "data" && value.dataType?.kind === "struct"
+            ? value.dataType
+            : undefined;
     const fields = lowerer.context.dataTypes
         .structFields(dataType.name, node, "accessors")
         .filter((field) => field.optionalProperty && !field.accessorReceiver)
         // A compile-time record's generation-known scalar is present: its
         // key can never hold an own undefined.
         .filter((field) => {
-            const fact = record?.recordProperties?.[field.sourceName];
+            const fact =
+                value.kind === "record"
+                    ? value.recordProperties?.[field.sourceName]
+                    : undefined;
             return (
                 fact?.staticString === undefined &&
                 fact?.staticNumber === undefined &&
@@ -425,13 +431,7 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
-        requireCopiedOwnUndefinedFields(
-            lowerer,
-            dataType,
-            node,
-            undefined,
-            value,
-        );
+        requireCopiedOwnUndefinedFields(lowerer, dataType, node, value);
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
             node,
@@ -592,12 +592,7 @@ function valueStruct(
             : aggregate;
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
-        requireCopiedOwnUndefinedFields(
-            lowerer,
-            dataType,
-            node,
-            value.dataType,
-        );
+        requireCopiedOwnUndefinedFields(lowerer, dataType, node, value);
         const sourceType = value.dataType;
         // Receiver-aware slots retain presence independently of their payload.
         // Their owner types must share one layout even for a fresh object.

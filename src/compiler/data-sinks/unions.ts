@@ -88,18 +88,14 @@ function unionValue(
     // A parsed value never holds a native handle or function: beside those
     // members it is the union's one scalar member, converted as it is read.
     if (memberIndex < 0 && isJsonValue(value)) {
-        const documentMembers = type.members.flatMap((member, index) =>
-            member.kind === "handle" || member.kind === "function"
-                ? []
-                : [index],
+        const documentMembers = type.members.filter(
+            (member) => member.kind !== "handle" && member.kind !== "function",
         );
-        const only = documentMembers.length === 1 ? documentMembers[0] : -1;
         if (
-            only !== undefined &&
-            only >= 0 &&
-            ["string", "number", "boolean"].includes(type.members[only]!.kind)
+            documentMembers.length === 1 &&
+            ["string", "number", "boolean"].includes(documentMembers[0]!.kind)
         )
-            memberIndex = only;
+            memberIndex = type.members.indexOf(documentMembers[0]!);
     }
     if (memberIndex < 0) return undefined;
     const cpp = lowerer.compileKnownValueForSink(

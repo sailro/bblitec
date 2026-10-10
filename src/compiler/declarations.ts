@@ -83,7 +83,6 @@ import {
     type NullableResourceType,
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
-import { nullableResourceEngine } from "./window-events.js";
 import { withLiteralSelfBinding } from "./home-object-methods.js";
 import {
     inferPromiseRejectStorage,
@@ -235,7 +234,7 @@ export class DeclarationLowerer {
         cppName: string,
         resource: NullableResourceType,
         shared: boolean,
-        value: Value,
+        value?: Value,
         initializer = "",
     ): void {
         const type = `std::optional<${resource.cppType}>`;
@@ -686,14 +685,6 @@ export class DeclarationLowerer {
                     cppName,
                     resource,
                     sharedClosureStorage,
-                    valueForKind(resource.kind, {
-                        cpp: "",
-                        ...nullableResourceEngine(
-                            resource.kind,
-                            this.context.options.workers,
-                            this.context.defaultEngineCpp,
-                        ),
-                    }),
                 );
                 return;
             }
@@ -878,7 +869,8 @@ export class DeclarationLowerer {
         // reads its annotation as a record; other absent initializers are
         // proven after their value compiles, below.
         if (
-            declaration.initializer.kind === ts.SyntaxKind.NullKeyword &&
+            this.context.unwrap(declaration.initializer).kind ===
+                ts.SyntaxKind.NullKeyword &&
             nullableResource &&
             !this.context.dynamicBindings.has(declaration)
         ) {
@@ -887,14 +879,6 @@ export class DeclarationLowerer {
                 cppName,
                 nullableResource,
                 sharedClosureStorage,
-                valueForKind(nullableResource.kind, {
-                    cpp: "",
-                    ...nullableResourceEngine(
-                        nullableResource.kind,
-                        this.context.options.workers,
-                        this.context.defaultEngineCpp,
-                    ),
-                }),
             );
             return;
         }
@@ -1016,14 +1000,6 @@ export class DeclarationLowerer {
                 cppName,
                 nullableResource,
                 sharedClosureStorage,
-                valueForKind(nullableResource.kind, {
-                    cpp: "",
-                    ...nullableResourceEngine(
-                        nullableResource.kind,
-                        this.context.options.workers,
-                        this.context.defaultEngineCpp,
-                    ),
-                }),
             );
             return;
         }
@@ -2354,12 +2330,10 @@ export class DeclarationLowerer {
                     "Recursive callback parameters must have plain-data types.",
                 );
             }
-            // A parameter whose resources need their engine stores it.
-            const type = this.context.dataTypes.requiresEngineParameterStorage(
+            const type = this.context.dataTypes.engineParameterStorage(
                 parameter,
-            )
-                ? this.context.dataTypes.collectionKeyStorage(mapped)
-                : mapped;
+                mapped,
+            );
             const byReference = passesByReference(this.context.dataTypes, type);
             const readOnly = parameterIsReadOnly(
                 this.context.checker,

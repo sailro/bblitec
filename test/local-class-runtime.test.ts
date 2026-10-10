@@ -231,7 +231,7 @@ test("inlines a method on an instance read back out of a container", (t) => {
     // the method (`volume`) read through it rather than through a local.
     assert.match(
         result.cpp,
-        /auto (v_\w+) = bbl::js::snapshot_value\(\w+\[\w+\]\);\s*if \(!\(\(static_cast<bool>\(\1\) && \1->_destroyed\)\)\)/,
+        /const auto& (v_\w+) = \w+\[\w+\];\s*if \(!\(\(static_cast<bool>\(\1\) && \1->_destroyed\)\)\)/,
     );
     assert.match(result.cpp, /\w+->_size\[bbl::js::array_index\(0\.0\)\]/);
     if (!nativeTools) return t.skip("native compiler unavailable");

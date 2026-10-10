@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { returnsOnly } from "./fresh-records.js";
 import { callMember, type DataType } from "./data-types.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { unwrapExpression } from "./syntax.js";
@@ -22,39 +22,16 @@ function freshCallable(
         );
     if (!ts.isCallExpression(source)) return false;
     const declaration = checker.getResolvedSignature(source)?.declaration;
-    if (
-        !declaration ||
-        !(
-            ts.isFunctionDeclaration(declaration) ||
+    return (
+        declaration !== undefined &&
+        (ts.isFunctionDeclaration(declaration) ||
             ts.isArrowFunction(declaration) ||
             ts.isFunctionExpression(declaration) ||
-            ts.isMethodDeclaration(declaration)
-        ) ||
-        !declaration.body ||
-        active.has(declaration)
-    )
-        return false;
-    active.add(declaration);
-    try {
-        if (!ts.isBlock(declaration.body))
-            return freshCallable(checker, declaration.body, active);
-        let returns = 0;
-        let fresh = true;
-        forEachAnalysisNode(
-            declaration.body,
-            (node) => {
-                if (!ts.isReturnStatement(node)) return;
-                returns++;
-                fresh &&=
-                    node.expression !== undefined &&
-                    freshCallable(checker, node.expression, active);
-            },
-            { functions: "skip", types: "skip" },
-        );
-        return returns > 0 && fresh;
-    } finally {
-        active.delete(declaration);
-    }
+            ts.isMethodDeclaration(declaration)) &&
+        returnsOnly(declaration, active, (returned) =>
+            freshCallable(checker, returned, active),
+        )
+    );
 }
 
 /** A function's properties live on one carrier shared by every lexical alias. */

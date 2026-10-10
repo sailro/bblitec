@@ -36,9 +36,12 @@ const scene = (body: string): string => `
     void main();
 `;
 
-/** The read `found?.position.y` guarded by the chain's presence. */
+/**
+ * The read `found?.position.y` guarded by the chain's presence; the entry's
+ * engine is in scope, so the owned pair's engine is that engine.
+ */
 const guardedRead =
-    /\(v_found\.has_value\(\) \? (?<read>bbl::handle_at\(\(\*(?<pair>\(\(\*v_found\)\))\.first\)\.meshes, \k<pair>\.second\)\.position\.y) : std::remove_cvref_t<decltype\(\k<read>\)>\{\}\)/;
+    /\(v_found\.has_value\(\) \? (?<read>bbl::handle_at\(v_engine\.meshes, \(\(\*v_found\)\)\.second\)\.position\.y) : std::remove_cvref_t<decltype\(\k<read>\)>\{\}\)/;
 
 test("a condition over a chain continuation tests presence first", () => {
     const result = compileSource(

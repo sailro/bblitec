@@ -135,24 +135,21 @@ function fresh(
     return false;
 }
 
-/** Every value the function can return is a fresh object or nullish. */
-function returnsOnlyFresh(
-    checker: ts.TypeChecker,
+/**
+ * Whether `declaration` completes only with values `produces` accepts: its
+ * expression body, or at least one `return`, each accepted. A declaration
+ * already being followed (`active`), or followed eight deep, proves nothing.
+ */
+export function returnsOnly(
     declaration: ts.FunctionLikeDeclaration,
     active: Set<ts.Node>,
+    produces: (expression: ts.Expression) => boolean,
 ): boolean {
     const body = declaration.body;
     if (!body || active.has(declaration) || active.size > 8) return false;
-    if (!ts.isBlock(body)) {
-        active.add(declaration);
-        try {
-            return fresh(checker, body, active);
-        } finally {
-            active.delete(declaration);
-        }
-    }
     active.add(declaration);
     try {
+        if (!ts.isBlock(body)) return produces(body);
         let returns = 0;
         let only = true;
         forEachAnalysisNode(
@@ -161,10 +158,7 @@ function returnsOnlyFresh(
                 if (!only) return "skip";
                 if (ts.isReturnStatement(node)) {
                     returns++;
-                    if (
-                        !node.expression ||
-                        !fresh(checker, node.expression, active)
-                    )
+                    if (!node.expression || !produces(node.expression))
                         only = false;
                 }
             },
@@ -174,6 +168,17 @@ function returnsOnlyFresh(
     } finally {
         active.delete(declaration);
     }
+}
+
+/** Every value the function can return is a fresh object or nullish. */
+function returnsOnlyFresh(
+    checker: ts.TypeChecker,
+    declaration: ts.FunctionLikeDeclaration,
+    active: Set<ts.Node>,
+): boolean {
+    return returnsOnly(declaration, active, (expression) =>
+        fresh(checker, expression, active),
+    );
 }
 
 /** Array methods whose result is a new array, never their receiver. */

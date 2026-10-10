@@ -1,5 +1,5 @@
 import { EmissionMap, writable } from "./emission-transaction.js";
-import { representedStorage } from "./types.js";
+import { storeClassField } from "./classes.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { setRecordProperty } from "./object-statics.js";
 import {
@@ -1623,10 +1623,7 @@ export function emitPropertyAssignment(
             existing.dataType &&
             operator === "="
         ) {
-            context.emit({
-                kind: "expression",
-                code: `${representedStorage(existing)?.cpp ?? context.fail(left, "Stored class field requires represented storage.")} = ${context.compileForDataSink(expression.right, existing.dataType)};`,
-            });
+            storeClassField(context, existing, expression.right, left);
             return;
         }
         if (

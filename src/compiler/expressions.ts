@@ -41,6 +41,7 @@ import {
     TYPED_ARRAY_KINDS,
     typeofTag,
 } from "./data-types.js";
+import { belongsToEntryEngine } from "./data-types/handles.js";
 import {
     DynamicBindingStorageRequired,
     requireOneObject,
@@ -307,6 +308,7 @@ export interface ExpressionContext
             | "libraryGlobal"
             | "callbacks"
             | "requireDefaultEngine"
+            | "entryEngineInScope"
             | "defaultEngine"
             | "handleCollections"
             | "compileRegisteredConstant"
@@ -3063,20 +3065,23 @@ export class ExpressionLowerer {
                   ? whenFalse.dataType
                   : undefined;
         if (ownedResourceType && whenTrue.kind === whenFalse.kind) {
-            const trueArm = this.selectedArmValue(
-                whenTrue,
-                ownedResourceType,
-                node,
-            );
+            // Where the entry's engine is in scope, the arms select plain
+            // handles of that one engine; elsewhere each carries its owner.
+            const selectedType: DataType<"handle"> =
+                belongsToEntryEngine(ownedResourceType.handle) &&
+                this.context.entryEngineInScope()
+                    ? { kind: "handle", handle: ownedResourceType.handle }
+                    : ownedResourceType;
+            const trueArm = this.selectedArmValue(whenTrue, selectedType, node);
             const falseArm = this.selectedArmValue(
                 whenFalse,
-                ownedResourceType,
+                selectedType,
                 node,
             );
             const selected = withNativeMetadata(
                 this.context.dataLowerer.leafValue(
                     `(${condition} ? ${trueArm.cpp} : ${falseArm.cpp})`,
-                    ownedResourceType,
+                    selectedType,
                 ),
                 commonResourceValue(whenTrue, [whenTrue, whenFalse]),
             );

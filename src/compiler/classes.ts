@@ -78,6 +78,25 @@ interface StoredClassField extends DataStructField {
     source: string;
 }
 
+/** Store `source` into a class field slot the shared object layout allocated. */
+export function storeClassField(
+    context: Pick<LoweringServices, "emit" | "fail" | "compileForDataSink">,
+    field: Value,
+    source: ts.Expression,
+    node: ts.Node,
+): void {
+    const storage = representedStorage(field);
+    if (!storage || !field.dataType)
+        return context.fail(
+            node,
+            "Stored class field requires represented storage.",
+        );
+    context.emit({
+        kind: "expression",
+        code: `${storage.cpp} = ${context.compileForDataSink(source, field.dataType)};`,
+    });
+}
+
 /** The `super(...)` call a constructor statement consists of. */
 /** A method as refusals name it (`Class.method`), or its source text when it has no plain name. */
 function methodLabel(method: ts.MethodDeclaration): string {
@@ -1276,17 +1295,13 @@ export class ClassLowerer {
             // object is storage; its declaration initializer is a
             // store into that slot rather than a second binding.
             if (stored?.classStoredField) {
-                if (member.initializer) {
-                    this.context.emit({
-                        kind: "expression",
-                        code:
-                            `${representedStorage(stored)?.cpp ?? this.context.fail(member, "Stored class field requires represented storage.")} = ` +
-                            `${this.context.compileForDataSink(
-                                member.initializer,
-                                stored.dataType!,
-                            )};`,
-                    });
-                }
+                if (member.initializer)
+                    storeClassField(
+                        this.context,
+                        stored,
+                        member.initializer,
+                        member,
+                    );
                 continue;
             }
             if (!member.initializer) {
@@ -3442,10 +3457,7 @@ export class ClassLowerer {
     ): void {
         const stored = properties[name.text];
         if (stored?.classStoredField) {
-            this.context.emit({
-                kind: "expression",
-                code: `${representedStorage(stored)?.cpp ?? this.context.fail(name, "Stored class field requires represented storage.")} = ${this.context.compileForDataSink(name, stored.dataType!)};`,
-            });
+            storeClassField(this.context, stored, name, name);
         } else {
             writable(properties)[name.text] = this.context.compileValue(name);
         }

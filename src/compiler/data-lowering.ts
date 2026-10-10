@@ -31,8 +31,10 @@ import ts from "typescript";
 import { storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import {
+    belongsToEntryEngine,
     handleCppType,
     isEngineScopedHandleKind,
+    storesOneHandle,
 } from "./data-types/handles.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import {
@@ -3475,9 +3477,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 fieldHandle.kind === "handle" &&
                 !fieldHandle.ownedEngine &&
                 fieldHandle.handle === candidateHandle.handle &&
-                // The plain field stores the very handle the pair holds;
-                // textures convert between stored, file and solid storages.
-                fieldHandle.handle !== "texture" &&
+                // The plain field stores the very handle the pair holds.
+                storesOneHandle(fieldHandle.handle) &&
                 this.context.dataTypes.cppType(fieldHandle) ===
                     handleCppType(fieldHandle.handle)
                     ? field.type
@@ -3506,10 +3507,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.dataTypes.requireEngineFieldStorage(
                     field,
                     node,
-                    targetHandle !==
-                        (field.type.kind === "optional"
-                            ? field.type.inner
-                            : field.type),
+                    true,
                 );
             return {
                 ...field,
@@ -6311,12 +6309,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                               ownerIndex,
                               access,
                           )
-                        : !common.engineCpp &&
-                            possible.some(
-                                (candidate) => candidate.engineCarriersDisagree,
-                            )
-                          ? { ...common, engineCarriersDisagree: true }
-                          : common;
+                        : common;
                 }
                 return value;
             }
@@ -7287,15 +7280,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // every mesh intrinsic and property assignment works on a
             // mesh read out of a struct or array exactly as it does on
             // a mesh local. The Window document has its own UI owner.
-            const engineCpp =
-                dataType.handle.startsWith("text-") ||
-                dataType.handle === "node-input"
-                    ? undefined
-                    : dataType.handle === "picking-info"
-                      ? `bbl::picking_engine(${cpp})`
-                      : dataType.handle === "ui-element"
-                        ? documentEngine(this.context, this.context.sourceFile)
-                        : this.context.defaultEngine();
+            const engineCpp = belongsToEntryEngine(dataType.handle)
+                ? this.context.defaultEngine()
+                : dataType.handle === "picking-info"
+                  ? `bbl::picking_engine(${cpp})`
+                  : dataType.handle === "ui-element"
+                    ? documentEngine(this.context, this.context.sourceFile)
+                    : undefined;
             return valueForKind(
                 dataType.handle === "property-animation-group"
                     ? "animation-group"
@@ -8311,6 +8302,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 node,
             );
             return this.context.dataTypes.enumFindStringCpp(type, text, node);
+        }
+        // A query compares an owned key's engine by identity and never
+        // stores it, so it borrows the engine rather than owning it.
+        if (
+            type.kind === "handle" &&
+            type.ownedEngine &&
+            value.engineCpp &&
+            !(value.dataType?.kind === "handle" && value.dataType.ownedEngine)
+        ) {
+            const raw = this.compileKnownValueForSink(
+                value,
+                { kind: "handle", handle: type.handle },
+                node,
+            );
+            return `${this.context.dataTypes.cppType(type)}{bbl::StoredEngine::borrowed(${this.context.requireEngine(value, node)}), ${raw}}`;
         }
         return this.compileKnownValueForSink(value, type, node);
     }
@@ -14590,9 +14596,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
         right: ts.Expression,
     ): void {
-        const source = this.context.dataTypes.resolveTypeParameter(
-            this.context.checker.getTypeAtLocation(right),
-        );
         const owner = this.dataTypeAt(left.expression);
         const held = owner?.kind === "optional" ? owner.inner : owner;
         if (held?.kind !== "struct") return;
@@ -14601,20 +14604,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : ts.isStringLiteralLike(left.argumentExpression)
               ? left.argumentExpression.text
               : undefined;
-        for (const field of this.context.dataTypes.structFields(
-            held.name,
-            left,
-            "accessors",
-        ))
-            if (name === undefined || field.sourceName === name) {
-                this.context.dataTypes.requireEngineFieldStorage(field, left);
-                this.context.dataTypes.requireOwnUndefinedField(
-                    held.name,
-                    field,
-                    source,
-                    right,
-                );
-            }
+        const named =
+            name === undefined
+                ? undefined
+                : this.context.dataTypes.findStructField(held.name, name, left);
+        const fields =
+            name === undefined
+                ? this.context.dataTypes.structFields(
+                      held.name,
+                      left,
+                      "accessors",
+                  )
+                : named
+                  ? [named]
+                  : [];
+        if (!fields.length) return;
+        const source = this.context.dataTypes.resolveTypeParameter(
+            this.context.checker.getTypeAtLocation(right),
+        );
+        for (const field of fields) {
+            this.context.dataTypes.requireEngineFieldStorage(field, left);
+            this.context.dataTypes.requireOwnUndefinedField(
+                held.name,
+                field,
+                source,
+                right,
+            );
+        }
     }
 
     /**
@@ -19214,49 +19230,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         }
         const sourceElement = iterated?.element;
-        // Engine-owned resources spread into plain handle storage keep the
-        // handle of each owned pair.
-        if (
-            iterated &&
+        const targetElement = dataType.element;
+        const sameHandle =
             sourceElement?.kind === "handle" &&
-            dataType.element.kind === "handle" &&
-            sourceElement.handle === dataType.element.handle &&
-            sourceElement.ownedEngine &&
-            !dataType.element.ownedEngine
-        ) {
-            const item = this.context.allocateTemporaryCppName("spread_item");
-            return {
-                ...this.leafValue(
-                    `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +
-                        `${iterated.range.cpp}, [](const auto& ${item}) { return ${item}.second; })`,
-                    dataType,
-                ),
-                freshSpread: true,
-            };
-        }
+            targetElement.kind === "handle" &&
+            sourceElement.handle === targetElement.handle;
         // Resources spread into engine-owned storage pair each handle with
         // the one engine their elements are proven to share.
         if (
             iterated &&
-            sourceElement?.kind === "handle" &&
-            dataType.element.kind === "handle" &&
-            sourceElement.handle === dataType.element.handle &&
+            sameHandle &&
             !sourceElement.ownedEngine &&
-            dataType.element.ownedEngine
+            targetElement.ownedEngine
         ) {
             const members =
                 iterated.range.staticElements ?? iterable.staticElements;
             const proof = iterated.range.engineCpp
                 ? iterated.range
-                : members?.length &&
-                    members.every(
-                        (member) =>
-                            member.engineCpp !== undefined &&
-                            member.engineCpp === members[0]!.engineCpp,
-                    )
-                  ? members[0]
+                : members?.length
+                  ? commonResourceValue(members[0]!, members)
                   : undefined;
-            if (!proof)
+            if (!proof?.engineCpp)
                 return this.context.fail(
                     spread,
                     "Array spread into engine-owned resource storage requires one proved engine.",
@@ -19273,15 +19267,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 freshSpread: true,
             };
         }
-        // Lanes of another scalar spelling, or records seen through the
+        // Lanes of another scalar spelling, records seen through the
         // target's record type (projected as a readonly view's elements
-        // are), convert one by one.
+        // are), or engine-owned resources stored as plain handles convert
+        // one by one.
         if (
             iterated &&
             sourceElement &&
             !dataTypesEqual(sourceElement, dataType.element) &&
-            ((["string", "enum"].includes(sourceElement.kind) &&
-                ["string", "enum"].includes(dataType.element.kind)) ||
+            (sameHandle ||
+                (["string", "enum"].includes(sourceElement.kind) &&
+                    ["string", "enum"].includes(dataType.element.kind)) ||
                 (sourceElement.kind === "struct" &&
                     dataType.element.kind === "struct") ||
                 (sourceElement.kind === "promise" &&

@@ -2672,7 +2672,7 @@ test("retains lexical constant-expression tuple arrays for runtime break", () =>
     const range = /const auto&? (\w+) = v_fn\d+_shots;/.exec(result.cpp);
     assert.ok(range);
     const iteration = new RegExp(
-        `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] auto (\\w+) = bbl::js::snapshot_value\\(${range[1]}\\[\\1\\]\\);`,
+        `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] const auto& (\\w+) = ${range[1]}\\[\\1\\];`,
     ).exec(result.cpp);
     assert.ok(iteration);
     assert.match(
@@ -2779,29 +2779,39 @@ test("spreads a native partial struct into a wider struct", () => {
         options.enabled = item.label !== undefined;
     `);
 
-    const spread = /auto (\w+) = bbl::js::snapshot_value\(v_options\);/.exec(
-        result.cpp,
-    );
-    assert.ok(spread);
-    const owner = spread[1]!;
-    assert.match(result.cpp, /bbl::js::JsonValue v_item =/);
-    assert.ok(
-        result.cpp.includes(
-            'own.emplace_back("id", bbl::js::json_value(3.0));',
-        ),
-    );
-    for (const key of ["label", "enabled"]) {
-        assert.ok(
-            result.cpp.includes(
-                `if (${owner}.${key}.has_value()) own.emplace_back("${key}", bbl::js::json_value((*${owner}.${key})));`,
+    // Nothing reads a copied key's presence, so an own undefined needs no
+    // document: the wider record stays native and copies present fields.
+    assert.match(result.cpp, /bblscene::Item v_item\{\};/);
+    for (const key of ["label", "enabled"])
+        assert.match(
+            result.cpp,
+            new RegExp(
+                String.raw`if \(v_options\.${key}\.has_value\(\)\) \{\s*v_item\.${key} = \(\*v_options\.${key}\);`,
             ),
         );
-    }
     assert.ok(
         result.cpp.includes(
-            'v_options.enabled = bbl::js::Nullable<bool>{!(v_item.read_property("label").is_undefined())};',
+            "v_options.enabled = bbl::js::Nullable<bool>{v_item.label.has_value()};",
         ),
     );
+
+    // Reading a copied key's presence keeps an own undefined apart from a
+    // missing key, which only a document records.
+    const observed = compileSource(`
+        interface Options {
+            label?: string;
+            enabled?: boolean;
+        }
+        interface Item {
+            id: number;
+            label?: string;
+            enabled?: boolean;
+        }
+        const options: Options = { label: "ready" };
+        const item: Item = { id: 3, ...options };
+        options.enabled = "label" in item;
+    `);
+    assert.match(observed.cpp, /bbl::js::JsonValue v_item =/);
 });
 
 test("lowers array callbacks through one native iteration protocol", () => {
@@ -8015,7 +8025,7 @@ test("iterates strings through their JavaScript characters", () => {
     assert.match(
         result.cpp,
         new RegExp(
-            `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] auto (\\w+) = bbl::js::snapshot_value\\(${range[1]}\\[\\1\\]\\);\\s+\\[\\[maybe_unused\\]\\] std::string \\w+ = \\2;`,
+            `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] const auto& (\\w+) = ${range[1]}\\[\\1\\];\\s+\\[\\[maybe_unused\\]\\] std::string \\w+ = \\2;`,
         ),
     );
 });
@@ -13547,11 +13557,11 @@ test("reads mesh.parent as the nullable handle setParent owns", () => {
     );
     assert.ok(receiver);
     const pair = `(*${receiver[1]})`;
-    const engine = `(*(${pair}).first)`;
-    const parent = `bbl::handle_at(${engine}.meshes, (${pair}).second).parent`;
+    // Reads name the entry's engine; the stored parent keeps the pair's owner.
+    const parent = `bbl::handle_at(v_engine.meshes, (${pair}).second).parent`;
     const assignment =
         `v_current = bbl::js::Nullable<${ownedMesh}>{((${parent}.value != bbl::invalid_handle) ? ` +
-        `bbl::js::Nullable<${ownedMesh}>{${ownedMesh}{bbl::StoredEngine{${engine}}, ${parent}}} : ` +
+        `bbl::js::Nullable<${ownedMesh}>{${ownedMesh}{bbl::StoredEngine{(*(${pair}).first)}, ${parent}}} : ` +
         `bbl::js::Nullable<${ownedMesh}>{std::nullopt})}.to_optional();`;
     assert.ok(result.cpp.includes(assignment));
     assert.ok(result.cpp.indexOf(receiver[0]) < result.cpp.indexOf(assignment));
@@ -13763,7 +13773,8 @@ test("stores and fills a nullable mesh local", () => {
     );
     assert.ok(receiver);
     const pair = `(*${receiver[1]})`;
-    const engine = `(*(${pair}).first)`;
+    // The entry's engine is in scope: the pair's engine is that engine.
+    const engine = "v_engine";
     assert.ok(
         result.cpp.includes(
             `bbl::handle_at(${engine}.meshes, (${pair}).second).position.y = 2.0;`,
@@ -19846,7 +19857,7 @@ function assertAnimationSeekSelection(
     if (isOwnedSharedResult(receiver) && ownedCompared) {
         assert.ok(
             cpp.includes(
-                `bbl::set_animation_current_time((*(${receiver}).first), (${receiver}).second, (bbl::js::detail::same_value_zero(${receiver}, ${compared}) ? 0.25 : 1.5));`,
+                `bbl::set_animation_current_time(v_engine, (${receiver}).second, (bbl::js::detail::same_value_zero(${receiver}, ${compared}) ? 0.25 : 1.5));`,
             ),
         );
         return;
@@ -19913,12 +19924,12 @@ test("binds a loader group collection, resolves finds statically, and erases the
     // The tuple local reaches addAnimationGroups as the selected pair.
     assert.match(
         result.cpp,
-        /bbl::add_animation_groups\(v_manager, \(\*\(v_idle\)\.first\), std::vector<bbl::AnimationGroupHandle>\{\(v_idle\)\.second, \(v_sadPose\)\.second\}\)/,
+        /bbl::add_animation_groups\(v_manager, v_engine, std::vector<bbl::AnimationGroupHandle>\{\(v_idle\)\.second, \(v_sadPose\)\.second\}\)/,
     );
     // setAnimationAdditive: frame zero through the pinned conversion.
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(\(\*\(v_sadPose\)\.first\), \(v_sadPose\)\.second, 0\.0\)/,
+        /bbl::set_animation_additive_from_frame\(v_engine, \(v_sadPose\)\.second, 0\.0\)/,
     );
     // Each selected receiver keeps the owner-aware identity branch
     // that chooses its source seek value.
@@ -19956,7 +19967,7 @@ test("preserves animation group selection through mutable and readonly array ali
         assert.equal(
             [
                 ...result.cpp.matchAll(
-                    /bbl::add_animation_groups\(v_manager, \(\*\(v_idle\)\.first\), std::vector<bbl::AnimationGroupHandle>\{\(v_idle\)\.second, \(v_sadPose\)\.second\}\)/g,
+                    /bbl::add_animation_groups\(v_manager, v_engine, std::vector<bbl::AnimationGroupHandle>\{\(v_idle\)\.second, \(v_sadPose\)\.second\}\)/g,
                 ),
             ].length,
             2,
@@ -19991,7 +20002,7 @@ test("cross-fades glTF groups without enabling or replacing their mixer", () => 
     assert.match(result.cpp, /bbl::enable_animation_blending\(v_manager\)/);
     assert.match(
         result.cpp,
-        /bbl::cross_fade_animation_groups\(v_manager, \(\*\(v_idle\)\.first\), bbl::AnimationWeightFadeTarget::from_gltf\(\(v_idle\)\.second\), bbl::AnimationWeightFadeTarget::from_gltf\(\(v_sadPose\)\.second\), 1000\.0, 1\.0\)/,
+        /bbl::cross_fade_animation_groups\(v_manager, v_engine, bbl::AnimationWeightFadeTarget::from_gltf\(\(v_idle\)\.second\), bbl::AnimationWeightFadeTarget::from_gltf\(\(v_sadPose\)\.second\), 1000\.0, 1\.0\)/,
     );
     assert.ok(result.manifest.features.includes("animation:gltf-blending"));
     assert.ok(result.manifest.features.includes("animation:weight-fades"));
@@ -20106,11 +20117,11 @@ test("setAnimationAdditive resolves its options at generation exactly where the 
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive\(\(\*\(v_idle\)\.first\), \(v_idle\)\.second, 0\.5\)/,
+        /bbl::set_animation_additive\(v_engine, \(v_idle\)\.second, 0\.5\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(\(\*\(v_other\)\.first\), \(v_other\)\.second, 0\.0\)/,
+        /bbl::set_animation_additive_from_frame\(v_engine, \(v_other\)\.second, 0\.0\)/,
     );
 });
 

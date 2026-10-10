@@ -4458,6 +4458,13 @@ public:
           lifetime_(engine ? engine->lifetime.token() : std::weak_ptr<const int>{}),
           owner_(std::move(engine)) {}
 
+    /** A lookup key naming `engine` by identity alone; it is never dereferenced or stored. */
+    [[nodiscard]] static StoredEngine borrowed(Engine& engine) noexcept {
+        StoredEngine key;
+        key.pointer_ = &engine;
+        return key;
+    }
+
     [[nodiscard]] Engine& operator*() const {
         if (!pointer_ || lifetime_.expired())
             throw std::runtime_error("Stored engine context is no longer live.");

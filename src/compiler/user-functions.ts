@@ -4852,12 +4852,12 @@ export class UserFunctionLowerer {
                         }
                         const { type, cppName: name } = supplied;
                         if (
-                            context.dataTypes.requiresEngineParameterStorage(
-                                parameter.declaration,
-                            ) &&
                             !dataTypesEqual(
                                 type,
-                                context.dataTypes.collectionKeyStorage(type),
+                                context.dataTypes.engineParameterStorage(
+                                    parameter.declaration,
+                                    type,
+                                ),
                             )
                         )
                             context.dataTypes.requireEngineParameterStorage(
@@ -5316,14 +5316,11 @@ export class UserFunctionLowerer {
         value: Value,
         node: ts.Node,
     ): Value {
-        if (
-            !value.dataType ||
-            !context.dataTypes.requiresEngineParameterStorage(
-                parameter.declaration,
-            )
-        )
-            return value;
-        const owned = context.dataTypes.collectionKeyStorage(value.dataType);
+        if (!value.dataType) return value;
+        const owned = context.dataTypes.engineParameterStorage(
+            parameter.declaration,
+            value.dataType,
+        );
         if (dataTypesEqual(owned, value.dataType)) return value;
         return withNativeMetadata(
             context.dataLowerer.leafValue(

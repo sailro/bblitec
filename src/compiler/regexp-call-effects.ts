@@ -88,8 +88,13 @@ function facts(
             file,
             (node) => {
                 if (ts.isIdentifier(node)) {
+                    // Receivers and their aliases are constants; only their
+                    // references are ever checked.
                     const symbol = resolvedSymbol(checker, node);
-                    if (symbol) {
+                    if (
+                        symbol?.valueDeclaration &&
+                        constant(symbol.valueDeclaration)
+                    ) {
                         const references = result.references.get(symbol) ?? [];
                         references.push(node);
                         result.references.set(symbol, references);

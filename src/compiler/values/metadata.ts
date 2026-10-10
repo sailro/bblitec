@@ -228,6 +228,19 @@ export type ValueMetadataPayloads = {
 
 export type ValueMetadataKey = keyof ValueMetadataPayloads["data"];
 
+/**
+ * Metadata strings bound to the source value's own storage: C++ spellings
+ * that read it, or the storage form it holds.
+ */
+export const spelledMetadataFields: ReadonlySet<ValueMetadataKey> = new Set([
+    "runtimeCallbackIdentityCpp",
+    "runtimeRecordCpp",
+    "spriteLayerCpp",
+    "animationFrameRate",
+    "animationDuration",
+    "textureStorage",
+] as const);
+
 export function metadataFieldsForKind(
     kind: ValueKind,
 ): readonly ValueMetadataKey[] {
