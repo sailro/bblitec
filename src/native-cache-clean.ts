@@ -1,4 +1,11 @@
-import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
+import {
+    existsSync,
+    lstatSync,
+    mkdirSync,
+    readdirSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 interface CacheEntry {
@@ -81,6 +88,55 @@ export function oldNativeCacheEntries(
         }
     }
     return result.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/**
+ * Entries of a result cache whose every entry is one top-level file or
+ * folder (`artifacts/code-quality-cache`, `artifacts/native-fixture-cache`)
+ * unused for `days`: last used is the newest time inside it.
+ */
+export function oldResultCacheEntries(
+    root: string,
+    days = 30,
+    now = Date.now(),
+): CacheEntry[] {
+    if (!Number.isFinite(days) || days <= 0)
+        throw new Error("clean: --cache-days must be a positive number.");
+    if (!existsSync(root) || !unlinkedPath(root)) return [];
+    const cutoff = now - days * 86_400_000;
+    const result: CacheEntry[] = [];
+    for (const name of readdirSync(root)) {
+        if (name === prunedMarker) continue;
+        const path = join(root, name);
+        const state = cacheEntryState(path);
+        if (state && state.lastUsedMs < cutoff) result.push({ path, ...state });
+    }
+    return result.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export function pruneResultCache(root: string, days = 30): CacheEntry[] {
+    const removed: CacheEntry[] = [];
+    for (const entry of oldResultCacheEntries(root, days)) {
+        const current = cacheEntryState(entry.path);
+        if (!current || current.lastUsedMs >= Date.now() - days * 86_400_000)
+            continue;
+        rmSync(entry.path, { recursive: true, force: true });
+        removed.push(entry);
+    }
+    return removed;
+}
+
+/** The marker whose time records a result cache's last pruning pass. */
+const prunedMarker = ".pruned";
+
+/** Prunes a result cache at most once a day, so opening one stays cheap. */
+export function pruneResultCacheDaily(root: string, days = 30): void {
+    const marker = join(root, prunedMarker);
+    const pruned = existsSync(marker) ? lstatSync(marker).mtimeMs : undefined;
+    if (pruned !== undefined && Date.now() - pruned < 86_400_000) return;
+    mkdirSync(root, { recursive: true });
+    writeFileSync(marker, "");
+    pruneResultCache(root, days);
 }
 
 /** Recheck the paths and age at deletion, including a concurrent configure's touch. */

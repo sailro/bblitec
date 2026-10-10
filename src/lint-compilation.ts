@@ -208,22 +208,42 @@ export function lintCompilationKey(
     return JSON.stringify([entry.file, normalized]);
 }
 
-/** Indices retain every original build context, including commands we cannot compare. */
+/**
+ * Indices retain every original build context, including commands we cannot
+ * compare; a group's key is undefined for those.
+ */
 export function lintCompilationGroups(
     entries: readonly (CompilationCommand | undefined)[],
     pchDigest: (absolutePath: string) => string,
-): number[][] {
-    const groups: number[][] = [];
+): { key: string | undefined; indices: number[] }[] {
+    const groups: { key: string | undefined; indices: number[] }[] = [];
     const byKey = new Map<string, number[]>();
     entries.forEach((entry, index) => {
         const key = entry && lintCompilationKey(entry, pchDigest);
         const existing = key === undefined ? undefined : byKey.get(key);
         if (existing) existing.push(index);
         else {
-            const group = [index];
-            groups.push(group);
-            if (key !== undefined) byKey.set(key, group);
+            const indices = [index];
+            groups.push({ key, indices });
+            if (key !== undefined) byKey.set(key, indices);
         }
     });
     return groups;
+}
+
+/** The file a compile command writes (`/Fo`, `/Fo:`, `/Fo <path>`, `-o <path>`), resolved. */
+export function commandOutput(entry: CompilationCommand): string | undefined {
+    const args = commandArguments(entry);
+    for (let index = 0; index < args.length; ++index) {
+        const argument = args[index]!;
+        const fo = /^[/-]Fo:?(.*)$/.exec(argument);
+        const path =
+            fo !== null
+                ? fo[1] || args[index + 1]
+                : argument === "-o"
+                  ? args[index + 1]
+                  : undefined;
+        if (path) return resolve(entry.directory, path);
+    }
+    return undefined;
 }

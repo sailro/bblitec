@@ -25,6 +25,7 @@ import {
 } from "../src/feature-macros.js";
 import { developmentVcpkgInstall } from "../src/vcpkg-install.js";
 import { sceneAggregateSources } from "../src/native-scene-sources.js";
+import { runFixtureCompiler } from "./native-fixture-cache.js";
 
 /** The development vcpkg install for `triplet` (the one scene builds link against). */
 export function developmentVcpkgRoot(triplet = "x64-windows"): string {
@@ -354,28 +355,21 @@ function nativeFixtureArguments(
     ];
 }
 
+/**
+ * Runs the fixture compiler, reusing a stored build whose command and every
+ * input it read are unchanged (`native-fixture-cache.ts`).
+ * `BBLITE_FIXTURE_CACHE=0` always compiles.
+ */
 export function runNativeFixtureCompiler(
     tools: WindowsBuildTools,
     arguments_: readonly string[],
 ): void {
-    try {
-        execFileSync(
-            tools.compiler,
-            nativeFixtureArguments(tools, arguments_),
-            {
-                cwd: resolve("."),
-                env: tools.environment,
-                stdio: "pipe",
-                windowsHide: true,
-            },
-        );
-    } catch (error) {
-        const failure = error as Error & { stdout?: Buffer; stderr?: Buffer };
-        throw new Error(
-            `${failure.message}\n${failure.stdout?.toString() ?? ""}\n${failure.stderr?.toString() ?? ""}`,
-            { cause: error },
-        );
-    }
+    runFixtureCompiler(
+        tools.compiler,
+        tools.environment,
+        nativeFixtureArguments(tools, arguments_),
+        resolve("."),
+    );
 }
 
 /**

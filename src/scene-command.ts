@@ -5,7 +5,9 @@ import "./tooling/compile-cache.js";
 import { spawn, spawnSync } from "node:child_process";
 import {
     oldNativeCacheEntries,
+    oldResultCacheEntries,
     pruneNativeCache,
+    pruneResultCache,
 } from "./native-cache-clean.js";
 import { availableParallelism, totalmem } from "node:os";
 import {
@@ -2818,6 +2820,10 @@ const isDllFile = (name: string): boolean =>
 
 function runClean(options: CleanOptions): void {
     const nativeCacheRoot = resolve("artifacts", "native-cache");
+    const resultCacheRoots = [
+        resolve(artifactDirectory("code-quality-cache")),
+        resolve(artifactDirectory("native-fixture-cache")),
+    ];
     if (options.cacheDays <= 0)
         throw new Error("clean: --cache-days must be a positive number.");
     if (
@@ -2832,7 +2838,7 @@ function runClean(options: CleanOptions): void {
             "clean: pass --report (list sizes, delete nothing), --orphans (delete build trees and generated/ entries " +
                 "no registry entry owns), --all (also delete every owned build tree; owned generated/ directories always stay), " +
                 "--pch / --dlls (delete the precompiled headers / DLL copies inside native/build-*; the next build restores them), " +
-                "and/or --artifacts (delete unowned artifacts). --orphans, --all and --artifacts also prune native support inputs unused for --cache-days (default 30).",
+                "and/or --artifacts (delete unowned artifacts). --orphans, --all and --artifacts also prune native support inputs and the clang-tidy and fixture result caches unused for --cache-days (default 30).",
         );
     }
     let removed = 0;
@@ -2914,6 +2920,12 @@ function runClean(options: CleanOptions): void {
         console.log(
             `  native-cache support inputs: ${oldCache.length} expired entries, ${gigabytes(oldCache.reduce((sum, entry) => sum + entry.bytes, 0))} (unused for ${options.cacheDays} days; --orphans/--all/--artifacts)`,
         );
+        for (const root of resultCacheRoots) {
+            const old = oldResultCacheEntries(root, options.cacheDays);
+            console.log(
+                `  ${relative(".", root)}: ${old.length} expired entries, ${gigabytes(old.reduce((sum, entry) => sum + entry.bytes, 0))} (unused for ${options.cacheDays} days; --orphans/--all/--artifacts)`,
+            );
+        }
         console.log(
             `  native/build-*: ${trees.length} tree(s), ${gigabytes(owned + orphan)} ` +
                 `(owned ${gigabytes(owned)}, orphan ${gigabytes(orphan)} in ${trees.filter((tree) => !ownedBuilds.has(tree)).length})`,
@@ -3007,6 +3019,14 @@ function runClean(options: CleanOptions): void {
             console.log(
                 `clean: pruned ${pruned.length} old native support inputs (${gigabytes(pruned.reduce((sum, entry) => sum + entry.bytes, 0))}); process --cold restores them.`,
             );
+        for (const root of resultCacheRoots) {
+            const results = pruneResultCache(root, options.cacheDays);
+            removed += results.length;
+            if (results.length > 0)
+                console.log(
+                    `clean: pruned ${results.length} old ${relative(".", root)} entries (${gigabytes(results.reduce((sum, entry) => sum + entry.bytes, 0))}); the next run recomputes them.`,
+                );
+        }
     }
     console.log(
         removed === 0
@@ -3263,7 +3283,7 @@ const COMMANDS: readonly CommandSpec[] = [
             ],
         },
         summary:
-            "disk hygiene: --report sizes; --orphans unowned trees; --all owned build trees; --pch/--dlls duplicated payloads; --artifacts unowned artifacts; --orphans/--all/--artifacts prune native cache inputs older than --cache-days (30)",
+            "disk hygiene: --report sizes; --orphans unowned trees; --all owned build trees; --pch/--dlls duplicated payloads; --artifacts unowned artifacts; --orphans/--all/--artifacts prune native cache inputs and result caches older than --cache-days (30)",
         lock: true,
     },
     {

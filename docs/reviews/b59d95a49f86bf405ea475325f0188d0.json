@@ -1,0 +1,54 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Each build's Ninja dependency log is read once, concurrently, and also serves the precompiled-header freshness check through one parser and one newerInput rule.",
+      "applied": true
+    },
+    {
+      "summary": "One commandOutput helper reads /Fo, /Fo:, a separated /Fo and -o for the precompiled-header outputs and the lint cache.",
+      "applied": true
+    },
+    {
+      "summary": "lintCompilationGroups returns the key it computed; result keys and inputs are computed only for the unit that runs, with one stat per path per run.",
+      "applied": true
+    },
+    {
+      "summary": "Both caches identify files with the shared inputIdentity, hash with hashEntries and read the environment through environmentValue.",
+      "applied": true
+    },
+    {
+      "summary": "The lint result key is built from the clang-tidy executable's identity and the arguments it runs with.",
+      "applied": true
+    },
+    {
+      "summary": "One unused-for-N-days prune serves both caches daily and clean --cache-days, which also reports them.",
+      "applied": true
+    },
+    {
+      "summary": "The fixture cache has one entry point owning /showIncludes and its notes; the plan exposes its sources instead of a second source pattern.",
+      "applied": true
+    },
+    {
+      "summary": "Fixture keys include CL, _CL_, LINK and _LINK_ and the libraries a /LIBPATH: folder supplies.",
+      "applied": true
+    },
+    {
+      "summary": "Stored fixture headers carry their size and time, so a hit rereads only changed headers, and a new build replaces older variants of its command.",
+      "applied": true
+    },
+    {
+      "summary": "Paths inside the checkout enter both caches' keys relative to it, and setup-worktree shares both caches.",
+      "applied": true
+    },
+    {
+      "summary": "A linking fixture command stores only its executable, and the unused stored output list and refusals no fixture reaches are removed.",
+      "applied": true
+    }
+  ]
+}

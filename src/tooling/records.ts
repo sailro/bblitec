@@ -18,7 +18,7 @@ import {
     statSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
 /**
@@ -140,6 +140,34 @@ export function toolIdentity(path: string | undefined): string {
 export function contentIdentity(path: string): string {
     if (!existsSync(path)) return "missing";
     return contentDigest(path);
+}
+
+/**
+ * `text` with every spelling of the checkout root `root` (either slash,
+ * any case) replaced, so a key computed in one worktree matches another's.
+ */
+export function withoutRepositoryRoot(text: string, root: string): string {
+    const spellings = [
+        ...new Set([
+            resolve(root),
+            resolve(root).replaceAll("\\", "/"),
+            resolve(root).replaceAll("/", "\\"),
+        ]),
+    ].map((spelling) => spelling.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return text.replace(new RegExp(spellings.join("|"), "gi"), "<root>");
+}
+
+/**
+ * One input's identity. A repository file is its bytes; a file outside the
+ * repository (an installed compiler, an SDK header) is a tool, which no
+ * checkout rewrites and which is too large to read for nothing.
+ */
+export function inputIdentity(input: string, repositoryRoot: string): string {
+    const path = resolve(repositoryRoot, input);
+    const inside = relative(repositoryRoot, path);
+    return inside.startsWith("..") || isAbsolute(inside)
+        ? toolIdentity(path)
+        : contentIdentity(path);
 }
 
 /**
