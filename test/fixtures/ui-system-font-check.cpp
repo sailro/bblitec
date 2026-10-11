@@ -9,6 +9,7 @@ using Style = Rml::Style::FontStyle;
 using Key = std::tuple<std::string, Style, Weight>;
 
 struct Renderer final : Rml::FontEngineInterface {
+    Rml::FontFaceHandle face = std::make_shared<int>(0);
     std::set<Key> loaded;
     int loads = 0;
     int last_index = 0;
@@ -25,10 +26,10 @@ struct Renderer final : Rml::FontEngineInterface {
         return LoadFontFace("memory", index, family, style, weight, fallback);
     }
     Rml::FontFaceHandle GetFontFaceHandle(const Rml::String& family, Style style, Weight weight,
-                                          int) override {
+                                          float) override {
         assert(family == Rml::StringUtilities::ToLower(family));
         last_query_weight = weight;
-        return loaded.contains(Key{family, style, weight}) ? 1 : 0;
+        return loaded.contains(Key{family, style, weight}) ? face : nullptr;
     }
     void Shutdown() override { loaded.clear(); }
 };
@@ -51,7 +52,8 @@ int main() {
     Renderer renderer;
     bbl::pal::SystemUiFontEngine engine(renderer, "static");
     const auto request = [&](std::string family, int weight, Style style = Style::Normal) {
-        assert(engine.GetFontFaceHandle(family, style, static_cast<Weight>(weight), 16) == 1);
+        assert(engine.GetFontFaceHandle(family, style, static_cast<Weight>(weight), 16) ==
+               renderer.face);
     };
     request("variable", 650);
     assert(renderer.loaded.contains(Key{"variable", Style::Normal, static_cast<Weight>(600)}));

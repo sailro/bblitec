@@ -60,7 +60,7 @@ int main() {
         return engine.GetStringWidth(face, value, shaping, Rml::Character::Null);
     };
     engine.take_cpu_sample();
-    const int cache_width = measured(segoe, "Cache", context);
+    const float cache_width = measured(segoe, "Cache", context);
     assert(engine.take_cpu_sample().shapes == 1);
     assert(measured(segoe, "Cache", context) == cache_width);
     auto sample = engine.take_cpu_sample();
@@ -90,7 +90,7 @@ int main() {
     assert(sample.shapes == 0 && sample.cache_hits == 1); // Keys own language bytes.
     engine.GetStringWidth(segoe, "Cache", context, Rml::Character{'A'});
     sample = engine.take_cpu_sample();
-    assert(sample.width_fallback == 1 && sample.cache_hits == 0 && sample.shapes == 0);
+    assert(sample.width_fallback == 0 && sample.shapes == 2);
     const Rml::String missing = "\xf4\x8f\xbf\xbf";
     engine.GetStringWidth(segoe, missing, context, Rml::Character::Null);
     engine.GetStringWidth(segoe, missing, context, Rml::Character::Null);
@@ -119,22 +119,54 @@ int main() {
                               Rml::Character::Null);
     // Fewer than 256 entries still evict when owned strings/vectors exceed 64 KiB.
     assert(engine.take_cpu_sample().cache_evictions > 0);
-    assert(engine.GetStringWidth(consolas, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", context,
-                                 Rml::Character::Null) == 186);
+    assert(std::abs(engine.GetStringWidth(consolas, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", context,
+                                          Rml::Character::Null) -
+                    186) < .5f);
     // Browser widths: OpenType GPOS differs from the font's legacy kern table.
-    assert(engine.GetStringWidth(segoe,
-                                 "WeightWeightWeightWeightWeightWeightWeightWeightWeightWeight",
-                                 context, Rml::Character::Null) == 410);
-    assert(engine.GetStringWidth(
-               segoe, "OpacityOpacityOpacityOpacityOpacityOpacityOpacityOpacityOpacityOpacity",
-               context, Rml::Character::Null) == 439);
+    assert(std::abs(engine.GetStringWidth(
+                        segoe, "WeightWeightWeightWeightWeightWeightWeightWeightWeightWeight",
+                        context, Rml::Character::Null) -
+                    410) < .5f);
+    assert(std::abs(engine.GetStringWidth(
+                        segoe,
+                        "OpacityOpacityOpacityOpacityOpacityOpacityOpacityOpacityOpacityOpacity",
+                        context, Rml::Character::Null) -
+                    439) < .5f);
     context.font_kerning = Rml::Style::FontKerning::None;
-    assert(engine.GetStringWidth(segoe,
-                                 "WeightWeightWeightWeightWeightWeightWeightWeightWeightWeight",
-                                 context, Rml::Character::Null) == 415);
+    assert(std::abs(engine.GetStringWidth(
+                        segoe, "WeightWeightWeightWeightWeightWeightWeightWeightWeightWeight",
+                        context, Rml::Character::Null) -
+                    415) < .5f);
     context.font_kerning = Rml::Style::FontKerning::Auto;
     auto* layout = Rml::CreateContext("font-coverage", {320, 100});
     assert(layout);
+    {
+        // A missing emoji must not change the renderer of the surrounding text.
+        const Rml::String tool = "\xf0\x9f\x9b\xa0";
+        const auto color = Rml::Colourb{230, 237, 243}.ToPremultiplied();
+        Rml::TexturedMeshList ordinary, mixed;
+        const float a = engine.GenerateString(layout->GetRenderManager(), segoe, 0, "A", {0, 20},
+                                              color, 1, context, ordinary);
+        const float missing_width = measured(segoe, tool, context);
+        const float b = measured(segoe, "B", context);
+        engine.take_cpu_sample();
+        const float width =
+            engine.GenerateString(layout->GetRenderManager(), segoe, 0, "A" + tool + "B", {0, 20},
+                                  color, 1, context, mixed);
+        sample = engine.take_cpu_sample();
+        assert(sample.generate_fallback == 1 && sample.cache_hits == 2);
+        assert(std::abs(width - (a + missing_width + b)) < .001f);
+        assert(std::abs(measured(segoe, "A" + tool + "B", context) - width) < .001f);
+        assert(mixed.size() >= 3 && ordinary.size() == 1);
+        assert(mixed[0].texture == ordinary[0].texture);
+        for (std::size_t i = 0; i < 4; ++i)
+            assert(mixed[0].mesh.vertices[i].position == ordinary[0].mesh.vertices[i].position);
+        // A combining sequence follows its missing base into fallback as one unit.
+        engine.take_cpu_sample();
+        measured(segoe, "A" + missing + "\xcc\x81" + "B", context);
+        sample = engine.take_cpu_sample();
+        assert(sample.width_fallback == 1 && sample.cache_hits == 2);
+    }
     {
         measured(consolas, "A", context);
         engine.take_cpu_sample();

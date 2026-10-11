@@ -1,0 +1,289 @@
+Keep text advances fractional through word wrapping, selection and geometry.
+Rounding each word changes line breaks at fractional CSS sizes.
+
+diff --git a/Include/RmlUi/Core/ElementUtilities.h b/Include/RmlUi/Core/ElementUtilities.h
+index 29eb922..dda95a8 100644
+--- a/Include/RmlUi/Core/ElementUtilities.h
++++ b/Include/RmlUi/Core/ElementUtilities.h
+@@ -55,7 +55,7 @@ public:
+ 	/// @param[in] string The string to measure.
+ 	/// @param[in] prior_character The character placed just before this string, used for kerning.
+ 	/// @return The string width, in pixels.
+-	static int GetStringWidth(Element* element, StringView string, Character prior_character = Character::Null);
++	static float GetStringWidth(Element* element, StringView string, Character prior_character = Character::Null);
+ 
+ 	/// Generates the clipping region for an element.
+ 	/// @param[in] element The element to generate the clipping region for.
+diff --git a/Include/RmlUi/Core/FontEngineInterface.h b/Include/RmlUi/Core/FontEngineInterface.h
+index d9dd7a1..158a448 100644
+--- a/Include/RmlUi/Core/FontEngineInterface.h
++++ b/Include/RmlUi/Core/FontEngineInterface.h
+@@ -85,7 +85,7 @@ public:
+ 	/// @param[in] prior_character The optionally-specified character that immediately precedes the string. This may have an impact on the string
+ 	/// width due to kerning.
+ 	/// @return The width, in pixels, this string will occupy if rendered with this handle.
+-	virtual int GetStringWidth(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context,
++	virtual float GetStringWidth(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context,
+ 		Character prior_character = Character::Null);
+ 
+ 	/// Called by RmlUi when it wants to retrieve the meshes required to render a single line of text.
+@@ -99,7 +99,7 @@ public:
+ 	/// @param[in] text_shaping_context Additional parameters that provide context for text shaping.
+ 	/// @param[out] mesh_list A list to place the meshes and textures representing the string to be rendered.
+ 	/// @return The width, in pixels, of the string mesh.
+-	virtual int GenerateString(RenderManager& render_manager, FontFaceHandle face_handle, FontEffectsHandle font_effects_handle, StringView string,
++	virtual float GenerateString(RenderManager& render_manager, FontFaceHandle face_handle, FontEffectsHandle font_effects_handle, StringView string,
+ 		Vector2f position, ColourbPremultiplied colour, float opacity, const TextShapingContext& text_shaping_context, TexturedMeshList& mesh_list);
+ 
+ 	/// Called by RmlUi to determine if the text geometry is required to be re-generated. Whenever the returned version
+diff --git a/Source/Core/DecoratorText.cpp b/Source/Core/DecoratorText.cpp
+index ea0628a..7e98b8f 100644
+--- a/Source/Core/DecoratorText.cpp
++++ b/Source/Core/DecoratorText.cpp
+@@ -66,7 +66,7 @@ bool DecoratorText::GenerateGeometry(Element* element, ElementData& element_data
+ 	const auto& computed = element->GetComputedValues();
+ 	const TextShapingContext text_shaping_context{computed.language(), computed.direction(), computed.font_kerning(), computed.letter_spacing()};
+ 
+-	const int string_width = font_engine_interface->GetStringWidth(font_face_handle, text, text_shaping_context);
++	const float string_width = font_engine_interface->GetStringWidth(font_face_handle, text, text_shaping_context);
+ 
+ 	const FontMetrics& metrics = font_engine_interface->GetFontMetrics(font_face_handle);
+ 	const RenderBox render_box = element->GetRenderBox(element_data.paint_area);
+diff --git a/Source/Core/ElementText.cpp b/Source/Core/ElementText.cpp
+index 7986903..eec0e96 100644
+--- a/Source/Core/ElementText.cpp
++++ b/Source/Core/ElementText.cpp
+@@ -14,7 +14,6 @@
+ #include "ElementDefinition.h"
+ #include "ElementStyle.h"
+ #include "TransformState.h"
+-#include <limits>
+ 
+ namespace Rml {
+ 
+@@ -22,17 +21,6 @@ static bool BuildToken(String& token, const char*& token_begin, const char* stri
+ 	bool break_at_endline, Style::TextTransform text_transformation, bool decode_escape_characters);
+ static bool LastToken(const char* token_begin, const char* string_end, bool collapse_white_space, bool break_at_endline);
+ 
+-static int RoundDownToIntegerClamped(float value)
+-{
+-	constexpr int clamp = (1 << std::numeric_limits<float>::digits);
+-	constexpr float clamp_f = float{clamp};
+-	if (value >= clamp_f)
+-		return clamp;
+-	if (value <= -clamp_f)
+-		return -clamp;
+-	return static_cast<int>(value);
+-}
+-
+ struct TextOverflowResolved {
+ 	bool enabled = false;
+ 	float overflow_width = 0.f;
+@@ -266,20 +254,20 @@ bool ElementText::GenerateLine(String& line, int& line_length, float& line_width
+ 		// Generate the next token and determine its pixel-length.
+ 		bool break_line = BuildToken(token, next_token_begin, string_end, line.empty() && trim_whitespace_prefix, collapse_white_space,
+ 			break_at_endline, text_transform_property, decode_escape_characters);
+-		int token_width = font_engine_interface->GetStringWidth(font_face_handle, token, text_shaping_context, previous_codepoint);
++		float token_width = font_engine_interface->GetStringWidth(font_face_handle, token, text_shaping_context, previous_codepoint);
+ 
+ 		// If we're breaking to fit a line box, check if the token can fit on the line before we add it.
+ 		if (break_at_line)
+ 		{
+ 			const bool is_last_token = LastToken(next_token_begin, string_end, collapse_white_space, break_at_endline);
+-			int max_token_width = RoundDownToIntegerClamped(maximum_line_width - (is_last_token ? line_width + right_spacing_width : line_width));
++			float max_token_width = maximum_line_width - (is_last_token ? line_width + right_spacing_width : line_width);
+ 
+ 			if (token_width > max_token_width)
+ 			{
+ 				if (word_break == WordBreak::BreakAll || ((word_break == WordBreak::BreakWord || overflow_wrap) && line.empty()))
+ 				{
+ 					// Try to break up the word
+-					max_token_width = RoundDownToIntegerClamped(maximum_line_width - line_width);
++					max_token_width = maximum_line_width - line_width;
+ 					const int token_max_size = int(next_token_begin - token_begin);
+ 					const char* partial_string_end = token_begin + token_max_size;
+ 
+diff --git a/Source/Core/ElementUtilities.cpp b/Source/Core/ElementUtilities.cpp
+index 57a2b56..30b2a1f 100644
+--- a/Source/Core/ElementUtilities.cpp
++++ b/Source/Core/ElementUtilities.cpp
+@@ -106,7 +106,7 @@ float ElementUtilities::GetDensityIndependentPixelRatio(Element* element)
+ 	return context->GetDensityIndependentPixelRatio();
+ }
+ 
+-int ElementUtilities::GetStringWidth(Element* element, StringView string, Character prior_character)
++float ElementUtilities::GetStringWidth(Element* element, StringView string, Character prior_character)
+ {
+ 	const auto& computed = element->GetComputedValues();
+ 	const TextShapingContext text_shaping_context{computed.language(), computed.direction(), computed.font_kerning(), computed.letter_spacing()};
+diff --git a/Source/Core/Elements/WidgetTextInput.cpp b/Source/Core/Elements/WidgetTextInput.cpp
+index 6a2dce8..d412b7f 100644
+--- a/Source/Core/Elements/WidgetTextInput.cpp
++++ b/Source/Core/Elements/WidgetTextInput.cpp
+@@ -1329,7 +1329,7 @@ Vector2f WidgetTextInput::FormatText(float height_constraint)
+ 		// the beginning of this line, then this will be empty).
+ 		if (!pre_selection.empty())
+ 		{
+-			const int width = ElementUtilities::GetStringWidth(text_element, pre_selection);
++			const float width = ElementUtilities::GetStringWidth(text_element, pre_selection);
+ 			text_element->AddLine(line_position + Vector2f{GetAlignmentSpecificTextOffset(line), 0}, String(pre_selection));
+ 			line_position.x += width;
+ 		}
+@@ -1342,8 +1342,8 @@ Vector2f WidgetTextInput::FormatText(float height_constraint)
+ 			// the two neighboring characters from each string and compare the string width with and without kerning, which should be much faster.
+ 			const Character left_back = StringUtilities::ToCharacter(StringUtilities::SeekBackwardUTF8(left.end() - 1, left.begin()), left.end());
+ 			const StringView right_front_u8 = StringView(right.begin(), StringUtilities::SeekForwardUTF8(right.begin() + 1, right.end()));
+-			const int width_kerning = ElementUtilities::GetStringWidth(text_element, right_front_u8, left_back);
+-			const int width_no_kerning = ElementUtilities::GetStringWidth(text_element, right_front_u8, Character::Null);
++			const float width_kerning = ElementUtilities::GetStringWidth(text_element, right_front_u8, left_back);
++			const float width_no_kerning = ElementUtilities::GetStringWidth(text_element, right_front_u8, Character::Null);
+ 			return float(width_kerning - width_no_kerning);
+ 		};
+ 
+@@ -1353,7 +1353,7 @@ Vector2f WidgetTextInput::FormatText(float height_constraint)
+ 		{
+ 			line_position.x += GetKerningBetween(pre_selection, selection);
+ 
+-			const int selection_width = ElementUtilities::GetStringWidth(selected_text_element, selection);
++			const float selection_width = ElementUtilities::GetStringWidth(selected_text_element, selection);
+ 			const bool selection_contains_endline = (selection_begin_index + selection_length > line_begin + line.editable_length);
+ 			const Vector2f selection_size = {float(selection_width + (selection_contains_endline ? endline_font_width : 0)), line_height};
+ 			const Vector2f aligned_position = line_position + Vector2f{GetAlignmentSpecificTextOffset(line), 0};
+@@ -1382,7 +1382,7 @@ Vector2f WidgetTextInput::FormatText(float height_constraint)
+ 		if (!ime_composition.empty())
+ 		{
+ 			const bool composition_contains_endline = (ime_composition_end_index > line_begin + line.editable_length);
+-			const int composition_width = ElementUtilities::GetStringWidth(text_element, ime_composition);
++			const float composition_width = ElementUtilities::GetStringWidth(text_element, ime_composition);
+ 			const Vector2f composition_position = {
+ 				float(ElementUtilities::GetStringWidth(text_element, ime_pre_composition)) + GetAlignmentSpecificTextOffset(line),
+ 				line_position.y - top_to_baseline + line_height - COMPOSITION_UNDERLINE_WIDTH,
+@@ -1459,7 +1459,7 @@ void WidgetTextInput::UpdateCursorPosition(bool update_ideal_cursor_position)
+ 	GetRelativeCursorIndices(cursor_line_index, cursor_character_index);
+ 
+ 	const auto& line = lines[cursor_line_index];
+-	const int string_width_pre_cursor =
++	const float string_width_pre_cursor =
+ 		ElementUtilities::GetStringWidth(text_element, StringView(text_element->GetText(), line.value_offset, cursor_character_index));
+ 
+ 	auto AlignmentOffsetForPlaceholder = [this]() {
+diff --git a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp
+index 30a4cca..3e39531 100644
+--- a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp
++++ b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp
+@@ -50,14 +50,14 @@ const FontMetrics& FontEngineInterfaceDefault::GetFontMetrics(FontFaceHandle han
+ 	return handle_default->GetFontMetrics();
+ }
+ 
+-int FontEngineInterfaceDefault::GetStringWidth(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context,
++float FontEngineInterfaceDefault::GetStringWidth(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context,
+ 	Character prior_character)
+ {
+ 	auto handle_default = static_cast<FontFaceHandleDefault*>(handle.get());
+ 	return handle_default->GetStringWidth(string, text_shaping_context, prior_character);
+ }
+ 
+-int FontEngineInterfaceDefault::GenerateString(RenderManager& render_manager, FontFaceHandle handle, FontEffectsHandle font_effects_handle,
++float FontEngineInterfaceDefault::GenerateString(RenderManager& render_manager, FontFaceHandle handle, FontEffectsHandle font_effects_handle,
+ 	StringView string, Vector2f position, ColourbPremultiplied colour, float opacity, const TextShapingContext& text_shaping_context,
+ 	TexturedMeshList& mesh_list)
+ {
+diff --git a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.h b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.h
+index 847918b..42d73b1 100644
+--- a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.h
++++ b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.h
+@@ -35,10 +35,10 @@ public:
+ 	const FontMetrics& GetFontMetrics(FontFaceHandle handle) override;
+ 
+ 	/// Returns the width a string will take up if rendered with this handle.
+-	int GetStringWidth(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context, Character prior_character) override;
++	float GetStringWidth(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context, Character prior_character) override;
+ 
+ 	/// Generates the geometry required to render a single line of text.
+-	int GenerateString(RenderManager& render_manager, FontFaceHandle face_handle, FontEffectsHandle effects_handle, StringView string,
++	float GenerateString(RenderManager& render_manager, FontFaceHandle face_handle, FontEffectsHandle effects_handle, StringView string,
+ 		Vector2f position, ColourbPremultiplied colour, float opacity, const TextShapingContext& text_shaping_context,
+ 		TexturedMeshList& mesh_list) override;
+ 
+diff --git a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+index a27e4b4..eed684f 100644
+--- a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
++++ b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+@@ -65,7 +65,7 @@ const FontGlyphMap& FontFaceHandleDefault::GetGlyphs() const
+ 	return glyphs;
+ }
+ 
+-int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingContext& text_shaping_context, Character prior_character)
++float FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingContext& text_shaping_context, Character prior_character)
+ {
+ 	RMLUI_ZoneScoped;
+ 
+@@ -91,7 +91,7 @@ int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingCo
+ 		prior_character = character;
+ 	}
+ 
+-	return Math::RoundToInteger(Math::Max(width, 0.f));
++	return Math::Max(width, 0.f);
+ }
+ 
+ int FontFaceHandleDefault::GenerateLayerConfiguration(const FontEffectList& font_effects)
+@@ -177,7 +177,7 @@ bool FontFaceHandleDefault::GenerateLayerTexture(Vector<byte>& texture_data, Vec
+ 	return it->layer->GenerateTexture(texture_data, texture_dimensions, texture_id, glyphs);
+ }
+ 
+-int FontFaceHandleDefault::GenerateString(RenderManager& render_manager, TexturedMeshList& mesh_list, StringView string, const Vector2f position,
++float FontFaceHandleDefault::GenerateString(RenderManager& render_manager, TexturedMeshList& mesh_list, StringView string, const Vector2f position,
+ 	const ColourbPremultiplied colour, const float opacity, const TextShapingContext& text_shaping_context, const int layer_configuration_index)
+ {
+ 	RMLUI_ASSERT(layer_configuration_index >= 0);
+@@ -252,7 +252,7 @@ int FontFaceHandleDefault::GenerateString(RenderManager& render_manager, Texture
+ 		geometry_index += num_textures;
+ 	}
+ 
+-	return Math::RoundToInteger(Math::Max(line_width, 0.f));
++	return Math::Max(line_width, 0.f);
+ }
+ 
+ bool FontFaceHandleDefault::UpdateLayersOnDirty()
+diff --git a/Source/Core/FontEngineDefault/FontFaceHandleDefault.h b/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
+index b42944b..4afa0ad 100644
+--- a/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
++++ b/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
+@@ -31,7 +31,7 @@ public:
+ 	/// @param[in] prior_character The optionally-specified character that immediately precedes the string. This may have an impact on the string
+ 	/// width due to kerning.
+ 	/// @return The width, in pixels, this string will occupy if rendered with this handle.
+-	int GetStringWidth(StringView string, const TextShapingContext& text_shaping_context, Character prior_character = Character::Null);
++	float GetStringWidth(StringView string, const TextShapingContext& text_shaping_context, Character prior_character = Character::Null);
+ 
+ 	/// Generates, if required, the layer configuration for a given list of font effects.
+ 	/// @param[in] font_effects The list of font effects to generate the configuration for.
+@@ -56,7 +56,7 @@ public:
+ 	/// @param[in] text_shaping_context Extra parameters that provide context for text shaping.
+ 	/// @param[in] layer_configuration Face configuration index to use for generating string.
+ 	/// @return The width, in pixels, of the string geometry.
+-	int GenerateString(RenderManager& render_manager, TexturedMeshList& mesh_list, StringView string, Vector2f position, ColourbPremultiplied colour,
++	float GenerateString(RenderManager& render_manager, TexturedMeshList& mesh_list, StringView string, Vector2f position, ColourbPremultiplied colour,
+ 		float opacity, const TextShapingContext& text_shaping_context, int layer_configuration);
+ 
+ 	/// Version is changed whenever the layers are dirtied, requiring regeneration of string geometry.
+diff --git a/Source/Core/FontEngineInterface.cpp b/Source/Core/FontEngineInterface.cpp
+index c5286e5..d85e439 100644
+--- a/Source/Core/FontEngineInterface.cpp
++++ b/Source/Core/FontEngineInterface.cpp
+@@ -45,13 +45,13 @@ const FontMetrics& FontEngineInterface::GetFontMetrics(FontFaceHandle /*handle*/
+ 	return metrics;
+ }
+ 
+-int FontEngineInterface::GetStringWidth(FontFaceHandle /*handle*/, StringView /*string*/, const TextShapingContext& /*text_shaping_context*/,
++float FontEngineInterface::GetStringWidth(FontFaceHandle /*handle*/, StringView /*string*/, const TextShapingContext& /*text_shaping_context*/,
+ 	Character /*prior_character*/)
+ {
+ 	return 0;
+ }
+ 
+-int FontEngineInterface::GenerateString(RenderManager& /*render_manager*/, FontFaceHandle /*face_handle*/, FontEffectsHandle /*font_effects_handle*/,
++float FontEngineInterface::GenerateString(RenderManager& /*render_manager*/, FontFaceHandle /*face_handle*/, FontEffectsHandle /*font_effects_handle*/,
+ 	StringView /*string*/, Vector2f /*position*/, ColourbPremultiplied /*colour*/, float /*opacity*/,
+ 	const TextShapingContext& /*text_shaping_context*/, TexturedMeshList& /*mesh_list*/)
+ {

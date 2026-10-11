@@ -3,6 +3,7 @@
 #if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
 #include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/FontEngineInterface.h>
+#include <RmlUi/Core/FontFaceCache.h>
 #include <RmlUi/Core/FontEffect.h>
 #include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
@@ -16,6 +17,7 @@
 #include <CoreGraphics/CoreGraphics.h>
 #endif
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <map>
 #include <set>
@@ -29,12 +31,12 @@ namespace bbl::pal {
 // glyphs that FreeType cannot rasterize, including Android COLRv1 and iOS emjc.
 class ColorUiFontEngine final : public Rml::FontEngineInterface {
     struct EmojiData {
-        int advance = 0;
+        float advance = 0;
         Rml::Vector2i origin{}, dimensions{};
         std::vector<Rml::byte> pixels;
     };
     struct Raster {
-        int advance;
+        float advance;
         Rml::Vector2i origin, dimensions;
         std::shared_ptr<const std::vector<Rml::byte>> pixels;
         std::unique_ptr<Rml::CallbackTextureSource> texture;
@@ -43,26 +45,33 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
         Rml::Vector2i offset, dimensions;
         std::unique_ptr<Rml::CallbackTextureSource> texture;
     };
-    using RasterKey = std::tuple<int, std::string, float>;
+    using RasterKey = std::pair<std::string, float>;
+#if defined(SDL_PLATFORM_IOS)
+    using AppleFont = FontOwner<CTFontRef, &CFRelease>;
+#endif
+    struct Face {
+        Rml::FontFaceHandle fallback_handle;
+        float size = 0;
+        bool color = false;
+        std::map<RasterKey, float> advances;
+        std::map<RasterKey, Raster> rasters;
+        std::map<Rml::FontEffectsHandle, Rml::FontEffectList> effects;
+        std::map<std::pair<Raster*, size_t>, EffectRaster> effect_rasters;
+#if defined(SDL_PLATFORM_IOS)
+        AppleFont apple_font{nullptr, CFRelease};
+#endif
+    };
+    using FaceKey = std::tuple<std::string, Rml::Style::FontStyle, Rml::Style::FontWeight, float>;
+    Rml::FontFaceCache<FaceKey, Face> faces;
     Rml::FontEngineInterface& fallback;
     std::string path;
     int face_index = 0;
-    std::map<Rml::FontFaceHandle, int> sizes;
-    std::set<Rml::FontFaceHandle> color_faces;
     std::set<Rml::Character> color_characters, text_characters;
     std::set<std::tuple<std::string, int, bool>> registered_characters;
-    std::map<RasterKey, int> advances;
-    std::map<RasterKey, Raster> rasters;
-    std::map<Rml::FontEffectsHandle, Rml::FontEffectList> effects;
-    std::map<std::pair<Raster*, size_t>, EffectRaster> effect_rasters;
 #if defined(SDL_PLATFORM_IOS)
-    using AppleFont = FontOwner<CTFontRef, &CFRelease>;
-    std::map<std::tuple<std::string, int, int>, AppleFont> apple_fonts;
-
-    CTFontRef apple_font(int size) {
-        const auto key = std::tuple{path, face_index, size};
-        if (const auto found = apple_fonts.find(key); found != apple_fonts.end())
-            return found->second.get();
+    CTFontRef apple_font(Face& sized) {
+        if (sized.apple_font)
+            return sized.apple_font.get();
         const auto library = platform_font_library();
         FT_Face raw_face = nullptr;
         if (!library || FT_New_Face(library, path.c_str(), face_index, &raw_face)) {
@@ -77,7 +86,7 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
             CFRelease);
         if (!name)
             throw std::runtime_error("iOS emoji font name allocation failed.");
-        AppleFont font(CTFontCreateWithName(name.get(), size, nullptr), CFRelease);
+        AppleFont font(CTFontCreateWithName(name.get(), sized.size, nullptr), CFRelease);
         if (!font)
             throw std::runtime_error("CoreText could not create the selected emoji font.");
         FontOwner<CFStringRef, &CFRelease> resolved(CTFontCopyPostScriptName(font.get()),
@@ -85,7 +94,8 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
         if (!resolved || !CFEqual(name.get(), resolved.get())) {
             throw std::runtime_error("CoreText substituted a different emoji font.");
         }
-        return apple_fonts.emplace(key, std::move(font)).first->second.get();
+        sized.apple_font = std::move(font);
+        return sized.apple_font.get();
     }
 #endif
 
@@ -107,16 +117,15 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
             characters.insert(static_cast<Rml::Character>(point));
         registered_characters.insert(key);
     }
-    template <class Visit>
-    void spans(Rml::FontFaceHandle handle, Rml::StringView text, Visit&& visit) {
+    template <class Visit> void spans(const Face& face, Rml::StringView text, Visit&& visit) {
         const char* begin = text.begin();
         const char* end = begin + text.size();
         bool previous = false;
         const char* start = begin;
         for (const char* cursor = begin; cursor < end;) {
             const auto point = Rml::StringUtilities::ToCharacter(cursor, end);
-            const bool color = color_faces.contains(handle) || (color_characters.contains(point) &&
-                                                                !text_characters.contains(point));
+            const bool color = face.color || (color_characters.contains(point) &&
+                                              !text_characters.contains(point));
             if (cursor != begin && color != previous) {
                 visit(Rml::StringView(start, cursor), previous);
                 start = cursor;
@@ -135,7 +144,7 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
                 return output.GenerateTexture(*pixels, dimensions);
             });
     }
-    EmojiData emoji_data(int size, Rml::StringView text, float spacing, bool render) {
+    EmojiData emoji_data(Face& face, Rml::StringView text, float spacing, bool render) {
 #if defined(__ANDROID__)
         auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
         if (!env || env->PushLocalFrame(8) < 0)
@@ -147,14 +156,16 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
         const auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
         const auto type = env->GetObjectClass(activity);
         const auto method = env->GetMethodID(type, render ? "rasterizeEmoji" : "measureEmoji",
-                                             "([BLjava/lang/String;IIF)[I");
+                                             "([BLjava/lang/String;IFF)[I");
         const auto bytes = env->NewByteArray(static_cast<jsize>(text.size()));
         env->SetByteArrayRegion(bytes, 0, static_cast<jsize>(text.size()),
                                 reinterpret_cast<const jbyte*>(text.begin()));
         const auto font = env->NewStringUTF(path.c_str());
-        const auto output = method ? static_cast<jintArray>(env->CallObjectMethod(
-                                         activity, method, bytes, font, face_index, size, spacing))
-                                   : nullptr;
+        const auto output =
+            method ? static_cast<jintArray>(env->CallObjectMethod(
+                         activity, method, bytes, font, face_index, static_cast<jdouble>(face.size),
+                         static_cast<jdouble>(spacing)))
+                   : nullptr;
         if (env->ExceptionCheck()) {
             env->ExceptionClear();
             throw std::runtime_error("Android emoji rasterization failed.");
@@ -164,7 +175,9 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
         std::vector<jint> values(env->GetArrayLength(output));
         env->GetIntArrayRegion(output, 0, static_cast<jsize>(values.size()), values.data());
         EmojiData result;
-        result.advance = values[0];
+        result.advance = std::bit_cast<float>(values[0]);
+        if (!std::isfinite(result.advance) || result.advance < 0 || result.advance > 1048576)
+            throw std::runtime_error("Invalid Android emoji advance.");
         if (!render)
             return result;
         result.origin = {values[1], values[2]};
@@ -195,7 +208,7 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
         if (!string || !kern)
             throw std::runtime_error("CoreText emoji text allocation failed.");
         const void* keys[] = {kCTFontAttributeName, kCTKernAttributeName};
-        const void* values[] = {apple_font(size), kern.get()};
+        const void* values[] = {apple_font(face), kern.get()};
         FontOwner<CFDictionaryRef, &CFRelease> attributes(
             CFDictionaryCreate(kCFAllocatorDefault, keys, values, 2, &kCFTypeDictionaryKeyCallBacks,
                                &kCFTypeDictionaryValueCallBacks),
@@ -216,7 +229,7 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
             throw std::runtime_error("Invalid CoreText emoji advance.");
         }
         EmojiData result;
-        result.advance = static_cast<int>(std::lround(advance));
+        result.advance = static_cast<float>(advance);
         if (!render)
             return result;
         const CGRect bounds = CTLineGetImageBounds(line.get(), nullptr);
@@ -253,31 +266,33 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
         return result;
 #endif
     }
-    int advance(int size, Rml::StringView text, float spacing) {
-        const RasterKey key{size, std::string(text.begin(), text.size()), spacing};
-        if (const auto found = advances.find(key); found != advances.end())
+    float advance(Face& face, Rml::StringView text, float spacing) {
+        const RasterKey key{std::string(text.begin(), text.size()), spacing};
+        if (const auto found = face.advances.find(key); found != face.advances.end())
             return found->second;
-        return advances.emplace(key, emoji_data(size, text, spacing, false).advance).first->second;
+        return face.advances.emplace(key, emoji_data(face, text, spacing, false).advance)
+            .first->second;
     }
-    Raster& raster(int size, Rml::StringView text, float spacing) {
-        const RasterKey key{size, std::string(text.begin(), text.size()), spacing};
-        if (const auto found = rasters.find(key); found != rasters.end())
+    Raster& raster(Face& face, Rml::StringView text, float spacing) {
+        const RasterKey key{std::string(text.begin(), text.size()), spacing};
+        if (const auto found = face.rasters.find(key); found != face.rasters.end())
             return found->second;
-        auto data = emoji_data(size, text, spacing, true);
+        auto data = emoji_data(face, text, spacing, true);
         Raster value{data.advance,
                      data.origin,
                      data.dimensions,
                      std::make_shared<const std::vector<Rml::byte>>(std::move(data.pixels)),
                      {}};
         value.texture = texture(value.pixels, value.dimensions);
-        advances.insert_or_assign(key, value.advance);
-        return rasters.emplace(key, std::move(value)).first->second;
+        face.advances.insert_or_assign(key, value.advance);
+        return face.rasters.emplace(key, std::move(value)).first->second;
     }
-    void effect_mesh(Rml::RenderManager& manager, Raster& base, const Rml::FontEffect& effect,
-                     Rml::Vector2f position, float opacity, Rml::TexturedMeshList& meshes) {
+    void effect_mesh(Face& face, Rml::RenderManager& manager, Raster& base,
+                     const Rml::FontEffect& effect, Rml::Vector2f position, float opacity,
+                     Rml::TexturedMeshList& meshes) {
         const auto key = std::pair{&base, effect.GetFingerprint()};
-        auto found = effect_rasters.find(key);
-        if (found == effect_rasters.end()) {
+        auto found = face.effect_rasters.find(key);
+        if (found == face.effect_rasters.end()) {
             Rml::FontGlyph glyph;
             glyph.bitmap_data = base.pixels->data();
             glyph.bitmap_dimensions = base.dimensions;
@@ -304,7 +319,7 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
                     texture(std::make_shared<const std::vector<Rml::byte>>(std::move(pixels)),
                             value.dimensions);
             }
-            found = effect_rasters.emplace(key, std::move(value)).first;
+            found = face.effect_rasters.emplace(key, std::move(value)).first;
         }
         const auto& value = found->second;
         meshes.emplace_back();
@@ -345,64 +360,66 @@ public:
         return true;
     }
     Rml::FontFaceHandle GetFontFaceHandle(const Rml::String& family, Rml::Style::FontStyle style,
-                                          Rml::Style::FontWeight weight, int size) override {
-        const auto handle = fallback.GetFontFaceHandle(family, style, weight, size);
-        if (handle)
-            sizes.emplace(handle, size);
-        if (handle && family == "bbl-emoji")
-            color_faces.insert(handle);
-        return handle;
+                                          Rml::Style::FontWeight weight, float size) override {
+        if (!std::isfinite(size) || size <= 0.f || size > 16384.f)
+            return {};
+        return faces.Get(std::tuple{family, style, weight, size}, [&]() -> std::shared_ptr<Face> {
+            const auto handle = fallback.GetFontFaceHandle(family, style, weight, size);
+            if (!handle)
+                return {};
+            auto face = std::make_shared<Face>();
+            face->fallback_handle = handle;
+            face->size = size;
+            face->color = family == "bbl-emoji";
+            return face;
+        });
     }
     Rml::FontEffectsHandle PrepareFontEffects(Rml::FontFaceHandle handle,
                                               const Rml::FontEffectList& list) override {
-        const auto result = fallback.PrepareFontEffects(handle, list);
-        effects.insert_or_assign(result, list);
+        auto& face = *static_cast<Face*>(handle.get());
+        const auto result = fallback.PrepareFontEffects(face.fallback_handle, list);
+        face.effects.insert_or_assign(result, list);
         return result;
     }
     const Rml::FontMetrics& GetFontMetrics(Rml::FontFaceHandle handle) override {
-        return fallback.GetFontMetrics(handle);
+        return fallback.GetFontMetrics(static_cast<Face*>(handle.get())->fallback_handle);
     }
-    int GetStringWidth(Rml::FontFaceHandle handle, Rml::StringView text,
-                       const Rml::TextShapingContext& context, Rml::Character prior) override {
-        const auto found = sizes.find(handle);
-        if (found == sizes.end())
-            return fallback.GetStringWidth(handle, text, context, prior);
-        int width = 0;
-        spans(handle, text, [&](Rml::StringView span, bool color) {
-            width += color ? advance(found->second, span, context.letter_spacing)
-                           : fallback.GetStringWidth(handle, span, context, prior);
+    float GetStringWidth(Rml::FontFaceHandle handle, Rml::StringView text,
+                         const Rml::TextShapingContext& context, Rml::Character prior) override {
+        auto& face = *static_cast<Face*>(handle.get());
+        float width = 0;
+        spans(face, text, [&](Rml::StringView span, bool color) {
+            width += color ? advance(face, span, context.letter_spacing)
+                           : fallback.GetStringWidth(face.fallback_handle, span, context, prior);
             prior = Rml::Character::Null;
         });
         return width;
     }
-    int GenerateString(Rml::RenderManager& manager, Rml::FontFaceHandle handle,
-                       Rml::FontEffectsHandle effect_handle, Rml::StringView text,
-                       Rml::Vector2f position, Rml::ColourbPremultiplied color, float opacity,
-                       const Rml::TextShapingContext& context,
-                       Rml::TexturedMeshList& meshes) override {
-        const auto found = sizes.find(handle);
-        if (found == sizes.end())
-            return fallback.GenerateString(manager, handle, effect_handle, text, position, color,
-                                           opacity, context, meshes);
-        int width = 0;
-        spans(handle, text, [&](Rml::StringView span, bool is_color) {
+    float GenerateString(Rml::RenderManager& manager, Rml::FontFaceHandle handle,
+                         Rml::FontEffectsHandle effect_handle, Rml::StringView text,
+                         Rml::Vector2f position, Rml::ColourbPremultiplied color, float opacity,
+                         const Rml::TextShapingContext& context,
+                         Rml::TexturedMeshList& meshes) override {
+        auto& face = *static_cast<Face*>(handle.get());
+        float width = 0;
+        spans(face, text, [&](Rml::StringView span, bool is_color) {
             if (!is_color) {
                 Rml::TexturedMeshList retained;
-                const int advance =
-                    fallback.GenerateString(manager, handle, effect_handle, span, position, color,
-                                            opacity, context, retained);
+                const float advance =
+                    fallback.GenerateString(manager, face.fallback_handle, effect_handle, span,
+                                            position, color, opacity, context, retained);
                 for (auto& mesh : retained)
                     meshes.push_back(std::move(mesh));
                 width += advance;
                 position.x += advance;
                 return;
             }
-            auto& value = raster(found->second, span, context.letter_spacing);
+            auto& value = raster(face, span, context.letter_spacing);
             const auto draw_effects = [&](Rml::FontEffect::Layer layer) {
-                if (const auto list = effects.find(effect_handle); list != effects.end())
+                if (const auto list = face.effects.find(effect_handle); list != face.effects.end())
                     for (const auto& effect : list->second)
                         if (effect->GetLayer() == layer)
-                            effect_mesh(manager, value, *effect, position, opacity, meshes);
+                            effect_mesh(face, manager, value, *effect, position, opacity, meshes);
             };
             draw_effects(Rml::FontEffect::Layer::Back);
             meshes.emplace_back();
@@ -418,17 +435,19 @@ public:
         });
         return width;
     }
-    int GetVersion(Rml::FontFaceHandle handle) override { return fallback.GetVersion(handle); }
+    int GetVersion(Rml::FontFaceHandle handle) override {
+        return fallback.GetVersion(static_cast<Face*>(handle.get())->fallback_handle);
+    }
     void ReleaseFontResources() override {
-        effect_rasters.clear();
-        rasters.clear();
-        advances.clear();
-        effects.clear();
-        sizes.clear();
-        color_faces.clear();
+        faces.Clear([](Face& face) {
+            face.effect_rasters.clear();
+            face.rasters.clear();
+            face.advances.clear();
+            face.effects.clear();
 #if defined(SDL_PLATFORM_IOS)
-        apple_fonts.clear();
+            face.apple_font.reset();
 #endif
+        });
         fallback.ReleaseFontResources();
     }
 };

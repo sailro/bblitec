@@ -261,6 +261,27 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0032-fractional-font-size.patch",
+      "purpose": "Fractional CSS font sizes, FreeType advances and kerning",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0033-bounded-font-face-cache.patch",
+      "purpose": "Owning font handles and bounded caches with shared fallback bitmaps",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0034-fractional-text-width.patch",
+      "purpose": "Fractional advances through word wrapping, selection and geometry",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

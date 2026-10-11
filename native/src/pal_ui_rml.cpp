@@ -6215,20 +6215,7 @@ struct UiRmlRuntime {
                     continue;
                 }
                 const Rml::Box& box = child->GetBox();
-                float content_width = box.GetSize(Rml::BoxArea::Content).x;
-                const UiElementRecord& child_record = handle_at(engine.ui_elements, child_handle);
-                if (!child_record.text.empty() && child_record.children.empty()) {
-                    // RmlUi's default font engine selects integer-sized font
-                    // handles. Compensate its max-content measurement for a
-                    // fractional CSS font size while retaining the actual box
-                    // frame and margins measured by RmlUi.
-                    const float integer_font_size = std::floor(computed.font_size());
-                    if (integer_font_size > 0.0f) {
-                        content_width *= computed.font_size() / integer_font_size;
-                    }
-                }
-                const float outer_width = content_width + box.GetSize(Rml::BoxArea::Border).x -
-                                          box.GetSize(Rml::BoxArea::Content).x +
+                const float outer_width = box.GetSize(Rml::BoxArea::Border).x +
                                           box.GetEdge(Rml::BoxArea::Margin, Rml::BoxEdge::Left) +
                                           box.GetEdge(Rml::BoxArea::Margin, Rml::BoxEdge::Right);
                 if (is_inline_level(computed.display())) {
@@ -6383,8 +6370,7 @@ struct UiRmlRuntime {
             return false;
 
         const double layout_scale = (std::abs(scale_x) + std::abs(scale_y)) * 0.5;
-        const int font_size =
-            std::max(1, static_cast<int>(std::lround(draw.font_size * layout_scale)));
+        const float font_size = static_cast<float>(draw.font_size * layout_scale);
         const bool monospace = draw.font_family.find("monospace") != std::string::npos;
         const std::string& family = monospace ? css_monospace_family : css_font_family;
         const Rml::FontFaceHandle face = fonts->GetFontFaceHandle(

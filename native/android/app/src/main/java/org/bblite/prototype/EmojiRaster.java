@@ -18,7 +18,7 @@ final class EmojiRaster {
             .computeIfAbsent(index, key -> new Typeface.Builder(path).setTtcIndex(index).build());
     }
 
-    private static Paint paint(String path, int index, int size, float spacing) {
+    private static Paint paint(String path, int index, float size, float spacing) {
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         paint.setTypeface(typeface(path, index));
         paint.setTextSize(size);
@@ -27,12 +27,13 @@ final class EmojiRaster {
         return paint;
     }
 
-    static int[] measure(byte[] utf8, String path, int index, int size, float spacing) {
+    // The first result word carries the fractional advance as IEEE-754 bits.
+    static int[] measure(byte[] utf8, String path, int index, float size, float spacing) {
         String text = new String(utf8, StandardCharsets.UTF_8);
-        return new int[] { Math.round(paint(path, index, size, spacing).measureText(text)) };
+        return new int[] { Float.floatToRawIntBits(paint(path, index, size, spacing).measureText(text)) };
     }
 
-    static int[] render(byte[] utf8, String path, int index, int size, float spacing) {
+    static int[] render(byte[] utf8, String path, int index, float size, float spacing) {
         String text = new String(utf8, StandardCharsets.UTF_8);
         Paint paint = paint(path, index, size, spacing);
         Rect bounds = new Rect();
@@ -41,7 +42,7 @@ final class EmojiRaster {
         Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         new Canvas(bitmap).drawText(text, -bounds.left, -bounds.top, paint);
         int[] result = new int[5 + width * height];
-        result[0] = Math.round(paint.measureText(text));
+        result[0] = Float.floatToRawIntBits(paint.measureText(text));
         result[1] = bounds.left;
         result[2] = bounds.top;
         result[3] = width;

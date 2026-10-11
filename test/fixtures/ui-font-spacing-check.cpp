@@ -93,7 +93,7 @@ int main() {
                                           Rml::Style::FontWeight::Normal, 16);
     const Rml::String language = "en";
     Rml::TextShapingContext context{language};
-    const int baseline = engine->GetStringWidth(face, "1111111111111111", context);
+    const float baseline = engine->GetStringWidth(face, "1111111111111111", context);
     for (const float spacing : {0.25f, -0.25f, 2.5f}) {
         context.letter_spacing = spacing;
         assert(engine->GetStringWidth(face, "1111111111111111", context) ==

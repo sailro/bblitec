@@ -1,0 +1,403 @@
+Retain sized faces through owning handles and a bounded hot cache. Keep live-handle
+identity through weak entries and share fallback bitmap ownership across eviction.
+
+diff --git a/Include/RmlUi/Core/FontFaceCache.h b/Include/RmlUi/Core/FontFaceCache.h
+new file mode 100644
+index 0000000..a51a3e3
+--- /dev/null
++++ b/Include/RmlUi/Core/FontFaceCache.h
+@@ -0,0 +1,74 @@
++#pragma once
++
++#include <list>
++#include <map>
++#include <memory>
++#include <utility>
++
++namespace Rml {
++
++// Retain a bounded hot set. Live handles own their faces independently of the
++// cache, including inherited styles and detached elements. Weak entries preserve
++// identity for those faces without retaining obsolete animation/resize sizes.
++template <typename Key, typename Value, size_t Capacity = 32>
++class FontFaceCache {
++public:
++	FontFaceCache() = default;
++	FontFaceCache(const FontFaceCache&) = delete;
++	FontFaceCache& operator=(const FontFaceCache&) = delete;
++
++	template <typename Create>
++	std::shared_ptr<Value> Get(const Key& key, Create create)
++	{
++		// Bound cleanup work even when many live styles retain distinct sizes.
++		for (size_t budget = 4; budget && !faces.empty(); --budget)
++		{
++			if (cleanup == faces.end())
++				cleanup = faces.begin();
++			auto entry = cleanup++;
++			if (entry->second.expired())
++				faces.erase(entry);
++		}
++
++		std::shared_ptr<Value> face;
++		auto found = faces.find(key);
++		if (found != faces.end())
++			face = found->second.lock();
++		if (!face)
++		{
++			face = create();
++			if (!face)
++				return nullptr;
++			faces[key] = face;
++		}
++		for (auto it = recent.begin(); it != recent.end(); ++it)
++			if (*it == face)
++			{
++				recent.splice(recent.end(), recent, it);
++				return face;
++			}
++		recent.push_back(face);
++		if (recent.size() > Capacity)
++			recent.pop_front();
++		return face;
++	}
++
++	template <typename Release>
++	void Clear(Release release)
++	{
++		for (auto& entry : faces)
++			if (auto face = entry.second.lock())
++				release(*face);
++		recent.clear();
++		faces.clear();
++		cleanup = faces.end();
++	}
++	void Clear() { Clear([](Value&) {}); }
++
++private:
++	std::map<Key, std::weak_ptr<Value>> faces;
++	typename decltype(faces)::iterator cleanup = faces.end();
++	std::list<std::shared_ptr<Value>> recent;
++};
++
++} // namespace Rml
+diff --git a/Include/RmlUi/Core/FontGlyph.h b/Include/RmlUi/Core/FontGlyph.h
+index 5020bfb..dc12f3c 100644
+--- a/Include/RmlUi/Core/FontGlyph.h
++++ b/Include/RmlUi/Core/FontGlyph.h
+@@ -22,19 +22,8 @@ public:
+ 	ColorFormat color_format = ColorFormat::A8;
+ 
+ 	// bitmap_data may point to this member or another font glyph data.
+-	UniquePtr<byte[]> bitmap_owned_data;
+-
+-	// Create a copy with its bitmap data owned by another glyph.
+-	FontGlyph WeakCopy() const
+-	{
+-		FontGlyph glyph;
+-		glyph.bearing = bearing;
+-		glyph.advance = advance;
+-		glyph.bitmap_data = bitmap_data;
+-		glyph.bitmap_dimensions = bitmap_dimensions;
+-		glyph.color_format = color_format;
+-		return glyph;
+-	}
++	SharedPtr<byte[]> bitmap_owned_data;
++
+ };
+ 
+ using FontGlyphMap = UnorderedMap<Character, FontGlyph>;
+diff --git a/Include/RmlUi/Core/Types.h b/Include/RmlUi/Core/Types.h
+index 6c720e6..2e32d56 100644
+--- a/Include/RmlUi/Core/Types.h
++++ b/Include/RmlUi/Core/Types.h
+@@ -81,7 +81,8 @@ using CompiledGeometryHandle = uintptr_t;
+ using CompiledFilterHandle = uintptr_t;
+ using CompiledShaderHandle = uintptr_t;
+ using DecoratorDataHandle = uintptr_t;
+-using FontFaceHandle = uintptr_t;
++// Sized faces are retained by their users; cache eviction never invalidates a live handle.
++using FontFaceHandle = SharedPtr<void>;
+ using FontEffectsHandle = uintptr_t;
+ using LayerHandle = uintptr_t;
+ 
+diff --git a/Source/Core/CMakeLists.txt b/Source/Core/CMakeLists.txt
+index 09af90c..581eb51 100644
+--- a/Source/Core/CMakeLists.txt
++++ b/Source/Core/CMakeLists.txt
+@@ -286,6 +286,7 @@ target_sources(rmlui_core PRIVATE
+ 	"${PROJECT_SOURCE_DIR}/Include/RmlUi/Core/FontEngineInterface.h"
+ 	"${PROJECT_SOURCE_DIR}/Include/RmlUi/Core/FontGlyph.h"
+ 	"${PROJECT_SOURCE_DIR}/Include/RmlUi/Core/FontMetrics.h"
++	"${PROJECT_SOURCE_DIR}/Include/RmlUi/Core/FontFaceCache.h"
+ 	"${PROJECT_SOURCE_DIR}/Include/RmlUi/Core/Geometry.h"
+ 	"${PROJECT_SOURCE_DIR}/Include/RmlUi/Core/Header.h"
+ 	"${PROJECT_SOURCE_DIR}/Include/RmlUi/Core/ID.h"
+diff --git a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp
+index 5bc591b..30a4cca 100644
+--- a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp
++++ b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp
+@@ -35,25 +35,25 @@ bool FontEngineInterfaceDefault::LoadFontFace(Span<const byte> data, int face_in
+ FontFaceHandle FontEngineInterfaceDefault::GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size)
+ {
+ 	auto handle = FontProvider::GetFontFaceHandle(family, style, weight, size);
+-	return reinterpret_cast<FontFaceHandle>(handle);
++	return handle;
+ }
+ 
+ FontEffectsHandle FontEngineInterfaceDefault::PrepareFontEffects(FontFaceHandle handle, const FontEffectList& font_effects)
+ {
+-	auto handle_default = reinterpret_cast<FontFaceHandleDefault*>(handle);
++	auto handle_default = static_cast<FontFaceHandleDefault*>(handle.get());
+ 	return (FontEffectsHandle)handle_default->GenerateLayerConfiguration(font_effects);
+ }
+ 
+ const FontMetrics& FontEngineInterfaceDefault::GetFontMetrics(FontFaceHandle handle)
+ {
+-	auto handle_default = reinterpret_cast<FontFaceHandleDefault*>(handle);
++	auto handle_default = static_cast<FontFaceHandleDefault*>(handle.get());
+ 	return handle_default->GetFontMetrics();
+ }
+ 
+ int FontEngineInterfaceDefault::GetStringWidth(FontFaceHandle handle, StringView string, const TextShapingContext& text_shaping_context,
+ 	Character prior_character)
+ {
+-	auto handle_default = reinterpret_cast<FontFaceHandleDefault*>(handle);
++	auto handle_default = static_cast<FontFaceHandleDefault*>(handle.get());
+ 	return handle_default->GetStringWidth(string, text_shaping_context, prior_character);
+ }
+ 
+@@ -61,14 +61,14 @@ int FontEngineInterfaceDefault::GenerateString(RenderManager& render_manager, Fo
+ 	StringView string, Vector2f position, ColourbPremultiplied colour, float opacity, const TextShapingContext& text_shaping_context,
+ 	TexturedMeshList& mesh_list)
+ {
+-	auto handle_default = reinterpret_cast<FontFaceHandleDefault*>(handle);
++	auto handle_default = static_cast<FontFaceHandleDefault*>(handle.get());
+ 	return handle_default->GenerateString(render_manager, mesh_list, string, position, colour, opacity, text_shaping_context,
+ 		(int)font_effects_handle);
+ }
+ 
+ int FontEngineInterfaceDefault::GetVersion(FontFaceHandle handle)
+ {
+-	auto handle_default = reinterpret_cast<FontFaceHandleDefault*>(handle);
++	auto handle_default = static_cast<FontFaceHandleDefault*>(handle.get());
+ 	return handle_default->GetVersion();
+ }
+ 
+diff --git a/Source/Core/FontEngineDefault/FontFace.cpp b/Source/Core/FontEngineDefault/FontFace.cpp
+index 9cc105e..f56e910 100644
+--- a/Source/Core/FontEngineDefault/FontFace.cpp
++++ b/Source/Core/FontEngineDefault/FontFace.cpp
+@@ -15,6 +15,7 @@ FontFace::FontFace(FontFaceHandleFreetype _face, Style::FontStyle _style, Style:
+ 
+ FontFace::~FontFace()
+ {
++	ReleaseFontResources();
+ 	if (face)
+ 		FreeType::ReleaseFace(face);
+ }
+@@ -29,40 +30,23 @@ Style::FontWeight FontFace::GetWeight() const
+ 	return weight;
+ }
+ 
+-FontFaceHandleDefault* FontFace::GetHandle(float size, bool load_default_glyphs)
++SharedPtr<FontFaceHandleDefault> FontFace::GetHandle(float size, bool load_default_glyphs)
+ {
+ 	if (!std::isfinite(size) || size <= 0.f || size > 16384.f)
+ 		return nullptr;
+-	auto it = handles.find(size);
+-	if (it != handles.end())
+-		return it->second.get();
+-
+-	// See if this face has been released.
+-	if (!face)
+-	{
+-		Log::Message(Log::LT_WARNING, "Font face has been released, unable to generate new handle.");
+-		return nullptr;
+-	}
+-
+-	// Construct and initialise the new handle.
+-	auto handle = MakeUnique<FontFaceHandleDefault>();
+-	if (!handle->Initialize(face, size, load_default_glyphs))
+-	{
+-		handles[size] = nullptr;
+-		return nullptr;
+-	}
+-
+-	FontFaceHandleDefault* result = handle.get();
+-
+-	// Save the new handle to the font face
+-	handles[size] = std::move(handle);
+-
+-	return result;
++	return handles.Get(size, [&]() -> SharedPtr<FontFaceHandleDefault> {
++		if (!face)
++			return nullptr;
++		auto handle = MakeShared<FontFaceHandleDefault>();
++		if (!handle->Initialize(face, size, load_default_glyphs))
++			return nullptr;
++		return handle;
++	});
+ }
+ 
+ void FontFace::ReleaseFontResources()
+ {
+-	HandleMap().swap(handles);
++	handles.Clear([](FontFaceHandleDefault& handle) { handle.ReleaseResources(); });
+ }
+ 
+ } // namespace Rml
+diff --git a/Source/Core/FontEngineDefault/FontFace.h b/Source/Core/FontEngineDefault/FontFace.h
+index 86c4ea3..aeb9020 100644
+--- a/Source/Core/FontEngineDefault/FontFace.h
++++ b/Source/Core/FontEngineDefault/FontFace.h
+@@ -2,6 +2,7 @@
+ 
+ #include "../../../Include/RmlUi/Core/StyleTypes.h"
+ #include "FontTypes.h"
++#include "../../../Include/RmlUi/Core/FontFaceCache.h"
+ 
+ namespace Rml {
+ 
+@@ -19,7 +20,7 @@ public:
+ 	/// @param[in] size The size of the desired handle, in pixels.
+ 	/// @param[in] load_default_glyphs True to load the default set of glyph (ASCII range).
+ 	/// @return The font handle.
+-	FontFaceHandleDefault* GetHandle(float size, bool load_default_glyphs);
++	SharedPtr<FontFaceHandleDefault> GetHandle(float size, bool load_default_glyphs);
+ 
+ 	/// Releases resources owned by sized font faces, including their textures and rendered glyphs.
+ 	void ReleaseFontResources();
+@@ -29,7 +30,7 @@ private:
+ 	Style::FontWeight weight;
+ 
+ 	// Key is font size
+-	using HandleMap = UnorderedMap<float, UniquePtr<FontFaceHandleDefault>>;
++	using HandleMap = FontFaceCache<float, FontFaceHandleDefault>;
+ 	HandleMap handles;
+ 
+ 	FontFaceHandleFreetype face;
+diff --git a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+index fcfdd4d..a27e4b4 100644
+--- a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
++++ b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+@@ -22,9 +22,18 @@ FontFaceHandleDefault::FontFaceHandleDefault()
+ }
+ 
+ FontFaceHandleDefault::~FontFaceHandleDefault()
++{
++	ReleaseResources();
++}
++
++void FontFaceHandleDefault::ReleaseResources()
+ {
+ 	glyphs.clear();
+ 	layers.clear();
++	layer_cache.clear();
++	layer_configurations.clear();
++	base_layer = nullptr;
++	ft_face = 0;
+ }
+ 
+ bool FontFaceHandleDefault::Initialize(FontFaceHandleFreetype face, float font_size, bool load_default_glyphs)
+@@ -367,15 +376,15 @@ const FontGlyph* FontFaceHandleDefault::GetOrAppendGlyph(Character& character, b
+ 			const int num_fallback_faces = FontProvider::CountFallbackFontFaces();
+ 			for (int i = 0; i < num_fallback_faces; i++)
+ 			{
+-				FontFaceHandleDefault* fallback_face = FontProvider::GetFallbackFontFace(i, metrics.size);
+-				if (!fallback_face || fallback_face == this)
++				auto fallback_face = FontProvider::GetFallbackFontFace(i, metrics.size);
++				if (!fallback_face || fallback_face.get() == this)
+ 					continue;
+ 
+ 				const FontGlyph* glyph = fallback_face->GetOrAppendGlyph(character, false);
+ 				if (glyph)
+ 				{
+ 					// Insert the new glyph into our own set of glyphs
+-					auto pair = glyphs.emplace(character, glyph->WeakCopy());
++					auto pair = glyphs.emplace(character, *glyph);
+ 					it_glyph = pair.first;
+ 					if (pair.second)
+ 						is_layers_dirty = true;
+diff --git a/Source/Core/FontEngineDefault/FontFaceHandleDefault.h b/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
+index 426ee02..b42944b 100644
+--- a/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
++++ b/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
+@@ -17,6 +17,7 @@ class FontFaceHandleDefault final : public NonCopyMoveable {
+ public:
+ 	FontFaceHandleDefault();
+ 	~FontFaceHandleDefault();
++	void ReleaseResources();
+ 
+ 	bool Initialize(FontFaceHandleFreetype face, float font_size, bool load_default_glyphs);
+ 
+diff --git a/Source/Core/FontEngineDefault/FontFamily.cpp b/Source/Core/FontEngineDefault/FontFamily.cpp
+index 82d3614..ea9a4f8 100644
+--- a/Source/Core/FontEngineDefault/FontFamily.cpp
++++ b/Source/Core/FontEngineDefault/FontFamily.cpp
+@@ -16,7 +16,7 @@ FontFamily::~FontFamily()
+ 		entry.face.reset();
+ }
+ 
+-FontFaceHandleDefault* FontFamily::GetFaceHandle(Style::FontStyle style, Style::FontWeight weight, float size)
++SharedPtr<FontFaceHandleDefault> FontFamily::GetFaceHandle(Style::FontStyle style, Style::FontWeight weight, float size)
+ {
+ 	int best_dist = INT_MAX;
+ 	FontFace* matching_face = nullptr;
+diff --git a/Source/Core/FontEngineDefault/FontFamily.h b/Source/Core/FontEngineDefault/FontFamily.h
+index 254eff0..7b14283 100644
+--- a/Source/Core/FontEngineDefault/FontFamily.h
++++ b/Source/Core/FontEngineDefault/FontFamily.h
+@@ -23,7 +23,7 @@ public:
+ 	/// @param[in] weight The weight of the desired handle.
+ 	/// @param[in] size The size of the desired handle, in pixels.
+ 	/// @return A valid handle if a matching (or closely matching) font face was found, nullptr otherwise.
+-	FontFaceHandleDefault* GetFaceHandle(Style::FontStyle style, Style::FontWeight weight, float size);
++	SharedPtr<FontFaceHandleDefault> GetFaceHandle(Style::FontStyle style, Style::FontWeight weight, float size);
+ 
+ 	/// Adds a new face to the family.
+ 	/// @param[in] ft_face The previously loaded FreeType face.
+diff --git a/Source/Core/FontEngineDefault/FontProvider.cpp b/Source/Core/FontEngineDefault/FontProvider.cpp
+index 0521824..0f3524d 100644
+--- a/Source/Core/FontEngineDefault/FontProvider.cpp
++++ b/Source/Core/FontEngineDefault/FontProvider.cpp
+@@ -47,7 +47,7 @@ FontProvider& FontProvider::Get()
+ 	return *g_font_provider;
+ }
+ 
+-FontFaceHandleDefault* FontProvider::GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size)
++SharedPtr<FontFaceHandleDefault> FontProvider::GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size)
+ {
+ 	RMLUI_ASSERTMSG(family == StringUtilities::ToLower(family), "Font family name must be converted to lowercase before entering here.");
+ 
+@@ -65,7 +65,7 @@ int FontProvider::CountFallbackFontFaces()
+ 	return (int)Get().fallback_font_faces.size();
+ }
+ 
+-FontFaceHandleDefault* FontProvider::GetFallbackFontFace(int index, float font_size)
++SharedPtr<FontFaceHandleDefault> FontProvider::GetFallbackFontFace(int index, float font_size)
+ {
+ 	auto& faces = FontProvider::Get().fallback_font_faces;
+ 
+diff --git a/Source/Core/FontEngineDefault/FontProvider.h b/Source/Core/FontEngineDefault/FontProvider.h
+index 4bd7d81..5022e24 100644
+--- a/Source/Core/FontEngineDefault/FontProvider.h
++++ b/Source/Core/FontEngineDefault/FontProvider.h
+@@ -33,7 +33,7 @@ public:
+ 	/// @param[in] weight The weight of the desired font handle.
+ 	/// @param[in] size The size of desired handle, in pixels.
+ 	/// @return A valid handle if a matching (or closely matching) font face was found, nullptr otherwise.
+-	static FontFaceHandleDefault* GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size);
++	static SharedPtr<FontFaceHandleDefault> GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size);
+ 
+ 	/// Adds a new font face to the database. The face's family, style and weight will be determined from the face itself.
+ 	static bool LoadFontFace(const String& file_name, int face_index, bool fallback_face, Style::FontWeight weight = Style::FontWeight::Auto);
+@@ -50,7 +50,7 @@ public:
+ 	static int CountFallbackFontFaces();
+ 
+ 	/// Return a font face handle with the given index, at the given font size.
+-	static FontFaceHandleDefault* GetFallbackFontFace(int index, float font_size);
++	static SharedPtr<FontFaceHandleDefault> GetFallbackFontFace(int index, float font_size);
+ 
+ 	/// Releases resources owned by sized font faces, including their textures and rendered glyphs.
+ 	static void ReleaseFontResources();
