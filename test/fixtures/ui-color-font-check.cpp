@@ -60,12 +60,39 @@ int main() try {
     Rml::TextShapingContext shaping{language};
     const std::array<Rml::String, 4> symbols{"\xF0\x9F\x8F\x81", "\xF0\x9F\x8E\xAE",
                                              "\xF0\x9F\x9B\xA0", "\xF0\x9F\x93\xBA"};
-    for (const int size : {16, 24, 32}) {
+    const auto text_font = bbl::pal::find_system_font("Helvetica", 400);
+    require(text_font.has_value(), "Text font is missing.");
+    require(engine.LoadFontFace(text_font->path.string(), text_font->face_index, "text",
+                                Rml::Style::FontStyle::Normal, Rml::Style::FontWeight::Normal,
+                                false),
+            "Text face load failed.");
+    for (const float size : {16.25f, 24.5f, 32.75f}) {
         const auto handle = engine.GetFontFaceHandle("bbl-emoji", Rml::Style::FontStyle::Normal,
                                                      Rml::Style::FontWeight::Normal, size);
         require(handle != 0, "Emoji handle creation failed.");
+        require(engine.GetFontMetrics(handle).size == size, "Emoji size was truncated.");
+        const auto ordinary = engine.GetFontFaceHandle("text", Rml::Style::FontStyle::Normal,
+                                                       Rml::Style::FontWeight::Normal, size);
+        const auto measure = [&](const Rml::String& text) {
+            return engine.GetStringWidth(ordinary, text, shaping, Rml::Character::Null);
+        };
+        const auto mixed = "A" + symbols[2] + "B";
+        require(std::abs(measure(mixed) - (measure("A") + measure(symbols[2]) + measure("B"))) <
+                    .001f,
+                "A missing glyph changed the surrounding text advances.");
+        Rml::TexturedMeshList plain_meshes, mixed_meshes;
+        const auto color = Rml::Colourb{255, 255, 255}.ToPremultiplied();
+        engine.GenerateString(layout->GetRenderManager(), ordinary, 0, "A", {0, 40}, color, 1,
+                              shaping, plain_meshes);
+        require(std::abs(engine.GenerateString(layout->GetRenderManager(), ordinary, 0, mixed,
+                                               {0, 40}, color, 1, shaping, mixed_meshes) -
+                         measure(mixed)) < .001f,
+                "Mixed text layout/render advances differ.");
+        require(mixed_meshes.size() == 3 && plain_meshes.size() == 1 &&
+                    mixed_meshes[0].texture == plain_meshes[0].texture,
+                "Emoji fallback changed the surrounding text renderer.");
         for (const auto& symbol : symbols) {
-            const int advance =
+            const float advance =
                 engine.GetStringWidth(handle, symbol, shaping, Rml::Character::Null);
             require(advance > 0 && advance < size * 3, "Invalid emoji advance.");
             Rml::TexturedMeshList meshes;

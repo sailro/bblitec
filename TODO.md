@@ -14,8 +14,3 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 - [ ] iOS: qualify device bundles on hardware.
 - [ ] Linux/Vulkan: every registered scene within its thresholds against same-host browser references.
 - [ ] macOS/Metal: every registered scene within its thresholds against same-host browser references, fonts included, on an Apple Silicon host.
-
-## UI text
-
-- [ ] Carry fractional CSS font sizes through the shared font engine on every platform, with a bounded face cache.
-- [ ] Fall back per character on Windows when a face lacks a glyph. Measure both [font limitations](docs/ui.md#css-layout-and-fonts) against same-host browser references.

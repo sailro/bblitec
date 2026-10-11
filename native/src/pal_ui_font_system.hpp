@@ -4,6 +4,7 @@
 #include <RmlUi/Core/FontEngineInterface.h>
 #include <RmlUi/Core/Log.h>
 #include <RmlUi/Core/StringUtilities.h>
+#include <cmath>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -114,11 +115,12 @@ public:
         return loaded;
     }
     Rml::FontFaceHandle GetFontFaceHandle(const Rml::String& family, Rml::Style::FontStyle style,
-                                          Rml::Style::FontWeight weight, int size) override {
+                                          Rml::Style::FontWeight weight, float size) override {
         if (size == 0)
             return 0;
-        if (size < 0)
-            throw std::runtime_error("The retained UI font size must be nonnegative.");
+        if (!std::isfinite(size) || size < 0 || size > 16384.f)
+            throw std::runtime_error(
+                "The retained UI font size must be finite and between 0 and 16384 pixels.");
         for (const auto& name : families(family)) {
             if (name.empty())
                 continue;
@@ -144,15 +146,15 @@ public:
     const Rml::FontMetrics& GetFontMetrics(Rml::FontFaceHandle handle) override {
         return renderer_.GetFontMetrics(handle);
     }
-    int GetStringWidth(Rml::FontFaceHandle handle, Rml::StringView text,
-                       const Rml::TextShapingContext& context, Rml::Character previous) override {
+    float GetStringWidth(Rml::FontFaceHandle handle, Rml::StringView text,
+                         const Rml::TextShapingContext& context, Rml::Character previous) override {
         return renderer_.GetStringWidth(handle, text, context, previous);
     }
-    int GenerateString(Rml::RenderManager& manager, Rml::FontFaceHandle handle,
-                       Rml::FontEffectsHandle effects, Rml::StringView text, Rml::Vector2f position,
-                       Rml::ColourbPremultiplied color, float opacity,
-                       const Rml::TextShapingContext& context,
-                       Rml::TexturedMeshList& meshes) override {
+    float GenerateString(Rml::RenderManager& manager, Rml::FontFaceHandle handle,
+                         Rml::FontEffectsHandle effects, Rml::StringView text,
+                         Rml::Vector2f position, Rml::ColourbPremultiplied color, float opacity,
+                         const Rml::TextShapingContext& context,
+                         Rml::TexturedMeshList& meshes) override {
         return renderer_.GenerateString(manager, handle, effects, text, position, color, opacity,
                                         context, meshes);
     }

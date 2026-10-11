@@ -29,11 +29,11 @@ public final class MainActivity extends SDLActivity {
         return MotionPreferences.reducedMotion(getContentResolver());
     }
 
-    public int[] rasterizeEmoji(byte[] utf8, String path, int index, int size, float spacing) {
+    public int[] rasterizeEmoji(byte[] utf8, String path, int index, float size, float spacing) {
         return EmojiRaster.render(utf8, path, index, size, spacing);
     }
 
-    public int[] measureEmoji(byte[] utf8, String path, int index, int size, float spacing) {
+    public int[] measureEmoji(byte[] utf8, String path, int index, float size, float spacing) {
         return EmojiRaster.measure(utf8, path, index, size, spacing);
     }
 

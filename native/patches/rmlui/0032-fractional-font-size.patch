@@ -1,0 +1,479 @@
+Carry CSS font sizes through face selection, metrics and FreeType at fractional pixel
+precision. Keep fractional advances and kerning until the run is rounded.
+
+diff --git a/Include/RmlUi/Core/FontEngineInterface.h b/Include/RmlUi/Core/FontEngineInterface.h
+index ac15f59..d9dd7a1 100644
+--- a/Include/RmlUi/Core/FontEngineInterface.h
++++ b/Include/RmlUi/Core/FontEngineInterface.h
+@@ -63,9 +63,9 @@ public:
+ 	/// @param[in] family The family of the desired font handle.
+ 	/// @param[in] style The style of the desired font handle.
+ 	/// @param[in] weight The weight of the desired font handle.
+-	/// @param[in] size The size of desired handle, in points.
++	/// @param[in] size The size of desired handle, in pixels.
+ 	/// @return A valid handle if a matching (or closely matching) font face was found, NULL otherwise.
+-	virtual FontFaceHandle GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, int size);
++	virtual FontFaceHandle GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size);
+ 
+ 	/// Called by RmlUi when a list of font effects is resolved for an element with a given font face.
+ 	/// @param[in] handle The font handle.
+diff --git a/Include/RmlUi/Core/FontGlyph.h b/Include/RmlUi/Core/FontGlyph.h
+index 2100298..5020bfb 100644
+--- a/Include/RmlUi/Core/FontGlyph.h
++++ b/Include/RmlUi/Core/FontGlyph.h
+@@ -13,7 +13,7 @@ public:
+ 	/// The distance from the cursor (positioned vertically on the baseline) to the top-left corner of this glyph's bitmap.
+ 	Vector2i bearing;
+ 	/// The glyph's advance; this is how far the cursor will be moved along after rendering this character.
+-	int advance = 0;
++	float advance = 0;
+ 
+ 	/// Bitmap data defining this glyph. The dimensions and format of the data is given below. This will be nullptr if the glyph has no bitmap data.
+ 	const byte* bitmap_data = nullptr;
+diff --git a/Include/RmlUi/Core/FontMetrics.h b/Include/RmlUi/Core/FontMetrics.h
+index 92e06f3..1a06839 100644
+--- a/Include/RmlUi/Core/FontMetrics.h
++++ b/Include/RmlUi/Core/FontMetrics.h
+@@ -5,7 +5,7 @@
+ namespace Rml {
+ 
+ struct FontMetrics {
+-	int size;                  // Specified font size [px].
++	float size;                // Specified font size [px].
+ 
+ 	float ascent;              // Distance above the baseline to the upper grid coordinate [px, positive above baseline].
+ 	float descent;             // Distance below the baseline to the lower grid coordinate [px, positive below baseline].
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index c57180f..7215254 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -999,7 +999,7 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 	{
+ 		RMLUI_ZoneScopedN("FontFaceHandle");
+ 		values.font_face_handle(
+-			GetFontEngineInterface()->GetFontFaceHandle(values.font_family(), values.font_style(), values.font_weight(), (int)values.font_size()));
++			GetFontEngineInterface()->GetFontFaceHandle(values.font_family(), values.font_style(), values.font_weight(), values.font_size()));
+ 	}
+ 
+ 	// The normal keyword inherits unchanged and resolves using each element's
+diff --git a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp
+index 7f7f911..5bc591b 100644
+--- a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp
++++ b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.cpp
+@@ -32,7 +32,7 @@ bool FontEngineInterfaceDefault::LoadFontFace(Span<const byte> data, int face_in
+ 	return FontProvider::LoadFontFace(data, face_index, font_family, style, weight, fallback_face);
+ }
+ 
+-FontFaceHandle FontEngineInterfaceDefault::GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, int size)
++FontFaceHandle FontEngineInterfaceDefault::GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size)
+ {
+ 	auto handle = FontProvider::GetFontFaceHandle(family, style, weight, size);
+ 	return reinterpret_cast<FontFaceHandle>(handle);
+diff --git a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.h b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.h
+index 701ac95..847918b 100644
+--- a/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.h
++++ b/Source/Core/FontEngineDefault/FontEngineInterfaceDefault.h
+@@ -26,7 +26,7 @@ public:
+ 	/// Returns a handle to a font face that can be used to position and render text. This will return the closest match
+ 	/// it can find, but in the event a font family is requested that does not exist, NULL will be returned instead of a
+ 	/// valid handle.
+-	FontFaceHandle GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, int size) override;
++	FontFaceHandle GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size) override;
+ 
+ 	/// Prepares for font effects by configuring a new, or returning an existing, layer configuration.
+ 	FontEffectsHandle PrepareFontEffects(FontFaceHandle handle, const FontEffectList& font_effects) override;
+diff --git a/Source/Core/FontEngineDefault/FontFace.cpp b/Source/Core/FontEngineDefault/FontFace.cpp
+index fec8908..9cc105e 100644
+--- a/Source/Core/FontEngineDefault/FontFace.cpp
++++ b/Source/Core/FontEngineDefault/FontFace.cpp
+@@ -2,6 +2,7 @@
+ #include "../../../Include/RmlUi/Core/Log.h"
+ #include "FontFaceHandleDefault.h"
+ #include "FreeTypeInterface.h"
++#include <cmath>
+ 
+ namespace Rml {
+ 
+@@ -28,8 +29,10 @@ Style::FontWeight FontFace::GetWeight() const
+ 	return weight;
+ }
+ 
+-FontFaceHandleDefault* FontFace::GetHandle(int size, bool load_default_glyphs)
++FontFaceHandleDefault* FontFace::GetHandle(float size, bool load_default_glyphs)
+ {
++	if (!std::isfinite(size) || size <= 0.f || size > 16384.f)
++		return nullptr;
+ 	auto it = handles.find(size);
+ 	if (it != handles.end())
+ 		return it->second.get();
+diff --git a/Source/Core/FontEngineDefault/FontFace.h b/Source/Core/FontEngineDefault/FontFace.h
+index 369eda5..86c4ea3 100644
+--- a/Source/Core/FontEngineDefault/FontFace.h
++++ b/Source/Core/FontEngineDefault/FontFace.h
+@@ -16,10 +16,10 @@ public:
+ 	Style::FontWeight GetWeight() const;
+ 
+ 	/// Returns a handle for positioning and rendering this face at the given size.
+-	/// @param[in] size The size of the desired handle, in points.
++	/// @param[in] size The size of the desired handle, in pixels.
+ 	/// @param[in] load_default_glyphs True to load the default set of glyph (ASCII range).
+ 	/// @return The font handle.
+-	FontFaceHandleDefault* GetHandle(int size, bool load_default_glyphs);
++	FontFaceHandleDefault* GetHandle(float size, bool load_default_glyphs);
+ 
+ 	/// Releases resources owned by sized font faces, including their textures and rendered glyphs.
+ 	void ReleaseFontResources();
+@@ -29,7 +29,7 @@ private:
+ 	Style::FontWeight weight;
+ 
+ 	// Key is font size
+-	using HandleMap = UnorderedMap<int, UniquePtr<FontFaceHandleDefault>>;
++	using HandleMap = UnorderedMap<float, UniquePtr<FontFaceHandleDefault>>;
+ 	HandleMap handles;
+ 
+ 	FontFaceHandleFreetype face;
+diff --git a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+index b984dc0..fcfdd4d 100644
+--- a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
++++ b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+@@ -27,7 +27,7 @@ FontFaceHandleDefault::~FontFaceHandleDefault()
+ 	layers.clear();
+ }
+ 
+-bool FontFaceHandleDefault::Initialize(FontFaceHandleFreetype face, int font_size, bool load_default_glyphs)
++bool FontFaceHandleDefault::Initialize(FontFaceHandleFreetype face, float font_size, bool load_default_glyphs)
+ {
+ 	ft_face = face;
+ 
+@@ -293,16 +293,16 @@ void FontFaceHandleDefault::FillKerningPairCache()
+ 			const bool first_iteration = (i == KerningCache_AsciiSubsetBegin && j == KerningCache_AsciiSubsetBegin);
+ 
+ 			// Fetch the kerning from the font face. Submit zero font size on subsequent iterations for performance reasons.
+-			const int kerning = FreeType::GetKerning(ft_face, first_iteration ? metrics.size : 0, Character(i), Character(j));
++			const float kerning = FreeType::GetKerning(ft_face, first_iteration ? metrics.size : 0, Character(i), Character(j));
+ 			if (kerning != 0)
+ 			{
+-				kerning_pair_cache.emplace(AsciiPair((i << 8) | j), KerningIntType(kerning));
++				kerning_pair_cache.emplace(AsciiPair((i << 8) | j), KerningType(kerning));
+ 			}
+ 		}
+ 	}
+ }
+ 
+-int FontFaceHandleDefault::GetKerning(Character lhs, Character rhs, bool& has_set_size) const
++float FontFaceHandleDefault::GetKerning(Character lhs, Character rhs, bool& has_set_size) const
+ {
+ 	static_assert(' ' == 32, "Only ASCII/UTF8 character set supported.");
+ 
+@@ -327,7 +327,7 @@ int FontFaceHandleDefault::GetKerning(Character lhs, Character rhs, bool& has_se
+ 	}
+ 
+ 	// Fetch it from the font face instead.
+-	const int result = FreeType::GetKerning(ft_face, has_set_size ? 0 : metrics.size, lhs, rhs);
++	const float result = FreeType::GetKerning(ft_face, has_set_size ? 0 : metrics.size, lhs, rhs);
+ 
+ 	// This is purely an optimization to avoid repeatedly setting the font size in FreeType, which can be a measurable performance hit.
+ 	has_set_size = true;
+diff --git a/Source/Core/FontEngineDefault/FontFaceHandleDefault.h b/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
+index cf05181..426ee02 100644
+--- a/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
++++ b/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
+@@ -18,7 +18,7 @@ public:
+ 	FontFaceHandleDefault();
+ 	~FontFaceHandleDefault();
+ 
+-	bool Initialize(FontFaceHandleFreetype face, int font_size, bool load_default_glyphs);
++	bool Initialize(FontFaceHandleFreetype face, float font_size, bool load_default_glyphs);
+ 
+ 	const FontMetrics& GetFontMetrics() const;
+ 
+@@ -69,7 +69,7 @@ private:
+ 	void FillKerningPairCache();
+ 
+ 	// Return the kerning for a character pair.
+-	int GetKerning(Character lhs, Character rhs, bool& has_set_size) const;
++	float GetKerning(Character lhs, Character rhs, bool& has_set_size) const;
+ 
+ 	// Returns whether kerning is enabled based on the text-shaping context.
+ 	bool IsKerningEnabled(const TextShapingContext& text_shaping_context) const;
+@@ -108,8 +108,8 @@ private:
+ 
+ 	// Pre-cache kerning pairs for some ascii subset of all characters.
+ 	using AsciiPair = uint16_t;
+-	using KerningIntType = int16_t;
+-	using KerningPairs = UnorderedMap<AsciiPair, KerningIntType>;
++	using KerningType = float;
++	using KerningPairs = UnorderedMap<AsciiPair, KerningType>;
+ 	KerningPairs kerning_pair_cache;
+ 
+ 	bool has_kerning = false;
+diff --git a/Source/Core/FontEngineDefault/FontFamily.cpp b/Source/Core/FontEngineDefault/FontFamily.cpp
+index 53134ef..82d3614 100644
+--- a/Source/Core/FontEngineDefault/FontFamily.cpp
++++ b/Source/Core/FontEngineDefault/FontFamily.cpp
+@@ -16,7 +16,7 @@ FontFamily::~FontFamily()
+ 		entry.face.reset();
+ }
+ 
+-FontFaceHandleDefault* FontFamily::GetFaceHandle(Style::FontStyle style, Style::FontWeight weight, int size)
++FontFaceHandleDefault* FontFamily::GetFaceHandle(Style::FontStyle style, Style::FontWeight weight, float size)
+ {
+ 	int best_dist = INT_MAX;
+ 	FontFace* matching_face = nullptr;
+diff --git a/Source/Core/FontEngineDefault/FontFamily.h b/Source/Core/FontEngineDefault/FontFamily.h
+index b251029..254eff0 100644
+--- a/Source/Core/FontEngineDefault/FontFamily.h
++++ b/Source/Core/FontEngineDefault/FontFamily.h
+@@ -21,9 +21,9 @@ public:
+ 	/// Returns a handle to the most appropriate font in the family, at the correct size.
+ 	/// @param[in] style The style of the desired handle.
+ 	/// @param[in] weight The weight of the desired handle.
+-	/// @param[in] size The size of the desired handle, in points.
++	/// @param[in] size The size of the desired handle, in pixels.
+ 	/// @return A valid handle if a matching (or closely matching) font face was found, nullptr otherwise.
+-	FontFaceHandleDefault* GetFaceHandle(Style::FontStyle style, Style::FontWeight weight, int size);
++	FontFaceHandleDefault* GetFaceHandle(Style::FontStyle style, Style::FontWeight weight, float size);
+ 
+ 	/// Adds a new face to the family.
+ 	/// @param[in] ft_face The previously loaded FreeType face.
+diff --git a/Source/Core/FontEngineDefault/FontProvider.cpp b/Source/Core/FontEngineDefault/FontProvider.cpp
+index 94f9733..0521824 100644
+--- a/Source/Core/FontEngineDefault/FontProvider.cpp
++++ b/Source/Core/FontEngineDefault/FontProvider.cpp
+@@ -47,7 +47,7 @@ FontProvider& FontProvider::Get()
+ 	return *g_font_provider;
+ }
+ 
+-FontFaceHandleDefault* FontProvider::GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, int size)
++FontFaceHandleDefault* FontProvider::GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size)
+ {
+ 	RMLUI_ASSERTMSG(family == StringUtilities::ToLower(family), "Font family name must be converted to lowercase before entering here.");
+ 
+@@ -65,7 +65,7 @@ int FontProvider::CountFallbackFontFaces()
+ 	return (int)Get().fallback_font_faces.size();
+ }
+ 
+-FontFaceHandleDefault* FontProvider::GetFallbackFontFace(int index, int font_size)
++FontFaceHandleDefault* FontProvider::GetFallbackFontFace(int index, float font_size)
+ {
+ 	auto& faces = FontProvider::Get().fallback_font_faces;
+ 
+diff --git a/Source/Core/FontEngineDefault/FontProvider.h b/Source/Core/FontEngineDefault/FontProvider.h
+index 7b2c139..4bd7d81 100644
+--- a/Source/Core/FontEngineDefault/FontProvider.h
++++ b/Source/Core/FontEngineDefault/FontProvider.h
+@@ -31,9 +31,9 @@ public:
+ 	/// @param[in] family The family of the desired font handle.
+ 	/// @param[in] style The style of the desired font handle.
+ 	/// @param[in] weight The weight of the desired font handle.
+-	/// @param[in] size The size of desired handle, in points.
++	/// @param[in] size The size of desired handle, in pixels.
+ 	/// @return A valid handle if a matching (or closely matching) font face was found, nullptr otherwise.
+-	static FontFaceHandleDefault* GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, int size);
++	static FontFaceHandleDefault* GetFontFaceHandle(const String& family, Style::FontStyle style, Style::FontWeight weight, float size);
+ 
+ 	/// Adds a new font face to the database. The face's family, style and weight will be determined from the face itself.
+ 	static bool LoadFontFace(const String& file_name, int face_index, bool fallback_face, Style::FontWeight weight = Style::FontWeight::Auto);
+@@ -50,7 +50,7 @@ public:
+ 	static int CountFallbackFontFaces();
+ 
+ 	/// Return a font face handle with the given index, at the given font size.
+-	static FontFaceHandleDefault* GetFallbackFontFace(int index, int font_size);
++	static FontFaceHandleDefault* GetFallbackFontFace(int index, float font_size);
+ 
+ 	/// Releases resources owned by sized font faces, including their textures and rendered glyphs.
+ 	static void ReleaseFontResources();
+diff --git a/Source/Core/FontEngineDefault/FreeTypeInterface.cpp b/Source/Core/FontEngineDefault/FreeTypeInterface.cpp
+index a46ce1d..2cff97c 100644
+--- a/Source/Core/FontEngineDefault/FreeTypeInterface.cpp
++++ b/Source/Core/FontEngineDefault/FreeTypeInterface.cpp
+@@ -2,6 +2,7 @@
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../../Include/RmlUi/Core/FontMetrics.h"
+ #include "../../../Include/RmlUi/Core/Log.h"
++#include <cmath>
+ #include <algorithm>
+ #include <ft2build.h>
+ #include <limits.h>
+@@ -15,9 +16,9 @@ namespace Rml {
+ static FT_Library ft_library = nullptr;
+ 
+ static bool BuildGlyph(FT_Face ft_face, Character character, FontGlyphMap& glyphs, float bitmap_scaling_factor);
+-static void BuildGlyphMap(FT_Face ft_face, int size, FontGlyphMap& glyphs, float bitmap_scaling_factor, bool load_default_glyphs);
++static void BuildGlyphMap(FT_Face ft_face, float size, FontGlyphMap& glyphs, float bitmap_scaling_factor, bool load_default_glyphs);
+ static void GenerateMetrics(FT_Face ft_face, FontMetrics& metrics, float bitmap_scaling_factor);
+-static bool SetFontSize(FT_Face ft_face, int font_size, float& out_bitmap_scaling_factor);
++static bool SetFontSize(FT_Face ft_face, float font_size, float& out_bitmap_scaling_factor);
+ static void BitmapDownscale(byte* bitmap_new, int new_width, int new_height, const byte* bitmap_source, int width, int height, int pitch,
+ 	ColorFormat color_format);
+ 
+@@ -174,7 +175,7 @@ void FreeType::GetFaceStyle(FontFaceHandleFreetype in_face, String* font_family,
+ 	}
+ }
+ 
+-bool FreeType::InitialiseFaceHandle(FontFaceHandleFreetype face, int font_size, FontGlyphMap& glyphs, FontMetrics& metrics, bool load_default_glyphs)
++bool FreeType::InitialiseFaceHandle(FontFaceHandleFreetype face, float font_size, FontGlyphMap& glyphs, FontMetrics& metrics, bool load_default_glyphs)
+ {
+ 	FT_Face ft_face = (FT_Face)face;
+ 
+@@ -193,7 +194,7 @@ bool FreeType::InitialiseFaceHandle(FontFaceHandleFreetype face, int font_size,
+ 	return true;
+ }
+ 
+-bool FreeType::AppendGlyph(FontFaceHandleFreetype face, int font_size, Character character, FontGlyphMap& glyphs)
++bool FreeType::AppendGlyph(FontFaceHandleFreetype face, float font_size, Character character, FontGlyphMap& glyphs)
+ {
+ 	FT_Face ft_face = (FT_Face)face;
+ 
+@@ -211,7 +212,7 @@ bool FreeType::AppendGlyph(FontFaceHandleFreetype face, int font_size, Character
+ 	return true;
+ }
+ 
+-int FreeType::GetKerning(FontFaceHandleFreetype face, int font_size, Character lhs, Character rhs)
++float FreeType::GetKerning(FontFaceHandleFreetype face, float font_size, Character lhs, Character rhs)
+ {
+ 	FT_Face ft_face = (FT_Face)face;
+ 
+@@ -229,12 +230,12 @@ int FreeType::GetKerning(FontFaceHandleFreetype face, int font_size, Character l
+ 	FT_Vector ft_kerning;
+ 
+ 	FT_Error ft_error = FT_Get_Kerning(ft_face, FT_Get_Char_Index(ft_face, (FT_ULong)lhs), FT_Get_Char_Index(ft_face, (FT_ULong)rhs),
+-		FT_KERNING_DEFAULT, &ft_kerning);
++		FT_KERNING_UNFITTED, &ft_kerning);
+ 
+ 	if (ft_error)
+ 		return 0;
+ 
+-	int kerning = ft_kerning.x >> 6;
++	float kerning = float(ft_kerning.x) / 64.f;
+ 	return kerning;
+ }
+ 
+@@ -245,7 +246,7 @@ bool FreeType::HasKerning(FontFaceHandleFreetype face)
+ 	return FT_HAS_KERNING(ft_face);
+ }
+ 
+-static void BuildGlyphMap(FT_Face ft_face, int size, FontGlyphMap& glyphs, const float bitmap_scaling_factor, const bool load_default_glyphs)
++static void BuildGlyphMap(FT_Face ft_face, float size, FontGlyphMap& glyphs, const float bitmap_scaling_factor, const bool load_default_glyphs)
+ {
+ 	if (load_default_glyphs)
+ 	{
+@@ -265,7 +266,7 @@ static void BuildGlyphMap(FT_Face ft_face, int size, FontGlyphMap& glyphs, const
+ 	if (it == glyphs.end())
+ 	{
+ 		FontGlyph glyph;
+-		glyph.bitmap_dimensions = {size / 3, (size * 2) / 3};
++		glyph.bitmap_dimensions = {int(size / 3), int((size * 2) / 3)};
+ 		glyph.advance = glyph.bitmap_dimensions.x + 2;
+ 		glyph.bearing = {1, glyph.bitmap_dimensions.y};
+ 
+@@ -293,7 +294,9 @@ static bool BuildGlyph(FT_Face ft_face, const Character character, FontGlyphMap&
+ 	if (index == 0)
+ 		return false;
+ 
+-	FT_Error error = FT_Load_Glyph(ft_face, index, FT_LOAD_COLOR);
++	// TrueType hint programs can divide by zero at one pixel per em and below.
++	const bool subpixel_size = FT_IS_SCALABLE(ft_face) && ft_face->size->metrics.y_ppem <= 1;
++	FT_Error error = FT_Load_Glyph(ft_face, index, FT_LOAD_COLOR | (subpixel_size ? FT_LOAD_NO_HINTING : 0));
+ 	if (error != 0)
+ 	{
+ #ifdef RMLUI_DEBUG
+@@ -333,7 +336,7 @@ static bool BuildGlyph(FT_Face ft_face, const Character character, FontGlyphMap&
+ 
+ 	glyph.bearing.x = ft_glyph->bitmap_left;
+ 	glyph.bearing.y = ft_glyph->bitmap_top;
+-	glyph.advance = ft_glyph->metrics.horiAdvance >> 6;
++	glyph.advance = FT_IS_SCALABLE(ft_face) ? float(ft_glyph->linearHoriAdvance) / 65536.f : float(ft_glyph->metrics.horiAdvance) / 64.f;
+ 	glyph.bitmap_dimensions.x = ft_glyph->bitmap.width;
+ 	glyph.bitmap_dimensions.y = ft_glyph->bitmap.rows;
+ 
+@@ -342,7 +345,7 @@ static bool BuildGlyph(FT_Face ft_face, const Character character, FontGlyphMap&
+ 	if (scale_bitmap)
+ 	{
+ 		glyph.bearing = Vector2i(Vector2f(glyph.bearing) * bitmap_scaling_factor);
+-		glyph.advance = int(float(glyph.advance) * bitmap_scaling_factor);
++		glyph.advance *= bitmap_scaling_factor;
+ 		glyph.bitmap_dimensions = Vector2i(Vector2f(glyph.bitmap_dimensions) * bitmap_scaling_factor);
+ 	}
+ 
+@@ -468,27 +471,31 @@ static void GenerateMetrics(FT_Face ft_face, FontMetrics& metrics, float bitmap_
+ 	metrics.has_ellipsis = (ellipsis_index != 0);
+ }
+ 
+-static bool SetFontSize(FT_Face ft_face, int font_size, float& out_bitmap_scaling_factor)
++static bool SetFontSize(FT_Face ft_face, float font_size, float& out_bitmap_scaling_factor)
+ {
+ 	RMLUI_ASSERT(out_bitmap_scaling_factor == 1.f);
+ 
+ 	FT_Error error = 0;
+ 
+ 	// Set the character size on the font face.
+-	error = FT_Set_Char_Size(ft_face, 0, font_size << 6, 0, 0);
++	// FT_Set_Char_Size clamps sizes below one pixel. Request the nominal size
++	// directly, quantizing only at FreeType's 26.6 boundary.
++	const auto size = static_cast<FT_Long>(Math::Max(1l, std::lround(font_size * 64.0)));
++	FT_Size_RequestRec request{FT_SIZE_REQUEST_TYPE_NOMINAL, size, size, 72, 72};
++	error = FT_Request_Size(ft_face, &request);
+ 
+ 	// If setting char size fails, try to select a bitmap strike instead when available.
+ 	if (error != 0 && FT_HAS_FIXED_SIZES(ft_face))
+ 	{
+ 		constexpr int a_big_number = INT_MAX / 2;
+-		int heuristic_min = INT_MAX;
++		float heuristic_min = float(INT_MAX);
+ 		int index_min = -1;
+ 
+ 		// Select the bitmap strike with the smallest size *above* font_size, or else the largest size.
+ 		for (int i = 0; i < ft_face->num_fixed_sizes; i++)
+ 		{
+-			const int size_diff = ft_face->available_sizes[i].height - font_size;
+-			const int heuristic = (size_diff < 0 ? a_big_number - size_diff : size_diff);
++			const float size_diff = ft_face->available_sizes[i].height - font_size;
++			const float heuristic = (size_diff < 0 ? a_big_number - size_diff : size_diff);
+ 
+ 			if (heuristic < heuristic_min)
+ 			{
+@@ -512,7 +519,7 @@ static bool SetFontSize(FT_Face ft_face, int font_size, float& out_bitmap_scalin
+ 
+ 	if (error != 0)
+ 	{
+-		Log::Message(Log::LT_ERROR, "Unable to set the character size '%d' on the font face '%s %s'.", font_size, ft_face->family_name,
++		Log::Message(Log::LT_ERROR, "Unable to set the character size '%g' on the font face '%s %s'.", font_size, ft_face->family_name,
+ 			ft_face->style_name);
+ 		return false;
+ 	}
+diff --git a/Source/Core/FontEngineDefault/FreeTypeInterface.h b/Source/Core/FontEngineDefault/FreeTypeInterface.h
+index 68a3a72..20cb932 100644
+--- a/Source/Core/FontEngineDefault/FreeTypeInterface.h
++++ b/Source/Core/FontEngineDefault/FreeTypeInterface.h
+@@ -25,14 +25,14 @@ namespace FreeType {
+ 	void GetFaceStyle(FontFaceHandleFreetype face, String* font_family, Style::FontStyle* style, Style::FontWeight* weight);
+ 
+ 	// Initializes a face for a given font size. Glyphs are filled with the ASCII subset, and the font face metrics are set.
+-	bool InitialiseFaceHandle(FontFaceHandleFreetype face, int font_size, FontGlyphMap& glyphs, FontMetrics& metrics, bool load_default_glyphs);
++	bool InitialiseFaceHandle(FontFaceHandleFreetype face, float font_size, FontGlyphMap& glyphs, FontMetrics& metrics, bool load_default_glyphs);
+ 
+ 	// Build a new glyph representing the given code point and append to 'glyphs'.
+-	bool AppendGlyph(FontFaceHandleFreetype face, int font_size, Character character, FontGlyphMap& glyphs);
++	bool AppendGlyph(FontFaceHandleFreetype face, float font_size, Character character, FontGlyphMap& glyphs);
+ 
+ 	// Returns the kerning between two characters.
+ 	// 'font_size' value of zero assumes the font size is already set on the face, and skips this step for performance reasons.
+-	int GetKerning(FontFaceHandleFreetype face, int font_size, Character lhs, Character rhs);
++	float GetKerning(FontFaceHandleFreetype face, float font_size, Character lhs, Character rhs);
+ 
+ 	// Returns true if the font face has kerning.
+ 	bool HasKerning(FontFaceHandleFreetype face);
+diff --git a/Source/Core/FontEngineInterface.cpp b/Source/Core/FontEngineInterface.cpp
+index f66c488..c5286e5 100644
+--- a/Source/Core/FontEngineInterface.cpp
++++ b/Source/Core/FontEngineInterface.cpp
+@@ -29,7 +29,7 @@ bool FontEngineInterface::LoadFontFace(Span<const byte> /*data*/, int /*face_ind
+ }
+ 
+ FontFaceHandle FontEngineInterface::GetFontFaceHandle(const String& /*family*/, Style::FontStyle /*style*/, Style::FontWeight /*weight*/,
+-	int /*size*/)
++	float /*size*/)
+ {
+ 	return 0;
+ }

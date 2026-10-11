@@ -262,9 +262,12 @@ on macOS/iOS, Linux and Android. Android resolves generic families through its f
 families through its installed-font list; variable fonts select the nearest named weight. Color glyphs use CoreText
 on iOS (including Apple's `emjc` bitmaps) and Android's text renderer (including COLRv1).
 Android bundles Noto Sans Symbols 2 for monochrome text symbols. Other FreeType color fonts retain
-PNG decoding. Font coverage, baseline/line-height rounding, emoji/ZWJ shaping and rasterization can
-differ from Chromium. RmlUi truncates CSS font sizes to integer pixels before requesting a face;
-Windows falls back to FreeType for the whole run when DirectWrite cannot supply every glyph.
+PNG decoding. Font selection and coverage, kerning, baseline/line-height rounding, emoji/ZWJ shaping and rasterization can
+differ from Chromium. Missing glyphs fall back individually on every platform; Windows keeps combining
+sequences together and preserves DirectWrite rendering for surrounding text. CSS font sizes and text
+advances stay fractional through face selection, line wrapping and rasterization; FreeType quantizes
+sizes at its 1/64-pixel boundary. Sized-face caches retain 32 recent entries each;
+live handles retain their faces independently. Zero-size text paints no glyphs; sizes above 16384 pixels refuse.
 Relative transition units resolve at transition start.
 
 The maintained RmlUi patches are `native/patches/rmlui/NNNN-*.patch`, applied in number order.

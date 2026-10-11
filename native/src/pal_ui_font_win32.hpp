@@ -6,6 +6,7 @@
 #include "pal_win32_text.hpp"
 #include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/FontEngineInterface.h>
+#include <RmlUi/Core/FontFaceCache.h>
 #include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
 #include <RmlUi/Core/StringUtilities.h>
@@ -119,8 +120,9 @@ private:
         std::uint64_t used = 0;
     };
     struct Face {
-        SourceFace* source;
-        Rml::FontMetrics metrics;
+        Rml::FontFaceHandle fallback_handle;
+        SourceFace* source = nullptr;
+        Rml::FontMetrics metrics{};
         DWRITE_RENDERING_MODE rendering = DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC;
         std::map<std::tuple<UINT16, int, unsigned>, Glyph> glyphs;
         std::map<ShapeKey, CachedRun, std::less<>> shapes;
@@ -199,9 +201,10 @@ private:
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return value;
     }
-    static DWRITE_RENDERING_MODE rendering_mode(IDWriteFontFace* face, int size) {
+    static DWRITE_RENDERING_MODE rendering_mode(IDWriteFontFace* face, float size) {
         Table gasp(face, DWRITE_MAKE_OPENTYPE_TAG('g', 'a', 's', 'p'));
-        int minimum = size, maximum = size, version = -1, flags = 0;
+        float minimum = size, maximum = size;
+        int version = -1, flags = 0;
         if (gasp.length >= 4 && gasp.u16(0) <= 1 && gasp.u16(2) <= 1024 &&
             4u + 4u * gasp.u16(2) <= gasp.length) {
             int previous = -1;
@@ -211,8 +214,8 @@ private:
                     version = gasp.u16(0);
                     flags = gasp.u16(6 + i * 4);
                     if (flags == 1) {
-                        minimum = previous + 1;
-                        maximum = upper;
+                        minimum = static_cast<float>(previous + 1);
+                        maximum = static_cast<float>(upper);
                     }
                     break;
                 }
@@ -339,15 +342,70 @@ private:
         const CpuTimer timer(cpu_profile, cpu_sample.mapping, cpu_sample.mapping_ms);
         std::vector<UINT32> points;
         for (auto it = Rml::StringIteratorU8(text); it; ++it)
-            if (static_cast<UINT32>(*it) >= 32)
-                points.push_back(static_cast<UINT32>(*it));
+            points.push_back(static_cast<UINT32>(*it));
         output.resize(points.size());
         if (points.empty())
             return true;
         check(face.source->face->GetGlyphIndices(points.data(), static_cast<UINT32>(points.size()),
                                                  output.data()),
               "glyph mapping");
-        return std::none_of(output.begin(), output.end(), [](UINT16 value) { return value == 0; });
+        for (std::size_t i = 0; i < points.size(); ++i)
+            if (points[i] >= 32 && output[i] == 0)
+                return false;
+        return true;
+    }
+    struct CoverageSpan {
+        Rml::StringView text;
+        bool supported;
+    };
+    static bool continues_cluster(UINT32 point, UINT32 previous, WORD type) {
+        if (point == 0x200d || previous == 0x200d || (point >= 0xfe00 && point <= 0xfe0f) ||
+            (point >= 0xe0100 && point <= 0xe01ef) || (point >= 0x1f3fb && point <= 0x1f3ff))
+            return true;
+        return (type & (C3_NONSPACING | C3_DIACRITIC | C3_VOWELMARK)) != 0;
+    }
+    // Only used after a coverage miss. Keep combining sequences together, then
+    // coalesce adjacent clusters using the same renderer so ordinary text keeps
+    // its shaping, weight and rasterization around missing characters.
+    static std::vector<CoverageSpan> coverage_spans(Rml::StringView text,
+                                                    const std::vector<UINT16>& mapped) {
+        std::vector<CoverageSpan> spans;
+        const auto wide = utf8_to_wide(std::string_view(text.begin(), text.size()));
+        if (!wide)
+            throw std::runtime_error("DirectWrite text is not UTF-8.");
+        std::vector<WORD> types(wide->size());
+        if (!wide->empty() &&
+            !GetStringTypeW(CT_CTYPE3, wide->data(), static_cast<int>(wide->size()), types.data()))
+            throw std::runtime_error("DirectWrite text classification failed.");
+        const char* cluster = text.begin();
+        bool supported = true;
+        UINT32 previous = 0;
+        std::size_t index = 0, wide_index = 0, regional_count = 0;
+        const auto append = [&](const char* end) {
+            if (cluster == end)
+                return;
+            if (!spans.empty() && spans.back().supported == supported)
+                spans.back().text = Rml::StringView(spans.back().text.begin(), end);
+            else
+                spans.push_back({Rml::StringView(cluster, end), supported});
+        };
+        for (auto it = Rml::StringIteratorU8(text); it; ++it, ++index) {
+            const auto point = static_cast<UINT32>(*it);
+            const bool regional = point >= 0x1f1e6 && point <= 0x1f1ff;
+            const bool joined = continues_cluster(point, previous, types[wide_index]) ||
+                                (regional && regional_count % 2 == 1);
+            wide_index += point > 0xffff ? 2 : 1;
+            if (it.get() != cluster && !joined) {
+                append(it.get());
+                cluster = it.get();
+                supported = true;
+            }
+            supported = supported && (point < 32 || mapped[index] != 0);
+            regional_count = regional ? regional_count + 1 : 0;
+            previous = point;
+        }
+        append(text.end());
+        return spans;
     }
     float shape(Face& face, Rml::StringView text, const Rml::TextShapingContext& context,
                 std::vector<UINT16>& glyphs, std::vector<Rml::Vector2f>& positions) const {
@@ -475,7 +533,7 @@ public:
         check(factory->CreateTextAnalyzer(&analyzer), "text analyzer initialization");
     }
     void Shutdown() override {
-        faces.clear();
+        ReleaseFontResources();
         sources.clear();
         fallback.Shutdown();
     }
@@ -520,77 +578,114 @@ public:
         return true;
     }
     Rml::FontFaceHandle GetFontFaceHandle(const Rml::String& family, Rml::Style::FontStyle style,
-                                          Rml::Style::FontWeight weight, int size) override {
+                                          Rml::Style::FontWeight weight, float size) override {
+        if (!std::isfinite(size) || size <= 0.f || size > 16384.f)
+            return {};
         const auto handle = fallback.GetFontFaceHandle(family, style, weight, size);
-        if (!handle || faces.contains(handle))
-            return handle;
-        SourceFace* source = nullptr;
-        for (auto& candidate : sources)
-            if (candidate->family == lower(family) && candidate->style == style &&
-                (!source ||
-                 std::abs(static_cast<int>(candidate->weight) - static_cast<int>(weight)) <
-                     std::abs(static_cast<int>(source->weight) - static_cast<int>(weight))))
-                source = candidate.get();
-        if (!source || source->color)
-            return handle;
-        DWRITE_FONT_METRICS original{};
-        source->face->GetMetrics(&original);
-        const float scale = static_cast<float>(size) / original.designUnitsPerEm;
-        auto metrics = fallback.GetFontMetrics(handle);
-        metrics.ascent = std::round(original.ascent * scale);
-        metrics.descent = std::round(original.descent * scale);
-        metrics.line_spacing =
-            metrics.ascent + metrics.descent + std::round(original.lineGap * scale);
-        metrics.x_height = original.xHeight * scale;
-        faces.emplace(handle,
-                      Face{source, metrics, rendering_mode(source->face.Get(), size), {}, {}});
-        return handle;
+        if (!handle)
+            return {};
+        return faces.Get(handle.get(), [&]() -> std::shared_ptr<Face> {
+            auto result = std::make_shared<Face>();
+            result->fallback_handle = handle;
+            result->metrics = fallback.GetFontMetrics(handle);
+            SourceFace* source = nullptr;
+            for (auto& candidate : sources)
+                if (candidate->family == lower(family) && candidate->style == style &&
+                    (!source ||
+                     std::abs(static_cast<int>(candidate->weight) - static_cast<int>(weight)) <
+                         std::abs(static_cast<int>(source->weight) - static_cast<int>(weight))))
+                    source = candidate.get();
+            if (!source || source->color)
+                return result;
+            result->source = source;
+            DWRITE_FONT_METRICS original{};
+            source->face->GetMetrics(&original);
+            const float scale = size / original.designUnitsPerEm;
+            auto& metrics = result->metrics;
+            metrics.ascent = std::round(original.ascent * scale);
+            metrics.descent = std::round(original.descent * scale);
+            metrics.line_spacing =
+                metrics.ascent + metrics.descent + std::round(original.lineGap * scale);
+            metrics.x_height = original.xHeight * scale;
+            result->rendering = rendering_mode(source->face.Get(), size);
+            return result;
+        });
     }
     Rml::FontEffectsHandle PrepareFontEffects(Rml::FontFaceHandle handle,
                                               const Rml::FontEffectList& effects) override {
-        return fallback.PrepareFontEffects(handle, effects);
+        return fallback.PrepareFontEffects(static_cast<Face*>(handle.get())->fallback_handle,
+                                           effects);
     }
     const Rml::FontMetrics& GetFontMetrics(Rml::FontFaceHandle handle) override {
-        const auto found = faces.find(handle);
-        return found == faces.end() ? fallback.GetFontMetrics(handle) : found->second.metrics;
+        return static_cast<Face*>(handle.get())->metrics;
     }
-    int GetStringWidth(Rml::FontFaceHandle handle, Rml::StringView text,
-                       const Rml::TextShapingContext& context, Rml::Character prior) override {
+    float GetStringWidth(Rml::FontFaceHandle handle, Rml::StringView text,
+                         const Rml::TextShapingContext& context, Rml::Character prior) override {
         const CpuTimer timer(cpu_profile, cpu_sample.widths, cpu_sample.width_ms);
-        const auto found = faces.find(handle);
-        ShapedRun scratch;
-        const auto* run = found != faces.end() && prior == Rml::Character::Null
-                              ? shaped_run(found->second, text, context, scratch)
-                              : nullptr;
-        if (!run) {
-            if (cpu_profile)
-                ++cpu_sample.width_fallback;
-            return fallback.GetStringWidth(handle, text, context, prior);
+        auto& face = *static_cast<Face*>(handle.get());
+        if (face.source && prior != Rml::Character::Null) {
+            const auto prefix = Rml::StringUtilities::ToUTF8(prior);
+            const auto joined = prefix + Rml::String(text.begin(), text.end());
+            return std::max(0.f, GetStringWidth(handle, joined, context, Rml::Character::Null) -
+                                     GetStringWidth(handle, prefix, context, Rml::Character::Null));
         }
-        return static_cast<int>(std::lround(std::max(run->width, 0.f)));
-    }
-    int GenerateString(Rml::RenderManager& manager, Rml::FontFaceHandle handle,
-                       Rml::FontEffectsHandle effects, Rml::StringView text, Rml::Vector2f position,
-                       Rml::ColourbPremultiplied color, float opacity,
-                       const Rml::TextShapingContext& context,
-                       Rml::TexturedMeshList& meshes) override {
-        const CpuTimer timer(cpu_profile, cpu_sample.generated, cpu_sample.generate_ms);
-        const auto found = faces.find(handle);
         ShapedRun scratch;
-        const auto* run = found != faces.end() && !effects
-                              ? shaped_run(found->second, text, context, scratch)
-                              : nullptr;
+        const auto* run = face.source ? shaped_run(face, text, context, scratch) : nullptr;
         if (!run) {
+            if (!face.source) {
+                if (cpu_profile)
+                    ++cpu_sample.width_fallback;
+                return fallback.GetStringWidth(face.fallback_handle, text, context, prior);
+            }
+            float width = 0;
+            for (const auto& span : coverage_spans(text, scratch.glyphs)) {
+                if (span.supported)
+                    width += GetStringWidth(handle, span.text, context, Rml::Character::Null);
+                else {
+                    if (cpu_profile)
+                        ++cpu_sample.width_fallback;
+                    width += fallback.GetStringWidth(face.fallback_handle, span.text, context,
+                                                     Rml::Character::Null);
+                }
+            }
+            return width;
+        }
+        return std::max(run->width, 0.f);
+    }
+    float GenerateString(Rml::RenderManager& manager, Rml::FontFaceHandle handle,
+                         Rml::FontEffectsHandle effects, Rml::StringView text,
+                         Rml::Vector2f position, Rml::ColourbPremultiplied color, float opacity,
+                         const Rml::TextShapingContext& context,
+                         Rml::TexturedMeshList& meshes) override {
+        const CpuTimer timer(cpu_profile, cpu_sample.generated, cpu_sample.generate_ms);
+        auto& face = *static_cast<Face*>(handle.get());
+        const auto generate_fallback = [&](Rml::StringView span, Rml::Vector2f offset) {
             if (cpu_profile)
                 ++cpu_sample.generate_fallback;
             Rml::TexturedMeshList retained;
-            const int width = fallback.GenerateString(manager, handle, effects, text, position,
-                                                      color, opacity, context, retained);
+            const float width =
+                fallback.GenerateString(manager, face.fallback_handle, effects, span, offset, color,
+                                        opacity, context, retained);
             for (auto& mesh : retained)
                 meshes.push_back(std::move(mesh));
             return width;
+        };
+        if (!face.source || effects)
+            return generate_fallback(text, position);
+        ShapedRun scratch;
+        const auto* run = shaped_run(face, text, context, scratch);
+        if (!run) {
+            float width = 0;
+            for (const auto& span : coverage_spans(text, scratch.glyphs)) {
+                const float advance =
+                    span.supported ? GenerateString(manager, handle, effects, span.text, position,
+                                                    color, opacity, context, meshes)
+                                   : generate_fallback(span.text, position);
+                width += advance;
+                position.x += advance;
+            }
+            return width;
         }
-        auto& face = found->second;
         std::map<Glyph*, std::size_t> groups;
         for (std::size_t i = 0; i < run->glyphs.size(); ++i) {
             const float x = position.x + run->positions[i].x;
@@ -616,11 +711,17 @@ public:
                     raster.origin,
                 raster.dimensions, color, {0, 0}, {1, 1});
         }
-        return static_cast<int>(std::lround(std::max(run->width, 0.f)));
+        return std::max(run->width, 0.f);
     }
-    int GetVersion(Rml::FontFaceHandle handle) override { return fallback.GetVersion(handle); }
+    int GetVersion(Rml::FontFaceHandle handle) override {
+        return fallback.GetVersion(static_cast<Face*>(handle.get())->fallback_handle);
+    }
     void ReleaseFontResources() override {
-        faces.clear();
+        faces.Clear([](Face& face) {
+            face.glyphs.clear();
+            face.shapes.clear();
+            face.shape_bytes = 0;
+        });
         fallback.ReleaseFontResources();
     }
 
@@ -629,7 +730,7 @@ private:
     ComPtr<IDWriteFactory> factory;
     ComPtr<IDWriteTextAnalyzer> analyzer;
     std::vector<std::unique_ptr<SourceFace>> sources;
-    std::map<Rml::FontFaceHandle, Face> faces;
+    Rml::FontFaceCache<const void*, Face> faces;
 };
 } // namespace bbl::pal
 #endif
