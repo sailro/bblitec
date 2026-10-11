@@ -987,23 +987,23 @@ ${billboard ? particleBillboardSync(this.context) : ""}
 ${sprite2d.length > 0 ? particleSpriteSync(this.context) : ""}
 
 struct BakedSystem {
-    int set_index;
-    int system_index;
-    double capacity;
-    int blend_mode;
+    int set_index{};
+    int system_index{};
+    double capacity{};
+    int blend_mode{};
     // Whether the set reached the enabler, which is what decides WHICH
     // mapping the mode takes -- upstream installs it per system rather than
     // reading the mode differently.
-    bool exact_blend;
-    const char* texture_asset;
+    bool exact_blend{};
+    const char* texture_asset{};
     // createParticleBillboard's own cell rule, resolved: the sprite sheet's
     // cell size, or the texture's own.
-    double cell_width_px;
-    double cell_height_px;
-    std::size_t particle_count;
-    ParticleRenderColumns render_columns;
-    std::span<const std::uint16_t> cells;
-    bool has_cells;
+    double cell_width_px{};
+    double cell_height_px{};
+    std::size_t particle_count{};
+    ParticleRenderColumns render_columns{};
+    std::span<const std::uint16_t> cells{};
+    bool has_cells{};
 };
 
 ${

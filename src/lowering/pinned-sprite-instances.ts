@@ -67,7 +67,7 @@ export function lowerSpriteInstances(context: LoweringContext): string {
         writerBindings.set(name, binding);
     writerBindings.set("slotIndex", scalar("static_cast<double>(index)"));
     writerBindings.set("prev", {
-        cpp: "(*previous)",
+        cpp: '(previous ? *previous : throw std::runtime_error("Cannot access a nullish object."))',
         type: "f32",
         absentCpp: "previous == nullptr",
         absentValue: "null",

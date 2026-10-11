@@ -132,6 +132,25 @@ test("Sprite2D writers execute pinned bodies across depth and extended layouts",
     const tools = optionalNativeFixtureTools();
     if (!tools) return t.skip("Native fixture compiler unavailable.");
     const context = sharedPinnedContext();
+    const missingPosition: State = {
+        atlas: { frames: [] },
+        count: 0,
+        depth: "none",
+        layerZ: 0.5,
+        _instanceFloatsPerSprite: 13,
+        _instanceData: new Float32Array(13).fill(9.25),
+        _savedSize: new Float32Array(2).fill(17.75),
+        _version: 0,
+    };
+    assert.throws(
+        () => reference(context).writeInstance(missingPosition, 0, {}, null),
+        TypeError,
+    );
+    assert.deepEqual(
+        Array.from(missingPosition._instanceData),
+        Array(13).fill(9.25),
+    );
+    assert.deepEqual(Array.from(missingPosition._savedSize), [17.75, 17.75]);
     const variants = [
         context,
         doctoredContext(modulePath, "uMax = 1;", "uMax = 0.75;"),
@@ -267,6 +286,13 @@ int main() {
     atlas.frames = {${frames.map((frame) => `bbl::SpriteFrame{${tuple(frame.uvMin)}, ${tuple(frame.uvMax)}, ${tuple(frame.sourceSizePx)}, {0.5, 0.5}}`).join(", ")}};
     ${checks.join("\n")}
     bbl::Sprite2DLayerRecord layer; layer.count = 1; layer.instance_data.resize(13); layer.saved_size.resize(2);
+    std::fill(layer.instance_data.begin(), layer.instance_data.end(), 9.25f);
+    std::fill(layer.saved_size.begin(), layer.saved_size.end(), 17.75f);
+    bool missing_position = false;
+    try { bbl::case0::write_sprite_instance(layer, atlas, 0u, bbl::Sprite2DProps{}, true); }
+    catch (const std::exception&) { missing_position = true; }
+    assert(missing_position);
+    ${checkState(missingPosition)}
     for (double invalid : {-1.0, 1.0}) {
         bool threw = false; try { bbl::case0::set_sprite_frame(layer, atlas, invalid, 0.0); } catch (const std::exception&) { threw = true; } assert(threw);
     }
