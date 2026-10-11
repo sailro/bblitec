@@ -17,7 +17,7 @@ Physics rows measure Bullet against Havok: their residuals include solver differ
 | 1 | <img src="images/scenes/scene1.png" alt="Scene 1 BoomBox rendering" width="160"> | pixel‑perfect | pixel‑perfect | BoomBox PBR |
 | 2 | <img src="images/scenes/scene2.png" alt="Scene 2 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Directional Light Sphere |
 | 3 | <img src="images/scenes/scene3.png" alt="Scene 3 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Fog Boxes |
-| 4 | <img src="images/scenes/scene4.png" alt="Scene 4 rendering" width="160"> | 0.042/0.042 | 0.042/0.042 | ESM Directional and PCF Spot Shadows |
+| 4 | <img src="images/scenes/scene4.png" alt="Scene 4 rendering" width="160"> | 0.038/0.038 | 0.038/0.038 | ESM Directional and PCF Spot Shadows |
 | 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Alien Morph and Skeleton |
 | 6 | <img src="images/scenes/scene6.png" alt="Scene 6 rendering" width="160"> | pixel‑perfect | pixel‑perfect | PBR Gold Sphere |
 | 7 | <img src="images/scenes/scene7.png" alt="Scene 7 ChibiRex rendering" width="160"> | 0.001/0.008 | 0.001/0.008 | ChibiRex Default Camera |
@@ -35,7 +35,7 @@ Physics rows measure Bullet against Havok: their residuals include solver differ
 | 19 | <img src="images/scenes/scene19.png" alt="Scene 19 rendering" width="160"> | pixel‑perfect | pixel‑perfect | PBR Clearcoat |
 | 20 | <img src="images/scenes/scene20.png" alt="Scene 20 rendering" width="160"> | pixel‑perfect | pixel‑perfect | PBR Emissive Sphere Grid |
 | 21 | <img src="images/scenes/scene21.png" alt="Scene 21 rendering" width="160"> | pixel‑perfect | pixel‑perfect | PBR Sheen Cloth |
-| 22 | <img src="images/scenes/scene22.png" alt="Scene 22 rendering" width="160"> | 0.040/0.040 | 0.040/0.040 | PBR Shadow Receiver |
+| 22 | <img src="images/scenes/scene22.png" alt="Scene 22 rendering" width="160"> | 0.038/0.038 | 0.038/0.038 | PBR Shadow Receiver |
 | 23 | <img src="images/scenes/scene23.png" alt="Scene 23 rendering" width="160"> | pixel‑perfect | pixel‑perfect | PBR Anisotropy |
 | 24 | <img src="images/scenes/scene24.png" alt="Scene 24 rendering" width="160"> | 0.000/0.000 | pixel‑perfect | Hill Valley |
 | 25 | <img src="images/scenes/scene25.png" alt="Scene 25 rendering" width="160"> | pixel‑perfect | pixel‑perfect | KTX Compressed Texture |
@@ -209,7 +209,7 @@ Physics rows measure Bullet against Havok: their residuals include solver differ
 | 225 | <img src="images/scenes/scene225.png" alt="Scene 225 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Geospatial Camera; renders its pose, controls attach without input arms. |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001/0.003 | 0.001/0.003 | Gaussian Splatting glTF |
 | 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.001/0.001 | 0.001/0.001 | Shared Scene Surfaces |
-| 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.001/0.001 | 0.001/0.001 | Independent Scene Surfaces |
+| 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.000/0.001 | 0.000/0.001 | Independent Scene Surfaces |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Triangle Without Indices |
 | 231 | <img src="images/scenes/scene231.png" alt="Scene 231 rendering" width="160"> | 0.000/0.001 | 0.000/0.000 | Standard Material Deform Features |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Animated Triangle |
@@ -273,26 +273,26 @@ Unchanged pinned applications, including their reached source and asset graphs.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
-| Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.303/0.299 | 0.303/0.298 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.005/0.005 on both backends. |
-| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.401}} / \color{#9a6700}{\textsf{0.548}}$ | $\color{#1a7f37}{\textsf{0.401}} / \color{#9a6700}{\textsf{0.548}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only: pixel-perfect on both backends. |
+| Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.221/0.219 | 0.221/0.219 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.005/0.005 on both backends. |
+| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | 0.309/0.424 | 0.309/0.424 | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only: pixel-perfect on both backends. |
 | Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | 0.183/0.208 | 0.183/0.208 | Thin-instance game; audio; retained UI. UI residual; canvas-only MAD: 0.080/0.086 on both backends, the demo's doubled `devicePixelRatio` supersample (the port renders at the window's size). |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | WAD game; sprites; audio; retained UI. |
-| LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.027/0.027 | 0.027/0.027 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
+| LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.024/0.023 | 0.024/0.023 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
 | Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | pixel‑perfect | pixel‑perfect | Frame graph; offscreen effects; bloom. |
-| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.664}} / \color{#9a6700}{\textsf{0.664}}$ | $\color{#9a6700}{\textsf{0.664}} / \color{#9a6700}{\textsf{0.664}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; canvas-only: pixel-perfect on both backends. |
+| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.659}} / \color{#9a6700}{\textsf{0.659}}$ | $\color{#9a6700}{\textsf{0.659}} / \color{#9a6700}{\textsf{0.659}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; canvas-only: pixel-perfect on both backends. |
 | Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Voronoi fracture; PBR; physics. |
 | Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | 0.175/0.175 | 0.175/0.175 | Driving game; CSM; physics; audio; retained HUD. UI residual; canvas-only MAD: 0.004/0.004 on both backends. |
 | Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{1.049}} / \color{#cf222e}{\textsf{1.066}}$ | $\color{#cf222e}{\textsf{1.049}} / \color{#cf222e}{\textsf{1.066}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: SDL_GPU 0.000/0.000, Dawn pixel-perfect. |
-| Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.141/0.107 | 0.141/0.107 | Animated glTF; PBR/IBL; retained chrome. |
-| Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.102/0.140 | 0.102/0.140 | Skinned Draco/WebP glTF; transmission; retained chrome. |
-| Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.115/0.113 | 0.115/0.113 | Strategy map; sprites; picking; retained cursor/tooltips. |
+| Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.015/0.012 | 0.015/0.012 | Animated glTF; PBR/IBL; retained chrome. |
+| Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.003/0.004 | 0.003/0.004 | Skinned Draco/WebP glTF; transmission; retained chrome. |
+| Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.098/0.095 | 0.098/0.095 | Strategy map; sprites; picking; retained cursor/tooltips. |
 | The Playroom (`playroom`) | <img src="images/scenes/playroom.png" alt="Playroom gameplay with throw counter and score" width="160"> | $\color{#9a6700}{\textsf{0.957}} / \color{#9a6700}{\textsf{0.720}}$ | $\color{#9a6700}{\textsf{0.959}} / \color{#9a6700}{\textsf{0.723}}$ | Physics game; ragdoll; thin instances; skeleton shadows; audio; retained HUD. Not qualified: the Bullet ragdoll settles in another pose than Havok's by the reference frame, so the canvas differs; physics performance remains below target; canvas-only MAD: SDL_GPU 3.364/3.126, Dawn 3.363/3.126. |
-| Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.073/0.077 | 0.073/0.077 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
+| Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.058/0.060 | 0.058/0.060 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#9a6700}{\textsf{0.669}} / \color{#9a6700}{\textsf{0.669}}$ | $\color{#9a6700}{\textsf{0.669}} / \color{#9a6700}{\textsf{0.669}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | NPE on Sprite2D | <img src="images/scenes/npe-sprite2d.png" alt="NPE on Sprite2D rendering" width="160"> | pixel‑perfect | pixel‑perfect | Live pure-2D node particles; sprite atlas; pointer-following emitter. |
 | Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.139/0.169 | 0.139/0.169 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only: pixel-perfect on both backends. |
 | Mosquito in Amber | <img src="images/scenes/mosquito-amber.png" alt="Mosquito in Amber rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Transmissive glTF (scene 176) as a demo; studio HDR IBL; retained chrome. |
-| Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | $\color{#1a7f37}{\textsf{0.196}} / \color{#9a6700}{\textsf{0.895}}$ | $\color{#1a7f37}{\textsf{0.196}} / \color{#9a6700}{\textsf{0.895}}$ | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only: pixel-perfect on both backends. |
+| Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | 0.020/0.089 | 0.020/0.089 | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only: pixel-perfect on both backends. |
 
 ## Project-owned differential gates
 
@@ -326,10 +326,10 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | node-local-attributes | <img src="images/scenes/regression-node-local-attributes.png" alt="Node local attributes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Node Local Attributes |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | pixel‑perfect | pixel‑perfect | Morph Storage Ground |
 | timer-callback-cells | <img src="images/scenes/regression-timer-callback-cells.png" alt="Timer callback cells rendering" width="160"> | pixel‑perfect | pixel‑perfect | Timer Callback Cells |
-| host-page | <img src="images/scenes/regression-host-page.png" alt="Host page rendering" width="160"> | $\color{#1a7f37}{\textsf{0.069}} / \color{#cf222e}{\textsf{6.774}}$ | $\color{#1a7f37}{\textsf{0.069}} / \color{#cf222e}{\textsf{6.774}}$ | HTML host page: markup, sheets, inline loader, engine-less Canvas2D. UI text residual. |
-| page-canvas | <img src="images/scenes/regression-page-canvas.png" alt="Page canvas rendering" width="160"> | 0.009/0.024 | 0.009/0.024 | Text scene on a page-authored canvas over page chrome; canvas-only: pixel‑perfect on both backends. UI text residual. |
+| host-page | <img src="images/scenes/regression-host-page.png" alt="Host page rendering" width="160"> | $\color{#1a7f37}{\textsf{0.063}} / \color{#cf222e}{\textsf{6.135}}$ | $\color{#1a7f37}{\textsf{0.063}} / \color{#cf222e}{\textsf{6.135}}$ | HTML host page: markup, sheets, inline loader, engine-less Canvas2D. UI text residual. |
+| page-canvas | <img src="images/scenes/regression-page-canvas.png" alt="Page canvas rendering" width="160"> | 0.004/0.010 | 0.004/0.010 | Text scene on a page-authored canvas over page chrome; canvas-only: pixel‑perfect on both backends. UI text residual. |
 | filter-values | <img src="images/scenes/regression-filter-values.png" alt="Filter values rendering" width="160"> | 0.002/0.044 | 0.002/0.044 | Inherited custom properties, scalar/pixel math and computed shadow color. |
 | markup-values | <img src="images/scenes/regression-markup-values.png" alt="Markup values rendering" width="160"> | 0.035/0.124 | 0.035/0.124 | Stored markup snapshots, conditional order and queried button interaction. |
-| grid-placement | <img src="images/scenes/regression-grid-placement.png" alt="Grid placement rendering" width="160"> | 0.038/0.141 | 0.038/0.141 | Two-axis spans, intrinsic/finite tracks, auto-repeat and reversible isolation. |
+| grid-placement | <img src="images/scenes/regression-grid-placement.png" alt="Grid placement rendering" width="160"> | 0.032/0.116 | 0.032/0.116 | Two-axis spans, intrinsic/finite tracks, auto-repeat and reversible isolation. |
 | retained-svg | <img src="images/scenes/regression-retained-svg.png" alt="Retained SVG rendering" width="160"> | 0.007/0.299 | 0.007/0.299 | SVG namespace construction, live shape attributes, replacement and inherited color. |
-| page-scene-canvas | <img src="images/scenes/regression-page-scene-canvas.png" alt="Page scene canvas rendering" width="160"> | $\color{#1a7f37}{\textsf{0.357}} / \color{#9a6700}{\textsf{0.633}}$ | $\color{#1a7f37}{\textsf{0.357}} / \color{#9a6700}{\textsf{0.633}}$ | Scene through a laid-out page canvas: preceding page paint stays beneath it; intrinsic canvas size; vertical-align, p and code defaults. UI text residual. |
+| page-scene-canvas | <img src="images/scenes/regression-page-scene-canvas.png" alt="Page scene canvas rendering" width="160"> | $\color{#1a7f37}{\textsf{0.338}} / \color{#9a6700}{\textsf{0.600}}$ | $\color{#1a7f37}{\textsf{0.338}} / \color{#9a6700}{\textsf{0.600}}$ | Scene through a laid-out page canvas: preceding page paint stays beneath it; intrinsic canvas size; vertical-align, p and code defaults. UI text residual. |
