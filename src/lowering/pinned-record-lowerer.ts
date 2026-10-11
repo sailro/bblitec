@@ -3861,7 +3861,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "array": {
                 const element = shape.element;
                 if (element.kind === "number")
-                    return `bbl::pinned::number_at(${owner}, ${index})`;
+                    return `bbl::js::number_at(${owner}, ${index})`;
                 // A value element the pin may find absent reads `undefined`
                 // past the end.
                 const at = this.shapeAt(node);

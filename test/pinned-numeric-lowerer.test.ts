@@ -69,6 +69,66 @@ function lower(
     return lowerer.statements(file.statements, "").join("\n");
 }
 
+test("numeric list reads preserve absent numbers and evaluate indices once", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const bindings: [string, PinnedBinding][] = [
+        ["values", { cpp: "values", type: "f64-list" }],
+        ["rows", { cpp: "rows", type: "f64-list-2d" }],
+        ["index", { cpp: "index", type: "scalar" }],
+        ["output", { cpp: "output", type: "scalar" }],
+    ];
+    const read = lower(
+        "const alias = values; output = alias[index] * 2;",
+        bindings,
+    );
+    const nested = lower("output = rows[0][index] - 1;", bindings);
+    const once = lower("output = values[index++];", bindings);
+    const loop = lower(
+        "for (let lane = 0; lane < values.length; lane++) output += values[lane];",
+        bindings,
+    );
+    runGeneratedProgram(
+        tools,
+        "pinned-numeric-list-reads",
+        `#include <bblite/js_data.hpp>
+        #include <cassert>
+        double read(const std::vector<double>& values, double index) {
+            double output = 0;
+            ${read}
+            return output;
+        }
+        double nested(const std::vector<std::vector<double>>& rows, double index) {
+            double output = 0;
+            ${nested}
+            return output;
+        }
+        int main() {
+            const std::vector<double> values{3, 7};
+            const std::vector<std::vector<double>> rows{values};
+            assert(read(values, 0) == 6 && read(values, 1) == 14);
+            assert(read(values, -0.0) == 6 && nested(rows, 1) == 6);
+            for (const double index : {2.0, -1.0, 0.5, 1e300,
+                    std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::quiet_NaN()}) {
+                assert(std::isnan(read(values, index)));
+                assert(std::isnan(nested(rows, index)));
+            }
+            assert(std::isnan(read({}, 0)));
+            double index = 1, output = 0;
+            ${once}
+            assert(output == 7 && index == 2);
+            output = 0;
+            ${loop}
+            assert(output == 10);
+        }`,
+        { expectedOutput: "" },
+    );
+});
+
 test("record aliases retain optional-read adapters while rebinding ordinary members", () => {
     const output = lower(
         "const state = engine.record; const guarded = state?.count; const direct = state.count;",

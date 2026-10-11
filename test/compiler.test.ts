@@ -4354,7 +4354,7 @@ test("preserves missing Map handle storage in nullable locals", () => {
     assert.equal((result.cpp.match(/bbl::create_box\(/g) ?? []).length, 1);
     assert.match(
         result.cpp,
-        /if \(!\(v_mesh\.has_value\(\)\)\) \{\s*v_mesh = [^\n]+bbl::StoredEngine\{v_engine\}[^\n]+bbl::create_box\(v_engine,[^\n]+;\s*const auto& (\w+) = "wall";\s*static_cast<void>\(v_meshes\.set\(\1, \(\(\*v_mesh\)\)\.second\)\);/,
+        /if \(!\(v_mesh\.has_value\(\)\)\) \{\s*v_mesh = [^\n]+bbl::StoredEngine\{v_engine\}[^\n]+bbl::create_box\(v_engine,[^\n]+;\s*const auto (\w+) = "wall";\s*static_cast<void>\(v_meshes\.set\(\1, \(\(\*v_mesh\)\)\.second\)\);/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -14629,7 +14629,7 @@ test("mutates a Map array fallback before storing it back", () => {
     assert.match(result.cpp, /v_list\.push_back\(3\.0\)/);
     assert.match(
         result.cpp,
-        /v_list\.push_back\(3\.0\)[\s\S]*const auto& (v_bblite_map_key_\d+) = "items";\s+static_cast<void>\(v_groups\.set\(\1, v_list\)\)/,
+        /v_list\.push_back\(3\.0\)[\s\S]*const auto (v_bblite_map_key_\d+) = "items";\s+static_cast<void>\(v_groups\.set\(\1, v_list\)\)/,
     );
 });
 
