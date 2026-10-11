@@ -258,7 +258,7 @@ export function listenerOptions(
 }
 
 /** Convert a reached lifetime operand without fabricating an AbortSignal. */
-export function deferredListenerSignal(
+function deferredListenerSignal(
     context: Pick<
         Context,
         | "dataTypes"

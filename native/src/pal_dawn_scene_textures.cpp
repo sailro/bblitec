@@ -52,15 +52,6 @@ WGPUTextureFormat compressed_texture_format(std::string_view name) {
 }
 
 WGPUTexture upload_compressed_texture(DawnState& state, const CompressedTexture& compressed) {
-    // The device request is opportunistic (the pinned engine asks for every
-    // optional feature the adapter offers), so an adapter without block
-    // compression reaches here rather than failing at creation. Refuse by
-    // name, as the SDL_GPU sibling does through
-    // `SDL_GPUTextureSupportsFormat`.
-    if (!wgpuAdapterHasFeature(state.adapter, WGPUFeatureName_TextureCompressionBC)) {
-        throw std::runtime_error("This adapter cannot sample '" + std::string(compressed.format) +
-                                 "' textures: it reports no block-compression feature.");
-    }
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
     descriptor.size = {compressed.width, compressed.height, 1};
@@ -71,14 +62,14 @@ WGPUTexture upload_compressed_texture(DawnState& state, const CompressedTexture&
         dawn_error("wgpuDeviceCreateTexture compressed");
     for (std::size_t level = 0; level < compressed.mips.size(); ++level) {
         const CompressedMipLevel& mip = compressed.mips[level];
-        const CompressedMipCopy geometry = compressed_mip_copy(compressed, mip);
+        const CompressedMipCopy& geometry = mip.copy;
         WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
         destination.texture = texture;
         destination.mipLevel = static_cast<std::uint32_t>(level);
         WGPUTexelCopyBufferLayout layout{};
         layout.offset = 0;
         layout.bytesPerRow = geometry.row_bytes;
-        layout.rowsPerImage = geometry.block_rows;
+        layout.rowsPerImage = WGPU_COPY_STRIDE_UNDEFINED;
         const WGPUExtent3D size{geometry.width, geometry.height, 1};
         DawnGpuDevice{state.queue}.write_texture(&destination, mip.bytes.data(), mip.bytes.size(),
                                                  &layout, &size);

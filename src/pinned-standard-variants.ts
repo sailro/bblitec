@@ -357,7 +357,7 @@ export async function pinnedStandardMaterialFeatures(
  * material word alone would never match a marked material at run time. This
  * is that OR, taken from the same registry.
  */
-export async function pinnedStandardRenderableFeatures(
+async function pinnedStandardRenderableFeatures(
     material: PinnedStandardMaterialInput,
     meshFeatures: number,
     skeleton = false,
@@ -737,7 +737,7 @@ export interface PinnedStandardVariantManifestEntry {
 }
 
 /** A deterministic file stem for a composed Standard variant. */
-export function pinnedStandardVariantFileStem(
+function pinnedStandardVariantFileStem(
     variant: Pick<
         PinnedStandardVariant,
         "fragmentKey" | "features" | "meshFeatures"

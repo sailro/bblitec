@@ -39,7 +39,7 @@ import { typeCanCarryReference } from "./type-facts.js";
  */
 
 /** Property names from a parameter to an object; `*` is any key. */
-export type EffectPath = readonly string[];
+type EffectPath = readonly string[];
 
 interface UseBase {
     readonly node: ts.Node;
@@ -59,7 +59,7 @@ interface UseBase {
     readonly inPlace: boolean;
 }
 
-export type ParameterUse = UseBase &
+type ParameterUse = UseBase &
     (
         | { readonly kind: "write" | "rebind" }
         | {
@@ -91,7 +91,7 @@ export type ParameterUse = UseBase &
           }
     );
 
-export interface ParameterEffects {
+interface ParameterEffects {
     /** False for a destructured or rest parameter, or a function without a body. */
     readonly analyzable: boolean;
     /** An async function or generator: its body runs on after the call returns. */
@@ -294,7 +294,7 @@ const OPAQUE: ParameterEffects = {
  * The one effect summary of a parameter binding of `fn`, memoized: a
  * parameter's name, or a name its destructuring pattern binds.
  */
-export function parameterEffects(
+function parameterEffects(
     checker: ts.TypeChecker,
     fn: EffectFunction,
     binding: ts.Identifier,
@@ -1226,7 +1226,7 @@ function libraryMayHold(
  * code the program does not hold -- an ambient declaration, a function
  * value, an interface member -- otherwise.
  */
-export type CallTarget =
+type CallTarget =
     | {
           readonly kind: "bodies";
           readonly checker: ts.TypeChecker;
@@ -1236,7 +1236,7 @@ export type CallTarget =
     | { readonly kind: "library"; readonly name: string | undefined }
     | { readonly kind: "unknown" };
 
-export function callTarget(
+function callTarget(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
 ): CallTarget {

@@ -1,12 +1,16 @@
 import ts from "typescript";
-import { elementIndexText, LoweredSource, LoweringContext } from "./context.js";
+import { LoweredSource, LoweringContext } from "./context.js";
 import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
 import type { ShaderTextBinding } from "./pinned-shader-builders.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
-import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import {
+    lowerPinnedFunction,
+    lowerTupleComponents,
+} from "./pinned-function-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
     type PinnedBinding,
     PinnedNumericLowerer,
@@ -18,6 +22,7 @@ import {
 } from "./pinned-vertex-attributes.js";
 import { recordAt } from "../compiler/record-access.js";
 import { billboardOrderHelpers } from "./billboard-order-lowerer.js";
+import { lowerBillboardInstances } from "./pinned-billboard-instances.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
@@ -53,22 +58,7 @@ interface BillboardCustomProgram {
     extraTextures: readonly string[];
 }
 
-/**
- * World-space billboards, lowered from the pinned billboard family.
- *
- * The 2D sprite family that already ships and this one are the same shape
- * twice — an atlas, a packed instance buffer, a quad expanded in the vertex
- * stage — so this mirrors `SpriteLowerer` deliberately, down to which
- * contracts it asserts. What differs is the only thing that matters: the
- * quad is expanded in WORLD space around a camera-derived basis, and it
- * draws inside the scene's own pass against the scene depth buffer, which
- * is why the pinned shader binds the scene UBO at group 0 rather than
- * owning a view of its own.
- *
- * Only the permutation reached by scene code is lowered: camera-facing,
- * straight-alpha, no custom shader and no alpha-to-coverage. Every other
- * arm refuses at the intrinsic rather than silently rendering the wrong one.
- */
+/** Pinned world-space billboard instances, shader composition and scene bindings. */
 export class BillboardLowerer {
     private readonly shaderText: PinnedShaderBuilders;
 
@@ -84,6 +74,7 @@ export class BillboardLowerer {
     private layout(): {
         instanceFloats: number;
         anchorFloats: number;
+        savedSizeFloats: number;
         systemUboBytes: number;
     } {
         const constant = (module: string, name: string): number => {
@@ -101,6 +92,10 @@ export class BillboardLowerer {
             anchorFloats: constant(
                 systemModule,
                 "BILLBOARD_ANCHOR_FLOATS_PER_SPRITE",
+            ),
+            savedSizeFloats: constant(
+                systemModule,
+                "BILLBOARD_SAVED_SIZE_FLOATS_PER_SPRITE",
             ),
             systemUboBytes: constant(
                 pipelineModule,
@@ -135,117 +130,6 @@ export class BillboardLowerer {
         );
     }
 
-    /** `writeInstance` writes each slot from the source the pin names. */
-    private assertInstanceSlots(): void {
-        const { file, declaration } = this.context.functionDeclaration(
-            systemModule,
-            "writeInstance",
-        );
-        // The F64 anchor stored beside the F32 position lanes, which the
-        // floating-origin uploads subtract the camera offset from.
-        const anchorStores = this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isElementAccessExpression(node.left) &&
-                node.left.expression.getText(file) === "system._anchor",
-        );
-        (["posX", "posY", "posZ"] as const).forEach((source, lane) => {
-            const store = anchorStores.find(
-                (node) =>
-                    ts.isElementAccessExpression(node.left) &&
-                    elementIndexText(node.left) ===
-                        (lane === 0 ? "anchorBase" : `anchorBase + ${lane}`),
-            );
-            if (!store) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned billboard writeInstance no longer stores anchor lane ${lane}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                store.right,
-                source,
-                `billboard writeInstance anchor lane ${lane}`,
-            );
-        });
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "posX"),
-            "props.position ? props.position[0] : system._anchor[anchorBase]",
-            "billboard writeInstance posX",
-        );
-        const expected: ReadonlyArray<[number, string]> = [
-            [0, "posX"],
-            [1, "posY"],
-            [2, "posZ"],
-            [3, "visible ? trueWidth : 0"],
-            [4, "visible ? trueHeight : 0"],
-            [5, "uvMinX"],
-            [6, "uvMinY"],
-            [7, "uvMaxX"],
-            [8, "uvMaxY"],
-            [9, "rotation"],
-            [10, "pivotX"],
-            [11, "pivotY"],
-        ];
-        const writes = this.context.pinnedElementStores(declaration, "data");
-        for (const [slot, source] of expected) {
-            const write = writes.find(
-                (node) => elementIndexText(node.left) === `base + ${slot}`,
-            );
-            if (!write) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned billboard writeInstance no longer writes slot ${slot}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                write.right,
-                source,
-                `billboard writeInstance slot ${slot}`,
-            );
-        }
-        // Colour writes twice — the props arm and the add default — so it is
-        // checked by count, the way the 2D layer's is.
-        for (const slot of [12, 13, 14, 15]) {
-            const found = writes.filter(
-                (node) => elementIndexText(node.left) === `base + ${slot}`,
-            );
-            if (found.length !== 2) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned billboard colour slot ${slot} has ${found.length} writers, expected 2.`,
-                );
-            }
-        }
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "base"),
-            "slotIndex * BILLBOARD_INSTANCE_FLOATS_PER_SPRITE",
-            "billboard writeInstance base",
-        );
-        // The flip resolution is what makes flipX an absolute orientation
-        // rather than a toggle.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "currentFlipX"),
-            "uvMinX > uvMaxX",
-            "billboard writeInstance currentFlipX",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "wantsFlipX"),
-            "props.flipX !== undefined ? props.flipX === true : prevFlipX",
-            "billboard writeInstance wantsFlipX",
-        );
-        // On add, the pivot falls back to the frame's own pivot; a scene that
-        // omits it must not silently get the centre of a frame that names
-        // another anchor.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "pivotX"),
-            "props.pivot ? props.pivot[0] : prev ? prev[10] : (frame?.pivot[0] ?? 0.5)",
-            "billboard writeInstance pivotX",
-        );
-    }
-
     /** The system's defaults, which the intrinsic reproduces for an add. */
     private assertSystemDefaults(): void {
         const { declaration } = this.context.functionDeclaration(
@@ -254,7 +138,6 @@ export class BillboardLowerer {
         );
         for (const [name, shape] of [
             ["blendMode", "opts.blendMode ?? billboardBlendAlpha"],
-            ["capacity", "Math.max(1, opts.capacity ?? DEFAULT_CAPACITY)"],
             ["depthMode", "blendMode._depthMode"],
         ] as const) {
             this.context.assertExpressionShape(
@@ -291,29 +174,6 @@ export class BillboardLowerer {
             ),
             'createBillboardSystem(atlas, "facing", [0, 0, 0], opts)',
             "createFacingBillboardSystem",
-        );
-        // The axis-locked factory normalises its axis before storing it, and
-        // the basis reads `normalize(billboards.axisAndCutoff.xyz)` again --
-        // so a scene's raw axis has to be normalised at the same point the
-        // pin normalises it, not left to the shader.
-        const axisLocked = this.context.functionDeclaration(
-            systemModule,
-            "createAxisLockedBillboardSystem",
-        ).declaration;
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(axisLocked, "lengthSq"),
-            "axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]",
-            "createAxisLockedBillboardSystem lengthSq",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(axisLocked, "invLength"),
-            "1 / Math.sqrt(lengthSq)",
-            "createAxisLockedBillboardSystem invLength",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(axisLocked, "normalized"),
-            "[axis[0] * invLength, axis[1] * invLength, axis[2] * invLength]",
-            "createAxisLockedBillboardSystem normalized",
         );
         this.context.assertExpressionShape(
             this.context.variableInitializer(
@@ -474,8 +334,11 @@ export class BillboardLowerer {
         (["X", "Y", "Z"] as const).forEach((axis, lane) => {
             const store = sortedStores.find(
                 (node) =>
-                    elementIndexText(node.left) ===
-                    (lane === 0 ? "destBase" : `destBase + ${lane}`),
+                    ts.isElementAccessExpression(node.left) &&
+                    this.context.expressionMatchesShape(
+                        node.left.argumentExpression,
+                        lane === 0 ? "destBase" : `destBase + ${lane}`,
+                    ),
             );
             if (!store) {
                 this.context.contractError(
@@ -807,6 +670,65 @@ inline double billboard_sort_compare(
     // Emission
     // -----------------------------------------------------------------
 
+    /** Pinned validation and normalization, before the native record stores its axis. */
+    public lowerAxisNormalization(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            systemModule,
+            "createAxisLockedBillboardSystem",
+        );
+        const result = this.context.callExpression(
+            declaration,
+            "createBillboardSystem",
+        );
+        this.context.assertExpressionShape(
+            result,
+            'createBillboardSystem(atlas, "axis-locked", normalized, opts)',
+            "Axis-locked system storage boundary",
+        );
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings: new Map([["axis", { cpp: "axis", type: "f64-buffer" }]]),
+            calls: new Map(),
+            statement: (statement, lowerer, indent) => {
+                if (
+                    !ts.isVariableStatement(statement) ||
+                    statement.declarationList.declarations.length !== 1
+                )
+                    return undefined;
+                const local = statement.declarationList.declarations[0]!;
+                if (
+                    !ts.isIdentifier(local.name) ||
+                    local.name.text !== "normalized" ||
+                    !local.initializer
+                )
+                    return undefined;
+                const values = lowerTupleComponents(
+                    this.context,
+                    lowerer,
+                    local.initializer,
+                    { at: local, arity: 3 },
+                );
+                lowerer.bindLocal(local.name, {
+                    cpp: "normalized",
+                    type: "f64-buffer",
+                });
+                return [
+                    `${indent}const std::array<double, 3> normalized{${values.join(", ")}};`,
+                ];
+            },
+            returnValue: (expression, lowerer) => {
+                if (expression !== result)
+                    this.context.contractError(
+                        expression ?? declaration,
+                        "Expected the billboard storage boundary.",
+                    );
+                return lowerer.expression(result.arguments[2]!);
+            },
+        });
+        return `std::array<double, 3> normalize_billboard_axis(const std::array<double, 3>& axis) {
+${body}
+}`;
+    }
+
     public lowerCore(): LoweredSource {
         const layout = this.layout();
         const rows = this.attributeRows(layout.instanceFloats);
@@ -817,35 +739,39 @@ inline double billboard_sort_compare(
             "billboardBlend",
         );
         this.assertDepthMode();
-        this.assertInstanceSlots();
         this.assertQuad();
         this.assertSceneRegistration();
         this.assertAlphaToCoverageRule();
-        // The squared axis length below which the axis-locked factory
-        // refuses the axis as zero, read off its own `lengthSq < <floor>`.
-        const axisLocked = this.context.functionDeclaration(
-            systemModule,
-            "createAxisLockedBillboardSystem",
-        );
-        const floors = this.context.findNodes(
-            axisLocked.declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.LessThanToken &&
-                ts.isIdentifier(node.left) &&
-                node.left.text === "lengthSq",
-        );
-        if (floors.length !== 1) {
-            this.context.contractError(
-                axisLocked.declaration,
-                "Expected createAxisLockedBillboardSystem to refuse one " +
-                    "lengthSq floor.",
-            );
-        }
-        const zeroAxisFloor = this.context.doubleLiteral(
-            this.context.numericValue(floors[0]!.right, axisLocked.file),
-        );
         const uploadCondition = this.uploadCondition();
+        const factory = this.context.functionDeclaration(
+            systemModule,
+            "createBillboardSystem",
+        );
+        const capacity = this.context.variableInitializer(
+            factory.declaration,
+            "capacity",
+        ).parent.parent.parent;
+        if (
+            !ts.isVariableStatement(capacity) ||
+            capacity.declarationList.declarations.length !== 1
+        )
+            this.context.contractError(
+                capacity,
+                "Expected the billboard capacity declaration.",
+            );
+        const capacityBody = lowerPinnedBody(factory.file, [capacity], {
+            bindings: new Map([
+                [
+                    "opts.capacity",
+                    {
+                        cpp: "options.capacity",
+                        type: "scalar",
+                        nullish: "false",
+                    },
+                ],
+            ]),
+            calls: new Map(),
+        });
 
         const provenance = this.context.provenance(
             systemModule,
@@ -893,6 +819,7 @@ inline constexpr std::uint32_t billboard_system_ubo_bytes = ${layout.systemUboBy
 
 /** \`BILLBOARD_ANCHOR_FLOATS_PER_SPRITE\`: the F64 \`_anchor\` lanes per sprite. */
 inline constexpr std::uint32_t billboard_anchor_floats_per_sprite = ${layout.anchorFloats}u;
+inline constexpr std::uint32_t billboard_saved_size_floats_per_sprite = ${layout.savedSizeFloats}u;
 #if BBLITE_HAS_PICKING
 
 ${this.packPickUboCpp()}
@@ -1061,6 +988,10 @@ inline void billboard_upload_instances(
 
 namespace bbl {
 
+${this.lowerAxisNormalization()}
+
+${lowerBillboardInstances(this.context)}
+
 // createBillboardSystem: both factories delegate here, differing only in the
 // orientation and the axis it carries. A facing system's axis is the pin's
 // zero vector -- its basis reads the camera, not the axis.
@@ -1068,7 +999,7 @@ BillboardSystemHandle create_billboard_system(
     Engine& engine,
     SpriteAtlasHandle atlas,
     BillboardOrientation orientation,
-    Vec3 axis,
+    Vec3d axis,
     BillboardSystemOptions options) {
     if (atlas.value >= engine.sprite_atlases.size()) {
         throw std::runtime_error("Invalid sprite atlas handle.");
@@ -1097,67 +1028,21 @@ BillboardSystemHandle create_billboard_system(
         upstream::billboard_system_order(BillboardSystemOptions{}, "cutout")) {
         throw std::runtime_error("Custom cutout billboard order requires interleaved opaque renderables.");
     }
-    // createAxisLockedBillboardSystem: the axis is normalised before it is
-    // stored, and a non-finite or zero axis is rejected. The basis
-    // normalises again in WGSL, but a zero axis has no direction to recover
-    // there, so the refusal belongs here as it does upstream.
     if (orientation == BillboardOrientation::axis_locked) {
-        const double length_sq =
-            static_cast<double>(axis.x) * axis.x +
-            static_cast<double>(axis.y) * axis.y +
-            static_cast<double>(axis.z) * axis.z;
-        if (!std::isfinite(length_sq)) {
-            throw std::runtime_error(
-                "createAxisLockedBillboardSystem: axis components must be "
-                "finite numbers.");
-        }
-        if (length_sq < ${zeroAxisFloor}) {
-            throw std::runtime_error(
-                "createAxisLockedBillboardSystem: axis must be non-zero.");
-        }
-        const double inv_length = 1.0 / std::sqrt(length_sq);
-        axis = Vec3{
-            static_cast<float>(axis.x * inv_length),
-            static_cast<float>(axis.y * inv_length),
-            static_cast<float>(axis.z * inv_length)};
+        const auto normalized = normalize_billboard_axis({axis.x, axis.y, axis.z});
+        axis = Vec3d{normalized[0], normalized[1], normalized[2]};
     }
-    system.axis = axis;
+    system.axis = Vec3{static_cast<float>(axis.x), static_cast<float>(axis.y), static_cast<float>(axis.z)};
     system.alpha_cutoff = options.has_alpha_cutoff
         ? options.alpha_cutoff
         : (cutout ? 0.5f : 0.0f);
     system.instance_floats_per_sprite = ${layout.instanceFloats}u;
-    system.capacity = static_cast<std::uint32_t>(
-        std::max(1.0, static_cast<double>(options.capacity)));
-    system.instance_data.assign(
-        static_cast<std::size_t>(system.capacity) *
-            system.instance_floats_per_sprite,
-        0.0f);
-    system.anchor.assign(
-        static_cast<std::size_t>(system.capacity) *
-            upstream::billboard_anchor_floats_per_sprite,
-        0.0);
+${capacityBody}
+    resize_billboard_storage(system, capacity);
     engine.billboard_systems.push_back(std::move(system));
     return BillboardSystemHandle{
         static_cast<std::uint32_t>(
             engine.billboard_systems.size() - 1u)};
-}
-
-// writeInstance's position stores: the F32 lanes and the F64 \`_anchor\`
-// beside them, both from the pin's number triple.
-static void write_billboard_position(
-    BillboardSystemRecord& system,
-    std::uint32_t index,
-    Vec3d position) {
-    const std::size_t base =
-        static_cast<std::size_t>(index) * system.instance_floats_per_sprite;
-    system.instance_data[base + 0u] = static_cast<float>(position.x);
-    system.instance_data[base + 1u] = static_cast<float>(position.y);
-    system.instance_data[base + 2u] = static_cast<float>(position.z);
-    const std::size_t anchor_base =
-        static_cast<std::size_t>(index) * upstream::billboard_anchor_floats_per_sprite;
-    system.anchor[anchor_base + 0u] = position.x;
-    system.anchor[anchor_base + 1u] = position.y;
-    system.anchor[anchor_base + 2u] = position.z;
 }
 
 double add_billboard_sprite_index(
@@ -1168,100 +1053,7 @@ double add_billboard_sprite_index(
         ${recordAt("engine.billboard_systems", "system_handle")};
     const SpriteAtlasRecord& atlas =
         ${recordAt("engine.sprite_atlases", "system.atlas")};
-    const std::uint32_t index = system.count;
-    if (index >= system.capacity) {
-        const std::uint32_t capacity =
-            std::max(index + 1u, system.capacity * 2u);
-        system.instance_data.resize(
-            static_cast<std::size_t>(capacity) *
-                system.instance_floats_per_sprite,
-            0.0f);
-        system.anchor.resize(
-            static_cast<std::size_t>(capacity) *
-                upstream::billboard_anchor_floats_per_sprite,
-            0.0);
-        system.capacity = capacity;
-    }
-
-    // writeInstance, add arm (\`prev === null\`): an unspecified field takes
-    // its documented default rather than a previous value.
-    const std::size_t base =
-        static_cast<std::size_t>(index) *
-        system.instance_floats_per_sprite;
-    const bool has_frame = props.has_frame;
-    const SpriteFrame frame = has_frame
-        ? atlas.frames[upstream::resolve_sprite_frame(
-              atlas,
-              static_cast<double>(props.frame))]
-        : SpriteFrame{};
-
-    const float true_width =
-        props.has_size_world ? props.size_world.x : 0.0f;
-    const float true_height =
-        props.has_size_world ? props.size_world.y : 0.0f;
-
-    const bool visible =
-        props.has_visible ? props.visible : true;
-
-    float uv_min_x = 0.0f;
-    float uv_min_y = 0.0f;
-    float uv_max_x = 1.0f;
-    float uv_max_y = 1.0f;
-    if (has_frame) {
-        uv_min_x = frame.uv_min.x;
-        uv_min_y = frame.uv_min.y;
-        uv_max_x = frame.uv_max.x;
-        uv_max_y = frame.uv_max.y;
-    }
-    // flipX/flipY are absolute orientation flags resolved against the flip
-    // already baked into the endpoints; on add there is no previous
-    // orientation, so an omitted flag leaves them as the frame wrote them.
-    const bool current_flip_x = uv_min_x > uv_max_x;
-    const bool current_flip_y = uv_min_y > uv_max_y;
-    const bool wants_flip_x =
-        props.has_flip_x ? props.flip_x : false;
-    const bool wants_flip_y =
-        props.has_flip_y ? props.flip_y : false;
-    if (current_flip_x != wants_flip_x) {
-        std::swap(uv_min_x, uv_max_x);
-    }
-    if (current_flip_y != wants_flip_y) {
-        std::swap(uv_min_y, uv_max_y);
-    }
-
-    const float rotation =
-        props.has_rotation ? props.rotation : 0.0f;
-    // With no previous instance the pivot falls back to the FRAME's pivot,
-    // not to the quad centre.
-    const float pivot_x =
-        props.has_pivot ? props.pivot.x : frame.pivot.x;
-    const float pivot_y =
-        props.has_pivot ? props.pivot.y : frame.pivot.y;
-
-    // Both stores are live, as in the pin: the F32 lanes feed the upload
-    // without an offset and picking, the F64 anchor the eye-relative one.
-    write_billboard_position(system, index, props.position);
-    system.instance_data[base + 3u] = visible ? true_width : 0.0f;
-    system.instance_data[base + 4u] = visible ? true_height : 0.0f;
-    system.instance_data[base + 5u] = uv_min_x;
-    system.instance_data[base + 6u] = uv_min_y;
-    system.instance_data[base + 7u] = uv_max_x;
-    system.instance_data[base + 8u] = uv_max_y;
-    system.instance_data[base + 9u] = rotation;
-    system.instance_data[base + 10u] = pivot_x;
-    system.instance_data[base + 11u] = pivot_y;
-    system.instance_data[base + 12u] =
-        props.has_color ? props.color.x : 1.0f;
-    system.instance_data[base + 13u] =
-        props.has_color ? props.color.y : 1.0f;
-    system.instance_data[base + 14u] =
-        props.has_color ? props.color.z : 1.0f;
-    system.instance_data[base + 15u] =
-        props.has_color ? props.color.w : 1.0f;
-
-    system.count = index + 1u;
-    system.instance_version += 1u;
-    return static_cast<double>(index);
+    return append_billboard_instance(system, atlas, props);
 }
 
 BillboardSpriteHandle add_billboard_sprite(
@@ -1297,30 +1089,11 @@ void update_billboard_sprite(
     if (found == system.handle_id_to_index.end()) {
         throw std::runtime_error("Invalid billboard sprite handle.");
     }
-    const std::size_t base =
-        static_cast<std::size_t>(found->second) *
-        system.instance_floats_per_sprite;
-    if (props.has_position) {
-        write_billboard_position(system, found->second, props.position);
-    }
-    if (props.has_size_world) {
-        system.instance_data[base + 3u] = props.size_world.x;
-        system.instance_data[base + 4u] = props.size_world.y;
-    }
-    if (props.has_color) {
-        system.instance_data[base + 12u] = props.color.x;
-        system.instance_data[base + 13u] = props.color.y;
-        system.instance_data[base + 14u] = props.color.z;
-        system.instance_data[base + 15u] = props.color.w;
-    }
-    system.instance_version += 1u;
+    const SpriteAtlasRecord& atlas =
+        ${recordAt("engine.sprite_atlases", "system.atlas")};
+    update_billboard_instance(system, atlas, static_cast<double>(found->second), props);
 }
 
-// billboard-sprite-handle-animation.ts drives a sprite's frame through the
-// same setter the 2D family has: rewrite the four UV floats from the atlas
-// frame, keeping whichever axes the sprite was flipped on. The flip is read
-// back off the stored endpoints rather than a stored flag, exactly as the
-// add above resolves it.
 void set_billboard_sprite_frame(
     Engine& engine,
     BillboardSpriteHandle handle,
@@ -1336,24 +1109,7 @@ void set_billboard_sprite_frame(
     }
     const SpriteAtlasRecord& atlas =
         ${recordAt("engine.sprite_atlases", "system.atlas")};
-    const SpriteFrame& atlas_frame =
-        atlas.frames[upstream::resolve_sprite_frame(atlas, frame)];
-    const std::size_t base =
-        static_cast<std::size_t>(found->second) *
-        system.instance_floats_per_sprite;
-    const bool flip_x =
-        system.instance_data[base + 5u] > system.instance_data[base + 7u];
-    const bool flip_y =
-        system.instance_data[base + 6u] > system.instance_data[base + 8u];
-    system.instance_data[base + 5u] =
-        flip_x ? atlas_frame.uv_max.x : atlas_frame.uv_min.x;
-    system.instance_data[base + 6u] =
-        flip_y ? atlas_frame.uv_max.y : atlas_frame.uv_min.y;
-    system.instance_data[base + 7u] =
-        flip_x ? atlas_frame.uv_min.x : atlas_frame.uv_max.x;
-    system.instance_data[base + 8u] =
-        flip_y ? atlas_frame.uv_min.y : atlas_frame.uv_max.y;
-    system.instance_version += 1u;
+    set_billboard_instance_frame(system, atlas, static_cast<double>(found->second), frame);
 }
 
 /** Whether a handle still names a sprite, which is what stops an animation
@@ -1384,6 +1140,7 @@ void remove_billboard_sprite(
     const std::uint32_t index = found->second;
     const std::uint32_t last = system.count - 1u;
     constexpr std::size_t anchor_stride = upstream::billboard_anchor_floats_per_sprite;
+    constexpr std::size_t saved_stride = upstream::billboard_saved_size_floats_per_sprite;
     if (index != last) {
         const std::size_t stride = system.instance_floats_per_sprite;
         std::copy_n(
@@ -1398,6 +1155,10 @@ void remove_billboard_sprite(
             anchor_stride,
             system.anchor.begin() +
                 static_cast<std::ptrdiff_t>(index * anchor_stride));
+        std::copy_n(
+            system.saved_size.begin() + static_cast<std::ptrdiff_t>(last * saved_stride),
+            saved_stride,
+            system.saved_size.begin() + static_cast<std::ptrdiff_t>(index * saved_stride));
         const std::uint32_t moved = system.index_to_handle_id[last];
         system.index_to_handle_id[index] = moved;
         if (moved != 0u) {
@@ -1408,6 +1169,9 @@ void remove_billboard_sprite(
         system.anchor.begin() + static_cast<std::ptrdiff_t>(last * anchor_stride),
         anchor_stride,
         0.0);
+    std::fill_n(
+        system.saved_size.begin() + static_cast<std::ptrdiff_t>(last * saved_stride),
+        saved_stride, 0.0f);
     system.index_to_handle_id[last] = 0u;
     system.handle_id_to_index.erase(found);
     system.count = last;
@@ -1430,6 +1194,9 @@ void clear_billboard_sprites(
         system.index_to_handle_id.end(),
         0u);
     if (system.count != 0u) {
+        std::fill_n(system.saved_size.begin(),
+            static_cast<std::size_t>(system.count) * upstream::billboard_saved_size_floats_per_sprite,
+            0.0f);
         std::fill_n(
             system.anchor.begin(),
             static_cast<std::size_t>(system.count) *

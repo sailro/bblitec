@@ -18,7 +18,7 @@ export function proceduralSkyGpuSource(context: LoweringContext): {
             declaration,
             (node): node is ts.CallExpression =>
                 ts.isCallExpression(node) &&
-                node.expression.getText(file) === name,
+                context.expressionMatchesShape(node.expression, name),
         );
         if (matches.length !== 1)
             throw new Error(`Procedural sky requires one ${name} descriptor.`);

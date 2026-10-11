@@ -5,6 +5,8 @@ import { containsPinnedErrorMessage } from "./pinned-error.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { compressedTextureFormat as layout } from "../compressed-texture-format.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 
 const KTX_MODULE = "src/texture/ktx-loader.ts";
 const FORMATS_MODULE = "src/texture/compressed-formats.ts";
@@ -669,6 +671,138 @@ export class CompressedTextureLowerer {
         };
     }
 
+    /** Record the pin's writeTexture layout while reading each packaged mip. */
+    private lowerMipCopy(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            KTX_MODULE,
+            "uploadCompressed",
+        );
+        const loops = this.context.findNodes(declaration, ts.isForStatement);
+        const loop = loops[0];
+        if (loops.length !== 1 || !loop || !ts.isBlock(loop.statement))
+            this.context.contractError(
+                declaration,
+                "Expected one compressed mip upload loop.",
+            );
+        const initializer = loop.initializer;
+        const index =
+            initializer &&
+            ts.isVariableDeclarationList(initializer) &&
+            initializer.declarations.length === 1
+                ? initializer.declarations[0]
+                : undefined;
+        if (
+            !index ||
+            !ts.isIdentifier(index.name) ||
+            index.name.text !== "i" ||
+            !index.initializer ||
+            !loop.condition ||
+            !loop.incrementor
+        )
+            this.context.contractError(
+                loop,
+                "Expected the complete compressed mip traversal.",
+            );
+        this.context.assertExpressionShape(
+            index.initializer,
+            "0",
+            "compressed mip start",
+        );
+        this.context.assertExpressionShape(
+            loop.condition,
+            "i < parsed.mips.length",
+            "compressed mip traversal",
+        );
+        this.context.assertExpressionShape(
+            loop.incrementor,
+            "i++",
+            "compressed mip step",
+        );
+        const write = this.context.callExpression(loop, "writeTexture");
+        const layout = this.context.callObjectArgument(loop, "writeTexture", 2);
+        const extent = this.context.callObjectArgument(loop, "writeTexture", 3);
+        if (
+            write.arguments.length !== 4 ||
+            layout.properties.length !== 1 ||
+            extent.properties.length !== 2
+        )
+            this.context.contractError(
+                write,
+                "Compressed mip copy gained unrepresented upload options.",
+            );
+        this.context.assertExpressionShape(
+            write.expression,
+            "device.queue.writeTexture",
+            "compressed mip upload",
+        );
+        this.context.assertExpressionShape(
+            write.arguments[0]!,
+            "{ texture, mipLevel: i }",
+            "compressed mip destination",
+        );
+        this.context.assertExpressionShape(
+            write.arguments[1]!,
+            "mip.data",
+            "compressed mip bytes",
+        );
+        const fields = [
+            this.context.propertyInitializer(layout, "bytesPerRow"),
+            this.context.propertyInitializer(extent, "width"),
+            this.context.propertyInitializer(extent, "height"),
+        ];
+        const members: readonly (readonly [string, string])[] = [
+            ["mip.width", "mip.width"],
+            ["mip.height", "mip.height"],
+            ["fmt.blockW", "format->block_width"],
+            ["fmt.blockH", "format->block_height"],
+            ["fmt.blockBytes", "format->block_bytes"],
+        ];
+        const bindings = new Map<string, PinnedBinding>(
+            members.map(([name, cpp]) => [
+                name,
+                { cpp: `static_cast<double>(${cpp})`, type: "scalar" },
+            ]),
+        );
+        return lowerPinnedBody(
+            file,
+            loop.statement.statements,
+            {
+                bindings,
+                calls: new Map(),
+                statement: (statement, lowerer, indent) => {
+                    if (ts.isVariableStatement(statement)) {
+                        const variable =
+                            statement.declarationList.declarations[0];
+                        if (
+                            statement.declarationList.declarations.length ===
+                                1 &&
+                            variable &&
+                            ts.isIdentifier(variable.name) &&
+                            variable.name.text === "mip" &&
+                            variable.initializer
+                        ) {
+                            this.context.assertExpressionShape(
+                                variable.initializer,
+                                "parsed.mips[i]",
+                                "compressed mip input",
+                            );
+                            return [];
+                        }
+                    }
+                    if (
+                        ts.isExpressionStatement(statement) &&
+                        statement.expression === write
+                    )
+                        return [
+                            `${indent}mip.copy = {${fields.map((field) => `gpu_u32(gpu_size(${lowerer.expression(field)}))`).join(", ")}};`,
+                        ];
+                    return undefined;
+                },
+            },
+            "        ",
+        );
+    }
+
     public lower(): LoweredSource {
         const rows = this.formatRows();
         const magic = [...layout.magic].map((character) =>
@@ -742,7 +876,7 @@ CompressedTexture read_compressed_texture(std::vector<std::uint8_t> container);
             source: `// ${this.context.provenance(
                 KTX_MODULE,
                 "parseKtx1",
-                `${FORMATS_MODULE}#getCompressedFormat`,
+                `${FORMATS_MODULE}#getCompressedFormat; ${KTX_MODULE}#uploadCompressed`,
             )}
 #include <bblite/upstream/compressed_texture.hpp>
 
@@ -805,9 +939,6 @@ CompressedTexture read_compressed_texture(std::vector<std::uint8_t> container) {
     const auto* format = compressed_format_for_gl(gl_format);
     if (!format) throw std::runtime_error("Compressed texture: unknown format " + hex(gl_format));
     texture.format = format->gpu_format;
-    texture.block_width = format->block_width;
-    texture.block_height = format->block_height;
-    texture.block_bytes = format->block_bytes;
     texture.width = read_u32(bytes, ${layout.width});
     texture.height = read_u32(bytes, ${layout.height});
     const auto levels = read_u32(bytes, ${layout.mipCount});
@@ -825,7 +956,9 @@ CompressedTexture read_compressed_texture(std::vector<std::uint8_t> container) {
         }
         texture.mips.push_back({read_u32(bytes, entry + ${layout.mipWidth}),
             read_u32(bytes, entry + ${layout.mipHeight}),
-            std::span<const std::uint8_t>(bytes).subspan(offset, length)});
+            std::span<const std::uint8_t>(bytes).subspan(offset, length), {}});
+        auto& mip = texture.mips.back();
+${this.lowerMipCopy()}
     }
     return texture;
 }

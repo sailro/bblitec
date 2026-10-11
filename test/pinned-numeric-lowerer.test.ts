@@ -1232,6 +1232,70 @@ const nodeShape: PinnedRecordShape = {
     ],
 };
 
+test("nullable record selections retain field shape, laziness and null access checks", (t) => {
+    const bindings: [string, PinnedBinding][] = [
+        [
+            "nodes",
+            {
+                cpp: "nodes",
+                type: "record-list",
+                record: nodeShape,
+                indexedRead: (owner, index) =>
+                    `bbl::js::array_index_checked(${owner}, ${index}, "nodes")`,
+            },
+        ],
+        ["enabled", { cpp: "enabled", type: "bool" }],
+        ["index", { cpp: "index", type: "scalar" }],
+        ["total", { cpp: "total", type: "scalar" }],
+    ];
+    const forward = lower(
+        "const selectedFrame = enabled ? nodes[index] : null; const alias = selectedFrame; total = alias?.weight ?? -4;",
+        bindings,
+    );
+    const reverse = lower(
+        "const chosen = enabled ? null : nodes[index]; total = chosen === null ? -4 : chosen.weight;",
+        bindings,
+    );
+    const direct = lower(
+        "const selected = enabled ? nodes[index] : null; total = selected.weight;",
+        bindings,
+    );
+    assert.throws(
+        () =>
+            lower(
+                "let selected = enabled ? nodes[index] : null; selected = null;",
+                bindings,
+            ),
+        /reassigned nullable record selection/,
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        tools,
+        "pinned-nullable-record-selection",
+        `
+        #include <bblite/js_data.hpp>
+        #include <cassert>
+        #include <stdexcept>
+        #include <vector>
+        struct Node { double weight; };
+        double forward(const std::vector<Node>& nodes, bool enabled, double index) { double total; ${forward} return total; }
+        double reverse(const std::vector<Node>& nodes, bool enabled, double index) { double total; ${reverse} return total; }
+        double direct(const std::vector<Node>& nodes, bool enabled, double index) { double total; ${direct} return total; }
+        int main() {
+            const std::vector<Node> nodes{{1.000000001}, {-0.0}};
+            assert(forward(nodes, true, 0) == 1.000000001);
+            assert(forward(nodes, false, 100) == -4);
+            assert(reverse(nodes, true, 100) == -4);
+            assert(reverse(nodes, false, 0) == 1.000000001);
+            assert(direct(nodes, true, 0) == 1.000000001);
+            bool absent = false; try { (void)direct(nodes, false, 100); } catch (const std::exception&) { absent = true; } assert(absent);
+            for (double index : {-1.0, 0.5, 2.0}) { bool invalid = false; try { (void)forward(nodes, true, index); } catch (const std::exception&) { invalid = true; } assert(invalid); }
+        }
+    `,
+    );
+});
+
 test("lowers JavaScript's array operations over a record list", () => {
     const emitted = lower(
         "items.length = 0;\n" +

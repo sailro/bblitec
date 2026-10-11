@@ -263,7 +263,9 @@ families through its installed-font list; variable fonts select the nearest name
 on iOS (including Apple's `emjc` bitmaps) and Android's text renderer (including COLRv1).
 Android bundles Noto Sans Symbols 2 for monochrome text symbols. Other FreeType color fonts retain
 PNG decoding. Font coverage, baseline/line-height rounding, emoji/ZWJ shaping and rasterization can
-differ from Chromium. Relative transition units resolve at transition start.
+differ from Chromium. RmlUi truncates CSS font sizes to integer pixels before requesting a face;
+Windows falls back to FreeType for the whole run when DirectWrite cannot supply every glyph.
+Relative transition units resolve at transition start.
 
 The maintained RmlUi patches are `native/patches/rmlui/NNNN-*.patch`, applied in number order.
 [`native/patches/manifest.json`](../native/patches/manifest.json) states the contract each adds

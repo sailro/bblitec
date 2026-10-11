@@ -50,7 +50,7 @@ SDL_GPUTexture* upload_compressed_texture(SDL_GPUDevice* device,
     const bool metal = SDL_strcmp(SDL_GetGPUDeviceDriver(device), "metal") == 0;
     for (std::size_t level = 0; level < compressed.mips.size(); ++level) {
         const CompressedMipLevel& mip = compressed.mips[level];
-        const CompressedMipCopy geometry = compressed_mip_copy(compressed, mip);
+        const CompressedMipCopy& geometry = mip.copy;
         const SDL_GPUTextureRegion region{texture, static_cast<Uint32>(level), 0, 0, 0, 0, 0, 0, 1};
         SdlCopyTextureDestination destination{device,    copy,           region,
                                               transfers, geometry.width, geometry.height};

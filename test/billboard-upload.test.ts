@@ -46,7 +46,13 @@ test(
             .map((signature) => cppFunction(core.header, signature))
             .join("\n");
         const definitions = [
-            "static void write_billboard_position(",
+            "std::array<double, 3> normalize_billboard_axis(",
+            "static void resize_billboard_storage(",
+            "static void grow_billboard_capacity(",
+            "static void write_billboard_instance(",
+            "static double append_billboard_instance(",
+            "static void update_billboard_instance(",
+            "static void set_billboard_instance_frame(",
             "BillboardSystemHandle create_billboard_system(",
             "double add_billboard_sprite_index(",
             "BillboardSpriteHandle add_billboard_sprite(",
@@ -70,6 +76,7 @@ test(
         namespace bbl::upstream {
             ${cppFunction(sprite.header, "inline std::uint32_t resolve_sprite_frame(")}
             ${anchorFloats}
+            ${core.header.match(/inline constexpr std::uint32_t billboard_saved_size_floats_per_sprite = \d+u;/)![0]}
             ${uploads}
         }
         namespace bbl {
@@ -95,6 +102,8 @@ test(
             assert(!dirty());
             bbl::BillboardSpriteProps props;
             props.has_position = true;
+            props.has_size_world = true;
+            props.size_world = {1, 1};
             props.position = {1, 2, 3};
             const auto first = bbl::add_billboard_sprite(engine, handle, props);
             assert(dirty()); uploaded();
@@ -211,6 +220,8 @@ test(
                 "The billboard header no longer states its anchor lanes.",
             );
         const definitions = [
+            "std::array<double, 3> normalize_billboard_axis(",
+            "static void resize_billboard_storage(",
             "BillboardSystemHandle create_billboard_system(",
             "void set_billboard_alpha_to_coverage(",
             "void add_billboard_system(",
@@ -236,6 +247,7 @@ test(
             file,
             `
         #include <bblite/runtime.hpp>
+        #include <bblite/js_data.hpp>
         #include <bblite/upstream/pinned_surface.hpp>
         #include <algorithm>
         #include <cassert>
@@ -245,6 +257,7 @@ test(
         #include <vector>
         namespace bbl::upstream {
             ${anchorFloats}
+            ${core.header.match(/inline constexpr std::uint32_t billboard_saved_size_floats_per_sprite = \d+u;/)![0]}
             ${cppFunction(core.header, "inline double billboard_system_order(")}
         }
         namespace bbl {

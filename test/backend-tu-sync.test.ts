@@ -1,80 +1,155 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { featureSources } from "../src/compiler/output-projection.js";
+import { discoverDevelopmentTools } from "../src/development-tools.js";
 import { sceneBackendSource, sharedGpuSource } from "./native-fixture.js";
 
-// `featureSources` decides which SDL_GPU translation units a feature
-// compiles into BBLITE_RUNTIME_SOURCES; the CMake backend arm derives the
-// Dawn twins from that selection by name and drops the SDL units from a
-// build without the SDL_GPU backend by the same name pattern. One
-// authority, so what is pinned here is the pattern's coverage: every SDL
-// unit the table names matches it, and every one has its Dawn twin on
-// disk -- a twin the derivation would otherwise refuse at configure.
-test("the CMake backend arm derives the Dawn twins from the SDL_GPU units featureSources names", () => {
-    const featureTus = [
-        ...new Set(
-            Object.values(featureSources)
-                .flat()
-                .filter(
-                    (source) =>
-                        source.startsWith("src/pal_sdl_gpu") &&
-                        source.endsWith(".cpp"),
-                ),
-        ),
-    ];
-    assert.ok(featureTus.length > 0, "featureSources names no SDL_GPU TU");
+const tools = discoverDevelopmentTools();
+const featureTus = [
+    ...new Set(
+        Object.values(featureSources)
+            .flat()
+            .filter(
+                (source) =>
+                    source.startsWith("src/pal_sdl_gpu") &&
+                    source.endsWith(".cpp"),
+            ),
+    ),
+];
+const aggregateScene = (source: string): string =>
+    source === "src/pal_sdl_gpu.cpp" ? "src/pal_sdl_gpu_scene_all.cpp" : source;
+const dawnTwin = (source: string): string =>
+    source.replace("src/pal_sdl_gpu", "src/pal_dawn");
 
-    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
-    const pattern =
-        /list\(FILTER BBLITE_SDL_GPU_SOURCES INCLUDE REGEX "([^"]+)"\)/.exec(
-            cmake,
-        )?.[1];
-    assert.ok(
-        pattern,
-        "CMakeLists.txt does not select the SDL_GPU units by pattern",
-    );
-    const exclusion =
-        /list\(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "([^"]+)"\)/.exec(
-            cmake,
-        )?.[1];
-    assert.ok(
-        exclusion,
-        "CMakeLists.txt does not drop the SDL_GPU units by pattern",
-    );
-    assert.equal(
-        exclusion,
-        pattern,
-        "selection and exclusion must be one pattern",
-    );
-    // CMake spells the regex with doubled backslashes inside its quotes.
-    const selector = new RegExp(pattern.replaceAll("\\\\", "\\"));
-    assert.match(
-        cmake,
-        /string\(REPLACE "\/src\/pal_sdl_gpu" "\/src\/pal_dawn" bblite_dawn_source/,
-    );
-    assert.match(
-        cmake,
-        /target_sources\(bblite_native PRIVATE \$\{BBLITE_DAWN_SOURCES\}\)/,
-    );
-    assert.doesNotMatch(
-        cmake,
-        /REMOVE_ITEM BBLITE_(?:RUNTIME|SDL_GPU|DAWN)_SOURCES/,
-    );
-    assert.doesNotMatch(
-        cmake,
-        /PRIVATE "\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_dawn[^"]*\.cpp"/,
-    );
-    for (const source of featureTus) {
-        assert.match(
-            `/${source}`,
-            selector,
-            `${source} escapes the SDL_GPU pattern`,
-        );
-        const twin = `native/${source.replace("src/pal_sdl_gpu", "src/pal_dawn")}`;
-        assert.ok(existsSync(twin), `${source} has no Dawn twin at ${twin}`);
+test("every reached GPU translation unit has both backend implementations", () => {
+    assert.ok(featureTus.length > 0);
+    for (const source of [
+        ...featureTus.map(aggregateScene),
+        "src/pal_sdl_gpu_window_presenter.cpp",
+    ]) {
+        for (const path of [source, dawnTwin(source)])
+            assert.ok(existsSync(join("native", path)), path);
     }
+    assert.match(
+        readFileSync("native/CMakeLists.txt", "utf8"),
+        /include\("\$\{CMAKE_CURRENT_LIST_DIR\}\/backend-sources\.cmake"\)/,
+    );
 });
+
+test(
+    "backend selection needs only the selected renderer's files",
+    { skip: !tools.cmake },
+    (t) => {
+        assert.ok(tools.cmake);
+        const root = mkdtempSync(join(tmpdir(), "bblite-backend-selection-"));
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const script = join(root, "select.cmake");
+        writeFileSync(
+            script,
+            [
+                "cmake_minimum_required(VERSION 3.24)",
+                'set(BBLITE_NATIVE_ROOT "$ENV{BBLITE_TEST_NATIVE}")',
+                'set(BBLITE_RUNTIME_SOURCES "$ENV{BBLITE_TEST_SOURCES}")',
+                'set(BBLITE_RUNTIME_FEATURES "$ENV{BBLITE_TEST_FEATURES}")',
+                'set(BBLITE_BACKEND_SDL_GPU "$ENV{BBLITE_TEST_SDL}")',
+                'set(BBLITE_BACKEND_DAWN "$ENV{BBLITE_TEST_DAWN}")',
+                'include("$ENV{BBLITE_TEST_SELECTOR}")',
+                'file(WRITE "$ENV{BBLITE_TEST_OUTPUT}" "${BBLITE_RUNTIME_SOURCES}\n${BBLITE_DAWN_SOURCES}")',
+            ].join("\n"),
+        );
+        for (const backend of ["sdl", "dawn", "both"] as const) {
+            const native = join(root, backend).replaceAll("\\", "/");
+            mkdirSync(join(native, "src"), { recursive: true });
+            const useSdl = backend !== "dawn";
+            const useDawn = backend !== "sdl";
+            for (const source of [
+                ...featureTus.map(aggregateScene),
+                "src/pal_sdl_gpu_window_presenter.cpp",
+            ]) {
+                if (useSdl) writeFileSync(join(native, source), "");
+                if (useDawn) writeFileSync(join(native, dawnTwin(source)), "");
+            }
+            const absolute = (source: string): string => native + "/" + source;
+            const shared = [
+                "src/pal_gpu_frame.cpp",
+                "src/pal_gpu_images.cpp",
+                "src/pal_gpu_shared.cpp",
+            ].map(absolute);
+            for (const paths of [
+                [],
+                ...featureTus.map((source) => [source]),
+                featureTus,
+            ]) {
+                for (const window of [false, true]) {
+                    const canonical = [
+                        ...paths.map(aggregateScene),
+                        ...(window
+                            ? ["src/pal_sdl_gpu_window_presenter.cpp"]
+                            : []),
+                    ];
+                    const output = join(native, "selection.txt");
+                    const result: SpawnSyncReturns<string> = spawnSync(
+                        tools.cmake,
+                        ["-P", script],
+                        {
+                            encoding: "utf8",
+                            env: {
+                                ...process.env,
+                                BBLITE_TEST_NATIVE: native,
+                                BBLITE_TEST_SOURCES: ["src/pal.cpp", ...paths]
+                                    .map(absolute)
+                                    .join(";"),
+                                BBLITE_TEST_FEATURES: window
+                                    ? "platform:window"
+                                    : "",
+                                BBLITE_TEST_SDL: useSdl ? "ON" : "OFF",
+                                BBLITE_TEST_DAWN: useDawn ? "ON" : "OFF",
+                                BBLITE_TEST_SELECTOR: resolve(
+                                    "native/backend-sources.cmake",
+                                ),
+                                BBLITE_TEST_OUTPUT: output,
+                            },
+                        },
+                    );
+                    const context = backend + ": " + canonical.join(", ");
+                    assert.equal(
+                        result.status,
+                        0,
+                        context + "\n" + result.stdout + result.stderr,
+                    );
+                    const selected = readFileSync(output, "utf8")
+                        .split(/\r?\n/)
+                        .map((line) => (line ? line.split(";") : []));
+                    assert.deepEqual(
+                        selected,
+                        [
+                            [
+                                absolute("src/pal.cpp"),
+                                ...(useSdl ? canonical.map(absolute) : []),
+                                ...(canonical.length ? shared : []),
+                            ],
+                            useDawn
+                                ? canonical.map(dawnTwin).map(absolute)
+                                : [],
+                        ],
+                        context,
+                    );
+                }
+            }
+        }
+    },
+);
 
 test("the SDL scene driver releases run resources before its device", () => {
     const source = sceneBackendSource("sdl");

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { validateRecord, workHash } from "../src/verify-simplify.js";
 
-test("committing a review record does not invalidate its work hash", () => {
+test("ignored review records preserve the work hash while source edits invalidate it", () => {
     const root = mkdtempSync(join(tmpdir(), "bblite-simplify-"));
     const git = (...args: string[]): void => {
         execFileSync("git", args, { cwd: root });
@@ -16,7 +16,8 @@ test("committing a review record does not invalidate its work hash", () => {
         git("config", "user.email", "test@example.invalid");
         git("config", "user.name", "bblite test");
         writeFileSync(join(root, "source.txt"), "base\n");
-        git("add", "source.txt");
+        writeFileSync(join(root, ".gitignore"), "artifacts/\n");
+        git("add", "source.txt", ".gitignore");
         git("commit", "-m", "base");
         git("switch", "-c", "feature");
         writeFileSync(join(root, "source.txt"), "changed\n");
@@ -24,12 +25,14 @@ test("committing a review record does not invalidate its work hash", () => {
         git("commit", "-m", "change");
 
         const before = workHash(root).hash;
-        mkdirSync(join(root, "docs", "reviews"), { recursive: true });
-        writeFileSync(join(root, "docs", "reviews", `${before}.json`), "{}\n");
-        git("add", "docs/reviews");
-        git("commit", "-m", "record review");
-
+        const records = join(root, "artifacts", "reviews");
+        mkdirSync(records, { recursive: true });
+        writeFileSync(join(records, `${before}.json`), "{}\n");
         assert.equal(workHash(root).hash, before);
+        writeFileSync(join(records, `${before}.json`), '{"findings":[]}\n');
+        assert.equal(workHash(root).hash, before);
+        writeFileSync(join(root, "source.txt"), "changed again\n");
+        assert.notEqual(workHash(root).hash, before);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

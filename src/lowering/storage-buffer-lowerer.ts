@@ -70,11 +70,17 @@ function ownerMethod(
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind ===
                     ts.SyntaxKind.QuestionQuestionToken &&
-                node.left.getText(file) === "buffer._engine._resourceEpoch"
+                context.expressionMatchesShape(
+                    node.left,
+                    "buffer._engine._resourceEpoch",
+                )
             )
                 return "owner.resource_epoch";
             if (!ts.isCallExpression(node)) return undefined;
-            const callee = node.expression.getText(file);
+            const callee = context.matchingExpressionShape(node.expression, [
+                "engine._storageBuffers?.has",
+                "buffer._engine._storageBuffers?.has",
+            ]);
             if (
                 callee === "engine._storageBuffers?.has" ||
                 callee === "buffer._engine._storageBuffers?.has"
@@ -118,7 +124,16 @@ function ownerMethod(
             if (!ts.isExpressionStatement(node)) return undefined;
             const expression = unwrapExpression(node.expression);
             if (ts.isCallExpression(expression)) {
-                const callee = expression.expression.getText(file);
+                const callee = context.matchingExpressionShape(
+                    expression.expression,
+                    [
+                        "engine._device.queue.writeBuffer",
+                        "shadow.set",
+                        "buffer._readback?.destroy",
+                        "buffer._buffer?.destroy",
+                        "buffer._engine._storageBuffers.delete",
+                    ],
+                );
                 if (callee === "engine._device.queue.writeBuffer") {
                     context.assertExpressionShape(
                         expression,
@@ -174,8 +189,16 @@ function ownerMethod(
                 expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken
             )
                 return undefined;
-            const target = expression.left.getText(file);
+            const target = context.matchingExpressionShape(expression.left, [
+                "buffer._readback",
+                "buffer._readbackDevice",
+                "buffer._engine._storageBuffers",
+                "buffer._buffer",
+                "buffer._data",
+                "buffer._engine._disposeStorageBuffers",
+            ]);
             if (
+                target !== undefined &&
                 [
                     "buffer._readback",
                     "buffer._readbackDevice",
@@ -268,7 +291,7 @@ function factory(context: LoweringContext): string {
                     node,
                     "Unrepresented storage option default.",
                 );
-            return `    const bool ${node.name.text} = options.${node.name.text}.value_or(${node.initializer.getText(file)});`;
+            return `    const bool ${node.name.text} = options.${node.name.text}.value_or(${node.initializer.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false"});`;
         });
     const start = entries.findIndex(
         (node) =>
@@ -324,8 +347,10 @@ function factory(context: LoweringContext): string {
                         if (
                             !ts.isConditionalExpression(value) ||
                             !ts.isNewExpression(value.whenTrue) ||
-                            value.whenTrue.expression.getText(file) !==
-                                "Uint8Array" ||
+                            !context.expressionMatchesShape(
+                                value.whenTrue.expression,
+                                "Uint8Array",
+                            ) ||
                             value.whenTrue.arguments?.length !== 1 ||
                             value.whenFalse.kind !== ts.SyntaxKind.NullKeyword
                         )
@@ -401,7 +426,10 @@ function factory(context: LoweringContext): string {
             if (!ts.isExpressionStatement(node)) return undefined;
             const value = unwrapExpression(node.expression);
             if (ts.isCallExpression(value)) {
-                const callee = value.expression.getText(file);
+                const callee = context.matchingExpressionShape(
+                    value.expression,
+                    ["bytes.set", "Object.defineProperties"],
+                );
                 if (callee === "bytes.set") {
                     context.assertExpressionShape(
                         value,
@@ -544,8 +572,13 @@ function disposal(context: LoweringContext): string {
                 (args) => `dispose_storage_buffer(engine, ${args.join(", ")})`,
             ],
         ]),
-        forOf(iterated, element) {
-            if (iterated !== "[...(engine._storageBuffers ?? [])]")
+        forOf(_iterated, element, _binding, syntax) {
+            if (
+                !context.expressionMatchesShape(
+                    syntax.expression,
+                    "[...(engine._storageBuffers ?? [])]",
+                )
+            )
                 return undefined;
             return {
                 range: "storage_buffer_registry_snapshot(engine)",

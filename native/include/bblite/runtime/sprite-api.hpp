@@ -26,7 +26,7 @@ create_sprite_atlas_from_frames(Engine& engine,
 Sprite2DLayerHandle create_sprite_2d_layer(Engine& engine, SpriteAtlasHandle atlas,
                                            Sprite2DLayerOptions options);
 BillboardSystemHandle create_billboard_system(Engine& engine, SpriteAtlasHandle atlas,
-                                              BillboardOrientation orientation, Vec3 axis,
+                                              BillboardOrientation orientation, Vec3d axis,
                                               BillboardSystemOptions options);
 
 double add_billboard_sprite_index(Engine& engine, BillboardSystemHandle system,

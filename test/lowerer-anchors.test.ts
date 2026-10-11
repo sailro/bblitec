@@ -37,7 +37,6 @@ test("node-particle billboard options initialize custom texture names", () => {
                 spriteSheet: null,
                 alive: 0,
                 positions: [],
-                sizes: [],
                 colors: [],
                 rotations: [],
                 frames: null,
@@ -316,31 +315,22 @@ test("mesh factory tables flow from the pinned builders", () => {
     }
 });
 
-test("environment sizing constants flow slot by slot", () => {
+test("environment builders share the lowered sizing and world bounds", () => {
     const adapter = new EnvironmentLowerer(
         new LoweringContext(),
-    ).lowerLoaderAdapter({ loadEnvironment: true, ddsBackground: false });
-    // Each literal is tied to its parameter position in the pinned
-    // computeSceneSize, then interpolated here: defaults, the diagonal
-    // override, the two final scales, and the root composition.
-    assert.match(adapter.source, /environment\.ground_size = 15\.0;/);
-    assert.match(adapter.source, /options\.skybox_size : 20\.0;/);
-    assert.match(adapter.source, /double ground_size = 15\.0;/);
-    assert.match(adapter.source, /\*camera\.upper_radius_limit \*\s*2\.0/);
-    assert.match(adapter.source, /diagonal \* 2\.0;/);
-    assert.match(adapter.source, /ground_size \*= 1\.1;/);
-    assert.match(adapter.source, /skybox_size \*= 1\.5;/);
-    assert.match(adapter.source, /bounds_min\[0\] \+ dx \* 0\.5/);
-    assert.match(adapter.source, /bounds_min\[1\] - 0\.00001/);
-    assert.match(adapter.source, /bounds_min\[2\] \+ dz \* 0\.5/);
-    // The deferred builder sees the scene as it exists at registration,
-    // including procedural meshes and their live parented transforms. The
-    // pin expands each local box through mesh.worldMatrix at that point.
+    ).lowerLoaderAdapter({ loadEnvironment: true, ddsBackground: true });
     assert.match(
         adapter.source,
-        /upstream::mesh_world_matrix\(\*scene\.engine, mesh\)/,
+        /compute_scene_size\(scene, requested_skybox_size\)/,
     );
-    // The world-space box comes from the lowered expandWorldAabbForMesh.
+    assert.equal(
+        adapter.source.match(/SceneSize compute_scene_size\(/g)?.length,
+        1,
+    );
+    assert.match(
+        adapter.source,
+        /upstream::mesh_world_matrix\(\*scene.engine, record\)/,
+    );
     assert.match(
         adapter.source,
         /void expand_world_aabb_for_mesh\(WorldAabb& acc, const WorldAabbMesh& mesh\)/,

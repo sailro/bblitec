@@ -59,7 +59,6 @@ const groupSchema = pinnedRecordSchema("pal::ComputeBindGroupDescriptor", {
 
 function scope(
     context: LoweringContext,
-    file: ts.SourceFile,
     creating: boolean,
 ): PinnedNumericScope {
     const bindings = new Map<string, PinnedBinding>();
@@ -178,8 +177,10 @@ function scope(
         expression(node, l) {
             if (
                 ts.isCallExpression(node) &&
-                unwrapExpression(node.expression).getText(file) ===
-                    "entry._resolver._validate"
+                context.expressionMatchesShape(
+                    unwrapExpression(node.expression),
+                    "entry._resolver._validate",
+                )
             )
                 return `entry.resolver->validate(${node.arguments.map((arg) => l.expression(arg)).join(", ")})`;
             if (ts.isStringLiteralLike(node))
@@ -203,7 +204,12 @@ function scope(
                     ]),
                 ].join(" + ");
             if (ts.isElementAccessExpression(node)) {
-                const owner = node.expression.getText(file),
+                const owner = context.matchingExpressionShape(node.expression, [
+                        "resources",
+                        "volatileEntries",
+                        "layouts",
+                        "bindings._entries",
+                    ]),
                     index = l.expression(node.argumentExpression);
                 if (owner === "resources") return `resources.at(${index})`;
                 const collections: Record<string, string> = {
@@ -211,7 +217,7 @@ function scope(
                     layouts: "layouts->",
                     "bindings._entries": "bindings->entries.",
                 };
-                if (collections[owner])
+                if (owner !== undefined && collections[owner])
                     return `${collections[owner]}at(static_cast<std::size_t>(${index}))`;
             }
             if (
@@ -230,8 +236,10 @@ function scope(
                 return "([&]() -> std::optional<std::vector<std::vector<double>>> {if(!dynamicSlots)return std::nullopt;std::vector<std::vector<double>> offsets;for(double count:shader->dynamic_counts)offsets.emplace_back(static_cast<std::size_t>(count),0.0);return offsets;}())";
             if (
                 ts.isCallExpression(node) &&
-                node.expression.getText(file) ===
-                    "shader._engine._device.createBindGroup"
+                context.expressionMatchesShape(
+                    node.expression,
+                    "shader._engine._device.createBindGroup",
+                )
             ) {
                 if (node.arguments.length !== 1)
                     return context.contractError(
@@ -242,15 +250,25 @@ function scope(
             }
             return undefined;
         },
-        forOf(iterated, element) {
-            if (iterated === "Object.keys(resources)")
+        forOf(_iterated, element, _binding, syntax) {
+            if (
+                context.expressionMatchesShape(
+                    syntax.expression,
+                    "Object.keys(resources)",
+                )
+            )
                 return {
                     range: "resources",
                     bindings: new Map([
                         [element, { cpp: `${element}.first`, type: "opaque" }],
                     ]),
                 };
-            if (iterated === "shader._decls")
+            if (
+                context.expressionMatchesShape(
+                    syntax.expression,
+                    "shader._decls",
+                )
+            )
                 return {
                     range: "shader->decls",
                     bindings: new Map([
@@ -351,7 +369,10 @@ function scope(
             if (ts.isExpressionStatement(node)) {
                 const expression = unwrapExpression(node.expression);
                 if (ts.isCallExpression(expression)) {
-                    const callee = expression.expression.getText(file);
+                    const callee = context.matchingExpressionShape(
+                        expression.expression,
+                        ["entries.push"],
+                    );
                     if (callee === "entries.push") {
                         const value = expression.arguments[0];
                         if (!value || expression.arguments.length !== 1)
@@ -417,7 +438,7 @@ export function lowerComputeBindings(context: LoweringContext): LoweredSource {
     const output = methods.map(([name, signature]) => {
         const { file, declaration } = context.functionDeclaration(path, name!);
         const body = lowerPinnedBody(file, declaration.body!.statements, {
-            ...scope(context, file, name === "createComputeBindingSet"),
+            ...scope(context, name === "createComputeBindingSet"),
             returnValue: (node, l) => (node ? l.expression(node) : ""),
         });
         return `// ${context.provenance(path, name!)}\n${signature}{\n${body}\n}`;

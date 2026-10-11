@@ -752,7 +752,6 @@ async function bakeNodeParticleSystems(
                 spriteSheet: null,
                 alive: 0,
                 positions: [],
-                sizes: [],
                 colors: [],
                 rotations: [],
                 frames: null,
@@ -1602,9 +1601,7 @@ async function main(): Promise<void> {
         animationPointer: specializationFeatures.animationPointer,
         animationPointerMaterials:
             specializationFeatures.animationPointerMaterials,
-        assetTransmission: specializationFeatures.assetTransmission,
         transmission: activationPlan.transmission.value,
-        materialSpecular: specializationFeatures.materialSpecular,
         // The one static `selectVariant` a scene reaches: the loader reads
         // the variant order and the per-primitive mappings out of the
         // document, so only the chosen name is compiled in.

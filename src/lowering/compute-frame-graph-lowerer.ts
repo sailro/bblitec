@@ -75,7 +75,10 @@ export function lowerComputeFrameGraph(
                 const expression = node.expression;
                 if (
                     ts.isCallExpression(expression) &&
-                    expression.expression.getText(file) === "fg._tasks.splice"
+                    context.expressionMatchesShape(
+                        expression.expression,
+                        "fg._tasks.splice",
+                    )
                 ) {
                     if (expression.arguments.length !== 3)
                         return context.contractError(
@@ -95,7 +98,10 @@ export function lowerComputeFrameGraph(
                     ts.isBinaryExpression(expression) &&
                     expression.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken &&
-                    expression.left.getText(file) === "task._passes.length"
+                    context.expressionMatchesShape(
+                        expression.left,
+                        "task._passes.length",
+                    )
                 ) {
                     context.assertExpressionShape(
                         expression.right,
@@ -135,13 +141,18 @@ export function lowerComputeFrameGraph(
                 ["pass._execute", () => "pass->execute()"],
                 ["task.execute", () => "task->execute()"],
             ]),
-            forOf(iterated, element) {
-                const range =
-                    iterated === "fg._tasks"
-                        ? "tasks"
-                        : iterated === "task._passes"
-                          ? "task->passes"
-                          : undefined;
+            forOf(_iterated, element, _binding, syntax) {
+                const range = context.expressionMatchesShape(
+                    syntax.expression,
+                    "fg._tasks",
+                )
+                    ? "tasks"
+                    : context.expressionMatchesShape(
+                            syntax.expression,
+                            "task._passes",
+                        )
+                      ? "task->passes"
+                      : undefined;
                 if (!range) return undefined;
                 return {
                     range,

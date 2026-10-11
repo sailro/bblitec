@@ -2077,10 +2077,7 @@ async function runProbe(
                 "(or delete it if the deployed directory is intact), then retry.",
         );
     }
-    const probeDirectory = resolve(
-        defaultCaptureDirectory(scene.id),
-        "probe-variants",
-    );
+    const probeDirectory = resolve(defaultCaptureDirectory(scene.id), "probe");
     const experiment =
         term !== undefined
             ? `'${term}' -> '${replacement}' (${occurrences} occurrence(s))`
@@ -2169,11 +2166,11 @@ async function runProbe(
                 "is the probe's answer at this pose.",
         );
     }
-    const reportPath = join(probeDirectory, "probe-variants.json");
+    const reportPath = join(probeDirectory, "probe.json");
     writeReport(
         reportPath,
         {
-            tool: "probe-variants",
+            tool: "probe",
             backend: "dawn",
             generatedDirectory: resolve(scene.output),
         },
@@ -3258,7 +3255,7 @@ const COMMANDS: readonly CommandSpec[] = [
             boolean: ["--cold"],
         },
         summary:
-            "compile, compile shaders (--shader d3d12|vulkan|metal|all) and build",
+            "compile, compile shaders (--shader d3d12|vulkan|metal|all|reflection) and build",
         lock: true,
     },
     {

@@ -23,6 +23,7 @@ import {
     gltfIblLoadingCpp,
 } from "../src/lowering/gltf/ibl.js";
 import { lowerGltfAssetSceneSetup } from "../src/lowering/gltf/asset-scene-setup.js";
+import { gltfHasImageBasedLight } from "../src/pinned-material-arms.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
@@ -110,6 +111,7 @@ test("source IBL selection, image slices, compute copies, uniforms and deferred 
     const { document, bin, faceBytes } = fixture();
     const binary = await packageGltfMeshPlan(document, bin);
     const { ibl } = packagedGltfMeshPlan(document);
+    assert.equal(gltfHasImageBasedLight(document), true);
     assert.equal(ibl.textures.length, 1);
     const textures = ibl.textures[0]!;
     assert.deepEqual(
@@ -148,14 +150,17 @@ test("source IBL selection, image slices, compute copies, uniforms and deferred 
 
 test("source IBL activation and selected-scene guards decide whether resources exist", async () => {
     const { document, bin } = fixture();
-    assert.deepEqual(
-        (await gltfMeshPlan({ ...document, extensionsUsed: [] }, bin)).ibl,
-        { textures: [], setup: [] },
-    );
-    assert.deepEqual((await gltfMeshPlan({ ...document, scene: 1 }, bin)).ibl, {
-        textures: [],
-        setup: [],
-    });
+    for (const absent of [
+        { ...document, extensionsUsed: [] },
+        { ...document, scene: 1 },
+    ]) {
+        const plan = await gltfMeshPlan(absent, bin);
+        assert.deepEqual(plan.ibl, { textures: [], setup: [] });
+        assert.equal(
+            gltfHasImageBasedLight({ ...absent, [GLTF_MESH_PLAN]: plan }),
+            false,
+        );
+    }
     const disabled = await gltfMeshPlan(
         document,
         bin,
@@ -166,15 +171,21 @@ test("source IBL activation and selected-scene guards decide whether resources e
         ),
     );
     assert.deepEqual(disabled.ibl, { textures: [], setup: [] });
+    assert.equal(
+        gltfHasImageBasedLight({ ...document, [GLTF_MESH_PLAN]: disabled }),
+        false,
+    );
     const without = structuredClone(document);
     const light = asRecords(
         asObject(asObject(without.extensions)?.EXT_lights_image_based)?.lights,
     )[0]!;
     delete light.irradianceCoefficients;
-    assert.deepEqual((await gltfMeshPlan(without, bin)).ibl, {
-        textures: [],
-        setup: [],
-    });
+    const incomplete = await gltfMeshPlan(without, bin);
+    assert.deepEqual(incomplete.ibl, { textures: [], setup: [] });
+    assert.equal(
+        gltfHasImageBasedLight({ ...without, [GLTF_MESH_PLAN]: incomplete }),
+        false,
+    );
 });
 
 test("source image order and cube destination layers drive native face order", async () => {

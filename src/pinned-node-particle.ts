@@ -1,34 +1,8 @@
 /**
- * The frozen node-particle bake: the pin's own parser, graph builder and CPU
- * simulation, run at generation, with the particle state they produced baked.
- *
- * Why this one is EXECUTED rather than folded, stated once because it is the
- * whole argument for the family:
- *
- *   - The graph build is closures. `npe-build.ts` walks the document and
- *     dynamically imports one evaluator per block class, each of which
- *     installs getters and update steps onto the system as JavaScript
- *     functions. There is no shape to fold: the "shader" of a particle graph
- *     is a call tree assembled at load, and this compiler lowers no closures.
- *   - The simulation's value is fragile in the strongest sense the repository
- *     has met. Every corpus scene installs its own deterministic
- *     `Math.random` seeded through `Math.sin`, and the graph consumes that
- *     sequence in an order the block walk decides. `Math.sin` is not
- *     bit-portable between V8 and a native C++ library, so a lowered
- *     simulation would draw a different random sequence within a few
- *     hundred calls and diverge completely -- not by a rounding step, but
- *     into a different set of particles. Running the pin under the engine
- *     the golden runs it in is the only port that can agree.
- *
- * What is NOT executed is everything downstream: `createParticleBillboard`
- * and `syncParticleBillboard` are folded from their own pinned declarations
- * (`src/lowering/node-particle-lowerer.ts`), so the atlas, the blend and the
- * per-particle write stay the pin's shape and a change in either fails
- * generation instead of being baked over.
- *
- * The tradeoff is the drawn atlas's and the HDR prefilter's, and it is
- * recorded per scene as the `executed-node-particle-simulation` adaptation:
- * the baked state depends on the Chrome that ran it.
+ * Frozen particle simulation executes the pinned parser, graph builder and
+ * simulation in Chromium. This preserves JavaScript random/math behavior.
+ * The driver records billboard uploads and raw Sprite2D columns; live and
+ * continued graphs lower through node-particle-live-lowerer.
  */
 import {
     createSuiteSceneServer,
@@ -402,8 +376,8 @@ export interface NodeParticleSystemBake {
     /** `buffer.alive` — the length of every column below. */
     alive: number;
     positions: number[];
-    /** `size * scaleX`, `size * scaleY` — the product the pin writes. */
-    sizes: number[];
+    /** Raw Float32 inputs retained for source-derived sprite synchronization. */
+    sizeColumns?: { size: number[]; scaleX: number[]; scaleY: number[] };
     colors: number[];
     rotations: number[];
     /** `_spriteSheet.cellIndex` per particle, or null without a sheet. */
@@ -825,7 +799,15 @@ ${stepProgram(request.steps)}
             mediaType: blob.type,
         };
     };
+    const hooked = new Map();
+    for (const expansion of registrationExpansions.concat(sprite2dExpansions)) {
+        for (const entry of expansion.systems) {
+            const key = entry.set + ":" + entry.system;
+            hooked.set(key, (hooked.get(key) ?? false) || expansion.autoStart);
+        }
+    }
     const systems = [];
+    const billboardSnapshots = new Map();
     for (const { set: setIndex, system: index } of frozen) {
         const system = systemAt(setIndex, index);
         // The billboard is built and synced so the atlas the pin derives and
@@ -833,6 +815,9 @@ ${stepProgram(request.steps)}
         // itself is the buffer that sync reads.
         const billboard = createParticleBillboard(system);
         syncParticleBillboard(system, billboard);
+        if (hooked.has(setIndex + ":" + index)) {
+            billboardSnapshots.set(system, { billboard, data: billboard._instanceData.slice(0, billboard.count * billboard._instanceFloatsPerSprite) });
+        }
         const buffer = system.buffer;
         const alive = buffer.alive;
         if (alive !== billboard.count) {
@@ -852,7 +837,6 @@ ${stepProgram(request.steps)}
             throw new Error("node-particle bake: the system's texture is not a loaded image");
         }
         const positions = [];
-        const sizes = [];
         const colors = [];
         const rotations = [];
         const frames = sheet ? [] : null;
@@ -872,7 +856,6 @@ ${stepProgram(request.steps)}
         }
         for (let i = 0; i < alive; i++) {
             positions.push(buffer.posX[i], buffer.posY[i], buffer.posZ[i]);
-            sizes.push(buffer.size[i] * buffer.scaleX[i], buffer.size[i] * buffer.scaleY[i]);
             colors.push(buffer.colorR[i], buffer.colorG[i], buffer.colorB[i], buffer.colorA[i]);
             rotations.push(buffer.angle[i]);
             if (frames) frames.push(sheet.cellIndex[i]);
@@ -899,7 +882,11 @@ ${stepProgram(request.steps)}
                 : null,
             alive,
             positions,
-            sizes,
+            sizeColumns: {
+                size: Array.from(buffer.size.subarray(0, alive)),
+                scaleX: Array.from(buffer.scaleX.subarray(0, alive)),
+                scaleY: Array.from(buffer.scaleY.subarray(0, alive)),
+            },
             colors,
             rotations,
             frames,
@@ -1006,13 +993,6 @@ ${stepProgram(request.steps)}
     // A registration with autoStart starts its systems BEFORE the hook
     // runs, and an unstarted system leaves animateParticleSystem at its
     // first line -- so the probe replays the start it would have had.
-    const hooked = new Map();
-    for (const expansion of registrationExpansions.concat(sprite2dExpansions)) {
-        for (const entry of expansion.systems) {
-            const key = entry.set + ":" + entry.system;
-            hooked.set(key, (hooked.get(key) ?? false) || expansion.autoStart);
-        }
-    }
     for (const baked of systems) {
         if (!hooked.has(baked.set + ":" + baked.system)) continue;
         const system = systemAt(baked.set, baked.system);
@@ -1028,8 +1008,9 @@ ${stepProgram(request.steps)}
                 buffer.posX[i] === baked.positions[i * 3] &&
                 buffer.posY[i] === baked.positions[i * 3 + 1] &&
                 buffer.posZ[i] === baked.positions[i * 3 + 2] &&
-                buffer.size[i] * buffer.scaleX[i] === baked.sizes[i * 2] &&
-                buffer.size[i] * buffer.scaleY[i] === baked.sizes[i * 2 + 1] &&
+                buffer.size[i] === baked.sizeColumns.size[i] &&
+                buffer.scaleX[i] === baked.sizeColumns.scaleX[i] &&
+                buffer.scaleY[i] === baked.sizeColumns.scaleY[i] &&
                 buffer.colorR[i] === baked.colors[i * 4] &&
                 buffer.colorG[i] === baked.colors[i * 4 + 1] &&
                 buffer.colorB[i] === baked.colors[i * 4 + 2] &&
@@ -1041,6 +1022,10 @@ ${stepProgram(request.steps)}
             same = same && values.length === buffer[column].length &&
                 values.every((value, index) => Object.is(value, buffer[column][index]));
         }
+        const snapshot = billboardSnapshots.get(system);
+        syncParticleBillboard(system, snapshot.billboard);
+        same = same && snapshot.billboard.count === baked.alive && snapshot.data.every(
+            (value, index) => Object.is(value, snapshot.billboard._instanceData[index]));
         baked.stepIsIdentity = same;
     }
     return {

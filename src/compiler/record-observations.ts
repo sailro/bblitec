@@ -248,7 +248,7 @@ function observedArrayCopy(
  * can reach an array of that type. An assertion to a subtype of `target`,
  * or out of `any` or `unknown`, extends where the copy may flow.
  */
-export function arrayIdentityObservation(
+function arrayIdentityObservation(
     context: RecordObservationContext,
     target: ts.Type,
 ): string | undefined {

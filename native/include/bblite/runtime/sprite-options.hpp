@@ -41,31 +41,24 @@ struct GridSpriteAtlasOptions {
     bool premultiplied_alpha = false;
 };
 
-/** Normalized runtime input to the in-memory sprite-atlas shelf packer. */
+/** Borrowed input records; the call retains each source pixel buffer while packing. */
 struct SpriteAtlasFramePixelsView {
-    const std::uint8_t* pixels = nullptr;
-    std::size_t byte_length = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::uint32_t src_x = 0;
-    std::uint32_t src_y = 0;
-    /** Absent where the scene named none: `srcStrideBytes ?? width * 4`. */
-    std::optional<std::uint32_t> src_stride_bytes{};
-    Vec2 pivot{0.5f, 0.5f};
+    const js::U8Array* pixels{};
+    double width{};
+    double height{};
+    std::optional<double> src_x;
+    std::optional<double> src_y;
+    std::optional<double> src_stride_bytes;
+    std::optional<Vec2d> pivot;
 };
 
-/**
- * `createSpriteAtlasFromFrames`'s options. Generation always emits the full
- * positional literal, so the members carry no initializers of their own.
- */
+/** Optional values remain absent until the pinned factory resolves its defaults. */
 struct SpriteAtlasPackOptions {
-    std::uint32_t padding_px;
-    std::uint32_t max_width_px;
-    TextureFilter sampling;
-    bool premultiplied_alpha;
-    bool has_capacity;
-    std::uint32_t capacity_width;
-    std::uint32_t capacity_height;
+    std::optional<double> padding_px;
+    std::optional<double> max_width_px;
+    std::optional<std::string> sampling;
+    std::optional<bool> premultiplied_alpha;
+    std::optional<Vec2d> capacity_px;
 };
 
 /**
@@ -75,25 +68,19 @@ struct SpriteAtlasPackOptions {
  * initializers of their own.
  */
 struct Sprite2DLayerOptions {
-    float capacity;
+    double capacity;
     SpriteBlendDescriptor blend_mode;
     float opacity;
     bool visible;
     float order;
     Sprite2DDepthMode depth_mode;
-    float layer_z;
+    double layer_z;
     Vec2d pivot;
     std::uint32_t custom_shader;
     std::vector<PixelsTexture> custom_textures;
     std::vector<std::string> custom_texture_names;
 };
 
-/**
- * Per-sprite init record (`Sprite2DProps`). Every optional field carries a
- * `has_` companion because the pinned writer distinguishes "absent" from a
- * value: an absent `sizePx` falls back to the frame, an absent `flipX`
- * preserves the orientation already baked into the UVs.
- */
 /**
  * createFacingBillboardSystem's options. Every generated construction is a
  * full designated-initializer literal (the pin's defaults are emitted by
@@ -124,15 +111,15 @@ struct BillboardSystemOptions {
 /** addBillboardSpriteIndex's props; a `has_` flag marks what was named. */
 struct BillboardSpriteProps {
     Vec3d position{};
-    Vec2 size_world{};
+    Vec2d size_world{};
     bool has_size_world = false;
-    float frame = 0.0f;
+    double frame = 0.0f;
     bool has_frame = false;
-    float rotation = 0.0f;
+    double rotation = 0.0f;
     bool has_rotation = false;
-    Vec2 pivot{};
+    Vec2d pivot{};
     bool has_pivot = false;
-    Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+    Vec4d color{1.0f, 1.0f, 1.0f, 1.0f};
     bool has_color = false;
     bool flip_x = false;
     bool has_flip_x = false;
@@ -144,19 +131,20 @@ struct BillboardSpriteProps {
     bool has_position = false;
 };
 
+/** Source numeric inputs remain double until the pinned writer's Float32 stores. */
 struct Sprite2DProps {
-    Vec2 position_px{};
+    Vec2d position_px{};
     // `addSprite2DIndex` throws without `positionPx`; `updateSprite2DIndex`
     // takes a `Partial<Sprite2DProps>`, where an omitted position preserves
     // the slot's own. Both arms write this explicitly.
     bool has_position_px = false;
-    Vec2 size_px{};
+    Vec2d size_px{};
     bool has_size_px = false;
-    float frame = 0.0f;
+    double frame = 0.0;
     bool has_frame = false;
-    float rotation = 0.0f;
+    double rotation = 0.0;
     bool has_rotation = false;
-    Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+    Vec4d color{1.0, 1.0, 1.0, 1.0};
     bool has_color = false;
     bool flip_x = false;
     bool has_flip_x = false;
@@ -164,7 +152,7 @@ struct Sprite2DProps {
     bool has_flip_y = false;
     bool visible = true;
     bool has_visible = false;
-    float z = 0.0f;
+    double z = 0.0;
     bool has_z = false;
 };
 

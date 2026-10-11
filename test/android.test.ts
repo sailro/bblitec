@@ -119,7 +119,7 @@ test(
             script,
             `set(ANDROID TRUE)
 ${cppSection(cmake, "if(ANDROID)", "if(IOS)")}
-${cppSection(cmake, 'if(BBLITE_BACKEND STREQUAL "SDL_GPU")', "# One authority")}
+${cppSection(cmake, 'if(BBLITE_BACKEND STREQUAL "SDL_GPU")', 'include("${CMAKE_CURRENT_LIST_DIR}/backend-sources.cmake")')}
 if(BBLITE_BACKEND_DAWN)
 ${cppSection(cmake, "    if(ANDROID AND NOT BBLITE_DAWN_LIBRARY_TYPE", '    if(BBLITE_DAWN_LIBRARY_TYPE STREQUAL "SHARED_LIBRARY")')}
 endif()

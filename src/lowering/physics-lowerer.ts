@@ -26,16 +26,9 @@
  * What it deliberately does NOT emit is any solver arithmetic. There is
  * none in the pinned module to emit.
  *
- * **The one semantic divergence this repository has ever carried.** Every
- * other adaptation here is bit-faithful by construction or executed in the
- * engine the golden runs in. A different solver is neither: Bullet and
- * Havok integrate different contact models, so a body's pose after N steps
- * is a different number, not a rounding of the same one. It is recorded as
- * `substituted-physics-solver` in the scene's `fidelity.json`, and it is
- * why a physics scene's threshold cannot be driven toward zero: scene 40
- * carries one, but it gates this port's own solver against a measured
- * distance rather than asserting agreement with the pinned one. See
- * `docs/fidelity.md#physics-contract`.
+ * Bullet and Havok integrate different contact models. This substitution
+ * is recorded as `substituted-physics-solver` in `fidelity.json`; its
+ * contract is in `docs/fidelity.md#physics-contract`.
  */
 import ts from "typescript";
 import {
@@ -560,11 +553,7 @@ ${segment("CYLINDER")}`;
         this.assertShapeParameterMembers();
         const cases = this.context
             .findNodes(declaration, ts.isCaseClause)
-            .map((clause) =>
-                clause.expression
-                    .getText(file)
-                    .replace("PhysicsShapeType.", ""),
-            );
+            .map((clause) => this.shapeCaseName(clause));
         const expected = PRIMITIVE_SHAPE_ARMS.map(([name]) => name);
         if (
             cases.length !== expected.length ||
@@ -619,13 +608,7 @@ ${PRIMITIVE_SHAPE_ARMS.map((arm) =>
         declaration: ts.FunctionDeclaration,
         [caseName, entryPoint, palFunction]: readonly [string, string, string],
     ): string {
-        const clause = this.context
-            .findNodes(declaration, ts.isCaseClause)
-            .find(
-                (candidate) =>
-                    candidate.expression.getText(file) ===
-                    `PhysicsShapeType.${caseName}`,
-            )!;
+        const clause = this.shapeCaseClause(declaration, caseName);
         const bindings = new Map<string, PinnedBinding>();
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
@@ -653,7 +636,10 @@ ${PRIMITIVE_SHAPE_ARMS.map((arm) =>
                 if (
                     !split ||
                     !member ||
-                    split.left.getText(file) !== `params.${member}`
+                    !this.context.expressionMatchesShape(
+                        split.left,
+                        `params.${member}`,
+                    )
                 ) {
                     this.context.contractError(
                         local.initializer,
@@ -748,7 +734,13 @@ ${PRIMITIVE_SHAPE_ARMS.map((arm) =>
             ts.isCallExpression(returned.expression.expression)
                 ? returned.expression.expression
                 : undefined;
-        if (!call || call.expression.getText(file) !== `hknp.${entryPoint}`) {
+        if (
+            !call ||
+            !this.context.expressionMatchesShape(
+                call.expression,
+                `hknp.${entryPoint}`,
+            )
+        ) {
             this.context.contractError(
                 returned ?? clause,
                 `Expected the ${caseName} arm to return ` +
@@ -826,7 +818,6 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
      * shape to carry one.
      */
     private assertShapeParamsCases(declaration: ts.FunctionDeclaration): void {
-        const file = declaration.getSourceFile();
         const expected = new Map<string, readonly string[]>([
             ["SPHERE", ["radius", "center"]],
             ["BOX", ["extents", "center"]],
@@ -834,9 +825,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
             ["CYLINDER", ["radius", "pointA", "pointB"]],
         ]);
         const clauses = this.context.findNodes(declaration, ts.isCaseClause);
-        const cases = clauses.map((clause) =>
-            clause.expression.getText(file).replace("PhysicsShapeType.", ""),
-        );
+        const cases = clauses.map((clause) => this.shapeCaseName(clause));
         if (
             cases.length !== expected.size ||
             cases.some((name) => !expected.has(name))
@@ -850,21 +839,21 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
                     "falling through to the primitive-shape refusal.",
             );
         }
-        for (const clause of clauses) {
-            const name = clause.expression
-                .getText(file)
-                .replace("PhysicsShapeType.", "");
+        for (const [index, clause] of clauses.entries()) {
+            const name = cases[index]!;
             const assigned = this.context
                 .findNodes(clause, ts.isBinaryExpression)
                 .filter(
                     (candidate) =>
                         candidate.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken &&
-                        candidate.left.getText(file).startsWith("params."),
+                        ts.SyntaxKind.EqualsToken,
                 )
-                .map((candidate) =>
-                    candidate.left.getText(file).slice("params.".length),
-                );
+                .map((candidate) => this.context.propertyPath(candidate.left))
+                .filter(
+                    (path): path is string[] =>
+                        path !== undefined && path[0] === "params",
+                )
+                .map((path) => path.slice(1).join("."));
             const wanted = expected.get(name)!;
             const extra = assigned.filter((key) => !wanted.includes(key));
             const missing = wanted.filter((key) => !assigned.includes(key));
@@ -883,23 +872,33 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         }
     }
 
-    /** One `case PhysicsShapeType.<name>:` of `_buildShapeParams`. */
+    private shapeCaseName(clause: ts.CaseClause): string {
+        const path = this.context.propertyPath(clause.expression);
+        if (path?.length !== 2 || path[0] !== "PhysicsShapeType")
+            this.context.contractError(
+                clause,
+                "Expected a PhysicsShapeType member case.",
+            );
+        return path[1]!;
+    }
+
+    /** One `case PhysicsShapeType.<name>:` of a pinned shape function. */
     private shapeCaseClause(
         declaration: ts.FunctionDeclaration,
         caseName: string,
     ): ts.CaseClause {
-        const file = declaration.getSourceFile();
         const clause = this.context
             .findNodes(declaration, ts.isCaseClause)
-            .find(
-                (candidate) =>
-                    candidate.expression.getText(file) ===
+            .find((candidate) =>
+                this.context.expressionMatchesShape(
+                    candidate.expression,
                     `PhysicsShapeType.${caseName}`,
+                ),
             );
         if (!clause) {
             this.context.contractError(
                 declaration,
-                `Expected ${buildShapeParams} to carry a ` +
+                `Expected ${declaration.name?.text ?? "shape function"} to carry a ` +
                     `PhysicsShapeType.${caseName} case.`,
             );
         }
@@ -920,14 +919,16 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         property: string,
     ): ts.Expression {
         const clause = this.shapeCaseClause(declaration, caseName);
-        const file = declaration.getSourceFile();
         const assignment = this.context
             .findNodes(clause, ts.isBinaryExpression)
             .find(
                 (candidate) =>
                     candidate.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken &&
-                    candidate.left.getText(file) === `params.${property}`,
+                    this.context.expressionMatchesShape(
+                        candidate.left,
+                        `params.${property}`,
+                    ),
             );
         if (!assignment) {
             this.context.contractError(

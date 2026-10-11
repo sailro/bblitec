@@ -237,7 +237,7 @@ export async function registeredPbrExtensionIds(): Promise<readonly string[]> {
  * Derives a material's feature bits the way the pin does, including every
  * registered extension's own `detect`.
  */
-export async function pinnedMaterialFeatures(
+async function pinnedMaterialFeatures(
     material: PinnedMaterialInput,
 ): Promise<{ features: number; features2: number }> {
     await registerPbrExtensions();

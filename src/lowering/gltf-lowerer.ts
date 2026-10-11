@@ -1,7 +1,6 @@
 /** Pinned glTF lowering families and their source-derived native segments. */
 
-export { GltfLoaderOptions, GltfLowerer } from "./gltf/loader.js";
-export { lowerAccessorNormalizationCpp } from "./gltf/accessor-normalization.js";
+export { type GltfLoaderOptions, GltfLowerer } from "./gltf/loader.js";
 export {
     COLOR_CHANNEL_HELPERS_CPP,
     lowerShPrescaleCpp,
@@ -10,4 +9,3 @@ export {
     lowerMatrixComposeCpp,
     lowerRootedWorldCpp,
 } from "./gltf/matrix-leaves.js";
-export { lowerGltfFactorBake } from "./gltf/factor-bake.js";

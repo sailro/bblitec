@@ -275,13 +275,31 @@ function recordBindings(
     name: string,
     cpp: string,
     shape: PinnedRecordShape,
+    absent?: { cpp: string; value: "null" | "undefined" },
 ): Map<string, PinnedBinding> {
     const bindings = new Map<string, PinnedBinding>([
-        [name, { cpp, type: "opaque", record: shape }],
+        [
+            name,
+            {
+                cpp,
+                type: "opaque",
+                record: shape,
+                ...(absent
+                    ? { absentCpp: absent.cpp, absentValue: absent.value }
+                    : {}),
+            },
+        ],
     ]);
     for (const member of shape.members) {
         for (const [path, binding] of member.read(cpp)) {
             bindings.set(`${name}.${member.name}${path}`, binding);
+            if (absent)
+                bindings.set(`${name}?.${member.name}${path}`, {
+                    ...binding,
+                    nullish: binding.nullish
+                        ? `(${absent.cpp} || ${binding.nullish})`
+                        : absent.cpp,
+                });
         }
     }
     return bindings;
@@ -306,6 +324,8 @@ export function callShapeOf(
 /** How one pinned identifier is spelled and typed in the emitted C++. */
 export interface PinnedBinding {
     cpp: string;
+    /** Indexed reads through a represented container, including its bounds rules. */
+    indexedRead?: (owner: string, index: string) => string;
     /** An effectful buffer getter must be read when a local aliases it. */
     materializeAlias?: true;
     /** Indexed stores through a platform view, including its bounds and rounding rules. */
@@ -502,6 +522,8 @@ export interface PinnedRecordMember {
 }
 
 export interface PinnedNumericScope {
+    /** Checked native storage size for a lowered numeric-array allocation. */
+    allocationSize?: (count: string, element: string) => string;
     /** Domain-owned records and library values; arithmetic still recurses through this lowerer. */
     expression?: (
         expression: ts.Expression,
@@ -648,6 +670,7 @@ export interface PinnedNumericScope {
         element: string,
         /** What the iterated expression is bound to, where it is bound. */
         binding: PinnedBinding | undefined,
+        syntax: { expression: ts.Expression; binding: ts.BindingName },
     ) =>
         | {
               /** The C++ range expression, e.g. `scene.caster_meshes`. */
@@ -1156,13 +1179,25 @@ export class PinnedNumericLowerer {
                 ))
         ))
             return this.fail(binding, "for-of initializer");
-        const element = binding.getText(this.file);
+        const element = ts.isIdentifier(binding)
+            ? binding.text
+            : `[${binding.elements
+                  .map((entry) => {
+                      if (
+                          !ts.isBindingElement(entry) ||
+                          !ts.isIdentifier(entry.name)
+                      )
+                          return this.fail(entry, "for-of initializer");
+                      return entry.name.text;
+                  })
+                  .join(", ")}]`;
         const iterated = statement.expression.getText(this.file);
         const resolved =
             this.scope.forOf?.(
                 iterated,
                 element,
                 this.binding(statement.expression),
+                { expression: statement.expression, binding },
             ) ??
             (ts.isIdentifier(binding)
                 ? this.recordListForOf(statement.expression, element)
@@ -1671,18 +1706,22 @@ export class PinnedNumericLowerer {
                 // `let v1: Vec3;` is the same statement over the pin's own
                 // record, and its annotation is the only place that says so.
                 const annotation = declaration.type;
+                const boolean =
+                    annotation?.kind === ts.SyntaxKind.BooleanKeyword;
                 const record =
                     annotation !== undefined
                         ? recordTypeOfAnnotation(annotation)
                         : undefined;
                 this.bindLocal(declaration.name, {
                     cpp,
-                    type: record ?? "scalar",
+                    type: record ?? (boolean ? "bool" : "scalar"),
                 });
                 lines.push(
                     record
                         ? `${indent}${RECORD_SHAPES.get(record)!.storage} ${cpp}{};`
-                        : `${indent}double ${cpp} = 0.0;`,
+                        : boolean
+                          ? `${indent}bool ${cpp} = false;`
+                          : `${indent}double ${cpp} = 0.0;`,
                 );
                 continue;
             }
@@ -1870,6 +1909,35 @@ export class PinnedNumericLowerer {
             // ternary picks. Bound by REFERENCE so the choice is made once
             // and the row is still the list's own storage.
             if (ts.isConditionalExpression(rowSource)) {
+                const arms = [rowSource.whenTrue, rowSource.whenFalse].map(
+                    unwrapExpression,
+                );
+                const nullArm = arms.findIndex(
+                    (arm) => arm.kind === ts.SyntaxKind.NullKeyword,
+                );
+                const selected = nullArm >= 0 ? arms[1 - nullArm] : undefined;
+                const selectedRecord =
+                    selected && ts.isElementAccessExpression(selected)
+                        ? this.elementBinding(selected)
+                        : undefined;
+                if (selectedRecord?.record) {
+                    if (!isConst && this.reassigned(declaration, name))
+                        this.fail(
+                            declaration,
+                            "reassigned nullable record selection",
+                        );
+                    const pointer = `&(${selectedRecord.cpp})`;
+                    lines.push(
+                        `${indent}const auto* ${cpp} = ${this.condition(rowSource.condition)} ? ${nullArm === 0 ? "nullptr" : pointer} : ${nullArm === 0 ? pointer : "nullptr"};`,
+                    );
+                    this.bindRecord(
+                        declaration.name,
+                        `(${cpp} ? *${cpp} : throw std::runtime_error("Cannot access a nullish object."))`,
+                        selectedRecord.record,
+                        { cpp: `${cpp} == nullptr`, value: "null" },
+                    );
+                    continue;
+                }
                 const chosen = [rowSource.whenTrue, rowSource.whenFalse].map(
                     (branch) => {
                         const access = unwrapExpression(branch);
@@ -2228,8 +2296,11 @@ export class PinnedNumericLowerer {
                 ? literal
                 : undefined;
         const count = this.expression(argument);
+        const allocationSize = (element: string): string =>
+            this.scope.allocationSize?.(count, element) ??
+            `static_cast<std::size_t>(${count})`;
         const sized = (element: string, zero: string): string =>
-            `std::vector<${element}>(static_cast<std::size_t>(${count}), ${zero})`;
+            `std::vector<${element}>(${allocationSize(element)}, ${zero})`;
         if (constructor === "F32") {
             return {
                 type: "f32",
@@ -2238,7 +2309,7 @@ export class PinnedNumericLowerer {
                     fixed !== undefined
                         ? `std::array<float, ${fixed}> ${name}{};`
                         : `std::vector<float> ${name}(` +
-                          `static_cast<std::size_t>(${count}), 0.0f);`,
+                          `${allocationSize("float")}, 0.0f);`,
             };
         }
         if (constructor === "U32") {
@@ -2249,7 +2320,7 @@ export class PinnedNumericLowerer {
                     fixed !== undefined
                         ? `std::array<std::uint32_t, ${fixed}> ${name}{};`
                         : `std::vector<std::uint32_t> ${name}(` +
-                          `static_cast<std::size_t>(${count}), 0u);`,
+                          `${allocationSize("std::uint32_t")}, 0u);`,
             };
         }
         // `new U8(n)` over a COUNT: the pin's own zeroed byte scratch, which
@@ -2265,7 +2336,7 @@ export class PinnedNumericLowerer {
                     fixed !== undefined
                         ? `std::array<std::uint8_t, ${fixed}> ${name}{};`
                         : `std::vector<std::uint8_t> ${name}(` +
-                          `static_cast<std::size_t>(${count}), 0u);`,
+                          `${allocationSize("std::uint8_t")}, 0u);`,
             };
         }
         // `new F64(n)` and `new Array<number>(n)` are the pin's own
@@ -2278,7 +2349,7 @@ export class PinnedNumericLowerer {
                 value: sized("double", "0.0"),
                 declare: (name) =>
                     `std::vector<double> ${name}(` +
-                    `static_cast<std::size_t>(${count}), 0.0);`,
+                    `${allocationSize("double")}, 0.0);`,
             };
         }
         return undefined;
@@ -2566,8 +2637,9 @@ export class PinnedNumericLowerer {
         name: ts.Identifier,
         cpp: string,
         shape: PinnedRecordShape,
+        absent?: { cpp: string; value: "null" | "undefined" },
     ): void {
-        this.bindPorts(recordBindings(name.text, cpp, shape), name);
+        this.bindPorts(recordBindings(name.text, cpp, shape, absent), name);
     }
 
     /**
@@ -2977,7 +3049,7 @@ export class PinnedNumericLowerer {
      * template would need JavaScript's own number formatting, so it refuses
      * rather than printing C++'s.
      */
-    private stringExpression(expression: ts.Expression): string {
+    protected stringExpression(expression: ts.Expression): string {
         const node = unwrapExpression(expression);
         if (
             ts.isStringLiteral(node) ||
@@ -3397,6 +3469,7 @@ export class PinnedNumericLowerer {
         const binding = this.elementOwner(expression);
         if (!binding) this.fail(expression, "element access owner");
         const index = this.expression(expression.argumentExpression);
+        if (binding.indexedRead) return binding.indexedRead(binding.cpp, index);
         return `${binding.cpp}[static_cast<std::size_t>(${index})]`;
     }
 

@@ -20,7 +20,6 @@ const helpers = [
 
 function resolverScope(
     context: LoweringContext,
-    file: ts.SourceFile,
     kind: (typeof helpers)[number][0],
     native: string,
     local: string,
@@ -127,7 +126,10 @@ function resolverScope(
                 return undefined;
             const name = decl.name.text;
             if (name === local) {
-                const input = unwrapExpression(decl.initializer).getText(file);
+                const input = context.matchingExpressionShape(
+                    decl.initializer,
+                    ["input", "state"],
+                );
                 if (input !== "input" && input !== "state")
                     return context.contractError(
                         decl,
@@ -156,7 +158,11 @@ function resolverScope(
                 "sampler._sampler": ["sampler->allocation", "sampler"],
                 "resource._view": ["resource->allocation", "storage"],
             };
-            const projection = fields[value.getText(file)];
+            const key = context.matchingExpressionShape(
+                value,
+                Object.keys(fields),
+            );
+            const projection = key === undefined ? undefined : fields[key];
             if (projection)
                 return `pal::ComputeTextureResource{${projection[0]},pal::ComputeTextureViewRole::${projection[1]}}`;
             return context.contractError(
@@ -253,7 +259,7 @@ export function lowerComputeBindingResolvers(
         for (const verb of ["resolve", "get"]) {
             const name = `${verb}${source}`,
                 { file, declaration } = context.functionDeclaration(path, name);
-            const scope = resolverScope(context, file, kind, native, local);
+            const scope = resolverScope(context, kind, native, local);
             const body = lowerPinnedBody(
                 file,
                 declaration.body!.statements,
@@ -282,7 +288,7 @@ export function lowerComputeBindingResolvers(
                     "Expected sampled texture volatile validator.",
                 );
             output.push(
-                `void validate_compute_texture_binding(const std::shared_ptr<Engine>& engine,const ComputeBindingState& state){\n${lowerPinnedBody(file, validate.body.statements, resolverScope(context, file, kind, native, local))}\n}`,
+                `void validate_compute_texture_binding(const std::shared_ptr<Engine>& engine,const ComputeBindingState& state){\n${lowerPinnedBody(file, validate.body.statements, resolverScope(context, kind, native, local))}\n}`,
             );
         }
     }

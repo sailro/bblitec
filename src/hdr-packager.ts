@@ -5,21 +5,10 @@ import {
 } from "./pinned-shader-composer.js";
 
 /**
- * The HDR package is the pin executed, not transcribed. RGBE parsing and the
- * irradiance chain call the pinned package's own exported functions
- * (`parseRGBE`, `computeSHFromEquirect` — which runs the pin's
- * `shToPolynomial` internally), and every cube level comes back from the
- * pinned `equirectToCubemapGPU` and `prefilterCubemapGPU` the Chromium
- * harness runs, so every byte in the package is produced by the pin's own
- * code. A pin
- * bump that changes any of it changes the package and the test goldens go
- * red — the drift-detection direction, where the former transcriptions kept
- * agreeing with themselves.
- *
- * The pin has no defensive parsing: a truncated or legacy-encoded RGBE file
- * decodes to garbage there exactly as it does here now. Corpus inputs are
- * content-addressed and hash-pinned, so the guards this file used to carry
- * protected nothing reachable.
+ * RGBE parsing and irradiance execute the pinned parseRGBE and
+ * computeSHFromEquirect. Cube levels execute equirectToCubemapGPU and
+ * prefilterCubemapGPU in Chromium. Malformed RGBE follows the pinned parser;
+ * corpus inputs are content-addressed and hash-pinned.
  */
 const pinnedHdrParser = await importPinnedModule<{
     parseRGBE: (buffer: Uint8Array) => HdrImage;
@@ -29,9 +18,6 @@ const pinnedHdrParser = await importPinnedModule<{
         height: number,
     ) => Float32Array;
 }>("loader-hdr/hdr-parser.js");
-const pinnedSphericalHarmonics = await importPinnedModule<{
-    shToPolynomial: (sh: Float64Array) => Float32Array;
-}>("math/spherical-harmonics.js");
 /**
  * `polynomialToPreScaledHarmonics` is module-local to the pin, so it is
  * reached by re-exporting it out of the pinned module's own text, the way
@@ -45,8 +31,6 @@ const pinnedIblAssembly = await importPinnedModuleWithExports<{
 }>("loader-gltf/ibl-env-assembly.js", ["polynomialToPreScaledHarmonics"]);
 
 export const parseRgbe = pinnedHdrParser.parseRGBE;
-/** The pin's own `shToPolynomial`, re-exported for the DDS packager. */
-export const shToPolynomial = pinnedSphericalHarmonics.shToPolynomial;
 
 const hdrMagic = new Uint8Array([
     0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31, 0x00,

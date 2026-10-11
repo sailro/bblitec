@@ -44,7 +44,6 @@ interface GltfSpecialization {
         animationPointerMaterials: boolean;
         /** Null until asynchronous material construction has packaged its selection. */
         transmissiveMaterial: boolean | null;
-        specularReflectance: boolean;
         eightInfluenceSkinning: boolean;
         /** The packaged document carries converted Gaussian-splat clouds. */
         gaussianSplats: boolean;
@@ -596,29 +595,6 @@ export function specializeGltf(
     const transmissiveMaterial = transmission
         ? selectedGltfTransmission(transmission, selectedVariantName)
         : null;
-    // The specular half of the pinned `needsReflectance` — which also fires
-    // on `ior !== 1.5` alone; that arm is folded exactly by the generated
-    // loader's reflectance fold and `applyDielectric`, so this predicate
-    // deliberately reads only the specular fields. A material declaring the
-    // extension at factor 1 and colour (1,1,1) reaches nothing.
-    const specularReflectance = asRecords(document.materials).some(
-        (material) => {
-            const specular = asObject(
-                asObject(material.extensions)?.["KHR_materials_specular"],
-            );
-            if (!specular) return false;
-            const factor = specular.specularFactor as number | undefined;
-            const color = specular.specularColorFactor;
-            return (
-                specular.specularTexture !== undefined ||
-                specular.specularColorTexture !== undefined ||
-                (typeof factor === "number" && Math.abs(factor - 1) > 1e-6) ||
-                (Array.isArray(color) &&
-                    color.length === 3 &&
-                    (color[0] !== 1 || color[1] !== 1 || color[2] !== 1))
-            );
-        },
-    );
     return {
         asset: assetName,
         extensionsUsed,
@@ -627,7 +603,6 @@ export function specializeGltf(
             maxSkinJoints,
             animationPointerMaterials,
             transmissiveMaterial,
-            specularReflectance,
             eightInfluenceSkinning,
             gaussianSplats: gltfHasGaussianSplats(document),
             compressedImages: gltfHasCompressedImages(document),
@@ -675,7 +650,6 @@ export interface AssetSpecializationFeatures {
     animationPointer: boolean;
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
-    materialSpecular: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
     /** Any asset carries JOINTS_1/WEIGHTS_1 the pin would skin and this port truncates. */
@@ -742,7 +716,6 @@ export function emitAssetSpecializations(
             animationPointer: false,
             animationPointerMaterials: false,
             assetTransmission: false,
-            materialSpecular: false,
             textureTransform: false,
             gpuInstancing: false,
             eightInfluenceSkinning: false,
@@ -830,9 +803,6 @@ export function emitAssetSpecializations(
         ),
         assetTransmission: anyAsset(
             ({ features }) => features.transmissiveMaterial,
-        ),
-        materialSpecular: anyAsset(
-            ({ features }) => features.specularReflectance,
         ),
         textureTransform: anyAsset(({ loader }) => loader.textureTransform),
         gpuInstancing: anyAsset(({ loader }) => loader.gpuInstancing),

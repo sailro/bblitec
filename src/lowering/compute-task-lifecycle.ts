@@ -83,7 +83,17 @@ export function computeTaskLifecycleCpp(
                     value.operatorToken.kind !== ts.SyntaxKind.EqualsToken
                 )
                     return undefined;
-                const target = value.left.getText(file);
+                const target = context.matchingExpressionShape(value.left, [
+                    "task._passes.length",
+                    "task._dispatches.length",
+                    "task._pass",
+                    "task._uniformArenas",
+                    "task._flushOwned",
+                    "task._disposeOwned",
+                    "task._oneShotRecorded",
+                    "task._oneShotDispose",
+                ]);
+                if (target === undefined) return undefined;
                 const arrays: Record<string, string> = {
                     "task._passes.length": "task.passes",
                     "task._dispatches.length": "task.dispatches",

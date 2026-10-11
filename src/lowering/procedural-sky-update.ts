@@ -174,8 +174,14 @@ export function lowerProceduralSkyUpdate(
                 calls,
 
                 foldConditions: false,
-                forOf(iterated, element) {
-                    if (iterated !== "environment._mipmaps") return undefined;
+                forOf(_iterated, element, _binding, syntax) {
+                    if (
+                        !context.expressionMatchesShape(
+                            syntax.expression,
+                            "environment._mipmaps",
+                        )
+                    )
+                        return undefined;
                     return {
                         range: "environment->mipmaps",
                         bindings: new Map([
@@ -222,7 +228,10 @@ export function lowerProceduralSkyUpdate(
                         const expression = unwrapExpression(node.expression);
                         if (
                             ts.isBinaryExpression(expression) &&
-                            expression.left.getText(file) === "options"
+                            context.expressionMatchesShape(
+                                expression.left,
+                                "options",
+                            )
                         ) {
                             context.assertExpressionShape(
                                 expression,
@@ -234,8 +243,10 @@ export function lowerProceduralSkyUpdate(
                         }
                         if (
                             ts.isCallExpression(expression) &&
-                            expression.expression.getText(file) ===
-                                "device.queue.submit"
+                            context.expressionMatchesShape(
+                                expression.expression,
+                                "device.queue.submit",
+                            )
                         ) {
                             context.assertExpressionShape(
                                 expression,

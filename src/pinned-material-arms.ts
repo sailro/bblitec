@@ -27,6 +27,7 @@ import {
 import { asObject, asRecords, type JsonObject } from "./json-fields.js";
 import {
     ensurePinnedLoaderExecution,
+    preparePinnedMaterialFeatures,
     gltfAnimatedExtensionTargets,
     gltfAnimatedMaterialPointers,
     gltfImageResolver,
@@ -63,6 +64,7 @@ import {
     type GltfConstructedMaterialPlan,
 } from "./gltf-mesh-plan.js";
 import { packagedGltfLights, type GltfLight } from "./gltf-light-plan.js";
+import { packagedGltfIbl } from "./gltf-ibl-plan.js";
 import {
     packagedGltfTransmissionPlan,
     selectedGltfTransmission,
@@ -341,8 +343,9 @@ export function gltfNodeLights(document: JsonObject): GltfNodeLights {
  * environment turns on.
  */
 export function gltfHasImageBasedLight(document: JsonObject): boolean {
-    const used = document["extensionsUsed"];
-    return Array.isArray(used) && used.includes("EXT_lights_image_based");
+    return packagedGltfIbl(document).setup.some(
+        (write) => write.kind === "textures",
+    );
 }
 
 /** Source material construction, registration and selection over the actual scene mesh list. */
@@ -426,30 +429,6 @@ function stampClusteredLightState(
         ? { _hasSpots: true }
         : {};
     input["_clusteredLightState"] = marker;
-}
-
-/**
- * Stamps what a scene-code `setPbrUnlit` over a container's meshes stamps.
- *
- * The pin's setter writes `_unlit` on the material object and the unlit
- * extension's `detect` reads exactly that, so a material a scene marked
- * after loading composes the same arm the loader's `KHR_materials_unlit`
- * would have. The tint follows only when the call supplied one, because the
- * pin guards its store the same way and the writer's `?? [1, 1, 1]` is what
- * an unsupplied tint means.
- *
- * The fact is the container's: the setter is accepted only over its whole
- * flattened mesh list, so every material a renderable carries is stamped.
- */
-function stampSceneUnlit(
-    input: PinnedMaterialInput,
-    unlit: { tint?: readonly [number, number, number] } | undefined,
-): void {
-    if (!unlit) return;
-    input["_unlit"] = true;
-    if (unlit.tint) {
-        input["_unlitColor"] = [...unlit.tint];
-    }
 }
 
 /**
@@ -596,11 +575,16 @@ export async function materialSubjects(
     // reaches `pinnedMaterialInputFromGltf`/`gltfAnimatedExtensionTargets`,
     // so a scene with no glTF material never pays the ~15 pinned imports.
     await ensurePinnedLoaderExecution();
+    const materialFeatures = await preparePinnedMaterialFeatures(
+        document,
+        construction?.context,
+    );
     // Deferred for the same reason, one level in: the setters resolve eight
     // more pinned modules, and both stamp sites below are guarded on this
     // scene having named a lightmap at all.
     const lightmap = scene.sceneLightmap;
-    const setters = lightmap ? await scenePbrSetters() : undefined;
+    const setters =
+        lightmap || scene.sceneUnlit ? await scenePbrSetters() : undefined;
     const view = document as GltfDocument;
     const materials = view.materials ?? [];
     const imageOf = gltfImageResolver(document);
@@ -683,6 +667,7 @@ export async function materialSubjects(
         let transmissionRegistered = false;
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
+            materialFeatures,
             ...scene,
             animatedBaseColorFactor:
                 !variant && animatedBaseColor?.has(sourceIndex) === true,
@@ -704,7 +689,8 @@ export async function materialSubjects(
             },
         });
         stampClusteredLightState(input, scene.clusteredLights);
-        stampSceneUnlit(input, scene.sceneUnlit);
+        if (setters && scene.sceneUnlit)
+            setters.setPbrUnlit(input, scene.sceneUnlit.tint);
         if (setters && lightmap?.materials.has(index)) {
             stampSceneLightmap(setters, input, lightmap.options);
         }
@@ -1079,6 +1065,11 @@ type PinnedLayerSetter<TProps> = (
  * every material in the sweep wants the same setter implementations.
  */
 interface ScenePbrSetters {
+    setPbrUnlit: (
+        material: PinnedMaterialInput,
+        tint?: readonly [number, number, number],
+    ) => void;
+    setPbrSkybox: (material: PinnedMaterialInput) => void;
     setPbrSheen: PinnedLayerSetter<Record<string, unknown>>;
     setPbrClearCoat: PinnedLayerSetter<Record<string, unknown>>;
     setPbrIridescence: PinnedLayerSetter<Record<string, unknown>>;
@@ -1102,6 +1093,8 @@ let scenePbrSettersPromise: Promise<ScenePbrSetters> | undefined;
 function scenePbrSetters(): Promise<ScenePbrSetters> {
     scenePbrSettersPromise ??= (async () => {
         const [
+            unlit,
+            skybox,
             sheen,
             clearCoat,
             iridescence,
@@ -1113,6 +1106,12 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             lightmap,
             shadowOnly,
         ] = await Promise.all([
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrUnlit">>(
+                "material/pbr/set-unlit.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrSkybox">>(
+                "material/pbr/set-skybox.js",
+            ),
             importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
                 "material/pbr/set-sheen.js",
             ),
@@ -1148,6 +1147,8 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             ),
         ]);
         return {
+            setPbrUnlit: unlit.setPbrUnlit,
+            setPbrSkybox: skybox.setPbrSkybox,
             setPbrSheen: sheen.setPbrSheen,
             setPbrClearCoat: clearCoat.setPbrClearCoat,
             setPbrIridescence: iridescence.setPbrIridescence,
@@ -1232,13 +1233,11 @@ export async function composeScenePbrVariants(
                 material.localCubemapCandidates,
             );
         }
-        // The pin's setPbrUnlit stamps `mat._unlit = true`, and setPbrSkybox
-        // stamps `mat._skyboxMode = true`.
         if (scene.linearImageProcessing) {
             input["_linearImageProcessing"] = true;
         }
-        if (material.unlit) input["_unlit"] = true;
-        if (material.skyboxMode) input["_skyboxMode"] = true;
+        if (material.unlit) setters.setPbrUnlit(input);
+        if (material.skyboxMode) setters.setPbrSkybox(input);
         // `material.plugins = [...]`, under the pin's own field name: the
         // PBR bridge's `detect` reads it off the material, so the plugin
         // index reaches `features2` through `_computePbrMaterialFeatures`

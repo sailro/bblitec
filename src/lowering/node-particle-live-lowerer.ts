@@ -1,4 +1,5 @@
 import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
+import { particleRenderColumnsCpp } from "./particle-sprite-sync.js";
 /**
  * A LIVE node-particle system, lowered from the pin's own block evaluators.
  *
@@ -44,6 +45,7 @@ import {
     snakeCase,
 } from "../cpp-literals.js";
 import { LoweringContext } from "./context.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { CPP_ELEMENT, cppVector } from "./cpp-types.js";
 import {
     lowerPinnedFunction,
@@ -1895,60 +1897,138 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
      * `killParticle`: swap-remove across every column. The pin loops over
      * `buffer._all`, a list of typed arrays of three element widths, which
      * has no single native storage; the loop is unrolled over the columns
-     * `createParticleBuffer` lists in `_all`, and the function's own
-     * statements are asserted so a changed release rule fails here.
+     * `createParticleBuffer` lists in `_all`. Each iteration's body and the
+     * surrounding lifetime/control flow use the ordinary numeric lowerer.
      */
     private killParticleCpp(): string {
         const { file, declaration } = this.context.functionDeclaration(
             bufferModule,
             "killParticle",
         );
-        this.context.assertStatementInventory(
-            declaration,
-            declaration.body!.statements,
-            "killParticle",
-            "the live swap-remove restates a body",
-            ["variable statement", "if statement"],
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "last"),
-            "--buffer.alive",
-            "killParticle release",
-        );
-        const guard = declaration.body!.statements.find(ts.isIfStatement)!;
-        this.context.assertExpressionShape(
-            guard.expression,
-            "i !== last",
-            "killParticle guard",
-        );
-        const copies = this.context
-            .findNodes(guard, ts.isBinaryExpression)
-            .filter(
-                (candidate) =>
-                    candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken,
-            );
-        if (
-            copies.length !== 1 ||
-            copies[0]!.getText(file).replace(/\s+/g, " ") !==
-                "col[i] = col[last]!"
-        ) {
-            this.context.contractError(
-                guard,
-                "killParticle no longer copies each column's last slot.",
-            );
-        }
-        const lines = this.columns.map(
-            (column) =>
-                `        state.${column.cpp}[static_cast<std::size_t>(i)] = ` +
-                `state.${column.cpp}[static_cast<std::size_t>(last)];`,
-        );
+        const bindings = new Map<string, PinnedBinding>([
+            ["i", { cpp: "i", type: "scalar" }],
+        ]);
+        const calls = pinnedCalls();
+        this.recordBindings(bindings, calls, "buffer", "buffer");
+        let column: ColumnSpec | undefined;
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings,
+            calls,
+            statement: (statement, lowerer, indent) => {
+                if (ts.isVariableStatement(statement)) {
+                    const [local] = statement.declarationList.declarations;
+                    if (
+                        statement.declarationList.declarations.length === 1 &&
+                        local?.initializer &&
+                        ts.isIdentifier(local.name)
+                    ) {
+                        if (
+                            this.context.expressionMatchesShape(
+                                local.initializer,
+                                "buffer._all",
+                            )
+                        ) {
+                            this.context.assertStatementShapes(
+                                declaration,
+                                [statement],
+                                "const all = buffer._all;",
+                                "Particle column list",
+                            );
+                            return [];
+                        }
+                        if (
+                            column &&
+                            this.context.expressionMatchesShape(
+                                local.initializer,
+                                "all[c]",
+                            )
+                        ) {
+                            lowerer.bindLocal(
+                                local.name,
+                                this.columnBinding(column),
+                            );
+                            return [];
+                        }
+                    }
+                }
+                if (!ts.isForStatement(statement)) return undefined;
+                if (
+                    !statement.initializer ||
+                    !ts.isVariableDeclarationList(statement.initializer) ||
+                    !statement.condition ||
+                    !statement.incrementor
+                )
+                    this.context.contractError(
+                        statement,
+                        "Expected a particle column loop.",
+                    );
+                const [cursor] = statement.initializer.declarations;
+                if (
+                    statement.initializer.declarations.length !== 1 ||
+                    !cursor ||
+                    !ts.isIdentifier(cursor.name) ||
+                    cursor.name.text !== "c" ||
+                    !cursor.initializer ||
+                    (statement.initializer.flags & ts.NodeFlags.Let) === 0
+                )
+                    this.context.contractError(
+                        statement,
+                        "Expected one mutable particle column cursor.",
+                    );
+                this.context.assertExpressionShape(
+                    cursor.initializer,
+                    "0",
+                    "Particle column cursor",
+                );
+                this.context.assertExpressionShape(
+                    statement.condition,
+                    "c < all.length",
+                    "Particle column bound",
+                );
+                this.context.assertExpressionShape(
+                    statement.incrementor,
+                    "c++",
+                    "Particle column step",
+                );
+                if (
+                    this.context.hasNode(
+                        statement.statement,
+                        (node) =>
+                            ts.isBreakStatement(node) ||
+                            ts.isContinueStatement(node),
+                    )
+                )
+                    this.context.contractError(
+                        statement,
+                        "Particle column expansion cannot transfer loop control.",
+                    );
+                return this.columns.flatMap((current, index) => {
+                    column = current;
+                    lowerer.bindPorts(
+                        [
+                            [
+                                "c",
+                                {
+                                    cpp: String(index),
+                                    type: "scalar",
+                                    staticNumber: index,
+                                },
+                            ],
+                        ],
+                        statement.statement,
+                    );
+                    try {
+                        return lowerer.statement(statement.statement, indent);
+                    } finally {
+                        column = undefined;
+                    }
+                });
+            },
+        });
         return (
             `// ${this.context.provenance(bufferModule, "killParticle")}\n` +
             "void kill_particle(State& state, double i) {\n" +
-            "    const double last = static_cast<double>(--state.alive);\n" +
-            "    if (i != last) {\n" +
-            `${lines.join("\n")}\n` +
-            "    }\n" +
+            `${body}\n` +
             "}"
         );
     }
@@ -2121,11 +2201,9 @@ ${accessors.map((entry) => entry.write).join("\n")}
 double alive() { return snapshot_state().alive; }
 void animate(double ratio) { animate_particle_system(snapshot_state(), ratio); }
 void start() { start_particle_system(snapshot_state()); }
-std::array<double, 9> sprite_particle(std::size_t index) {
+ParticleRenderColumns render_columns() {
     const State& state = snapshot_state();
-    const double size = state.size[index];
-    return {state.pos_x[index], state.pos_y[index], size * state.scale_x[index], size * state.scale_y[index],
-        state.angle[index], state.color_r[index], state.color_g[index], state.color_b[index], state.color_a[index]};
+    return ${particleRenderColumnsCpp("state")};
 }`;
     }
 }
@@ -2423,22 +2501,27 @@ export class NodeParticleLiveLowerer {
                     : loop.statement;
                 return body && ts.isIfStatement(body)
                     ? body.expression
-                          .getText(declaration.getSourceFile())
-                          .replace(/\s+/g, " ")
                     : undefined;
             });
         const expected = [
             'input.name === "particle" && isInputConnected(input)',
             'input.name !== "particle" && isInputConnected(input)',
         ];
-        if (!expected.every((text) => guards.includes(text))) {
+        if (
+            !expected.every((shape) =>
+                guards.some(
+                    (guard) =>
+                        guard !== undefined &&
+                        this.context.expressionMatchesShape(guard, shape),
+                ),
+            )
+        ) {
             this.context.contractError(
                 declaration,
                 "buildNodeParticleSet no longer recurses the particle " +
                     "inputs first and the other connected inputs second.",
             );
         }
-        const file = declaration.getSourceFile();
         const ctx = this.context.variableInitializer(declaration, "ctx");
         if (!ts.isObjectLiteralExpression(ctx)) {
             this.context.contractError(ctx, "buildNodeParticleSet ctx");
@@ -2487,8 +2570,10 @@ export class NodeParticleLiveLowerer {
             !returned ||
             !ts.isReturnStatement(returned) ||
             !returned.expression ||
-            returned.expression.getText(file).replace(/\s+/g, " ") !==
-                "fallback ?? (() => null as unknown as NpeValue)"
+            !this.context.expressionMatchesShape(
+                returned.expression,
+                "fallback ?? (() => null as unknown as NpeValue)",
+            )
         ) {
             this.context.contractError(input, "ctx.input fallback");
         }

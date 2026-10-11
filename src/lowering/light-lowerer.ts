@@ -1,7 +1,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedMathSpelling } from "./pinned-operators.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { recordAt } from "../compiler/record-access.js";
@@ -14,7 +13,7 @@ interface HemisphericDefaults {
 interface PositionalLightDefaults {
     diffuseColor: [number, number, number];
     specularColor: [number, number, number];
-    rangeIsUnbounded: boolean;
+    groundColor?: never;
 }
 
 export class LightLowerer {
@@ -24,40 +23,6 @@ export class LightLowerer {
             "src/light/spot-light.ts",
             "createSpotLight",
         );
-        const expression = this.context.unwrapExpression(
-            this.context.variableInitializer(declaration, "_cosHalfAngle"),
-        );
-        if (
-            !ts.isCallExpression(expression) ||
-            this.context.propertyPath(expression.expression)?.join(".") !==
-                "Math.cos" ||
-            expression.arguments.length !== 1
-        )
-            this.context.contractError(
-                expression,
-                "Expected source spot cone cosine.",
-            );
-        const product = this.context.unwrapExpression(expression.arguments[0]!);
-        if (
-            !ts.isBinaryExpression(product) ||
-            product.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
-            !ts.isIdentifier(product.left) ||
-            product.left.text !== "angle"
-        )
-            this.context.contractError(
-                product,
-                "Expected source spot cone angle scaling.",
-            );
-        return this.spotConeSetter(
-            declaration,
-            this.context.numericValue(product.right, file),
-        );
-    }
-
-    private spotConeSetter(
-        declaration: ts.FunctionDeclaration,
-        coneHalfFactor: number,
-    ): string {
         const install = this.context.callExpression(
             declaration,
             "defineProperty",
@@ -69,25 +34,69 @@ export class LightLowerer {
                 "Expected the spot light to define an 'angle' accessor.",
             );
         }
-        this.context.expectShapeCount(
-            declaration,
-            `_cosHalfAngle = Math.cos(v * ${coneHalfFactor})`,
-            "spot angle setter cone cosine",
+        const descriptor = install.arguments[2];
+        if (!descriptor || !ts.isObjectLiteralExpression(descriptor))
+            this.context.contractError(
+                install,
+                "Expected a spot angle descriptor.",
+            );
+        const setter = descriptor.properties.find(
+            (member): member is ts.MethodDeclaration =>
+                ts.isMethodDeclaration(member) &&
+                this.context.propertyName(member.name) === "set",
         );
-        this.context.expectShapeCount(
-            declaration,
-            "_angle = v",
-            "spot angle setter angle store",
-        );
+        if (
+            !setter?.body ||
+            setter.parameters.length !== 1 ||
+            !ts.isIdentifier(setter.parameters[0]!.name)
+        )
+            this.context.contractError(
+                descriptor,
+                "Expected the spot angle setter body.",
+            );
+        const initializers = ["_angle", "_cosHalfAngle"].map((name) => {
+            const initializer = this.context.variableInitializer(
+                declaration,
+                name,
+            );
+            const owner = initializer.parent.parent.parent;
+            if (
+                !ts.isVariableStatement(owner) ||
+                owner.declarationList.declarations.length !== 1
+            )
+                this.context.contractError(
+                    initializer,
+                    "Expected one spot state declaration.",
+                );
+            return owner;
+        });
+        const initialBody = lowerPinnedBody(file, initializers, {
+            bindings: new Map([["angle", { cpp: "angle", type: "scalar" }]]),
+            calls: new Map(),
+        });
+        const setterBody = lowerPinnedBody(file, setter.body.statements, {
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    setter.parameters[0]!.name.text,
+                    { cpp: "angle", type: "scalar" },
+                ],
+                ["_angle", { cpp: "light.angle", type: "scalar" }],
+                ["_cosHalfAngle", { cpp: "cos_half_angle", type: "scalar" }],
+            ]),
+            // Native light uniforms read live state every frame.
+            calls: new Map([["lvs.b", () => "(void)0"]]),
+        });
         return `
-// The pinned cone pair, re-run on every angle write the same way the local
-// matrix is re-run on every vector write: the factory computes the cosine
-// while the angle is still a JavaScript number and only its UBO store
-// rounds, so the product stays double up to the single narrowing here.
+void initialize_spot_light_cone(LightRecord& light, double angle) {
+${initialBody}
+    light.angle = _angle;
+    light.cos_half_angle = static_cast<float>(_cosHalfAngle);
+}
+
 void refresh_spot_light_cone(LightRecord& light, double angle) {
-    light.angle = angle;
-    light.cos_half_angle = static_cast<float>(${pinnedMathSpelling("cos")}(
-        angle * ${this.context.doubleLiteral(coneHalfFactor)}));
+    double cos_half_angle = light.cos_half_angle;
+${setterBody}
+    light.cos_half_angle = static_cast<float>(cos_half_angle);
 }
 `;
     }
@@ -268,8 +277,8 @@ LightHandle create_${kind}_light(${parameters.join(", ")}) {
     light.intensity = intensity;
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
     light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
-    ${"groundColor" in defaults ? `light.ground_color = ${this.context.cppColor3(defaults.groundColor)};` : "light.range = std::numeric_limits<float>::max();"}
-    ${kind === "spot" ? "light.exponent = exponent; refresh_spot_light_cone(light, angle);" : ""}
+    ${defaults.groundColor !== undefined ? `light.ground_color = ${this.context.cppColor3(defaults.groundColor)};` : "light.range = std::numeric_limits<float>::max();"}
+    ${kind === "spot" ? "light.exponent = exponent; initialize_spot_light_cone(light, angle);" : ""}
     engine.lights.push_back(light);
     return LightHandle{static_cast<std::uint32_t>(engine.lights.size() - 1)};
 }
@@ -358,7 +367,6 @@ ${
                 this.context.propertyInitializer(lightObject, "specular"),
                 file,
             ),
-            rangeIsUnbounded: range,
         };
     }
 }

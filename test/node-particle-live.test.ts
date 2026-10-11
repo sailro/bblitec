@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import { transpileCommonJs } from "../src/typescript-transpile.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
     HOOK_NAMES,
@@ -12,6 +15,13 @@ import {
 } from "../src/lowering/node-particle-live-lowerer.js";
 import { findRepositoryRoot } from "../src/upstream-source.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { doctoredContext } from "./doctored-store.js";
+import {
+    cppFunction,
+    cppRecord,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 /**
  * The live node-particle lowering over the demo's own graph.
@@ -22,7 +32,7 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
  * would report come off a real built system, and the lowering is checked
  * against them exactly as generation checks it.
  */
-async function lowerDemoGraph(): Promise<{
+async function lowerDemoGraph(context = new LoweringContext()): Promise<{
     source: string;
     facts: LiveSystemFacts;
 }> {
@@ -116,12 +126,104 @@ async function lowerDemoGraph(): Promise<{
         blocks: [...graph.blocks.values()],
         systemBlockIds: graph.systemBlockIds,
     };
-    const lowerer = new NodeParticleLiveLowerer(new LoweringContext());
+    const lowerer = new NodeParticleLiveLowerer(context);
     const lowered = lowerer.lowerSystem(liveGraph, facts);
     return { source: `${lowerer.sharedSource()}\n${lowered.source}`, facts };
 }
 
 const demo = lowerDemoGraph();
+
+test("particle retirement lowers source control and stores across all column widths", async (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native compiler unavailable.");
+        return;
+    }
+    const module = "src/particle/particle-buffer.ts";
+    const contexts = [
+        new LoweringContext(),
+        doctoredContext(
+            module,
+            "col[i] = col[last]!",
+            "col[i] = col[last]! + 0.25",
+        ),
+        doctoredContext(
+            module,
+            "const last = --buffer.alive",
+            "buffer.alive--; const last = --buffer.alive",
+        ),
+    ];
+    const variants: string[] = [];
+    for (const [index, context] of contexts.entries()) {
+        const { source } =
+            index === 0 ? await demo : await lowerDemoGraph(context);
+        const declaration = context.functionDeclaration(
+            module,
+            "killParticle",
+        ).declaration;
+        const script = transpileCommonJs(declaration.getText(), module);
+        interface Buffer {
+            alive: number;
+            _all: (Float32Array | Float64Array | Uint32Array)[];
+        }
+        const sandbox = {
+            exports: {} as {
+                killParticle(buffer: Buffer, index: number): void;
+            },
+        };
+        runInNewContext(script, sandbox);
+        const buffer: Buffer = {
+            alive: 4,
+            _all: [
+                new Float32Array([1.1, 2.2, 3.3, 4.4]),
+                new Float64Array([1.1, 2.2, 3.3, 4.4]),
+                new Uint32Array([11, 22, 33, 44]),
+            ],
+        };
+        const calls = [0, 1];
+        const checks: string[] = [];
+        for (const particle of calls) {
+            sandbox.exports.killParticle(buffer, particle);
+            checks.push(`kill_particle(state, ${particle});
+                assert(state.alive == ${buffer.alive});
+                assert((state.pos_x == std::vector<float>{${Array.from(
+                    buffer._all[0]!,
+                )
+                    .map((value) => `${value}f`)
+                    .join(",")}}));
+                assert((state.age == std::vector<double>{${Array.from(buffer._all[1]!).join(",")}}));
+                assert((state.id == std::vector<std::uint32_t>{${Array.from(buffer._all[2]!).join(",")}}));`);
+        }
+        variants.push(`namespace variant_${index} {
+            ${cppRecord(source, "struct State")}
+            ${cppFunction(source, "void kill_particle(State& state, double i)")}
+            void check() {
+                State state(4); state.alive = 4;
+                state.pos_x = {1.1f, 2.2f, 3.3f, 4.4f};
+                state.age = {1.1, 2.2, 3.3, 4.4}; state.id = {11,22,33,44};
+                ${checks.join("\n")}
+            }
+        }`);
+    }
+    const directory = resolve("artifacts/node-particle-retirement");
+    mkdirSync(directory, { recursive: true });
+    const cpp = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        cpp,
+        `#include <bblite/runtime.hpp>\n#include <bblite/js_data.hpp>\n#include <cassert>\nusing namespace bbl;\n${variants.join("\n")}\nint main(){${contexts.map((_, index) => `variant_${index}::check();`).join("")}}`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/O2",
+        cpp,
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
+    ]);
+    assert.equal(
+        execFileSync(executable, { encoding: "utf8", windowsHide: true }),
+        "",
+    );
+});
 
 test("the live lowering derives the executed pin's own build", async () => {
     const { facts } = await demo;

@@ -3954,7 +3954,10 @@ std::array<float, 16> bbox_mat4_from_quat(
         const axisRefresh = layout.body.statements.filter(
             (statement): statement is ts.ForOfStatement =>
                 ts.isForOfStatement(statement) &&
-                statement.expression.getText(file) === "rotators",
+                this.context.expressionMatchesShape(
+                    statement.expression,
+                    "rotators",
+                ),
         );
         if (
             axisRefresh.length !== 1 ||
@@ -3964,7 +3967,10 @@ std::array<float, 16> bbox_mat4_from_quat(
                     ts.isBinaryExpression(node) &&
                     node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                     ts.isPropertyAccessExpression(node.left) &&
-                    !node.left.expression.getText(file).startsWith("r.axis"),
+                    !this.context.expressionMatchesShape(
+                        node.left.expression,
+                        "r.axis",
+                    ),
             )
         ) {
             this.context.contractError(

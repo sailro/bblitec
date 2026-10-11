@@ -3,23 +3,84 @@ import test from "node:test";
 import {
     ensurePinnedLoaderExecution,
     gltfImageResolver,
-    pinnedMaterialInputFromGltf,
+    pinnedMaterialInputFromGltf as projectMaterialInput,
+    preparePinnedMaterialFeatures,
 } from "../src/pinned-material-input.js";
 import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { pinnedGltfMaterialCore } from "../src/pinned-gltf-material-core.js";
+import { composedMaterialCapabilities } from "../src/composed-material-capabilities.js";
+import { doctoredContext } from "./doctored-store.js";
+import { isRecord } from "../src/json-fields.js";
 
 // The executed loader is lazy in production (materialSubjects awaits it);
 // this file reads the synchronous API directly, so it awaits the same
 // gate up front.
 await ensurePinnedLoaderExecution();
 
+// Material-only fixtures declare their extension names in a complete source document.
+async function pinnedMaterialInputFromGltf(
+    material: Parameters<typeof projectMaterialInput>[0],
+    scene: Parameters<typeof projectMaterialInput>[1] = {},
+) {
+    const extensions = new Set<string>();
+    const visit = (value: unknown): void => {
+        if (Array.isArray(value)) {
+            value.forEach(visit);
+            return;
+        }
+        if (!isRecord(value)) return;
+        for (const [key, child] of Object.entries(value)) {
+            if (key === "extensions" && isRecord(child))
+                for (const name of Object.keys(child)) extensions.add(name);
+            visit(child);
+        }
+    };
+    visit(material);
+    const materialFeatures = await preparePinnedMaterialFeatures({
+        materials: [material],
+        extensionsUsed: [...extensions],
+    });
+    return projectMaterialInput(material, { ...scene, materialFeatures });
+}
+
+test("material core assembly follows source defaults and retains decoded image identity", () => {
+    const source = pinnedGltfMaterialCore(
+        doctoredContext(
+            "src/loader-gltf/gltf-material.ts",
+            "_roughnessFactor: pbr.roughnessFactor ?? 1",
+            "_roughnessFactor: pbr.roughnessFactor ?? 0.375",
+        ),
+    );
+    const material = {
+        pbrMetallicRoughness: {
+            metallicRoughnessTexture: { index: 1 },
+            baseColorTexture: { index: 2 },
+        },
+        occlusionTexture: { index: 0 },
+    };
+    const core = source(material, (index) => (index === 2 ? 1 : 0));
+    assert.equal(core._roughnessFactor, 0.375);
+    assert.equal(core._metallicRoughnessImage, core._occlusionImage);
+    assert.notEqual(core._baseColorImage, core._occlusionImage);
+    assert.equal(core._rawMatDef, material);
+    assert.equal(
+        pinnedGltfMaterialCore()(material, () => undefined)._roughnessFactor,
+        1,
+    );
+    assert.equal(source({}, () => undefined)._normalImage, null);
+});
+
 const environmentVariant = async (material: Record<string, unknown>) => {
     const { PBR_HAS_ENV } = await importPinnedModule<{ PBR_HAS_ENV: number }>(
         "material/pbr/pbr-flag-bits.js",
     );
-    return composePinnedPbrVariant(pinnedMaterialInputFromGltf(material), {
-        sceneFeatures: PBR_HAS_ENV,
-    });
+    return composePinnedPbrVariant(
+        await pinnedMaterialInputFromGltf(material),
+        {
+            sceneFeatures: PBR_HAS_ENV,
+        },
+    );
 };
 
 test("a declared extension composes its layer, factor or not", async () => {
@@ -66,27 +127,29 @@ test("a sheen roughness map that is the tint map is dropped", async () => {
     const imageOf = gltfImageResolver({
         textures: [{ source: 0 }, { source: 1 }],
     });
-    const sheenOf = (roughIndex: number) =>
+    const sheenOf = async (roughIndex: number) =>
         (
-            pinnedMaterialInputFromGltf(
-                {
-                    extensions: {
-                        KHR_materials_sheen: {
-                            sheenColorFactor: [1, 1, 1],
-                            sheenColorTexture: { index: 0 },
-                            sheenRoughnessTexture: { index: roughIndex },
+            (
+                await pinnedMaterialInputFromGltf(
+                    {
+                        extensions: {
+                            KHR_materials_sheen: {
+                                sheenColorFactor: [1, 1, 1],
+                                sheenColorTexture: { index: 0 },
+                                sheenRoughnessTexture: { index: roughIndex },
+                            },
                         },
                     },
-                },
-                { imageOf },
+                    { imageOf },
+                )
             )["_sheen"] as Record<string, unknown>
         )["roughnessTexture"];
     assert.equal(
-        sheenOf(0),
+        await sheenOf(0),
         undefined,
         "same texture: read from the tint alpha",
     );
-    assert.ok(sheenOf(1), "a different texture is its own map");
+    assert.ok(await sheenOf(1), "a different texture is its own map");
 });
 
 test("an alpha-cutoff material reaches the alpha-test fragment", async () => {
@@ -99,7 +162,7 @@ test("an alpha-cutoff material reaches the alpha-test fragment", async () => {
 });
 
 test("maps the material fields the base feature derivation reads", async () => {
-    const input = pinnedMaterialInputFromGltf(
+    const input = await pinnedMaterialInputFromGltf(
         {
             doubleSided: true,
             alphaMode: "BLEND",
@@ -140,7 +203,7 @@ test("attaches the emissive texture but gates the emissive colour", async () => 
     // emissive texture. `needsGltfEmissive` gates only `setPbrEmissive`, which
     // writes `_emissiveColor` and contributes PBR_HAS_EMISSIVE_COLOR.
     for (const emissiveFactor of [undefined, [0, 0, 0], [1, 1, 1]]) {
-        const input = pinnedMaterialInputFromGltf({
+        const input = await pinnedMaterialInputFromGltf({
             emissiveTexture: { index: 1 },
             ...(emissiveFactor ? { emissiveFactor } : {}),
         });
@@ -153,34 +216,38 @@ test("attaches the emissive texture but gates the emissive colour", async () => 
     }
     // With no texture, a full-white factor is a real emissive colour.
     assert.deepEqual(
-        pinnedMaterialInputFromGltf({ emissiveFactor: [1, 1, 1] })[
+        (await pinnedMaterialInputFromGltf({ emissiveFactor: [1, 1, 1] }))[
             "_emissiveColor"
         ],
         [1, 1, 1],
     );
     // An animated emissive needs the field however the load-time factor reads.
     assert.ok(
-        pinnedMaterialInputFromGltf(
-            { emissiveTexture: { index: 1 }, emissiveFactor: [1, 1, 1] },
-            { animatedEmissive: true },
+        (
+            await pinnedMaterialInputFromGltf(
+                { emissiveTexture: { index: 1 }, emissiveFactor: [1, 1, 1] },
+                { animatedEmissive: true },
+            )
         )["_emissiveColor"],
     );
 });
 
 test("skips a default base colour factor", async () => {
     const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
-    const withFactor = (baseColorFactor: number[]) =>
-        pinnedMaterialInputFromGltf(
-            {
-                pbrMetallicRoughness: {
-                    baseColorFactor,
-                    baseColorTexture: { index: 0 },
+    const withFactor = async (baseColorFactor: number[]) =>
+        (
+            await pinnedMaterialInputFromGltf(
+                {
+                    pbrMetallicRoughness: {
+                        baseColorFactor,
+                        baseColorTexture: { index: 0 },
+                    },
                 },
-            },
-            { imageOf },
+                { imageOf },
+            )
         ).baseColorFactor;
-    assert.equal(withFactor([1, 1, 1, 1]), undefined);
-    assert.deepEqual(withFactor([1, 0.5, 1, 1]), [1, 0.5, 1, 1]);
+    assert.equal(await withFactor([1, 1, 1, 1]), undefined);
+    assert.deepEqual(await withFactor([1, 0.5, 1, 1]), [1, 0.5, 1, 1]);
 });
 
 test("marks a material whose built texture carries KHR_texture_transform", async () => {
@@ -188,13 +255,13 @@ test("marks a material whose built texture carries KHR_texture_transform", async
     // so it needs an image behind the slot, not just a transform on it.
     const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
 
-    const plain = pinnedMaterialInputFromGltf(
+    const plain = await pinnedMaterialInputFromGltf(
         { pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
         { imageOf },
     );
     assert.equal(plain["_hasUvTx"], undefined);
 
-    const transformed = pinnedMaterialInputFromGltf(
+    const transformed = await pinnedMaterialInputFromGltf(
         {
             pbrMetallicRoughness: {
                 baseColorTexture: {
@@ -209,7 +276,7 @@ test("marks a material whose built texture carries KHR_texture_transform", async
 
     // A transform on a slot with no image behind it builds no texture, so it
     // stamps nothing — a factor-only base colour is an uploaded texel.
-    const noImage = pinnedMaterialInputFromGltf({
+    const noImage = await pinnedMaterialInputFromGltf({
         pbrMetallicRoughness: {
             baseColorTexture: {
                 index: 0,
@@ -226,18 +293,50 @@ test("occlusion becomes the ORM texture when there is no metallic-roughness imag
     });
     // No metallic-roughness image and texCoord 0: occlusion fills the ORM slot
     // and there is no separate carrier.
-    const folded = pinnedMaterialInputFromGltf(
+    const folded = await pinnedMaterialInputFromGltf(
         { occlusionTexture: { index: 0 } },
         { imageOf },
     );
     assert.equal(folded["occlusionTexture"], undefined);
 
     // texCoord 1 with no metallic-roughness image: occlusion is its own carrier.
-    const uv2 = pinnedMaterialInputFromGltf(
+    const uv2 = await pinnedMaterialInputFromGltf(
         { occlusionTexture: { index: 0, texCoord: 1 } },
         { imageOf },
     );
     assert.ok(uv2["occlusionTexture"]);
+});
+
+test("alternate texture sources preserve the pin's image sharing and occlusion carriers", async () => {
+    const imageOf = gltfImageResolver({
+        textures: [
+            { source: 1, extensions: { EXT_texture_webp: { source: 0 } } },
+            { extensions: { EXT_texture_webp: { source: 0 } } },
+            { source: 0 },
+            { source: 1 },
+            {},
+        ],
+    });
+    assert.deepEqual([0, 1, 2, 3, 4, 5].map(imageOf), [
+        0,
+        0,
+        0,
+        1,
+        undefined,
+        undefined,
+    ]);
+    for (const index of [1, 2, 3]) {
+        const input = await pinnedMaterialInputFromGltf(
+            {
+                pbrMetallicRoughness: {
+                    metallicRoughnessTexture: { index: 0 },
+                },
+                occlusionTexture: { index },
+            },
+            { imageOf },
+        );
+        assert.equal(input["occlusionTexture"] !== undefined, index !== 3);
+    }
 });
 
 test("the emissive slot's transform and uv2 bit ignore the factor", async () => {
@@ -246,7 +345,7 @@ test("the emissive slot's transform and uv2 bit ignore the factor", async () => 
     // texture — so a neutral `[1,1,1]` factor (which writes no
     // `_emissiveColor`) still composes the transform arm and the uv2 bit.
     const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
-    const transformed = pinnedMaterialInputFromGltf(
+    const transformed = await pinnedMaterialInputFromGltf(
         {
             emissiveFactor: [1, 1, 1],
             emissiveTexture: {
@@ -259,7 +358,7 @@ test("the emissive slot's transform and uv2 bit ignore the factor", async () => 
     assert.equal(transformed["_hasUvTx"], true);
     assert.equal(transformed["_emissiveColor"], undefined);
 
-    const onUv2 = pinnedMaterialInputFromGltf(
+    const onUv2 = await pinnedMaterialInputFromGltf(
         { emissiveTexture: { index: 0, texCoord: 1 } },
         { imageOf },
     );
@@ -271,7 +370,7 @@ test("a declared emissive-strength extension always writes the colour", async ()
     // factor * strength)` whenever the extension is declared —
     // `emissiveStrength ?? 1`, factor default `[0,0,0]` — and the later
     // opt-in gate stands down on the already-written property.
-    const strong = pinnedMaterialInputFromGltf({
+    const strong = await pinnedMaterialInputFromGltf({
         emissiveFactor: [1, 1, 1],
         emissiveTexture: { index: 0 },
         extensions: {
@@ -282,7 +381,7 @@ test("a declared emissive-strength extension always writes the colour", async ()
 
     // Declared empty: strength defaults to 1 and the colour is still written,
     // where the bare neutral-over-texture factor writes nothing.
-    const declared = pinnedMaterialInputFromGltf({
+    const declared = await pinnedMaterialInputFromGltf({
         emissiveFactor: [1, 1, 1],
         emissiveTexture: { index: 0 },
         extensions: { KHR_materials_emissive_strength: {} },
@@ -290,7 +389,7 @@ test("a declared emissive-strength extension always writes the colour", async ()
     assert.deepEqual(declared["_emissiveColor"], [1, 1, 1]);
 
     // Even a black factor carries the property, as the pin's ext does.
-    const black = pinnedMaterialInputFromGltf({
+    const black = await pinnedMaterialInputFromGltf({
         extensions: {
             KHR_materials_emissive_strength: { emissiveStrength: 3 },
         },
@@ -307,13 +406,13 @@ test("a declared-but-empty transform splits the occlusion carrier", async () => 
     const shared = {
         pbrMetallicRoughness: { metallicRoughnessTexture: { index: 0 } },
     };
-    const plain = pinnedMaterialInputFromGltf(
+    const plain = await pinnedMaterialInputFromGltf(
         { ...shared, occlusionTexture: { index: 0 } },
         { imageOf },
     );
     assert.equal(plain["occlusionTexture"], undefined);
 
-    const declared = pinnedMaterialInputFromGltf(
+    const declared = await pinnedMaterialInputFromGltf(
         {
             ...shared,
             occlusionTexture: {
@@ -339,13 +438,17 @@ test("an extension texture reaches the pin under the pin's own property name", a
     const imageOf = gltfImageResolver({
         textures: [{ source: 0 }, { source: 1 }, { source: 2 }],
     });
-    const iridescence = pinnedMaterialInputFromGltf(
+    const iridescence = await pinnedMaterialInputFromGltf(
         {
             extensions: {
                 KHR_materials_iridescence: {
                     iridescenceFactor: 1,
                     iridescenceTexture: { index: 0 },
-                    iridescenceThicknessTexture: { index: 1, texCoord: 1 },
+                    iridescenceThicknessTexture: {
+                        index: 1,
+                        texCoord: 1,
+                        extensions: { KHR_texture_transform: {} },
+                    },
                 },
             },
         },
@@ -363,7 +466,7 @@ test("an extension texture reaches the pin under the pin's own property name", a
         "`detect` reads _texCoord off the built texture",
     );
 
-    const clearcoat = pinnedMaterialInputFromGltf(
+    const clearcoat = await pinnedMaterialInputFromGltf(
         {
             extensions: {
                 KHR_materials_clearcoat: {
@@ -403,7 +506,7 @@ test("an extension texture reaches the pin under the pin's own property name", a
     );
 
     // A slot with no image behind it builds no texture, so it stamps nothing.
-    const noImage = pinnedMaterialInputFromGltf({
+    const noImage = await pinnedMaterialInputFromGltf({
         extensions: {
             KHR_materials_sheen: {
                 sheenColorFactor: [1, 1, 1],
@@ -424,29 +527,31 @@ test("a texture transform counts only when it patches a field", async () => {
     // by animation if at all — and the browser's fragment for it has no
     // `txfUV` helper and no UV matrix fields.
     const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
-    const transformed = (transform: unknown) =>
-        pinnedMaterialInputFromGltf(
-            {
-                pbrMetallicRoughness: {
-                    baseColorTexture: {
-                        index: 0,
-                        extensions: { KHR_texture_transform: transform },
+    const transformed = async (transform: unknown) =>
+        (
+            await pinnedMaterialInputFromGltf(
+                {
+                    pbrMetallicRoughness: {
+                        baseColorTexture: {
+                            index: 0,
+                            extensions: { KHR_texture_transform: transform },
+                        },
                     },
                 },
-            },
-            { imageOf },
+                { imageOf },
+            )
         )["_hasUvTx"];
 
     assert.equal(
-        transformed({}),
+        await transformed({}),
         undefined,
         "an empty transform patches nothing",
     );
     // `rotation` is read for truthiness upstream, so zero is the same as absent.
-    assert.equal(transformed({ rotation: 0 }), undefined);
-    assert.equal(transformed({ rotation: 0.5 }), true);
-    assert.equal(transformed({ scale: [1, 1] }), true);
-    assert.equal(transformed({ offset: [0, 0] }), true);
+    assert.equal(await transformed({ rotation: 0 }), undefined);
+    assert.equal(await transformed({ rotation: 0.5 }), true);
+    assert.equal(await transformed({ scale: [1, 1] }), true);
+    assert.equal(await transformed({ offset: [0, 0] }), true);
 });
 
 test("an animated transform forces the UV fields the animation writes into", async () => {
@@ -465,25 +570,107 @@ test("an animated transform forces the UV fields the animation writes into", asy
         },
     };
     assert.equal(
-        pinnedMaterialInputFromGltf(material, { imageOf })["_hasUvTx"],
+        (await pinnedMaterialInputFromGltf(material, { imageOf }))["_hasUvTx"],
         undefined,
     );
     assert.equal(
-        pinnedMaterialInputFromGltf(material, {
-            imageOf,
-            animatedUvTransform: true,
-        })["_hasUvTx"],
+        (
+            await pinnedMaterialInputFromGltf(material, {
+                imageOf,
+                animatedUvTransform: true,
+            })
+        )["_hasUvTx"],
         true,
     );
+});
+
+test("glTF specular fields register and compose their own reflectance capabilities", async () => {
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
+    for (const [specular, property, value, metallicMap, colorMap] of [
+        [{ specularFactor: 0.3 }, "_metallicF0Factor", 0.3, false, false],
+        [
+            { specularColorFactor: [0.2, 0.4, 0.6] },
+            "_metallicReflectanceColor",
+            [0.2, 0.4, 0.6],
+            false,
+            false,
+        ],
+        [
+            { specularTexture: { index: 0 } },
+            "_metallicReflectanceTexture",
+            { index: 0 },
+            true,
+            false,
+        ],
+        [
+            { specularColorTexture: { index: 0 } },
+            "_reflectanceTexture",
+            { index: 0 },
+            false,
+            true,
+        ],
+    ] as const) {
+        let registered = false;
+        const input = await pinnedMaterialInputFromGltf(
+            { extensions: { KHR_materials_specular: specular } },
+            {
+                imageOf,
+                recordMetallicReflectanceRegistration: () => {
+                    registered = true;
+                },
+            },
+        );
+        assert.equal(registered, true, property);
+        assert.deepEqual(input[property], value, property);
+        const variant = await composePinnedPbrVariant(input);
+        assert.equal(variant.fragmentKey, "reflectance", property);
+        const capabilities = composedMaterialCapabilities([variant], []);
+        assert.equal(
+            capabilities.metallicReflectanceMap,
+            metallicMap,
+            property,
+        );
+        assert.equal(capabilities.reflectanceMap, colorMap, property);
+    }
+    for (const specular of [
+        { specularFactor: 1 },
+        { specularFactor: 1 + 1e-7 },
+        { specularColorFactor: [1, 1, 1] },
+        { specularTexture: { index: 1 } },
+    ]) {
+        let registered = false;
+        const input = await pinnedMaterialInputFromGltf(
+            { extensions: { KHR_materials_specular: specular } },
+            {
+                imageOf,
+                recordMetallicReflectanceRegistration: () => {
+                    registered = true;
+                },
+            },
+        );
+        assert.equal(registered, false);
+        assert.equal((await composePinnedPbrVariant(input)).fragmentKey, "");
+    }
 });
 
 test("the dielectric reflectance is what the executed pin set", async () => {
     // `gltf-ext-dielectric.ts` executes here, so the IOR Fresnel is the pin's
     // own `((ior - 1) / (ior + 1)) ** 2 / 0.04` — Scene 253's Transmission
     // sphere composes a reflectance arm purely because its ior is 1.209.
-    const ior = pinnedMaterialInputFromGltf({
-        extensions: { KHR_materials_ior: { ior: 1.209 } },
-    });
+    let registered = false;
+    const ior = await pinnedMaterialInputFromGltf(
+        { extensions: { KHR_materials_ior: { ior: 1.209 } } },
+        {
+            recordMetallicReflectanceRegistration: () => {
+                registered = true;
+            },
+        },
+    );
+    assert.equal(registered, true);
+    assert.equal(
+        (await composePinnedPbrVariant(ior)).fragmentKey,
+        "reflectance",
+    );
     assert.equal(
         ior["_metallicF0Factor"],
         ((1.209 - 1) / (1.209 + 1)) ** 2 / 0.04,
@@ -495,7 +682,7 @@ test("the dielectric reflectance is what the executed pin set", async () => {
 
     // An explicit specular factor of exactly 1 *clears* what the ior set —
     // the pin deletes both options before the reflectance gate runs.
-    const cleared = pinnedMaterialInputFromGltf({
+    const cleared = await pinnedMaterialInputFromGltf({
         extensions: {
             KHR_materials_ior: { ior: 1.209 },
             KHR_materials_specular: { specularFactor: 1 },
@@ -505,7 +692,7 @@ test("the dielectric reflectance is what the executed pin set", async () => {
     assert.equal(cleared["_specularWeight"], undefined);
 
     // The default ior of 1.5 composes no reflectance arm at all.
-    const neutral = pinnedMaterialInputFromGltf({
+    const neutral = await pinnedMaterialInputFromGltf({
         extensions: { KHR_materials_ior: { ior: 1.5 } },
     });
     assert.equal(neutral["_metallicF0Factor"], undefined);
@@ -516,9 +703,20 @@ test("an animated ior seeds the pin's own Fresnel", async () => {
     // carrier of the IOR Fresnel is also the pin's `iorToF0Factor`, wired
     // through `setPbrMetallicReflectance` exactly as `prepareExtMaterials`
     // wires it.
-    const input = pinnedMaterialInputFromGltf(
+    let registered = false;
+    const input = await pinnedMaterialInputFromGltf(
         { extensions: { KHR_materials_ior: { ior: 1.31 } } },
-        { animatedExtensionTargets: { ior: true } },
+        {
+            animatedExtensionTargets: { ior: true },
+            recordMetallicReflectanceRegistration: () => {
+                registered = true;
+            },
+        },
+    );
+    assert.equal(registered, true);
+    assert.equal(
+        (await composePinnedPbrVariant(input)).fragmentKey,
+        "reflectance",
     );
     assert.equal(
         input["_metallicF0Factor"],
@@ -535,7 +733,7 @@ test("dispersion carries the pin's 20/dispersion through the volume gate", async
     // `needsDispersion` demands an ior or transmission, a volume, and a
     // positive thickness; the refraction then carries `20 / dispersion` —
     // `setPbrDispersion`'s own argument, executed.
-    const input = pinnedMaterialInputFromGltf({
+    const input = await pinnedMaterialInputFromGltf({
         extensions: {
             KHR_materials_ior: { ior: 1.4 },
             KHR_materials_volume: { thicknessFactor: 0.5 },
@@ -546,7 +744,7 @@ test("dispersion carries the pin's 20/dispersion through the volume gate", async
     const refraction = subsurface["refraction"] as Record<string, unknown>;
     assert.equal(refraction["dispersion"], 20 / 0.25);
     // Without the volume, the same dispersion composes nothing.
-    const gated = pinnedMaterialInputFromGltf({
+    const gated = await pinnedMaterialInputFromGltf({
         extensions: {
             KHR_materials_ior: { ior: 1.4 },
             KHR_materials_dispersion: { dispersion: 0.25 },
@@ -567,34 +765,40 @@ test("a base colour factor is carried only over a base colour image", async () =
     const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
     const factor = [0.78, 0.78, 0.78, 1];
     assert.equal(
-        pinnedMaterialInputFromGltf(
-            {
-                pbrMetallicRoughness: { baseColorFactor: factor },
-            },
-            { imageOf },
+        (
+            await pinnedMaterialInputFromGltf(
+                {
+                    pbrMetallicRoughness: { baseColorFactor: factor },
+                },
+                { imageOf },
+            )
         ).baseColorFactor,
         undefined,
         "no image: the factor is baked into the texel",
     );
     assert.deepEqual(
-        pinnedMaterialInputFromGltf(
-            {
-                pbrMetallicRoughness: {
-                    baseColorFactor: factor,
-                    baseColorTexture: { index: 0 },
+        (
+            await pinnedMaterialInputFromGltf(
+                {
+                    pbrMetallicRoughness: {
+                        baseColorFactor: factor,
+                        baseColorTexture: { index: 0 },
+                    },
                 },
-            },
-            { imageOf },
+                { imageOf },
+            )
         ).baseColorFactor,
         factor,
     );
     // An animated factor needs the field however the load-time value reads.
     assert.deepEqual(
-        pinnedMaterialInputFromGltf(
-            {
-                pbrMetallicRoughness: { baseColorFactor: factor },
-            },
-            { imageOf, animatedBaseColorFactor: true },
+        (
+            await pinnedMaterialInputFromGltf(
+                {
+                    pbrMetallicRoughness: { baseColorFactor: factor },
+                },
+                { imageOf, animatedBaseColorFactor: true },
+            )
         ).baseColorFactor,
         factor,
     );

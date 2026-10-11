@@ -9,7 +9,7 @@ Values describe saved reports, not the current working tree. Verify with `npm ru
 
 Numbered scene coverage starts with its registry name. Colors: below 0.5 green,
 0.5–1 yellow, 1+ red. Repeatability-exempt rows retain their published values.
-Physics rows measure Bullet against Havok: their residuals are solver deltas, not renderer fidelity
+Physics rows measure Bullet against Havok: their residuals include solver differences and do not isolate renderer fidelity
 ([contract](fidelity.md#physics-contract)).
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
@@ -69,7 +69,7 @@ Physics rows measure Bullet against Havok: their residuals are solver deltas, no
 | 53 | <img src="images/scenes/scene53.png" alt="Scene 53 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Depth-Hosted Sprites |
 | 54 | <img src="images/scenes/scene54.png" alt="Scene 54 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Facing Billboards |
 | 55 | <img src="images/scenes/scene55.png" alt="Scene 55 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Billboard Field |
-| 56 | <img src="images/scenes/scene56.png" alt="Scene 56 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Axis-Locked Billboards |
+| 56 | <img src="images/scenes/scene56.png" alt="Scene 56 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Axis-Locked Billboards |
 | 57 | <img src="images/scenes/scene57.png" alt="Scene 57 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Cutout Billboards |
 | 58 | <img src="images/scenes/scene58.png" alt="Scene 58 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Sprite2D Frame Animation |
 | 59 | <img src="images/scenes/scene59.png" alt="Scene 59 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Billboard Sprite Frame Animation |

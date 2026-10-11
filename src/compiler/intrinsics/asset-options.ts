@@ -1,16 +1,5 @@
 import type { LoweringServices } from "../lowering-services.js";
-// Environment option lowering: the .env, .dds, and .hdr loaders.
-//
-// Each function turns an environment loader's options argument into
-// the resolved values the generated loader consumes, folding the skip
-// flags and sizes to statics at compile time. The intrinsic lowerer in
-// asset.ts calls these through its context.
-// Environment option lowering: the .env, .dds, and .hdr loaders.
-//
-// Each function turns an environment loader's options argument into
-// the resolved values the generated loader consumes, folding the skip
-// flags and sizes to statics at compile time. The intrinsic lowerer in
-// asset.ts calls these through its context.
+// Options shared by the .env, .dds and .hdr loader intrinsics.
 import type ts from "typescript";
 import { imageCodecForFileName } from "../../image-codec-manifest.js";
 import {
@@ -37,6 +26,7 @@ export interface AssetOptionContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "compileNumber"
+            | "dataLowerer"
             | "compileStringLiteral"
             | "compileVec3"
         > {}
@@ -95,15 +85,9 @@ export function compileEnvironmentOptions(
             ? context.compileStringLiteral(groundTextureUrl)
             : "",
         skyboxUrl: skyboxUrl ? context.compileStringLiteral(skyboxUrl) : "",
-        // Zero asks the loader for the pinned default rather than
-        // inventing one here: `createDefaultEnvironment`'s skyboxSize is
-        // 20, and the generated loader already resolves it. Passing a
-        // size of our own produced a skybox large enough for the camera's
-        // far plane to clip it, which shows as a straight-edged hole in
-        // the background once the camera moves off the reference pose.
         skyboxSize: skyboxSize
-            ? context.compileNumber(skyboxSize, "double")
-            : "0.0",
+            ? `bbl::js::Nullable<double>{${context.dataLowerer.compileForSink(skyboxSize, { kind: "optional", inner: { kind: "number" } })}}.to_optional()`
+            : "std::nullopt",
         brdfUrl:
             brdfUrl && !brdfPathCpp
                 ? context.compileStringLiteral(brdfUrl)

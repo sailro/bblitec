@@ -32,6 +32,12 @@ const emittedAtlasHelpers = new EmissionWeakMap<
     Map<string, string>
 >();
 
+function frameCpp(lane: (field: string, index: number) => string): string {
+    return `bbl::SpriteFrame{${["uvMin", "uvMax", "sourceSizePx", "pivot"]
+        .map((field) => `bbl::Vec2d{${lane(field, 0)}, ${lane(field, 1)}}`)
+        .join(", ")}}`;
+}
+
 /** Materializes a pure-data SpriteAtlas record over a reached pixel texture. */
 export function compileSpriteAtlasRecord(
     context: SpriteAtlasRecordContext,
@@ -182,10 +188,6 @@ export function compileSpriteAtlasRecord(
             );
             return `${base}${arrow ? "->" : "."}${field.name}`;
         };
-        const uvMin = access("frame", "uvMin");
-        const uvMax = access("frame", "uvMax");
-        const sourceSize = access("frame", "sourceSizePx");
-        const pivot = access("frame", "pivot");
         context.reachJsData();
         reachTextureArm();
         const framesCppType = context.dataTypes.cppType({
@@ -205,11 +207,7 @@ export function compileSpriteAtlasRecord(
             `atlas.premultiplied_alpha = premultiplied_alpha;`,
             `atlas.mip_maps = false;`,
             `for (const auto& frame : frames) { ` +
-                `atlas.frames.push_back(bbl::SpriteFrame{` +
-                `bbl::Vec2{static_cast<float>(${uvMin}[0]), static_cast<float>(${uvMin}[1])}, ` +
-                `bbl::Vec2{static_cast<float>(${uvMax}[0]), static_cast<float>(${uvMax}[1])}, ` +
-                `bbl::Vec2{static_cast<float>(${sourceSize}[0]), static_cast<float>(${sourceSize}[1])}, ` +
-                `bbl::Vec2{static_cast<float>(${pivot}[0]), static_cast<float>(${pivot}[1])}}); }`,
+                `atlas.frames.push_back(${frameCpp((field, index) => `${access("frame", field)}[${index}]`)}); }`,
             `engine.sprite_atlases.push_back(std::move(atlas));`,
             `return bbl::SpriteAtlasHandle{static_cast<std::uint32_t>(engine.sprite_atlases.size() - 1)};`,
         ];
@@ -252,19 +250,10 @@ export function compileSpriteAtlasRecord(
         return property;
     };
     const frameStatements = (frames.tupleElements ?? [])
-        .map((frame) => {
-            const uvMin = frameProperty(frame, "uvMin");
-            const uvMax = frameProperty(frame, "uvMax");
-            const sourceSize = frameProperty(frame, "sourceSizePx");
-            const pivot = frameProperty(frame, "pivot");
-            return (
-                `${atlas}.frames.push_back(bbl::SpriteFrame{` +
-                `bbl::Vec2{static_cast<float>(${tupleLane(uvMin, 0)}), static_cast<float>(${tupleLane(uvMin, 1)})}, ` +
-                `bbl::Vec2{static_cast<float>(${tupleLane(uvMax, 0)}), static_cast<float>(${tupleLane(uvMax, 1)})}, ` +
-                `bbl::Vec2{static_cast<float>(${tupleLane(sourceSize, 0)}), static_cast<float>(${tupleLane(sourceSize, 1)})}, ` +
-                `bbl::Vec2{static_cast<float>(${tupleLane(pivot, 0)}), static_cast<float>(${tupleLane(pivot, 1)})}}); `
-            );
-        })
+        .map(
+            (frame) =>
+                `${atlas}.frames.push_back(${frameCpp((field, index) => tupleLane(frameProperty(frame, field), index))}); `,
+        )
         .join("");
     context.reachJsData();
     reachTextureArm();

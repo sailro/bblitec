@@ -144,7 +144,10 @@ export function lowerStorageReadback(context: LoweringContext): LoweredSource {
                     for (const span of node.templateSpans) {
                         const value = lowerer.expression(span.expression);
                         pieces.push(
-                            span.expression.getText(file) === "buffer._label"
+                            context.expressionMatchesShape(
+                                span.expression,
+                                "buffer._label",
+                            )
                                 ? value
                                 : `js::number_to_string(${value})`,
                         );
@@ -216,7 +219,17 @@ export function lowerStorageReadback(context: LoweringContext): LoweredSource {
                     return `js::make_closure(std::tuple{buffer,byteOffset,byteLength}, [](auto& captures,${rejected ? "std::exception_ptr" : "const js::ArrayBuffer&"}) { const auto& [buffer,byteOffset,byteLength]=captures; return ${inner.expression(node.body)}; })`;
                 }
                 if (!ts.isCallExpression(node)) return undefined;
-                const callee = node.expression.getText(file);
+                const callee = context.matchingExpressionShape(
+                    node.expression,
+                    [
+                        "buffer._engine._storageBuffers?.has",
+                        "Promise.reject",
+                        "Promise.resolve",
+                        "device.createBuffer",
+                        "device.createCommandEncoder",
+                        "staging.mapAsync",
+                    ],
+                );
                 if (callee === "buffer._engine._storageBuffers?.has")
                     return "buffer_record.registered";
                 if (callee === "Promise.reject")
@@ -244,8 +257,10 @@ export function lowerStorageReadback(context: LoweringContext): LoweredSource {
                     const source = node.expression.expression;
                     if (
                         ts.isCallExpression(source) &&
-                        source.expression.getText(file) ===
-                            "staging.getMappedRange"
+                        context.expressionMatchesShape(
+                            source.expression,
+                            "staging.getMappedRange",
+                        )
                     ) {
                         context.assertExpressionShape(
                             node.arguments[0]!,
@@ -260,10 +275,12 @@ export function lowerStorageReadback(context: LoweringContext): LoweredSource {
                     ["then", "finally"].includes(node.expression.name.text)
                 ) {
                     const parent = node.expression.expression;
-                    const receiver =
-                        parent.getText(file) === "buffer._readPending"
-                            ? "state->pending->"
-                            : `${lowerer.expression(parent)}.`;
+                    const receiver = context.expressionMatchesShape(
+                        parent,
+                        "buffer._readPending",
+                    )
+                        ? "state->pending->"
+                        : `${lowerer.expression(parent)}.`;
                     return `${receiver}${node.expression.name.text}(${node.arguments.map((argument) => lowerer.expression(argument)).join(", ")})`;
                 }
                 return undefined;
@@ -304,8 +321,10 @@ export function lowerStorageReadback(context: LoweringContext): LoweredSource {
                 if (
                     ts.isExpressionStatement(node) &&
                     ts.isCallExpression(node.expression) &&
-                    node.expression.expression.getText(file) ===
-                        "device.queue.submit"
+                    context.expressionMatchesShape(
+                        node.expression.expression,
+                        "device.queue.submit",
+                    )
                 ) {
                     context.assertExpressionShape(
                         node.expression.arguments[0]!,
@@ -338,7 +357,7 @@ export function lowerStorageReadback(context: LoweringContext): LoweredSource {
                     declaration,
                     "Expected a storage readback promise.",
                 );
-            return value.getText(file) === "buffer._readPending"
+            return context.expressionMatchesShape(value, "buffer._readPending")
                 ? "*state->pending"
                 : lowerer.expression(value);
         },

@@ -272,55 +272,7 @@ else()
         "BBLITE_BACKEND must be SDL_GPU, DAWN, or BOTH (got '${BBLITE_BACKEND}')."
     )
 endif()
-# One authority for the renderer translation units. `featureSources`
-# (src/compiler/output-projection.ts) selects the SDL_GPU units a scene's
-# reached features need into BBLITE_RUNTIME_SOURCES -- pal_sdl_gpu.cpp for
-# renderer:scene, the sprite/effect/frame-graph units for theirs -- and
-# every one of them has a Dawn twin under the other backend's name. The
-# twins are derived from that selection here, so a unit added to (or
-# renamed in) the feature table follows into both backends without a
-# second list, and the Dawn scene unit follows renderer:scene exactly as
-# the SDL one does. A feature decides whether a renderer exists at all;
-# the backend selection decides which API draws it, and the two are
-# independent -- a build with either backend removed must still compile
-# every feature the scene reached.
-# The scene renderer's sources are its driver (pal_sdl_gpu.cpp) and one file
-# per feature family it draws through. They compile as one translation unit,
-# pal_sdl_gpu_scene_all.cpp, which includes them by name, so the scene header
-# they all open with is parsed once per backend; its Dawn twin follows below.
-list(TRANSFORM BBLITE_RUNTIME_SOURCES REPLACE "/src/pal_sdl_gpu\\.cpp$" "/src/pal_sdl_gpu_scene_all.cpp")
-# The Window host presents through its backend's presenter, paired like the
-# renderer units.
-if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
-    list(APPEND BBLITE_RUNTIME_SOURCES "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_window_presenter.cpp")
-endif()
-set(BBLITE_SDL_GPU_SOURCES ${BBLITE_RUNTIME_SOURCES})
-list(FILTER BBLITE_SDL_GPU_SOURCES INCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
-set(BBLITE_DAWN_SOURCES "")
-foreach(bblite_sdl_gpu_source IN LISTS BBLITE_SDL_GPU_SOURCES)
-    string(REPLACE "/src/pal_sdl_gpu" "/src/pal_dawn" bblite_dawn_source "${bblite_sdl_gpu_source}")
-    if(NOT EXISTS "${bblite_dawn_source}")
-        message(
-            FATAL_ERROR
-            "${bblite_sdl_gpu_source} has no Dawn twin at ${bblite_dawn_source}; "
-            "every SDL_GPU renderer unit is paired."
-        )
-    endif()
-    list(APPEND BBLITE_DAWN_SOURCES "${bblite_dawn_source}")
-endforeach()
-if(NOT BBLITE_BACKEND_SDL_GPU)
-    list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
-endif()
-# The bodies the GPU backends share (the concern headers) follow
-# the units that include them: every renderer unit and the window realm.
-if(BBLITE_SDL_GPU_SOURCES OR "platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
-    list(
-        APPEND BBLITE_RUNTIME_SOURCES
-        "${BBLITE_NATIVE_ROOT}/src/pal_gpu_frame.cpp"
-        "${BBLITE_NATIVE_ROOT}/src/pal_gpu_images.cpp"
-        "${BBLITE_NATIVE_ROOT}/src/pal_gpu_shared.cpp"
-    )
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/backend-sources.cmake")
 
 # The PAL units whose preprocessed text depends on the generated tree only
 # through the activation macros they test (bblite/features/); the two
@@ -969,6 +921,7 @@ endif()
 if(
     "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
     "loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES OR
+    "environment:env" IN_LIST BBLITE_RUNTIME_FEATURES OR
     "data:json" IN_LIST BBLITE_RUNTIME_FEATURES
 )
     find_package(nlohmann_json CONFIG REQUIRED)
@@ -1030,9 +983,10 @@ if(BBLITE_MINSIZE)
             )
         endif()
     elseif(MSVC)
-        # The scene command configures Release even for this opt-in shape.
-        # Override Release's /O2 /Ob2 for the application just as the trimmed
-        # dependency builds do; the later options win in MSVC's command line.
+        # The scene command uses Release for this opt-in shape. Remove its
+        # superseded speed options so MSVC does not warn on every source.
+        string(REPLACE "/O2" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+        string(REPLACE "/Ob2" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
         target_compile_options(bblite_core INTERFACE /O1 /Ob1 /GL /Gw /Zc:inline
         )
         # /MAP emits the linker map beside the executable for

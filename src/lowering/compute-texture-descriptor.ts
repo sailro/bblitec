@@ -167,7 +167,10 @@ export function computeTextureDescriptorCpp(context: LoweringContext): string {
                         ts.SyntaxKind.QuestionQuestionToken
                 )
                     return undefined;
-                const lhs = node.left.getText(normalize.file);
+                const lhs = context.matchingExpressionShape(node.left, [
+                    "options.height",
+                    "options.depthOrArrayLayers",
+                ]);
                 const optional =
                     lhs === "options.height"
                         ? "height_option"
@@ -290,7 +293,14 @@ export function computeTextureSamplingCpp(context: LoweringContext): string {
                 )
                     return 'std::string_view{"string"}';
                 if (!ts.isCallExpression(node)) return undefined;
-                const callee = node.expression.getText(file);
+                const callee = context.matchingExpressionShape(
+                    node.expression,
+                    [
+                        "engine._device.features.has",
+                        "_inferComputeTextureFormatSampleType",
+                        "_inferComputeSamplerType",
+                    ],
+                );
                 if (callee === "engine._device.features.has") {
                     const feature = node.arguments[0];
                     if (

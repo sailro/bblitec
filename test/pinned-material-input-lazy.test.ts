@@ -3,6 +3,7 @@ import test from "node:test";
 import {
     ensurePinnedLoaderExecution,
     pinnedMaterialInputFromGltf,
+    preparePinnedMaterialFeatures,
 } from "../src/pinned-material-input.js";
 import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
@@ -68,18 +69,32 @@ test("the pinned loader executes on demand, not at import, and moves no bytes", 
     // eager module always produced — the existing fixture from
     // pinned-material-input.test.ts, byte-composed through the pin.
     const iridescence = await composePinnedPbrVariant(
-        pinnedMaterialInputFromGltf({
-            extensions: { KHR_materials_iridescence: {} },
-        }),
+        pinnedMaterialInputFromGltf(
+            {
+                extensions: { KHR_materials_iridescence: {} },
+            },
+            {
+                materialFeatures: await preparePinnedMaterialFeatures({
+                    extensionsUsed: ["KHR_materials_iridescence"],
+                }),
+            },
+        ),
         { sceneFeatures: PBR_HAS_ENV },
     );
     assert.equal(iridescence.fragmentKey, "ibl|iridescence");
     // Stable across a recompose — the composer reads only process-global
     // state, so agreement here is agreement about that state.
     const again = await composePinnedPbrVariant(
-        pinnedMaterialInputFromGltf({
-            extensions: { KHR_materials_iridescence: {} },
-        }),
+        pinnedMaterialInputFromGltf(
+            {
+                extensions: { KHR_materials_iridescence: {} },
+            },
+            {
+                materialFeatures: await preparePinnedMaterialFeatures({
+                    extensionsUsed: ["KHR_materials_iridescence"],
+                }),
+            },
+        ),
         { sceneFeatures: PBR_HAS_ENV },
     );
     assert.equal(again.fragmentWgsl, iridescence.fragmentWgsl);

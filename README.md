@@ -31,7 +31,6 @@ Canonical facts and current state. One owner per fact; no session logs.
 | [UI](docs/ui.md) | DOM/CSS/Canvas2D support, limits and browser compatibility |
 | [Status](docs/status.md) | Published measurements and scene previews |
 | [TODO](TODO.md) | Internal work, qualification, performance and refusal defects |
-| [Audit](audit.md) | Open audit findings |
 
 ## Acknowledgements
 

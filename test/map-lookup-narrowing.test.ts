@@ -81,7 +81,7 @@ test("guarded Map and WeakMap numbers reach native numeric sinks while dictionar
 ${result.cpp}
 #undef main
 #include <cassert>
-namespace { std::vector<float> observed; }
+namespace { std::vector<double> observed; }
 namespace bbl {
 Engine create_engine(EngineOptions){return {};}
 PixelsTexture create_texture_2d_from_pixels(Engine&,const js::U8Array&,double width,double height,PixelsTextureOptions){
@@ -100,7 +100,7 @@ double add_sprite_2d_index(Engine&,Sprite2DLayerHandle layer,Sprite2DProps props
 }
 int main(){
     assert(generated_main()==0);
-    assert((observed==std::vector<float>{7,0,11,0}));
+    assert((observed==std::vector<double>{7,0,11,0}));
 }
 `,
     );

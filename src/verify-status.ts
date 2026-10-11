@@ -65,7 +65,7 @@ const YELLOW = "#9a6700";
 const RED = "#cf222e";
 
 /** A backend whose capture matches its reference exactly publishes this. */
-export const PIXEL_PERFECT = "pixel-perfect";
+const PIXEL_PERFECT = "pixel-perfect";
 
 /**
  * How a measured cell is written, so that it reads like a colored one and

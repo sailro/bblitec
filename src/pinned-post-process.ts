@@ -702,7 +702,7 @@ const COMPOSITION_CAMERA = { nearPlane: 0, farPlane: 1 };
  * this plus the suffix the pin derived. The generated factory rebuilds each
  * from the scene's own name, which is only known at run time.
  */
-export const COMPOSITION_NAME = "bblitec-composite";
+const COMPOSITION_NAME = "bblitec-composite";
 
 export async function composePostProcess(
     request: PostProcessCompositionRequest,

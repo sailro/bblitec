@@ -48,7 +48,7 @@ interface Descriptor {
 }
 
 /** Explicit missing public operations; existing admitted adapters remain authoritative. */
-export const deferredCapabilityDescriptors: readonly Descriptor[] = [
+const deferredCapabilityDescriptors: readonly Descriptor[] = [
     ...[
         "atob",
         "btoa",

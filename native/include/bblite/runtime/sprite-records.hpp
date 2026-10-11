@@ -8,7 +8,7 @@ struct Sprite2DLayerRecord {
     bool visible = true;
     float order = 0.0f;
     Sprite2DDepthMode depth_mode = Sprite2DDepthMode::none;
-    float layer_z = 0.5f;
+    double layer_z = 0.5;
     Sprite2DView view{};
     Vec2d pivot{0.5, 0.5};
     std::uint32_t count = 0;
@@ -153,6 +153,7 @@ struct BillboardSystemRecord {
     std::uint32_t capacity = 0;
     std::uint32_t instance_floats_per_sprite = 16;
     std::vector<float> instance_data;
+    std::vector<float> saved_size;
     // The pin's F64 `_anchor`, three per sprite: each position at the width
     // it was written, which the floating-origin upload makes eye-relative
     // before its single float store.

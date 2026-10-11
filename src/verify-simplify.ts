@@ -1,22 +1,4 @@
-/**
- * The `/simplify` gate, as a check that fails and names what is missing.
- *
- * Gate 3 runs the skill over the complete body of work before the validation
- * sweep, on every branch that becomes a pull request, whatever its size;
- * a change judged too small to review is exactly where the run finds
- * defects, so the gate is a check rather than prose, in the form this
- * repository already trusts for `docs/status.md`.
- *
- * The record is keyed by the CONTENT of the work, not by the branch or the
- * commit, for the same reason `parity` refuses a stale binary: a review of
- * different bytes is not a review of these ones. Applying what the skill
- * found changes the content, so the final record — written after the fixes —
- * is the one that counts.
- *
- * The record lives under `docs/reviews/`, which is tracked, so it travels
- * with the branch and a reviewer can read what was found. Its own path is
- * excluded from the hash; otherwise writing it would invalidate it.
- */
+/** Content-hashed `/simplify` evidence, kept in ignored artifacts. */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
@@ -25,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 
 /** Where a record lives, relative to the repository root. */
-const reviewDirectory = "docs/reviews";
+const reviewDirectory = "artifacts/reviews";
 
 /** One finding, and what happened to it. */
 interface SimplifyFinding {
@@ -222,9 +204,7 @@ function verifySimplify(root: string): {
                 `  work against ${work.base}, content hash ${work.hash}`,
                 `  expected     ${posix.join(reviewDirectory, `${work.hash}.json`)}`,
                 "",
-                "Gate 3 runs `/simplify` over the complete body of work BEFORE",
-                "the validation sweep, on every branch that becomes a pull",
-                "request, whatever its size.",
+                "Run `/simplify` over the complete diff before final validation.",
                 "",
                 "Run the skill, apply what it finds, then record it:",
                 "  npm run simplify:record",

@@ -128,5 +128,13 @@ int main() {
     assert(node_particle_frozen_alive(0, 2) == 0);
     assert(!node_particle_frozen_column(0, 2, "age", 0).has_value());
     assert(node_particle_frozen_column(0, 3, "age", 2).value() == 0.123456789012345);
+    const auto baked_renderer = create_sprite_renderer(engine, {});
+    register_node_particle_set_2d(engine, baked_renderer, 3);
+    const auto& baked = engine.sprite_renderers[baked_renderer.value];
+    assert(baked.layers.size() == 1 && baked.before_update.empty());
+    const auto& baked_layer = engine.sprite_layers[baked.layers[0].value];
+    assert(std::equal(expected_0.begin(), expected_0.end(), baked_layer.instance_data.begin()));
+    assert(baked_layer.saved_size[0] == expected_0[2]);
+    assert(baked_layer.saved_size[1] == expected_0[3]);
     std::cout << "frozen-bridge-check: ok\n";
 }

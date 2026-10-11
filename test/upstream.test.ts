@@ -650,12 +650,11 @@ const lightLowerer = new LightLowerer(new LoweringContext());
 
 test("flows SceneNode transforms and the pinned spot cone into light factories", () => {
     const spot = lightLowerer.lowerSpotFactory().source;
+    assert.match(spot, /initialize_spot_light_cone\(light, angle\);/);
     assert.match(
         spot,
-        /light\.cos_half_angle = static_cast<float>\(std::cos\(\s*angle \* 0\.5\)\);/,
+        /void refresh_spot_light_cone\(LightRecord& light, double angle\)/,
     );
-    assert.equal(spot.split("light.cos_half_angle").length - 1, 1);
-    assert.match(spot, /refresh_spot_light_cone\(light, angle\);/);
     assert.match(
         spot,
         /refresh_spot_light_cone\(bbl::handle_at\(engine\.lights, light\), angle\);/,

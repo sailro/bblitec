@@ -120,6 +120,7 @@ template <typename R, typename... Args> class Callback<R(Args...)> {
         virtual ~Body() = default;
         virtual R call(Args... args) = 0;
         virtual bool present() const = 0;
+        virtual void gc_trace(const TraceVisitor&) const = 0;
     };
     template <typename F> struct Callable final : Body {
         explicit Callable(F body) : function(std::move(body)) {}
@@ -139,13 +140,7 @@ template <typename R, typename... Args> class Callback<R(Args...)> {
             else
                 return true;
         }
-        /** Only a body that can own a traced edge describes one, so `make_gc_shared`
-         * registers exactly those. */
-        void gc_trace(const TraceVisitor& visitor) const
-            requires gc_traceable<F>
-        {
-            visitor(function);
-        }
+        void gc_trace(const TraceVisitor& visitor) const override { visitor(function); }
     };
 
 public:
@@ -177,7 +172,8 @@ public:
     template <typename F>
     Callback(std::size_t identity, F&& body)
         : identity_(identity),
-          body_(make_gc_shared<Callable<std::decay_t<F>>>(std::forward<F>(body))),
+          body_(make_gc_shared_if<gc_traceable<std::decay_t<F>>, Callable<std::decay_t<F>>>(
+              std::forward<F>(body))),
           identity_owner_(body_) {}
     template <typename F>
     Callback(std::size_t identity, F&& body, std::weak_ptr<const void> identity_owner)

@@ -843,7 +843,7 @@ function compileLoadEnvironment(
         : {
               groundTextureUrl: "",
               skyboxUrl: "",
-              skyboxSize: "0.0",
+              skyboxSize: "std::nullopt",
               brdfUrl: "",
               skipSkybox: false,
               skipGround: false,
