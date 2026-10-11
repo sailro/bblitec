@@ -300,7 +300,6 @@ test("authored moving-emitter modes carry pinned build facts without freezing na
                             spriteSheet: null,
                             alive: 0,
                             positions: [],
-                            sizes: [],
                             colors: [],
                             rotations: [],
                             frames: null,

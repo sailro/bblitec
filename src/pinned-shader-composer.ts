@@ -18,6 +18,7 @@
  * share.
  */
 import ts from "typescript";
+import { stripAsyncAndAwait } from "./typescript-transpile.js";
 import { importAugmentedModule } from "./pinned-module-loader.js";
 
 import { javascriptModuleUrl } from "./data-url.js";
@@ -97,7 +98,7 @@ export function readPinnedLibraryModule(relativePath: string): string {
 }
 
 /** Resolve implementation text through source maps rather than hashed chunk names. */
-export function pinnedImplementationPath(relativePath: string): string {
+function pinnedImplementationPath(relativePath: string): string {
     const sourcePath = `src/${relativePath.replace(/\.js$/, ".ts")}`;
     const store = sharedUpstreamStore();
     return store.hasSource(sourcePath)
@@ -340,44 +341,6 @@ export function extractPackagedTemplateLiteral(
         );
     }
     return value;
-}
-
-/**
- * Splits a lifted WGSL statement list into one statement per entry, keeping
- * every byte of each statement. Statements end at `;` outside any brace or
- * parenthesis nesting, or at a top-level `}` (an `if` or `for` block) that no
- * `else` continues — so a pinned `if (...) { ... } else { ... }` chain stays
- * one statement, and the `;`s inside a `for` header stay inside it.
- */
-export function splitWgslStatements(body: string): string[] {
-    const pieces: string[] = [];
-    let braces = 0;
-    let parens = 0;
-    let start = 0;
-    for (let index = 0; index < body.length; index++) {
-        const character = body[index];
-        if (character === "(") parens++;
-        else if (character === ")") parens--;
-        else if (character === "{") braces++;
-        else if (character === "}") {
-            braces--;
-            if (
-                braces === 0 &&
-                parens === 0 &&
-                !/^\s*else\b/.test(body.slice(index + 1))
-            ) {
-                pieces.push(body.slice(start, index + 1));
-                start = index + 1;
-            }
-        } else if (character === ";" && braces === 0 && parens === 0) {
-            pieces.push(body.slice(start, index + 1));
-            start = index + 1;
-        }
-    }
-    pieces.push(body.slice(start));
-    return pieces
-        .map((piece) => piece.trim())
-        .filter((piece) => piece.length > 0);
 }
 
 const pinnedModules = new Map<string, Promise<unknown>>();
@@ -706,64 +669,6 @@ function anchorPinnedSpecifiers(
     );
 }
 
-/** The index of the first non-whitespace character at or after `index`. */
-function afterWhitespace(text: string, index: number): number {
-    let end = index;
-    while (end < text.length && text[end]!.trim() === "") end += 1;
-    return end;
-}
-
-/**
- * Module text with every `async` modifier and every `await` operator
- * removed, each with the space that separates it from what follows. The
- * keywords are located as syntax -- a modifier on a function, an await
- * expression -- so a word inside a literal, a comment or a property name is
- * never touched, and the text around them is executed byte for byte.
- */
-function stripAsyncAndAwait(text: string): string {
-    const source = ts.createSourceFile(
-        "pinned-module.js",
-        text,
-        ts.ScriptTarget.ES2022,
-        true,
-        ts.ScriptKind.JS,
-    );
-    const removed: Array<readonly [number, number]> = [];
-    const visit = (node: ts.Node): void => {
-        if (ts.canHaveModifiers(node)) {
-            for (const modifier of ts.getModifiers(node) ?? []) {
-                if (modifier.kind === ts.SyntaxKind.AsyncKeyword) {
-                    removed.push([
-                        modifier.getStart(source),
-                        afterWhitespace(text, modifier.end),
-                    ]);
-                }
-            }
-        }
-        if (ts.isAwaitExpression(node)) {
-            removed.push([
-                node.getStart(source),
-                node.expression.getStart(source),
-            ]);
-        }
-        if (ts.isForOfStatement(node) && node.awaitModifier) {
-            removed.push([
-                node.awaitModifier.getStart(source),
-                afterWhitespace(text, node.awaitModifier.end),
-            ]);
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(source);
-    let stripped = text;
-    for (const [start, end] of removed.sort(
-        (left, right) => right[0] - left[0],
-    )) {
-        stripped = stripped.slice(0, start) + stripped.slice(end);
-    }
-    return stripped;
-}
-
 /**
  * Imports a pinned module with its `async`/`await` erased.
  *
@@ -790,7 +695,20 @@ export async function importPinnedModuleUnasynced(
     relativePath: string,
     extraExports: readonly string[] = [],
     redirects: ReadonlyMap<string, string> = new Map(),
+    source?: string,
 ): Promise<Record<string, unknown>> {
+    return (await import(
+        pinnedModuleUnasyncedUrl(relativePath, extraExports, redirects, source)
+    )) as Record<string, unknown>;
+}
+
+/** A synchronous recording module URL, reusable by a prepared source module graph. */
+export function pinnedModuleUnasyncedUrl(
+    relativePath: string,
+    extraExports: readonly string[] = [],
+    redirects: ReadonlyMap<string, string> = new Map(),
+    source = readPinnedLibraryModule(relativePath),
+): string {
     const modulePath = join(
         pinnedLibraryRoot(),
         pinnedImplementationPath(relativePath),
@@ -800,7 +718,7 @@ export async function importPinnedModuleUnasynced(
     // A dynamic import becomes the namespace a hoisted static import binds;
     // every specifier, hoisted or static, resolves through the same shim map.
     const anchored = rewriteModuleSpecifiers(
-        readPinnedLibraryModule(relativePath),
+        source,
         modulePath,
         (specifier) => {
             if (ts.isCallExpression(specifier.parent)) {
@@ -836,8 +754,7 @@ export async function importPinnedModuleUnasynced(
             ? [`export { ${extraExports.join(", ")} };`]
             : []),
     ].join("\n");
-    const url = javascriptModuleUrl(augmented);
-    return (await import(url)) as Record<string, unknown>;
+    return javascriptModuleUrl(augmented);
 }
 
 /** Trips if an unasynced pinned function still produced a promise. */

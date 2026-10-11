@@ -1769,11 +1769,20 @@ struct TextureUvTransform {
     double u_ang = 0.0;
 };
 
-/** One mip level of a compressed texture, as its container stores it. */
+/** The pinned compressed upload's byte layout and block-padded copy extent. */
+struct CompressedMipCopy {
+    std::uint32_t row_bytes = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    bool operator==(const CompressedMipCopy&) const = default;
+};
+
+/** One mip level and the upload plan lowered from uploadCompressed. */
 struct CompressedMipLevel {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::span<const std::uint8_t> bytes;
+    CompressedMipCopy copy;
 };
 
 /**
@@ -1793,9 +1802,6 @@ struct CompressedTexture {
     std::string_view format{};
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    std::uint32_t block_width = 0;
-    std::uint32_t block_height = 0;
-    std::uint32_t block_bytes = 0;
     // Mip spans share the immutable container across texture/material copies.
     std::shared_ptr<const std::vector<std::uint8_t>> storage;
     std::vector<CompressedMipLevel> mips;
@@ -5880,7 +5886,7 @@ struct EnvironmentOptions {
     std::string environment_url;
     std::string ground_texture_url;
     std::string skybox_url;
-    double skybox_size = 1000.0;
+    std::optional<double> skybox_size;
     std::string brdf_url;
     // A skybox URL naming the .env itself asks for the environment's own
     // cubemap rather than a separate DDS, which is the pinned loader's

@@ -1,179 +1,117 @@
-import ts from "typescript";
-import type { LoweringContext } from "./context.js";
+import { type LoweringContext } from "./context.js";
+import { spriteAtlasFramesCpp } from "./pinned-grid-atlas.js";
+import { PinnedRecordModel } from "./pinned-record-lowerer.js";
+import { textureFilterByPin } from "../pinned-address-modes.js";
+import { stringLiteral } from "../cpp-literals.js";
 
 const packerModule = "src/sprite/shared/sprite-atlas-packer.ts";
 
-function initializer(
-    context: LoweringContext,
-    declaration: ts.FunctionDeclaration,
-    name: string,
-): ts.Expression {
-    const variable = context
-        .findNodes(declaration.body!, ts.isVariableDeclaration)
-        .find(
-            (candidate) =>
-                ts.isIdentifier(candidate.name) && candidate.name.text === name,
-        );
-    if (!variable?.initializer) {
-        context.contractError(
-            declaration,
-            `${declaration.name?.text ?? "Pinned atlas function"} no longer declares '${name}'.`,
-        );
-    }
-    return variable.initializer;
+/** Lower the complete shelf packer and factory; native code only transports pixels and records. */
+export function frameSpriteAtlasCpp(context: LoweringContext): string {
+    const records = [
+        "SpriteAtlasFrameSource",
+        "SpriteAtlasPackOptions",
+        "SpriteFrame",
+        "SpriteAtlasPackState",
+        "SpriteAtlas",
+        "ShelfPackResult",
+        "PixelsTexture2DOptions",
+    ];
+    const model = new PinnedRecordModel(
+        context,
+        context.program.modules([packerModule]),
+        {
+            records: records.map((pinned) => ({
+                pinned: [pinned],
+                cpp: `Packed${pinned}`,
+                reference: false,
+            })),
+            values: new Map([
+                ["EngineContext", { kind: "native", cpp: "bbl::Engine&" }],
+                ["Texture2D", { kind: "native", cpp: "PackedAtlasTexture" }],
+            ]),
+            adapters: new Map([
+                [
+                    "src/texture/pixels-texture.ts#createTexture2DFromPixels",
+                    {
+                        cpp: (argument) =>
+                            `pack_atlas_texture(${argument(0)}, ${argument(1)}, ${argument(2)}, ${argument(3)}, ${argument(4)})`,
+                    },
+                ],
+            ]),
+        },
+    );
+    const lowered = model.lower([
+        model.functionDeclaration(packerModule, "createSpriteAtlasFromFrames"),
+    ]);
+    return `namespace bbl {
+struct PackedAtlasTexture {
+    js::TypedArray<std::uint8_t> pixels;
+    double width;
+    double height;
+    TextureFilter min_filter;
+    TextureFilter mag_filter;
+};
+${model.structs(records)}
+inline TextureFilter packed_atlas_filter(const std::string& name) {
+${Object.entries(textureFilterByPin)
+    .map(
+        ([name, cpp]) =>
+            `    if (name == ${stringLiteral(name)}) return ${cpp};`,
+    )
+    .join("\n")}
+    throw std::runtime_error("Unsupported atlas texture filter.");
 }
-
-/**
- * Assert the shelf placement and texture/frame construction that the native
- * runtime port emits for `createSpriteAtlasFromFrames`.
- *
- * The C++ implementation is deliberately direct because its inputs are
- * borrowed native pixel spans, but every formula it restates remains owned by
- * the pinned Babylon Lite implementation. A pin change therefore fails
- * generation instead of silently changing only the browser side.
- */
-export function assertFrameAtlasRule(context: LoweringContext): void {
-    const { declaration: shelf } = context.functionDeclaration(
-        packerModule,
-        "shelfPack",
-    );
-    // The shelf packer's statements in the pin's order: the shape checks
-    // below say each initializer is present, and only the inventory notices
-    // a statement the pin adds between them.
-    context.assertStatementInventory(
-        shelf,
-        shelf.body!.statements,
-        "shelfPack",
-        "the native frame-atlas packer restates a body",
-        [
-            "variable statement",
-            "variable statement",
-            "variable statement",
-            "variable statement",
-            "variable statement",
-            "variable statement",
-            "for statement",
-            "variable statement",
-            "return statement",
-        ],
-    );
-    const shelfExpressions: ReadonlyArray<readonly [string, string]> = [
-        ["xs", "new Array<number>(sources.length)"],
-        ["ys", "new Array<number>(sources.length)"],
-        ["penX", "startPenX"],
-        ["penY", "startPenY"],
-        ["shelfHeight", "startShelfHeight"],
-        ["contentWidth", "0"],
-        ["srcX", "s.srcX ?? 0"],
-        ["srcY", "s.srcY ?? 0"],
-        ["srcStride", "s.srcStrideBytes ?? s.width * 4"],
-        [
-            "requiredBytes",
-            "(srcY + s.height - 1) * srcStride + (srcX + s.width) * 4",
-        ],
-        ["rightEdge", "penX + s.width"],
-        [
-            "contentHeight",
-            "sources.length === 0 ? startPenY : penY + shelfHeight",
-        ],
-    ];
-    for (const [name, shape] of shelfExpressions) {
-        context.assertExpressionShape(
-            initializer(context, shelf, name),
-            shape,
-            `sprite frame-atlas shelf '${name}'`,
-        );
+inline PackedAtlasTexture pack_atlas_texture([[maybe_unused]] Engine& engine, js::TypedArray<std::uint8_t> pixels,
+    double width, double height, const PackedPixelsTexture2DOptions& options) {
+    if (options.address_mode_u || options.address_mode_v ||
+        (options.srgb && *options.srgb)) {
+        throw std::runtime_error("Unsupported packed atlas texture options.");
     }
-
-    const { declaration: create } = context.functionDeclaration(
-        packerModule,
-        "createSpriteAtlasFromFrames",
-    );
-    context.assertStatementInventory(
-        create,
-        create.body!.statements,
-        "createSpriteAtlasFromFrames",
-        "the native frame-atlas builder restates a body",
-        [
-            "variable statement",
-            "variable statement",
-            "if statement",
-            "variable statement",
-            "variable statement",
-            "variable statement",
-            "variable statement",
-            "if statement",
-            "if statement",
-            "variable statement",
-            "for statement",
-            "variable statement",
-            "variable statement",
-            "variable statement",
-            "for statement",
-            "variable statement",
-            "return statement",
-        ],
-    );
-    const createExpressions: ReadonlyArray<readonly [string, string]> = [
-        ["padding", "options.paddingPx ?? 1"],
-        ["requestedMaxWidth", "options.maxWidthPx ?? 1024"],
-        [
-            "maxWidth",
-            "options.capacityPx ? Math.min(requestedMaxWidth, options.capacityPx[0]) : requestedMaxWidth",
-        ],
-        [
-            "placement",
-            'shelfPack(sources, padding, maxWidth, Number.MAX_SAFE_INTEGER, 0, 0, 0, "createSpriteAtlasFromFrames")',
-        ],
-        [
-            "atlasWidth",
-            "options.capacityPx ? options.capacityPx[0] : Math.max(1, placement.contentWidth)",
-        ],
-        [
-            "atlasHeight",
-            "options.capacityPx ? options.capacityPx[1] : Math.max(1, placement.contentHeight)",
-        ],
-        ["data", "new U8(atlasWidth * atlasHeight * 4)"],
-        ["srcX", "s.srcX ?? 0"],
-        ["srcY", "s.srcY ?? 0"],
-        ["srcStride", "s.srcStrideBytes ?? s.width * 4"],
-        ["rowBytes", "s.width * 4"],
-        ["srcOffset", "(srcY + row) * srcStride + srcX * 4"],
-        [
-            "dstOffset",
-            "((placement.ys[i] + row) * atlasWidth + placement.xs[i]) * 4",
-        ],
-        ["sampling", 'options.sampling ?? "nearest"'],
-        [
-            "texture",
-            "createTexture2DFromPixels(engine, data, atlasWidth, atlasHeight, { minFilter: sampling, magFilter: sampling, srgb: options.srgb ?? false })",
-        ],
-        ["frames", "new Array<SpriteFrame>(sources.length)"],
-    ];
-    for (const [name, shape] of createExpressions) {
-        context.assertExpressionShape(
-            initializer(context, create, name),
-            shape,
-            `sprite frame-atlas creation '${name}'`,
-        );
+    return {std::move(pixels), width, height,
+        packed_atlas_filter(js::present(options.min_filter)),
+        packed_atlas_filter(js::present(options.mag_filter))};
+}
+${lowered.declarations}
+${lowered.definitions}
+namespace upstream {
+inline void pack_sprite_atlas(SpriteAtlasRecord& atlas, Engine& engine,
+    const std::vector<SpriteAtlasFramePixelsView>& sources, const SpriteAtlasPackOptions& options) {
+    js::Array<PackedSpriteAtlasFrameSource> inputs;
+    inputs.reserve(sources.size());
+    for (const auto& source : sources) {
+        PackedSpriteAtlasFrameSource input;
+        input.pixels = js::TypedArray<std::uint8_t>(source.pixels->buffer(),
+            static_cast<double>(source.pixels->byte_offset()), static_cast<double>(source.pixels->size()));
+        input.width = source.width;
+        input.height = source.height;
+        if (source.src_x) input.src_x = *source.src_x;
+        if (source.src_y) input.src_y = *source.src_y;
+        if (source.src_stride_bytes) input.src_stride_bytes = *source.src_stride_bytes;
+        if (source.pivot) input.pivot = js::Tuple<2>{source.pivot->x, source.pivot->y};
+        inputs.push_back(std::move(input));
     }
-
-    const frameAssignment = context
-        .findNodes(create.body!, ts.isBinaryExpression)
-        .find(
-            (candidate) =>
-                candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                candidate.left.getText().replace(/\s+/g, " ") === "frames[i]",
-        );
-    if (!frameAssignment) {
-        context.contractError(
-            create,
-            "createSpriteAtlasFromFrames no longer assigns frames in source order.",
-        );
-    }
-    context.assertExpressionShape(
-        frameAssignment.right,
-        "{ name: s.name, uvMin: [placement.xs[i] / atlasWidth, placement.ys[i] / atlasHeight], uvMax: [(placement.xs[i] + s.width) / atlasWidth, (placement.ys[i] + s.height) / atlasHeight], sourceSizePx: [s.width, s.height], pivot: s.pivot ?? [0.5, 0.5] }",
-        "sprite frame-atlas frame record",
-    );
+    PackedSpriteAtlasPackOptions named;
+    if (options.padding_px) named.padding_px = *options.padding_px;
+    if (options.max_width_px) named.max_width_px = *options.max_width_px;
+    if (options.sampling) named.sampling = *options.sampling;
+    if (options.premultiplied_alpha) named.premultiplied_alpha = *options.premultiplied_alpha;
+    if (options.capacity_px) named.capacity_px = js::Tuple<2>{options.capacity_px->x, options.capacity_px->y};
+    const auto result = create_sprite_atlas_from_frames(engine, inputs, named);
+    atlas.width = js::to_uint32(result.texture.width);
+    atlas.height = js::to_uint32(result.texture.height);
+    atlas.rgba = result.texture.pixels.storage();
+    atlas.premultiplied_alpha = result.premultiplied_alpha;
+    atlas.mip_maps = false;
+    atlas.sampler.min_filter = result.texture.min_filter;
+    atlas.sampler.mag_filter = result.texture.mag_filter;
+    atlas.sampler.mipmap_mode = TextureMipmapMode::nearest;
+    atlas.sampler.address_u = TextureAddressMode::clamp;
+    atlas.sampler.address_v = TextureAddressMode::clamp;
+    atlas.sampler.max_anisotropy = 1.0f;
+    atlas.sampler.max_lod = 0.0f;
+${spriteAtlasFramesCpp("atlas.frames", "result.frames")}
+}
+} // namespace upstream
+} // namespace bbl`;
 }

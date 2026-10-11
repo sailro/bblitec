@@ -1734,7 +1734,7 @@ function runtimeFeatureRows(
 function capabilityRows(
     inputs: FeatureActivationInputs,
 ): FeatureActivationRow[] {
-    const { specialization: spec, emit, features } = inputs;
+    const { emit, features } = inputs;
     const has = (feature: Feature): boolean => features.includes(feature);
     // The pin's background renderables, each drawn from pinned_backgrounds.hpp.
     const backgroundFeatures: readonly Feature[] = [
@@ -2112,11 +2112,8 @@ function capabilityRows(
             composed.metallicReflectanceMap,
             [
                 [
-                    (has("material:metallic-reflectance") ||
-                        spec.materialSpecular) &&
-                        composed.metallicReflectanceMap,
-                    "source or glTF loader reached metallic reflectance " +
-                        "and a composed variant binds metallicReflectanceMap",
+                    composed.metallicReflectanceMap,
+                    "a composed PBR variant binds metallicReflectanceMap",
                 ],
             ],
             "no composed PBR variant binds metallicReflectanceMap",
@@ -2135,11 +2132,8 @@ function capabilityRows(
             composed.reflectanceMap,
             [
                 [
-                    (has("material:metallic-reflectance") ||
-                        spec.materialSpecular) &&
-                        composed.reflectanceMap,
-                    "source or glTF loader reached metallic reflectance " +
-                        "and a composed variant binds reflectanceMap",
+                    composed.reflectanceMap,
+                    "a composed PBR variant binds reflectanceMap",
                 ],
             ],
             "no composed PBR variant binds reflectanceMap",
@@ -2722,38 +2716,6 @@ function emitOptionRows(
             ["loader flag"],
         ),
         row(
-            "assetTransmission",
-            "emit-option",
-            emit.assetTransmission,
-            emit.assetTransmission
-                ? "a glTF material's transmissionFactor > 0"
-                : "no glTF material carries transmissionFactor > 0 (a " +
-                      "declared extension with a zero factor reaches nothing)",
-            "src/loader-gltf/gltf-ext-dielectric.ts sets _transmissive and " +
-                "the refraction intensity from transmissionFactor; " +
-                "registerPbrTransmission " +
-                "(src/material/pbr/pbr-transmission-ext.ts) accepts any " +
-                "such mesh without the scene naming it",
-            ["loader flag", "render_capabilities.hpp"],
-        ),
-        row(
-            "materialSpecular",
-            "emit-option",
-            emit.materialSpecular,
-            emit.materialSpecular
-                ? "a KHR_materials_specular material reaches the specular " +
-                      "half of the pinned needsReflectance (a texture, factor " +
-                      "!= 1, or a non-white colour)"
-                : "no material reaches the specular half of " +
-                      "needsReflectance (the ior-alone arm folds exactly; " +
-                      "factor 1 with white colour reaches nothing)",
-            "src/loader-gltf/gltf-ext-dielectric.ts needsReflectance, the " +
-                "specular half; the ior !== 1.5 arm is folded exactly by " +
-                "the generated loader's reflectance fold and " +
-                "applyDielectric, so it deliberately does not activate this",
-            ["loader flag", "renderer plan"],
-        ),
-        row(
             "textureTransform",
             "emit-option",
             emit.textureTransform,
@@ -2788,10 +2750,10 @@ function emitOptionRows(
             "emit-option",
             emit.imageBasedLighting,
             emit.imageBasedLighting
-                ? "an asset uses EXT_lights_image_based (installs the " +
+                ? "an asset's executed IBL plan installs the " +
                       "asset's own environment, adds the pinned BRDF LUT " +
-                      "asset, and joins environment:ibl)"
-                : "no asset uses EXT_lights_image_based",
+                      "asset, and joins environment:ibl"
+                : "no asset's executed IBL plan installs an environment",
             "src/loader-gltf/gltf-ext-lights-image-based.ts",
             ["renderer plan"],
         ),

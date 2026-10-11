@@ -2,19 +2,16 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
-    captureBuffersPath,
     captureDrawsPath,
     captureShadersDirectory,
     captureTextureUploadsPath,
 } from "./tooling/artifacts.js";
 import {
     fieldOffsets,
-    lastWriteBytes,
     layoutOf,
     parseWgslStructs,
-    storageUsage,
-    storageValueCap,
-    uniformUsage,
+    readCapturedValueBuffers,
+    type CapturedValueBuffer,
     type WgslStruct,
 } from "./capture-uniforms.js";
 import { withoutPinnedProvenance } from "./pinned-provenance.js";
@@ -336,7 +333,7 @@ export interface FamilyCensus {
     effectTasks: number;
 }
 
-export function readNativeCapture(path: string): NativeCapture {
+function readNativeCapture(path: string): NativeCapture {
     if (!existsSync(path)) {
         throw new Error(
             `No native capture at ${path}. Run 'scene -- capture <id> --native' first.`,
@@ -576,64 +573,10 @@ export function pinnedBlockFields(capture: NativeCapture): {
 // Browser side
 // ---------------------------------------------------------------------------
 
-interface CapturedBuffer {
-    id?: number;
-    label?: string;
-    size?: number;
-    usage?: number;
-    writes?: Array<{ data?: string } | string>;
-    mappedWrites?: Array<{ data?: string }>;
-}
-
-/** One buffers.json entry that passed admission, its last write decoded. */
-export interface AdmittedBuffer {
-    id: number | string;
-    size: number;
-    bytes: Buffer;
-}
-
-/**
- * The capture's buffers.json, parsed once and reduced to the buffers
- * whose values are worth reading — uniform blocks, plus storage buffers
- * small enough to be state rather than geometry — each with its newest
- * write decoded. Both projections below (the struct-decoded fields and
- * the raw vec4 rows) read this one result, so they cannot disagree about
- * which buffers even have bytes, and the multi-megabyte base64 payload
- * is parsed and decoded once per diff instead of once per projection.
- */
-function admittedBuffers(captureDirectory: string): AdmittedBuffer[] {
-    const buffersPath = captureBuffersPath(captureDirectory);
-    if (!existsSync(buffersPath)) {
-        throw new Error(
-            `No browser capture at ${buffersPath}. Run 'scene -- capture <id>' first.`,
-        );
-    }
-    const buffers = JSON.parse(
-        readFileSync(buffersPath, "utf8"),
-    ) as CapturedBuffer[];
-    const admitted: AdmittedBuffer[] = [];
-    for (const buffer of buffers) {
-        const usage = buffer.usage ?? 0;
-        const uniform = (usage & uniformUsage) !== 0;
-        const storage =
-            (usage & storageUsage) !== 0 &&
-            (buffer.size ?? 0) <= storageValueCap;
-        if (!uniform && !storage) continue;
-        const bytes = lastWriteBytes(buffer);
-        if (!bytes) continue;
-        admitted.push({
-            id: buffer.id ?? "?",
-            size: buffer.size ?? bytes.length,
-            bytes,
-        });
-    }
-    return admitted;
-}
-
 /** A buffer's payload as bare `buffer#<id>[<lane>]` vec4 rows — upload
  *  granularity, shared by the no-struct fallback and the row projection
  *  so the two spell their names and lanes identically. */
-function bufferVec4Rows(buffer: AdmittedBuffer): UniformField[] {
+function bufferVec4Rows(buffer: CapturedValueBuffer): UniformField[] {
     const rows: UniformField[] = [];
     for (let offset = 0; offset + 16 <= buffer.bytes.length; offset += 16) {
         rows.push({
@@ -668,8 +611,8 @@ function readBrowserShaderTexts(captureDirectory: string): Map<string, string> {
  * each of them; duplicate names collapse when their values agree, which
  * they do for the scene block every fragment redeclares.
  */
-export function browserUniformFields(
-    buffers: readonly AdmittedBuffer[],
+function browserUniformFields(
+    buffers: readonly CapturedValueBuffer[],
     structs: readonly WgslStruct[],
 ): UniformField[] {
     const fields: UniformField[] = [];
@@ -720,8 +663,8 @@ export function browserUniformFields(
  * candidate pool only: reporting them under "browser values with no
  * native counterpart" would duplicate every decoded field.
  */
-export function browserBufferValueRows(
-    buffers: readonly AdmittedBuffer[],
+function browserBufferValueRows(
+    buffers: readonly CapturedValueBuffer[],
 ): UniformField[] {
     return buffers.flatMap((buffer) => bufferVec4Rows(buffer));
 }
@@ -1111,7 +1054,7 @@ function nativeDrawShapes(capture: NativeCapture): Set<string> {
  * a browser counterpart match it byte-for-byte already, so all this
  * forgives is line endings and trailing space.
  */
-export function normalizeShaderText(text: string): string {
+function normalizeShaderText(text: string): string {
     return text
         .split("\n")
         .map((line) => line.replace(/\s+$/, ""))
@@ -1263,7 +1206,7 @@ export function buildRenderDiff(
     // The browser capture is parsed once: the admitted buffers serve both
     // value projections, and the shader texts serve the struct parse, the
     // arm comparison and the sample-call listing.
-    const captureBuffers = admittedBuffers(captureDirectory);
+    const captureBuffers = readCapturedValueBuffers(captureDirectory);
     const browserShaderTexts = readBrowserShaderTexts(captureDirectory);
     const structs: WgslStruct[] = [];
     for (const [name, text] of browserShaderTexts) {

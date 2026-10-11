@@ -19,7 +19,7 @@ test("stored sprite atlases remain warning-clean under LTCG with and without ima
     const result = compileSource(`
         import {createEngine,createSprite2DLayer,createTexture2DFromPixels,type SpriteAtlas,type Texture2D} from '@babylonjs/lite';
         async function assets(texture:Texture2D):Promise<{texture:Texture2D,frames:SpriteAtlas['frames']}>{
-            return {texture,frames:[{uvMin:[0,0],uvMax:[1,1],sourceSizePx:[1,1],pivot:[0.5,0.5]}]};
+            return {texture,frames:[{uvMin:[0.1000000001,0.2000000001],uvMax:[0.9000000001,0.8000000001],sourceSizePx:[16777217,1.00000001],pivot:[0.5000000001,0.5000000002]}]};
         }
         async function main(){
             const engine=await createEngine({});
@@ -64,12 +64,18 @@ int main() {
     bbl::StoredTexture texture = pixels;
     const bbl::js::Array<bblscene::SpriteFrame> frames{
         bbl::js::make_ref<bblscene::SpriteFrameData>(bblscene::SpriteFrameData{
-            std::nullopt, {0,0}, {1,1}, {1,1}, {0.5,0.5}})};
+            std::nullopt, {0.1000000001,0.2000000001}, {0.9000000001,0.8000000001},
+            {16777217,1.00000001}, {0.5000000001,0.5000000002}})};
     const auto first = bblscene::${helper}(engine,texture,1,1,true,frames);
     const auto& atlas = engine.sprite_atlases.at(first.value);
     const std::vector<std::uint8_t> original{80,40,20,128};
     assert(*atlas.rgba == original && atlas.width == 1 && atlas.height == 1);
-    assert(atlas.frames.size() == 1 && atlas.frames[0].pivot.x == 0.5f);
+    assert(atlas.frames.size() == 1);
+    const auto& frame = atlas.frames[0];
+    assert(frame.uv_min.x == 0.1000000001 && frame.uv_min.y == 0.2000000001);
+    assert(frame.uv_max.x == 0.9000000001 && frame.uv_max.y == 0.8000000001);
+    assert(frame.source_size_px.x == 16777217 && frame.source_size_px.y == 1.00000001);
+    assert(frame.pivot.x == 0.5000000001 && frame.pivot.y == 0.5000000002);
     assert(atlas.premultiplied_alpha && !atlas.mip_maps);
     bbl::FileTexture file;
     file.data.bytes = {${[...png].join(",")}};

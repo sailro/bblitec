@@ -9,8 +9,13 @@ import {
 import { pinnedHeader } from "./pinned-header.js";
 import {
     lowerWorldAabbHelpers,
-    worldAabbArrayCopies,
+    worldAabbLaneBindings,
 } from "./world-bounds-lowerer.js";
+import {
+    lowerPinnedFunction,
+    lowerTupleComponents,
+} from "./pinned-function-lowerer.js";
+import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 
 /** The DDS background composite, reached without the `.env` loader. */
@@ -177,96 +182,20 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes);
                 "src/loader-env/load-env.ts#polynomialToPreScaledHarmonics",
             )}
 #include <bblite/upstream/env_parse.hpp>
+#include <bblite/js_data.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
-#include <cctype>
-#include <cstdlib>
 #include <stdexcept>
-#include <string>
 #include <string_view>
 
 namespace bbl::upstream {
 namespace {
 
-struct MipmapEntry {
-    std::size_t position = 0;
-    std::size_t length = 0;
-};
-
-void skip_space(std::string_view text, std::size_t& position) {
-    while (position < text.size() && std::isspace(static_cast<unsigned char>(text[position]))) ++position;
-}
-
-double parse_number(std::string_view text, std::size_t& position) {
-    skip_space(text, position);
-    const char* begin = text.data() + position;
-    char* end = nullptr;
-    const double value = std::strtod(begin, &end);
-    if (end == begin) throw std::runtime_error("Invalid number in environment manifest.");
-    position = static_cast<std::size_t>(end - text.data());
-    return value;
-}
-
-std::size_t find_value(std::string_view text, std::string_view key, std::size_t start = 0) {
-    const std::string quoted = "\\"" + std::string(key) + "\\"";
-    const std::size_t key_position = text.find(quoted, start);
-    if (key_position == std::string_view::npos) {
-        throw std::runtime_error("Environment manifest is missing '" + std::string(key) + "'.");
-    }
-    const std::size_t colon = text.find(':', key_position + quoted.size());
-    if (colon == std::string_view::npos) throw std::runtime_error("Invalid environment manifest.");
-    return colon + 1;
-}
-
-std::size_t parse_unsigned(std::string_view text, std::string_view key, std::size_t start = 0) {
-    std::size_t position = find_value(text, key, start);
-    const double value = parse_number(text, position);
-    if (value < 0.0) throw std::runtime_error("Negative environment manifest value.");
-    return static_cast<std::size_t>(value);
-}
-
-Color3 parse_color(std::string_view text, std::string_view key, std::size_t start) {
-    std::size_t position = text.find('[', find_value(text, key, start));
-    if (position == std::string_view::npos) throw std::runtime_error("Invalid environment coefficient.");
-    ++position;
-    Color3 result;
-    result.r = static_cast<float>(parse_number(text, position));
-    position = text.find(',', position) + 1;
-    result.g = static_cast<float>(parse_number(text, position));
-    position = text.find(',', position) + 1;
-    result.b = static_cast<float>(parse_number(text, position));
-    return result;
-}
-
 ${COLOR_CHANNEL_HELPERS_CPP}
 
 ${prescale}
-
-std::vector<MipmapEntry> parse_mipmaps(std::string_view manifest) {
-    const std::size_t start = manifest.find("\\"mipmaps\\"");
-    const std::size_t array_start = manifest.find('[', start);
-    const std::size_t array_end = manifest.find(']', array_start);
-    if (start == std::string_view::npos || array_start == std::string_view::npos || array_end == std::string_view::npos) {
-        throw std::runtime_error("Invalid environment mipmap array.");
-    }
-    std::vector<MipmapEntry> result;
-    std::size_t cursor = array_start;
-    while (true) {
-        const std::size_t length_key = manifest.find("\\"length\\"", cursor);
-        if (length_key == std::string_view::npos || length_key >= array_end) break;
-        const std::size_t position_key = manifest.find("\\"position\\"", length_key);
-        if (position_key == std::string_view::npos || position_key >= array_end) {
-            throw std::runtime_error("Invalid environment mipmap entry.");
-        }
-        result.push_back(MipmapEntry{
-            parse_unsigned(manifest, "position", position_key),
-            parse_unsigned(manifest, "length", length_key),
-        });
-        cursor = position_key + 10;
-    }
-    return result;
-}
 
 std::uint32_t mip_level_count(std::uint32_t width) {
     std::uint32_t count = 1;
@@ -288,20 +217,21 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
     if (terminator == bytes.end()) throw std::runtime_error("Invalid .env manifest.");
     const std::size_t json_end = static_cast<std::size_t>(terminator - bytes.begin());
     const std::size_t binary_start = json_end + 1;
-    const std::string_view manifest(
-        reinterpret_cast<const char*>(bytes.data() + 8),
-        json_end - 8);
-    const std::size_t irradiance_start = manifest.find("\\"irradiance\\"");
-    if (irradiance_start == std::string_view::npos) throw std::runtime_error("Missing irradiance.");
+    const auto manifest = nlohmann::json::parse(bytes.begin() + 8, terminator);
+    const auto& irradiance = manifest.at("irradiance");
     const std::array<std::string_view, 9> coefficient_names{${keys}};
     std::array<Color3, 9> polynomial{};
     for (std::size_t index = 0; index < coefficient_names.size(); ++index) {
-        polynomial[index] = parse_color(manifest, coefficient_names[index], irradiance_start);
+        const auto& coefficient = irradiance.at(coefficient_names[index]);
+        polynomial[index] = Color3{
+            coefficient.at(0).get<float>(),
+            coefficient.at(1).get<float>(),
+            coefficient.at(2).get<float>()};
     }
-    const std::uint32_t width = static_cast<std::uint32_t>(parse_unsigned(manifest, "width"));
+    const std::uint32_t width = gpu_u32(gpu_size(manifest.at("width").get<double>()));
     const std::uint32_t mip_count = mip_level_count(width);
-    const std::vector<MipmapEntry> mipmaps = parse_mipmaps(manifest);
-    if (mipmaps.size() != static_cast<std::size_t>(mip_count) * 6) {
+    const auto& mipmaps = manifest.at("specular").at("mipmaps");
+    if (!mipmaps.is_array() || mipmaps.size() != static_cast<std::size_t>(mip_count) * 6) {
         throw std::runtime_error("Environment mipmap count is not six faces per level.");
     }
 
@@ -310,10 +240,14 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
     result.width = width;
     result.mip_count = mip_count;
     result.faces.reserve(mipmaps.size());
-    for (const MipmapEntry& mipmap : mipmaps) {
-        const std::size_t start = binary_start + mipmap.position;
-        const std::size_t end = start + mipmap.length;
-        if (end > bytes.size()) throw std::runtime_error("Environment mipmap exceeds file.");
+    for (const auto& mipmap : mipmaps) {
+        const auto position = js::buffer_view_index(mipmap.at("position").get<double>());
+        const auto length = js::buffer_view_index(mipmap.at("length").get<double>());
+        const auto available = bytes.size() - binary_start;
+        if (position > available || length > available - position)
+            throw std::runtime_error("Environment mipmap exceeds file.");
+        const std::size_t start = binary_start + position;
+        const std::size_t end = start + length;
         TextureData face;
         face.bytes.assign(
             bytes.begin() + static_cast<std::ptrdiff_t>(start),
@@ -382,7 +316,6 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
                 );
             }
         }
-        const sceneSize = this.readSceneSizeContract();
         if (
             !this.context.hasNode(
                 declaration,
@@ -438,28 +371,18 @@ namespace bbl {
 
 namespace {
 
-${lowerWorldAabbHelpers(this.context, { emptyAccumulator: false })}
+${lowerWorldAabbHelpers(this.context, { emptyAccumulator: true })}
 
-// The pinned expansion over one mesh's local geometry box and its live
-// float32 world matrix, into the scene-size bounds. Keeping that transform
-// is essential for procedural meshes added after loadEnvironment
-// (including invisible shadow anchors).
-void expand_world_aabb_for_box(
-    std::array<double, 3>& minimum,
-    std::array<double, 3>& maximum,
-    const Vec3& box_min,
-    const Vec3& box_max,
-    const std::array<float, 16>& world,
-    const MeshRecord& record) {
-    WorldAabb acc{};
-${worldAabbArrayCopies(this.context, "minimum", "maximum").load}
+void expand_scene_mesh_bounds(WorldAabb& acc, const Scene& scene, MeshHandle handle) {
+    const MeshRecord& record = ${recordAt("scene.engine->meshes", "handle")};
+    if (record.geometry >= scene.engine->geometries.size()) return;
+    const ModelGeometry& geometry = scene.engine->geometries[record.geometry];
     WorldAabbMesh mesh;
-    mesh.bound_min = std::array<float, 3>{box_min.x, box_min.y, box_min.z};
-    mesh.bound_max = std::array<float, 3>{box_max.x, box_max.y, box_max.z};
-    mesh.world_matrix = world;
+    mesh.bound_min = {geometry.bounds_min.x, geometry.bounds_min.y, geometry.bounds_min.z};
+    mesh.bound_max = {geometry.bounds_max.x, geometry.bounds_max.y, geometry.bounds_max.z};
+    mesh.world_matrix = upstream::mesh_world_matrix(*scene.engine, record);
     read_thin_instance_world_bounds(mesh, record);
     expand_world_aabb_for_mesh(acc, mesh);
-${worldAabbArrayCopies(this.context, "minimum", "maximum").store}
 }
 
 std::uint32_t read_u32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
@@ -494,91 +417,15 @@ void read_dds_skybox(
     environment.skybox_uses_environment = false;
 }
 
-// src/material/pbr/scene-size.ts computeSceneSize over
-// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh. Both run
-// in JavaScript doubles over Float32Array boxes, and the box is
-// re-derived as a centre plus a per-row abs-coefficient radius
-// rather than taken as min/max -- which returns the same bounds
-// through an identity world matrix only because every term of
-// that round-trip is exact in double. Accumulating in float
-// instead moved the root by one ULP, and the background dither
-// seeds on the world position it places, so the whole ground
-// decorrelated.
-//
-// Every caller runs it from a deferred builder because upstream computes it
-// inside one: the bounds are the scene's at build time, not at load time.
-void apply_scene_size(Scene& scene, double requested_skybox_size) {
-    std::array<double, 3> bounds_min{
-        std::numeric_limits<double>::infinity(),
-        std::numeric_limits<double>::infinity(),
-        std::numeric_limits<double>::infinity(),
-    };
-    std::array<double, 3> bounds_max{
-        -std::numeric_limits<double>::infinity(),
-        -std::numeric_limits<double>::infinity(),
-        -std::numeric_limits<double>::infinity(),
-    };
-    for (const MeshHandle handle : scene.meshes) {
-        if (handle.value >= scene.engine->meshes.size()) continue;
-        const MeshRecord& mesh =
-            ${recordAt("scene.engine->meshes", "handle")};
-        if (mesh.geometry >=
-            scene.engine->geometries.size()) {
-            continue;
-        }
-        const ModelGeometry& geometry =
-            scene.engine->geometries[mesh.geometry];
-        const std::array<float, 16> world =
-            upstream::mesh_world_matrix(*scene.engine, mesh);
-        expand_world_aabb_for_box(
-            bounds_min,
-            bounds_max,
-            geometry.bounds_min,
-            geometry.bounds_max,
-            world,
-            mesh);
-    }
-    scene.environment.ground_size = ${this.context.doubleLiteral(sceneSize.groundDefault)};
-    scene.environment.skybox_size = requested_skybox_size;
-    scene.environment.ground_position = Vec3d{};
-    scene.environment.skybox_position = Vec3d{};
-    if (!std::isfinite(bounds_min[0])) return;
-    const double dx = bounds_max[0] - bounds_min[0];
-    const double dy = bounds_max[1] - bounds_min[1];
-    const double dz = bounds_max[2] - bounds_min[2];
-    const double diagonal =
-        std::sqrt(dx * dx + dy * dy + dz * dz);
-    double ground_size = ${this.context.doubleLiteral(sceneSize.groundDefault)};
-    double skybox_size = requested_skybox_size;
-    if (
-        scene.camera.value < scene.engine->cameras.size() &&
-        ${recordAt("scene.engine->cameras", "scene.camera")}.kind ==
-            CameraKind::arc_rotate) {
-        const CameraRecord& camera =
-            ${recordAt("scene.engine->cameras", "scene.camera")};
-        if (
-            camera.upper_radius_limit &&
-            *camera.upper_radius_limit != 0.0) {
-            ground_size = *camera.upper_radius_limit *
-                ${this.context.doubleLiteral(sceneSize.cameraRadiusScale)};
-            skybox_size = ground_size;
-        }
-    }
-    if (diagonal > ground_size) {
-        ground_size = diagonal * ${this.context.doubleLiteral(sceneSize.diagonalScale)};
-        skybox_size = ground_size;
-    }
-    ground_size *= ${this.context.doubleLiteral(sceneSize.groundScale)};
-    skybox_size *= ${this.context.doubleLiteral(sceneSize.skyboxScale)};
-    scene.environment.ground_size = ground_size;
-    scene.environment.skybox_size = skybox_size;
+${this.lowerSceneSize()}
+
+void apply_scene_size(Scene& scene, std::optional<double> requested_skybox_size) {
+    const auto size = compute_scene_size(scene, requested_skybox_size);
+    scene.environment.ground_size = size.ground_size;
+    scene.environment.skybox_size = size.skybox_size;
     scene.environment.ground_position = Vec3d{
-        bounds_min[0] + dx * ${this.context.doubleLiteral(sceneSize.rootHalf)},
-        bounds_min[1] - ${this.context.doubleLiteral(sceneSize.rootDrop)},
-        bounds_min[2] + dz * ${this.context.doubleLiteral(sceneSize.rootHalf)},
-    };
-    scene.environment.skybox_position =
-        scene.environment.ground_position;
+        size.root_position[0], size.root_position[1], size.root_position[2]};
+    scene.environment.skybox_position = scene.environment.ground_position;
 }
 
 } // namespace
@@ -656,8 +503,8 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
     } else if (!options.skybox_url.empty()) {
         read_dds_skybox(scene.environment, options.skybox_url);
     }
-    const double requested_skybox_size =
-        options.skybox_size > 0.0 ? options.skybox_size : ${this.context.doubleLiteral(sceneSize.skyboxDefault)};
+    const std::optional<double> requested_skybox_size =
+        options.skybox_size;
     scene.deferred_builders.emplace_back(
         [&scene, requested_skybox_size]() {
             apply_scene_size(scene, requested_skybox_size);
@@ -1066,348 +913,174 @@ ${spec.tail}}
         };
     }
 
-    /**
-     * The sizing the deferred builder reproduces. Round 1 pinned its
-     * numbers as an order-free literal bag; here each constant is read
-     * from its own parameter position — the empty-scene defaults, the
-     * diagonal override, the two final scales, and the root composition —
-     * and FLOWS into the emitted builder, so a moved literal cannot pass
-     * by matching a different parameter that happens to share its value.
-     */
-    private readSceneSizeContract(): {
-        groundDefault: number;
-        skyboxDefault: number;
-        cameraRadiusScale: number;
-        diagonalScale: number;
-        groundScale: number;
-        skyboxScale: number;
-        rootHalf: number;
-        rootDrop: number;
-    } {
-        const sizeModule = "src/material/pbr/scene-size.ts";
-        const { file, declaration } = this.context.functionDeclaration(
-            sizeModule,
+    /** The complete pinned sizing body over native mesh and camera records. */
+    public lowerSceneSize(): string {
+        const modulePath = "src/material/pbr/scene-size.ts";
+        const { declaration } = this.context.functionDeclaration(
+            modulePath,
             "computeSceneSize",
         );
-        for (const call of ["emptyWorldAabb", "expandWorldAabbForMesh"]) {
-            if (!this.context.hasCall(declaration, call)) {
-                this.context.contractError(
-                    declaration,
-                    `Expected computeSceneSize to call ${call}.`,
-                );
-            }
-        }
-        // The empty-scene early return (the first object-literal return)
-        // and the main path's seeds must agree: the emitted builder stores
-        // the defaults once, before the finite check, and returns.
-        const emptyReturn = this.context.returnObject(declaration);
-        const emptyGround = this.context.numericValue(
-            this.context.propertyInitializer(emptyReturn, "groundSize"),
-            file,
+        const body = lowerPinnedFunction(
+            this.context,
+            modulePath,
+            "computeSceneSize",
+            [
+                {
+                    pinned: "scene",
+                    kind: "record",
+                    cpp: "scene",
+                    annotation: "SceneContext",
+                    cppType: "Scene",
+                },
+                {
+                    pinned: "userSkyboxSize",
+                    kind: "number",
+                    cpp: "requested_skybox_size",
+                    optional: true,
+                    cppType: "std::optional<double>",
+                    binding: {
+                        cpp: "*requested_skybox_size",
+                        type: "scalar",
+                        nullish: "!requested_skybox_size.has_value()",
+                    },
+                },
+            ],
+            {
+                cppName: "compute_scene_size",
+                returns: {
+                    type: "SceneSize",
+                    value: (lowerer, expression) => {
+                        if (!expression)
+                            this.context.contractError(
+                                declaration,
+                                "Expected a scene size return value.",
+                            );
+                        const object =
+                            this.context.unwrapExpression(expression);
+                        if (!ts.isObjectLiteralExpression(object))
+                            this.context.contractError(
+                                object,
+                                "Expected a scene size record.",
+                            );
+                        const root = this.context.propertyInitializer(
+                            object,
+                            "rootPosition",
+                        );
+                        const rootValue = ts.isArrayLiteralExpression(root)
+                            ? `std::array<double, 3>{${lowerTupleComponents(this.context, lowerer, root, { at: root, arity: 3 }).join(", ")}}`
+                            : lowerer.expression(root);
+                        return `SceneSize{${lowerer.expression(this.context.propertyInitializer(object, "groundSize"))}, ${lowerer.expression(this.context.propertyInitializer(object, "skyboxSize"))}, ${rootValue}}`;
+                    },
+                },
+                localStorage: [
+                    {
+                        pinned: "acc",
+                        initializer: "emptyWorldAabb()",
+                        binding: { cpp: "acc", type: "opaque" },
+                        declaration: "WorldAabb acc = empty_world_aabb();",
+                    },
+                ],
+                memberBindings: new Map<string, PinnedBinding>([
+                    ...worldAabbLaneBindings(this.context, "acc", "acc"),
+                    ["scene.meshes", { cpp: "scene.meshes", type: "opaque" }],
+                ]),
+                calls: new Map([
+                    [
+                        "expandWorldAabbForMesh",
+                        ([acc, mesh]) =>
+                            `expand_scene_mesh_bounds(${acc}, scene, ${mesh})`,
+                    ],
+                    ["isFinite", ([value]) => `std::isfinite(${value})`],
+                ]),
+                forOf: (iterated, element) =>
+                    iterated === "scene.meshes"
+                        ? {
+                              range: iterated,
+                              bindings: new Map([
+                                  [element, { cpp: element, type: "opaque" }],
+                              ]),
+                          }
+                        : undefined,
+                statement: (statement, lowerer, indent) => {
+                    if (
+                        !ts.isVariableStatement(statement) ||
+                        statement.declarationList.declarations.length !== 1
+                    )
+                        return undefined;
+                    const local = statement.declarationList.declarations[0]!;
+                    if (!ts.isIdentifier(local.name) || !local.initializer)
+                        return undefined;
+                    if (local.name.text === "cam") {
+                        this.context.assertExpressionShape(
+                            local.initializer,
+                            "scene.camera",
+                            "Scene camera storage boundary",
+                        );
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    "cam",
+                                    {
+                                        cpp: "camera",
+                                        type: "opaque",
+                                        absentCpp: "camera == nullptr",
+                                    },
+                                ],
+                                [
+                                    "cam.upperRadiusLimit",
+                                    {
+                                        cpp: "camera->upper_radius_limit.value_or(std::numeric_limits<double>::quiet_NaN())",
+                                        type: "scalar",
+                                    },
+                                ],
+                            ],
+                            local,
+                        );
+                        return [
+                            `${indent}const auto* camera = bbl::handle_find(scene.engine->cameras, scene.camera);`,
+                        ];
+                    }
+                    if (local.name.text !== "rootPosition") return undefined;
+                    const values = lowerTupleComponents(
+                        this.context,
+                        lowerer,
+                        local.initializer,
+                        { at: local, arity: 3 },
+                    );
+                    lowerer.bindLocal(local.name, {
+                        cpp: "root_position",
+                        type: "f64-buffer",
+                    });
+                    return [
+                        `${indent}const std::array<double, 3> root_position{${values.join(", ")}};`,
+                    ];
+                },
+                expression: (expression, lowerer) => {
+                    if (
+                        !ts.isBinaryExpression(expression) ||
+                        expression.operatorToken.kind !==
+                            ts.SyntaxKind.InKeyword
+                    )
+                        return undefined;
+                    if (
+                        !ts.isStringLiteral(expression.left) ||
+                        expression.left.text !== "upperRadiusLimit" ||
+                        lowerer.binding(expression.right)?.cpp !== "camera"
+                    )
+                        this.context.contractError(
+                            expression,
+                            "Unsupported camera property membership.",
+                        );
+                    return "camera->kind == CameraKind::arc_rotate";
+                },
+            },
         );
-        const skyboxFallback = (
-            expression: ts.Expression,
-            label: string,
-        ): number => {
-            const unwrapped = this.context.unwrapExpression(expression);
-            if (
-                !ts.isBinaryExpression(unwrapped) ||
-                unwrapped.operatorToken.kind !==
-                    ts.SyntaxKind.QuestionQuestionToken ||
-                !ts.isIdentifier(unwrapped.left) ||
-                unwrapped.left.text !== "userSkyboxSize"
-            ) {
-                this.context.contractError(
-                    expression,
-                    `Expected ${label} to default the user skybox size.`,
-                );
-            }
-            return this.context.numericValue(unwrapped.right, file);
-        };
-        const emptySkybox = skyboxFallback(
-            this.context.propertyInitializer(emptyReturn, "skyboxSize"),
-            "the empty-scene skybox size",
-        );
-        const emptyRoot = this.context.numericTuple(
-            this.context.propertyInitializer(emptyReturn, "rootPosition"),
-            file,
-        );
-        if (emptyRoot.some((component) => component !== 0)) {
-            this.context.contractError(
-                emptyReturn,
-                "Expected the empty-scene root at the origin.",
-            );
-        }
-        const groundDefault = this.context.numericValue(
-            this.context.variableInitializer(declaration, "groundSize"),
-            file,
-        );
-        const skyboxDefault = skyboxFallback(
-            this.context.variableInitializer(declaration, "skyboxSize"),
-            "the skybox seed",
-        );
-        if (groundDefault !== emptyGround || skyboxDefault !== emptySkybox) {
-            this.context.contractError(
-                declaration,
-                "Scene-size defaults no longer agree between the empty and sized paths.",
-            );
-        }
-        // The camera-limit and diagonal override arms, paired with the
-        // emitted deferred builder line by line. The camera's
-        // upperRadiusLimit wins first, exactly as in the pin; the diagonal
-        // may then widen it. Select each arm by its multiplicand rather than
-        // by position so a harmless source reorder does not confuse them.
-        for (const [name, expected] of [
-            ["dx", "maxX - minX"],
-            ["dy", "maxY - minY"],
-            ["dz", "maxZ - minZ"],
-            ["sceneDiagonalLength", "Math.sqrt(dx * dx + dy * dy + dz * dz)"],
-        ] as const) {
-            this.context.assertExpressionShape(
-                this.context.variableInitializer(declaration, name),
-                expected,
-                `Scene-size '${name}'`,
-            );
-        }
-        const assignments = this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
-        );
-        const cam = this.context.unwrapExpression(
-            this.context.variableInitializer(declaration, "cam"),
-        );
-        if (
-            !ts.isPropertyAccessExpression(cam) ||
-            !ts.isIdentifier(cam.expression) ||
-            cam.expression.text !== "scene" ||
-            cam.name.text !== "camera"
-        ) {
-            this.context.contractError(
-                cam,
-                "Expected scene sizing to inspect scene.camera.",
-            );
-        }
-        const cameraGuards = assignments.filter(
-            (expression) =>
-                expression.operatorToken.kind === ts.SyntaxKind.InKeyword &&
-                ts.isStringLiteral(expression.left) &&
-                expression.left.text === "upperRadiusLimit" &&
-                ts.isIdentifier(expression.right) &&
-                expression.right.text === "cam",
-        );
-        if (cameraGuards.length !== 1) {
-            this.context.contractError(
-                declaration,
-                "Expected one arc-rotate upperRadiusLimit guard.",
-            );
-        }
-        const cameraOverrides = assignments.filter((expression) => {
-            if (
-                expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
-                !ts.isIdentifier(expression.left) ||
-                expression.left.text !== "groundSize"
-            ) {
-                return false;
-            }
-            const product = this.context.unwrapExpression(expression.right);
-            if (
-                !ts.isBinaryExpression(product) ||
-                product.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
-                !ts.isNumericLiteral(product.right)
-            ) {
-                return false;
-            }
-            const limit = this.context.unwrapExpression(product.left);
-            return (
-                ts.isPropertyAccessExpression(limit) &&
-                limit.name.text === "upperRadiusLimit" &&
-                ts.isIdentifier(
-                    this.context.unwrapExpression(limit.expression),
-                ) &&
-                (
-                    this.context.unwrapExpression(
-                        limit.expression,
-                    ) as ts.Identifier
-                ).text === "cam"
-            );
-        });
-        if (cameraOverrides.length !== 1) {
-            this.context.contractError(
-                declaration,
-                "Expected one camera-radius-driven ground override.",
-            );
-        }
-        const cameraRadiusScale = this.context.numericValue(
-            (
-                this.context.unwrapExpression(
-                    cameraOverrides[0]!.right,
-                ) as ts.BinaryExpression
-            ).right,
-            file,
-        );
-        const diagonalGuards = assignments.filter(
-            (expression) =>
-                expression.operatorToken.kind ===
-                    ts.SyntaxKind.GreaterThanToken &&
-                ts.isIdentifier(expression.left) &&
-                expression.left.text === "sceneDiagonalLength" &&
-                ts.isIdentifier(expression.right) &&
-                expression.right.text === "groundSize",
-        );
-        if (diagonalGuards.length !== 1) {
-            this.context.contractError(
-                declaration,
-                "Expected one diagonal-versus-ground guard.",
-            );
-        }
-        const diagonalOverrides = assignments.filter((expression) => {
-            if (
-                expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
-                !ts.isIdentifier(expression.left) ||
-                expression.left.text !== "groundSize"
-            ) {
-                return false;
-            }
-            const product = this.context.unwrapExpression(expression.right);
-            return (
-                ts.isBinaryExpression(product) &&
-                product.operatorToken.kind === ts.SyntaxKind.AsteriskToken &&
-                ts.isIdentifier(product.left) &&
-                product.left.text === "sceneDiagonalLength" &&
-                ts.isNumericLiteral(product.right)
-            );
-        });
-        if (diagonalOverrides.length !== 1) {
-            this.context.contractError(
-                declaration,
-                "Expected one diagonal-driven ground override.",
-            );
-        }
-        const diagonalScale = this.context.numericValue(
-            (
-                this.context.unwrapExpression(
-                    diagonalOverrides[0]!.right,
-                ) as ts.BinaryExpression
-            ).right,
-            file,
-        );
-        const skyboxFollows = assignments.filter(
-            (expression) =>
-                expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isIdentifier(expression.left) &&
-                expression.left.text === "skyboxSize" &&
-                ts.isIdentifier(
-                    this.context.unwrapExpression(expression.right),
-                ),
-        );
-        if (
-            !skyboxFollows.some(
-                (expression) =>
-                    (
-                        this.context.unwrapExpression(
-                            expression.right,
-                        ) as ts.Identifier
-                    ).text === "groundSize",
-            )
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected the skybox to follow the overridden ground size.",
-            );
-        }
-        // The final scales, each tied to the variable it multiplies.
-        const scaleOf = (name: string): number => {
-            const scaled = assignments.filter(
-                (expression) =>
-                    expression.operatorToken.kind ===
-                        ts.SyntaxKind.AsteriskEqualsToken &&
-                    ts.isIdentifier(expression.left) &&
-                    expression.left.text === name,
-            );
-            if (scaled.length !== 1) {
-                this.context.contractError(
-                    declaration,
-                    `Expected one final '${name}' scale.`,
-                );
-            }
-            return this.context.numericValue(scaled[0]!.right, file);
-        };
-        const groundScale = scaleOf("groundSize");
-        const skyboxScale = scaleOf("skyboxSize");
-        // The root: box centre on x and z (one shared half factor) and the
-        // box floor minus a drop on y, each read from its own slot of the
-        // pinned rootPosition tuple.
-        const root = this.context.unwrapExpression(
-            this.context.variableInitializer(declaration, "rootPosition"),
-        );
-        if (!ts.isArrayLiteralExpression(root) || root.elements.length !== 3) {
-            this.context.contractError(
-                root,
-                "Expected a three-component root position.",
-            );
-        }
-        const centreHalf = (
-            element: ts.Expression,
-            minName: string,
-            deltaName: string,
-        ): number => {
-            const unwrapped = this.context.unwrapExpression(element);
-            if (
-                !ts.isBinaryExpression(unwrapped) ||
-                unwrapped.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
-                !ts.isIdentifier(unwrapped.left) ||
-                unwrapped.left.text !== minName
-            ) {
-                this.context.contractError(
-                    element,
-                    `Expected the root to centre from ${minName}.`,
-                );
-            }
-            const product = this.context.unwrapExpression(unwrapped.right);
-            if (
-                !ts.isBinaryExpression(product) ||
-                product.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
-                !ts.isIdentifier(product.left) ||
-                product.left.text !== deltaName
-            ) {
-                this.context.contractError(
-                    element,
-                    `Expected the root to scale ${deltaName}.`,
-                );
-            }
-            return this.context.numericValue(product.right, file);
-        };
-        const halfX = centreHalf(root.elements[0]!, "minX", "dx");
-        const halfZ = centreHalf(root.elements[2]!, "minZ", "dz");
-        if (halfX !== halfZ) {
-            this.context.contractError(
-                root,
-                "Expected one shared root centre factor.",
-            );
-        }
-        const floor = this.context.unwrapExpression(root.elements[1]!);
-        if (
-            !ts.isBinaryExpression(floor) ||
-            floor.operatorToken.kind !== ts.SyntaxKind.MinusToken ||
-            !ts.isIdentifier(floor.left) ||
-            floor.left.text !== "minY"
-        ) {
-            this.context.contractError(
-                root.elements[1]!,
-                "Expected the root floor to drop below minY.",
-            );
-        }
-        const rootDrop = this.context.numericValue(floor.right, file);
-        return {
-            groundDefault,
-            skyboxDefault,
-            cameraRadiusScale,
-            diagonalScale,
-            groundScale,
-            skyboxScale,
-            rootHalf: halfX,
-            rootDrop,
-        };
+        return `struct SceneSize {
+    double ground_size;
+    double skybox_size;
+    std::array<double, 3> root_position;
+};
+${body}`;
     }
 
     private extractConstants(): EnvironmentConstants {

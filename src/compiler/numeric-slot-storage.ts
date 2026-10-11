@@ -47,12 +47,6 @@ export class NumericSlotStorageRequired extends Error {
     }
 }
 
-/** The kinds each demanded slot stores. */
-export type NumericSlots = ReadonlyMap<
-    ts.Declaration,
-    ReadonlySet<NumericSlotKind>
->;
-
 /** The numeric array kind a stored value is, or undefined for any other value. */
 export function numericSlotKind(
     dataType: DataType | undefined,

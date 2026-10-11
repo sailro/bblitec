@@ -164,6 +164,7 @@ test("notices follow the reached features, the trimmed SDL and the codecs the bu
     assert.deepEqual(jsonFeatures, [
         "loader:gltf",
         "loader:babylon",
+        "environment:env",
         "data:json",
     ]);
     for (const feature of jsonFeatures)

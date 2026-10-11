@@ -172,20 +172,3 @@ export const loadSpriteAtlasDefaults = once(() => {
         addressModeV: addressMode("addressModeV"),
     };
 });
-
-/** `createSpriteAtlasFromFrames`'s option and per-frame defaults. */
-export const spriteAtlasPackDefaults = once(() => {
-    const packer = factory(
-        "src/sprite/shared/sprite-atlas-packer.ts",
-        "createSpriteAtlasFromFrames",
-    );
-    return {
-        paddingPx: packer.number({ local: "padding" }),
-        maxWidthPx: packer.number({ local: "requestedMaxWidth" }),
-        sampling: packer.string({ local: "sampling" }),
-        premultipliedAlpha: packer.flag({ member: "premultipliedAlpha" }),
-        srcX: packer.number({ member: "srcX" }),
-        srcY: packer.number({ member: "srcY" }),
-        pivot: packer.pair({ member: "pivot" }),
-    };
-});

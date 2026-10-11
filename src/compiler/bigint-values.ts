@@ -50,7 +50,7 @@ const BIGINT_OPERATORS = new Map<ts.SyntaxKind, string>([
 ]);
 
 /** The compound assignments a BigInt target takes, by their binary operator. */
-export const BIGINT_COMPOUND_OPERATORS = new Map<ts.SyntaxKind, ts.SyntaxKind>([
+const BIGINT_COMPOUND_OPERATORS = new Map<ts.SyntaxKind, ts.SyntaxKind>([
     [ts.SyntaxKind.PlusEqualsToken, ts.SyntaxKind.PlusToken],
     [ts.SyntaxKind.MinusEqualsToken, ts.SyntaxKind.MinusToken],
     [ts.SyntaxKind.AsteriskEqualsToken, ts.SyntaxKind.AsteriskToken],
@@ -87,7 +87,7 @@ export function isBigIntTyped(
 }
 
 /** A literal's value as C++: an int64 when it fits, else its decimal digits. */
-export function bigintLiteralCpp(
+function bigintLiteralCpp(
     context: Pick<LoweringServices, "cppString">,
     value: bigint,
 ): string {
@@ -118,7 +118,7 @@ function operandCpp(
 }
 
 /** `left <op> right` over two BigInt values. */
-export function bigintBinaryCpp(
+function bigintBinaryCpp(
     operator: ts.SyntaxKind,
     left: string,
     right: string,

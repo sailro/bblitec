@@ -1,17 +1,4 @@
-// The pinned functions that stand between a frozen particle buffer and the
-// two families this port already renders: world-space billboards, and the
-// pure-2D Sprite2D layers a SpriteRenderer draws with no scene at all.
-//
-// `createParticleBillboard` and `syncParticleBillboard` are small and their
-// SHAPE is the contract, so they are folded from their own declarations
-// rather than executed with the simulation: which atlas the pin derives from
-// the system's texture and sprite sheet, which blend its numeric mode
-// selects, and exactly which five props the sync writes per live particle.
-// Each of those is asserted against the pinned source here, so a pin that
-// changes any of them fails generation instead of baking over it.
-//
-// What the bake supplies is only the values: the particle columns, the
-// texture the graph loaded and the mode the system block set.
+// Particle rendering lowers pinned synchronization over frozen or live raw columns.
 import ts from "typescript";
 import {
     cppArrayDeclaration,
@@ -46,6 +33,13 @@ import {
 } from "./node-particle-live-lowerer.js";
 import type { CompileAsset, PixelsTextureSource } from "../compiler/types.js";
 import { recordAt } from "../compiler/record-access.js";
+import {
+    particleBillboardSync,
+    particleRenderColumns,
+    particleRenderColumnsDeclaration,
+    particleRenderColumnsCpp,
+    particleSpriteSync,
+} from "./particle-sprite-sync.js";
 
 const billboardModule = "src/particle/particle-billboard.ts";
 const blendModule = "src/particle/particle-blend.ts";
@@ -676,96 +670,6 @@ export class NodeParticleLowerer {
     }
 
     /**
-     * The pure-2D sync's packed write, asserted term by term.
-     *
-     * The bridge writes the thirteen instance floats directly where the
-     * billboard path calls the pin's own index writer, so what is checked
-     * here is that those writes still mean what the generated
-     * `add_sprite_2d_index` produces: the mapped position, the scaled size,
-     * the frame's UVs, the signed rotation and the colour.
-     */
-    private assertSprite2dSyncRules(): void {
-        const { declaration } = this.context.functionDeclaration(
-            sprite2dModule,
-            "syncParticleSprite2DBridge",
-        );
-        const assigned = (offset: number): ts.Expression => {
-            const target =
-                offset === 0 ? "data[base]" : `data[base + ${offset}]`;
-            const found = this.context
-                .findNodes(declaration.body!, ts.isBinaryExpression)
-                .find(
-                    (candidate) =>
-                        candidate.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken &&
-                        candidate.left.getText().replace(/\s+/g, " ").trim() ===
-                            target,
-                );
-            if (!found) {
-                this.context.contractError(
-                    declaration,
-                    `The pure-2D bridge no longer writes ${target}.`,
-                );
-            }
-            return found.right;
-        };
-        const expected: ReadonlyArray<readonly [number, string]> = [
-            [0, "originX + buffer.posX[i]! * pixelsPerUnit"],
-            [1, "originY + buffer.posY[i]! * pixelsPerUnit * ySign"],
-            [2, "width"],
-            [3, "height"],
-            [4, "frame.uvMin[0]"],
-            [5, "frame.uvMin[1]"],
-            [6, "frame.uvMax[0]"],
-            [7, "frame.uvMax[1]"],
-            [8, "buffer.angle[i]! * ySign"],
-            [9, "buffer.colorR[i]!"],
-            [10, "buffer.colorG[i]!"],
-            [11, "buffer.colorB[i]!"],
-            [12, "buffer.colorA[i]!"],
-        ];
-        for (const [offset, shape] of expected) {
-            this.context.assertExpressionShape(
-                assigned(offset),
-                shape,
-                `pure-2D bridge instance float ${offset}`,
-            );
-        }
-        const local = (name: string, shape: string): void => {
-            this.context.assertExpressionShape(
-                this.context.variableInitializer(declaration, name),
-                shape,
-                `pure-2D bridge ${name}`,
-            );
-        };
-        local("width", "buffer.size[i]! * buffer.scaleX[i]! * pixelsPerUnit");
-        local("height", "buffer.size[i]! * buffer.scaleY[i]! * pixelsPerUnit");
-        local("ySign", "bridge.invertY ? -1 : 1");
-        local(
-            "frameIndex",
-            "resolveSpriteFrame(layer.atlas, cellIndex ? cellIndex[i]! : 0)",
-        );
-        // The tail the live sync restates around the same writes: the
-        // saved sizes over the live range, cleared over the range that
-        // died, then the count and the dirty mark.
-        local("dirtyEnd", "Math.max(previousCount, alive)");
-        for (const [shape, label] of [
-            ["savedSize[savedBase] = width", "saved width"],
-            ["savedSize[savedBase + 1] = height", "saved height"],
-            ["savedSize[savedBase] = 0", "saved clear width"],
-            ["savedSize[savedBase + 1] = 0", "saved clear height"],
-            ["_setSprite2DCount(layer, alive)", "count"],
-            ["_markSprite2DDirty(layer, 0, dirtyEnd)", "dirty mark"],
-        ] as const) {
-            this.context.expectShapeCount(
-                declaration,
-                shape,
-                `pure-2D bridge ${label}`,
-            );
-        }
-    }
-
-    /**
      * The exact bridge's own rules: which descriptor replaces the layer's,
      * and that a two-pass mode adds a second layer over the SAME atlas
      * rather than a second system.
@@ -852,71 +756,6 @@ export class NodeParticleLowerer {
         );
     }
 
-    /**
-     * `syncParticleBillboard`'s five props, in the pin's own order.
-     *
-     * This is the whole reason the sync is folded rather than executed: the
-     * bake carries the buffer, and which of its columns reach which prop --
-     * `size * scaleX` into the world size, `angle` into the rotation, the
-     * sprite sheet's cell into the frame -- is the pin's to say.
-     */
-    private assertSyncProps(): void {
-        const { declaration } = this.context.functionDeclaration(
-            billboardModule,
-            "syncParticleBillboard",
-        );
-        const calls = this.context.findNodes(
-            declaration.body!,
-            ts.isCallExpression,
-        );
-        const write = calls.find(
-            (candidate) =>
-                ts.isIdentifier(candidate.expression) &&
-                candidate.expression.text === "addBillboardSpriteIndex",
-        );
-        const props = write?.arguments[1];
-        if (!props || !ts.isObjectLiteralExpression(props)) {
-            this.context.contractError(
-                declaration,
-                "syncParticleBillboard no longer writes sprite props.",
-            );
-        }
-        const expected: ReadonlyArray<readonly [string, string]> = [
-            ["position", "[posX[i], posY[i], posZ[i]]"],
-            ["sizeWorld", "[size[i] * scaleX[i], size[i] * scaleY[i]]"],
-            ["color", "[colR[i], colG[i], colB[i], colA[i]]"],
-            ["rotation", "angle[i]"],
-            ["frame", "cellIndex ? cellIndex[i] : 0"],
-        ];
-        if (props.properties.length !== expected.length) {
-            this.context.contractError(
-                props,
-                `syncParticleBillboard writes ${props.properties.length} ` +
-                    `props; ${expected.length} are lowered.`,
-            );
-        }
-        for (const [name, shape] of expected) {
-            this.context.assertExpressionShape(
-                this.context.propertyInitializer(props, name),
-                shape,
-                `syncParticleBillboard ${name}`,
-            );
-        }
-        // The sync clears first, so a second call replaces rather than
-        // appends -- which is what makes one frozen write the whole state.
-        if (
-            !calls.some(
-                (candidate) =>
-                    ts.isIdentifier(candidate.expression) &&
-                    candidate.expression.text === "clearBillboardSprites",
-            )
-        ) {
-            this.context.contractError(
-                declaration,
-                "syncParticleBillboard no longer clears before writing.",
-            );
-        }
-    }
     // -----------------------------------------------------------------
     // Emission
     // -----------------------------------------------------------------
@@ -933,7 +772,6 @@ export class NodeParticleLowerer {
         refusalSite = "",
     ): LoweredSource {
         this.assertBillboardRules();
-        this.assertSyncProps();
         // Every registrar upstream installs a per-frame step: the scene
         // one appends to `scene._beforeRender`, and BOTH pure-2D ones push
         // onto `renderer._beforeUpdate`. The frozen fold has to answer for
@@ -975,9 +813,6 @@ export class NodeParticleLowerer {
         }
         const sprite2dLayer =
             sprite2d.length > 0 ? this.sprite2dBridgeRules() : undefined;
-        if (sprite2d.length > 0) {
-            this.assertSprite2dSyncRules();
-        }
         if (sprite2d.some((binding) => binding.exact)) {
             this.assertSprite2dExactRules();
         }
@@ -1041,10 +876,9 @@ export class NodeParticleLowerer {
         // targets are exclusive per system, so a system a pure-2D binding
         // took draws no billboard — and a scene of nothing but bridges
         // compiles no billboard code at all.
-        const billboard = systems.some(
-            (entry) =>
-                isRegistered(entry) || !hooked.has(nodeParticleKey(entry.bake)),
-        );
+        const usesBillboard = (entry: NodeParticleSystemEmit): boolean =>
+            isRegistered(entry) || !hooked.has(nodeParticleKey(entry.bake));
+        const billboard = systems.some(usesBillboard);
         const provenance = this.context.provenance(
             billboardModule,
             "createParticleBillboard,syncParticleBillboard",
@@ -1137,7 +971,8 @@ ${
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-${frozen ? "#include <span>\n#include <string_view>\n" : ""}\
+#include <span>
+${frozen ? "#include <string_view>\n" : ""}\
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -1145,14 +980,11 @@ ${frozen ? "#include <span>\n#include <string_view>\n" : ""}\
 namespace bbl::upstream {
 namespace {
 
-/** One live particle, as syncParticleBillboard reads it. */
-struct BakedParticle {
-    Vec3 position;
-    Vec2 size_world;
-    Vec4 color;
-    float rotation{};
-    float frame{};
-};
+${particleRenderColumnsDeclaration()}
+
+${billboard ? particleBillboardSync(this.context) : ""}
+
+${sprite2d.length > 0 ? particleSpriteSync(this.context) : ""}
 
 struct BakedSystem {
     int set_index;
@@ -1168,8 +1000,10 @@ struct BakedSystem {
     // cell size, or the texture's own.
     double cell_width_px;
     double cell_height_px;
-    const BakedParticle* particles;
     std::size_t particle_count;
+    ParticleRenderColumns render_columns;
+    std::span<const std::uint16_t> cells;
+    bool has_cells;
 };
 
 ${
@@ -1258,7 +1092,7 @@ ${pushAtlasHandleCpp()}
 `
         : ""
 }
-${systems.map(particleRowsCpp).join("\n\n")}
+${systems.map((entry, index) => particleColumnsCpp(entry, index, !entry.live && !entry.continuation)).join("\n\n")}
 
 const BakedSystem baked_systems[] = {
 ${systems.map(bakedSystemRowCpp).join("\n")}
@@ -1403,13 +1237,13 @@ Sprite2DLayerOptions bridge_layer_options(
         ? create_particle_blend(system.blend_mode)
         : sprite_2d_blend_for_mode(system.blend_mode);
     return Sprite2DLayerOptions{
-        .capacity = static_cast<float>(system.capacity),
+        .capacity = static_cast<double>(system.capacity),
         .blend_mode = blend,
         .opacity = bridge.has_opacity ? bridge.opacity : ${floatLiteral(sprite2DLayerDefaults().opacity)},
         .visible = bridge.has_visible ? bridge.visible : ${String(sprite2DLayerDefaults().visible)},
         .order = bridge.has_order ? bridge.order : ${floatLiteral(sprite2DLayerDefaults().order)},
         .depth_mode = Sprite2DDepthMode::${sprite2dDepthMode(sprite2dLayer!.depth)},
-        .layer_z = ${floatLiteral(sprite2DLayerDefaults().layerZ)},
+        .layer_z = ${doubleLiteral(sprite2DLayerDefaults().layerZ)},
         .pivot = Vec2d{${doubleLiteral(sprite2dLayer!.pivot[0])}, ${doubleLiteral(sprite2dLayer!.pivot[1])}},
         .custom_shader = blend.particle_passes >= 1,
         .custom_textures = {},
@@ -1417,47 +1251,16 @@ Sprite2DLayerOptions bridge_layer_options(
     };
 }
 
-/**
- * syncParticleSprite2DBridge over the baked buffer: NPE world XY mapped into
- * Sprite2D pixels, one sprite per live particle, in buffer order. The
- * mapping's terms are asserted against the pin's own packed writes.
- */
 void write_bridge_sprites(
-    Engine& engine,
-    Sprite2DLayerHandle layer,
-    const Sprite2DBridge& bridge,
-    const BakedSystem& system) {
-    for (std::size_t i = 0; i < system.particle_count; ++i) {
-        const BakedParticle& particle = system.particles[i];
-        Sprite2DProps props;
-        props.has_position_px = true;
-        props.position_px = Vec2{
-            static_cast<float>(
-                bridge.origin_x +
-                static_cast<double>(particle.position.x) *
-                    bridge.pixels_per_unit),
-            static_cast<float>(
-                bridge.origin_y +
-                static_cast<double>(particle.position.y) *
-                    bridge.pixels_per_unit * bridge.y_sign)};
-        props.size_px = Vec2{
-            static_cast<float>(
-                static_cast<double>(particle.size_world.x) *
-                bridge.pixels_per_unit),
-            static_cast<float>(
-                static_cast<double>(particle.size_world.y) *
-                bridge.pixels_per_unit)};
-        props.has_size_px = true;
-        props.frame = particle.frame;
-        props.has_frame = true;
-        props.rotation = static_cast<float>(
-            static_cast<double>(particle.rotation) * bridge.y_sign);
-        props.has_rotation = true;
-        props.color = particle.color;
-        props.has_color = true;
-        add_sprite_2d_index(engine, layer, props);
-    }
+    Engine& engine, Sprite2DLayerHandle handle,
+    const Sprite2DBridge& bridge, const BakedSystem& system) {
+    Sprite2DLayerRecord& layer = ${recordAt("engine.sprite_layers", "handle")};
+    const SpriteAtlasRecord& atlas = ${recordAt("engine.sprite_atlases", "layer.atlas")};
+    sync_particle_sprite_2d_bridge(layer, atlas, bridge.pixels_per_unit,
+        {bridge.origin_x, bridge.origin_y}, bridge.y_sign < 0,
+        static_cast<double>(system.particle_count), system.render_columns, system.cells, system.has_cells);
 }
+
 `
 }${simulation}${live?.anonymous ?? ""}${native?.anonymous ?? ""}${frozen?.registrar ?? ""}
 }  // namespace
@@ -1521,7 +1324,7 @@ ${
         engine,
         atlas,
         BillboardOrientation::facing,
-        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3d{},
         std::move(options));
 }
 
@@ -1530,24 +1333,9 @@ void sync_node_particle_billboard(
     int set_index,
     int system_index,
     BillboardSystemHandle billboard) {
-    // createParticleBillboard hands this a system with no sprites, so the
-    // pin's own clearBillboardSprites is the identity here; a second sync is
-    // refused at generation.
     const BakedSystem& system = baked(set_index, system_index);
-    for (std::size_t i = 0; i < system.particle_count; ++i) {
-        const BakedParticle& particle = system.particles[i];
-        BillboardSpriteProps props;
-        props.position = Vec3d{particle.position.x, particle.position.y, particle.position.z};
-        props.size_world = particle.size_world;
-        props.has_size_world = true;
-        props.frame = particle.frame;
-        props.has_frame = true;
-        props.rotation = particle.rotation;
-        props.has_rotation = true;
-        props.color = particle.color;
-        props.has_color = true;
-        add_billboard_sprite_index(engine, billboard, props);
-    }
+    sync_particle_billboard(engine, billboard, static_cast<double>(system.particle_count),
+        system.render_columns, system.cells, system.has_cells);
 }`
 }
 ${
@@ -1644,14 +1432,6 @@ void register_node_particle_set_2d(
                 entry.bake.bufferColumns !== undefined ||
                 retainedKeys.has(nodeParticleKey(entry.bake)),
         );
-        const spriteFile = this.context.sourceFile("src/sprite/sprite-2d.ts");
-        const savedSizeFloats = this.context.numericValue(
-            this.context.moduleScopeConstant(
-                spriteFile,
-                "SAVED_SIZE_FLOATS_PER_SPRITE",
-            )!,
-            spriteFile,
-        );
         if (bindings.some((binding) => binding.retainFrozen && binding.exact)) {
             const copy = this.context.functionDeclaration(
                 sprite2dBlendModule,
@@ -1693,10 +1473,6 @@ void register_node_particle_set_2d(
         const continuations = observed.filter((entry) => entry.continuation);
         const rows = observed.map(({ bake, continuation }) => {
             const prefix = `frozen_${bake.set}_${bake.system}`;
-            const sizes =
-                !continuation && retainedKeys.has(nodeParticleKey(bake))
-                    ? stream(`${prefix}_sizes`, bake.sizes)
-                    : "std::span<const double>{}";
             const columns = Object.entries(
                 continuation ? {} : (bake.bufferColumns ?? {}),
             ).map(
@@ -1711,7 +1487,6 @@ void register_node_particle_set_2d(
                 );
             }
             return `    {${bake.set}, ${bake.system}, ${bake.texture!.width}, ${bake.texture!.height},
-        ${sizes},
         ${columns.length > 0 ? `std::span<const FrozenColumn>(${prefix}_columns)` : "std::span<const FrozenColumn>{}"}, false, 0, 0, {}, ${continuation ? `&runtime_${bake.set}_${bake.system}` : "nullptr"}},`;
         });
         return {
@@ -1736,7 +1511,7 @@ struct FrozenRuntime {
     void (*write)(std::string_view, std::size_t, double);
     void (*animate)(double);
     void (*start)();
-    std::array<double, 9> (*sprite_particle)(std::size_t);
+    ParticleRenderColumns (*render_columns)();
 };
 ${continuations
     .map((entry) => {
@@ -1747,10 +1522,10 @@ double read_column(std::string_view, std::size_t);
 void write_column(std::string_view, std::size_t, double);
 void animate(double);
 void start();
-std::array<double, 9> sprite_particle(std::size_t);
+ParticleRenderColumns render_columns();
 }
 const FrozenRuntime runtime_${entry.bake.set}_${entry.bake.system}{
-    &${ns}::alive, &${ns}::read_column, &${ns}::write_column, &${ns}::animate, &${ns}::start, &${ns}::sprite_particle};`;
+    &${ns}::alive, &${ns}::read_column, &${ns}::write_column, &${ns}::animate, &${ns}::start, &${ns}::render_columns};`;
     })
     .join("\n")}
 
@@ -1759,7 +1534,6 @@ struct FrozenSystem {
     int system{};
     double texture_width{};
     double texture_height{};
-    std::span<const double> sizes;
     std::span<const FrozenColumn> columns;
     bool has_sheet = false;
     double cell_width = 0;
@@ -1795,53 +1569,18 @@ void assert_frozen_bridge_ownership(const Sprite2DLayerRecord& layer) {
     }
 }
 
-// syncParticleSprite2DBridge owns the complete packed range, even after an
-// Index API caller clears, appends, or hides slots between renderer updates.
 void sync_frozen_bridge(Engine& engine, Sprite2DLayerHandle handle,
     const Sprite2DBridge& bridge, const BakedSystem& system, const FrozenSystem& state) {
     Sprite2DLayerRecord& layer = ${recordAt("engine.sprite_layers", "handle")};
-    assert_frozen_bridge_ownership(layer);
     const SpriteAtlasRecord& atlas = ${recordAt("engine.sprite_atlases", "layer.atlas")};
-    const std::size_t alive = state.runtime ? static_cast<std::size_t>(state.runtime->alive()) : system.particle_count;
-    const std::uint32_t previous_count = layer.count;
-    for (std::size_t i = 0; i < alive; ++i) {
-        const BakedParticle particle = i < system.particle_count ? system.particles[i] : BakedParticle{};
-        const auto values = state.runtime ? state.runtime->sprite_particle(i) : std::array<double, 9>{
-            particle.position.x, particle.position.y, state.sizes[i * 2], state.sizes[i * 2 + 1],
-            particle.rotation, particle.color.x, particle.color.y, particle.color.z, particle.color.w};
-        if (state.has_sheet && i >= state.cells.size()) {
-            throw std::runtime_error("Particle sprite-sheet cell index is undefined.");
-        }
-        const SpriteFrame& frame = atlas.frames[resolve_sprite_frame(atlas,
-            state.has_sheet ? static_cast<double>(state.cells[i]) : particle.frame)];
-        const std::size_t base = i * layer.instance_floats_per_sprite;
-        const std::size_t saved = i * ${savedSizeFloats}u;
-        const float width = static_cast<float>(values[2] * bridge.pixels_per_unit);
-        const float height = static_cast<float>(values[3] * bridge.pixels_per_unit);
-        auto& data = layer.instance_data;
-        data[base] = static_cast<float>(bridge.origin_x + values[0] * bridge.pixels_per_unit);
-        data[base + 1] = static_cast<float>(bridge.origin_y + values[1] * bridge.pixels_per_unit * bridge.y_sign);
-        data[base + 2] = width;
-        data[base + 3] = height;
-        data[base + 4] = frame.uv_min.x;
-        data[base + 5] = frame.uv_min.y;
-        data[base + 6] = frame.uv_max.x;
-        data[base + 7] = frame.uv_max.y;
-        data[base + 8] = static_cast<float>(values[4] * bridge.y_sign);
-        data[base + 9] = static_cast<float>(values[5]);
-        data[base + 10] = static_cast<float>(values[6]);
-        data[base + 11] = static_cast<float>(values[7]);
-        data[base + 12] = static_cast<float>(values[8]);
-        layer.saved_size[saved] = width;
-        layer.saved_size[saved + 1] = height;
-    }
-    for (std::size_t i = alive; i < previous_count; ++i) {
-        layer.saved_size[i * ${savedSizeFloats}u] = 0;
-        layer.saved_size[i * ${savedSizeFloats}u + 1] = 0;
-    }
-    set_sprite_2d_count(layer, static_cast<std::uint32_t>(alive));
-    const std::size_t dirty_end = std::max<std::size_t>(previous_count, alive);
-    if (dirty_end > 0) mark_sprite_2d_dirty(layer, 0u, static_cast<std::uint32_t>(dirty_end));
+    const double alive = state.runtime ? state.runtime->alive() : static_cast<double>(system.particle_count);
+    const ParticleRenderColumns columns = state.runtime ? state.runtime->render_columns() : system.render_columns;
+    if (state.has_sheet)
+        sync_particle_sprite_2d_bridge(layer, atlas, bridge.pixels_per_unit,
+            {bridge.origin_x, bridge.origin_y}, bridge.y_sign < 0, alive, columns, state.cells, true);
+    else
+        sync_particle_sprite_2d_bridge(layer, atlas, bridge.pixels_per_unit,
+            {bridge.origin_x, bridge.origin_y}, bridge.y_sign < 0, alive, columns, system.cells, !system.cells.empty());
 }
 
 // Retained bridges sync shared sheet cells and any native continuation each frame.
@@ -2057,26 +1796,11 @@ double native_node_particle_alive(int set, int system);
 double native_node_particle_capacity(int set, int system);
 `,
             anonymous: `
-// syncParticleBillboard's checked props over simulated columns. Calling the
-// existing billboard writer preserves the atlas, capacity and dirty rules.
+// Live particle sheets are outside the admitted live graph surface.
 template <typename State>
 void sync_native_particle_billboard(Engine& engine, BillboardSystemHandle billboard, const State& state) {
-    clear_billboard_sprites(engine, billboard);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(state.alive); ++i) {
-        BillboardSpriteProps props;
-        props.position = Vec3d{state.pos_x[i], state.pos_y[i], state.pos_z[i]};
-        props.size_world = Vec2{
-            static_cast<float>(static_cast<double>(state.size[i]) * state.scale_x[i]),
-            static_cast<float>(static_cast<double>(state.size[i]) * state.scale_y[i])};
-        props.has_size_world = true;
-        props.frame = 0.0f;
-        props.has_frame = true;
-        props.rotation = state.angle[i];
-        props.has_rotation = true;
-        props.color = Vec4{state.color_r[i], state.color_g[i], state.color_b[i], state.color_a[i]};
-        props.has_color = true;
-        add_billboard_sprite_index(engine, billboard, props);
-    }
+    sync_particle_billboard(engine, billboard, state.alive,
+        ${particleRenderColumnsCpp("state")}, std::span<const std::uint16_t>{}, false);
 }
 
 /** One system's operations, over the state its namespace's accessor owns. */
@@ -2187,7 +1911,7 @@ double native_node_particle_capacity(int set, int system) { return native_partic
      * demo moves per frame, and its system's live count. The sync is
      * `syncParticleSprite2DBridge` over the simulated columns instead of a
      * baked table: the same thirteen writes, saved sizes, count and dirty
-     * range `assertSprite2dSyncRules` checks against the pin.
+     * range emitted by the shared pinned Sprite2D sync.
      */
     private liveSectionCpp(
         lowered: ReadonlyMap<string, LoweredLiveSystem>,
@@ -2227,14 +1951,6 @@ double native_node_particle_capacity(int set, int system) { return native_partic
                 sprite2dFile,
             ),
         );
-        const spriteFile = this.context.sourceFile("src/sprite/sprite-2d.ts");
-        const savedSizeFloats = this.context.numericValue(
-            this.context.moduleScopeConstant(
-                spriteFile,
-                "SAVED_SIZE_FLOATS_PER_SPRITE",
-            )!,
-            spriteFile,
-        );
         return {
             header: `
 /**
@@ -2273,70 +1989,13 @@ struct LiveMapping {
 // registerNodeParticleSet2D's hook: \`deltaMs > 0 ? deltaMs / FRAME_MS : 1\`.
 constexpr double live_frame_ms = ${frameMs};
 
-/**
- * syncParticleSprite2DBridge over a simulated buffer: the same packed
- * writes the frozen bridge fills once, performed every frame over the live
- * range, then the count and the dirty range the pin marks.
- */
 template <typename State>
-void sync_live_bridge(
-    Engine& engine,
-    const LiveMapping& mapping,
-    const State& state) {
+void sync_live_bridge(Engine& engine, const LiveMapping& mapping, const State& state) {
     Sprite2DLayerRecord& layer = ${recordAt("engine.sprite_layers", "mapping.layer")};
     const SpriteAtlasRecord& atlas = ${recordAt("engine.sprite_atlases", "layer.atlas")};
-    const double pixels_per_unit = mapping.row->pixels_per_unit;
-    const double origin_x = mapping.origin_x;
-    const double origin_y = mapping.origin_y;
-    const double y_sign = mapping.row->y_sign;
-    const std::size_t alive = static_cast<std::size_t>(state.alive);
-    const std::uint32_t previous_count = layer.count;
-    const std::size_t stride = layer.instance_floats_per_sprite;
-    std::vector<float>& data = layer.instance_data;
-    std::vector<float>& saved_size = layer.saved_size;
-    // A live system carries no sprite sheet, so every particle draws
-    // frame 0 of the full-texture grid.
-    const SpriteFrame& frame =
-        atlas.frames[resolve_sprite_frame(atlas, 0.0)];
-    for (std::size_t i = 0; i < alive; ++i) {
-        const std::size_t base = i * stride;
-        const std::size_t saved_base = i * ${savedSizeFloats}u;
-        const double width =
-            static_cast<double>(state.size[i]) *
-            static_cast<double>(state.scale_x[i]) * pixels_per_unit;
-        const double height =
-            static_cast<double>(state.size[i]) *
-            static_cast<double>(state.scale_y[i]) * pixels_per_unit;
-        data[base] = static_cast<float>(
-            origin_x + static_cast<double>(state.pos_x[i]) * pixels_per_unit);
-        data[base + 1] = static_cast<float>(
-            origin_y +
-            static_cast<double>(state.pos_y[i]) * pixels_per_unit * y_sign);
-        data[base + 2] = static_cast<float>(width);
-        data[base + 3] = static_cast<float>(height);
-        data[base + 4] = frame.uv_min.x;
-        data[base + 5] = frame.uv_min.y;
-        data[base + 6] = frame.uv_max.x;
-        data[base + 7] = frame.uv_max.y;
-        data[base + 8] = static_cast<float>(
-            static_cast<double>(state.angle[i]) * y_sign);
-        data[base + 9] = state.color_r[i];
-        data[base + 10] = state.color_g[i];
-        data[base + 11] = state.color_b[i];
-        data[base + 12] = state.color_a[i];
-        saved_size[saved_base] = static_cast<float>(width);
-        saved_size[saved_base + 1] = static_cast<float>(height);
-    }
-    for (std::size_t i = alive; i < previous_count; ++i) {
-        const std::size_t saved_base = i * ${savedSizeFloats}u;
-        saved_size[saved_base] = 0.0f;
-        saved_size[saved_base + 1] = 0.0f;
-    }
-    set_sprite_2d_count(layer, static_cast<std::uint32_t>(alive));
-    const std::size_t dirty_end = std::max<std::size_t>(previous_count, alive);
-    if (dirty_end > 0) {
-        mark_sprite_2d_dirty(layer, 0u, static_cast<std::uint32_t>(dirty_end));
-    }
+    sync_particle_sprite_2d_bridge(layer, atlas, mapping.row->pixels_per_unit,
+        {mapping.origin_x, mapping.origin_y}, mapping.row->y_sign < 0,
+        state.alive, ${particleRenderColumnsCpp("state")}, std::span<const std::uint16_t>{}, false);
 }
 
 /**
@@ -2562,12 +2221,6 @@ function pixelsTextureCpp(texture: PixelsTextureSource): string {
     );
 }
 
-/**
- * A baked value as the shared C++ float literal, refusing a non-finite one
- * by name: the node-particle bake is the only producer here, and a NaN or
- * Infinity in its columns is a broken bake, not a value to silently emit
- * as `0.0f`.
- */
 /** A pinned Sprite2D `depth` string as the native layer's depth mode. */
 function sprite2dDepthMode(depth: string): string {
     const modes: Readonly<Record<string, string>> = {
@@ -2584,6 +2237,7 @@ function sprite2dDepthMode(depth: string): string {
     return mode;
 }
 
+/** Preserve finite baked Float32 values through native source-width storage. */
 function bakedFloatLiteral(value: number): string {
     if (!Number.isFinite(value)) {
         throw new Error(
@@ -2594,28 +2248,72 @@ function bakedFloatLiteral(value: number): string {
     return floatLiteral(value);
 }
 
-/** One system's live particles, as the table the sync walks. */
-function particleRowsCpp(entry: NodeParticleSystemEmit, index: number): string {
+/** Source-width columns; size products remain in the pinned sync body. */
+function particleColumnsCpp(
+    entry: NodeParticleSystemEmit,
+    index: number,
+    bakedColumns: boolean,
+): string {
     const { bake } = entry;
-    const rows: string[] = [];
-    for (let i = 0; i < bake.alive; i += 1) {
-        rows.push(
-            `    {{${bakedFloatLiteral(bake.positions[i * 3]!)}, ` +
-                `${bakedFloatLiteral(bake.positions[i * 3 + 1]!)}, ` +
-                `${bakedFloatLiteral(bake.positions[i * 3 + 2]!)}}, ` +
-                `{${bakedFloatLiteral(bake.sizes[i * 2]!)}, ` +
-                `${bakedFloatLiteral(bake.sizes[i * 2 + 1]!)}}, ` +
-                `{${bakedFloatLiteral(bake.colors[i * 4]!)}, ` +
-                `${bakedFloatLiteral(bake.colors[i * 4 + 1]!)}, ` +
-                `${bakedFloatLiteral(bake.colors[i * 4 + 2]!)}, ` +
-                `${bakedFloatLiteral(bake.colors[i * 4 + 3]!)}}, ` +
-                `${bakedFloatLiteral(bake.rotations[i]!)}, ` +
-                `${bakedFloatLiteral(bake.frames ? bake.frames[i]! : 0)}},`,
+    if (bakedColumns && bake.alive > 0 && !bake.sizeColumns)
+        throw new Error(
+            "A frozen particle bake must retain its raw size columns.",
         );
-    }
-    if (rows.length === 0) rows.push("    {}");
-    const body = rows.join("\n");
-    return `const BakedParticle particles_${index}[] = {\n${body}\n};`;
+    const component = (
+        values: readonly number[],
+        width: number,
+        lane: number,
+    ) =>
+        Array.from(
+            { length: bake.alive },
+            (_, row) => values[row * width + lane]!,
+        );
+    const columns:
+        | Record<(typeof particleRenderColumns)[number][0], readonly number[]>
+        | undefined = bakedColumns
+        ? {
+              posX: component(bake.positions, 3, 0),
+              posY: component(bake.positions, 3, 1),
+              posZ: component(bake.positions, 3, 2),
+              size: bake.sizeColumns?.size ?? [],
+              scaleX: bake.sizeColumns?.scaleX ?? [],
+              scaleY: bake.sizeColumns?.scaleY ?? [],
+              angle: bake.rotations,
+              colorR: component(bake.colors, 4, 0),
+              colorG: component(bake.colors, 4, 1),
+              colorB: component(bake.colors, 4, 2),
+              colorA: component(bake.colors, 4, 3),
+          }
+        : undefined;
+    const declarations: string[] = [];
+    const spans = columns
+        ? particleRenderColumns.map(([source, native]) => {
+              const values = columns[source].slice(0, bake.alive);
+              if (values.length !== bake.alive)
+                  throw new Error(
+                      `Particle column '${source}' does not cover its live range.`,
+                  );
+              const declaration = cppArrayDeclaration(
+                  `sprite_${index}_${native}`,
+                  "float",
+                  values,
+                  bakedFloatLiteral,
+                  undefined,
+                  "span",
+              );
+              declarations.push(...declaration.lines);
+              return declaration.expression;
+          })
+        : [];
+    const cells = cppArrayDeclaration(
+        `sprite_${index}_cells`,
+        "std::uint16_t",
+        bake.frames ?? [],
+        (value) => `${value}u`,
+        undefined,
+        "span",
+    );
+    return `\n${declarations.join("\n")}\nconst ParticleRenderColumns render_columns_${index}{${spans.join(", ")}};\n${cells.lines.join("\n")}\nconst auto sprite_cells_${index} = ${cells.expression};\n`;
 }
 
 /** One row of the pure-2D bridge table, per system a binding walks. */
@@ -2653,6 +2351,6 @@ function bakedSystemRowCpp(
         `    {${bake.set}, ${bake.system}, ${bake.capacity}, ` +
         `${bake.blendMode}, ${entry.exactBlend}, ` +
         `${JSON.stringify(textureAsset)}, ` +
-        `${cellWidth}, ${cellHeight}, particles_${index}, ${bake.alive}},`
+        `${cellWidth}, ${cellHeight}, ${bake.alive}, render_columns_${index}, sprite_cells_${index}, ${bake.frames !== null}},`
     );
 }

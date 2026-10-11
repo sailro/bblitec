@@ -179,10 +179,10 @@ function bodyScope(
         calls,
 
         foldConditions: false,
-        forOf(iterated, element) {
+        forOf(_iterated, element, _binding, syntax) {
             if (
-                iterated !== "batch" ||
-                element.replace(/\s/g, "") !== "[oneShot,generation]"
+                !context.expressionMatchesShape(syntax.expression, "batch") ||
+                element !== "[oneShot, generation]"
             )
                 return undefined;
             return {
@@ -212,7 +212,13 @@ function bodyScope(
             if (ts.isVoidExpression(node))
                 return `(void)(${lowerer.expression(node.expression)})`;
             if (ts.isNewExpression(node)) {
-                const name = node.expression.getText(file);
+                const name = context.matchingExpressionShape(node.expression, [
+                    "Error",
+                    "Set",
+                    "WeakMap",
+                    "Map",
+                    "Promise",
+                ]);
                 if (name === "Error" && node.arguments?.length === 1)
                     return `js::make_error("Error",${lowerer.expression(node.arguments[0]!)})`;
                 if (name === "Set")
@@ -270,15 +276,25 @@ function bodyScope(
                 if (names.length === 0 && ts.isCallExpression(node.body))
                     return closure(
                         node,
-                        node.body.expression.getText(file) ===
-                            "disposeComputeOneShot"
+                        context.expressionMatchesShape(
+                            node.body.expression,
+                            "disposeComputeOneShot",
+                        )
                             ? ["oneShot"]
                             : ["state", "engine"],
                         [],
                     );
             }
             if (ts.isCallExpression(node)) {
-                const name = unwrapExpression(node.expression).getText(file);
+                const name = context.matchingExpressionShape(node.expression, [
+                    "states.get",
+                    "states.set",
+                    "_engineStates?.get",
+                    "_engineStates?.delete",
+                    "addFramePostSubmitHook",
+                    "oneShot.completion.catch",
+                    "state.engine._device.queue.onSubmittedWorkDone().then",
+                ]);
                 if (name === "states.get")
                     return `find_compute_one_shot_state(${lowerer.expression(node.arguments[0]!)})`;
                 if (name === "states.set")
@@ -305,8 +321,10 @@ function bodyScope(
                         if (
                             !ts.isArrowFunction(callback) ||
                             !ts.isCallExpression(callback.body) ||
-                            callback.body.expression.getText(file) !==
-                                "completions.forEach"
+                            !context.expressionMatchesShape(
+                                callback.body.expression,
+                                "completions.forEach",
+                            )
                         )
                             return context.contractError(
                                 callback,
@@ -401,7 +419,14 @@ function bodyScope(
                         `${indent}(void)(${lowerer.expression(call.expression)});`,
                     ];
                 if (ts.isCallExpression(call)) {
-                    const name = call.expression.getText(file);
+                    const name = context.matchingExpressionShape(
+                        call.expression,
+                        [
+                            "completions.push",
+                            "oneShot._reject",
+                            "state?.shots.delete",
+                        ],
+                    );
                     if (name === "completions.push")
                         return [
                             `${indent}completions.push_back(${pinnedRecordLiteral(context, lowerer, call.arguments[0]!, completionSchema)});`,

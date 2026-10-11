@@ -12,6 +12,16 @@ const tools = optionalNativeFixtureTools(false);
 
 for (const [name, fixture, expected] of [
     [
+        "WeakMap traces values only through reachable keys and owners",
+        "js-gc-ephemeron-check",
+        "gc-ephemerons: ok",
+    ],
+    [
+        "GC shared storage preserves alignment and refuses allocation size overflow",
+        "js-gc-allocation-check",
+        "gc-allocation: ok",
+    ],
+    [
         "GC publishes complete owners and unlinks payloads before reentrant destruction",
         "js-gc-reentrant-check",
         "gc-reentrant-lifetime: ok",

@@ -13,6 +13,7 @@ import {
 import { LoweringContext } from "../src/lowering/context.js";
 import { doctoredContext } from "./doctored-store.js";
 import { gltfMeshPlan, readPackedGltfAttribute } from "./gltf-mesh-fixture.js";
+import { materialSubjects } from "../src/pinned-material-arms.js";
 
 const animationModule = "src/loader-gltf/gltf-animation.ts";
 const pointerModule = "src/loader-gltf/animation-pointer.ts";
@@ -260,16 +261,31 @@ test("actual pointer preparation supplies material initialization and base-color
             "/materials/0/extensions/KHR_materials_transmission/transmissionFactor",
         ),
     ]);
+    const factor = [0.2, 0.3, 0.4, 0.5];
+    asRecords(input.document.materials)[0]!.pbrMetallicRoughness = {
+        baseColorFactor: factor,
+    };
     const plan = await gltfMeshPlan(input.document, input.bin);
     assert.deepEqual(plan.baseColorDefinitions, [0]);
     assert.equal(plan.baseColorModule, true);
+    const [material] = await materialSubjects(
+        input.document,
+        {},
+        {
+            meshPlan: plan,
+            deferAnimationPointers: true,
+        },
+    );
+    assert.deepEqual(material!.input.baseColorFactor, factor);
     const patches = plan.animation!.materialState[0]!.patches;
-    assert.ok(
+    assert.equal(
         patches.some(
             (patch) =>
                 patch.path.join(".") === "baseColorFactor" &&
                 patch.operation === "set",
         ),
+        false,
+        "white fallback initializes the factor before pointer parsing",
     );
     assert.ok(
         patches.some(
@@ -289,6 +305,14 @@ test("actual pointer preparation supplies material initialization and base-color
     );
     assert.deepEqual(moved.baseColorDefinitions, []);
     assert.equal(moved.baseColorModule, true);
+    assert.ok(
+        moved.animation!.materialState[0]!.patches.some(
+            (patch) =>
+                patch.path.join(".") === "baseColorFactor" &&
+                patch.operation === "set",
+        ),
+        "without source white fallback, pointer parsing initializes the factor",
+    );
     const noPointer = fixture([trs()], false);
     const ordinary = await gltfMeshPlan(noPointer.document, noPointer.bin);
     assert.deepEqual(ordinary.baseColorDefinitions, []);

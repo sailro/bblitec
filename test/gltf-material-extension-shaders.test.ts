@@ -4,6 +4,7 @@ import type { JsonObject } from "../src/json-fields.js";
 import {
     ensurePinnedLoaderExecution,
     pinnedMaterialInputFromGltf,
+    preparePinnedMaterialFeatures,
 } from "../src/pinned-material-input.js";
 import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
 
@@ -24,6 +25,13 @@ test("diffuse color and intensity maps compose distinct bindings with live UV ma
     };
     const variant = await composePinnedPbrVariant(
         pinnedMaterialInputFromGltf(material, {
+            materialFeatures: await preparePinnedMaterialFeatures({
+                materials: [material],
+                extensionsUsed: [
+                    "KHR_materials_diffuse_transmission",
+                    "KHR_texture_transform",
+                ],
+            }),
             imageOf: (index) => (typeof index === "number" ? index : undefined),
         }),
     );

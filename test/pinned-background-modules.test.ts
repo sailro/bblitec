@@ -12,6 +12,7 @@ import {
     composePinnedBackgroundModules,
     type PinnedBackgroundArm,
 } from "../src/pinned-background-modules.js";
+import { DoctoredStore, doctoredContext } from "./doctored-store.js";
 
 const everyArm = {
     ground: true,
@@ -147,7 +148,7 @@ test("lowers each arm's builders into the backgrounds header", async () => {
     // and the .env arm passes the scene's clear colour through whole.
     assert.match(
         header,
-        /pinned_hdr_skybox_geometry\(scene\.environment\.skybox_size \/ 2\.0\)/,
+        /pinned_hdr_skybox_geometry\(\(scene\.environment\.skybox_size \/ 2\.0\)\)/,
     );
     assert.match(
         header,
@@ -162,5 +163,35 @@ test("lowers each arm's builders into the backgrounds header", async () => {
     assert.match(
         header,
         /PinnedBackgroundArmKind::image_skybox,\s*"skybox-cubemap\.vert",\s*"skybox-cubemap\.frag",[\s\S]*?RenderCullMode::none,\s*false,\s*true,/,
+    );
+});
+
+test("background size arguments derive from the loader expressions", async () => {
+    const arms = await composePinnedBackgroundModules(everyArm);
+    const environment = "src/loader-env/load-env.ts";
+    const dds = "src/material/pbr/background-dds-environment.ts";
+    const context = new LoweringContext(
+        new DoctoredStore().withEdits(
+            new Map([
+                [environment, ["autoSkyboxSize / 2", "autoSkyboxSize * 0.25"]],
+                [dds, ["skyboxSize / 2", "skyboxSize * 0.25"]],
+            ]),
+        ),
+    );
+    assert.match(
+        pinnedBackgroundsHeader(context, arms),
+        /pinned_hdr_skybox_geometry\(\(scene\.environment\.skybox_size \* 0\.25\)\)/,
+    );
+    assert.throws(
+        () =>
+            pinnedBackgroundsHeader(
+                doctoredContext(
+                    environment,
+                    "autoSkyboxSize / 2",
+                    "autoSkyboxSize / 3",
+                ),
+                arms,
+            ),
+        /distinct skybox size arguments/,
     );
 });

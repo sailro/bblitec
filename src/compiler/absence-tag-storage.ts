@@ -45,7 +45,7 @@ function isAbsenceTagDeclaration(
  * parameter it names, or the property a dotted read selects when a single
  * declaration declares it. Undefined for any other expression.
  */
-export function absenceTagDeclaration(
+function absenceTagDeclaration(
     checker: ts.TypeChecker,
     expression: ts.Node,
 ): AbsenceTagDeclaration | undefined {

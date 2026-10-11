@@ -27,7 +27,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data. Locale case conversion validates and selects only the first requested tag, matching Chromium. Intl formatters and Date locale strings use the host ICU's CLDR; date patterns spell a narrow no-break space as a space, as V8 does |
 | Shared memory | A SharedArrayBuffer is one realm's memory: no other agent shares it, Atomics are plain accesses, and cloning one (`structuredClone` included) throws DataCloneError |
 | Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
-| Weak collections and WeakRef | Erased record/callback/DOM WeakMap keys use weak identity; other keys and WeakRef targets are retained strongly |
+| Weak collections and WeakRef | Erased record/callback/DOM WeakMap keys use weak identity; values retain reachability only while their keys are reachable, including cycles. Other key representations and WeakRef targets are retained strongly |
 | Retired meshes | A mesh that left its last scene keeps its record, with its last pose and bounds, while a mesh is parented under it or a shadow caster array, a physics body or an edit gizmo names it, and then gives its slot to a later mesh; touching it through a kept program reference afterwards throws "Native handle refers to a retired record", where JavaScript reaches the detached object |
 | Object immutability | freeze/seal/preventExtensions return the original value without enforcing immutability |
 | Storage/files | Host preferences, native URL tokens, synchronized picker completion; FileReader loads inside readAsText |
@@ -121,7 +121,7 @@ write does (WGSL leaves the direction to the implementation).
 
 ### glTF material inputs
 
-Pinned extension handlers select factors, textures, UVs, transforms and ORM merging. Feature callbacks
+Pinned extension handlers select factors, textures, UVs, transforms and ORM image identity. Feature callbacks
 retain source order and fresh attachment identities. Deferred publication retains resource owners and
 captured-material guards. Public texture identity is distinct from render fallback identity.
 Metallic-roughness texture-transform animation targets are not resolved by the pin.

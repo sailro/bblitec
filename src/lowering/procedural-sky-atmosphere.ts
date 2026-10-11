@@ -263,7 +263,15 @@ export function lowerProceduralSkyAtmosphere(
                         );
                     const source = lowerer.expression(entry.initializer);
                     return entry.name.elements.map((element, index) => {
-                        const id = element.getText(file);
+                        if (
+                            !ts.isBindingElement(element) ||
+                            !ts.isIdentifier(element.name)
+                        )
+                            return context.contractError(
+                                element,
+                                "Unsupported sky tuple destructuring.",
+                            );
+                        const id = element.name.text;
                         lowerer.bindPorts(
                             [[id, { cpp: id, type: "scalar" }]],
                             entry,
@@ -288,9 +296,10 @@ export function lowerProceduralSkyAtmosphere(
                 const initializer = unwrapExpression(entry.initializer);
                 if (
                     ts.isNewExpression(initializer) &&
-                    ["Float64Array", "F32"].includes(
-                        initializer.expression.getText(file),
-                    )
+                    context.matchingExpressionShape(initializer.expression, [
+                        "Float64Array",
+                        "F32",
+                    ]) !== undefined
                 ) {
                     const length = initializer.arguments?.[0];
                     if (
@@ -302,8 +311,10 @@ export function lowerProceduralSkyAtmosphere(
                             initializer,
                             "Sky typed-array scratch requires its literal length.",
                         );
-                    const single =
-                        initializer.expression.getText(file) === "F32";
+                    const single = context.expressionMatchesShape(
+                        initializer.expression,
+                        "F32",
+                    );
                     lowerer.bindLocal(entry.name, {
                         cpp: id,
                         type: single ? "f32" : "f64-buffer",

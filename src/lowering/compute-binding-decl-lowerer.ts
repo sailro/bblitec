@@ -133,10 +133,7 @@ export const computeBindingFactories: Record<
     },
 };
 
-function factoryScope(
-    context: LoweringContext,
-    file: ts.SourceFile,
-): PinnedNumericScope {
+function factoryScope(context: LoweringContext): PinnedNumericScope {
     const bindings = new Map<string, PinnedBinding>([
         ["name", { cpp: "name", type: "opaque" }],
         ["options", { cpp: "options", type: "opaque" }],
@@ -176,7 +173,7 @@ function factoryScope(
                 const left = unwrapExpression(node.left);
                 if (
                     ts.isPropertyAccessExpression(left) &&
-                    left.expression.getText(file) === "options"
+                    context.expressionMatchesShape(left.expression, "options")
                 ) {
                     const field = optionFields[left.name.text];
                     if (field?.optional) {
@@ -206,7 +203,10 @@ function factoryScope(
             }
             if (
                 ts.isCallExpression(node) &&
-                node.expression.getText(file) === "_createComputeBindingDecl"
+                context.expressionMatchesShape(
+                    node.expression,
+                    "_createComputeBindingDecl",
+                )
             ) {
                 if (node.arguments.length !== 6)
                     return context.contractError(
@@ -243,8 +243,10 @@ function factoryScope(
             if (
                 ts.isExpressionStatement(node) &&
                 ts.isCallExpression(node.expression) &&
-                node.expression.expression.getText(file) ===
-                    "_installComputeBindingResolver"
+                context.expressionMatchesShape(
+                    node.expression.expression,
+                    "_installComputeBindingResolver",
+                )
             ) {
                 const args = node.expression.arguments;
                 if (
@@ -353,7 +355,10 @@ export function lowerComputeBindingDecl(
     const expression = unwrapExpression(returned.expression);
     if (
         !ts.isCallExpression(expression) ||
-        expression.expression.getText(common.file) !== "Object.freeze" ||
+        !context.expressionMatchesShape(
+            expression.expression,
+            "Object.freeze",
+        ) ||
         expression.arguments.length !== 1
     )
         return context.contractError(
@@ -388,7 +393,7 @@ export function lowerComputeBindingDecl(
         const path = `src/compute/${fn.module}.ts`,
             { file, declaration } = context.functionDeclaration(path, name);
         const body = lowerPinnedBody(file, declaration.body!.statements, {
-            ...factoryScope(context, file),
+            ...factoryScope(context),
             returnValue: (node, l) => l.expression(node!),
         });
         output.push(

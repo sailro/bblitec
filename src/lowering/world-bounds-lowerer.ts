@@ -33,57 +33,6 @@ function accumulatorLanes(context: LoweringContext): string[] {
         );
 }
 
-/** The lane one accumulator key occupies among `lanes`. */
-function accumulatorLane(
-    context: LoweringContext,
-    lanes: readonly string[],
-    key: string,
-): number {
-    const lane = lanes.indexOf(key);
-    if (lane < 0)
-        context.contractError(
-            context.functionDeclaration(boundsModule, "emptyWorldAabb")
-                .declaration,
-            `Expected the world accumulator to carry '${key}'.`,
-        );
-    return lane;
-}
-
-/**
- * Statements copying a caller's `minimum`/`maximum` x-y-z arrays into the
- * accumulator `acc` (`load`) and back (`store`).
- */
-export function worldAabbArrayCopies(
-    context: LoweringContext,
-    minimum: string,
-    maximum: string,
-    indent = "    ",
-): { load: string; store: string } {
-    const keys = accumulatorLanes(context);
-    const lanes = (["X", "Y", "Z"] as const).flatMap((axis, index) =>
-        (
-            [
-                ["min", minimum],
-                ["max", maximum],
-            ] as const
-        ).map(
-            ([side, array]) =>
-                [
-                    accumulatorLane(context, keys, `${side}${axis}`),
-                    `${array}[${index}]`,
-                ] as const,
-        ),
-    );
-    return {
-        load: lanes
-            .map(([lane, value]) => `${indent}acc[${lane}] = ${value};`)
-            .join("\n"),
-        store: lanes
-            .map(([lane, value]) => `${indent}${value} = acc[${lane}];`)
-            .join("\n"),
-    };
-}
-
 /** The C++ lane read of one accumulator key, as a caller binds `acc.minX`. */
 export function worldAabbLaneBindings(
     context: LoweringContext,

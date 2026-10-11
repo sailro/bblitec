@@ -13,9 +13,11 @@ import {
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { withDistWriter } from "./dist-access.mjs";
 
 const root = join(fileURLToPath(import.meta.url), "..", "..");
 const stampPath = join(root, "dist", ".build-stamp");
+process.chdir(root);
 
 /** Every file under `directory`, as sorted repo-relative forward-slash
  *  paths. All files, not just `.ts`: a stray input rebuilding more is
@@ -153,18 +155,24 @@ if (canReuse(stamp)) {
     process.exit(0);
 }
 
-run(join(root, "tools", "clean-dist.mjs"), []);
-run(join(root, "node_modules", "@typescript", "native", "bin", "tsc"), [
-    "-p",
-    join(root, "tsconfig.json"),
-]);
-if (stamp !== undefined) {
-    mkdirSync(join(root, "dist"), { recursive: true });
-    const outputs = listFiles(join(root, "dist"), "", [])
-        .map(({ relative }) => relative)
-        .sort();
-    writeFileSync(
-        stampPath,
-        JSON.stringify({ version: 1, input: stamp, outputs }) + "\n",
-    );
-}
+withDistWriter(() => {
+    if (canReuse(stamp)) {
+        console.log("build: dist is up to date (skipped clean + tsc).");
+        return;
+    }
+    run(join(root, "tools", "clean-dist.mjs"), []);
+    run(join(root, "node_modules", "@typescript", "native", "bin", "tsc"), [
+        "-p",
+        join(root, "tsconfig.json"),
+    ]);
+    if (stamp !== undefined) {
+        mkdirSync(join(root, "dist"), { recursive: true });
+        const outputs = listFiles(join(root, "dist"), "", [])
+            .map(({ relative }) => relative)
+            .sort();
+        writeFileSync(
+            stampPath,
+            JSON.stringify({ version: 1, input: stamp, outputs }) + "\n",
+        );
+    }
+});

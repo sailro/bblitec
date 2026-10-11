@@ -512,14 +512,12 @@ export interface UpstreamEmitOptions {
 
     animationPointer: boolean;
     animationPointerMaterials: boolean;
-    assetTransmission: boolean;
     /**
      * The transmission renderer (`BBLITE_RENDERER_TRANSMISSION`): the scene
      * reaches scene transmission, or a composed variant carries the pin's
      * refraction fragment -- `sceneTransmission` in asset-feature-join.ts.
      */
     transmission: boolean;
-    materialSpecular: boolean;
     /** The `KHR_materials_variants` a scene selected, or "" when unreached. */
     selectedMaterialVariant: string;
     standardLightLists: boolean;
@@ -3922,9 +3920,7 @@ export function emitUpstreamGenerated(
         gltfNodeVisibility: false,
         animationPointer: false,
         animationPointerMaterials: false,
-        assetTransmission: false,
         transmission: false,
-        materialSpecular: false,
         selectedMaterialVariant: "",
         standardLightLists: false,
         standardDiffuseUv2: false,

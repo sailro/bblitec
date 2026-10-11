@@ -16,11 +16,11 @@ export const meshCpuStreamFields: ReadonlyMap<string, string> = new Map([
     ["_cpuIndices", "indices"],
 ]);
 
-export const meshCpuStreamParameters =
+const meshCpuStreamParameters =
     "const js::F32Array& positions, const js::F32Array& normals, const js::U32Array& indices, const std::optional<js::F32Array>& uvs, const std::optional<js::F32Array>& uvs2, const std::optional<js::F32Array>& tangents, const std::optional<js::F32Array>& colors";
-export const meshCpuStreamArguments =
+const meshCpuStreamArguments =
     "positions, normals, indices, uvs, uvs2, tangents, colors";
-export const meshUploadedStreamArguments =
+const meshUploadedStreamArguments =
     "positions, normals, indices, retained_upload_stream(uvs), retained_upload_stream(uvs2), retained_upload_stream(tangents), retained_upload_stream(colors)";
 
 /** The optional source capture hook retains additional aliases only while enabled. */

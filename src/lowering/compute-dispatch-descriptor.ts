@@ -15,7 +15,7 @@ export function computeDispatchDescriptorCpp(context: LoweringContext): string {
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
             ts.isPropertyAccessExpression(node.left) &&
-            node.left.expression.getText(node.getSourceFile()) === "size" &&
+            context.expressionMatchesShape(node.left.expression, "size") &&
             ["y", "z"].includes(node.left.name.text)
         )
             return `${node.left.name.text}_input.value_or(${lowerer.expression(node.right)})`;
@@ -73,7 +73,10 @@ export function computeDispatchDescriptorCpp(context: LoweringContext): string {
             if (
                 !ts.isExpressionStatement(node) ||
                 !ts.isCallExpression(node.expression) ||
-                node.expression.expression.getText(file) !== "validateDimension"
+                !context.expressionMatchesShape(
+                    node.expression.expression,
+                    "validateDimension",
+                )
             )
                 return undefined;
             const args = node.expression.arguments;

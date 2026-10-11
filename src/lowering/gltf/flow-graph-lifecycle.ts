@@ -766,14 +766,12 @@ export function lowerFlowGraphDisposal(
                         "rt",
                         "Flow disposal context",
                     );
-                    if (
-                        variable.name.getText(file).replace(/\s/g, "") !==
-                        "{context:ctx,env}"
-                    )
-                        context.contractError(
-                            variable,
-                            "Unrepresented flow disposal context binding.",
-                        );
+                    context.assertStatementShapes(
+                        declaration,
+                        [statement],
+                        "const { context: ctx, env } = rt;",
+                        "Flow disposal context binding",
+                    );
                     return [];
                 }
                 if (

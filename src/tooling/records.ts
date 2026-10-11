@@ -137,7 +137,7 @@ export function toolIdentity(path: string | undefined): string {
 }
 
 /** A repository file's identity: its bytes, so a byte-identical checkout is the same file. */
-export function contentIdentity(path: string): string {
+function contentIdentity(path: string): string {
     if (!existsSync(path)) return "missing";
     return contentDigest(path);
 }

@@ -146,7 +146,7 @@ function gpuScope(
                 return [
                     `std::string{${stringLiteral(node.head.text)}}`,
                     ...node.templateSpans.flatMap((span) => [
-                        span.expression.getText(file) === "group"
+                        context.expressionMatchesShape(span.expression, "group")
                             ? `js::number_to_string(static_cast<double>(${lowerer.expression(span.expression)}))`
                             : lowerer.expression(span.expression),
                         `std::string{${stringLiteral(span.literal.text)}}`,
@@ -319,7 +319,10 @@ function gpuScope(
                 if (
                     ts.isExpressionStatement(node) &&
                     ts.isCallExpression(node.expression) &&
-                    node.expression.expression.getText(file) === "promise.then"
+                    context.expressionMatchesShape(
+                        node.expression.expression,
+                        "promise.then",
+                    )
                 ) {
                     const call = node.expression;
                     if (call.arguments.length !== 2)

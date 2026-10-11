@@ -1,41 +1,10 @@
 /**
- * Maps a glTF material to the shape Babylon Lite's own feature derivation
- * reads — by executing the pin's own loader, not by re-deriving its rules.
- *
- * Each option object here used to be a line-for-line transcription of the
- * loader extensions' `applyMaterial` builders, which is the drift the project
- * rule exists to prevent: a re-typed formula only agrees until the pin changes
- * it, and the IOR Fresnel `((ior-1)/(ior+1))^2 / 0.04` was carried twice as
- * exactly that. Now the pinned modules themselves run:
- *
- * - the seven loader extensions (`gltf-ext-clearcoat.ts` … `gltf-ext-
- *   dielectric.ts`) are executed against a recording `ctx` stub, and the
- *   option objects are whatever their own `setPbrX` calls set;
- * - `buildDefaultPbrTexturesExt` + `assemblePbrPropsExt` run against a
- *   recording device to decide the occlusion carrier, the UV2 mask and the
- *   factor gates;
- * - `animation-pointer-ext.ts`'s `seedExtMaterials` runs for the animated-
- *   pointer seeding, so the IOR Fresnel is computed by the pin's own
- *   `iorToF0Factor`.
- *
- * The pinned `applyMaterial` hooks are `async` (they await real texture
- * decodes) while this module's callers are synchronous, so the ext modules
- * are imported once through `importPinnedModuleUnasynced`, which erases the
- * `async`/`await` keywords from the pin's own text — every value they await
- * here is produced synchronously by the stub. That one-time load used to be
- * a module top-level await, which made every `cli.js` import pay the ~15
- * pinned imports whether or not the scene had a glTF material; it is now
- * behind `ensurePinnedLoaderExecution()`, awaited by the one async choke
- * point every production reader goes through (`materialSubjects` in
- * `pinned-material-arms.ts`). Callers see the same synchronous API once the
- * load has run; reading before it throws by name instead of misbehaving.
- *
- * What this module still carries by hand is plumbing, not formulas, each
- * piece cited at its definition: the loader's parsed-material field defaults
- * (`assembleMaterial` needs the document to fetch images; callers hand this
- * module an `imageOf` closure instead), the feature-registry ordering and
- * merge loop, and the slot-shaped texture fields of the output, which stand
- * in for the pin's GPU texture records.
+ * Execute pinned glTF material extensions, texture/props assembly and animated
+ * pointer seeding over recording textures. Production readers await
+ * ensurePinnedLoaderExecution; synchronous recording calls use the shared
+ * async/await AST transform. Source core assembly receives recording image
+ * identities; registry discovery, material prerequisites and dispatch execute
+ * in one source module realm. GPU records remain slot-shaped adapters.
  */
 import { javascriptModuleUrl } from "./data-url.js";
 import { asNumbers, asObject, type JsonObject } from "./json-fields.js";
@@ -50,6 +19,17 @@ import {
     type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
 import { createRecordingDevice } from "./recording-device.js";
+import { pinnedGltfMaterialCore } from "./pinned-gltf-material-core.js";
+import {
+    sharedPinnedContext,
+    type LoweringContext,
+} from "./lowering/context.js";
+import {
+    loadPinnedMaterialRegistry,
+    type PinnedMaterialFeatureContext,
+    type PinnedMaterialRegistry,
+    type PreparedMaterialFeatures,
+} from "./pinned-gltf-material-registry.js";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -65,6 +45,8 @@ import {
  * material carries its cutoff and a BLEND material carries its alpha.
  */
 interface PinnedMaterialSceneContext {
+    /** Discovery and material prerequisites executed over the complete glTF document. */
+    materialFeatures?: PreparedMaterialFeatures;
     /**
      * True when the scene renders linear because some material transmits.
      * Upstream this is a property of the material, but it is decided by the
@@ -254,43 +236,21 @@ function seedAnimatedExtensions(
     );
 }
 
-/**
- * Builds an `imageOf` resolver from a glTF document's `textures` array.
- *
- * The pin's `getTextureImageIndex` reads `extensions.EXT_texture_webp.source
- * ?? source`; this resolver reads plain `source` with the texture index as
- * the fallback identity, so a webp-only texture is its own pseudo-image
- * instead of the webp source's. Scene 37's sofa is all webp-only textures
- * and the difference is inert there — image identity gates only the
- * occlusion/metallic-roughness sharing decision, and that asset's pairs
- * share whole texture objects — but a GLB pairing those two slots through
- * two texture objects onto one webp source would split the occlusion
- * carrier under the pin and not here. Aligning the read is a one-line
- * change; it waits for an asset that can measure it.
- */
+/** Resolve image identity with the pinned loader's alternate-source rules. */
 export function gltfImageResolver(
     document: JsonObject,
 ): (textureIndex: unknown) => number | undefined {
     const textures = Array.isArray(document["textures"])
         ? (document["textures"] as JsonObject[])
         : [];
+    const { getTextureImageIndex } = executedPin();
     return (textureIndex) => {
         if (typeof textureIndex !== "number") return undefined;
         const texture = textures[textureIndex];
-        const source = texture?.["source"];
-        return typeof source === "number" ? source : textureIndex;
+        if (!texture) return undefined;
+        const source = getTextureImageIndex(texture);
+        return typeof source === "number" ? source : undefined;
     };
-}
-
-/** A pinned extension's `applyMaterial`, synchronous after the unasync load. */
-type PinnedApplyMaterial = (
-    mat: JsonObject,
-    ctx: PinnedExtensionContext,
-) => JsonObject | null;
-
-/** The half of the loader's `extCtx` the material extensions read. */
-interface PinnedExtensionContext {
-    _texture: (texInfo: unknown, sRGB: boolean) => JsonObject | undefined;
 }
 
 /** The texture set `buildDefaultPbrTexturesExt` returns; `void 0` slots stay. */
@@ -304,12 +264,8 @@ interface PinnedTextureSet {
 
 /** The executed pinned callables this module drives. */
 interface PinnedLoaderExecution {
-    /** The seven `applyMaterial` extensions, in the feature registry's order. */
-    materialExtensions: ReadonlyArray<{
-        id: string;
-        applyMaterial: PinnedApplyMaterial;
-    }>;
-    wrapTexture: (texture: JsonObject, texInfo: unknown) => JsonObject;
+    getTextureImageIndex: (texture: JsonObject) => unknown;
+    registry: PinnedMaterialRegistry;
     buildDefaultPbrTexturesExt: (
         engine: unknown,
         mat: JsonObject,
@@ -346,32 +302,6 @@ interface PinnedLoaderExecution {
             | null,
     ) => void;
 }
-
-/**
- * The material extensions `loadGltfFeatures` can activate, in the feature
- * registry's own order (`gltf-feature-registry.ts`), because
- * `runGltfMaterialFeatures` merges their fragments in that order. The
- * registry gates each on `extensionsUsed`; every module also guards itself on
- * the material's own declaration (`if (!c) return null`), so running all of
- * them per material differs only for an extension a material declares without
- * the document announcing it — which no valid glTF does.
- *
- * Spec-gloss is the one that overrides the base material rather than adding a
- * layer: it replaces the metallic-roughness workflow outright, so its result
- * lands on `baseColorTexture`, `metallicFactor`, `roughnessFactor`,
- * `reflectance` and the `specGlossTexture` slot rather than on a `_layer`.
- */
-const loaderMaterialExtensionModules = [
-    "loader-gltf/gltf-ext-clearcoat.js",
-    "loader-gltf/gltf-ext-iridescence.js",
-    "loader-gltf/gltf-ext-emissive-strength.js",
-    "loader-gltf/gltf-ext-sheen.js",
-    "loader-gltf/gltf-ext-anisotropy.js",
-    "loader-gltf/gltf-ext-diffuse-transmission.js",
-    "loader-gltf/gltf-ext-unlit.js",
-    "loader-gltf/gltf-ext-spec-gloss.js",
-    "loader-gltf/gltf-ext-dielectric.js",
-] as const;
 
 /**
  * Everything the pinned extensions are allowed to have set. A key outside
@@ -421,32 +351,18 @@ const knownLayerProperties = new Set([
     "_subsurface",
     ...reflectanceProperties,
     ...specGlossProperties,
+    "baseColorFactor",
+    "metadata",
 ]);
 
-/**
- * The one-time load of every pinned callable this module executes.
- *
- * The first await matters most: the executed `setPbrX` setters call
- * `_registerPbrExt`, and registration order is the material UBO's field order
- * (`pinned-pbr-variants.ts` spells the contract out). `_registerPbrExt` is a
- * `Map.set` keyed by id — a re-registration keeps the first position — so
- * registering the composer's curated order here first makes every
- * registration the executed setters perform order-neutral. The scene hook
- * `setPbrTransmission` registers is a `Set` nothing in generation drains,
- * and the imports themselves touch no pinned registry (the loader ext
- * modules and setters register only when *called*, which only happens
- * inside `pinnedMaterialInputFromGltf` — after this load, by construction),
- * so running this lazily cannot reorder anything a composition observes:
- * scene 12's empty-setter registration stays a position no-op because the
- * curated order always lands first, whichever path asks first.
- */
-async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
+/** Register the curated PBR order before loading the recording material realm. */
+async function loadPinnedLoaderExecution(
+    context: LoweringContext = sharedPinnedContext(),
+): Promise<PinnedLoaderExecution> {
     await registeredPbrExtensionIds();
-    const uvTransform = await importPinnedModule<{
-        default: {
-            wrapTexture: (texture: JsonObject, texInfo: unknown) => JsonObject;
-        };
-    }>("loader-gltf/gltf-ext-uv-transform.js");
+    const parser = await importPinnedModule<{
+        getTextureImageIndex: PinnedLoaderExecution["getTextureImageIndex"];
+    }>("loader-gltf/gltf-parser.js");
     const builder = await importPinnedModule<{
         needsGltfEmissive: (
             mat: JsonObject,
@@ -481,10 +397,6 @@ async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
         "loader-gltf/animation-pointer-ext.js",
         ["animatedTargets", "seedExtMaterials"],
     );
-    const materialExtensions: Array<{
-        id: string;
-        applyMaterial: PinnedApplyMaterial;
-    }> = [];
     const reflectanceModuleUrl = pathToFileURL(
         resolve(
             pinnedLibraryRoot(),
@@ -502,36 +414,26 @@ async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
             )}, { value: true, enumerable: false });\n` +
             `}\n`,
     );
-    const transmissionSetter = recordingTransmissionSetter("transmission");
-    const dispersionSetter = recordingTransmissionSetter("dispersion");
-    for (const path of loaderMaterialExtensionModules) {
-        const module = await importPinnedModuleUnasynced(
-            path,
-            [],
-            path === "loader-gltf/gltf-ext-dielectric.js"
-                ? new Map([
-                      [
-                          "../material/pbr/set-transmission.js",
-                          transmissionSetter,
-                      ],
-                      ["../material/pbr/set-dispersion.js", dispersionSetter],
-                      [
-                          "../material/pbr/set-metallic-reflectance.js",
-                          reflectanceRegistrationShim,
-                      ],
-                  ])
-                : new Map(),
-        );
-        materialExtensions.push(
-            module["default"] as {
-                id: string;
-                applyMaterial: PinnedApplyMaterial;
-            },
-        );
-    }
+    const registry = await loadPinnedMaterialRegistry(
+        context,
+        new Map([
+            [
+                "../material/pbr/set-transmission.js",
+                recordingTransmissionSetter("transmission", context),
+            ],
+            [
+                "../material/pbr/set-dispersion.js",
+                recordingTransmissionSetter("dispersion", context),
+            ],
+            [
+                "../material/pbr/set-metallic-reflectance.js",
+                reflectanceRegistrationShim,
+            ],
+        ]),
+    );
     return {
-        materialExtensions,
-        wrapTexture: uvTransform.default.wrapTexture,
+        getTextureImageIndex: parser.getTextureImageIndex,
+        registry,
         buildDefaultPbrTexturesExt: builderExt.buildDefaultPbrTexturesExt,
         assemblePbrPropsExt: builderExt.assemblePbrPropsExt,
         needsGltfUvTransform: builderExt.needsGltfUvTransform,
@@ -552,16 +454,22 @@ async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
 let pinExecutionPromise: Promise<PinnedLoaderExecution> | undefined;
 let pinExecution: PinnedLoaderExecution | undefined;
 
-/**
- * Runs the pinned loader execution once, memoized; every consumer awaits
- * this before reading materials through the synchronous API below. The
- * internal order is the eager module's own — the curated registration
- * first, then the imports — so the only observable change is that a
- * scene with no glTF/PBR material never runs the imports at all.
- */
+/** Initialize once, registering curated extensions before importing loaders. */
 export async function ensurePinnedLoaderExecution(): Promise<void> {
     pinExecutionPromise ??= loadPinnedLoaderExecution();
     pinExecution = await pinExecutionPromise;
+}
+
+/** Prepare one document's source-selected hooks before projecting its materials. */
+export async function preparePinnedMaterialFeatures(
+    document: JsonObject,
+    context?: LoweringContext,
+): Promise<PreparedMaterialFeatures> {
+    await ensurePinnedLoaderExecution();
+    const pin = context
+        ? await loadPinnedLoaderExecution(context)
+        : executedPin();
+    return pin.registry.prepare(document);
 }
 
 /** The executed pin, or a loud refusal naming the missing await. */
@@ -593,30 +501,15 @@ const uploadEngine: unknown = {
 
 const noopGenerateMipmaps = (): void => {};
 
-/**
- * The `ctx._texture` stub the executed extensions await.
- *
- * The real one decodes the image and wraps the GPU texture through the
- * registered `wrapTexture` hooks (`load-gltf.ts`'s `extCtx`). This one keeps
- * the module's output shape — the slot's own JSON plus the loader's markers —
- * but the *markers* come from executing the pin's `wrapTexture` over the
- * slot, so which transforms patch a field and which texCoord is stamped are
- * the pin's decisions, not re-derived ones. A slot with no image behind it
- * builds nothing, the same as the real fetcher.
- *
- * Two nuances the real loader has that this stub flattens, both corpus-
- * neutral today: `wrapTexture` only runs when `KHR_texture_transform` is in
- * `extensionsUsed` (here it always runs, as the transcription always
- * stamped), and the sRGB flag changes only the texture format, never the
- * markers.
- */
+/** Slot-shaped recording textures carry markers from the document's selected wraps. */
 function builtExtensionTexture(
+    prepared: PreparedMaterialFeatures,
     imageOf: (textureIndex: unknown) => number | undefined,
     slot: unknown,
 ): JsonObject | undefined {
     const info = asObject(slot);
     if (!info || imageOf(info["index"]) === undefined) return undefined;
-    const wrapped = executedPin().wrapTexture({}, info);
+    const wrapped = prepared.wrapTexture({}, info);
     return {
         ...info,
         ...(wrapped["_hasTx"] === true ? { _hasTx: true as const } : {}),
@@ -624,61 +517,7 @@ function builtExtensionTexture(
     };
 }
 
-/**
- * The parsed-material state `assembleMaterial` builds, field for field
- * (`gltf-material.ts`). That function is the one pinned step this module
- * cannot execute: it fetches real images from the document, and callers hand
- * this module an `imageOf` closure instead of the document. So the defaults
- * are mirrored here — they are plumbing, every formula that *reads* them is
- * executed — and each image becomes a per-index singleton handle, because the
- * texture assembly compares images by identity to decide whether occlusion
- * and metallic-roughness share one.
- */
-function loaderMaterialState(
-    material: JsonObject,
-    imageOf: (textureIndex: unknown) => number | undefined,
-): JsonObject {
-    const handles = new Map<number, JsonObject>();
-    const image = (slot: unknown): JsonObject | null => {
-        const info = asObject(slot);
-        const index = info ? imageOf(info["index"]) : undefined;
-        if (index === undefined) return null;
-        let handle = handles.get(index);
-        if (!handle) handles.set(index, (handle = {}));
-        return handle;
-    };
-    const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
-    const normal = asObject(material["normalTexture"]);
-    const occlusion = asObject(material["occlusionTexture"]);
-    return {
-        _baseColorFactor: pbr["baseColorFactor"] ?? [1, 1, 1, 1],
-        _metallicFactor: pbr["metallicFactor"] ?? 1,
-        _roughnessFactor: pbr["roughnessFactor"] ?? 1,
-        _emissiveFactor: material["emissiveFactor"] ?? [0, 0, 0],
-        _baseColorImage: image(pbr["baseColorTexture"]),
-        _metallicRoughnessImage: image(pbr["metallicRoughnessTexture"]),
-        _normalImage: image(normal),
-        _normalScale:
-            typeof normal?.["scale"] === "number" ? normal["scale"] : 1,
-        _occlusionTexCoord:
-            typeof occlusion?.["texCoord"] === "number"
-                ? occlusion["texCoord"]
-                : 0,
-        _occlusionImage: image(occlusion),
-        _emissiveImage: image(material["emissiveTexture"]),
-        _doubleSided: !!material["doubleSided"],
-        _alphaMode: material["alphaMode"] ?? "OPAQUE",
-        _alphaCutoff: material["alphaCutoff"] ?? 0.5,
-        _rawMatDef: material,
-    };
-}
-
-/**
- * Runs the executed extensions and merges their fragments the way
- * `runGltfMaterialFeatures` does — `Object.assign` over the non-null results
- * in registry order. The loop is mirrored (it holds no formulas); every value
- * inside the fragments came out of the pin.
- */
+/** Registration observations remain separate from the source's fragment merge. */
 interface PinnedExtensionLayerResult {
     layers: JsonObject;
     metallicReflectanceRegistered: boolean;
@@ -686,29 +525,38 @@ interface PinnedExtensionLayerResult {
 }
 
 function pinnedExtensionLayers(
+    prepared: PreparedMaterialFeatures,
     mat: JsonObject,
     imageOf: (textureIndex: unknown) => number | undefined,
 ): PinnedExtensionLayerResult {
-    const ctx: PinnedExtensionContext = {
-        _texture: (texInfo, _sRGB) => builtExtensionTexture(imageOf, texInfo),
+    const ctx: PinnedMaterialFeatureContext = {
+        _texture: (texInfo, _sRGB) =>
+            builtExtensionTexture(prepared, imageOf, texInfo),
     };
-    const layers: JsonObject = {};
     let metallicReflectanceRegistered = false;
     let transmissionRegistered = false;
-    for (const extension of executedPin().materialExtensions) {
-        const fragment = assertPinnedSync(
-            extension.applyMaterial(mat, ctx),
-            `${extension.id}.applyMaterial`,
-        );
-        if (fragment) {
-            if (fragment[transmissionRegistrationMarker] === true)
-                transmissionRegistered = true;
-            if (fragment[reflectanceRegistrationMarker] === true) {
-                metallicReflectanceRegistered = true;
+    const observed = prepared.features.map((extension) => ({
+        ...extension,
+        applyMaterial(mat: JsonObject, ctx: PinnedMaterialFeatureContext) {
+            const fragment = assertPinnedSync(
+                extension.applyMaterial(mat, ctx),
+                `${extension.id}.applyMaterial`,
+            );
+            if (fragment) {
+                if (fragment[transmissionRegistrationMarker] === true)
+                    transmissionRegistered = true;
+                if (fragment[reflectanceRegistrationMarker] === true) {
+                    metallicReflectanceRegistered = true;
+                }
             }
-            Object.assign(layers, fragment);
-        }
-    }
+            return fragment;
+        },
+    }));
+    const layers =
+        assertPinnedSync(
+            prepared.runGltfMaterialFeatures(mat, observed, ctx),
+            "runGltfMaterialFeatures",
+        ) ?? {};
     for (const name of Object.keys(layers)) {
         if (!knownLayerProperties.has(name)) {
             throw new Error(
@@ -743,12 +591,15 @@ export function pinnedMaterialInputFromGltf(
     const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
     const occlusion = asObject(material["occlusionTexture"]);
     const imageOf = scene.imageOf ?? ((): undefined => undefined);
+    const prepared =
+        scene.materialFeatures ??
+        pin.registry.prepare({ materials: [material] });
 
     // The pin's own loader steps, over this one material: the parsed state,
     // the extension fragments, the texture assembly, the props assembly.
-    const mat = loaderMaterialState(material, imageOf);
+    const mat = pinnedGltfMaterialCore()(material, imageOf);
     const { layers, metallicReflectanceRegistered, transmissionRegistered } =
-        pinnedExtensionLayers(mat, imageOf);
+        pinnedExtensionLayers(prepared, mat, imageOf);
     if (metallicReflectanceRegistered) {
         scene.recordMetallicReflectanceRegistration?.();
     }
@@ -759,7 +610,7 @@ export function pinnedMaterialInputFromGltf(
         undefined,
         noopGenerateMipmaps,
         () => ({}),
-        pin.wrapTexture,
+        prepared.wrapTexture,
         undefined,
     );
     const props = pin.assemblePbrPropsExt(mat, textures, layers);
@@ -782,15 +633,10 @@ export function pinnedMaterialInputFromGltf(
         // The pin's `mat._occlusionImage ? 1 : 0` — whether an occlusion
         // image was decoded at all, not the glTF `strength`.
         // `_computePbrMaterialFeatures` reads it as PBR_HAS_OCCLUSION.
-        //
-        // Scene 253 disagrees and is left disagreeing rather than tuned away:
-        // its one occlusion-textured material composes `occlusion = orm.r`
-        // here, while all fifteen captured fragments carry `occlusion = 1.0`.
-        // Forcing the field to zero matches that but costs a distinct variant
-        // and gains no exact match, so the source keeps the vote until a
-        // capture explains which materials actually reach `_occlusionImage`.
         occlusionStrength: props["occlusionStrength"] as number,
     };
+    // ExtrasAsMetadata returns an opaque payload; preserve the source's shape and identity.
+    if ("metadata" in props) input.metadata = props["metadata"];
     // `_emissiveColor`, three writers in the pin's own order:
     // `gltf-ext-emissive-strength.ts` ran with the other extensions and wrote
     // `factor * strength` whenever the extension is declared; an animated
@@ -844,7 +690,11 @@ export function pinnedMaterialInputFromGltf(
     // `[1,1,1,1]` at load and the browser's fragment still declares it).
     // Without an image the factor is baked into the uploaded texel instead.
     if ("baseColorFactor" in props || scene.animatedBaseColorFactor) {
-        input.baseColorFactor = mat["_baseColorFactor"] as readonly number[];
+        input.baseColorFactor = (
+            "baseColorFactor" in props
+                ? props["baseColorFactor"]
+                : mat["_baseColorFactor"]
+        ) as readonly number[];
     }
     // The executed assembly's own alpha block: BLEND carries the blend flag
     // and the factor's alpha; MASK carries the alpha and, through the pin's

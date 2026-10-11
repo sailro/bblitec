@@ -17,13 +17,11 @@ inline bool same_texture_image(const TextureData& left, const TextureData& right
     const auto& a = left.compressed;
     const auto& b = right.compressed;
     if (a.storage != b.storage || a.format != b.format || a.width != b.width ||
-        a.height != b.height || a.block_width != b.block_width ||
-        a.block_height != b.block_height || a.block_bytes != b.block_bytes ||
-        a.mips.size() != b.mips.size())
+        a.height != b.height || a.mips.size() != b.mips.size())
         return false;
     for (std::size_t i = 0; i < a.mips.size(); ++i) {
         if (a.mips[i].width != b.mips[i].width || a.mips[i].height != b.mips[i].height ||
-            a.mips[i].bytes.data() != b.mips[i].bytes.data() ||
+            a.mips[i].copy != b.mips[i].copy || a.mips[i].bytes.data() != b.mips[i].bytes.data() ||
             a.mips[i].bytes.size() != b.mips[i].bytes.size())
             return false;
     }

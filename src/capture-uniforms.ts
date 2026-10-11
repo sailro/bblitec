@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { asObject } from "./json-fields.js";
 import {
     parseWgslType,
     reflectWgslModule,
@@ -131,7 +132,7 @@ function decodeStruct(
  * through as well, so the two diagnostics agree about which buffers hold
  * bytes.
  */
-export function lastWriteBytes(buffer: {
+function lastWriteBytes(buffer: {
     writes?: unknown;
     mappedWrites?: unknown;
 }): Buffer | undefined {
@@ -154,8 +155,8 @@ export function lastWriteBytes(buffer: {
 }
 
 /** GPUBufferUsage.UNIFORM and .STORAGE. */
-export const uniformUsage = 0x40;
-export const storageUsage = 0x80;
+const uniformUsage = 0x40;
+const storageUsage = 0x80;
 
 /**
  * How large a non-uniform buffer may be and still be read for values.
@@ -164,18 +165,68 @@ export const storageUsage = 0x80;
  * buffers are storage-sized too and hold nothing worth decoding, so the cap
  * admits the state and excludes the geometry.
  */
-export const storageValueCap = 4096;
+const storageValueCap = 4096;
+
+export interface CapturedValueBuffer {
+    id: string;
+    size: number;
+    writes: number;
+    bytes: Buffer;
+}
+
+/** Shared capture schema and admission for uniform layouts and render diffs. */
+export function readCapturedValueBuffers(
+    captureDirectory: string,
+): CapturedValueBuffer[] {
+    const path = captureBuffersPath(captureDirectory);
+    if (!existsSync(path)) {
+        throw new Error(
+            `No capture buffers at ${path}. Run 'scene -- capture <id>' first.`,
+        );
+    }
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const entries = Array.isArray(parsed) ? parsed : asObject(parsed)?.buffers;
+    if (!Array.isArray(entries))
+        throw new Error(
+            "Capture buffers must be an array or a buffers record.",
+        );
+    const buffers: CapturedValueBuffer[] = [];
+    for (const candidate of entries) {
+        const entry = asObject(candidate);
+        if (!entry) throw new Error("Capture buffer entries must be records.");
+        const usage = Number(entry.usage ?? 0);
+        const uniform = (usage & uniformUsage) !== 0;
+        const declaredSize = entry.size ?? entry.byteLength;
+        if (
+            !uniform &&
+            ((usage & storageUsage) === 0 ||
+                Number(declaredSize ?? 0) > storageValueCap)
+        )
+            continue;
+        const bytes = lastWriteBytes(entry);
+        if (!bytes) continue;
+        const size = Number(declaredSize ?? bytes.length);
+        if (!uniform && size > storageValueCap) continue;
+        const id = entry.id ?? entry.index ?? "?";
+        if (typeof id !== "string" && typeof id !== "number")
+            throw new Error(
+                "Capture buffer identity must be a string or number.",
+            );
+        buffers.push({
+            id: String(id),
+            size,
+            writes: Array.isArray(entry.writes) ? entry.writes.length : 1,
+            bytes,
+        });
+    }
+    return buffers;
+}
 
 export function decodeCapturedUniforms(
     captureDirectory: string,
     options: { sizes?: number[]; module?: string } = {},
 ): DecodedBuffer[] {
-    const buffersPath = captureBuffersPath(captureDirectory);
-    if (!existsSync(buffersPath)) {
-        throw new Error(
-            `No capture buffers at ${buffersPath}. Run 'scene -- capture <id>' first.`,
-        );
-    }
+    const buffers = readCapturedValueBuffers(captureDirectory);
     const shaderDirectory = captureShadersDirectory(captureDirectory);
     const structs: WgslStruct[] = [];
     if (existsSync(shaderDirectory)) {
@@ -189,24 +240,9 @@ export function decodeCapturedUniforms(
             );
         }
     }
-    const parsed: unknown = JSON.parse(readFileSync(buffersPath, "utf8"));
-    const buffers = Array.isArray(parsed)
-        ? parsed
-        : ((parsed as { buffers?: unknown[] }).buffers ?? []);
     const result: DecodedBuffer[] = [];
-    for (const entry of buffers as Array<Record<string, unknown>>) {
-        const size = Number(entry.size ?? entry.byteLength ?? 0);
-        const usage = Number(entry.usage ?? 0);
-        // Uniform blocks, plus the small storage buffers the fragments read
-        // (the light lists) — the same admission `scene -- diff` uses, so a
-        // buffer one rung reports is never invisible to the next.
-        const admitted =
-            (usage & uniformUsage) !== 0 ||
-            ((usage & storageUsage) !== 0 && size <= storageValueCap);
-        if (!admitted) continue;
+    for (const { id, size, writes, bytes } of buffers) {
         if (options.sizes && !options.sizes.includes(size)) continue;
-        const bytes = lastWriteBytes(entry);
-        if (!bytes) continue;
         const candidates = structs
             .filter((struct) => struct.size === size)
             .filter(
@@ -219,16 +255,10 @@ export function decodeCapturedUniforms(
                 fields: decodeStruct(bytes, struct) ?? [],
             }))
             .filter((candidate) => candidate.fields.length > 0);
-        const id = entry.id ?? entry.index ?? "?";
-        if (typeof id !== "string" && typeof id !== "number") {
-            throw new Error(
-                "Uniform capture buffer identity must be a string or number.",
-            );
-        }
         result.push({
-            id: String(id),
+            id,
             size,
-            writes: Array.isArray(entry.writes) ? entry.writes.length : 1,
+            writes,
             candidates,
         });
     }

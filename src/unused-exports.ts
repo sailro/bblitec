@@ -36,23 +36,44 @@ function unusedExports(program: ts.Program): UnusedExport[] {
             if (declaration) candidates.set(symbol, { source, declaration });
         }
     }
+    // Export usage only distinguishes a declaration's own module from any
+    // other module. Expand each inferred type in at most two source contexts;
+    // walking the same compiler/runtime graph for every file is quadratic.
+    const typeSources = new Map<ts.Type, ts.SourceFile | null>();
     for (const source of sources) {
-        const types = new Set<ts.Type>();
         const expanding = new Set<ts.Symbol>();
         const visitedNodes = new Set<ts.Node>();
         function mark(symbol: ts.Symbol | undefined): void {
             if (!symbol) return;
-            if (candidates.has(symbol)) {
+            const candidate = candidates.get(symbol);
+            if (candidate) {
                 const uses = references.get(symbol) ?? new Set<ts.SourceFile>();
+                if (uses.has(source)) return;
                 uses.add(source);
                 references.set(symbol, uses);
+                // Inferred types matter at module boundaries. Asking for the
+                // type of every expression type-checks all implementation
+                // bodies, including huge generic compiler specializations.
+                if (
+                    candidate.source !== source &&
+                    !(symbol.flags & ts.SymbolFlags.Alias)
+                )
+                    visitType(
+                        symbol.flags & ts.SymbolFlags.Type
+                            ? checker.getDeclaredTypeOfSymbol(symbol)
+                            : checker.getTypeOfSymbolAtLocation(
+                                  symbol,
+                                  candidate.declaration,
+                              ),
+                    );
             }
             if (symbol.flags & ts.SymbolFlags.Alias)
                 mark(aliasTarget(checker, symbol));
         }
         function visitType(type: ts.Type): void {
-            if (types.has(type)) return;
-            types.add(type);
+            const previous = typeSources.get(type);
+            if (previous === null || previous === source) return;
+            typeSources.set(type, previous === undefined ? source : null);
             mark(type.aliasSymbol);
             mark(type.getSymbol());
             for (const argument of type.aliasTypeArguments ?? [])
@@ -169,6 +190,21 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                     }
                 return;
             }
+            // Destructuring a dynamic import creates local binding symbols;
+            // record the selected source properties, not the whole module.
+            if (
+                ts.isBindingElement(node) &&
+                ts.isObjectBindingPattern(node.parent)
+            ) {
+                const name = node.propertyName ?? node.name;
+                if (ts.isIdentifier(name) || ts.isStringLiteralLike(name))
+                    mark(
+                        checker.getPropertyOfType(
+                            checker.getTypeAtLocation(node.parent),
+                            name.text,
+                        ),
+                    );
+            }
             const symbol = declaredSymbol(checker, node);
             const declarationName = symbol?.declarations?.some(
                 (declaration) =>
@@ -193,7 +229,12 @@ function unusedExports(program: ts.Program): UnusedExport[] {
             if (
                 !declarationName &&
                 !namespaceQualifier &&
-                (ts.isExpression(node) || ts.isTypeNode(node))
+                ((ts.isExpression(node) &&
+                    symbol &&
+                    (aliasTarget(checker, symbol).flags &
+                        ts.SymbolFlags.Module) !==
+                        0) ||
+                    (ts.isImportTypeNode(node) && !node.qualifier))
             )
                 visitType(checker.getTypeAtLocation(node));
             ts.forEachChild(node, visit);

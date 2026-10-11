@@ -35,6 +35,7 @@ struct Registry {
     std::size_t total_allocations = 0;
     unsigned frames_since_collection = 0;
     bool collecting = false;
+    std::size_t weak_maps = 0; // Nonempty maps that require ephemeron tracing.
     ~Registry() noexcept;
 };
 // Generated JavaScript values belong to the control thread, as Ref counts do.
@@ -73,6 +74,7 @@ struct Node {
     virtual void pin() noexcept = 0;
     virtual void unpin() noexcept = 0;
     virtual std::weak_ptr<const void> shared_owner() const noexcept { return {}; }
+    virtual std::weak_ptr<const void> weak_owner() const noexcept { return shared_owner(); }
 };
 using SharedNodes = std::vector<std::pair<std::weak_ptr<const void>, Node*>>;
 
@@ -84,17 +86,38 @@ inline Node* find_shared_node(const SharedNodes& shared, const std::weak_ptr<con
     // lower_bound already establishes !less(found->first, owner).
     return found != shared.end() && !less(owner, found->first) ? found->second : nullptr;
 }
+inline std::size_t collect_ephemerons();
 } // namespace gc
 
 /** Enumerates owning edges; traversing a reference never traverses its payload. */
 class TraceVisitor {
 public:
     using Edge = void (*)(gc::Node*, void*);
-    TraceVisitor(const gc::SharedNodes& shared, Edge edge, void* state = nullptr)
-        : shared_(shared), edge_(edge), state_(state) {}
+    using Trace = void (*)(const void*, const TraceVisitor&);
+    using Erase = void (*)(const void*, const std::weak_ptr<const void>&);
+    struct Discovery {
+        gc::Node* (*shared)(const std::weak_ptr<const void>&, const void*, Trace, void*);
+        void (*weak)(const std::weak_ptr<const void>&, const void*, Trace, const void*, Erase,
+                     void*);
+    };
+    TraceVisitor(const gc::SharedNodes& shared, Edge edge, void* state = nullptr,
+                 const Discovery* discovery = nullptr)
+        : shared_(shared), edge_(edge), state_(state), discovery_(discovery) {}
     void edge(gc::Node* node) const {
         if (node)
             edge_(node, state_);
+    }
+    void reference(gc::Node* node) const {
+        if (node && (node->linked || discovery_))
+            edge(node);
+    }
+    template <typename T>
+    void ephemeron(const std::weak_ptr<const void>& key, const T& value, const void* owner,
+                   Erase erase) const {
+        if (discovery_)
+            discovery_->weak(key, std::addressof(value), trace_value<T>, owner, erase, state_);
+        else
+            (*this)(value);
     }
     template <typename T> void operator()(const T& value) const {
         if constexpr (requires { gc_trace_edges(value, *this); }) {
@@ -108,7 +131,15 @@ public:
     template <typename T> void operator()(const std::shared_ptr<T>& value) const {
         if (!value)
             return;
-        edge(gc::find_shared_node(shared_, std::weak_ptr<const void>(value)));
+        const std::weak_ptr<const void> owner(value);
+        if (auto* node = gc::find_shared_node(shared_, owner))
+            edge(node);
+        else if (discovery_) {
+            Trace trace = nullptr;
+            if constexpr (!std::is_void_v<T> && requires { sizeof(T); })
+                trace = trace_value<T>;
+            edge(discovery_->shared(owner, value.get(), trace, state_));
+        }
     }
     template <typename T> void operator()(const std::weak_ptr<T>&) const {}
     template <typename T> void operator()(const std::optional<T>& value) const {
@@ -164,9 +195,14 @@ public:
     void operator()(const std::basic_string_view<C, Tr>&) const {}
 
 private:
+    template <typename T> static void trace_value(const void* value, const TraceVisitor& visitor) {
+        visitor(*static_cast<const T*>(value));
+    }
     template <typename T> void trace_range(const T& values) const {
-        for (const auto& value : values)
-            (*this)(value);
+        if constexpr (!std::is_scalar_v<std::remove_cvref_t<decltype(*std::begin(values))>>) {
+            for (const auto& value : values)
+                (*this)(value);
+        }
     }
     template <std::size_t I, typename T> void trace_tuple_field(const T& value) const {
         if constexpr (!std::is_reference_v<std::tuple_element_t<I, T>>)
@@ -179,6 +215,7 @@ private:
     const gc::SharedNodes& shared_;
     Edge edge_;
     void* state_;
+    const Discovery* discovery_;
 };
 
 namespace gc {
@@ -355,17 +392,15 @@ template <typename List> [[nodiscard]] List* recycled_list() {
     return thread_list<List>;
 }
 
-struct FreeBlock {
-    void operator()(void* block) const noexcept { ::operator delete(block); }
+template <typename T> struct FreeBlock {
+    void operator()(T* block) const noexcept { std::allocator<T>{}.deallocate(block, 1); }
 };
 
 /**
  * The shared blocks of one payload type (the control block with its payload,
- * or a control block alone). A list serves one block size.
+ * or a control block alone). The rebound block type owns its allocation contract.
  */
-template <typename Tag> struct RecycledBlocks : RecycledList<void, 128, FreeBlock> {
-    std::size_t block_size = 0;
-};
+template <typename T, typename Tag> struct RecycledBlocks : RecycledList<T, 128, FreeBlock<T>> {};
 
 /** Shared-block memory drawn from and returned to the thread's list for `Tag`. */
 template <typename T, typename Tag> struct RecycledBlockAllocator {
@@ -377,21 +412,19 @@ template <typename T, typename Tag> struct RecycledBlockAllocator {
         using other = RecycledBlockAllocator<U, Tag>;
     };
     [[nodiscard]] T* allocate(std::size_t count) {
-        auto* list = recycled_list<RecycledBlocks<Tag>>();
-        if (count == 1 && list != nullptr && list->block_size == sizeof(T)) {
-            if (void* block = list->take())
-                return static_cast<T*>(block);
+        if (count == 1) {
+            if (auto* list = recycled_list<RecycledBlocks<T, Tag>>()) {
+                if (T* block = list->take())
+                    return block;
+            }
         }
-        return static_cast<T*>(::operator new(count * sizeof(T)));
+        return std::allocator<T>{}.allocate(count);
     }
     void deallocate(T* block, std::size_t count) noexcept {
-        auto* list = thread_list<RecycledBlocks<Tag>>;
-        if (count == 1 && list != nullptr &&
-            (list->block_size == 0 || list->block_size == sizeof(T)) && list->keep(block)) {
-            list->block_size = sizeof(T);
+        auto* list = thread_list<RecycledBlocks<T, Tag>>;
+        if (count == 1 && list != nullptr && list->keep(block))
             return;
-        }
-        ::operator delete(block);
+        std::allocator<T>{}.deallocate(block, count);
     }
     template <typename U>
     [[nodiscard]] friend bool operator==(const RecycledBlockAllocator&,
@@ -448,6 +481,8 @@ inline std::size_t collect_cycles() {
     auto& registry = gc::registry;
     if (registry.collecting || registry.nodes.empty())
         return 0;
+    if (registry.weak_maps != 0)
+        return gc::collect_ephemerons();
     const auto nodes = registry.nodes;
     gc::SharedNodes shared;
     for (auto* node : nodes) {
@@ -547,3 +582,5 @@ struct CollectOnExit {
 };
 
 } // namespace bbl::js
+
+#include <bblite/js_gc_ephemerons.hpp>

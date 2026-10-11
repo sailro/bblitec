@@ -1,6 +1,6 @@
 // Texel data both backends upload and read back, whatever the scene
 // reaches: the half-float packing, the decoded image a texture uploads,
-// the compressed-texture copy geometry, and the readback row conversion.
+// the compressed-format mapping, and the readback row conversion.
 // Reads no generated header, so its unit compiles once for every scene.
 #pragma once
 #include <bblite/pal_image.hpp>
@@ -60,25 +60,6 @@ inline std::uint16_t float_to_half_toward_zero(float value) {
  */
 DecodedImage decode_uploadable_image(const TextureData& texture_data,
                                      const std::array<std::uint8_t, 4>& fallback);
-
-/**
- * One compressed mip level's copy geometry, by the pin's own rules
- * (`ktx-loader.ts` uploadCompressed, `basis-loader.ts`).
- *
- * The copy extent is the block-padded size rather than the logical one:
- * a tail mip smaller than the block — 2x2 and 1x1 under a 4x4 block —
- * still occupies one whole block, and both WebGPU and D3D12 reject a
- * copy extent that is not a block multiple.
- */
-struct CompressedMipCopy {
-    std::uint32_t row_bytes;
-    std::uint32_t block_rows;
-    std::uint32_t width;
-    std::uint32_t height;
-};
-
-CompressedMipCopy compressed_mip_copy(const CompressedTexture& texture,
-                                      const CompressedMipLevel& mip);
 
 /**
  * The block-compressed formats this port uploads, as the pin's own WebGPU

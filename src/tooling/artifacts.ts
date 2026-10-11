@@ -34,6 +34,8 @@ export { NATIVE_BACKENDS, type NativeBackend };
  * and fails on a name missing here.
  */
 export const ARTIFACT_ROOTS = [
+    { name: ".dist-locks", owner: "dist consumers (src/dist-lock.ts)" },
+    { name: ".dist-writer.lock", owner: "dist writer (tools/dist-access.mjs)" },
     { name: ".scene-command.lock", owner: "dist lock (src/dist-lock.ts)" },
     { name: "android", owner: "tools/android.ps1, android:sweep" },
     { name: "android-vcpkg", owner: "tools/android.ps1 dependency install" },
@@ -65,6 +67,7 @@ export const ARTIFACT_ROOTS = [
     { name: "parity-canvas", owner: "canvas-only parity lane" },
     { name: "physics-constructor-inputs", owner: "physics-viewer generation" },
     { name: "releases", owner: "demos:release, package:demo" },
+    { name: "reviews", owner: "simplify evidence (src/verify-simplify.ts)" },
     { name: "scene149-reference", owner: "input of check scene149-transport" },
     { name: "shader-cache", owner: "offline shader compilation" },
     { name: "shipping", owner: "demos:release plans and logs" },

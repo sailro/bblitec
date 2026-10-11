@@ -100,7 +100,7 @@ export function declarationOrigin(declaration: ts.Node): DeclarationOrigin {
  * program's own sources (a declaration file describes storage its producer
  * owns).
  */
-export type RetypableDeclaration =
+type RetypableDeclaration =
     | ts.VariableDeclaration
     | ts.ParameterDeclaration
     | ts.PropertySignature

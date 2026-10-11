@@ -374,10 +374,10 @@ test("a scene that reaches neither carries neither", () => {
     );
 });
 
-test("nlohmann is linked only where a loader or the JSON bridge reaches it", () => {
+test("nlohmann is linked only for loaders, environment parsing or the JSON bridge", () => {
     const cmake = readFileSync(resolve("native/CMakeLists.txt"), "utf8");
     const gate =
-        /if\(\s*"loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR\s*"loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES OR\s*"data:json" IN_LIST BBLITE_RUNTIME_FEATURES\s*\)\s*find_package\(nlohmann_json CONFIG REQUIRED\)/;
+        /if\(\s*"loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR\s*"loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES OR\s*"environment:env" IN_LIST BBLITE_RUNTIME_FEATURES OR\s*"data:json" IN_LIST BBLITE_RUNTIME_FEATURES\s*\)\s*find_package\(nlohmann_json CONFIG REQUIRED\)/;
     assert.match(cmake, gate);
 });
 
@@ -441,9 +441,9 @@ test("the JSON runtime is included only by the scenes that reach it", () => {
     assert.match(runtime, /using Object = std::vector<Entry>;/);
     // ts_runtime.hpp includes nlohmann's header unconditionally, and the
     // static shipping tree carries that include directory only behind the
-    // loader:gltf, loader:babylon and data:json gate; an emitted unit that
-    // includes it without parsing JSON fails only there, never under the
-    // development precompiled header. The glTF loader is the one owner.
+    // loader:gltf, loader:babylon, environment:env and data:json gate.
+    // An emitted unit that includes it without parsing JSON fails only there,
+    // never under the development precompiled header. The glTF loader is the owner.
     const lowering = resolve("src/lowering");
     const includers = readdirSync(lowering, { recursive: true })
         .map(String)

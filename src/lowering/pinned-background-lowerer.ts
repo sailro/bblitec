@@ -25,7 +25,10 @@ import {
     lowerPinnedFunction,
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 
 /** The native enumerator for each arm. */
 const armKinds: Readonly<Record<PinnedBackgroundArmName, string>> = {
@@ -95,13 +98,10 @@ const imageSkyboxModule = "src/loader-skybox/load-skybox.ts";
  * The native value behind each scene path a factory passes on. These are
  * the records the pin's factories read -- the environment the loaders
  * size and colour, the scene's image processing and clear colour -- in the
- * native `Scene` that mirrors them. `skyHalfSize` is the half the entry
- * points take of the skybox size before calling the factory; that halving
- * is asserted against both entries in `assertSkyHalfSize`.
+ * native `Scene` that mirrors them. Entry-point arithmetic is lowered separately.
  */
 const nativeScenePaths: ReadonlyMap<string, string> = new Map([
     ["groundSize", "scene.environment.ground_size"],
-    ["skyHalfSize", "scene.environment.skybox_size / 2.0"],
     ["size", "scene.environment.image_skybox_size"],
     [
         "scene.imageProcessing.exposure",
@@ -246,11 +246,9 @@ function factoryCall(
 }
 
 /**
- * Both entry points halve the skybox size before a skybox factory sees it:
- * `loadEnvironment` names the half `skyHalfSize`, and
- * `addDdsEnvironmentBackground` passes `skyboxSize / 2` straight on.
+ * The shared skybox size argument, lowered from both loader entry points.
  */
-function assertSkyHalfSize(context: LoweringContext): void {
+function lowerSkyHalfSize(context: LoweringContext): string {
     const loadEnv = context.functionDeclaration(
         "src/loader-env/load-env.ts",
         "loadEnvironment",
@@ -269,11 +267,6 @@ function assertSkyHalfSize(context: LoweringContext): void {
             "Expected pinned loadEnvironment to name one skyHalfSize.",
         );
     }
-    context.assertExpressionShape(
-        halves[0]!.initializer!,
-        "autoSkyboxSize / 2",
-        "Pinned loadEnvironment skyHalfSize",
-    );
     const dds = context.functionDeclaration(
         "src/material/pbr/background-dds-environment.ts",
         "addDdsEnvironmentBackground",
@@ -283,11 +276,24 @@ function assertSkyHalfSize(context: LoweringContext): void {
         dds.declaration,
         "buildDdsSkyboxRenderable",
     );
-    context.assertExpressionShape(
-        call.arguments[1]!,
-        "skyboxSize / 2",
-        "Pinned addDdsEnvironmentBackground skybox half size",
-    );
+    const lower = (expression: ts.Expression, size: string): string =>
+        new PinnedNumericLowerer(expression.getSourceFile(), {
+            calls: new Map(),
+            bindings: new Map([
+                [
+                    size,
+                    { cpp: "scene.environment.skybox_size", type: "scalar" },
+                ],
+            ]),
+        }).expression(expression);
+    const environment = lower(halves[0]!.initializer!, "autoSkyboxSize");
+    const background = lower(call.arguments[1]!, "skyboxSize");
+    if (environment !== background)
+        context.contractError(
+            call,
+            "Background entry points require distinct skybox size arguments.",
+        );
+    return environment;
 }
 
 /** A writer or builder parameter, from its pinned annotation. */
@@ -719,7 +725,7 @@ export function pinnedBackgroundsHeader(
     const hasSkybox = arms.some(
         (arm) => arm.name !== "imageSkybox" && !arm.name.startsWith("ground"),
     );
-    if (hasSkybox) assertSkyHalfSize(context);
+    const skyHalfSize = hasSkybox ? lowerSkyHalfSize(context) : undefined;
     for (const arm of arms) {
         const kind = `PinnedBackgroundArmKind::${armKinds[arm.name]}`;
         if (arm.name === "imageSkybox") {
@@ -779,6 +785,7 @@ export function pinnedBackgroundsHeader(
             factory.factory,
         ).declaration;
         const tuples = tupleArguments(arm.name);
+        if (skyHalfSize !== undefined) tuples.set("skyHalfSize", skyHalfSize);
         const geometry = nativeCall(
             context,
             factoryDeclaration,

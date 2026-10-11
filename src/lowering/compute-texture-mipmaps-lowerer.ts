@@ -171,22 +171,29 @@ export function lowerComputeTextureMipmaps(
         ["pass.draw", (a) => `pass.draw(static_cast<std::uint32_t>(${a[0]}))`],
         ["pass.end", () => "pass.end()"],
     ]);
-    const scope = (file: ts.SourceFile): PinnedBodyScope => ({
+    const scope = (): PinnedBodyScope => ({
         bindings: new Map(bindings),
         calls,
-        expression(node) {
+        expression(node, lowerer) {
             if (ts.isStringLiteral(node)) return stringLiteral(node.text);
             if (context.expressionMatchesShape(node, "resources[0]!._engine"))
                 return "compute_mipmap_resource_engine(resources.at(0))";
-            if (
-                ts.isElementAccessExpression(node) &&
-                ["textures", "prepared"].includes(node.expression.getText(file))
-            )
-                return `${node.expression.getText(file)}[static_cast<std::size_t>(${node.argumentExpression.getText(file)})]`;
+            if (ts.isElementAccessExpression(node)) {
+                const owner = context.matchingExpressionShape(node.expression, [
+                    "textures",
+                    "prepared",
+                ]);
+                if (owner !== undefined)
+                    return `${owner}[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})]`;
+            }
             return undefined;
         },
-        forOf(iterated, element) {
-            if (!["textures", "prepared"].includes(iterated)) return undefined;
+        forOf(_iterated, element, _binding, syntax) {
+            const iterated = context.matchingExpressionShape(
+                syntax.expression,
+                ["textures", "prepared"],
+            );
+            if (iterated === undefined) return undefined;
             return {
                 range: iterated,
                 bindings: new Map([
@@ -206,7 +213,10 @@ export function lowerComputeTextureMipmaps(
                     return [`${indent}textures.clear();`];
                 if (
                     ts.isCallExpression(value) &&
-                    value.expression.getText(file) === "prepared.push"
+                    context.expressionMatchesShape(
+                        value.expression,
+                        "prepared.push",
+                    )
                 ) {
                     context.assertExpressionShape(
                         value,
@@ -252,7 +262,10 @@ export function lowerComputeTextureMipmaps(
                     return [`${indent}PreparedComputeMipmaps prepared;`];
                 if (
                     !ts.isCallExpression(init) ||
-                    init.expression.getText(file) !== "textures.map" ||
+                    !context.expressionMatchesShape(
+                        init.expression,
+                        "textures.map",
+                    ) ||
                     init.arguments.length !== 1 ||
                     !ts.isArrowFunction(init.arguments[0]!)
                 )
@@ -275,7 +288,10 @@ export function lowerComputeTextureMipmaps(
             if (name === "drawCount") {
                 if (
                     !ts.isCallExpression(init) ||
-                    init.expression.getText(file) !== "prepared.reduce" ||
+                    !context.expressionMatchesShape(
+                        init.expression,
+                        "prepared.reduce",
+                    ) ||
                     init.arguments.length !== 2 ||
                     !ts.isArrowFunction(init.arguments[0]!)
                 )
@@ -370,7 +386,7 @@ export function lowerComputeTextureMipmaps(
             const body = lowerPinnedBody(
                 factory.file,
                 method.body.statements,
-                scope(factory.file),
+                scope(),
             );
             return `    task->${name} = js::make_closure(std::tuple{textures, prepared, draw_count, engine, name}, [](auto& captures) -> ${name === "execute" ? "double" : "void"} {
         [[maybe_unused]] auto& textures = std::get<0>(captures);
@@ -394,11 +410,11 @@ ${computeTextureSamplingCpp(context)}
 }
 // ${context.provenance(mipPath, "prepareMipmaps")}
 PreparedComputeMipmaps prepare_compute_mipmaps(const std::shared_ptr<Engine>& engine, const std::shared_ptr<pal::ComputeTextureAllocation>& texture_allocation, const pal::ComputeTextureDescriptor& texture_descriptor, std::optional<std::uint32_t> face) {
-${lowerPinnedBody(prepare.file, prepare.declaration.body!.statements, scope(prepare.file))}
+${lowerPinnedBody(prepare.file, prepare.declaration.body!.statements, scope())}
 }
 // ${context.provenance(mipPath, "recordPreparedMipmaps")}
 void record_compute_mipmaps(const std::shared_ptr<pal::ComputeCommandEncoder>& encoder, const PreparedComputeMipmaps& prepared) {
-${lowerPinnedBody(record.file, record.declaration.body!.statements, scope(record.file))}
+${lowerPinnedBody(record.file, record.declaration.body!.statements, scope())}
 }
 // ${context.provenance(taskPath, "createComputeStorageTextureMipmapsTask")}
 std::shared_ptr<ComputeTask> create_compute_storage_texture_mipmaps_task(std::string name, const std::vector<std::shared_ptr<ComputeStorageTexture>>& resources) {
@@ -407,7 +423,7 @@ ${lowerPinnedBody(
     factory.declaration.body!.statements.filter(
         (node) => !ts.isReturnStatement(node),
     ),
-    scope(factory.file),
+    scope(),
 )}
     auto task = js::make_gc_shared<ComputeTask>();
     task->engine = engine;

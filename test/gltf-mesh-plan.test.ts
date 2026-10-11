@@ -105,6 +105,7 @@ test("base scheduling preserves reached order, both caches, default identity and
     assert.equal(
         await gltfLinearImageProcessing({
             ...document,
+            extensionsUsed: ["KHR_materials_transmission"],
             materials: [{}, {}, transmission],
         }),
         false,
@@ -112,6 +113,7 @@ test("base scheduling preserves reached order, both caches, default identity and
     assert.equal(
         await gltfLinearImageProcessing({
             ...document,
+            extensionsUsed: ["KHR_materials_transmission"],
             materials: [{}, transmission, {}],
         }),
         true,

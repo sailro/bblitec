@@ -25,6 +25,31 @@ import {
     GLTF_VARIANT_PLAN,
 } from "../src/gltf-document.js";
 import { packageGltfLoadPlan } from "../src/gltf-load-plan.js";
+import { withMeshPlan } from "./gltf-mesh-fixture.js";
+import { importPinnedModule } from "../src/pinned-shader-composer.js";
+
+test("scene unlit overrides retain the pinned setter's material state", async () => {
+    const document = await withMeshPlan({
+        nodes: [{ mesh: 0 }],
+        meshes: [{ primitives: [{ material: 0 }] }],
+        materials: [{}],
+    });
+    const { setPbrUnlit } = await importPinnedModule<{
+        setPbrUnlit: (
+            material: Record<string, unknown>,
+            tint?: readonly [number, number, number],
+        ) => void;
+    }>("material/pbr/set-unlit.js");
+    for (const tint of [undefined, [0.2, 0.4, 0.6] as const]) {
+        const expected: Record<string, unknown> = {};
+        setPbrUnlit(expected, tint);
+        const subjects = await materialSubjects(document, {
+            sceneUnlit: tint ? { tint } : {},
+        });
+        for (const [key, value] of Object.entries(expected))
+            assert.deepEqual(subjects[0]!.input[key], value);
+    }
+});
 
 const armNames: (keyof PinnedMaterialArms)[] = [
     "clearcoat",
@@ -365,6 +390,7 @@ test("a glTF dielectric globally registers scene-material F0", async () => {
     const { withMeshPlan } = await import("./gltf-mesh-fixture.js");
     const subjects = await materialSubjects(
         await withMeshPlan({
+            extensionsUsed: ["KHR_materials_ior", "KHR_materials_specular"],
             nodes: [{ mesh: 0 }],
             meshes: [{ primitives: [{ material: 0 }] }],
             materials: [

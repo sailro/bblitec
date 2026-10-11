@@ -238,7 +238,10 @@ function scope(
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
             ) {
-                const text = node.left.getText(file);
+                const text = context.matchingExpressionShape(node.left, [
+                    "options.entryPoint",
+                    "options.name",
+                ]);
                 if (text === "options.entryPoint" || text === "options.name")
                     return `options.${text.endsWith("name") ? "name" : "entry_point"}.value_or(${lowerer.expression(node.right)})`;
                 if (
@@ -250,7 +253,10 @@ function scope(
                     return `(decls.empty() ? ${lowerer.expression(node.right)} : decls.back()->group)`;
                 if (
                     ts.isElementAccessExpression(node.left) &&
-                    node.left.expression.getText(file) === "dynamicCounts"
+                    context.expressionMatchesShape(
+                        node.left.expression,
+                        "dynamicCounts",
+                    )
                 ) {
                     const index = lowerer.expression(
                         node.left.argumentExpression,
@@ -262,13 +268,16 @@ function scope(
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
                 ts.isCallExpression(node.left) &&
-                node.left.expression.getText(file) === "Number"
+                context.expressionMatchesShape(node.left.expression, "Number")
             ) {
                 const arg = node.left.arguments[0];
                 if (
                     arg &&
                     ts.isPropertyAccessExpression(arg) &&
-                    arg.expression.getText(file) === "engine._device.limits"
+                    context.expressionMatchesShape(
+                        arg.expression,
+                        "engine._device.limits",
+                    )
                 ) {
                     const cpp = limits[arg.name.text];
                     if (!cpp) return undefined;
@@ -296,8 +305,12 @@ function scope(
             }
             return undefined;
         },
-        forOf(iterated, element) {
-            if (iterated !== "decls" || element !== "decl") return undefined;
+        forOf(_iterated, element, _binding, syntax) {
+            if (
+                !context.expressionMatchesShape(syntax.expression, "decls") ||
+                element !== "decl"
+            )
+                return undefined;
             return {
                 range: "decls",
                 bindings: new Map([
@@ -463,7 +476,10 @@ function scope(
             if (
                 ts.isBinaryExpression(expression) &&
                 ts.isElementAccessExpression(expression.left) &&
-                expression.left.expression.getText(file) === "dynamicCounts"
+                context.expressionMatchesShape(
+                    expression.left.expression,
+                    "dynamicCounts",
+                )
             ) {
                 const index = lowerer.expression(
                         expression.left.argumentExpression,
@@ -488,7 +504,10 @@ function scope(
             }
             if (
                 ts.isCallExpression(expression) &&
-                expression.expression.getText(file) === "slots.set"
+                context.expressionMatchesShape(
+                    expression.expression,
+                    "slots.set",
+                )
             ) {
                 if (expression.arguments.length !== 2)
                     return context.contractError(

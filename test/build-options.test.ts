@@ -537,7 +537,7 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     // UNITY_BUILD writes absolute paths into the source it generates, which
     // would enter the object cache's key); no family file compiles alone.
     assert.ok(
-        cmake.includes(
+        readFileSync("native/backend-sources.cmake", "utf8").includes(
             'list(TRANSFORM BBLITE_RUNTIME_SOURCES REPLACE "/src/pal_sdl_gpu\\\\.cpp$" "/src/pal_sdl_gpu_scene_all.cpp")',
         ),
         "the feature table's scene driver compiles through its unity unit",

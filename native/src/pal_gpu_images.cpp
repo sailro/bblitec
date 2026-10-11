@@ -1,5 +1,5 @@
 // The texel bodies (pal_gpu_images.hpp): the decoded image a texture uploads,
-// the compressed-texture copy geometry and the readback row conversion. It
+// the compressed-format mapping and the readback row conversion. It
 // reads the image-decoder feature as part of its shared compilation identity.
 #include "pal_gpu_images.hpp"
 
@@ -27,19 +27,6 @@ DecodedImage decode_uploadable_image(const TextureData& texture_data,
     }
     orient_image(image, texture_data.invert_y, texture_data.premultiply_alpha);
     return image;
-}
-
-CompressedMipCopy compressed_mip_copy(const CompressedTexture& texture,
-                                      const CompressedMipLevel& mip) {
-    const std::uint32_t blocks_per_row =
-        (mip.width + texture.block_width - 1) / texture.block_width;
-    const std::uint32_t block_rows = (mip.height + texture.block_height - 1) / texture.block_height;
-    return CompressedMipCopy{
-        blocks_per_row * texture.block_bytes,
-        block_rows,
-        blocks_per_row * texture.block_width,
-        block_rows * texture.block_height,
-    };
 }
 
 CompressedBlockFormat compressed_block_format(std::string_view name) {

@@ -6,14 +6,16 @@ import {
     blendFactoriesCpp,
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
-import { elementIndexText, LoweredSource, LoweringContext } from "./context.js";
+import { LoweredSource, LoweringContext } from "./context.js";
 import {
     decodeAtlasImageCpp,
     gridSpriteAtlasCpp,
     gridSpriteAtlasFramesCpp,
     pushAtlasHandleCpp,
 } from "./pinned-grid-atlas.js";
-import { assertFrameAtlasRule } from "./pinned-frame-atlas.js";
+import { frameSpriteAtlasCpp } from "./pinned-frame-atlas.js";
+import { lowerSpriteCapacity } from "./pinned-sprite-capacity.js";
+import { lowerSpriteInstances } from "./pinned-sprite-instances.js";
 import {
     type PinnedVertexAttribute,
     pinnedVertexAttribute,
@@ -369,157 +371,6 @@ export class SpriteLowerer {
     }
 
     /**
-     * `writeInstance` writes thirteen base slots plus the depth slot. The lowered writer
-     * below reproduces them, so the slot expressions are pinned here
-     * rather than trusted: a moved slot has to fail generation.
-     */
-    private assertInstanceSlots(): void {
-        const { declaration } = this.context.functionDeclaration(
-            layerModule,
-            "writeInstance",
-        );
-        const expected: ReadonlyArray<[number, string]> = [
-            [0, "posX"],
-            [1, "posY"],
-            [2, "visible ? trueW : 0"],
-            [3, "visible ? trueH : 0"],
-            [4, "uMin"],
-            [5, "vMin"],
-            [6, "uMax"],
-            [7, "vMax"],
-            [8, "rotation"],
-        ];
-        const writes = this.context.pinnedElementStores(declaration, "data");
-        for (const [slot, source] of expected) {
-            const write = writes.find(
-                (node) => elementIndexText(node.left) === `base + ${slot}`,
-            );
-            if (!write) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned writeInstance no longer writes slot ${slot}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                write.right,
-                source,
-                `writeInstance slot ${slot}`,
-            );
-        }
-        // The colour block writes slots 9..12 twice (the props arm and the
-        // add default), so it is checked by count rather than by shape.
-        for (const slot of [9, 10, 11, 12]) {
-            const found = writes.filter(
-                (node) => elementIndexText(node.left) === `base + ${slot}`,
-            );
-            if (found.length !== 2) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned writeInstance colour slot ${slot} has ${found.length} writers, expected 2.`,
-                );
-            }
-        }
-        const depthWrite = writes.find(
-            (node) => elementIndexText(node.left) === "base + 13",
-        );
-        if (!depthWrite) {
-            this.context.contractError(
-                declaration,
-                "Pinned writeInstance no longer writes depth slot 13.",
-            );
-        }
-        this.context.assertExpressionShape(
-            depthWrite.right,
-            "z",
-            "writeInstance depth slot 13",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "z"),
-            "hasDepthSlot ? props.z ?? (prev ? prev[13] : layer.layerZ) : 0",
-            "writeInstance depth fallback",
-        );
-        // The flip resolution is what makes flipX absolute rather than a
-        // toggle, and the swap is what a preserved orientation means.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "currentFlipX"),
-            "uMin > uMax",
-            "writeInstance currentFlipX",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "wantsFlipX"),
-            "props.flipX !== undefined ? props.flipX === true : prevFlipX",
-            "writeInstance wantsFlipX",
-        );
-    }
-
-    /**
-     * The update arm of the same writer.
-     *
-     * `addSprite2DIndex` passes `prev === null` and every unsupplied field
-     * takes a documented default; `updateSprite2DIndex` passes the slot's own
-     * floats back in and every unsupplied field takes the *previous* value.
-     * The lowered writer carries both arms, so the expressions that read
-     * `prev` are pinned here exactly as the add arm's defaults already are --
-     * they are the whole of what "preserve what was not supplied" means, and
-     * a slot that started reading a different index would preserve the wrong
-     * quantity while still compiling.
-     */
-    private assertUpdateArm(): void {
-        const { declaration } = this.context.functionDeclaration(
-            layerModule,
-            "writeInstance",
-        );
-        const preserved: ReadonlyArray<[string, string]> = [
-            ["isAdd", "prev === null"],
-            ["posX", "props.positionPx ? props.positionPx[0] : prev![0]!"],
-            ["posY", "props.positionPx ? props.positionPx[1] : prev![1]!"],
-            ["prevFlipX", "!isAdd && prev![4]! > prev![6]!"],
-            ["prevFlipY", "!isAdd && prev![5]! > prev![7]!"],
-            ["rotation", "props.rotation ?? (prev ? prev[8]! : 0)"],
-        ];
-        for (const [name, source] of preserved) {
-            this.context.assertExpressionShape(
-                this.context.variableInitializer(declaration, name),
-                source,
-                `writeInstance ${name}`,
-            );
-        }
-        // The preserved quantities that are assigned inside an else branch
-        // rather than initialized. Each is matched as the whole assignment,
-        // because the element access alone also appears on the write side of
-        // the shadow and inside the flip reads. Each states where the
-        // previous value comes from: the size shadow, the zeroed GPU size
-        // (which is how a hidden sprite is stored), and the UV endpoints.
-        const branchArms: readonly string[] = [
-            "trueW = layer._savedSize[savedBase]!",
-            "trueH = layer._savedSize[savedBase + 1]!",
-            "visible = prev![2]! !== 0 || prev![3]! !== 0",
-            "uMin = prev![4]!",
-            "vMin = prev![5]!",
-            "uMax = prev![6]!",
-            "vMax = prev![7]!",
-        ];
-        for (const source of branchArms) {
-            this.context.expectShapeCount(
-                declaration,
-                source,
-                `writeInstance ${source}`,
-            );
-        }
-        // `updateSprite2DIndex` is the only caller that hands `prev` over,
-        // and the slot it hands over is the one it is about to rewrite.
-        const update = this.context.functionDeclaration(
-            layerModule,
-            "updateSprite2DIndex",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(update.declaration, "prev"),
-            "layer._instanceData.subarray(base, base + layer._instanceFloatsPerSprite)",
-            "updateSprite2DIndex prev",
-        );
-    }
-
-    /**
      * `clearSprite2DLayer` drops the count without touching the instance
      * floats, so what it must get right is the size shadow and the version.
      * The shadow is cleared over the *old* count so a later re-add starts
@@ -611,55 +462,24 @@ export class SpriteLowerer {
         );
     }
 
-    /** `base` is `slotIndex * layer._instanceFloatsPerSprite`. */
-    private assertInstanceBase(): void {
-        const { declaration } = this.context.functionDeclaration(
-            layerModule,
-            "writeInstance",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "base"),
-            "slotIndex * layer._instanceFloatsPerSprite",
-            "writeInstance base",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "savedBase"),
-            "slotIndex * SAVED_SIZE_FLOATS_PER_SPRITE",
-            "writeInstance savedBase",
-        );
-    }
-
-    /** `resolveSpriteFrame` is a bounds check and nothing else. */
-    private assertFrameResolution(): void {
-        const { declaration } = this.context.functionDeclaration(
+    /** Source bounds checks followed by the native array-index representation. */
+    public lowerFrameResolver(): string {
+        const { file, declaration } = this.context.functionDeclaration(
             atlasModule,
             "resolveSpriteFrame",
         );
-        const guard = this.context.findNodes(
-            declaration,
-            (node): node is ts.IfStatement => ts.isIfStatement(node),
-        )[0];
-        if (!guard) {
-            this.context.contractError(
-                declaration,
-                "Pinned resolveSpriteFrame no longer bounds-checks.",
-            );
-        }
-        this.context.assertExpressionShape(
-            guard.expression,
-            "frame < 0 || frame >= atlas.frames.length",
-            "resolveSpriteFrame bounds",
-        );
-        const returned = this.context.findNodes(
-            declaration,
-            (node): node is ts.ReturnStatement =>
-                ts.isReturnStatement(node) && node.expression !== undefined,
-        )[0];
-        this.context.assertExpressionShape(
-            returned!.expression!,
-            "frame",
-            "resolveSpriteFrame result",
-        );
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings: new Map<string, PinnedBinding>([
+                ["frame", { cpp: "frame", type: "scalar" }],
+                ["atlas.frames", { cpp: "atlas.frames", type: "record-list" }],
+            ]),
+            calls: new Map(),
+            returnValue: (expression, lowerer) =>
+                `gpu_u32(gpu_size(${lowerer.expression(expression!)}))`,
+        });
+        return `inline std::uint32_t resolve_sprite_frame(const SpriteAtlasRecord& atlas, double frame) {
+${body}
+}`;
     }
 
     /** `loadSpriteAtlas` requires `gridSize` and fixes the texture options. */
@@ -1253,13 +1073,8 @@ ${body}
         );
         const depthRow = this.depthAttribute();
         const uvScrollRow = this.uvScrollAttribute(layout.pureInstanceFloats);
-        assertFrameAtlasRule(this.context);
-        this.assertFrameResolution();
         this.assertAtlasLoader();
-        this.assertInstanceBase();
-        this.assertInstanceSlots();
         this.assertDepthHostedRenderable();
-        this.assertUpdateArm();
         this.assertClearLayer();
         this.assertRendererMembership();
         const fxUbo = this.fxUboCpp();
@@ -1327,21 +1142,7 @@ struct SpriteInstanceAttribute {
     std::uint32_t float_count;
 };
 
-/**
- * shared/sprite-atlas.ts#resolveSpriteFrame: a bounds check, nothing more.
- * It lives in the shared header because it is the shared atlas module's, and
- * both the 2D layer and the billboard system resolve a frame through it.
- */
-inline std::uint32_t resolve_sprite_frame(
-    const SpriteAtlasRecord& atlas,
-    double frame) {
-    if (frame < 0.0 ||
-        frame >= static_cast<double>(atlas.frames.size())) {
-        throw std::runtime_error(
-            "resolveSpriteFrame: index out of range.");
-    }
-    return static_cast<std::uint32_t>(frame);
-}
+${this.lowerFrameResolver()}
 
 /**
  * custom-shader-core.ts#writeSpriteFxUbo: the block a custom-shader layer
@@ -1415,6 +1216,8 @@ ${this.pickSprite2DCpp()}
 #include <utility>
 #include <vector>
 
+${frameSpriteAtlasCpp(this.context)}
+
 namespace bbl {
 namespace {
 
@@ -1449,26 +1252,7 @@ void touch_sprite_instances(
     }
 }
 
-void grow_sprite_capacity(
-    Sprite2DLayerRecord& layer,
-    std::uint32_t min_capacity) {
-    std::uint32_t capacity = layer.capacity;
-    while (capacity < min_capacity) {
-        capacity *= 2u;
-    }
-    layer.instance_data.resize(
-        static_cast<std::size_t>(capacity) *
-        layer.instance_floats_per_sprite);
-    layer.saved_size.resize(
-        static_cast<std::size_t>(capacity) *
-        sprite_saved_size_floats);
-    layer.capacity = capacity;
-    // The PAL replaces its capacity-sized buffer after this growth. Keep
-    // the whole active prefix dirty so that fresh allocation is initialized
-    // even though the add itself only writes the new tail slot.
-    layer.dirty_sprite_begin = layer.count == 0u ? invalid_handle : 0u;
-    layer.dirty_sprite_end = layer.count;
-}
+${lowerSpriteCapacity(this.context)}
 
 } // namespace
 
@@ -1499,7 +1283,7 @@ void ensure_sprite_uv_scroll(Sprite2DLayerRecord& layer) {
     const std::uint32_t new_stride =
         old_stride + sprite_uvscroll_extra_floats;
     std::vector<float> next(
-        static_cast<std::size_t>(layer.capacity) * new_stride, 0.0f);
+        checked_sprite_floats(static_cast<double>(layer.capacity) * new_stride), 0.0f);
     for (std::uint32_t index = 0; index < layer.count; ++index) {
         const std::size_t from =
             static_cast<std::size_t>(index) * old_stride;
@@ -1538,16 +1322,17 @@ void set_sprite_2d_uv_offset(
     Vec2 uv_offset) {
     Sprite2DLayerRecord& layer =
         ${recordAt("engine.sprite_layers", "layer_handle")};
+    const std::uint32_t slot_index = gpu_u32(gpu_size(index));
     if (index < 0.0 ||
         index >= static_cast<double>(layer.count)) {
         throw std::runtime_error(
             "setSprite2DUvOffset: index " +
-            std::to_string(static_cast<long long>(index)) +
+            std::to_string(index) +
             " out of range [0, " + std::to_string(layer.count) + ")");
     }
     ensure_sprite_uv_scroll(layer);
     const std::size_t base =
-        static_cast<std::size_t>(index) *
+        static_cast<std::size_t>(slot_index) *
         layer.instance_floats_per_sprite;
     const std::size_t slot =
         base + layer.instance_floats_per_sprite -
@@ -1556,8 +1341,8 @@ void set_sprite_2d_uv_offset(
     layer.instance_data[slot + 1u] = uv_offset.y;
     touch_sprite_instances(
         layer,
-        static_cast<std::uint32_t>(index),
-        static_cast<std::uint32_t>(index) + 1u);
+        slot_index,
+        slot_index + 1u);
 }
 
 SpriteAtlasHandle load_sprite_atlas(
@@ -1683,121 +1468,8 @@ SpriteAtlasHandle create_sprite_atlas_from_frames(
     Engine& engine,
     const std::vector<SpriteAtlasFramePixelsView>& sources,
     SpriteAtlasPackOptions options) {
-    if (sources.empty() && !options.has_capacity) {
-        throw std::runtime_error(
-            "createSpriteAtlasFromFrames: at least one frame is required.");
-    }
-    if (options.max_width_px == 0u) {
-        throw std::runtime_error(
-            "createSpriteAtlasFromFrames: maxWidthPx must be positive.");
-    }
-    const std::uint32_t shelf_width = options.has_capacity
-        ? std::min(options.max_width_px, options.capacity_width)
-        : options.max_width_px;
-    std::vector<std::uint32_t> xs(sources.size());
-    std::vector<std::uint32_t> ys(sources.size());
-    std::uint32_t pen_x = 0u;
-    std::uint32_t pen_y = 0u;
-    std::uint32_t shelf_height = 0u;
-    std::uint32_t content_width = 0u;
-    for (std::size_t index = 0; index < sources.size(); ++index) {
-        const SpriteAtlasFramePixelsView& source = sources[index];
-        if (source.width == 0u || source.height == 0u) {
-            throw std::runtime_error(
-                "createSpriteAtlasFromFrames: frame has non-positive size.");
-        }
-        const std::uint32_t stride =
-            source.src_stride_bytes.value_or(source.width * 4u);
-        const std::uint64_t row_end =
-            static_cast<std::uint64_t>(source.src_x + source.width) * 4u;
-        if (row_end > stride) {
-            throw std::runtime_error(
-                "createSpriteAtlasFromFrames: source rectangle exceeds its stride.");
-        }
-        const std::uint64_t required =
-            static_cast<std::uint64_t>(source.src_y + source.height - 1u) * stride +
-            row_end;
-        if (required > source.byte_length) {
-            throw std::runtime_error(
-                "createSpriteAtlasFromFrames: source pixel buffer is too short.");
-        }
-        if (pen_x > 0u && pen_x + source.width > shelf_width) {
-            pen_y += shelf_height + options.padding_px;
-            pen_x = 0u;
-            shelf_height = 0u;
-        }
-        if (source.width > shelf_width) {
-            throw std::runtime_error(
-                "createSpriteAtlasFromFrames: frame exceeds shelf width.");
-        }
-        xs[index] = pen_x;
-        ys[index] = pen_y;
-        content_width = std::max(content_width, pen_x + source.width);
-        pen_x += source.width + options.padding_px;
-        shelf_height = std::max(shelf_height, source.height);
-    }
-    const std::uint32_t content_height = sources.empty()
-        ? 0u
-        : pen_y + shelf_height;
-    const std::uint32_t atlas_width = options.has_capacity
-        ? options.capacity_width
-        : std::max(1u, content_width);
-    const std::uint32_t atlas_height = options.has_capacity
-        ? options.capacity_height
-        : std::max(1u, content_height);
-    if (atlas_width == 0u || atlas_height == 0u ||
-        content_width > atlas_width || content_height > atlas_height) {
-        throw std::runtime_error(
-            "createSpriteAtlasFromFrames: atlas capacity is too small.");
-    }
-
     SpriteAtlasRecord atlas;
-    atlas.width = atlas_width;
-    atlas.height = atlas_height;
-    std::vector<std::uint8_t> texels(
-        static_cast<std::size_t>(atlas_width) * atlas_height * 4u, 0u);
-    atlas.premultiplied_alpha = options.premultiplied_alpha;
-    atlas.mip_maps = false;
-    atlas.sampler.min_filter = options.sampling;
-    atlas.sampler.mag_filter = options.sampling;
-    atlas.sampler.mipmap_mode = TextureMipmapMode::nearest;
-    atlas.sampler.address_u = TextureAddressMode::clamp;
-    atlas.sampler.address_v = TextureAddressMode::clamp;
-    atlas.sampler.max_anisotropy = 1.0f;
-    atlas.sampler.max_lod = 0.0f;
-    atlas.frames.reserve(sources.size());
-    for (std::size_t index = 0; index < sources.size(); ++index) {
-        const SpriteAtlasFramePixelsView& source = sources[index];
-        const std::uint32_t stride =
-            source.src_stride_bytes.value_or(source.width * 4u);
-        const std::size_t row_bytes =
-            static_cast<std::size_t>(source.width) * 4u;
-        for (std::uint32_t row = 0; row < source.height; ++row) {
-            const std::size_t source_offset =
-                static_cast<std::size_t>(source.src_y + row) * stride +
-                static_cast<std::size_t>(source.src_x) * 4u;
-            const std::size_t destination_offset =
-                (static_cast<std::size_t>(ys[index] + row) * atlas_width +
-                 xs[index]) * 4u;
-            std::copy_n(
-                source.pixels + source_offset,
-                row_bytes,
-                texels.begin() +
-                    static_cast<std::ptrdiff_t>(destination_offset));
-        }
-        atlas.frames.push_back(SpriteFrame{
-            Vec2{
-                static_cast<float>(xs[index]) / atlas_width,
-                static_cast<float>(ys[index]) / atlas_height},
-            Vec2{
-                static_cast<float>(xs[index] + source.width) / atlas_width,
-                static_cast<float>(ys[index] + source.height) / atlas_height},
-            Vec2{
-                static_cast<float>(source.width),
-                static_cast<float>(source.height)},
-            source.pivot});
-    }
-    atlas.rgba = share_texels(std::move(texels));
+    upstream::pack_sprite_atlas(atlas, engine, sources, options);
 ${pushAtlasHandleCpp()}
 }
 
@@ -1824,16 +1496,7 @@ Sprite2DLayerHandle create_sprite_2d_layer(
         options.depth_mode == Sprite2DDepthMode::none
             ? sprite_instance_floats
             : sprite_depth_instance_floats;
-    layer.capacity = static_cast<std::uint32_t>(
-        std::max(1.0, static_cast<double>(options.capacity)));
-    layer.instance_data.assign(
-        static_cast<std::size_t>(layer.capacity) *
-            layer.instance_floats_per_sprite,
-        0.0f);
-    layer.saved_size.assign(
-        static_cast<std::size_t>(layer.capacity) *
-            sprite_saved_size_floats,
-        0.0f);
+    resize_sprite_storage(layer, sprite_capacity(options.capacity));
     engine.sprite_layers.push_back(std::move(layer));
     return Sprite2DLayerHandle{
         static_cast<std::uint32_t>(
@@ -1873,148 +1536,7 @@ void set_sprite_2d_alpha_to_coverage(
 
 namespace {
 
-// writeInstance: one writer, two arms. \`prev === null\` is the add arm,
-// where an unspecified field takes its documented default; an update hands
-// the slot's own floats back in, and an unspecified field takes the value
-// already there. The pin shares this body between addSprite2DIndex and
-// updateSprite2DIndex, so this port shares it too -- two writers would be
-// two places for a slot to drift.
-void write_sprite_instance(
-    Sprite2DLayerRecord& layer,
-    const SpriteAtlasRecord& atlas,
-    std::uint32_t index,
-    const Sprite2DProps& props,
-    bool is_add) {
-    const std::size_t base =
-        static_cast<std::size_t>(index) *
-        layer.instance_floats_per_sprite;
-    const std::size_t saved_base =
-        static_cast<std::size_t>(index) *
-        sprite_saved_size_floats;
-    const bool has_frame = props.has_frame;
-    const SpriteFrame frame = has_frame
-        ? atlas.frames[upstream::resolve_sprite_frame(
-              atlas,
-              static_cast<double>(props.frame))]
-        : SpriteFrame{};
-    // The pin's \`prev\` is a subarray view onto the slot being rewritten. It
-    // needs no alias here: every preserved read below is guarded by
-    // \`is_add\` and happens before the write phase at the end.
-
-    // props.sizePx -> the frame's own size -> the previous TRUE size. The
-    // shadow is what makes that last arm unambiguous: a hidden sprite's GPU
-    // size is zeroed, so the instance floats cannot answer it.
-    float true_w = 0.0f;
-    float true_h = 0.0f;
-    if (props.has_size_px) {
-        true_w = props.size_px.x;
-        true_h = props.size_px.y;
-    } else if (has_frame) {
-        true_w = frame.source_size_px.x;
-        true_h = frame.source_size_px.y;
-    } else if (!is_add) {
-        true_w = layer.saved_size[saved_base];
-        true_h = layer.saved_size[saved_base + 1u];
-    }
-    layer.saved_size[saved_base] = true_w;
-    layer.saved_size[saved_base + 1u] = true_h;
-
-    // A previous sprite was hidden exactly when its GPU size was zeroed.
-    const bool visible =
-        props.has_visible
-            ? props.visible
-            : (is_add ||
-               layer.instance_data[base + 2u] != 0.0f ||
-               layer.instance_data[base + 3u] != 0.0f);
-
-    float u_min = 0.0f;
-    float v_min = 0.0f;
-    float u_max = 1.0f;
-    float v_max = 1.0f;
-    if (has_frame) {
-        u_min = frame.uv_min.x;
-        v_min = frame.uv_min.y;
-        u_max = frame.uv_max.x;
-        v_max = frame.uv_max.y;
-    } else if (!is_add) {
-        u_min = layer.instance_data[base + 4u];
-        v_min = layer.instance_data[base + 5u];
-        u_max = layer.instance_data[base + 6u];
-        v_max = layer.instance_data[base + 7u];
-    }
-    // flipX/flipY are absolute orientation flags resolved against the flip
-    // already baked into the endpoints, so re-sending the same value every
-    // frame is idempotent. An omitted flag preserves the orientation the
-    // slot already had, which is what keeps a frame change from unflipping
-    // a sprite; on add there is no previous orientation, so it is false.
-    const bool current_flip_x = u_min > u_max;
-    const bool current_flip_y = v_min > v_max;
-    const bool prev_flip_x =
-        !is_add &&
-        layer.instance_data[base + 4u] >
-            layer.instance_data[base + 6u];
-    const bool prev_flip_y =
-        !is_add &&
-        layer.instance_data[base + 5u] >
-            layer.instance_data[base + 7u];
-    const bool wants_flip_x =
-        props.has_flip_x ? props.flip_x : prev_flip_x;
-    const bool wants_flip_y =
-        props.has_flip_y ? props.flip_y : prev_flip_y;
-    if (current_flip_x != wants_flip_x) {
-        std::swap(u_min, u_max);
-    }
-    if (current_flip_y != wants_flip_y) {
-        std::swap(v_min, v_max);
-    }
-
-    const float rotation =
-        props.has_rotation
-            ? props.rotation
-            : (is_add ? 0.0f : layer.instance_data[base + 8u]);
-    // An omitted position preserves the slot's own; the add arm's
-    // \`has_position_px\` is always true, because the pin throws without one.
-    const float pos_x =
-        props.has_position_px
-            ? props.position_px.x
-            : layer.instance_data[base + 0u];
-    const float pos_y =
-        props.has_position_px
-            ? props.position_px.y
-            : layer.instance_data[base + 1u];
-    // The colour is the one block the pin leaves alone on update: without
-    // \`props.color\` the four floats already in place are the answer, so an
-    // update writes them only when the caller supplied one.
-
-    layer.instance_data[base + 0u] = pos_x;
-    layer.instance_data[base + 1u] = pos_y;
-    layer.instance_data[base + 2u] = visible ? true_w : 0.0f;
-    layer.instance_data[base + 3u] = visible ? true_h : 0.0f;
-    layer.instance_data[base + 4u] = u_min;
-    layer.instance_data[base + 5u] = v_min;
-    layer.instance_data[base + 6u] = u_max;
-    layer.instance_data[base + 7u] = v_max;
-    layer.instance_data[base + 8u] = rotation;
-    if (props.has_color) {
-        layer.instance_data[base + 9u] = props.color.x;
-        layer.instance_data[base + 10u] = props.color.y;
-        layer.instance_data[base + 11u] = props.color.z;
-        layer.instance_data[base + 12u] = props.color.w;
-    } else if (is_add) {
-        layer.instance_data[base + 9u] = 1.0f;
-        layer.instance_data[base + 10u] = 1.0f;
-        layer.instance_data[base + 11u] = 1.0f;
-        layer.instance_data[base + 12u] = 1.0f;
-    }
-    if (layer.depth_mode != Sprite2DDepthMode::none) {
-        layer.instance_data[base + 13u] =
-            props.has_z
-                ? props.z
-                : (is_add
-                      ? layer.layer_z
-                      : layer.instance_data[base + 13u]);
-    }
-}
+${lowerSpriteInstances(this.context)}
 
 } // namespace
 
@@ -2032,7 +1554,7 @@ double add_sprite_2d_index(
     }
     const std::uint32_t index = layer.count;
     if (index >= layer.capacity) {
-        grow_sprite_capacity(layer, index + 1u);
+        grow_sprite_capacity(layer, static_cast<double>(index) + 1.0);
     }
     write_sprite_instance(layer, atlas, index, props, true);
     layer.count = index + 1u;${
@@ -2063,7 +1585,7 @@ void update_sprite_2d_index(
     const SpriteAtlasRecord& atlas =
         ${recordAt("engine.sprite_atlases", "layer.atlas")};
     const std::uint32_t index =
-        static_cast<std::uint32_t>(index_value);
+        gpu_u32(gpu_size(index_value));
     write_sprite_instance(
         layer,
         atlas,
@@ -2130,29 +1652,9 @@ void set_sprite_2d_frame_id(
         ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t index =
         sprite_2d_slot_of(layer, sprite_id);
-    if (index >= layer.count) {
-        throw std::runtime_error(
-            "setSprite2DFrameIndex: index out of range");
-    }
     const SpriteAtlasRecord& atlas =
         ${recordAt("engine.sprite_atlases", "layer.atlas")};
-    const SpriteFrame& atlas_frame =
-        atlas.frames[upstream::resolve_sprite_frame(atlas, frame)];
-    const std::size_t base =
-        static_cast<std::size_t>(index) * layer.instance_floats_per_sprite;
-    const bool flip_x =
-        layer.instance_data[base + 4] > layer.instance_data[base + 6];
-    const bool flip_y =
-        layer.instance_data[base + 5] > layer.instance_data[base + 7];
-    layer.instance_data[base + 4] =
-        flip_x ? atlas_frame.uv_max.x : atlas_frame.uv_min.x;
-    layer.instance_data[base + 5] =
-        flip_y ? atlas_frame.uv_max.y : atlas_frame.uv_min.y;
-    layer.instance_data[base + 6] =
-        flip_x ? atlas_frame.uv_min.x : atlas_frame.uv_max.x;
-    layer.instance_data[base + 7] =
-        flip_y ? atlas_frame.uv_min.y : atlas_frame.uv_max.y;
-    touch_sprite_instances(layer, index, index + 1u);
+    set_sprite_frame(layer, atlas, static_cast<double>(index), frame);
 }
 
 // sprite-2d.ts#removeSprite2DIndex: a swap-remove. The last sprite moves

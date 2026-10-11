@@ -6,14 +6,17 @@ import type { Value } from "../types.js";
 import { renderClosure } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
-import { isDataTuple, tupleComponents } from "../data-types.js";
+import {
+    isDataTuple,
+    isUndefinedDataType,
+    tupleComponents,
+} from "../data-types.js";
 import { handleCppType } from "../data-types/handles.js";
 import { retainedOptions, emitPresentOption } from "./retained-options.js";
 import {
     addressModeByPin,
     pixelsTexture2DOptionFields,
     pixelsTextureOptionsCpp,
-    textureFilterByPin,
 } from "../../pinned-address-modes.js";
 import {
     staticNumberValue,
@@ -34,7 +37,6 @@ import {
     billboardSystemDefaults,
     loadSpriteAtlasDefaults,
     sprite2DLayerDefaults,
-    spriteAtlasPackDefaults,
 } from "../../lowering/pinned-factory-defaults.js";
 
 export interface SpriteIntrinsicContext
@@ -343,9 +345,10 @@ function numberOption(
     options: Value | undefined,
     name: string,
     fallback: string,
+    precision: "float" | "double" = "float",
 ): string {
     const value = property(options, name);
-    return value ? `static_cast<float>(${value.cpp})` : fallback;
+    return value ? `static_cast<${precision}>(${value.cpp})` : fallback;
 }
 
 /**
@@ -367,38 +370,65 @@ function sprite2DPropsCpp(
     call: ts.CallExpression,
     importedName: string,
 ): string {
-    const positionPx = tupleOption(context, props, "positionPx", call, 2);
-    if (!positionPx && importedName === "addSprite2DIndex") {
-        context.fail(call, "addSprite2DIndex: positionPx required.");
+    if (props?.recordProperties) {
+        props = {
+            ...props,
+            recordProperties: Object.fromEntries(
+                Object.entries(props.recordProperties).filter(
+                    ([, value]) =>
+                        !isUndefinedDataType(value.dataType) &&
+                        !(
+                            value.kind === "json-null" &&
+                            value.cpp === "std::nullopt"
+                        ),
+                ),
+            ),
+        };
     }
-    const z = property(props, "z");
-    const sizePx = tupleOption(context, props, "sizePx", call, 2);
-    const color = tupleOption(context, props, "color", call, 4);
-    const frame = property(props, "frame");
-    const rotation = property(props, "rotation");
-    const flipX = property(props, "flipX");
-    const flipY = property(props, "flipY");
-    const visible = property(props, "visible");
+    const positionPx = tupleOption(
+        context,
+        props,
+        "positionPx",
+        call,
+        2,
+        "double",
+    );
+    if (
+        !positionPx &&
+        (importedName === "addSprite2DIndex" || importedName === "addSprite2D")
+    ) {
+        context.fail(call, `${importedName}: positionPx required.`);
+    }
+    const scalar = (
+        name: string,
+        kind: "number" | "boolean",
+        fallback: string,
+    ): string => {
+        const value = property(props, name);
+        if (!value) return `${fallback}, false`;
+        if (value.kind !== kind && value.dataType?.kind !== kind)
+            context.fail(call, `Sprite option '${name}' requires ${kind}.`);
+        return `${kind === "number" ? `static_cast<double>(${value.cpp})` : value.cpp}, true`;
+    };
+    const sizePx = tupleOption(context, props, "sizePx", call, 2, "double");
+    const color = tupleOption(context, props, "color", call, 4, "double");
     return (
         `bbl::Sprite2DProps{` +
-        `bbl::Vec2{${
-            positionPx ? `${positionPx[0]!}, ${positionPx[1]!}` : "0.0f, 0.0f"
+        `bbl::Vec2d{${
+            positionPx ? `${positionPx[0]!}, ${positionPx[1]!}` : "0.0, 0.0"
         }}, ${positionPx ? "true" : "false"}, ` +
-        `bbl::Vec2{${
-            sizePx ? `${sizePx[0]!}, ${sizePx[1]!}` : "0.0f, 0.0f"
+        `bbl::Vec2d{${
+            sizePx ? `${sizePx[0]!}, ${sizePx[1]!}` : "0.0, 0.0"
         }}, ${sizePx ? "true" : "false"}, ` +
-        `${frame ? `static_cast<float>(${frame.cpp})` : "0.0f"}, ` +
-        `${frame ? "true" : "false"}, ` +
-        `${rotation ? `static_cast<float>(${rotation.cpp})` : "0.0f"}, ` +
-        `${rotation ? "true" : "false"}, ` +
-        `bbl::Vec4{${
-            color ? color.join(", ") : "1.0f, 1.0f, 1.0f, 1.0f"
+        `${scalar("frame", "number", "0.0")}, ` +
+        `${scalar("rotation", "number", "0.0")}, ` +
+        `bbl::Vec4d{${
+            color ? color.join(", ") : "1.0, 1.0, 1.0, 1.0"
         }}, ${color ? "true" : "false"}, ` +
-        `${flipX?.cpp ?? "false"}, ${flipX ? "true" : "false"}, ` +
-        `${flipY?.cpp ?? "false"}, ${flipY ? "true" : "false"}, ` +
-        `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}, ` +
-        `${z ? `static_cast<float>(${z.cpp})` : "0.0f"}, ` +
-        `${z ? "true" : "false"}}`
+        `${scalar("flipX", "boolean", "false")}, ` +
+        `${scalar("flipY", "boolean", "false")}, ` +
+        `${scalar("visible", "boolean", "true")}, ` +
+        `${scalar("z", "number", "0.0")}}`
     );
 }
 
@@ -453,13 +483,11 @@ function tupleOption(
 
 type BillboardOption = {
     field: string;
-    update: boolean;
 } & (
     | {
           kind: "vector";
           arity: number;
           cpp: string;
-          precision: "float" | "double";
       }
     | { kind: "number" | "boolean" }
 );
@@ -470,10 +498,8 @@ const billboardOptions = new Map<string, BillboardOption>([
         {
             kind: "vector",
             field: "position",
-            update: true,
             arity: 3,
             cpp: "bbl::Vec3d",
-            precision: "double",
         },
     ],
     [
@@ -481,10 +507,8 @@ const billboardOptions = new Map<string, BillboardOption>([
         {
             kind: "vector",
             field: "size_world",
-            update: true,
             arity: 2,
-            cpp: "bbl::Vec2",
-            precision: "float",
+            cpp: "bbl::Vec2d",
         },
     ],
     [
@@ -492,10 +516,8 @@ const billboardOptions = new Map<string, BillboardOption>([
         {
             kind: "vector",
             field: "pivot",
-            update: false,
             arity: 2,
-            cpp: "bbl::Vec2",
-            precision: "float",
+            cpp: "bbl::Vec2d",
         },
     ],
     [
@@ -503,24 +525,21 @@ const billboardOptions = new Map<string, BillboardOption>([
         {
             kind: "vector",
             field: "color",
-            update: true,
             arity: 4,
-            cpp: "bbl::Vec4",
-            precision: "float",
+            cpp: "bbl::Vec4d",
         },
     ],
-    ["frame", { kind: "number", field: "frame", update: false }],
-    ["rotation", { kind: "number", field: "rotation", update: false }],
-    ["flipX", { kind: "boolean", field: "flip_x", update: false }],
-    ["flipY", { kind: "boolean", field: "flip_y", update: false }],
-    ["visible", { kind: "boolean", field: "visible", update: false }],
+    ["frame", { kind: "number", field: "frame" }],
+    ["rotation", { kind: "number", field: "rotation" }],
+    ["flipX", { kind: "boolean", field: "flip_x" }],
+    ["flipY", { kind: "boolean", field: "flip_y" }],
+    ["visible", { kind: "boolean", field: "visible" }],
 ]);
 
 /**
  * One billboard instance patch, shared by the index add, the stable-handle
- * add, and the update. `importedName` discriminates the update the way the
- * Sprite2D twin does: only the adds require a position, and only the update
- * narrows to the writer's update-arm fields.
+ * add, and the update. Adds require position and size; updates preserve
+ * every field the caller omitted.
  */
 function billboardPropsCpp(
     context: SpriteIntrinsicContext,
@@ -537,12 +556,6 @@ function billboardPropsCpp(
                 `Billboard sprite option '${name}' is not lowered.`,
             );
         }
-        if (update && !option.update) {
-            context.fail(
-                call,
-                `updateBillboardSprite option '${name}' is not lowered.`,
-            );
-        }
     }
     const vector = (name: string) => {
         const option = billboardOptions.get(name);
@@ -551,20 +564,15 @@ function billboardPropsCpp(
                 call,
                 `Billboard vector option '${name}' has no descriptor.`,
             );
-        return tupleOption(
-            context,
-            props,
-            name,
-            call,
-            option.arity,
-            option.precision,
-        );
+        return tupleOption(context, props, name, call, option.arity, "double");
     };
     const position = vector("position");
     if (!update && !position) {
         context.fail(call, `${importedName}: position required.`);
     }
     const sizeWorld = vector("sizeWorld");
+    if (!update && !sizeWorld)
+        context.fail(call, `${importedName}: sizeWorld required.`);
     const pivot = vector("pivot");
     const color = vector("color");
     const frame = property(props, "frame");
@@ -575,12 +583,12 @@ function billboardPropsCpp(
     return (
         `bbl::BillboardSpriteProps{` +
         `bbl::Vec3d{${position ? position.join(", ") : "0.0, 0.0, 0.0"}}, ` +
-        `bbl::Vec2{${sizeWorld ? sizeWorld.join(", ") : "0.0f, 0.0f"}}, ` +
+        `bbl::Vec2d{${sizeWorld ? sizeWorld.join(", ") : "0.0f, 0.0f"}}, ` +
         `${sizeWorld ? "true" : "false"}, ` +
-        `${frame ? `static_cast<float>(${frame.cpp})` : "0.0f"}, ${frame ? "true" : "false"}, ` +
-        `${rotation ? `static_cast<float>(${rotation.cpp})` : "0.0f"}, ${rotation ? "true" : "false"}, ` +
-        `bbl::Vec2{${pivot ? pivot.join(", ") : "0.0f, 0.0f"}}, ${pivot ? "true" : "false"}, ` +
-        `bbl::Vec4{${color ? color.join(", ") : "1.0f, 1.0f, 1.0f, 1.0f"}}, ${color ? "true" : "false"}, ` +
+        `${frame ? `static_cast<double>(${frame.cpp})` : "0.0f"}, ${frame ? "true" : "false"}, ` +
+        `${rotation ? `static_cast<double>(${rotation.cpp})` : "0.0f"}, ${rotation ? "true" : "false"}, ` +
+        `bbl::Vec2d{${pivot ? pivot.join(", ") : "0.0f, 0.0f"}}, ${pivot ? "true" : "false"}, ` +
+        `bbl::Vec4d{${color ? color.join(", ") : "1.0f, 1.0f, 1.0f, 1.0f"}}, ${color ? "true" : "false"}, ` +
         `${flipX?.cpp ?? "false"}, ${flipX ? "true" : "false"}, ` +
         `${flipY?.cpp ?? "false"}, ${flipY ? "true" : "false"}, ` +
         `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}, ` +
@@ -603,10 +611,7 @@ function billboardPropsExpression(
     context.emit(`bbl::BillboardSpriteProps ${result}{};`);
     for (const member of members) {
         const option = billboardOptions.get(member.name);
-        if (
-            !option ||
-            (importedName === "updateBillboardSprite" && !option.update)
-        )
+        if (!option)
             context.fail(
                 expression,
                 `${importedName} option '${member.name}' is not lowered.`,
@@ -637,7 +642,7 @@ function billboardPropsExpression(
                     member.name,
                     call,
                     option.arity,
-                    option.precision,
+                    "double",
                 )!;
                 cpp = `${option.cpp}{${parts.join(", ")}}`;
             } else {
@@ -648,7 +653,7 @@ function billboardPropsExpression(
                     );
                 cpp =
                     option.kind === "number"
-                        ? `static_cast<float>(${present.cpp})`
+                        ? `static_cast<double>(${present.cpp})`
                         : present.cpp;
             }
             context.emit(`${result}.${field} = ${cpp};`);
@@ -964,25 +969,23 @@ function compileCreateSpriteAtlasFromFrames(
         );
         return `${source}${arrow ? "->" : "."}${field.name}`;
     };
-    const packDefaults = spriteAtlasPackDefaults();
-    const optionalUnsigned = (name: string, fallback: string): string => {
+    const optionalNumber = (name: string): string => {
         const value = access(name);
-        return `(${value} ? bbl::js::to_uint32(*${value}) : ${fallback})`;
+        return `(${value} ? std::optional<double>{*${value}} : std::nullopt)`;
     };
-    const unsigned = (value: number): string => `${value}u`;
     const pivot = access("pivot");
     const options = optionsRecord(
         context,
         call.arguments[2],
         "createSpriteAtlasFromFrames",
     );
-    const numberOption = (name: string, fallback: string): string => {
+    const numberOption = (name: string): string => {
         const value = property(options, name);
-        if (!value) return fallback;
+        if (!value) return "std::nullopt";
         if (value.kind !== "number") {
             context.fail(argumentAt(call, 2), `${name} must be numeric.`);
         }
-        return `bbl::js::to_uint32(${value.cpp})`;
+        return value.cpp;
     };
     const sampling = property(options, "sampling");
     if (
@@ -1022,25 +1025,17 @@ function compileCreateSpriteAtlasFromFrames(
             `${normalized}.reserve(${sourceList}.size()); ` +
             `for (const auto& ${source} : ${sourceList}) { ` +
             `${normalized}.push_back(bbl::SpriteAtlasFramePixelsView{` +
-            `${access("pixels")}.data(), ${access("pixels")}.size(), ` +
-            `bbl::js::to_uint32(${access("width")}), ` +
-            `bbl::js::to_uint32(${access("height")}), ` +
-            `${optionalUnsigned("srcX", unsigned(packDefaults.srcX))}, ` +
-            `${optionalUnsigned("srcY", unsigned(packDefaults.srcY))}, ` +
-            // An absent stride stays absent: the packer's own
-            // `srcStrideBytes ?? width * 4` resolves it per frame.
-            `${optionalUnsigned("srcStrideBytes", "std::optional<std::uint32_t>{}")}, ` +
-            `(${pivot} ? bbl::Vec2{static_cast<float>((*${pivot})[0]), ` +
-            `static_cast<float>((*${pivot})[1])} : bbl::Vec2{${packDefaults.pivot.map(floatLiteral).join(", ")}})}); } ` +
+            `&${access("pixels")}, ${access("width")}, ${access("height")}, ` +
+            `${optionalNumber("srcX")}, ${optionalNumber("srcY")}, ` +
+            `${optionalNumber("srcStrideBytes")}, ` +
+            `(${pivot} ? std::optional<bbl::Vec2d>{bbl::Vec2d{(*${pivot})[0], ` +
+            `(*${pivot})[1]}} : std::nullopt)}); } ` +
             `return bbl::create_sprite_atlas_from_frames(${engine.cpp}, ${normalized}, ` +
             `bbl::SpriteAtlasPackOptions{` +
-            `${numberOption("paddingPx", unsigned(packDefaults.paddingPx))}, ` +
-            `${numberOption("maxWidthPx", unsigned(packDefaults.maxWidthPx))}, ` +
-            `bbl::${textureFilterByPin[sampling?.staticString ?? packDefaults.sampling] ?? context.fail(argumentAt(call, 2), `createSpriteAtlasFromFrames sampling '${packDefaults.sampling}' is not a pinned filter.`)}, ` +
-            `${premultiplied?.cpp ?? String(packDefaults.premultipliedAlpha)}, ` +
-            `${capacityLanes ? "true" : "false"}, ` +
-            `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[0]!})` : "0u"}, ` +
-            `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[1]!})` : "0u"}}); }())`,
+            `${numberOption("paddingPx")}, ${numberOption("maxWidthPx")}, ` +
+            `${sampling?.cpp ?? "std::nullopt"}, ` +
+            `${premultiplied?.cpp ?? "std::nullopt"}, ` +
+            `${capacityLanes ? `std::optional<bbl::Vec2d>{bbl::Vec2d{${capacityLanes[0]!}, ${capacityLanes[1]!}}}` : "std::nullopt"}}); }())`,
         engineCpp: engine.engineCpp ?? engine.cpp,
     };
 }
@@ -1289,7 +1284,7 @@ function compileCreateSprite2DLayer(
         cpp:
             `bbl::create_sprite_2d_layer(${engineCpp}, ` +
             `${atlas.cpp}, bbl::Sprite2DLayerOptions{` +
-            `${numberOption(options, "capacity", floatLiteral(defaults.capacity))}, ` +
+            `${numberOption(options, "capacity", doubleLiteral(defaults.capacity), "double")}, ` +
             `${blendCpp}, ` +
             `${numberOption(options, "opacity", floatLiteral(defaults.opacity))}, ` +
             `${property(options, "visible")?.cpp ?? String(defaults.visible)}, ` +
@@ -1297,7 +1292,7 @@ function compileCreateSprite2DLayer(
             `bbl::Sprite2DDepthMode::${
                 depthMode === "test-write" ? "test_write" : depthMode
             }, ` +
-            `${numberOption(options, "layerZ", floatLiteral(defaults.layerZ))}, ` +
+            `${numberOption(options, "layerZ", doubleLiteral(defaults.layerZ), "double")}, ` +
             `bbl::Vec2d{${
                 pivot
                     ? `${pivot[0]!}, ${pivot[1]!}`
@@ -1752,8 +1747,8 @@ function compileCreateFacingBillboardSystem(
     // rejects a degenerate one there, so that stays lowered rather
     // than recomputed at the call site.
     const axisCpp = locked
-        ? context.compileVec3(argumentAt(call, 1))
-        : `bbl::Vec3{${defaults.facingAxis.map(floatLiteral).join(", ")}}`;
+        ? context.compileVec3(argumentAt(call, 1), "double")
+        : `bbl::Vec3d{${defaults.facingAxis.map(doubleLiteral).join(", ")}}`;
     const engineCpp = context.engineFor(atlas, call);
     context.reachFeature("sprite:billboard", call);
     if (locked) {

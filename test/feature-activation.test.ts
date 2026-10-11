@@ -34,7 +34,6 @@ function specialization(
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,
-        materialSpecular: false,
         textureTransform: false,
         gpuInstancing: false,
         eightInfluenceSkinning: false,
@@ -87,9 +86,8 @@ function emitOptions(
         gltfNodeVisibility: false,
         animationPointer: false,
         animationPointerMaterials: false,
-        assetTransmission: false,
+
         transmission: false,
-        materialSpecular: false,
         selectedMaterialVariant: "",
         standardLightLists: false,
         standardDiffuseUv2: false,
@@ -216,7 +214,7 @@ function scene33Inputs(): FeatureActivationInputs {
         }),
         emit: emitOptions({
             punctualLights: true,
-            assetTransmission: true,
+
             transmission: true,
             assetLightNodes: { count: 5, asset: lamp },
             pinnedVariants: variants(18),
@@ -269,7 +267,7 @@ function dispersiveInputs(): FeatureActivationInputs {
         emit: emitOptions({
             iridescence: true,
             dispersion: true,
-            assetTransmission: true,
+
             transmission: true,
             pinnedVariants: variants(2, {
                 fragmentKey: "ibl|iridescence|refraction",
@@ -298,7 +296,6 @@ function everythingOnInputs(): FeatureActivationInputs {
             animationPointer: true,
             animationPointerMaterials: true,
             assetTransmission: true,
-            materialSpecular: true,
             textureTransform: true,
             gpuInstancing: true,
             eightInfluenceSkinning: true,
@@ -327,9 +324,8 @@ function everythingOnInputs(): FeatureActivationInputs {
             nodeVisibility: true,
             animationPointer: true,
             animationPointerMaterials: true,
-            assetTransmission: true,
+
             transmission: true,
-            materialSpecular: true,
             standardLightLists: true,
             standardDiffuseUv2: true,
             textureTransform: true,
@@ -401,7 +397,6 @@ function familyInputs(): FeatureActivationInputs {
             spriteSheet: null,
             alive: 0,
             positions: [],
-            sizes: [],
             colors: [],
             rotations: [],
             frames: null,
@@ -627,7 +622,7 @@ test("a graph-only MorphTargetsBlock activates native empty morph storage", () =
     assert.equal(named(rows, "BBLITE_GPU_DEFORMATION").active, false);
 });
 
-test("metallic-reflectance map capabilities stay independent", () => {
+test("metallic-reflectance maps follow composition for both asset and source materials", () => {
     for (const [binding, activeName, inactiveName] of [
         [
             "metallicReflectanceMap",
@@ -640,11 +635,15 @@ test("metallic-reflectance map capabilities stay independent", () => {
             "BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP",
         ],
     ] as const) {
-        const rows = featureActivationRows(
-            metallicReflectanceMapInputs(binding),
-        );
-        assert.equal(named(rows, activeName).active, true);
-        assert.equal(named(rows, inactiveName).active, false);
+        const inputs = metallicReflectanceMapInputs(binding);
+        for (const sourceFeatures of [[], inputs.features]) {
+            const rows = featureActivationRows({
+                ...inputs,
+                features: sourceFeatures,
+            });
+            assert.equal(named(rows, activeName).active, true);
+            assert.equal(named(rows, inactiveName).active, false);
+        }
     }
 });
 

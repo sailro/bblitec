@@ -63,7 +63,10 @@ export function textureOwnershipCpp(
                         node.operatorToken.kind ===
                             ts.SyntaxKind.QuestionQuestionToken &&
                         ts.isCallExpression(node.left) &&
-                        node.left.expression.getText(file) === "references.get"
+                        context.expressionMatchesShape(
+                            node.left.expression,
+                            "references.get",
+                        )
                     )
                         return "image.owners";
                     return undefined;
@@ -162,8 +165,10 @@ function sampledResourcesCpp(context: LoweringContext): string {
                     ts.isBinaryExpression(node) &&
                     node.operatorToken.kind ===
                         ts.SyntaxKind.QuestionQuestionToken &&
-                    node.left.getText(file) ===
-                        "resource._engine._resourceEpoch"
+                    context.expressionMatchesShape(
+                        node.left,
+                        "resource._engine._resourceEpoch",
+                    )
                 )
                     return "engine->resource_epoch";
                 return undefined;
@@ -295,7 +300,10 @@ function factoryCpp(context: LoweringContext): string {
         expression(node) {
             if (
                 ts.isCallExpression(node) &&
-                node.expression.getText(file) === "gpu?.texture.destroy" &&
+                context.expressionMatchesShape(
+                    node.expression,
+                    "gpu?.texture.destroy",
+                ) &&
                 !node.arguments.length
             )
                 return "(gpu ? gpu->destroy() : void())";
@@ -408,7 +416,17 @@ function registrationCpp(context: LoweringContext): string {
         calls: new Map(),
         expression(node) {
             if (ts.isCallExpression(node)) {
-                const callee = node.expression.getText(file);
+                const callee = context.matchingExpressionShape(
+                    node.expression,
+                    [
+                        "acquireTexture",
+                        "_createOwnedComputeTextureResource",
+                        "hooked.has",
+                        "hooked.add",
+                        "resourcesFor(engine).add",
+                        "registerManagedResourceDisposer",
+                    ],
+                );
                 if (callee === "acquireTexture")
                     return "acquire_gpu_texture_source(*resource->sampled_texture->data.gpu_source)";
                 if (callee === "_createOwnedComputeTextureResource")
@@ -602,9 +620,15 @@ function disposalCpp(context: LoweringContext): string {
             if (
                 !initializer ||
                 !ts.isCallExpression(initializer) ||
-                initializer.expression.getText(file) !== "_resources?.get" ||
+                !context.expressionMatchesShape(
+                    initializer.expression,
+                    "_resources?.get",
+                ) ||
                 initializer.arguments.length !== 1 ||
-                initializer.arguments[0]!.getText(file) !== "resource._engine"
+                !context.expressionMatchesShape(
+                    initializer.arguments[0]!,
+                    "resource._engine",
+                )
             )
                 return context.contractError(
                     node,
@@ -624,21 +648,30 @@ function disposalCpp(context: LoweringContext): string {
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind ===
                     ts.SyntaxKind.QuestionQuestionToken &&
-                node.left.getText(file) === "resource._engine._resourceEpoch"
+                context.expressionMatchesShape(
+                    node.left,
+                    "resource._engine._resourceEpoch",
+                )
             )
                 return "engine->resource_epoch";
             if (!ts.isCallExpression(node)) return undefined;
-            const name = node.expression.getText(file);
+            const name = context.matchingExpressionShape(node.expression, [
+                "resources?.has",
+                "_resources?.delete",
+            ]);
             if (
                 name === "resources?.has" &&
                 node.arguments.length === 1 &&
-                node.arguments[0]!.getText(file) === "resource"
+                context.expressionMatchesShape(node.arguments[0]!, "resource")
             )
                 return "(resources && resources->resources.contains(resource))";
             if (
                 name === "_resources?.delete" &&
                 node.arguments.length === 1 &&
-                node.arguments[0]!.getText(file) === "resource._engine"
+                context.expressionMatchesShape(
+                    node.arguments[0]!,
+                    "resource._engine",
+                )
             )
                 return "pal::remove_compute_registry(resources)";
             return undefined;

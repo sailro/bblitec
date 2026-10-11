@@ -602,10 +602,7 @@ public:
     [[nodiscard]] T* operator->() const { return std::addressof(require_value()); }
     explicit operator bool() const { return block_ != nullptr; }
     /** Only a registered block is an edge; `make_ref` registers traceable payloads. */
-    void gc_trace(const TraceVisitor& visitor) const {
-        if (block_ && block_->linked)
-            visitor.edge(block_);
-    }
+    void gc_trace(const TraceVisitor& visitor) const { visitor.reference(block_); }
     [[nodiscard]] std::weak_ptr<const void> weak_identity() const {
         if (!block_)
             return {};
@@ -652,6 +649,7 @@ private:
             }
         }
         std::size_t owners() const noexcept override { return count; }
+        std::weak_ptr<const void> weak_owner() const noexcept override { return identity; }
         void retain() noexcept {
             if (count == 0 || count == std::numeric_limits<std::size_t>::max())
                 std::terminate();
@@ -2592,28 +2590,41 @@ using WeakIdentity = std::weak_ptr<const void>;
 template <typename V> class WeakMap {
     struct Storage {
         using Entries = std::map<WeakIdentity, V, std::owner_less<WeakIdentity>>;
+        Storage() = default;
+        Storage(const Storage&) = delete;
+        Storage& operator=(const Storage&) = delete;
+        ~Storage() {
+            if (!entries.empty())
+                --gc::registry.weak_maps;
+        }
         mutable Entries entries;
         mutable typename Entries::iterator cursor = entries.end();
         void erase(typename Entries::iterator entry) const {
             if (cursor == entry)
                 ++cursor;
-            entries.erase(entry);
+            const auto removed = entries.extract(entry);
+            if (entries.empty())
+                --gc::registry.weak_maps;
         }
         void prune(std::size_t budget = 8) const {
             const auto count = std::min(budget, entries.size());
-            for (std::size_t i = 0; i < count; ++i) {
+            for (std::size_t i = 0; i < count && !entries.empty(); ++i) {
                 if (cursor == entries.end())
                     cursor = entries.begin();
                 const auto entry = cursor++;
                 if (entry->first.expired())
-                    entries.erase(entry);
+                    erase(entry);
             }
         }
         void gc_trace(const TraceVisitor& visitor) const {
             prune(entries.size());
             for (const auto& [key, value] : entries) {
-                static_cast<void>(key);
-                visitor(value);
+                visitor.ephemeron(key, value, this, [](const void* owner, const WeakIdentity& key) {
+                    const auto& storage = *static_cast<const Storage*>(owner);
+                    const auto entry = storage.entries.find(key);
+                    if (entry != storage.entries.end())
+                        storage.erase(entry);
+                });
             }
         }
     };
@@ -2641,7 +2652,13 @@ public:
         storage_->prune();
         if (key.expired())
             throw std::runtime_error("WeakMap key is not a live object.");
-        storage_->entries.insert_or_assign(key, value);
+        const auto [entry, inserted] = storage_->entries.try_emplace(key, value);
+        if (inserted) {
+            if (storage_->entries.size() == 1)
+                ++gc::registry.weak_maps;
+        } else {
+            entry->second = value;
+        }
         return *this;
     }
     bool erase(const WeakIdentity& key) {

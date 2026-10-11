@@ -577,12 +577,20 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
     const transportStart = finish.findIndex(
         (statement) =>
             ts.isVariableStatement(statement) &&
-            statement.declarationList.declarations[0]?.name.getText(file) ===
-                "byteLength",
+            statement.declarationList.declarations.some(
+                (entry) =>
+                    ts.isIdentifier(entry.name) &&
+                    entry.name.text === "byteLength",
+            ),
     );
     if (transportStart < 0) return fail(definition("finishTaskTimingFrame"));
     const copied = finish.findIndex((statement) =>
-        statement.getText(file).includes("timer.records.slice()"),
+        context.hasNode(
+            statement,
+            (node) =>
+                ts.isCallExpression(node) &&
+                context.expressionMatchesShape(node, "timer.records.slice()"),
+        ),
     );
     const cleared = finish.findIndex(
         (statement) =>
@@ -598,7 +606,12 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
         finish
             .slice(copied + 1, cleared)
             .some((statement) =>
-                statement.getText(file).includes("timer.records"),
+                context.hasNode(
+                    statement,
+                    (node) =>
+                        ts.isPropertyAccessExpression(node) &&
+                        context.expressionMatchesShape(node, "timer.records"),
+                ),
             )
     )
         return fail(definition("finishTaskTimingFrame"));

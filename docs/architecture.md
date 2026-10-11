@@ -24,7 +24,7 @@ program, through which lowerers resolve pinned names and types; `pinned-wgsl-bui
 | GPU PALs | `pal_sdl_gpu*`, `pal_dawn*` | Resources, bindings, encoding, presentation |
 | Subsystem PALs | UI, audio, physics, navigation | Library adaptation |
 
-Babylon behavior comes from pinned source; PAL owns platform adaptation.
+Pinned source defines Babylon behavior; PAL owns platform adaptation.
 Semantic substitutions are listed in [fidelity](fidelity.md).
 
 ## Compiler architecture
@@ -59,9 +59,8 @@ rolled-back statement's written names, and past record joins, lowered as copies;
 demands, untracked writes, dependencies on lost names and refusals (a survey's plan rolls these back). Its limits are checked at statement boundaries; coverage
 and surveys retain only strict attempts. Earlier aliases and initializers use the selected representation.
 A record join that only appears once an earlier join reshaped a component still costs one strict attempt:
-layouts are fixed when the compiler is built, so discovery cannot see it (one measured program: 66 of its
-73 attempts). Removing the cascade needs every join decided before lowering, by comparing each stored
-expression's record type with its contextual type over the memoized layout compatibility.
+layouts are fixed when the compiler is built, so discovery cannot see it. Deciding joins before lowering
+requires comparing each stored expression's record type with its contextual type over memoized layout compatibility.
 Calls rewrite a namespace member (`N.f`) to its declaration once, in `compileCall`; reads of class statics
 and `import * as M` receivers stay with their own lowerers. A rewrite in the shared `unwrap` would also
 reach write targets, turning a refused namespace-member write into a silent one, and would rewrite library

@@ -194,9 +194,7 @@ function parsePatchManifest(source: string): PatchManifest {
     return { libraries, patches };
 }
 
-export function readPatchManifest(
-    root = moduleRepositoryRoot(),
-): PatchManifest {
+function readPatchManifest(root = moduleRepositoryRoot()): PatchManifest {
     return parsePatchManifest(
         readFileSync(join(root, "native", "patches", "manifest.json"), "utf8"),
     );

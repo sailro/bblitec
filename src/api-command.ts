@@ -112,7 +112,7 @@ function referencedFunctionOwners(
     );
 }
 
-export async function apiCommand(args: readonly string[]): Promise<void> {
+async function apiCommand(args: readonly string[]): Promise<void> {
     const root = findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
     const [command = "help", ...rest] = args;
     if (command === "help") {

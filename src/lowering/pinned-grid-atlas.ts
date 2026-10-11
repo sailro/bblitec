@@ -69,6 +69,21 @@ export function gridSpriteAtlasFramesCpp(premultipliedAlpha?: string): string {
             }});`;
 }
 
+/** Preserve source frame numbers until instance writers store their Float32 lanes. */
+export function spriteAtlasFramesCpp(target: string, source: string): string {
+    return `    {
+        const auto vector = [](const js::Tuple<2>& pair) {
+            return Vec2d{pair[0], pair[1]};
+        };
+        ${target}.clear();
+        ${target}.reserve(${source}.size());
+        for (const auto& frame : ${source}) {
+            ${target}.push_back(SpriteFrame{vector(frame.uv_min), vector(frame.uv_max),
+                vector(frame.source_size_px), vector(frame.pivot)});
+        }
+    }`;
+}
+
 /** Lower the complete pinned grid factory, with texture and renderer adapters. */
 export function gridSpriteAtlasCpp(context: LoweringContext): string {
     const model = new PinnedRecordModel(
@@ -143,15 +158,7 @@ ${optionalFields.map((field) => `    if (options.has_${field}) input.${field} = 
     if (options.has_pivot) input.pivot = js::Tuple<2>{options.pivot.x, options.pivot.y};
     const auto result = create_grid_sprite_atlas(
         GridAtlasTextureView{static_cast<double>(atlas.width), static_cast<double>(atlas.height)}, input);
-    const auto vector = [](const js::Tuple<2>& pair) {
-        return Vec2{static_cast<float>(pair[0]), static_cast<float>(pair[1])};
-    };
-    atlas.frames.clear();
-    atlas.frames.reserve(result.frames.size());
-    for (const auto& frame : result.frames) {
-        atlas.frames.push_back(SpriteFrame{vector(frame.uv_min), vector(frame.uv_max),
-            vector(frame.source_size_px), vector(frame.pivot)});
-    }
+${spriteAtlasFramesCpp("atlas.frames", "result.frames")}
     atlas.premultiplied_alpha = result.premultiplied_alpha;
 }
 } // namespace upstream

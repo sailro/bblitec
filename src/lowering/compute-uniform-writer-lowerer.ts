@@ -124,11 +124,7 @@ for (const type of ["F32", "U32", "I32", "Vector", "Matrix"]) {
     };
 }
 
-function scope(
-    context: LoweringContext,
-    file: ts.SourceFile,
-    name: string,
-): PinnedNumericScope {
+function scope(context: LoweringContext, name: string): PinnedNumericScope {
     const bindings = new Map<string, PinnedBinding>();
     for (const param of ["slot", "value", "alignment", "scalar", "kind"])
         bindings.set(param, { cpp: param, type: "scalar" });
@@ -209,12 +205,12 @@ function scope(
             if (ts.isStringLiteralLike(node)) return stringLiteral(node.text);
             if (
                 ts.isPropertyAccessExpression(node) &&
-                node.getText(file) === "value.length"
+                context.expressionMatchesShape(node, "value.length")
             )
                 return "static_cast<double>(value.size())";
             if (
                 ts.isElementAccessExpression(node) &&
-                node.expression.getText(file) === "value"
+                context.expressionMatchesShape(node.expression, "value")
             )
                 return `value[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})]`;
             if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
@@ -253,8 +249,14 @@ function scope(
             }
             return undefined;
         },
-        forOf(iterated, element) {
-            if (iterated !== "layout._fields.values()") return undefined;
+        forOf(_iterated, element, _binding, syntax) {
+            if (
+                !context.expressionMatchesShape(
+                    syntax.expression,
+                    "layout._fields.values()",
+                )
+            )
+                return undefined;
             return {
                 range: "layout->fields",
                 bindings: new Map(
@@ -304,7 +306,10 @@ function scope(
                 if (id === "field") {
                     if (
                         ts.isCallExpression(value) &&
-                        value.expression.getText(file) === "getField"
+                        context.expressionMatchesShape(
+                            value.expression,
+                            "getField",
+                        )
                     )
                         return [
                             `${indent}const auto* field = ${lowerer.expression(value)};`,
@@ -324,12 +329,17 @@ function scope(
             const expression = unwrapExpression(node.expression);
             if (
                 ts.isCallExpression(expression) &&
-                expression.expression.getText(file) ===
-                    "Object.defineProperties"
+                context.expressionMatchesShape(
+                    expression.expression,
+                    "Object.defineProperties",
+                )
             ) {
                 if (
                     expression.arguments.length !== 2 ||
-                    expression.arguments[0]!.getText(file) !== "writer" ||
+                    !context.expressionMatchesShape(
+                        expression.arguments[0]!,
+                        "writer",
+                    ) ||
                     !ts.isObjectLiteralExpression(expression.arguments[1]!)
                 )
                     return context.contractError(
@@ -393,13 +403,16 @@ function scope(
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isElementAccessExpression(expression.left)
             ) {
-                const target = expression.left.expression.getText(file),
+                const target = context.matchingExpressionShape(
+                        expression.left.expression,
+                        ["writer._f32", "writer._u32", "writer._i32"],
+                    ),
                     cpp: Record<string, string> = {
                         "writer._f32": "f32",
                         "writer._u32": "u32",
                         "writer._i32": "i32",
                     };
-                const member = cpp[target];
+                const member = target === undefined ? undefined : cpp[target];
                 if (!member) return undefined;
                 const index = lowerer.expression(
                         expression.left.argumentExpression,
@@ -425,7 +438,7 @@ export function lowerComputeUniformWriter(
     for (const [name, fn] of Object.entries(functions)) {
         const { file, declaration } = context.functionDeclaration(path, name);
         const body = lowerPinnedBody(file, declaration.body!.statements, {
-            ...scope(context, file, name),
+            ...scope(context, name),
             returnValue: (node, lowerer) =>
                 node ? lowerer.expression(node) : "",
         });

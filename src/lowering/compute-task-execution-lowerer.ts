@@ -23,10 +23,7 @@ export function lowerComputeTaskExecution(
     context: LoweringContext,
 ): LoweredSource {
     const output: string[] = [];
-    function scope(
-        file: ts.SourceFile,
-        passMember = false,
-    ): PinnedNumericScope {
+    function scope(passMember = false): PinnedNumericScope {
         const bindings = new Map<string, PinnedBinding>();
         for (const name of [
             "task",
@@ -115,13 +112,18 @@ export function lowerComputeTaskExecution(
             bindings,
             calls,
 
-            forOf(iterated, element) {
-                const range =
-                    iterated === "tasks"
-                        ? "tasks"
-                        : iterated === "task._dispatches"
-                          ? "task->dispatches"
-                          : undefined;
+            forOf(_iterated, element, _binding, syntax) {
+                const range = context.expressionMatchesShape(
+                    syntax.expression,
+                    "tasks",
+                )
+                    ? "tasks"
+                    : context.expressionMatchesShape(
+                            syntax.expression,
+                            "task._dispatches",
+                        )
+                      ? "task->dispatches"
+                      : undefined;
                 if (!range) return undefined;
                 return {
                     range,
@@ -162,8 +164,10 @@ export function lowerComputeTaskExecution(
                         if (context.expressionMatchesShape(node, shape))
                             return cpp;
                     if (
-                        node.expression.getText(file) ===
-                        "engine._device.createCommandEncoder"
+                        context.expressionMatchesShape(
+                            node.expression,
+                            "engine._device.createCommandEncoder",
+                        )
                     ) {
                         context.assertExpressionShape(
                             node.arguments[0]!,
@@ -200,14 +204,18 @@ export function lowerComputeTaskExecution(
                     const parent = node.parent;
                     if (
                         ts.isCallExpression(parent) &&
-                        parent.expression.getText(file) ===
-                            "setComputePassExecuteEnabled"
+                        context.expressionMatchesShape(
+                            parent.expression,
+                            "setComputePassExecuteEnabled",
+                        )
                     )
                         return "js::make_closure(std::tuple{task}, [](auto& captures) { return compute_task_execute_enabled(*std::get<0>(captures)); })";
                     if (
                         ts.isCallExpression(parent) &&
-                        parent.expression.getText(file) ===
-                            "setComputePassExecuteFunc"
+                        context.expressionMatchesShape(
+                            parent.expression,
+                            "setComputePassExecuteFunc",
+                        )
                     )
                         return "js::make_closure(std::tuple{task, cache}, [](auto& captures, pal::ComputePassEncoder& encoder) { js::Callback<void(pal::ComputePassEncoder&,const std::shared_ptr<ComputeDispatch>&)> prepare; record_compute_dispatches(*std::get<0>(captures), encoder, *std::get<1>(captures), prepare); })";
                     if (!ts.isBlock(node.body)) {
@@ -268,15 +276,20 @@ export function lowerComputeTaskExecution(
                 if (
                     ts.isAwaitExpression(value) &&
                     ts.isCallExpression(value.expression) &&
-                    value.expression.expression.getText(file) === "Promise.all"
+                    context.expressionMatchesShape(
+                        value.expression.expression,
+                        "Promise.all",
+                    )
                 )
                     return [
                         `${indent}(void)co_await js::promise_all(${lowerer.expression(value.expression.arguments[0]!)});`,
                     ];
                 if (
                     ts.isCallExpression(value) &&
-                    value.expression.getText(file) ===
-                        "engine._device.queue.submit"
+                    context.expressionMatchesShape(
+                        value.expression,
+                        "engine._device.queue.submit",
+                    )
                 ) {
                     context.assertExpressionShape(
                         value.arguments[0]!,
@@ -300,7 +313,10 @@ export function lowerComputeTaskExecution(
                         value.operatorToken.kind ===
                             ts.SyntaxKind.EqualsToken &&
                         ts.isElementAccessExpression(value.left) &&
-                        value.left.expression.getText(file) === "task._passes"
+                        context.expressionMatchesShape(
+                            value.left.expression,
+                            "task._passes",
+                        )
                     )
                         return [
                             `${indent}js::array_index_write(task->passes, static_cast<std::size_t>(${lowerer.expression(value.left.argumentExpression)})) = ${lowerer.expression(value.right)};`,
@@ -327,7 +343,7 @@ export function lowerComputeTaskExecution(
                 "Expected a compute scheduling body.",
             );
         const body = lowerPinnedBody(file, declaration.body.statements, {
-            ...scope(file, passMember),
+            ...scope(passMember),
             returnValue: (value, lowerer) =>
                 value ? lowerer.expression(value) : "",
         });
@@ -387,12 +403,12 @@ export function lowerComputeTaskExecution(
         } else {
             const text = new PinnedNumericLowerer(
                 factory.file,
-                scope(factory.file),
+                scope(),
             ).expression(value);
             assignments.push(`        pass->${field} = ${text};`);
         }
     }
-    const factoryScope = scope(factory.file),
+    const factoryScope = scope(),
         originalStatement = factoryScope.statement;
     factoryScope.statement = (node, lowerer, indent) => {
         if (
@@ -448,7 +464,7 @@ export function lowerComputeTaskExecution(
             "Expected compute record method.",
         );
     output.push(
-        `// ${context.provenance(taskPath, "task.record")}\nvoid record_compute_task(const std::shared_ptr<ComputeTask>& task,const std::shared_ptr<ComputeValidatedBindings>& validated) {\n    auto cache = js::make_gc_shared<ComputeRecordingCache>();\n    cache->validated = validated;\n${lowerPinnedBody(record.file, record.declaration.body.statements, scope(record.file))}\n}\n`,
+        `// ${context.provenance(taskPath, "task.record")}\nvoid record_compute_task(const std::shared_ptr<ComputeTask>& task,const std::shared_ptr<ComputeValidatedBindings>& validated) {\n    auto cache = js::make_gc_shared<ComputeRecordingCache>();\n    cache->validated = validated;\n${lowerPinnedBody(record.file, record.declaration.body.statements, scope())}\n}\n`,
     );
     lowerFunction(
         taskPath,

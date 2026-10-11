@@ -10,13 +10,40 @@ import {
     type NodeParticleSystemEmit,
 } from "../src/lowering/node-particle-lowerer.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
+import { particleSpriteSync } from "../src/lowering/particle-sprite-sync.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { doctoredContext } from "./doctored-store.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
+
+test("particle Sprite2D sync lowers source arithmetic and ignores formatting", () => {
+    const original = particleSpriteSync(new LoweringContext());
+    const module = "src/particle/particle-sprite-2d.ts";
+    assert.equal(
+        particleSpriteSync(
+            doctoredContext(
+                module,
+                "buffer.size[i]! * buffer.scaleX[i]! * pixelsPerUnit",
+                "buffer /* size */ . size [i]! * buffer.scaleX [ i ]! * pixelsPerUnit",
+            ),
+        ),
+        original,
+    );
+    assert.notEqual(
+        particleSpriteSync(
+            doctoredContext(
+                module,
+                "buffer.size[i]! * buffer.scaleX[i]! * pixelsPerUnit",
+                "buffer.size[i]! * buffer.scaleX[i]! * (pixelsPerUnit + 1)",
+            ),
+        ),
+        original,
+    );
+});
 
 test(
     "frozen sprite bridges keep sheet aliases live and preserve pinned buffer precision",
@@ -203,10 +230,11 @@ test(
                 spriteSheet: null,
                 alive: 1,
                 positions: [buffer.posX[0], buffer.posY[0], buffer.posZ[0]!],
-                sizes: [
-                    buffer.size[0] * buffer.scaleX[0],
-                    buffer.size[0] * buffer.scaleY[0],
-                ],
+                sizeColumns: {
+                    size: [buffer.size[0]],
+                    scaleX: [buffer.scaleX[0]],
+                    scaleY: [buffer.scaleY[0]],
+                },
                 colors: [
                     buffer.colorR[0],
                     buffer.colorG[0],
@@ -232,13 +260,20 @@ test(
                         system: 2,
                         alive: 0,
                         positions: [],
-                        sizes: [],
                         colors: [],
                         rotations: [],
                         bufferColumns: {},
                     },
                 },
-                { ...entry, bake: { ...entry.bake, system: 3 } },
+                {
+                    ...entry,
+                    bake: {
+                        ...entry.bake,
+                        system: 3,
+                        spriteSheet: { cellWidth: 64, cellHeight: 64 },
+                        frames: [0],
+                    },
+                },
             ],
             [
                 {

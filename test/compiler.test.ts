@@ -16085,6 +16085,7 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
             "entry-main-wrapper-erasure",
             "browser-setup-erasure",
             "synchronous-aot-await",
+            "plain-data-value-model",
             "compile-time-asset-materialization",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
@@ -16338,7 +16339,7 @@ test("compiles Babylon Lite scene 53 depth-hosted per-instance-z sprites", () =>
         /Sprite2DLayerOptions\{[^;]*sprite_blend_opaque\(\)[^;]*Sprite2DDepthMode::test_write/,
     );
     assert.equal(
-        result.cpp.match(/static_cast<float>\((?:0\.6|0\.87|0\.95)\), true\}/g)
+        result.cpp.match(/static_cast<double>\((?:0\.6|0\.87|0\.95)\), true\}/g)
             ?.length,
         3,
     );

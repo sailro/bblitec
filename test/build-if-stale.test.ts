@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
     copyFileSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
+    readFileSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
-test("the build wrapper repairs missing JavaScript even when its input stamp matches", (t) => {
+function fixture(t: test.TestContext) {
     const root = mkdtempSync(join(tmpdir(), "bblite-dist-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const write = (path: string, contents: string): void => {
@@ -40,9 +42,18 @@ writeFileSync("dist/compiler-output.json", "{}");
 `,
     );
     mkdirSync(join(root, "tools"));
-    for (const name of ["build-if-stale.mjs", "clean-dist.mjs"]) {
+    for (const name of [
+        "build-if-stale.mjs",
+        "clean-dist.mjs",
+        "dist-access.mjs",
+    ]) {
         copyFileSync(join("tools", name), join(root, "tools", name));
     }
+    return { root, write };
+}
+
+test("the build wrapper repairs missing JavaScript even when its input stamp matches", (t) => {
+    const { root, write } = fixture(t);
     const build = (): string =>
         execFileSync(process.execPath, ["tools/build-if-stale.mjs"], {
             cwd: root,
@@ -61,4 +72,45 @@ writeFileSync("dist/compiler-output.json", "{}");
     write("dist/.build-stamp", "malformed");
     assert.doesNotMatch(build(), /up to date/);
     assert.match(build(), /up to date/);
+});
+
+test("parallel builds publish one complete dist tree without cleaning a running compiler", async (t) => {
+    const { root, write } = fixture(t);
+    write(
+        "node_modules/@typescript/native/bin/tsc",
+        `import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+         appendFileSync("compiles.log", "compile\\n");
+         mkdirSync("dist/src", { recursive: true });
+         writeFileSync("dist/src/entry.js", "export const answer = 42;");
+         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600);
+         if (!existsSync("dist/src/entry.js")) throw new Error("dist disappeared while compiling");
+         writeFileSync("dist/compiler-output.json", "{}");`,
+    );
+    const build = () =>
+        promisify(execFile)(process.execPath, ["tools/build-if-stale.mjs"], {
+            cwd: root,
+            encoding: "utf8",
+        });
+    const results = await Promise.all([build(), build()]);
+    assert.equal(readFileSync(join(root, "compiles.log"), "utf8"), "compile\n");
+    assert.equal(
+        results.filter((result) => /up to date/.test(result.stdout)).length,
+        1,
+    );
+    assert.ok(existsSync(join(root, "dist/src/entry.js")));
+    assert.ok(existsSync(join(root, "dist/compiler-output.json")));
+    assert.equal(existsSync(join(root, "artifacts/.dist-writer.lock")), false);
+});
+
+test("a failed compiler releases its writer gate without publishing a build stamp", (t) => {
+    const { root, write } = fixture(t);
+    write("node_modules/@typescript/native/bin/tsc", "process.exit(7);");
+    assert.throws(() =>
+        execFileSync(process.execPath, ["tools/build-if-stale.mjs"], {
+            cwd: root,
+            encoding: "utf8",
+        }),
+    );
+    assert.equal(existsSync(join(root, "artifacts/.dist-writer.lock")), false);
+    assert.equal(existsSync(join(root, "dist/.build-stamp")), false);
 });

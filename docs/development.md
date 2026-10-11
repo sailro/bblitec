@@ -177,7 +177,8 @@ Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript p
 Diagnosis commands are in [debugging](debugging.md#the-ladder).
 
 Build dist once with `npm run build`; repeated commands can use `node dist/src/scene-command.js`.
-Never rebuild/delete dist during its runs. Finish generation before native builds; finish shared-header
+Dist consumers run concurrently; rebuilds serialize writers and refuse while a consumer is active.
+Finish generation before native builds; finish shared-header
 edits before concurrent builds. Logs belong in ignored `artifacts/`.
 
 `npm run sweep` is `validate all`; tests are separate. Ad-hoc sources use generated/build/reference
@@ -294,8 +295,9 @@ npm run lint:cpp -- all --generated --backend both
 node dist/src/scene-command.js neutrality <saved-baseline-directory>
 ```
 
-Simplify covers the full diff; `npm run simplify:record` identifies its content-hashed record.
-`docs/reviews/` holds the record of the most recent reviewed change. Status verification checks
+Simplify covers the full diff; `npm run simplify:record` identifies its content-hashed record in
+ignored `artifacts/reviews/`. Write the record after applying the review findings; source changes
+invalidate it. Status verification checks
 published measurements, registry names and canvas gates; measured repeatability exceptions live in the
 neutrality allowlist, and a scene with partitioned live text keeps its published values unchecked.
 
@@ -496,5 +498,6 @@ changed external toolchains/assets and other hosts require separate qualificatio
 | Long vcpkg paths | Short --x-buildtrees-root |
 | Wrong compiler/generator | Recreate the affected disposable build tree |
 | Stale binary/payload | Process the scene |
+| Stale dist writer lock | Confirm its reported PID has stopped, remove `artifacts/.dist-writer.lock`, then run `npm run build` |
 
 Runtime switches and captures: [debugging](debugging.md).

@@ -13,7 +13,8 @@ function recordCallback(context: LoweringContext, name: string) {
     const calls = context.findNodes(
         declaration,
         (node): node is ts.CallExpression =>
-            ts.isCallExpression(node) && node.expression.getText(file) === name,
+            ts.isCallExpression(node) &&
+            context.expressionMatchesShape(node.expression, name),
     );
     if (calls.length !== 1)
         return context.contractError(
@@ -70,7 +71,7 @@ export function computeTaskExecutionGateCpp(context: LoweringContext): string {
             const owner = unwrapExpression(node.expression);
             if (
                 !ts.isElementAccessExpression(owner) ||
-                owner.expression.getText(file) !== "dispatches"
+                !context.expressionMatchesShape(owner.expression, "dispatches")
             )
                 return undefined;
             return `task.dispatches[static_cast<std::size_t>(${lowerer.expression(owner.argumentExpression)})]->enabled`;
@@ -141,7 +142,10 @@ export function computeTaskDispatchRecordingCpp(
 
             expression(node, lowerer) {
                 if (!ts.isElementAccessExpression(node)) return undefined;
-                const owner = node.expression.getText(offsets.file);
+                const owner = context.matchingExpressionShape(node.expression, [
+                    "a",
+                    "b",
+                ]);
                 if (owner !== "a" && owner !== "b") return undefined;
                 return `${owner === "a" ? "(*a)" : "b"}[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})]`;
             },
@@ -273,8 +277,10 @@ export function computeTaskDispatchRecordingCpp(
                 return `compute_optional_or(${lowerer.expression(node.left)}, [&]() { return ${lowerer.expression(node.right)}; })`;
             }
             if (!ts.isElementAccessExpression(node)) return undefined;
-            const name = node.expression.getText(file),
-                owner = indexed.get(name);
+            const name = context.matchingExpressionShape(node.expression, [
+                    ...indexed.keys(),
+                ]),
+                owner = name === undefined ? undefined : indexed.get(name);
             if (!owner) return undefined;
             const index = `static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})`;
             if (production && name === "dispatch.bindings._zeroDynamicOffsets")
@@ -300,7 +306,10 @@ export function computeTaskDispatchRecordingCpp(
                         ts.SyntaxKind.EqualsToken &&
                     ts.isElementAccessExpression(assignment.left)
                 ) {
-                    const owner = assignment.left.expression.getText(file);
+                    const owner = context.matchingExpressionShape(
+                        assignment.left.expression,
+                        ["lastGroups", "lastOffsets"],
+                    );
                     if (owner === "lastGroups" || owner === "lastOffsets")
                         return [
                             `${indent}${lowerer.expression(assignment.left)} = ${lowerer.expression(assignment.right)};`,
@@ -386,7 +395,13 @@ export function computeTaskDispatchRecordingCpp(
                 ["lastGroups", "cache.last_groups"],
                 ["lastOffsets", "cache.last_offsets"],
             ] as const) {
-                if (call.expression.getText(file) !== `${name}.fill`) continue;
+                if (
+                    !context.expressionMatchesShape(
+                        call.expression,
+                        `${name}.fill`,
+                    )
+                )
+                    continue;
                 context.assertExpressionShape(
                     call,
                     `${name}.fill(null)`,

@@ -213,7 +213,10 @@ export function lowerProceduralSkyLoader(
                 }
                 if (
                     ts.isCallExpression(node) &&
-                    node.expression.getText(file) === "Promise.all"
+                    context.expressionMatchesShape(
+                        node.expression,
+                        "Promise.all",
+                    )
                 ) {
                     const values = node.arguments[0];
                     if (!values || !ts.isArrayLiteralExpression(values))
@@ -225,8 +228,10 @@ export function lowerProceduralSkyLoader(
                 }
                 if (
                     ts.isCallExpression(node) &&
-                    node.expression.getText(file) ===
-                        "loadBrdfImage(options.brdfUrl).then"
+                    context.expressionMatchesShape(
+                        node.expression,
+                        "loadBrdfImage(options.brdfUrl).then",
+                    )
                 ) {
                     const callback = node.arguments[0];
                     if (
@@ -297,7 +302,10 @@ export function lowerProceduralSkyLoader(
                     const expression = unwrapExpression(node.expression);
                     if (
                         ts.isBinaryExpression(expression) &&
-                        expression.left.getText(file) === "options"
+                        context.expressionMatchesShape(
+                            expression.left,
+                            "options",
+                        )
                     ) {
                         context.assertExpressionShape(
                             expression,
@@ -308,7 +316,10 @@ export function lowerProceduralSkyLoader(
                     }
                     if (
                         ts.isBinaryExpression(expression) &&
-                        expression.left.getText(file) === "texture" &&
+                        context.expressionMatchesShape(
+                            expression.left,
+                            "texture",
+                        ) &&
                         ts.isCallExpression(expression.right)
                     ) {
                         context.assertExpressionShape(
@@ -329,7 +340,10 @@ export function lowerProceduralSkyLoader(
                     }
                     if (
                         ts.isBinaryExpression(expression) &&
-                        expression.left.getText(file) === "parameterBuffer" &&
+                        context.expressionMatchesShape(
+                            expression.left,
+                            "parameterBuffer",
+                        ) &&
                         ts.isCallExpression(expression.right)
                     ) {
                         context.assertExpressionShape(
@@ -343,12 +357,18 @@ export function lowerProceduralSkyLoader(
                     }
                     if (
                         ts.isBinaryExpression(expression) &&
-                        expression.left.getText(file) === "scene._envTextures"
+                        context.expressionMatchesShape(
+                            expression.left,
+                            "scene._envTextures",
+                        )
                     ) {
                         if (
                             expression.right.kind ===
                                 ts.SyntaxKind.Identifier &&
-                            expression.right.getText(file) === "textures"
+                            context.expressionMatchesShape(
+                                expression.right,
+                                "textures",
+                            )
                         )
                             return [
                                 `${indent}state->scene.environment=textures->value;`,
@@ -365,21 +385,29 @@ export function lowerProceduralSkyLoader(
                         ];
                     }
                     if (ts.isCallExpression(expression)) {
-                        const name = expression.expression.getText(file);
+                        const name = context.matchingExpressionShape(
+                            expression.expression,
+                            [
+                                "acquireGPUTexture",
+                                "registerEnvSceneUniforms",
+                                "scene._disposables.splice",
+                            ],
+                        );
                         if (name === "acquireGPUTexture") {
                             if (
-                                !["texture", "brdfLut"].includes(
-                                    expression.arguments[0]?.getText(file) ??
-                                        "",
-                                )
+                                context.matchingExpressionShape(
+                                    expression.arguments[0],
+                                    ["texture", "brdfLut"],
+                                ) === undefined
                             )
                                 return context.contractError(
                                     expression,
                                     "Unrepresented sky retained texture.",
                                 );
-                            const texture =
-                                expression.arguments[0]!.getText(file) ===
-                                "texture";
+                            const texture = context.expressionMatchesShape(
+                                expression.arguments[0]!,
+                                "texture",
+                            );
                             return texture
                                 ? [
                                       `${indent}state->texture_lease=std::make_shared<GpuTextureLease>(state->texture_source);`,
@@ -417,9 +445,17 @@ export function lowerProceduralSkyLoader(
                     if (!entry.initializer) return undefined;
                     if (ts.isArrayBindingPattern(entry.name)) {
                         if (
-                            entry.name.elements
-                                .map((element) => element.getText(file))
-                                .join(",") !== "irradiance,image"
+                            entry.name.elements.length !== 2 ||
+                            !entry.name.elements.every(
+                                (element, index) =>
+                                    ts.isBindingElement(element) &&
+                                    ts.isIdentifier(element.name) &&
+                                    !element.propertyName &&
+                                    !element.dotDotDotToken &&
+                                    !element.initializer &&
+                                    element.name.text ===
+                                        ["irradiance", "image"][index],
+                            )
                         )
                             return context.contractError(
                                 entry.name,
@@ -640,7 +676,10 @@ function lowerBrdfImage(context: LoweringContext): string {
                 return `(co_await ${lowerer.expression(node.expression)})`;
             if (
                 ts.isCallExpression(node) &&
-                node.expression.getText(file) === "createImageBitmap"
+                context.expressionMatchesShape(
+                    node.expression,
+                    "createImageBitmap",
+                )
             ) {
                 context.assertExpressionShape(
                     node.arguments[1]!,
@@ -691,7 +730,7 @@ function lowerBrdfImage(context: LoweringContext): string {
                 const error = unwrapExpression(node.expression);
                 if (
                     !ts.isNewExpression(error) ||
-                    error.expression.getText(file) !== "Error"
+                    !context.expressionMatchesShape(error.expression, "Error")
                 )
                     return context.contractError(
                         node,
@@ -707,7 +746,10 @@ function lowerBrdfImage(context: LoweringContext): string {
                     `std::string{${stringLiteral(message.head.text)}}`,
                 ];
                 for (const span of message.templateSpans) {
-                    const value = span.expression.getText(file);
+                    const value = context.matchingExpressionShape(
+                        span.expression,
+                        ["url", "response.status"],
+                    );
                     if (value === "url") pieces.push("url");
                     else if (value === "response.status")
                         pieces.push("js::number_to_string(response->status)");

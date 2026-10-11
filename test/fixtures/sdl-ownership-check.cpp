@@ -124,13 +124,14 @@ int main() {
             std::make_shared<const std::vector<std::uint8_t>>(16, std::uint8_t{0});
         blocks.compressed.format = "bc1-rgba-unorm";
         blocks.compressed.width = blocks.compressed.height = 4;
-        blocks.compressed.block_width = blocks.compressed.block_height = 4;
-        blocks.compressed.block_bytes = 8;
         blocks.compressed.mips.push_back(
-            {4, 4, std::span<const std::uint8_t>(*blocks.compressed.storage).first(8)});
+            {4, 4, std::span<const std::uint8_t>(*blocks.compressed.storage).first(8), {8, 4, 4}});
         auto compressed = acquire(blocks);
         auto other_blocks = blocks;
         assert(acquire(other_blocks) == compressed);
+        other_blocks.compressed.mips[0].copy.width = 8;
+        assert(acquire(other_blocks) != compressed);
+        other_blocks = blocks;
         other_blocks.compressed.mips[0].bytes =
             std::span<const std::uint8_t>(*blocks.compressed.storage).subspan(8);
         assert(acquire(other_blocks) != compressed);

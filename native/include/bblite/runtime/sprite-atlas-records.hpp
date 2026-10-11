@@ -2,10 +2,10 @@
 // Included within namespace bbl by runtime.hpp.
 
 struct SpriteFrame {
-    Vec2 uv_min{};
-    Vec2 uv_max{};
-    Vec2 source_size_px{};
-    Vec2 pivot{0.5f, 0.5f};
+    Vec2d uv_min{};
+    Vec2d uv_max{};
+    Vec2d source_size_px{};
+    Vec2d pivot{0.5f, 0.5f};
 };
 
 struct SpriteAtlasRecord {

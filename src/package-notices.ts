@@ -67,7 +67,11 @@ export function linkedPortNotices(request: NoticeRequest): PortNotice[] {
     if (!cache("BBLITE_SDL_DIR"))
         ports.push({ name: "SDL3.txt", port: "sdl3" });
     // The features native/CMakeLists.txt links nlohmann-json for.
-    if (["loader:gltf", "loader:babylon", "data:json"].some(has))
+    if (
+        ["loader:gltf", "loader:babylon", "environment:env", "data:json"].some(
+            has,
+        )
+    )
         ports.push({ name: "nlohmann-json.txt", port: "nlohmann-json" });
     if (
         request.platform === "macos" ||

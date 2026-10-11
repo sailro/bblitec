@@ -264,10 +264,10 @@ const Y_SORT_CALL_SHAPES: ReadonlyMap<string, PinnedBinding["type"]> = new Map([
  * null when the layer never enabled the extension.
  */
 function stateLocal(
+    context: LoweringContext,
     members: readonly StateMember[],
     lowerer: PinnedNumericLowerer,
     statement: ts.Statement,
-    file: ts.SourceFile,
     indent: string,
 ): string[] | undefined {
     if (!ts.isVariableStatement(statement)) return undefined;
@@ -277,7 +277,7 @@ function stateLocal(
         rest.length > 0 ||
         !ts.isIdentifier(entry.name) ||
         !entry.initializer ||
-        entry.initializer.getText(file) !== "getState(layer)"
+        !context.expressionMatchesShape(entry.initializer, "getState(layer)")
     ) {
         return undefined;
     }
@@ -326,7 +326,6 @@ function bodyOptions(
         ) => readonly string[] | undefined;
     } = {},
 ) {
-    const file = context.sourceFile(ySortModule);
     const memberBindings = new Map<string, PinnedBinding>([
         ...layerBindings("layer"),
         ...stateBindings(members, "state", "state."),
@@ -343,7 +342,7 @@ function bodyOptions(
             lowerer: PinnedNumericLowerer,
             indent: string,
         ): readonly string[] | undefined =>
-            stateLocal(members, lowerer, statement, file, indent) ??
+            stateLocal(context, members, lowerer, statement, indent) ??
             extra.statement?.(statement, lowerer, indent),
     };
 }
@@ -404,7 +403,11 @@ export function ySortCoreCpp(context: LoweringContext): string {
                     return "nullptr";
                 }
                 if (
-                    returned?.getText(drawOrder.file) === "state._permutation"
+                    returned !== undefined &&
+                    context.expressionMatchesShape(
+                        returned,
+                        "state._permutation",
+                    )
                 ) {
                     return `${lowerer.expression(returned)}.data()`;
                 }
@@ -429,7 +432,7 @@ function uploadSortedCpp(
     context: LoweringContext,
     members: readonly StateMember[],
 ): string {
-    const { file, declaration } = context.functionDeclaration(
+    const { declaration } = context.functionDeclaration(
         ySortModule,
         "uploadSorted",
     );
@@ -444,11 +447,12 @@ function uploadSortedCpp(
         if (
             ts.isBinaryExpression(expression) &&
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            ["layer._dirtyMin", "layer._dirtyMax"].includes(
-                expression.left.getText(file),
-            )
+            context.matchingExpressionShape(expression.left, [
+                "layer._dirtyMin",
+                "layer._dirtyMax",
+            ]) !== undefined
         ) {
-            if (expression.right.getText(file) !== "0") {
+            if (!context.expressionMatchesShape(expression.right, "0")) {
                 return context.contractError(
                     expression,
                     "Expected uploadSorted to reset the layer's dirty range to zero.",
@@ -456,22 +460,31 @@ function uploadSortedCpp(
             }
             // The pair resets the canonical range once; the minimum is
             // where the native reset is issued.
-            return expression.left.getText(file) === "layer._dirtyMin"
+            return context.expressionMatchesShape(
+                expression.left,
+                "layer._dirtyMin",
+            )
                 ? [`${indent}mark_sprite_dirty_range_consumed(layer);`]
                 : [];
         }
         if (
             ts.isCallExpression(expression) &&
-            expression.expression.getText(file) === "device.queue.writeBuffer"
+            context.expressionMatchesShape(
+                expression.expression,
+                "device.queue.writeBuffer",
+            )
         ) {
-            const [buffer, offset, source, sourceOffset, size] =
+            const [buffer, offset, sourceArgument, sourceOffset, size] =
                 expression.arguments;
+            const source =
+                sourceArgument && context.unwrapExpression(sourceArgument);
             if (
                 expression.arguments.length !== 5 ||
-                buffer?.getText(file) !== "instanceBuffer" ||
+                buffer === undefined ||
+                !context.expressionMatchesShape(buffer, "instanceBuffer") ||
                 !source ||
                 !ts.isPropertyAccessExpression(source) ||
-                source.getText(file) !== `${packed}.buffer` ||
+                !context.expressionMatchesShape(source, `${packed}.buffer`) ||
                 !offset ||
                 !sourceOffset ||
                 !size
@@ -541,9 +554,10 @@ function uploadSortedCpp(
                     }
                     if (
                         returned &&
-                        ["uploadedVersion", "layer._version"].includes(
-                            returned.getText(file),
-                        )
+                        context.matchingExpressionShape(returned, [
+                            "uploadedVersion",
+                            "layer._version",
+                        ]) !== undefined
                     ) {
                         return "staged";
                     }
@@ -732,9 +746,9 @@ function enableCpp(
         if (
             ts.isBinaryExpression(expression) &&
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            expression.left.getText(file) === "layer._ySortState"
+            context.expressionMatchesShape(expression.left, "layer._ySortState")
         ) {
-            if (expression.right.getText(file) !== created) {
+            if (!context.expressionMatchesShape(expression.right, created)) {
                 return context.contractError(
                     expression,
                     "Expected enableSprite2DYSort to install the state it created.",
@@ -746,7 +760,10 @@ function enableCpp(
         // the two entries the always-loaded paths reach.
         if (
             ts.isCallExpression(expression) &&
-            expression.getText(file) === "_registerSprite2DYSortHook(getHook())"
+            context.expressionMatchesShape(
+                expression,
+                "_registerSprite2DYSortHook(getHook())",
+            )
         ) {
             return [
                 `${indent}engine.sprite_y_sort_hook.upload = ${nativeName(entries.upload)};`,
@@ -793,8 +810,12 @@ function enableCpp(
             returns: {
                 type: "Sprite2DLayerHandle",
                 value: (_lowerer, expression) => {
-                    const returned = expression?.getText(file);
-                    if (returned === created || returned === "existing") {
+                    if (
+                        context.matchingExpressionShape(expression, [
+                            created,
+                            "existing",
+                        ]) !== undefined
+                    ) {
                         return "layer_handle";
                     }
                     return context.contractError(

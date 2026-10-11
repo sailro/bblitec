@@ -287,7 +287,7 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
         const store = new EditedStore(module, from, to);
         assert.throws(
             () => lowerDeviceRecovery(new LoweringContext(store)),
-            /native recovery contract|Expected|Unsupported pinned|splices exactly one/,
+            /native recovery contract|native seam|Expected|Unsupported pinned|splices exactly one/,
             `${module}: ${from}`,
         );
     }

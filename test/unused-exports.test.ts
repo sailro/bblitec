@@ -32,6 +32,10 @@ export const unqueried = 43;
 export const qualified = 44;
 export const namespaceUnused = 45;
 export const localOnly = 46;
+export function dynamicallyUsed(): void {}
+export function dynamicallyRenamed(): void {}
+export function dynamicallyNested(): void {}
+export function dynamicallyUnused(): void {}
 export interface PluginContext { value: string; }
 export function unusedFunction(): void {}
 export interface Recursive<T> { value: T; next?: Recursive<T[]>; }
@@ -54,6 +58,10 @@ type Whole = typeof import("./whole.js");
 const queried: Query = 42;
 const whole: Whole = { wholeValue: 1 };
 console.log(queried, whole);
+const { dynamicallyUsed } = await import("./model.js");
+const { dynamicallyRenamed: renamed } = await import("./model.js");
+const [{ dynamicallyNested }] = await Promise.all([import("./model.js")]);
+dynamicallyUsed(); renamed(); dynamicallyNested();
 `,
         "dist/model.d.ts": "export interface PluginContext { value: string; }",
         "plugin.mjs":
@@ -76,6 +84,7 @@ console.log(queried, whole);
             "unusedAlias",
             "unusedShape",
             "unusedFunction",
+            "dynamicallyUnused",
         ].sort(),
     );
     assert.equal(

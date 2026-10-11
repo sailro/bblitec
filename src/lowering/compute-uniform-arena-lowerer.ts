@@ -167,13 +167,14 @@ function scope(
                 return `js::or_number(${lowerer.expression(node.left)}, ${lowerer.expression(node.right)})`;
             if (
                 ts.isElementAccessExpression(node) &&
-                node.expression.getText(file) === "arenas"
+                context.expressionMatchesShape(node.expression, "arenas")
             )
                 return `arenas[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})]`;
             return undefined;
         },
-        forOf(iterated, element) {
-            if (iterated !== "arenas") return undefined;
+        forOf(_iterated, element, _binding, syntax) {
+            if (!context.expressionMatchesShape(syntax.expression, "arenas"))
+                return undefined;
             return {
                 range: "arenas",
                 bindings: new Map([
@@ -254,7 +255,10 @@ function scope(
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isArrowFunction(expression.right)
             ) {
-                const target = expression.left.getText(file),
+                const target = context.matchingExpressionShape(
+                        expression.left,
+                        ["task._flushOwned", "task._disposeOwned"],
+                    ),
                     member =
                         target === "task._flushOwned"
                             ? "flush_owned"

@@ -28,14 +28,17 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
  * generation with the pinned source location.
  */
 import ts from "typescript";
+import { numberConstant } from "../compiler/number-intrinsics.js";
 import {
     declaredInDefaultLibrary,
+    libraryGlobal,
     declaredSymbol,
     resolvedSymbol,
 } from "../compiler/symbols.js";
 import { posix } from "node:path";
 import {
     cppIdentifier,
+    doubleCpp,
     doubleLiteral,
     lazyStaticAccessor,
     snakeCase,
@@ -1873,7 +1876,7 @@ export class PinnedRecordModel {
         const returns = this.returnShapeOf(entry);
         const parameters = this.parametersOf(entry).map(
             (parameter) =>
-                `${this.cppType(parameter.shape)} ${cppIdentifier(parameter.name.text)}${parameter.optional && defaults ? ` = ${this.absent(parameter.shape, parameter.node)}` : ""}`,
+                `${this.cppType(parameter.shape)} ${cppIdentifier(parameter.name.text)}${defaults && parameter.node.initializer ? " = {}" : parameter.optional && defaults ? ` = ${this.absent(parameter.shape, parameter.node)}` : ""}`,
         );
         const self = this.selfShape(entry);
         return `${this.cppType(returns)} ${entry.cpp}(${[
@@ -1898,11 +1901,22 @@ export class PinnedRecordModel {
         return declaration.parameters.map((parameter, index) => {
             if (!ts.isIdentifier(parameter.name))
                 return this.fail(parameter, "Pinned parameters must be named.");
-            if (parameter.initializer)
-                this.fail(
+            if (parameter.initializer) {
+                const shape = this.declaredShape(
+                    this.checker.getTypeAtLocation(parameter.name),
                     parameter,
-                    "Pinned default parameters are not lowered.",
                 );
+                if (
+                    !ts.isObjectLiteralExpression(parameter.initializer) ||
+                    parameter.initializer.properties.length !== 0 ||
+                    shape.kind !== "record" ||
+                    this.record(shape.name).spec.reference
+                )
+                    this.fail(
+                        parameter,
+                        "Pinned defaults require an empty value record.",
+                    );
+            }
             if (ts.getModifiers(parameter)?.length)
                 this.fail(
                     parameter,
@@ -3356,6 +3370,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return this.typed(node) ?? super.expressionDomain(node);
     }
 
+    protected override stringExpression(expression: ts.Expression): string {
+        return this.convert(expression, { kind: "string" });
+    }
+
     /** Everything that is not JavaScript arithmetic over numbers. */
     private typed(node: ts.Expression): string | undefined {
         const substituted = this.substitutions.get(node);
@@ -3749,13 +3767,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const name = node.name.text;
         const owner = node.expression;
         const constant = this.constant(node);
-        if (constant !== undefined) return doubleLiteral(constant);
-        if (ts.isIdentifier(owner) && owner.text === "Number") {
-            if (name === "POSITIVE_INFINITY")
-                return "std::numeric_limits<double>::infinity()";
-            if (name === "NEGATIVE_INFINITY")
-                return "(-std::numeric_limits<double>::infinity())";
-        }
+        if (constant !== undefined) return doubleCpp(constant);
+        const numericConstant = numberConstant(node, (expression) =>
+            libraryGlobal(this.checker, expression),
+        );
+        if (numericConstant !== undefined) return doubleCpp(numericConstant);
         const shape = this.ownerShape(owner);
         const value = (): string => this.presentValue(owner);
         switch (shape.kind) {

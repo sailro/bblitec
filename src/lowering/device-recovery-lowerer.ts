@@ -26,7 +26,12 @@ import { stringLiteral } from "../cpp-literals.js";
  *    and retains the pin's optional CPU aliases at factory time.
  */
 import ts from "typescript";
-import type { LoweredSource, LoweringContext } from "./context.js";
+import {
+    type LoweredSource,
+    type LoweringContext,
+    propertyName,
+    unwrapExpression,
+} from "./context.js";
 import { assertDeviceRecoveryContracts } from "./device-recovery-contract.js";
 import { lowerRetainedMeshRecovery } from "./mesh-recovery.js";
 import {
@@ -125,8 +130,8 @@ const listMethods: NonNullable<PinnedNumericScope["methods"]> = new Map([
  * so the scene strategy needs no separate counter hook.
  */
 function captureHook(
+    context: LoweringContext,
     statement: ts.Statement,
-    file: ts.SourceFile,
     hook: "_enable" | "_disable",
 ): boolean {
     if (!ts.isIfStatement(statement) || statement.elseStatement) return false;
@@ -134,18 +139,25 @@ function captureHook(
         ? statement.thenStatement.statements
         : [statement.thenStatement];
     return (
-        statement.expression.getText(file) ===
-            "!registrations.some((current) => current._kind === registration._kind)" &&
+        context.expressionMatchesShape(
+            statement.expression,
+            "!registrations.some((current) => current._kind === registration._kind)",
+        ) &&
         body.length === 1 &&
-        body[0]!.getText(file) === `registration.${hook}?.(engine);`
+        ts.isExpressionStatement(body[0]!) &&
+        context.expressionMatchesShape(
+            body[0].expression,
+            `registration.${hook}?.(engine)`,
+        )
     );
 }
 
 /** The `.then(...)` call an expression statement makes, unwrapping `void`. */
 function thenCall(statement: ts.Statement): ts.CallExpression | undefined {
     if (!ts.isExpressionStatement(statement)) return undefined;
-    let expression = statement.expression;
-    if (ts.isVoidExpression(expression)) expression = expression.expression;
+    let expression = unwrapExpression(statement.expression);
+    if (ts.isVoidExpression(expression))
+        expression = unwrapExpression(expression.expression);
     return ts.isCallExpression(expression) &&
         ts.isPropertyAccessExpression(expression.expression) &&
         expression.expression.name.text === "then"
@@ -184,7 +196,14 @@ function armClosures(context: LoweringContext): {
     const { declaration } = context.functionDeclaration(recoveryModule, "arm");
     const listen = declaration
         .body!.statements.map(thenCall)
-        .find((call) => call?.expression.getText().startsWith("device.lost."));
+        .find(
+            (call) =>
+                call !== undefined &&
+                context.expressionMatchesShape(
+                    call.expression,
+                    "device.lost.then",
+                ),
+        );
     const lost = arrowBody(
         context,
         listen?.arguments[0],
@@ -237,7 +256,6 @@ function coordinatorScope(
     methods: NonNullable<PinnedNumericScope["methods"]>;
     statement: NonNullable<PinnedNumericScope["statement"]>;
 } {
-    const file = context.sourceFile(recoveryModule);
     const statement: NonNullable<PinnedNumericScope["statement"]> = (
         node,
         lowerer,
@@ -245,20 +263,27 @@ function coordinatorScope(
     ) => {
         // The PAL delivers the loss to the armed handler; the listener
         // itself is the frame loop's.
+        const run = thenCall(node);
         if (
-            thenCall(node)?.expression.getText(file).startsWith("device.lost.")
+            run &&
+            context.expressionMatchesShape(run.expression, "device.lost.then")
         ) {
             return [];
         }
         // `runDeviceLostRecovery`, dynamically imported and settled by the
         // two continuations: the PAL's rebuild, which settles through
         // `complete_device_recovery` or `fail_device_recovery`.
-        const run = thenCall(node);
         if (
             run &&
-            node
-                .getText(file)
-                .includes('import("./device-lost-recovery-run.js")')
+            context.hasNode(
+                run.expression,
+                (expression) =>
+                    ts.isCallExpression(expression) &&
+                    context.expressionMatchesShape(
+                        expression,
+                        'import("./device-lost-recovery-run.js")',
+                    ),
+            )
         ) {
             return [];
         }
@@ -347,18 +372,19 @@ function continuationsCpp(context: LoweringContext): string {
         const [entry] = ts.isVariableStatement(node)
             ? node.declarationList.declarations
             : [];
-        if (!entry || entry.name.getText(file) !== "registrations") {
+        if (
+            !entry ||
+            !ts.isIdentifier(entry.name) ||
+            entry.name.text !== "registrations"
+        ) {
             return undefined;
         }
-        if (
-            entry.getText(file) !== "registrations = [...state._registrations]"
-        ) {
-            return context.contractError(
-                entry,
-                "Expected the lost handler to snapshot the registrations its " +
-                    "continuations settle.",
-            );
-        }
+        context.assertStatementShapes(
+            entry,
+            [node],
+            "const registrations = [...state._registrations];",
+            "Recovery registration snapshot",
+        );
         lowerer.bindPorts([["registrations", inFlight[1]]], entry);
         return [`${indent}state.in_flight = state.registrations;`];
     };
@@ -433,18 +459,27 @@ function registrationCpp(context: LoweringContext): string {
         indent,
     ) => {
         if (
-            captureHook(node, file, "_enable") ||
-            captureHook(node, file, "_disable")
+            captureHook(context, node, "_enable") ||
+            captureHook(context, node, "_disable")
         ) {
             return [];
         }
         // `const state = getState(engine)`: the coordinator record, created
         // on first use.
+        const [local] = ts.isVariableStatement(node)
+            ? node.declarationList.declarations
+            : [];
         if (
-            ts.isVariableStatement(node) &&
-            node.declarationList.declarations[0]?.getText(file) ===
-                "state = getState(engine)"
+            local &&
+            ts.isIdentifier(local.name) &&
+            local.name.text === "state"
         ) {
+            context.assertStatementShapes(
+                node,
+                [node],
+                "const state = getState(engine);",
+                "Recovery coordinator state",
+            );
             lowerer.bindPorts(stateMembers("state", "state"), node);
             return [
                 `${indent}Engine::DeviceRecoveryState& state = recovery_state(engine);`,
@@ -455,24 +490,31 @@ function registrationCpp(context: LoweringContext): string {
         // features it was built for.
         if (
             ts.isIfStatement(node) &&
-            node.expression.getText(file) === "registrations.length === 0" &&
-            node.thenStatement
-                .getText(file)
-                .includes("state._requiredFeatures =")
+            context.expressionMatchesShape(
+                node.expression,
+                "registrations.length === 0",
+            )
         ) {
+            context.assertStatementShapes(
+                node,
+                [node],
+                "if (registrations.length === 0) { state._requiredFeatures = Array.from(engine._device.features) as GPUFeatureName[]; }",
+                "Recovery device features",
+            );
             return [];
         }
         // `let disabled = false`: the handle's own flag, on its record.
-        const [local] = ts.isVariableStatement(node)
-            ? node.declarationList.declarations
-            : [];
-        if (local?.name.getText(file) === "disabled") {
-            if (local.getText(file) !== "disabled = false") {
-                return context.contractError(
-                    local,
-                    "Expected a recovery handle to start enabled.",
-                );
-            }
+        if (
+            local &&
+            ts.isIdentifier(local.name) &&
+            local.name.text === "disabled"
+        ) {
+            context.assertStatementShapes(
+                node,
+                [node],
+                "let disabled = false;",
+                "Recovery handle enabled state",
+            );
             lowerer.bindPorts(
                 [
                     [
@@ -528,7 +570,11 @@ function registrationCpp(context: LoweringContext): string {
                         !handle ||
                         !ts.isObjectLiteralExpression(handle) ||
                         handle.properties
-                            .map((property) => property.name?.getText(file))
+                            .map((property) =>
+                                property.name
+                                    ? propertyName(property.name)
+                                    : undefined,
+                            )
                             .join() !== "disable"
                     ) {
                         return context.contractError(
@@ -547,7 +593,7 @@ function registrationCpp(context: LoweringContext): string {
         declaration,
         (node): node is ts.MethodDeclaration =>
             ts.isMethodDeclaration(node) &&
-            node.name.getText(file) === "disable",
+            propertyName(node.name) === "disable",
     )[0];
     if (!handle?.body) {
         return context.contractError(
@@ -591,7 +637,7 @@ ${disable}
  * rebuilds.
  */
 function sceneRecoveryCpp(context: LoweringContext): string {
-    const { file, declaration } = context.functionDeclaration(
+    const { declaration } = context.functionDeclaration(
         sceneModule,
         "enableDeviceLostSceneRecovery",
     );
@@ -603,14 +649,17 @@ function sceneRecoveryCpp(context: LoweringContext): string {
     const literal =
         call &&
         ts.isCallExpression(call) &&
-        call.expression.getText(file) === "_enableDeviceLostRecovery"
+        context.expressionMatchesShape(
+            call.expression,
+            "_enableDeviceLostRecovery",
+        )
             ? call.arguments[1]
             : undefined;
     const members =
         literal && ts.isObjectLiteralExpression(literal)
             ? new Map(
                   literal.properties.map((property) => [
-                      property.name?.getText(file) ?? "",
+                      property.name ? (propertyName(property.name) ?? "") : "",
                       property,
                   ]),
               )
@@ -624,15 +673,21 @@ function sceneRecoveryCpp(context: LoweringContext): string {
             return (
                 member !== undefined &&
                 ts.isPropertyAssignment(member) &&
-                member.initializer.getText(file) === `options.${option}`
+                context.expressionMatchesShape(
+                    member.initializer,
+                    `options.${option}`,
+                )
             );
         },
     );
     const options = declaration.parameters[1];
     if (
         !callbacks ||
-        options?.name.getText(file) !== "options" ||
-        options.initializer?.getText(file) !== "{}" ||
+        !options ||
+        !ts.isIdentifier(options.name) ||
+        options.name.text !== "options" ||
+        !options.initializer ||
+        !context.expressionMatchesShape(options.initializer, "{}") ||
         declaration.body!.statements.length !== 1 ||
         !members ||
         !kind ||
@@ -805,9 +860,10 @@ function forcedLossCpp(context: LoweringContext): string {
                 // at the frame boundary and delivers the loss.
                 statement: (node, _lowerer, indent) =>
                     ts.isExpressionStatement(node) &&
-                    node.expression.getText(
-                        context.sourceFile(testingModule),
-                    ) === "engine._device.destroy()"
+                    context.expressionMatchesShape(
+                        node.expression,
+                        "engine._device.destroy()",
+                    )
                         ? [`${indent}engine.renderer_restart_requested = true;`]
                         : undefined,
             }),

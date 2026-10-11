@@ -49,10 +49,7 @@ const resolvedSchema: PinnedRecordSchema = {
         },
     },
 };
-function bufferScope(
-    context: LoweringContext,
-    file: ts.SourceFile,
-): PinnedNumericScope {
+function bufferScope(context: LoweringContext): PinnedNumericScope {
     const bindings = new Map<string, PinnedBinding>();
     for (const name of [
         "engine",
@@ -146,8 +143,15 @@ function bufferScope(
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
             ) {
-                const left = node.left.getText(file);
-                if (["range.offset", "range.size", "size"].includes(left))
+                const left = context.matchingExpressionShape(node.left, [
+                    "range.offset",
+                    "range.size",
+                    "size",
+                ]);
+                if (
+                    left !== undefined &&
+                    ["range.offset", "range.size", "size"].includes(left)
+                )
                     return `${left}.value_or(${l.expression(node.right)})`;
             }
             if (ts.isObjectLiteralExpression(node))
@@ -218,9 +222,9 @@ export function lowerComputeBufferBinding(
         resolve.file,
         resolve.declaration.body!.statements,
         {
-            ...bufferScope(context, resolve.file),
+            ...bufferScope(context),
             returnValue: (node) => {
-                const scope = bufferScope(context, resolve.file);
+                const scope = bufferScope(context);
                 scope.bindings.set("size", { cpp: "size", type: "opaque" });
                 scope.bindings.set("offset", { cpp: "offset", type: "scalar" });
                 scope.bindings.set("boundSize", {
@@ -240,7 +244,7 @@ export function lowerComputeBufferBinding(
         get.file,
         get.declaration.body!.statements,
         {
-            ...bufferScope(context, get.file),
+            ...bufferScope(context),
             returnValue: (node) => {
                 const schema: PinnedRecordSchema = {
                     cpp: "pal::ComputeBufferResource",
@@ -251,7 +255,7 @@ export function lowerComputeBufferBinding(
                     },
                 };
                 // Native GPU byte positions are integral; source checks establish the range.
-                const base = bufferScope(context, get.file);
+                const base = bufferScope(context);
                 base.bindings.set("binding._offset", {
                     cpp: "static_cast<std::size_t>(binding.offset)",
                     type: "opaque",
@@ -287,7 +291,7 @@ function lowerBufferHelpers(context: LoweringContext): string {
             filePath,
             name,
         );
-        const scope = bufferScope(context, file);
+        const scope = bufferScope(context);
         scope.bindings.delete("alignment");
         scope.bindings.delete("maxBindingSize");
         const baseExpression = scope.expression;
@@ -352,13 +356,16 @@ function lowerBufferHelpers(context: LoweringContext): string {
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
                 ts.isCallExpression(node.left) &&
-                node.left.expression.getText(file) === "Number"
+                context.expressionMatchesShape(node.left.expression, "Number")
             ) {
                 const input = node.left.arguments[0];
                 if (
                     input &&
                     ts.isPropertyAccessExpression(input) &&
-                    input.expression.getText(file) === "engine._device.limits"
+                    context.expressionMatchesShape(
+                        input.expression,
+                        "engine._device.limits",
+                    )
                 ) {
                     const limit: Record<string, string> = {
                         minStorageBufferOffsetAlignment:

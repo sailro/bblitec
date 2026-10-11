@@ -95,20 +95,6 @@ export function findNodes<T extends ts.Node>(
     return result;
 }
 
-/**
- * The index text of an element-access store target (`data[base + 3]`
- * gives `base + 3`), whitespace-normalized so a table of expected slots
- * compares against it whatever the pin's line breaks. Undefined for a
- * target that is not an element access.
- */
-export function elementIndexText(target: ts.Expression): string | undefined {
-    if (!ts.isElementAccessExpression(target)) return undefined;
-    return target.argumentExpression
-        .getText(target.getSourceFile())
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
 /** The name a property is declared under, where it is a plain name or literal. */
 export function propertyName(name: ts.PropertyName): string | undefined {
     return propertyNameText(name);
@@ -967,6 +953,18 @@ export class LoweringContext {
             return false;
         }
         return this.nodeFingerprint(actual) === expected;
+    }
+
+    /** Select a canonical expression case by AST, retaining its native projection key. */
+    public matchingExpressionShape<T extends string>(
+        actual: ts.Expression | undefined,
+        choices: readonly T[],
+    ): T | undefined {
+        return actual === undefined
+            ? undefined
+            : choices.find((choice) =>
+                  this.expressionMatchesShape(actual, choice),
+              );
     }
 
     /**

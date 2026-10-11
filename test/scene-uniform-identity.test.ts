@@ -231,7 +231,7 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& input) {
 }
 }
 void read_dds_skybox(EnvironmentState&, const std::string&) {}
-void apply_scene_size(Scene&, double) {}
+void apply_scene_size(Scene&, std::optional<double>) {}
 ${envFunction}
 ${cppFunction(sceneSource, "void require_scene_engine(")}
 ${fogFunction}
