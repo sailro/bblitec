@@ -18,8 +18,8 @@ struct PackagedFetchEntry {
 inline js::Promise<HttpResponse> fetch_packaged(std::string url, std::string path) {
     return run_native_job<HttpResponse>([path = std::move(path)] { return read_binary_file(path); },
                                         [url = std::move(url)](std::vector<std::uint8_t> body) {
-                                            return js::make_ref<HttpResponseData>(
-                                                HttpResponseData{200, url, std::move(body), false});
+                                            return make_buffered_response(200, url,
+                                                                          std::move(body));
                                         });
 }
 

@@ -608,6 +608,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["Blob", "dom", "blob"],
     ["FileList", "dom", "file-list"],
     ["Response", "dom", "http-response"],
+    ["Headers", "dom", "http-headers"],
     ["AbortController", "dom", "abort-controller"],
     ["AbortSignal", "dom", "abort-signal"],
     ["URLSearchParams", "dom", "search-params"],
@@ -634,6 +635,9 @@ const BYTE_STREAM_KINDS: ReadonlyMap<
     "byte-stream" | "byte-stream-reader" | "byte-read-result"
 > = new Map([
     ["ReadableStream", "byte-stream"],
+    ["ReadableStreamDefaultReader", "byte-stream-reader"],
+    ["ReadableStreamReadValueResult", "byte-read-result"],
+    ["ReadableStreamReadDoneResult", "byte-read-result"],
 ]);
 
 /** Kinds whose storage `pal_fetch_response.hpp` declares. */
@@ -3910,17 +3914,12 @@ export class DataTypeRegistry {
         if (deferredObject)
             return { kind: "deferred-platform-object", name: deferredObject };
         if (
-            type.symbol?.name === "ReadableStream" &&
+            BYTE_STREAM_KINDS.has(type.symbol?.name ?? "") &&
             declaredInDomLibrary(type.symbol)
-        )
-            // Only byte streams have an owned deferred boundary. Unconstrained or
-            // differently typed streams must not share their native identity.
-            return this.byteStreamKind(type, node) === "byte-stream"
-                ? {
-                      kind: "deferred-platform-object",
-                      name: "ReadableByteStream",
-                  }
-                : undefined;
+        ) {
+            const byteStream = this.byteStreamKind(type, node);
+            return byteStream ? { kind: byteStream } : undefined;
+        }
         if (declaredIn(type.symbol, "dom", "webgpu")) {
             if (type.symbol?.name === "GPUAdapterInfo")
                 return { kind: "gpu-adapter-info" };

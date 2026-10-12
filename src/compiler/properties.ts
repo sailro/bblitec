@@ -2596,6 +2596,7 @@ export class PropertyAccessLowerer {
             this.context.dataLowerer,
             owner,
             expression.name.text,
+            expression,
         );
         if (platformProperty) return platformProperty;
         if (

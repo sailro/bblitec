@@ -95,7 +95,6 @@ export type TypedArrayKind =
     | "i32array"
     | "u8clampedarray";
 export const DEFERRED_DOM_OBJECTS = [
-    "Headers",
     "MediaRecorder",
     "BlobEvent",
     "IdleDeadline",
@@ -114,7 +113,7 @@ interface DataKinds {
     "event-target": { kind: "event-target" };
     "deferred-platform-object": {
         kind: "deferred-platform-object";
-        name: (typeof DEFERRED_DOM_OBJECTS)[number] | "ReadableByteStream";
+        name: (typeof DEFERRED_DOM_OBJECTS)[number];
     };
     "http-response": { kind: "http-response" };
     /** A response's Headers object (`js_fetch` headers). */

@@ -6,6 +6,7 @@ import {
     compileAbortNew,
     type WebPlatformCallContext,
 } from "./abort-signals.js";
+import { bodyStreamProperty, compileBodyStreamMethod } from "./body-streams.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
@@ -15,9 +16,19 @@ import type { Value } from "./types.js";
  * constructors, property reads and method calls on their native values.
  */
 
-const METHOD_OWNERS: ReadonlySet<DataType["kind"]> = new Set([
-    "abort-controller",
-    "abort-signal",
+type MethodLowerer = (
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    owner: Value,
+    method: string,
+) => Value;
+
+const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
+    ["abort-controller", compileAbortMethod],
+    ["abort-signal", compileAbortMethod],
+    ["http-headers", compileBodyStreamMethod],
+    ["byte-stream", compileBodyStreamMethod],
+    ["byte-stream-reader", compileBodyStreamMethod],
 ]);
 
 export function compileWebPlatformNew(
@@ -27,12 +38,17 @@ export function compileWebPlatformNew(
     return compileAbortNew(lowerer, node);
 }
 
+/** A property of a web platform value; `access` is the read's site, when known. */
 export function webPlatformProperty(
     lowerer: DataLowerer,
     owner: Value,
     property: string,
+    access?: ts.Node,
 ): Value | undefined {
-    return abortProperty(lowerer, owner, property);
+    return (
+        abortProperty(lowerer, owner, property) ??
+        bodyStreamProperty(lowerer, owner, property, access)
+    );
 }
 
 /** Calls that need the full lowering services: listeners and global functions. */
@@ -50,7 +66,16 @@ export function compileWebPlatformMethod(
     owner: Value,
     method: string,
 ): Value | undefined {
-    const kind = owner.dataType?.kind;
-    if (!kind || !METHOD_OWNERS.has(kind)) return undefined;
-    return compileAbortMethod(lowerer, call, owner, method);
+    const type = owner.dataType;
+    const optional = type?.kind === "optional";
+    const lower = METHOD_OWNERS.get(
+        (optional ? type.inner : type)?.kind ?? "undefined",
+    );
+    if (!lower) return undefined;
+    // `owner?.method()` runs only on a present owner; a plain call on an absent one throws.
+    return optional
+        ? lowerer.optionalAccess(owner, call, (present) =>
+              lower(lowerer, call, present, method),
+          )
+        : lower(lowerer, call, owner, method);
 }

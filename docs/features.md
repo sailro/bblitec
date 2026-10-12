@@ -54,7 +54,7 @@ runtime calls throw or reject according to each descriptor. Later source still c
 Registered audio graph operations retain typed failures; engine/source option variants reject only for present options, preserving the existing absent-options adapters.
 Registered media stream, recording, streamed-audio and script-element operations throw or reject at their typed boundary. Recorder and BlobEvent values have owned nominal storage; no unavailable producer returns a dummy object.
 Session storage access, idle scheduling/cancellation, dynamic surface pixel-ratio reads/writes and application-realm device recovery have typed throwing boundaries. Idle callbacks retain owned signatures; scene-only recovery keeps its supported path.
-Byte streams/compression have typed throwing boundaries; existing buffered response reads remain supported.
+Blob streams, stream piping and compression have typed throwing boundaries.
 Unregistered APIs, unsupported type/ownership forms and dynamic argument spreads still refuse.
 The default mode retains strict admission and existing capability-absence guards.
 Signal-backed listener lifetimes (`addEventListener(type, listener, { signal })`) throw when reached; an undefined listener signal uses ordinary native dispatch.
@@ -242,14 +242,18 @@ Unsupported dynamic URLs and percent-encoded asset bodies refuse.
 
 ### Runtime HTTP
 
-Async `fetch(url, options)` (application realm) uses absolute HTTP(S) URLs with specialized method, string headers, body and
-a static cache mode (only-if-cached refuses). Known asset fetches without options or with
-only a cache mode use packaged responses. Responses expose ok/status/url/bodyUsed and
-text/json/arrayBuffer reads; bodies consume once. HTTP errors fulfill; transport/missing-file errors reject.
-Response headers are unavailable; deferred mode gives `Response.headers` and `Headers.get` typed throwing boundaries.
+Async `fetch(url, options)` (application realm) uses absolute HTTP(S) URLs with specialized method, string headers, body,
+a static cache mode (only-if-cached refuses) and an AbortSignal `signal`. Known asset fetches without options or with
+only a cache mode use packaged responses. A response fulfills at its head and exposes ok/status/url/bodyUsed,
+`headers.get`/`has` (case-insensitive; repeated fields joined with `, `; packaged responses have none) and `body`, a
+byte ReadableStream (one object; null for null-body statuses and HEAD) with `locked`, `cancel()` and a default reader's
+`read()`/`cancel()`/`releaseLock()`; text/json/arrayBuffer consume it once. HTTP errors fulfill; transport/missing-file
+errors reject, or error a streaming body, with a TypeError. Aborting rejects a pending fetch, or errors a readable body,
+with the signal's reason and cancels the transfer.
 Descriptor arrays and typed helpers retain closed local URL selections; filename patterns package only
 matching files in an authored directory. URL expressions run once, and keys outside the package reject.
-Request objects, streaming and wider options/methods refuse. Transport limits are in [fidelity](fidelity.md).
+Request objects, reader options, `reader.closed`, piping, teeing, Headers iteration and wider options/methods refuse.
+A folded packaged response's `headers`/`body` keep deferred throwing boundaries. Transport limits are in [fidelity](fidelity.md).
 
 ### Compressed geometry
 

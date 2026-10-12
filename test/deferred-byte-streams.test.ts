@@ -74,10 +74,7 @@ test("deferred byte pipelines retain every typed boundary and throw before later
         ]),
     );
     assert.ok(sites.every((site) => site.timing === "throw"));
-    assert.match(
-        result.cpp,
-        /std::shared_ptr<bbl::DeferredReadableByteStream>/,
-    );
+    assert.match(result.cpp, /bbl::pal::BodyStream/);
     assert.throws(
         () =>
             compileSource(family + "new FinalizationRegistry(() => {});", {
