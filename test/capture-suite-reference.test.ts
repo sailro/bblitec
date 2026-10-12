@@ -183,6 +183,10 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
                     attributes: { id: "hud" },
                     text: "HUD",
                 },
+                {
+                    tag: "a",
+                    children: [{ tag: "b", text: "Title" }, { text: " tail" }],
+                },
             ],
         },
     });
@@ -213,6 +217,12 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
         // Dropping focus-visible paints every button as selected in the
         // reference.
         assert.match(html, /\.entry:focus-visible\{outline: 2px solid cyan\}/);
+        // Text nodes keep their place among their element siblings.
+        assert.match(html, /\{"tag":"b","text":"Title"\},\{"text":" tail"\}/);
+        assert.match(
+            html,
+            /if \(record\.tag === undefined\) return document\.createTextNode\(record\.text\);/,
+        );
     } finally {
         await new Promise<void>((done) => server.close(() => done()));
     }

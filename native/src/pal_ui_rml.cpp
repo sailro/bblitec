@@ -55,6 +55,7 @@
 #include "pal_ui_range.hpp"
 #include "pal_ui_control_marks.hpp"
 #include "pal_ui_color.hpp"
+#include "pal_ui_control_scheme.hpp"
 #include "pal_ui_scrollbars.hpp"
 #include "pal_ui_style_properties.hpp"
 #include "pal_ui_background.hpp"
@@ -4430,6 +4431,7 @@ struct UiRmlRuntime {
             Rml::Factory::RegisterElementInstancer("select", &select_instancer);
             Rml::Factory::RegisterElementInstancer("input", &input_instancer);
             scrollbar_properties = register_ui_scrollbar_properties();
+            control_scheme_properties = register_ui_control_scheme_properties();
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-control-mark",
                                                      &control_mark_decorator);
@@ -4582,6 +4584,8 @@ struct UiRmlRuntime {
             }
             if (sync_ui_scrollbar_styles(*document, scrollbar_properties))
                 context->Update();
+            if (sync_ui_control_schemes(*document, control_scheme_properties))
+                context->Update();
             if (background_styles.sync(*document))
                 context->Update();
             if (refresh_gradient_text())
@@ -4708,12 +4712,13 @@ struct UiRmlRuntime {
         }
         if (name == "display")
             element.SetProperty("--bbl-authored-display", "1");
-        const bool checked = name == "float" || name == "clear" || name == "object-fit" ||
-                             name == "filter" || name == "overflow-wrap" || name == "word-break" ||
-                             name == "flex" || name.starts_with("flex-") || name == "align-self" ||
-                             name == "align-content" || name == "row-gap" || name == "column-gap" ||
-                             name.starts_with("padding-") || name == "margin-left" ||
-                             name == "margin-right" || name == "box-shadow";
+        const bool checked =
+            name == "float" || name == "clear" || name == "object-fit" || name == "filter" ||
+            name == "overflow-wrap" || name == "word-break" || name == "flex" ||
+            name.starts_with("flex-") || name == "align-self" || name == "align-content" ||
+            name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
+            name == "margin-left" || name == "margin-right" || name == "box-shadow" ||
+            name == "accent-color" || name == "color-scheme" || name == "text-decoration";
         const bool accepted = element.SetProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
@@ -6665,8 +6670,9 @@ struct UiRmlRuntime {
     UiSystemInterface system_interface;
     UiRenderRecorder render_interface;
     std::vector<std::unique_ptr<UiFilterInstancer>> filter_instancers;
-    UiRangeDecoratorInstancer range_decorator;
-    UiControlMarkDecoratorInstancer control_mark_decorator;
+    UiControlSchemeProperties control_scheme_properties{};
+    UiRangeDecoratorInstancer range_decorator{control_scheme_properties};
+    UiControlMarkDecoratorInstancer control_mark_decorator{control_scheme_properties};
     UiControlArrowDecoratorInstancer control_arrow_decorator;
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::ElementInstancerGeneric<UiCanvasElement> canvas_instancer;
@@ -6999,6 +7005,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
         }
     }
     if (sync_ui_scrollbar_styles(*runtime.document, runtime.scrollbar_properties))
+        runtime.context->Update();
+    if (sync_ui_control_schemes(*runtime.document, runtime.control_scheme_properties))
         runtime.context->Update();
     if (focus_changed || hover_changed || motion_changed || dimensions_changed || density_changed ||
         generated_changed || containers_changed) {

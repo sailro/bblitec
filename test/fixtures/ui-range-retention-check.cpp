@@ -87,7 +87,7 @@ int main() try {
         assert(texture().id != id);
 
         // Exercise RmlUi's documented generate-before-release overlap directly.
-        UiRangeDecorator decorator;
+        UiRangeDecorator decorator(runtime.control_scheme_properties);
         auto first = decorator.GenerateElementData(raw(), Rml::BoxArea::Content);
         runtime.render_interface.begin_frame(640, 480);
         decorator.RenderElement(raw(), first);

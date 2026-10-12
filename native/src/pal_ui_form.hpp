@@ -6,6 +6,9 @@
 #include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/ElementUtilities.h>
 #include <RmlUi/Core/Context.h>
+#include <RmlUi/Core/Core.h>
+#include <RmlUi/Core/FontEngineInterface.h>
+#include <RmlUi/Core/FontMetrics.h>
 #include <RmlUi/Core/Decorator.h>
 #include <RmlUi/Core/Geometry.h>
 #include <RmlUi/Core/RenderManager.h>
@@ -27,8 +30,10 @@ public:
     void SetValue(const Rml::String& value) override { SetAttribute("value", value); }
 };
 
-// A browser select sizes to its longest option plus the native arrow. RmlUi's
-// default replacement box is an arbitrary 128px and cannot size an auto grid track.
+// A browser select sizes to its longest option plus the native arrow, and its
+// height to the font's normal line height plus Chromium's 1px internal padding
+// above and below, whatever its line-height. RmlUi's default replacement box is
+// an arbitrary 128px and cannot size an auto grid track.
 class UiSelectElement final : public Rml::ElementFormControlSelect {
     static void append_text(Rml::Element& element, Rml::String& output) {
         if (const auto* text = rmlui_dynamic_cast<Rml::ElementText*>(&element))
@@ -48,7 +53,10 @@ public:
                 label_width, static_cast<float>(Rml::ElementUtilities::GetStringWidth(this, text)));
         }
         const float density = Rml::ElementUtilities::GetDensityIndependentPixelRatio(this);
-        dimensions = {label_width + 20.f * density, std::max(GetLineHeight(), 17.f * density)};
+        const auto face = GetFontFaceHandle();
+        const float line = face ? Rml::GetFontEngineInterface()->GetFontMetrics(face).line_spacing
+                                : GetLineHeight();
+        dimensions = {label_width + 20.f * density, line + 2.f * density};
         ratio = -1.f;
         return true;
     }

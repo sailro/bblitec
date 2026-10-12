@@ -520,6 +520,7 @@ if (hostStyleSheet) {
     document.head.appendChild(style);
 }
 const create = (record) => {
+    if (record.tag === undefined) return document.createTextNode(record.text);
     const element = document.createElement(record.tag);
     for (const [name, value] of Object.entries(record.attributes ?? {})) {
         element.setAttribute(name, value);

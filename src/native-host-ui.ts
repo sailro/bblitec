@@ -46,14 +46,27 @@ export function* nativeHostUiElements(
     }
 }
 
-function nativeHostUiElement(
-    value: unknown,
-    location: string,
-): NativeHostUiElement {
+/**
+ * An element, or a text node (`{ "text": ... }` alone) where markup mixes
+ * text with elements: an element's own `text` precedes its children.
+ */
+function nativeHostUiNode(value: unknown, location: string): NativeHostUiNode {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error(`${location} must be an object.`);
     }
     const record = value as Record<string, unknown>;
+    if (record.tag !== undefined) return nativeHostUiElement(record, location);
+    refuseUnknownKeys(record, ["text"], `${location} (a text node)`);
+    if (typeof record.text !== "string") {
+        throw new Error(`${location} needs a string tag, or text alone.`);
+    }
+    return { text: record.text };
+}
+
+function nativeHostUiElement(
+    record: Record<string, unknown>,
+    location: string,
+): NativeHostUiElement {
     refuseUnknownKeys(
         record,
         ["tag", "text", "attributes", "children"],
@@ -94,10 +107,7 @@ function nativeHostUiElement(
         ...(record.children
             ? {
                   children: record.children.map((child, index) =>
-                      nativeHostUiElement(
-                          child,
-                          `${location}.children[${index}]`,
-                      ),
+                      nativeHostUiNode(child, `${location}.children[${index}]`),
                   ),
               }
             : {}),
@@ -286,7 +296,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
         sourcePath: path,
         ...(styleRules.length > 0 ? { styleRules } : {}),
         elements: record.elements.map((element, index) =>
-            nativeHostUiElement(
+            nativeHostUiNode(
                 element,
                 `Native host UI '${path}' elements[${index}]`,
             ),

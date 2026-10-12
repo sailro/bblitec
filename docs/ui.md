@@ -26,7 +26,8 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
 
 ## Integration
 
-- TypeScript owns live controls; reviewed `ui/*.json` companions or an HTML page describe static host chrome.
+- TypeScript owns live controls; reviewed `ui/*.json` companions (elements, interleaved text nodes and
+  bounded style rules) or an HTML page describe static host chrome.
 - An HTML page (`bblitec page.html [--site-root <dir>]`) is parsed by Chromium; its markup, text, attributes and
   `<style>` sheets are the host, and its one module script names the entry. `/` paths resolve beneath the site root
   (the page's directory by default).
@@ -212,7 +213,7 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Isolation | Reversible auto/isolate stacking contexts for painting and hit testing | Blend modes remain outside the retained surface |
 | Containers | inline-size containment; unnamed nearest-ancestor max-width:Npx queries | Named/min/height/style/scroll-state queries, relative units, other containment types |
 | Media | Reached max-width, portrait/landscape and reduced-motion rules | Reduced motion polls Windows/macOS accessibility preferences, Android animator scale or the Linux desktop portal (standard reduced-motion, then GNOME enable-animations); unavailable preferences refuse |
-| Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects, vertical-align keywords | Browser min-content, oblique, custom overflow, exact shaping/rasterization; vertical-align lengths/percentages |
+| Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects, vertical-align keywords, text-decoration line keywords | Browser min-content, oblique, custom overflow, exact shaping/rasterization; vertical-align lengths/percentages; decoration colors, styles and thickness |
 | Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
 | Borders/backgrounds | Solid sides, px/em/rem widths, length/percentage corner radii, gradients, solid border/padding/content clipping | Slash-separated elliptical radius syntax; gradient/image clipping and broader border composition |
 | Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables; outer shadows blur before the border-box clip; a single box larger than the viewport renders its shadow with a stretched band; a runtime assignment is checked against the CSS grammar itself, so an invalid value is ignored as CSSOM does while a valid one RmlUi cannot represent refuses | Omitted/currentColor, non-pixel lengths; a multi-box (inline) shadow texture clips to viewport size |
@@ -248,6 +249,15 @@ Horizontal range widgets support appearance:none and WebKit thumb/track styles, 
 size/margins/borders/gradients/shadows. Input behavior remains native. Vertical ranges and tick marks
 are unsupported; Gecko-only selector lists are rejected like Chromium's. Native scrollbars use 15/8
 CSS-pixel auto/thin widths; standard non-auto settings override vendor styles.
+
+Selects, checkboxes, color inputs, ranges, scrollbars and links use Chromium's control palettes for the
+inherited `color-scheme` (`normal`, `light` or `dark`); author rules keep precedence. `accent-color` (`auto`
+or an opaque literal) fills checked checkboxes and range values and thumbs: as in Chromium, an accent
+under 3:1 contrast with its palette's control fill selects the other palette, hover and press move its
+HSL lightness by 0.11, and disabled controls ignore it. A range's thumb takes its own hover/press state.
+Preference-dependent scheme lists and translucent accents refuse; system colors (Canvas, CanvasText)
+are not represented, and an open select menu takes the closed control's palette. A select's height is
+its font's normal line height plus Chromium's 1px internal padding above and below.
 
 Packaged raster images expose decode/complete/natural dimensions before engine creation. Decode settles
 on realm microtasks; empty/broken images reject and source changes invalidate requests. Network/responsive
