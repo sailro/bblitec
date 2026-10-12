@@ -7,6 +7,7 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_animation_frame.hpp>
 #include <bblite/pal_location.hpp>
+#include <bblite/js_url.hpp>
 #include "pal_window_presenter.hpp"
 #include "pal_window_frame_clock.hpp"
 #include "pal_gpu_frame.hpp"
@@ -637,6 +638,19 @@ std::string window_location_search(const std::string& initial) {
 void window_location_set_search(const std::string& value) {
     current_document().host->location->navigate(value);
     window_location_reload();
+}
+void window_location_assign(const std::string& target, const std::string& current) {
+    const js::Url document(current);
+    const js::Url destination(target, &document);
+    if (destination.protocol() != document.protocol() ||
+        destination.username() != document.username() ||
+        destination.password() != document.password() || destination.host() != document.host() ||
+        destination.pathname() != document.pathname())
+        throw js::make_dom_exception("location.assign navigates only within this document by "
+                                     "its query; " +
+                                         destination.href() + " is another document.",
+                                     "NotSupportedError");
+    window_location_set_search(destination.search());
 }
 js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
     auto& doc = current_document();

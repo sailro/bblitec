@@ -9316,6 +9316,7 @@ class Compiler implements LoweringServices {
                 this.dataTypes.usesDeferredPlatformStorage(),
             windowStorageReached: this.dataTypes.usesWindowStorage(),
             responseStorageReached: this.dataTypes.usesResponseStorage(),
+            webPlatformHeaders: this.dataTypes.webPlatformHeaders(),
             imageDecodeReached: this.imageDecodeReached,
             runtimeMeshProfiles: this.sceneManifest.hasRuntimeMeshProfiles(),
             jsRandomReached: this.jsRandomReached,

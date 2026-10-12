@@ -119,6 +119,14 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "offscreen-canvas",
 ]);
 
+/** DOM-declared classes with native runtime values (`web-platform.ts`). */
+const NATIVE_PLATFORM_CLASSES: ReadonlySet<string> = new Set([
+    "AbortController",
+    "AbortSignal",
+    "DOMException",
+    "URL",
+]);
+
 /** A browser value the fold spells as a literal: a number, string, boolean, null or undefined. */
 export function isPrimitiveBrowserValue(
     value: NonNullable<Value["browserValue"]>,
@@ -1337,6 +1345,7 @@ export class BrowserErasure {
             return false;
         }
         if (ts.isIdentifier(unwrapped)) {
+            const global = this.context.libraryGlobal(unwrapped) ?? "";
             if (
                 [
                     "console",
@@ -1344,10 +1353,12 @@ export class BrowserErasure {
                     "globalThis",
                     "performance",
                     "window",
-                ].includes(this.context.libraryGlobal(unwrapped) ?? "")
+                ].includes(global)
             ) {
                 return true;
             }
+            // Runtime web platform classes (`instanceof`, `new`) are native.
+            if (NATIVE_PLATFORM_CLASSES.has(global)) return false;
             const value = this.context.bindings.lookupOptional(unwrapped);
             const bound = value?.kind;
             // A FROZEN pure-2D particle binding has no native counterpart
@@ -1539,6 +1550,14 @@ export class BrowserErasure {
             if (ts.isIdentifier(unwrapped)) {
                 return this.context.bindings.lookupOptional(unwrapped);
             }
+            // A runtime web platform object (`new URL(...)`) is native data.
+            if (
+                ts.isNewExpression(unwrapped) &&
+                NATIVE_PLATFORM_CLASSES.has(
+                    this.context.libraryGlobal(unwrapped.expression) ?? "",
+                )
+            )
+                return { kind: "data", cpp: "" };
             // getComputedStyle(element) views the element's computed style.
             const computed = computedStyleElement(this.context, unwrapped);
             if (computed) return owner(computed);

@@ -37,7 +37,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
 }
 `;
 
-test("empty nominal Abort storage needs no successful producer or capability site", () => {
+test("empty Abort storage needs no capability site", () => {
     const source = `const signals:Array<AbortSignal>=[];const controllers:Array<AbortController>=[];if(signals.length+controllers.length!==0)throw new Error("empty storage");`;
     const result = compileSource(source, { deferredCapabilities });
     assert.equal(result.manifest.deferredCapabilities, undefined);
@@ -51,37 +51,32 @@ test("empty nominal Abort storage needs no successful producer or capability sit
     );
 });
 
-test("Abort nominal results preserve later sites and callback diagnostics after a throwing constructor", () => {
+test("listener signals keep a throwing boundary over native AbortSignals and leave later sites reachable", () => {
     const source =
         realm +
         `
         let caught=0;
+        const controller=new AbortController();
+        const signal=controller.signal;
+        signal.throwIfAborted();
+        if(signal.aborted)throw new Error("state");
         try {
-            const controller=new AbortController();
-            const signal=controller.signal;
-            signal.throwIfAborted();
-            if(signal.aborted)throw new Error("state");
-            controller.abort("reason");
             window.addEventListener("blur",()=>{atob("lazy");},{signal});
         } catch(error) {
-            if(!error.message.includes("dom:AbortController.constructor"))throw new Error("capability");
+            if(!error.message.includes("dom:EventTarget.addEventListener.signal"))throw new Error("capability");
             ++caught;
         }
-        if(caught!==1)throw new Error("constructor completion");
+        controller.abort();
+        if(caught!==1||!signal.aborted)throw new Error("listener signal completion");
     `;
-    assert.throws(() => compileSource(source), /Unsupported constructor/);
+    assert.throws(
+        () => compileSource(source),
+        /AbortSignal listener lifetime is not represented yet/,
+    );
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        [
-            "dom:AbortController.constructor",
-            "dom:AbortController.signal",
-            "dom:AbortSignal.throwIfAborted",
-            "dom:AbortSignal.aborted",
-            "dom:AbortController.abort",
-            "dom:atob",
-            "dom:EventTarget.addEventListener.signal",
-        ],
+        ["dom:atob", "dom:EventTarget.addEventListener.signal"],
     );
     assert.throws(
         () =>

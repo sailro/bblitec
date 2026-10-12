@@ -8,15 +8,6 @@
 namespace bbl {
 
 // Nominal storage for deferred platform APIs. There is no successful producer.
-class DeferredHeaders final {
-    DeferredHeaders() = delete;
-};
-class DeferredAbortController final {
-    DeferredAbortController() = delete;
-};
-class DeferredAbortSignal final {
-    DeferredAbortSignal() = delete;
-};
 class DeferredMediaRecorder final {
     DeferredMediaRecorder() = delete;
 };
@@ -25,10 +16,6 @@ class DeferredBlobEvent final {
 };
 class DeferredIdleDeadline final {
     DeferredIdleDeadline() = delete;
-};
-
-class DeferredReadableByteStream final {
-    DeferredReadableByteStream() = delete;
 };
 class DeferredCompressionStream final {
     DeferredCompressionStream() = delete;

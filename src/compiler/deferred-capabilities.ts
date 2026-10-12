@@ -81,11 +81,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "Element.innerHTML.svg-image",
         "Element.innerHTML.form-controls",
         "ChildNode.replaceWith",
-        "AbortController.abort",
-        "AbortSignal.throwIfAborted",
-        "AbortController.constructor",
-        "AbortController.signal",
-        "AbortSignal.aborted",
         "HTMLOrSVGElement.tabIndex",
         "EventTarget.addEventListener.signal",
         "MediaStream.constructor",
@@ -110,7 +105,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "CompressionStream.readable",
         "DecompressionStream.readable",
         "Response.constructor",
-        "Headers.get",
         "HTMLCanvasElement.captureStream",
         "AudioContext.createMediaStreamSource",
         "AudioContext.createMediaStreamDestination",
@@ -397,11 +391,7 @@ export class DeferredCapabilities {
                     context.checker.getTypeAtLocation(body),
                     body,
                 );
-            if (
-                bodyType?.kind !== "deferred-platform-object" ||
-                bodyType.name !== "ReadableByteStream"
-            )
-                return undefined;
+            if (bodyType?.kind !== "byte-stream") return undefined;
         }
         const type = context.dataTypes.fromTsType(
             context.checker.getTypeAtLocation(node),
@@ -536,16 +526,10 @@ export class DeferredCapabilities {
             );
         const handle = type?.kind === "handle" ? type.handle : value.kind;
         if (owner === "SurfaceContext") return value.kind === "engine";
-        if (owner === "ReadableStream")
-            return (
-                type?.kind === "deferred-platform-object" &&
-                type.name === "ReadableByteStream"
-            );
+        if (owner === "ReadableStream") return type?.kind === "byte-stream";
+        // A runtime Response's headers and body are native; a folded packaged one has neither.
         if (owner === "Response" || owner === "Body")
-            return (
-                type?.kind === "http-response" ||
-                value.kind === "static-fetch-response"
-            );
+            return value.kind === "static-fetch-response";
         if (owner === "MediaStream") return handle === "media-stream";
         if (owner === "MediaStreamTrack")
             return handle === "media-stream-track";

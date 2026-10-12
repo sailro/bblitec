@@ -584,6 +584,11 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
         | "blob"
         | "file-list"
         | "http-response"
+        | "http-headers"
+        | "abort-controller"
+        | "abort-signal"
+        | "url"
+        | "image-bitmap"
         | "search-params"
         | "date"
         | "regexp"
@@ -603,6 +608,10 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["Blob", "dom", "blob"],
     ["FileList", "dom", "file-list"],
     ["Response", "dom", "http-response"],
+    ["Headers", "dom", "http-headers"],
+    ["AbortController", "dom", "abort-controller"],
+    ["AbortSignal", "dom", "abort-signal"],
+    ["URL", "dom", "url"],
     ["URLSearchParams", "dom", "search-params"],
     ["Date", "default", "date"],
     ["RegExp", "default", "regexp"],
@@ -615,6 +624,40 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["ListFormat", "default", "list-format"],
     ["BigInt64Array", "default", "i64array"],
     ["BigUint64Array", "default", "u64array"],
+];
+
+/**
+ * The DOM's byte stream interfaces over `Uint8Array` chunks: a stream, its
+ * default reader, and either arm of a read's result (the result's storage is
+ * one record whatever TypeScript has narrowed it to).
+ */
+const BYTE_STREAM_KINDS: ReadonlyMap<
+    string,
+    "byte-stream" | "byte-stream-reader" | "byte-read-result"
+> = new Map([
+    ["ReadableStream", "byte-stream"],
+    ["ReadableStreamDefaultReader", "byte-stream-reader"],
+    ["ReadableStreamReadValueResult", "byte-read-result"],
+    ["ReadableStreamReadDoneResult", "byte-read-result"],
+]);
+
+/** Kinds whose storage `pal_fetch_response.hpp` declares. */
+const RESPONSE_KINDS: readonly DataType["kind"][] = [
+    "http-response",
+    "http-headers",
+    "byte-stream",
+    "byte-stream-reader",
+    "byte-read-result",
+];
+
+/** Header-only web platform storage, included where a program stores it. */
+const WEB_PLATFORM_HEADERS: readonly (readonly [
+    readonly DataType["kind"][],
+    string,
+])[] = [
+    [["abort-controller", "abort-signal"], "js_abort"],
+    [["url"], "js_url"],
+    [["image-bitmap"], "pal_image_bitmap"],
 ];
 
 /** A default-library binary class `instanceof` decides: ArrayBuffer, DataView, a view or typed array. */
@@ -1038,6 +1081,9 @@ export class DataTypeRegistry {
     @journaled private accessor emittedDeferredPlatformType = false;
     @journaled private accessor emittedWindowType = false;
     @journaled private accessor emittedResponseType = false;
+    /** The web platform kinds whose storage was rendered (`webPlatformHeaders`). */
+    @journaled
+    private accessor emittedWebPlatformKinds: readonly DataType["kind"][] = [];
     @journaled private accessor emittedBigIntType = false;
     @journaled private accessor emittedSymbolType = false;
     private readonly tables = new EmissionMap<ts.Node, DataTableDefinition>();
@@ -3697,6 +3743,32 @@ export class DataTypeRegistry {
         return undefined;
     }
 
+    /**
+     * The byte stream kind of a DOM stream interface over `Uint8Array`
+     * chunks. Unconstrained or differently typed streams are not represented:
+     * they must not share a byte stream's native identity.
+     */
+    private byteStreamKind(
+        type: ts.Type,
+        node: ts.Node,
+    ): "byte-stream" | "byte-stream-reader" | "byte-read-result" | undefined {
+        const kind = BYTE_STREAM_KINDS.get(type.symbol?.name ?? "");
+        if (
+            !kind ||
+            !declaredInDomLibrary(type.symbol) ||
+            !isTypeReference(type)
+        )
+            return undefined;
+        const arguments_ = this.checker.getTypeArguments(type);
+        const chunk = arguments_[0];
+        return arguments_.length === 1 &&
+            chunk &&
+            (chunk.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
+            this.fromTsType(chunk, node)?.kind === "u8array"
+            ? kind
+            : undefined;
+    }
+
     private fromNonNullableType(
         type: ts.Type,
         node: ts.Node,
@@ -3733,6 +3805,15 @@ export class DataTypeRegistry {
             return { kind: "bigint" };
         if ((type.flags & ts.TypeFlags.Union) !== 0) {
             const members = (type as ts.UnionType).types;
+            // `ReadableStreamReadResult<Uint8Array>`: either arm is one record.
+            if (
+                members.every(
+                    (member) =>
+                        this.byteStreamKind(member, node) ===
+                        "byte-read-result",
+                )
+            )
+                return { kind: "byte-read-result" };
             if (
                 members.length === 2 &&
                 members.some(
@@ -3807,8 +3888,10 @@ export class DataTypeRegistry {
         if (brand) return brand;
         if (
             type.symbol &&
-            ERROR_CONSTRUCTORS.has(type.symbol.name) &&
-            declaredInDefaultLibrary(type.symbol)
+            ((ERROR_CONSTRUCTORS.has(type.symbol.name) &&
+                declaredInDefaultLibrary(type.symbol)) ||
+                (type.symbol.name === "DOMException" &&
+                    declaredInDomLibrary(type.symbol)))
         )
             return { kind: "error" };
         const libraryObject = LIBRARY_OBJECT_KINDS.find(
@@ -3832,26 +3915,11 @@ export class DataTypeRegistry {
         if (deferredObject)
             return { kind: "deferred-platform-object", name: deferredObject };
         if (
-            type.symbol?.name === "ReadableStream" &&
+            BYTE_STREAM_KINDS.has(type.symbol?.name ?? "") &&
             declaredInDomLibrary(type.symbol)
         ) {
-            // Only byte streams have an owned deferred boundary. Unconstrained or
-            // differently typed streams must not share their native identity.
-            if (!isTypeReference(type)) return undefined;
-            const arguments_ = this.checker.getTypeArguments(type);
-            const chunk = arguments_[0];
-            if (
-                arguments_.length !== 1 ||
-                !chunk ||
-                (chunk.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
-                    0 ||
-                this.fromTsType(chunk, node)?.kind !== "u8array"
-            )
-                return undefined;
-            return {
-                kind: "deferred-platform-object",
-                name: "ReadableByteStream",
-            };
+            const byteStream = this.byteStreamKind(type, node);
+            return byteStream ? { kind: byteStream } : undefined;
         }
         if (declaredIn(type.symbol, "dom", "webgpu")) {
             if (type.symbol?.name === "GPUAdapterInfo")
@@ -8634,7 +8702,18 @@ export class DataTypeRegistry {
         if (dataType.kind === "json") this.emittedJsonType = true;
         if (BIGINT_KINDS.includes(dataType.kind)) this.emittedBigIntType = true;
         if (dataType.kind === "symbol") this.emittedSymbolType = true;
-        if (dataType.kind === "http-response") this.emittedResponseType = true;
+        if (RESPONSE_KINDS.includes(dataType.kind))
+            this.emittedResponseType = true;
+        if (
+            WEB_PLATFORM_HEADERS.some(([kinds]) =>
+                kinds.includes(dataType.kind),
+            ) &&
+            !this.emittedWebPlatformKinds.includes(dataType.kind)
+        )
+            this.emittedWebPlatformKinds = [
+                ...this.emittedWebPlatformKinds,
+                dataType.kind,
+            ];
         if (dataType.kind === "deferred-platform-object")
             this.emittedDeferredPlatformType = true;
         if (this.isWindowType(dataType)) this.emittedWindowType = true;
@@ -8657,7 +8736,17 @@ export class DataTypeRegistry {
     }
 
     public usesResponseStorage(): boolean {
-        return this.emittedResponseType || this.usesNamedKind("http-response");
+        return this.emittedResponseType || this.usesNamedKind(RESPONSE_KINDS);
+    }
+
+    /** The native headers (`bblite/<name>.hpp`) of the web platform kinds stored. */
+    public webPlatformHeaders(): string[] {
+        return WEB_PLATFORM_HEADERS.filter(
+            ([kinds]) =>
+                kinds.some((kind) =>
+                    this.emittedWebPlatformKinds.includes(kind),
+                ) || this.usesNamedKind(kinds),
+        ).map(([, header]) => header);
     }
 
     public usesDeferredPlatformStorage(): boolean {

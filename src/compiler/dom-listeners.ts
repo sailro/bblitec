@@ -61,6 +61,8 @@ const pointerNames = new Set([
     "input",
     "change",
     "cancel",
+    // A details element's disclosure change, a non-bubbling task-queued event.
+    "toggle",
 ]);
 
 const serviceNames = new Set([
@@ -289,10 +291,7 @@ function deferredListenerSignal(
         else context.emitDiscardedValue(value);
         return "false";
     }
-    if (
-        type?.kind !== "deferred-platform-object" ||
-        type.name !== "AbortSignal"
-    )
+    if (type?.kind !== "abort-signal")
         return context.fail(
             site,
             "Event listener signal requires the DOM AbortSignal identity.",

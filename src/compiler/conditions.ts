@@ -18,6 +18,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import { compileDomInstanceOf } from "./dom-targets.js";
+import { domExceptionInstanceOf } from "./abort-signals.js";
 import {
     authoredErrorBase,
     authoredErrorValue,
@@ -34,6 +35,7 @@ import { pinSlotFound, strictEqualsCpp } from "./data-comparisons.js";
 import {
     isStringValue,
     optionalPresentCpp,
+    optionalValueCpp,
     sameCompiledValue,
     type Value,
 } from "./types.js";
@@ -386,6 +388,37 @@ export class ConditionLowerer {
             ) {
                 const global =
                     this.context.libraryGlobal(unwrapped.right) ?? "";
+                const errorClass =
+                    global === "DOMException" || ERROR_CONSTRUCTORS.has(global);
+                const optionalError = errorClass
+                    ? this.context.probeEmission(() => {
+                          const value = this.context.compileValue(
+                              unwrapped.left,
+                          );
+                          return value.dataType?.kind === "optional" &&
+                              value.dataType.inner.kind === "error"
+                              ? value
+                              : undefined;
+                      })
+                    : undefined;
+                if (optionalError) {
+                    // An absent error (an AbortSignal's reason before abort) is no instance.
+                    const held = this.context.bindings.pinValueToTemporary(
+                        optionalError,
+                        "instance_candidate",
+                    );
+                    return `(${optionalPresentCpp(held.cpp)} && bbl::js::error_is(${optionalValueCpp(held.cpp)}, ${this.context.cppString(global)}))`;
+                }
+                if (global === "DOMException") {
+                    const value = this.context.compileValue(unwrapped.left);
+                    if (isJsonValue(value))
+                        return `[](const bbl::js::JsonValue& candidate) { return candidate.instance_of<bbl::js::Error>() && bbl::js::error_is(candidate.asserted_instance<bbl::js::Error>(), "DOMException"); }(${value.cpp})`;
+                    const instance = domExceptionInstanceOf(
+                        this.context,
+                        value,
+                    );
+                    if (instance !== undefined) return instance;
+                }
                 if (ERROR_CONSTRUCTORS.has(global)) {
                     const value = this.context.compileValue(unwrapped.left);
                     if (isJsonValue(value)) {

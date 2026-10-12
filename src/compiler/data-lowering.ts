@@ -89,6 +89,10 @@ import {
     type SlotStep,
 } from "./numeric-slot-storage.js";
 import { httpResponseProperty } from "./http.js";
+import {
+    compileWebPlatformAssignment,
+    webPlatformProperty,
+} from "./web-platform.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
 import { gpuValue } from "./gpu-value.js";
 import {
@@ -769,6 +773,8 @@ export class DataLowerer {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);
         if (deferred) return deferred;
+        const platform = compileWebPlatformAssignment(this, expression);
+        if (platform) return platform;
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
             const operator = ASSIGNMENT_OPERATORS.get(
                 expression.operatorToken.kind,
@@ -4921,6 +4927,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (exported) return exported;
         const http = httpResponseProperty(this, owner, property);
         if (http) return http;
+        const platform = webPlatformProperty(this, owner, property, access);
+        if (platform) return platform;
         const gpu = gpuAdapterProperty(this, owner, property);
         if (gpu) return gpu;
         if (owner.dataType?.kind === "storage") {
@@ -11102,6 +11110,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (dataType.kind === "span" && value.kind === "tuple") {
             return this.compileKnownValueForSink(value, dataType, expression);
         }
+        if (
+            dataType.kind === "span" &&
+            dataType.element.kind === "number" &&
+            value.kind === "camera-world-matrix"
+        ) {
+            // `camera.worldMatrix` as `ArrayLike<number>`: its stored lanes,
+            // as numbers, in a named local the call reads.
+            const engine = this.context.requireEngine(value, expression);
+            const lanes =
+                this.context.allocateTemporaryCppName("camera_world_lanes");
+            const widened =
+                this.context.allocateTemporaryCppName("array_like_numbers");
+            this.context.reachJsData();
+            this.context.emit(
+                `const auto ${lanes} = bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, value.cpp)});`,
+            );
+            this.context.emit(
+                `const bbl::js::F64Array ${widened}(${lanes}.begin(), ${lanes}.end());`,
+            );
+            this.registerLocal(widened, "owned");
+            return widened;
+        }
         if (value.kind !== "data" || !value.dataType) {
             this.context.fail(
                 expression,
@@ -14643,6 +14673,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.deferredCapabilities.assignment(expression);
         if (deferred) {
             this.context.emit({ kind: "expression", code: `${deferred.cpp};` });
+            return true;
+        }
+        const platform = compileWebPlatformAssignment(this, expression);
+        if (platform) {
+            this.context.emitDiscardedValue(platform);
             return true;
         }
         const operator = ASSIGNMENT_OPERATORS.get(

@@ -17,6 +17,12 @@ js::Promise<js::PromiseVoid> window_clipboard_write(std::string text);
 void window_location_reload();
 std::string window_location_search(const std::string& initial);
 void window_location_set_search(const std::string& value);
+/**
+ * `location.assign(target)` resolved against `current` (the document's href): a URL naming this
+ * document (same scheme, credentials, host, port and path) navigates to its query, as setting
+ * `location.search` does; another document throws a NotSupportedError DOMException.
+ */
+void window_location_assign(const std::string& target, const std::string& current);
 /** Publish document changes to the display; `wait` also adopts the layout it computes for them. */
 void update_window_document(bool wait = true);
 double window_device_pixel_ratio();

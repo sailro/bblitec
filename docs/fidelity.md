@@ -33,8 +33,8 @@ Artifact paths are relative to `generated/<id>/`.
 | Storage/files | Host preferences, native URL tokens, synchronized picker completion; FileReader loads inside readAsText |
 | Promises outside a realm | An await reads a constructed promise's settlement in place; one still pending ends the awaiting activation without its catch or finally blocks, resuming after the statement that discarded its promise; a later settlement throws, and an entry that awaits one exits with an error |
 | File publication | Direct destinations use atomic replacement; iOS stages a complete private snapshot and UIKit/file providers own export publication |
-| HTTP | WinHTTP/libcurl; system TLS, no cookie jar/CORS or HTTP cache; buffered 32 MiB request/response cap |
-| HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect/30 s request |
+| HTTP | WinHTTP/libcurl; system TLS, no cookie jar/CORS or HTTP cache. One process-wide connection pool keeps connections alive (WinHTTP: 6 per server, HTTP/2 where the OS has it). A transfer queues at most 8 MiB ahead of its reader. Request bodies and text/json/arrayBuffer reads are bounded at 32 MiB; streamed reads are not |
+| HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect, then under 1 byte/s for 5 s |
 | HTTP teardown | Realm close cancels requests and joins transport threads |
 | Inferred packaged URLs | 256 candidates; fixed non-root local directory; uncertain mutations, dynamic queries, traversal and encoded separators refuse |
 | Environment | Native platform/language/CPU data; onLine=true, secure Window context; no client hints/device-memory estimate; `performance.timeOrigin` is the epoch time of `performance.now()`'s zero, one per process |

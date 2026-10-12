@@ -95,9 +95,6 @@ export type TypedArrayKind =
     | "i32array"
     | "u8clampedarray";
 export const DEFERRED_DOM_OBJECTS = [
-    "Headers",
-    "AbortController",
-    "AbortSignal",
     "MediaRecorder",
     "BlobEvent",
     "IdleDeadline",
@@ -116,9 +113,23 @@ interface DataKinds {
     "event-target": { kind: "event-target" };
     "deferred-platform-object": {
         kind: "deferred-platform-object";
-        name: (typeof DEFERRED_DOM_OBJECTS)[number] | "ReadableByteStream";
+        name: (typeof DEFERRED_DOM_OBJECTS)[number];
     };
     "http-response": { kind: "http-response" };
+    /** A response's Headers object (`js_fetch` headers). */
+    "http-headers": { kind: "http-headers" };
+    /** A `ReadableStream<Uint8Array>`: a response body. */
+    "byte-stream": { kind: "byte-stream" };
+    /** A byte stream's `ReadableStreamDefaultReader<Uint8Array>`. */
+    "byte-stream-reader": { kind: "byte-stream-reader" };
+    /** A byte reader's `read()` result: `{ done, value }`. */
+    "byte-read-result": { kind: "byte-read-result" };
+    "abort-controller": { kind: "abort-controller" };
+    "abort-signal": { kind: "abort-signal" };
+    /** A WHATWG URL object. */
+    url: { kind: "url" };
+    /** A decoded ImageBitmap. */
+    "image-bitmap": { kind: "image-bitmap" };
     gpu: { kind: "gpu" };
     "gpu-adapter": { kind: "gpu-adapter" };
     "gpu-adapter-info": { kind: "gpu-adapter-info" };

@@ -1165,6 +1165,30 @@ js::Promise<js::PromiseVoid> ui_decode_image(Engine& engine, UiElementHandle ele
 }
 #endif
 
+namespace {
+/**
+ * HTML's details notification steps: a change of a details element's `open` attribute queues a
+ * task firing a non-bubbling, non-cancelable `toggle` at it (each change its own task; a
+ * synchronous program dispatches at once).
+ */
+void queue_details_toggle(Engine& engine, UiElementHandle element) {
+    const auto fire = [&engine, element] {
+        if (!engine.dom_input || element.value >= engine.ui_elements.size())
+            return;
+        PlatformMouseEvent payload;
+        payload.payload_kind = DomInputEventKind::Event;
+        const auto event = dom_event(payload, "toggle", dom_ui_path(engine, element), false, false);
+        event.dom->trusted = true;
+        dispatch_dom_pointer(engine, event);
+    };
+#if BBLITE_WORKERS
+    pal::EventLoop::current().post(fire);
+#else
+    fire();
+#endif
+}
+} // namespace
+
 void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
                       std::string value) {
     if (name.empty()) {
@@ -1212,9 +1236,13 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
         record.image_request.reset();
     }
 #endif
+    const bool opens_details =
+        record.tag == "details" && name == "open" && existing == record.attributes.end();
     const auto updated = record.attributes.insert_or_assign(std::move(name), std::move(value));
     if (engine.ui_attribute_changed)
         engine.ui_attribute_changed(element, updated.first->first);
+    if (opens_details)
+        queue_details_toggle(engine, element);
 #if BBLITE_WORKERS
     if (updates_image)
         static_cast<void>(image_request(engine, element));
@@ -1239,6 +1267,8 @@ void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_vi
     bool changed = record.attributes.erase(normalized) != 0;
     if (changed && engine.ui_attribute_changed)
         engine.ui_attribute_changed(element, normalized);
+    if (changed && normalized == "open" && record.tag == "details")
+        queue_details_toggle(engine, element);
 #if BBLITE_WORKERS
     if (changed && normalized == "src" && record.image_request) {
         record.image_request->invalidated = true;
@@ -1692,7 +1722,6 @@ bool dispatch_ui_click(Engine& engine, UiElementHandle element, bool trusted, bo
         if (first_summary != children.end() && *first_summary == element) {
             ui_set_boolean_attribute(engine, parent, "open",
                                      !ui_has_attribute(engine, parent, "open"));
-            dispatch_ui_listeners(ui_element(engine, parent), "toggle", PlatformMouseEvent{});
         }
     }
 #if BBLITE_HAS_BROWSER_FILE
