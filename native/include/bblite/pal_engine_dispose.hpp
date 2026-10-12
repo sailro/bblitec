@@ -60,6 +60,9 @@ inline void destroy_engine_device(Engine& engine) {
     engine.offscreen_run.reset();
 #endif
     engine.source_gpu_loop.reset();
+    engine.current_encoder.reset();
+    // Its leases retire before the native device they were created on.
+    engine.webgpu_device.reset();
     engine.source_gpu_device.reset();
 }
 

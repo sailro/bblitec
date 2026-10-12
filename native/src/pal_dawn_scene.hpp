@@ -6,6 +6,7 @@
 #pragma once
 
 #include <bblite/features/device_recovery.hpp>
+#include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
@@ -57,6 +58,9 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_dawn_shared.hpp"
+#if BBLITE_GPU_RETIREMENT
+#include "pal_external_renderables.hpp"
+#endif
 #include <bblite/pal_gpu_task_timing.hpp>
 #include "pal_dawn_compute_texture.hpp"
 #if BBLITE_OFFSCREEN_SURFACES
@@ -826,6 +830,14 @@ struct DawnState : DawnDevice {
 #endif
 #if BBLITE_HAS_SPLATS
     std::vector<DawnSplatPass> splat_passes;
+#endif
+#if BBLITE_GPU_RETIREMENT
+    /** Lowered renderables drawn in the scene's own pass (pal_external_renderables.hpp). */
+    ExternalRenderablePass external_pass;
+    /** `getSceneBindGroupLayout` for them, adopted once over the pass's group-0 layout. */
+    GpuHandle external_scene_layout;
+    /** The pass's group 0 for them (SDL_GPU binds its resources per pass itself). */
+    GpuHandle external_scene_group;
 #endif
 #if BBLITE_HAS_PICKING
     // A scene that picks without loading a cloud reaches every one of

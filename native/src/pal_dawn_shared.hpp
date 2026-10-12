@@ -338,6 +338,7 @@ struct DawnOffscreenDevice final : OffscreenDevice {
                                  const std::string&) override {
         return create_dawn_compute_shader_module(device, descriptor);
     }
+    using OffscreenDevice::create_compute_pipeline;
     std::shared_ptr<ComputePipeline>
     create_compute_pipeline(const ComputePipelineDescriptor& descriptor) override {
         return create_dawn_compute_pipeline(device, descriptor);

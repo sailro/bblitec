@@ -66,6 +66,9 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_common.hpp"
+#if BBLITE_GPU_RETIREMENT
+#include "pal_external_renderables.hpp"
+#endif
 #include "pal_sdl_gpu_indexed_draw.hpp"
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
@@ -957,6 +960,14 @@ struct GpuState : SdlGpuDevice {
 #endif
 #if BBLITE_HAS_SPLATS
     std::vector<SplatPass> splat_passes;
+#endif
+#if BBLITE_GPU_RETIREMENT
+    /** Lowered renderables drawn in the scene's own pass (pal_external_renderables.hpp). */
+    ExternalRenderablePass external_pass;
+    /** `getSceneBindGroupLayout` for them, adopted once over the pass's group-0 layout. */
+    GpuHandle external_scene_layout;
+    /** The pass's group 0 for them (SDL_GPU binds its resources per pass itself). */
+    GpuHandle external_scene_group;
 #endif
 #if BBLITE_HAS_PICKING
     // Built on the first pick and released with the renderer, as the pin

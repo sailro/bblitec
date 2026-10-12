@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+    copyFileSync,
+    existsSync,
+    mkdirSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileOfflineShaders } from "../src/compile-shaders.js";
@@ -8,6 +14,7 @@ import { discoverDevelopmentTools } from "../src/development-tools.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { readPinnedRawShader } from "../src/pinned-shader-composer.js";
+import { wgslStageStem } from "../src/wgsl-artifacts.js";
 import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -71,25 +78,27 @@ function writeStreamShaders(directory: string): Map<string, string> {
     return sources;
 }
 
-/** Each entry point compiled as `splat-stream-<module>.<entry>.<stage>`, as sdl-check.cpp names them. */
+/** Each entry point compiled under the name its module text gives it (`wgslStageStem`). */
 async function compileStreamShaders(
     root: string,
     sources: ReadonlyMap<string, string>,
 ): Promise<string> {
     const directory = join(root, "generated/stream/upstream/shaders");
+    rmSync(directory, { recursive: true, force: true });
     mkdirSync(directory, { recursive: true });
     mkdirSync(join(root, "upstream"), { recursive: true });
     copyFileSync("upstream/tint.json", join(root, "upstream/tint.json"));
     const modules = streamShaders.map(({ name, stages }) => {
+        const source = sources.get(name) ?? "";
         const [[entryPoint, kind], ...rest] = stages;
-        const output = `splat-stream-${name}.${entryPoint}.${kind}.native.wgsl`;
-        writeFileSync(join(directory, output), sources.get(name) ?? "");
+        const output = `${wgslStageStem(source, entryPoint, kind)}.native.wgsl`;
+        writeFileSync(join(directory, output), source);
         return {
             output,
             entryPoint,
             pinnedBindings: true,
             alsoStages: rest.map(([entry, stage]) => ({
-                stem: `splat-stream-${name}.${entry}.${stage}`,
+                stem: wgslStageStem(source, entry, stage),
                 entryPoint: entry,
             })),
         };
@@ -209,6 +218,8 @@ function assertStreamChecks(lines: Map<string, string>, backend: string): void {
         /^capacity=70000 count=69123 visible=\d+ levels=2 /,
     );
     assert.match(lines.get("projection") ?? "", /^visible=36 /);
+    // The pinned renderable drawn through the scene pass protocol, twice.
+    assert.match(lines.get("render") ?? "", /^covered=\d+ covered4=\d+$/);
 }
 
 test("Dawn runs the pinned splat-stream compute through the WebGPU subset device", (t) => {
@@ -231,6 +242,15 @@ test("SDL_GPU runs the pinned splat-stream compute through the WebGPU subset dev
         return;
     }
     assertStreamChecks(lines, "sdl");
+    // The native device finds the stages generation named by the module text.
+    const radix = readPinnedRawShader(
+        "loader-splat-stream/splat-stream-gpu.js",
+        "src/loader-splat-stream/splat-stream-radix.wgsl",
+    );
+    assert.equal(
+        lines.get("stem"),
+        wgslStageStem(radix, "histogramMain", "comp"),
+    );
 });
 
 /** Words of a float result line, as numbers. */
@@ -267,4 +287,20 @@ test("Dawn and SDL_GPU agree: integer results exactly, float results within 1e-5
             );
         });
     }
+    const channels = (line: string | undefined): number[] =>
+        Array.from(Buffer.from(line ?? "", "hex"));
+    // The splats drawn through the scene pass protocol, single- and four-sampled.
+    for (const key of ["image", "image4"]) {
+        const left = channels(dawn.get(key)),
+            right = channels(sdl.get(key));
+        assert.equal(left.length, 96 * 64 * 4, key);
+        assert.equal(right.length, left.length, key);
+        left.forEach((value, index) =>
+            assert.ok(
+                Math.abs(value - right[index]!) <= 1,
+                `${key} byte ${index}: ${value} vs ${right[index]}`,
+            ),
+        );
+    }
+    assert.equal(sdl.get("render"), dawn.get("render"));
 });

@@ -103,6 +103,7 @@ struct SdlOffscreenDevice final : OffscreenDevice {
                                  const std::string& artifact) override {
         return std::make_shared<SdlComputeShaderModule>(descriptor, artifact);
     }
+    using OffscreenDevice::create_compute_pipeline;
     std::shared_ptr<ComputePipeline>
     create_compute_pipeline(const ComputePipelineDescriptor& descriptor) override {
         return create_sdl_gpu_compute_pipeline(device, descriptor);

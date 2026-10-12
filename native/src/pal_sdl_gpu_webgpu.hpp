@@ -25,17 +25,10 @@
 // buffer is CPU bytes pushed when its command is encoded; command encoders
 // record WebGPU commands and encode them, in order, when their command buffer is
 // submitted or when a renderer encodes its frame encoder before its passes.
-// WGSL reaches SDL as the stages compiled at generation, found by the module's
-// exact text and entry point (`SdlWgslStage`).
+// WGSL reaches SDL as the stages compiled at generation, named by the module's
+// text and entry point (`wgsl_stage_stem`).
 
 namespace bbl::pal {
-
-/** A WGSL module's entry point compiled at generation: `<stem>` and `<stem>.slots`. */
-struct SdlWgslStage {
-    std::string code;
-    std::string entry_point;
-    std::string stem;
-};
 
 /** One SDL object; WebGPU's `destroy()` releases it (SDL defers past in-flight work). */
 template <class Handle, auto Release> struct SdlWebGpuLease {
@@ -76,7 +69,6 @@ struct SdlWebGpuComputeLease {
 struct SdlWebGpuOwner {
     SDL_GPUDevice* device = nullptr;
     GpuSupportedLimits limits;
-    std::vector<SdlWgslStage> stages;
     GpuLeaseRetirement leases;
     /** Zeroed upload bytes `clearBuffer` copies from. */
     std::shared_ptr<SdlWebGpuTransferLease> zeros;
@@ -105,15 +97,17 @@ struct SdlWebGpuOwner {
         dispatch_arguments.reset();
         device = nullptr;
     }
-    /** The generation-compiled stage of a module's entry point, by its exact text. */
-    const SdlWgslStage& stage(const std::string& code, const std::string& entry_point) const {
-        for (const auto& stage : stages)
-            if (stage.entry_point == entry_point && stage.code == code)
-                return stage;
-        webgpu_refuse("the WGSL entry point '" + entry_point +
-                      "' was not compiled at generation for SDL_GPU.");
-    }
 };
+
+/** Loads a generation-compiled stage, refusing an entry point generation did not compile. */
+template <class Load> auto load_sdl_webgpu_stage(const std::string& stem, Load load) {
+    try {
+        return load();
+    } catch (const std::exception& error) {
+        webgpu_refuse("the WGSL stage '" + stem + "' was not compiled at generation for SDL_GPU (" +
+                      error.what() + ").");
+    }
+}
 
 template <class Object>
 std::shared_ptr<Object> sdl_webgpu_object(const GpuHandle& handle, const char* what) {
@@ -657,22 +651,29 @@ struct SdlWebGpuCommandEncoder final : GpuCommandEncoder {
 };
 
 /** WebGPU format names the subset's render targets use. */
+inline constexpr std::pair<std::string_view, SDL_GPUTextureFormat> sdl_webgpu_formats[] = {
+    {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM},
+    {"rgba8unorm-srgb", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB},
+    {"bgra8unorm", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM},
+    {"bgra8unorm-srgb", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB},
+    {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT},
+    {"depth16unorm", SDL_GPU_TEXTUREFORMAT_D16_UNORM},
+    {"depth24plus", SDL_GPU_TEXTUREFORMAT_D24_UNORM},
+    {"depth24plus-stencil8", SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT},
+    {"depth32float", SDL_GPU_TEXTUREFORMAT_D32_FLOAT},
+    {"depth32float-stencil8", SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT}};
 inline SDL_GPUTextureFormat sdl_webgpu_format(const std::string& name) {
-    static constexpr std::pair<std::string_view, SDL_GPUTextureFormat> formats[] = {
-        {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM},
-        {"rgba8unorm-srgb", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB},
-        {"bgra8unorm", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM},
-        {"bgra8unorm-srgb", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB},
-        {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT},
-        {"depth16unorm", SDL_GPU_TEXTUREFORMAT_D16_UNORM},
-        {"depth24plus", SDL_GPU_TEXTUREFORMAT_D24_UNORM},
-        {"depth24plus-stencil8", SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT},
-        {"depth32float", SDL_GPU_TEXTUREFORMAT_D32_FLOAT},
-        {"depth32float-stencil8", SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT}};
-    for (const auto& [text, format] : formats)
+    for (const auto& [text, format] : sdl_webgpu_formats)
         if (text == name)
             return format;
     webgpu_refuse("texture format '" + name + "' is not admitted.");
+}
+/** A renderer attachment's WebGPU format name, for a target signature. */
+inline std::string sdl_webgpu_format_name(SDL_GPUTextureFormat format) {
+    for (const auto& [text, value] : sdl_webgpu_formats)
+        if (value == format)
+            return std::string(text);
+    webgpu_refuse("a renderer attachment format has no admitted WebGPU name.");
 }
 inline SDL_GPUCompareOp sdl_webgpu_compare(const std::string& name) {
     static constexpr std::pair<std::string_view, SDL_GPUCompareOp> operations[] = {
@@ -807,8 +808,7 @@ struct SdlWebGpuDevice : GpuDevice {
      * (`gpu_required_limits`); SDL_GPU sizes are 32-bit and its dispatch
      * dimensions those D3D12, Vulkan and Metal all admit.
      */
-    SdlWebGpuDevice(SDL_GPUDevice* device, const GpuSupportedLimits& limits,
-                    std::vector<SdlWgslStage> stages) {
+    SdlWebGpuDevice(SDL_GPUDevice* device, const GpuSupportedLimits& limits) {
         if (!device)
             webgpu_refuse("an SDL_GPU WebGPU device needs its device.");
         constexpr double sizes = std::numeric_limits<Uint32>::max();
@@ -817,7 +817,6 @@ struct SdlWebGpuDevice : GpuDevice {
             webgpu_refuse("requestDevice: a required limit exceeds what SDL_GPU represents.");
         owner->device = device;
         owner->limits = limits;
-        owner->stages = std::move(stages);
     }
     ~SdlWebGpuDevice() override { owner->retire(); }
     const void* device_identity() const override { return owner->device; }
@@ -922,11 +921,6 @@ struct SdlWebGpuDevice : GpuDevice {
     }
 
     GpuHandle create_shader_module(const GpuShaderModuleDescriptor& descriptor) override {
-        const bool compiled =
-            std::any_of(owner->stages.begin(), owner->stages.end(),
-                        [&](const SdlWgslStage& stage) { return stage.code == descriptor.code; });
-        if (!compiled)
-            webgpu_refuse("a WGSL module was not compiled at generation for SDL_GPU.");
         auto module = std::make_shared<SdlWebGpuShaderModule>();
         module->code = descriptor.code;
         return module;
@@ -949,12 +943,13 @@ struct SdlWebGpuDevice : GpuDevice {
             sdl_webgpu_object<SdlWebGpuShaderModule>(descriptor.compute.module, "shader module");
         if (!descriptor.compute.entry_point)
             webgpu_refuse("SDL_GPU compute stages are found by their named entry point.");
-        const auto& stage = owner->stage(module->code, *descriptor.compute.entry_point);
+        const auto& entry = *descriptor.compute.entry_point;
+        const auto stem = wgsl_stage_stem(module->code, entry, "comp");
         auto pipeline = std::make_shared<SdlWebGpuComputePipeline>();
         pipeline->layout = descriptor.layout;
         pipeline->lease = std::make_shared<SdlWebGpuComputeLease>();
-        pipeline->lease->pipeline =
-            load_sdl_gpu_compute_pipeline(owner->live_device(), stage.stem, stage.entry_point);
+        pipeline->lease->pipeline = load_sdl_webgpu_stage(
+            stem, [&] { return load_sdl_gpu_compute_pipeline(owner->live_device(), stem, entry); });
         owner->leases.track(pipeline->lease);
         return pipeline;
     }
@@ -966,19 +961,21 @@ struct SdlWebGpuDevice : GpuDevice {
             webgpu_refuse("render pipelines have a fragment stage with one target.");
         if (!descriptor.vertex.entry_point || !descriptor.fragment->entry_point)
             webgpu_refuse("SDL_GPU render stages are found by their named entry points.");
-        const auto& vertex_stage = owner->stage(
+        const auto vertex_stem = wgsl_stage_stem(
             sdl_webgpu_object<SdlWebGpuShaderModule>(descriptor.vertex.module, "shader module")
                 ->code,
-            *descriptor.vertex.entry_point);
-        const auto& fragment_stage = owner->stage(
+            *descriptor.vertex.entry_point, "vert");
+        const auto fragment_stem = wgsl_stage_stem(
             sdl_webgpu_object<SdlWebGpuShaderModule>(descriptor.fragment->module, "shader module")
                 ->code,
-            *descriptor.fragment->entry_point);
+            *descriptor.fragment->entry_point, "frag");
         auto* device = owner->live_device();
-        PinnedStage vertex =
-            load_pinned_stage(device, vertex_stage.stem, SDL_GPU_SHADERSTAGE_VERTEX);
-        PinnedStage fragment =
-            load_pinned_stage(device, fragment_stage.stem, SDL_GPU_SHADERSTAGE_FRAGMENT);
+        PinnedStage vertex = load_sdl_webgpu_stage(vertex_stem, [&] {
+            return load_pinned_stage(device, vertex_stem, SDL_GPU_SHADERSTAGE_VERTEX);
+        });
+        PinnedStage fragment = load_sdl_webgpu_stage(fragment_stem, [&] {
+            return load_pinned_stage(device, fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT);
+        });
         const auto& target = descriptor.fragment->targets[0];
         SDL_GPUColorTargetDescription color{};
         color.format = sdl_webgpu_format(target.format);
@@ -1031,9 +1028,8 @@ struct SdlWebGpuDevice : GpuDevice {
         pipeline->lease = owner->adopt<SdlWebGpuGraphicsLease>(
             create_sdl_gpu_graphics_pipeline(device, vertex.shader, &info),
             "SDL_CreateGPUGraphicsPipeline");
-        pipeline->vertex = {std::move(vertex.slots), sdl_webgpu_stage_bindings(vertex_stage.stem)};
-        pipeline->fragment = {std::move(fragment.slots),
-                              sdl_webgpu_stage_bindings(fragment_stage.stem)};
+        pipeline->vertex = {std::move(vertex.slots), sdl_webgpu_stage_bindings(vertex_stem)};
+        pipeline->fragment = {std::move(fragment.slots), sdl_webgpu_stage_bindings(fragment_stem)};
         return pipeline;
     }
 
@@ -1129,5 +1125,16 @@ struct SdlWebGpuDevice : GpuDevice {
         return group;
     }
 };
+
+/** `Engine::webgpu_device` over the engine's SDL_GPU device, created on first use. */
+inline SdlWebGpuDevice& sdl_engine_webgpu_device(Engine& engine, SDL_GPUDevice* device) {
+    if (!engine.webgpu_device)
+        engine.webgpu_device = std::make_shared<SdlWebGpuDevice>(
+            device, gpu_required_limits(engine.options.required_limits));
+    auto* result = dynamic_cast<SdlWebGpuDevice*>(engine.webgpu_device.get());
+    if (!result || result->device_identity() != device)
+        webgpu_refuse("the engine's WebGPU device belongs to another GPU device.");
+    return *result;
+}
 
 } // namespace bbl::pal

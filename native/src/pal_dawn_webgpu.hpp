@@ -378,22 +378,29 @@ struct DawnWebGpuRenderPass final : GpuEncoder {
 };
 
 /** WebGPU format names the subset's textures and render targets use. */
+inline constexpr std::pair<std::string_view, WGPUTextureFormat> dawn_webgpu_formats[] = {
+    {"rgba8unorm", WGPUTextureFormat_RGBA8Unorm},
+    {"rgba8unorm-srgb", WGPUTextureFormat_RGBA8UnormSrgb},
+    {"bgra8unorm", WGPUTextureFormat_BGRA8Unorm},
+    {"bgra8unorm-srgb", WGPUTextureFormat_BGRA8UnormSrgb},
+    {"rgba16float", WGPUTextureFormat_RGBA16Float},
+    {"depth16unorm", WGPUTextureFormat_Depth16Unorm},
+    {"depth24plus", WGPUTextureFormat_Depth24Plus},
+    {"depth24plus-stencil8", WGPUTextureFormat_Depth24PlusStencil8},
+    {"depth32float", WGPUTextureFormat_Depth32Float},
+    {"depth32float-stencil8", WGPUTextureFormat_Depth32FloatStencil8}};
 inline WGPUTextureFormat dawn_webgpu_format(const std::string& name) {
-    static constexpr std::pair<std::string_view, WGPUTextureFormat> formats[] = {
-        {"rgba8unorm", WGPUTextureFormat_RGBA8Unorm},
-        {"rgba8unorm-srgb", WGPUTextureFormat_RGBA8UnormSrgb},
-        {"bgra8unorm", WGPUTextureFormat_BGRA8Unorm},
-        {"bgra8unorm-srgb", WGPUTextureFormat_BGRA8UnormSrgb},
-        {"rgba16float", WGPUTextureFormat_RGBA16Float},
-        {"depth16unorm", WGPUTextureFormat_Depth16Unorm},
-        {"depth24plus", WGPUTextureFormat_Depth24Plus},
-        {"depth24plus-stencil8", WGPUTextureFormat_Depth24PlusStencil8},
-        {"depth32float", WGPUTextureFormat_Depth32Float},
-        {"depth32float-stencil8", WGPUTextureFormat_Depth32FloatStencil8}};
-    for (const auto& [text, format] : formats)
+    for (const auto& [text, format] : dawn_webgpu_formats)
         if (text == name)
             return format;
     webgpu_refuse("texture format '" + name + "' is not admitted.");
+}
+/** A renderer attachment's WebGPU format name, for a target signature. */
+inline std::string dawn_webgpu_format_name(WGPUTextureFormat format) {
+    for (const auto& [text, value] : dawn_webgpu_formats)
+        if (value == format)
+            return std::string(text);
+    webgpu_refuse("a renderer attachment format has no admitted WebGPU name.");
 }
 inline WGPUCompareFunction dawn_webgpu_compare(const std::string& name) {
     static constexpr std::pair<std::string_view, WGPUCompareFunction> functions[] = {
@@ -730,5 +737,16 @@ struct DawnWebGpuDevice : GpuDevice {
         return result;
     }
 };
+
+/** `Engine::webgpu_device` over the engine's Dawn device, created on first use. */
+inline DawnWebGpuDevice& dawn_engine_webgpu_device(Engine& engine, WGPUInstance instance,
+                                                   WGPUDevice device, WGPUQueue queue) {
+    if (!engine.webgpu_device)
+        engine.webgpu_device = std::make_shared<DawnWebGpuDevice>(instance, device, queue);
+    auto* result = dynamic_cast<DawnWebGpuDevice*>(engine.webgpu_device.get());
+    if (!result || result->device_identity() != queue)
+        webgpu_refuse("the engine's WebGPU device belongs to another GPU device.");
+    return *result;
+}
 
 } // namespace bbl::pal

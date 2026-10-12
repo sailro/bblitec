@@ -41,6 +41,9 @@
 #if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
 #include "pal_dawn_source_device.hpp"
 #endif
+#if BBLITE_GPU_RETIREMENT
+#include "pal_dawn_webgpu.hpp"
+#endif
 #include "pal_billboard_order.hpp"
 #if BBLITE_COMPUTE_FRAME_GRAPH
 #include <bblite/pal_compute_frame_graph.hpp>
@@ -2530,6 +2533,11 @@ public:
 #endif
             }
         };
+#if BBLITE_GPU_RETIREMENT
+        if (!scene.tasks.empty() && !scene.state->external_renderables.empty())
+            dawn_error("External renderables draw in the scene's own pass; a scene with render "
+                       "tasks refuses them.");
+#endif
         if (scene.tasks.empty()) {
             write_material_uniforms(render_plan.draw_lists.opaque,
                                     current_frame().frame_pass_matrices);
@@ -2599,6 +2607,52 @@ public:
             pass_descriptor.colorAttachmentCount = 1;
             pass_descriptor.colorAttachments = &color_attachment;
             pass_descriptor.depthStencilAttachment = &depth_attachment;
+#if BBLITE_GPU_RETIREMENT
+            // External renderables bind to this pass's target, update, and record
+            // their batches' compute into the frame encoder before the pass begins.
+            GpuHandle external_group;
+            if (!scene.state->external_renderables.empty() || !state.external_pass.empty()) {
+                auto& webgpu =
+                    dawn_engine_webgpu_device(engine, state.instance, state.device, state.queue);
+                // The pinned frame group when the build composes pinned materials;
+                // otherwise an empty group 0, which a renderable's shader cannot read.
+                if (!state.external_scene_layout) {
+#if BBLITE_PINNED_MATERIALS
+                    state.external_scene_layout =
+                        webgpu.adopt_bind_group_layout(pinned_frame_layout_for(state));
+#else
+                    state.external_scene_layout = webgpu.create_bind_group_layout({});
+                    state.external_scene_group =
+                        webgpu.create_bind_group({{}, state.external_scene_layout, {}});
+#endif
+                }
+                const bool other_transparent =
+                    !render_plan.draw_lists.transparent.commands.empty() ||
+                    !scene.splat_meshes.empty() || !scene.state->text_renderables.empty() ||
+                    !scene.state->billboard_renderables.empty() ||
+                    !scene.depth_hosted_sprite_layers.empty();
+                state.external_pass.follow(
+                    engine, scene, state.external_scene_layout,
+                    GpuRenderTargetSignature{dawn_webgpu_format_name(state.frame_color_format),
+                                             std::string("depth24plus-stencil8"),
+                                             {},
+                                             static_cast<double>(state.sample_count)},
+                    other_transparent);
+                if (!state.external_pass.empty()) {
+                    state.external_pass.prepare(
+                        engine,
+                        GpuDrawUpdateContext{
+                            static_cast<double>(width), static_cast<double>(height),
+                            camera ? std::optional<CameraHandle>(scene.camera) : std::nullopt},
+                        webgpu.borrow_command_encoder(encoder));
+#if BBLITE_PINNED_MATERIALS
+                    external_group = webgpu.adopt_bind_group(pinned_frame_group(state));
+#else
+                    external_group = state.external_scene_group;
+#endif
+                }
+            }
+#endif
             DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
             set_pass_camera_viewport(pass, scene, engine, camera, width, height);
             WGPURenderPipeline bound_pipeline = nullptr;
@@ -2726,6 +2780,13 @@ public:
                     // pin's own `_sortDistance` before this is right.
                     for (const DawnSplatPass& splat : state.splat_passes) {
                         record_dawn_splat_pass(pass, splat);
+                    }
+#endif
+#if BBLITE_GPU_RETIREMENT
+                    if (external_group) {
+                        state.external_pass.draw(DawnWebGpuDevice::borrow_render_pass(pass),
+                                                 external_group);
+                        bound_pipeline = nullptr;
                     }
 #endif
                     break;

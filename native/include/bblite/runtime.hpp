@@ -178,7 +178,7 @@ struct EngineOptions {
     std::uint32_t msaa_samples = 0;
     double max_device_pixel_ratio = std::numeric_limits<double>::infinity();
     /** `requiredLimits` the engine's `requestDevice` passes, by WebGPU limit name. */
-    std::vector<std::pair<std::string, double>> required_limits;
+    std::vector<std::pair<std::string, double>> required_limits{};
 };
 
 /** Browser-neutral keyboard data delivered by the platform event loop. */
@@ -908,6 +908,9 @@ struct BoundingBoxGizmoHandle {
  */
 struct SceneState;
 struct TextRenderableState;
+struct GpuDevice;
+struct GpuCommandEncoder;
+struct GpuExternalRenderable;
 struct TextLayerState;
 struct TextSurface;
 struct TextRendererState;
@@ -4155,6 +4158,14 @@ struct Engine {
     std::shared_ptr<DeviceRecoveryState> device_recovery;
     /** Retains the SDK device until all source resources and retirement state are released. */
     std::shared_ptr<pal::OffscreenDevice> source_gpu_device;
+    /**
+     * The WebGPU subset (`gpu.hpp`) over the engine's device: what lowered
+     * `engine._device` calls reach. Declared after `source_gpu_device`, whose
+     * native device it uses, so it retires first.
+     */
+    std::shared_ptr<GpuDevice> webgpu_device;
+    /** `engine._currentEncoder` while a renderer prepares a pass's external renderables. */
+    std::shared_ptr<GpuCommandEncoder> current_encoder;
     std::shared_ptr<pal::EventLoop> source_gpu_loop;
     bool source_gpu_host_closed = false;
     std::shared_ptr<pal::GpuRetirementState> gpu_retirements;
@@ -5479,6 +5490,8 @@ struct SceneState {
     std::vector<SplatMeshHandle> splat_meshes;
     /** Retained text is populated only by the reached text attachment adapter. */
     std::vector<std::shared_ptr<TextRenderableState>> text_renderables;
+    /** Lowered renderables a scene pass draws through `gpu_renderable.hpp`'s protocol. */
+    std::vector<std::shared_ptr<GpuExternalRenderable>> external_renderables;
     /**
      * The clustered light field this scene was given, if it was given one.
      *
@@ -5562,6 +5575,7 @@ struct SceneState {
         visitor(animation_seekers);
         visitor(deferred_builders);
         visitor(text_renderables);
+        visitor(external_renderables);
     }
 };
 

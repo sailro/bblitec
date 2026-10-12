@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bblite/byte_hash.hpp>
 #include <bblite/gpu.hpp>
 #include <bblite/js_promise.hpp>
 #include <bblite/pal_offscreen.hpp>
@@ -7,6 +8,7 @@
 #include "pal_gpu_lease_retirement.hpp"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -39,6 +41,20 @@ inline constexpr std::uint32_t vertex = 0x1, fragment = 0x2, compute = 0x4;
 } // namespace webgpu_shader_stage
 
 inline std::uint32_t webgpu_flags(double value) { return gpu_u32(gpu_size(value)); }
+
+/**
+ * The compiled stage a runtime WGSL module's entry point deploys as, when a
+ * backend consumes offline-compiled stages: `wgsl-<digest>.<entry>.<stage>`,
+ * where the digest is `hash_bytes` over the module's UTF-8 text, as
+ * src/wgsl-artifacts.ts `wgslStageStem` names it at generation.
+ */
+inline std::string wgsl_stage_stem(const std::string& code, const std::string& entry_point,
+                                   const char* stage) {
+    char digest[17];
+    std::snprintf(digest, sizeof(digest), "%016llx",
+                  static_cast<unsigned long long>(hash_bytes(code.data(), code.size())));
+    return std::string("wgsl-") + digest + "." + entry_point + "." + stage;
+}
 
 [[noreturn]] inline void webgpu_refuse(const std::string& message) {
     throw std::runtime_error("WebGPU subset: " + message);
