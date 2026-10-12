@@ -1550,6 +1550,14 @@ export class BrowserErasure {
             if (ts.isIdentifier(unwrapped)) {
                 return this.context.bindings.lookupOptional(unwrapped);
             }
+            // A runtime web platform object (`new URL(...)`) is native data.
+            if (
+                ts.isNewExpression(unwrapped) &&
+                NATIVE_PLATFORM_CLASSES.has(
+                    this.context.libraryGlobal(unwrapped.expression) ?? "",
+                )
+            )
+                return { kind: "data", cpp: "" };
             // getComputedStyle(element) views the element's computed style.
             const computed = computedStyleElement(this.context, unwrapped);
             if (computed) return owner(computed);

@@ -63,9 +63,11 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
 - Location follows deployment. A query value the deployment answers folds to a constant (alone, beside
   native operands in comparisons, arithmetic and logical chains, or as a native string method receiver),
   including short-circuits it decides; other reads, such as run-time keys, parse the deployment query
-  natively. Conditions over browser values the deployment does not answer refuse. Reload and
-  location.search assignment complete the task/microtasks, then recreate realms retaining durable storage
-  and the current query; other navigation refuses. Screen/viewport metrics use CSS pixels at display scale.
+  natively. Conditions over browser values the deployment does not answer refuse. Reload,
+  location.search assignment, and `location.assign(url)`/`location.href = url` naming this document (any
+  query) complete the task/microtasks, then recreate realms retaining durable storage and the new query;
+  `assign`/`href` naming another document throw a NotSupportedError DOMException; other navigation refuses.
+  A program that navigates reads `location.search`/`href` live. Screen/viewport metrics use CSS pixels at display scale.
 - The Window service provides promise-backed clipboard text writes; reads/rich data are unsupported.
 - document.hidden/visibilityState and visibilitychange follow window hide/minimize and show/restore, once per change.
 
@@ -91,7 +93,7 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
 | Constructed input events | Owned Event/MouseEvent/PointerEvent/InputEvent values, identity sets, synchronous element/Document/Window dispatch, capture/bubble routing, cancellation and redispatch | Shared pointer, focus and input/change channels only; cross-document redispatch, unrepresented payload fields and option accessors refuse |
 | Focus/forms | Focus/blur, literal/stored/optional focus options preventScroll (native focus never scrolls) and focusVisible, activeElement, input/textarea select(), button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Focus-option getters and spreads; full browser form behavior and broader constructed input types |
-| Disclosure | details.open and summary activation | Broader disclosure-group behavior |
+| Disclosure | details.open and summary activation; each change of `open` queues a non-bubbling `toggle` task through shared listener dispatch and removal | Broader disclosure-group behavior; toggle carries no oldState/newState and changes are not coalesced |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 
 Queries use current attributes/order, including detached subtrees. Single queries return null; lists

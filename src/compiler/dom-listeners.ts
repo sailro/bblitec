@@ -61,6 +61,8 @@ const pointerNames = new Set([
     "input",
     "change",
     "cancel",
+    // A details element's disclosure change, a non-bubbling task-queued event.
+    "toggle",
 ]);
 
 const serviceNames = new Set([

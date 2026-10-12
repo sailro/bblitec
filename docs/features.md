@@ -370,7 +370,8 @@ ArcRotate `wheelPrecision`, `angularSensibility` and `panningSensibility` writes
 `attachControl`, `attachFreeControl` and `attachConfigurableFreeControl` retain independent attachment
 state and callback order. Their disposers remove only that attachment; runtime reattachment is supported.
 Orthographic options admit halfHeight and optional left/right/bottom/top planes; later plane writes refuse.
-World matrices admit copied typed-array reads and constant indices 0–15. Tracked transforms and
+FreeCamera `inertia` writes reach attached free controls. World matrices admit copied typed-array reads,
+constant indices 0–15 and `ArrayLike<number>` parameters (a numeric copy at the call). Tracked transforms and
 configurable FreeCamera controls retain worldMatrixVersion; mutable world-matrix aliases refuse.
 `getViewMatrix`, `getProjectionMatrix` and `getViewProjectionMatrix` retain shared Float32 caches for
 unparented Free/ArcRotate cameras. Parented/geospatial cameras, high-precision matrices and floating

@@ -11110,6 +11110,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (dataType.kind === "span" && value.kind === "tuple") {
             return this.compileKnownValueForSink(value, dataType, expression);
         }
+        if (
+            dataType.kind === "span" &&
+            dataType.element.kind === "number" &&
+            value.kind === "camera-world-matrix"
+        ) {
+            // `camera.worldMatrix` as `ArrayLike<number>`: its stored lanes,
+            // as numbers, in a named local the call reads.
+            const engine = this.context.requireEngine(value, expression);
+            const lanes =
+                this.context.allocateTemporaryCppName("camera_world_lanes");
+            const widened =
+                this.context.allocateTemporaryCppName("array_like_numbers");
+            this.context.reachJsData();
+            this.context.emit(
+                `const auto ${lanes} = bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, value.cpp)});`,
+            );
+            this.context.emit(
+                `const bbl::js::F64Array ${widened}(${lanes}.begin(), ${lanes}.end());`,
+            );
+            this.registerLocal(widened, "owned");
+            return widened;
+        }
         if (value.kind !== "data" || !value.dataType) {
             this.context.fail(
                 expression,

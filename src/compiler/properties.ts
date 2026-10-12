@@ -912,6 +912,12 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     {
         owner: "camera",
+        property: "inertia",
+        value: "number",
+        record: ["cameras", "inertia"],
+    },
+    {
+        owner: "camera",
         property: "_yaw",
         value: "number",
         record: ["cameras", "free_yaw"],

@@ -83,3 +83,16 @@ test("range bounds and increments survive helper calls and reflect as strings", 
         );
     }
 });
+
+test("details toggle listeners join shared DOM dispatch with removal", () => {
+    const result = compileSource(`import {createEngine} from "@babylonjs/lite";
+        await createEngine({});
+        const details = document.createElement("details");
+        let toggles = 0;
+        const onToggle = (): void => { toggles += details.open ? 1 : 0; };
+        details.addEventListener("toggle", onToggle);
+        details.removeEventListener("toggle", onToggle);
+        details.open = toggles === 0;`);
+    assert.match(result.cpp, /on_dom_pointer\([^;]+"toggle"/);
+    assert.match(result.cpp, /off_dom_pointer\([^;]+"toggle"/);
+});
