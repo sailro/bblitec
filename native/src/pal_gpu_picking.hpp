@@ -358,7 +358,8 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
                              [[maybe_unused]] bool detailed = false) {
     std::vector<PickMeshCandidate> candidates;
     for (std::size_t item_index = 0;
-         item_index < render_plan.items.size() && item_index < gpu_mesh_count; ++item_index) {
+         item_index < render_plan.scene_items().size() && item_index < gpu_mesh_count;
+         ++item_index) {
         const MeshHandle handle = render_plan.items[item_index].mesh;
         if (!has_geometry(item_index))
             continue;
@@ -378,12 +379,12 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
         candidate.item_index = item_index;
         const MeshRecord& pick_mesh = handle_at(engine.meshes, handle);
 #if BBLITE_GPU_INSTANCING
-        candidate.thin = pick_mesh.thin_instanced;
+        candidate.thin = static_cast<bool>(pick_mesh.thin_instances);
         if (candidate.thin) {
-            candidate.instance_count =
-                static_cast<std::uint32_t>(thin_instance_active_count(pick_mesh));
-            if (candidate.instance_count == 0)
+            const auto& pool = *pick_mesh.thin_instances;
+            if (pool.count <= 0 || !pool.gpu_buffer)
                 continue;
+            candidate.instance_count = gpu_u32(gpu_size(pool.count));
             if (detailed)
                 throw std::runtime_error(
                     "Detailed picking requires the selected thin-instance world matrix.");

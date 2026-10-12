@@ -4912,7 +4912,10 @@ export class StatementLowerer {
         }
         if (
             ts.isCallExpression(unwrapped) &&
-            this.emitMemberSetCall(context, unwrapped)
+            context.probeEmission(
+                () => this.emitMemberSetCall(context, unwrapped),
+                (matched) => matched,
+            )
         ) {
             return;
         }

@@ -136,6 +136,8 @@ export interface RefusalSite {
 }
 
 export interface CompileOptions extends DeploymentOptions {
+    /** Generation supplies resource bytes for source-derived loader feature discovery. */
+    readAssetBytes?: (source: string, entryFileName: string) => Uint8Array;
     /** Emit explicit typed runtime failures for registered missing capabilities. */
     deferredCapabilities?: "runtime-throw";
     fileName?: string;
@@ -857,6 +859,8 @@ export interface CompiledShaderProgram {
      * prelude the stage compiles against.
      */
     readonly useThinInstanceColors?: boolean;
+    /** Original ShaderMaterialOptions value retained separately from the composed color lane. */
+    readonly thinInstanceColorOption?: boolean;
 }
 
 export interface CompiledShaderSampler {
@@ -1483,10 +1487,8 @@ export type ValueKind =
     | "compute-uniform-writer"
     | "compute-uniform-layout"
     /**
-     * `mesh.thinInstances` — the pin's own `ThinInstanceData`. It is a live
-     * view of the pool rather than a handle of its own: the only member the
-     * reached slice reads is `count`, which is `MeshRecord::instance_count`,
-     * so the value carries the mesh it was read from and nothing else.
+     * `mesh.thinInstances` retains the pin's shared `ThinInstanceData` object,
+     * including when the mesh is later disposed.
      */
     | "thin-instance-pool"
     | "morph-targets"
@@ -3019,6 +3021,7 @@ export type Feature =
     | "mesh:csg2"
     | "mesh:from-data"
     | "mesh:update-attributes"
+    | "mesh:update-geometry"
     | "mesh:resize-geometry"
     | "mesh:render-bundle-invalidation"
     | "mesh:ground"
@@ -3252,6 +3255,7 @@ export interface WorkerCompilation {
 }
 
 export interface ResolvedCompileOptions extends DeploymentOptions {
+    readAssetBytes?: CompileOptions["readAssetBytes"];
     /** An authored page replaces the default host, including its implicit canvas. */
     hostPage?: HostPageProgram;
     deferredCapabilities?: "runtime-throw";

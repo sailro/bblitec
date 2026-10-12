@@ -2194,6 +2194,7 @@ struct ValueHash<upstream::PhysicsBody> {
 #include "bblite/upstream/physics.hpp"
 #include "bblite/upstream/renderer_plan.hpp"
 #include <bblite/upstream/pinned_matrix.hpp>
+${thin ? "#include <bblite/pinned_records.hpp>" : ""}
 ${viewer ? "#include <bblite/pal_physics_debug.hpp>" : ""}
 
 #include <algorithm>
@@ -2516,9 +2517,11 @@ PhysicsWorldHandle create_havok_world(Scene& scene, Vec3d gravity) {
     try {
         scene.before_render.insert(
             scene.before_render.begin(),
-            [handle](float delta_ms) {
+            [handle](double delta_ms) {
                 if (const auto live = handle.ownership.lock()) {
-                    step_world(*live, static_cast<double>(delta_ms));
+                    // Preserve the Bullet adapter's float-millisecond input;
+                    // public scene callbacks retain the source's double width.
+                    step_world(*live, static_cast<double>(static_cast<float>(delta_ms)));
                 }
             });
     } catch (...) {
@@ -2655,7 +2658,7 @@ ${
         auto& world = physics_world_record(body.world);
         if (auto* state = thin_state(world, body.handle)) {
             static_cast<void>(thin_update_carrier(world, *state));
-            auto& matrices = thin_matrices(world, state->body.node);
+            auto matrices = thin_matrices(world, state->body.node);
             for (std::size_t index = 0; index < state->handles.size(); ++index) thin_write_matrix(*state, matrices, static_cast<double>(index), native.position, native.rotation);
             flush_thin_instances(*world.engine, std::get<MeshHandle>(state->body.node));
         }
@@ -3203,7 +3206,7 @@ ${
     PhysicsShape shape{options.shape};
     if (shape.handle.value == 0) {
       const PinnedShapeBounds sized =
-          pinned_shape_bounds(bounds, record.scaling${thin ? ", !(world.thin_enabled && world.thin_advanced && record.thin_instanced)" : ""});
+          pinned_shape_bounds(bounds, record.scaling${thin ? ", !(world.thin_enabled && world.thin_advanced && record.thin_instances)" : ""});
       PhysicsShapeParameters params{};
       // \`if (options.center) params.center = options.center;\` sits BEFORE
       // the switch upstream, so a capsule or a cylinder carries an explicit

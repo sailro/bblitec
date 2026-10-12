@@ -109,5 +109,41 @@ int main() {
         assert(SDL_WasInit(SDL_INIT_VIDEO) != 0);
     }
     assert(SDL_WasInit(SDL_INIT_VIDEO) == 0);
+    device_release_events.clear();
+    std::weak_ptr<OffscreenDevice> weak;
+    {
+        struct Lease {
+            std::shared_ptr<SdlWindowRun::Resources> window;
+            DawnDevice native;
+            OffscreenDevice adapter;
+        };
+        auto lease = std::make_shared<Lease>();
+        SDL_WindowID window_id = 0;
+        {
+            SdlWindowRun run;
+            assert(initialize_run_sdl(SDL_INIT_VIDEO));
+            lease->native.window = acquire_run_window(options, SDL_WINDOW_HIDDEN);
+            window_id = SDL_GetWindowID(lease->native.window);
+            lease->window = run.retain_resources();
+            lease->native.owns_window = false;
+        }
+        lease->native.device = fake<WGPUDevice>();
+        lease->native.uncaptured_error = "retained callback owner";
+        std::shared_ptr<OffscreenDevice> adapter(lease, &lease->adapter);
+        weak = adapter;
+        {
+            DawnDevice active;
+            active.source_owner = adapter;
+            active.shared_owner = &lease->native;
+            adapter.reset();
+            lease.reset();
+            assert(!weak.expired() && device_release_events.empty());
+            assert(active.last_error() == "retained callback owner");
+            assert(SDL_GetWindowFromID(window_id));
+        }
+        assert(weak.expired());
+        assert((device_release_events == std::vector<int>{5}));
+        assert(SDL_WasInit(SDL_INIT_VIDEO) == 0);
+    }
     std::cout << "device-owner-check: ok\n";
 }

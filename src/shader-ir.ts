@@ -6,6 +6,7 @@ import {
 } from "./wgsl-layout.js";
 import {
     shaderSamplerDeclarations,
+    typeComponents,
     type ShaderMaterialProgramSource,
 } from "./shader-material-programs.js";
 import type {
@@ -2556,22 +2557,6 @@ function stageReadsStorageBuffer(module: ShaderModule, name: string): boolean {
     return moduleUsesPath(module, (parts) => parts[0] === name);
 }
 
-/** How many floats a custom uniform type spans; the one such table. */
-export function typeComponents(type: ShaderType): number {
-    switch (type) {
-        case "f32":
-            return 1;
-        case "vec2<f32>":
-            return 2;
-        case "vec3<f32>":
-            return 3;
-        case "vec4<f32>":
-            return 4;
-        case "mat4x4<f32>":
-            return 16;
-    }
-}
-
 /**
  * A custom uniform's alignment, from the layout rule the capture decoder
  * reads browser buffers through -- the same rule on both sides of a
@@ -2619,11 +2604,6 @@ function reflectUniformBlock(
     const members: ShaderUniformMemberReflection[] = [];
     for (const uniform of custom) {
         const count = typeComponents(uniform.type);
-        if (count > 4) {
-            throw new Error(
-                `Custom matrix uniform '${uniform.name}' is not supported.`,
-            );
-        }
         byteOffset = roundUp(uniformTypeAlignment(uniform.type), byteOffset);
         const slot = Math.floor(byteOffset / 16);
         const component = (byteOffset % 16) / 4;
@@ -2633,7 +2613,7 @@ function reflectUniformBlock(
             offset: slot * 16 + component * 4,
             size: count * 4,
             slot,
-            components: componentSwizzle(component, count),
+            components: count > 4 ? "" : componentSwizzle(component, count),
         });
         byteOffset += count * 4;
     }

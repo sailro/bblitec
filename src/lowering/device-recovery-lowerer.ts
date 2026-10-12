@@ -44,6 +44,10 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import {
+    shaderUniformRecoveryPublication,
+    shaderUniformRecoveryReset,
+} from "./shader-uniforms.js";
 
 const recoveryModule = "src/engine/device-lost-recovery.ts";
 const testingModule = "src/engine/device-lost-recovery-testing.ts";
@@ -883,7 +887,10 @@ ${force.body}
 }`;
 }
 
-export function lowerDeviceRecovery(context: LoweringContext): LoweredSource {
+export function lowerDeviceRecovery(
+    context: LoweringContext,
+    thinBindings = false,
+): LoweredSource {
     assertDeviceRecoveryContracts(context);
     return {
         modulePath: recoveryModule,
@@ -948,7 +955,9 @@ void begin_device_recovery(Engine& engine) {
     assert_every_active_context_kind_is_recoverable(engine, state.in_flight);
     state.environments.clear(); state.shadows.clear(); state.renderable_counts.clear(); state.fallback = {};
     ++engine.device_generation;
+    ${shaderUniformRecoveryReset(context)}
     recover_retained_meshes(engine);
+    ${shaderUniformRecoveryPublication(context, thinBindings)}
     engine.stopped = !was_running;
 }
 void complete_device_recovery(Engine& engine) {

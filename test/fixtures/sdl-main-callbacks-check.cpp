@@ -6,6 +6,7 @@
 using namespace bbl::pal;
 static int callback_entries = 0, polls = 0, iterations = 0;
 static bool resource_alive = false, force_quit = false, send_text = false;
+static bool engine_device_alive = false;
 static SDL_AppIterate_func active_iterator = nullptr;
 static void* callback_state = nullptr;
 
@@ -38,7 +39,7 @@ int SDL_EnterAppMainCallbacks(int argc, char** argv, SDL_AppInit_func init,
     }
     quit(state, result);
     active_iterator = nullptr;
-    assert(!resource_alive); // SDL_Quit follows AppQuit, after native owners unwind.
+    assert(!resource_alive && !engine_device_alive); // SDL_Quit follows native cleanup.
     return result == SDL_APP_FAILURE ? 1 : 0;
 }
 
@@ -104,6 +105,28 @@ int main() {
     iterations = 0;
     assert(run_sdl_application(application(false), true) == 0);
     assert(iterations == 1 && !resource_alive);
+
+    for (const bool fail : {false, true}) {
+        force_quit = false;
+        engine_device_alive = true;
+        try {
+            run_sdl_application(application(fail), true, [] {
+                assert(!resource_alive);
+                engine_device_alive = false;
+            });
+            assert(!fail);
+        } catch (const std::runtime_error&) {
+            assert(fail);
+        }
+        assert(!engine_device_alive);
+    }
+    force_quit = true;
+    engine_device_alive = true;
+    assert(run_sdl_application(application(false), true, [] {
+               assert(!resource_alive);
+               engine_device_alive = false;
+           }) == 0);
+    assert(!engine_device_alive);
 
     char first[] = "one", second[] = "two";
     const char* candidates[] = {first, second};

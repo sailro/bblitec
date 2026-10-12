@@ -142,6 +142,7 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
     const { multiplyMat4IntoBuffer } = await importPinnedModule<{
         multiplyMat4IntoBuffer(this: void, ...args: unknown[]): void;
     }>("math/multiply-mat4-into-buffer.js");
+    let cameraReads = 0;
     const update = instantiate(
         () => false,
         () => {
@@ -150,7 +151,10 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         () => {},
         (camera: { aspect: number }) => camera.aspect,
         (camera: { key: number }) => camera.key,
-        (camera: { vp: Float32Array }) => camera.vp,
+        (camera: { vp: Float32Array }) => {
+            cameraReads++;
+            return camera.vp;
+        },
         multiplyMat4IntoBuffer,
         new Float32Array(16),
     ) as (
@@ -163,7 +167,7 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
     const vp = Float32Array.from([
         1.1, 0.2, 0.3, 0, 0.4, 1.3, 0.6, 0, 0.7, 0.8, 1.9, 0.2, 2, 3, 4, 1,
     ]);
-    const camera = { vp, key: 4, aspect: 1.25 };
+    const camera = { vp: vp.slice(), key: 4, aspect: 1.25 };
     const gpu = {
         _textU: {},
         _uploadedDataVersion: -1,
@@ -280,7 +284,12 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
             renderable.ignoreDepth = true;
         },
     );
-    const uniform = (cpp: string, present = true, width = 800, height = 640) =>
+    const uniform = (
+        cpp: string,
+        present = true,
+        width = 800,
+        height = 640,
+    ) => {
         act(cpp, () =>
             update(
                 renderable,
@@ -294,8 +303,19 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
                 },
             ),
         );
+        actions.push(`if (camera_reads != ${cameraReads}) return 4;`);
+    };
     uniform("update(&camera, 800, 640);");
     uniform("update(&camera, 800, 640);");
+    const beforeMatrixMutation = writes.length;
+    camera.vp[0] = 2.75;
+    uniform(
+        "camera.view_projection->store(0, 2.75f); update(&camera, 800, 640);",
+    );
+    assert.equal(writes.length, beforeMatrixMutation);
+    act("r->opacity = .42;", () => (renderable.opacity = 0.42));
+    uniform("update(&camera, 800, 640);");
+    assert.ok(writes.length > beforeMatrixMutation);
     camera.key = 7;
     uniform("camera.change_key = 7; update(&camera, 800, 640);");
     camera.aspect = 0.75;
@@ -362,6 +382,14 @@ int main() {
         for (std::size_t index = 0; index < world.size(); ++index) { const double wide=world.load(index); state.write(reinterpret_cast<const char*>(&wide),sizeof(wide)); }
     };
     TextCameraInput camera{js::TypedArray<float>{${Array.from(vp, (value) => `${Number.isInteger(value) ? value.toFixed(1) : value}f`).join(",")}},4,1.25};
+    if(camera.get_view_projection().load(0)!=camera.view_projection->load(0)) return 5;
+    TextCameraInput empty_camera;
+    try { static_cast<void>(empty_camera.get_view_projection()); return 6; }
+    catch (const std::runtime_error&) {}
+    empty_camera.read_view_projection=[&]{return *camera.view_projection;};
+    if(empty_camera.get_view_projection().identity()!=camera.view_projection->identity()) return 7;
+    int camera_reads=0;
+    camera.read_view_projection=[&]{++camera_reads;return *camera.view_projection;};
     auto device = std::make_shared<GpuDevice>();
     auto surface = std::make_shared<TextSurface>();
     surface->device = device;
@@ -403,6 +431,7 @@ int main() {
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(native, [
         "/DBBLITE_HAS_TEXT=1",
+        "/DBBLITE_GPU_INSTANCING=0",
         `/I${directory}`,
         source,
         `/Fo${resolve(directory, "check.obj")}`,
@@ -695,6 +724,7 @@ int main(){
     writeFileSync(path, cpp);
     runNativeFixtureCompiler(native, [
         "/DBBLITE_HAS_TEXT=1",
+        "/DBBLITE_GPU_INSTANCING=0",
         `/I${directory}`,
         path,
         `/Fo${resolve(directory, "check.obj")}`,
@@ -819,6 +849,7 @@ int main(){
     writeFileSync(path, cpp);
     runNativeFixtureCompiler(native, [
         "/DBBLITE_HAS_TEXT=1",
+        "/DBBLITE_GPU_INSTANCING=0",
         `/I${directory}`,
         path,
         `/Fo${resolve(directory, "check.obj")}`,
@@ -1012,6 +1043,7 @@ int main(){
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(native, [
         "/DBBLITE_HAS_TEXT=1",
+        "/DBBLITE_GPU_INSTANCING=0",
         `/I${directory}`,
         source,
         `/Fo${resolve(directory, "check.obj")}`,

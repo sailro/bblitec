@@ -59,6 +59,8 @@ inline void destroy_engine_device(Engine& engine) {
         engine.offscreen_run->invalidate_device();
     engine.offscreen_run.reset();
 #endif
+    engine.source_gpu_loop.reset();
+    engine.source_gpu_device.reset();
 }
 
 } // namespace bbl::pal

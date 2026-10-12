@@ -427,7 +427,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "camera:view-projection": {
-        provenance: "src/camera/camera.ts (getViewProjectionMatrix)",
+        provenance:
+            "src/camera/camera.ts (getViewMatrix, getProjectionMatrix, getViewProjectionMatrix)",
         consumers: CMAKE,
     },
     "environment:ibl": {
@@ -787,7 +788,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "mesh:update-attributes": {
         provenance:
-            "src/mesh/mesh-factories.ts (updateMeshPositions, updateMeshUvs)",
+            "src/mesh/mesh-factories.ts (updateMeshPositions, updateMeshUvs, updateMeshNormals, updateMeshColors, updateMeshTangents, updateMeshUv2)",
+        consumers: CMAKE,
+    },
+    "mesh:update-geometry": {
+        provenance:
+            "src/mesh/mesh-factories.ts (updateMeshGeometry, updateMeshGeometryCapacity)",
         consumers: CMAKE,
     },
     "mesh:ground": {

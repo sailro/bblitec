@@ -6,7 +6,9 @@ import test from "node:test";
 import { cameraSources } from "./camera-fixture.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerSceneBeforeRenderDispatch } from "../src/lowering/camera-control-attachment.js";
 import { compileSource } from "../src/compiler.js";
+import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
@@ -63,20 +65,68 @@ int main() {
 
 const cameraTools = optionalNativeFixtureTools();
 test(
-    "a camera control advances by the delta of the scene it was attached to",
+    "camera controls preserve per-scene deltas and canvas attachment order",
     { skip: !cameraTools },
-    () => {
+    async () => {
         const output = resolve("artifacts/camera-scene-delta");
-        const sources = cameraSources(output);
+        const sources = cameraSources(output, { arcRotate: true });
+        const { createArcRotateCamera } = await importPinnedModule<{
+            createArcRotateCamera(
+                this: void,
+                alpha: number,
+                beta: number,
+                radius: number,
+                target: object,
+            ): object;
+        }>("camera/arc-rotate.js");
+        const { attachControl } = await importPinnedModule<{
+            attachControl(
+                this: void,
+                camera: object,
+                canvas: object,
+                scene: object,
+                options: object,
+            ): () => void;
+        }>("camera/arc-rotate-controls.js");
+        const first = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
+        const second = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
+        const pointerDown: Array<(event: object) => void> = [];
+        const canvas = {
+            addEventListener(name: string, handler: (event: object) => void) {
+                if (name === "pointerdown") pointerDown.push(handler);
+            },
+        };
+        const pinnedOrder: number[] = [];
+        const context = { _beforeRender: [] };
+        for (const [camera, id] of [
+            [first, 1],
+            [second, 2],
+            [first, 3],
+        ] as const)
+            attachControl(camera, canvas, context, {
+                shouldHandlePointerDown() {
+                    pinnedOrder.push(id);
+                    return false;
+                },
+            });
+        for (const listener of pointerDown)
+            listener({
+                button: 0,
+                pointerType: "mouse",
+                pointerId: 1,
+                clientX: 0,
+                clientY: 0,
+            });
         const scene = new SceneLowerer(new LoweringContext()).lowerCore()
             .source;
         writeFileSync(
             join(output, "scene-callback-delta.hpp"),
-            `namespace bbl {\n${cppFunction(scene, "double scene_callback_delta(")}\n}\n`,
+            `namespace bbl {\n${cppFunction(scene, "double scene_callback_delta(")}\n${lowerSceneBeforeRenderDispatch(new LoweringContext())}\n}\nconst std::vector<int> pinned_camera_input_order{${pinnedOrder.join(",")}};\n`,
         );
         const executable = join(output, "camera-scene-delta-check.exe");
         runNativeFixtureCompiler(cameraTools!, [
             "/DSDL_STATIC_LIB",
+            "/DBBLITE_HAS_UI=0",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             "/I",

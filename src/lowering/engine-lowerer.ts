@@ -1,5 +1,6 @@
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import ts from "typescript";
+import { lowerThinInstanceDisposal } from "./thin-instance-lowerer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 import { canvasDatasetSource } from "./canvas-dataset.js";
@@ -75,6 +76,7 @@ export class EngineLowerer {
             source: `// ${this.context.provenance(modulePath, "createEngine, startEngine, stopEngine")}
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/thin_instance_sync.hpp>
 ${workers ? "#include <bblite/pal_async_engine.hpp>" : ""}
 
 #include <utility>
@@ -102,6 +104,8 @@ void stop_engine(Engine& engine) {
     engine.stopped = true;
     if (engine.flush_gpu_retirements) engine.flush_gpu_retirements();
 }
+${this.lowerFrameRetirementFlush()}
+${lowerThinInstanceDisposal(this.context)}
 ${workers ? this.lowerSurfaceSize() : ""}
 
 // The native reading of a bounded multi-frame drain: the scene's own
@@ -128,6 +132,52 @@ std::string asset_path(const std::string& relative_path) {
 ${canvasDatasetSource}
 `,
         };
+    }
+
+    private lowerFrameRetirementFlush(): string {
+        const module = "src/engine/engine.ts";
+        const { file, declaration } = this.context.functionDeclaration(
+            module,
+            "_renderFrame",
+        );
+        const frame = declaration.body!.statements.find(ts.isTryStatement);
+        if (!frame)
+            return this.context.contractError(
+                declaration,
+                "Expected a guarded frame submit.",
+            );
+        const statements = frame.tryBlock.statements;
+        const submit = statements.findIndex(
+            (statement) =>
+                ts.isExpressionStatement(statement) &&
+                ts.isCallExpression(statement.expression) &&
+                statement.expression.expression.getText(file) ===
+                    "engine._device.queue.submit",
+        );
+        const flush = statements[submit + 1];
+        if (submit < 0 || !flush)
+            return this.context.contractError(
+                frame,
+                "Expected a post-submit retirement flush.",
+            );
+        this.context.assertStatementShapes(
+            frame.tryBlock,
+            [flush],
+            "engine._flushGpuRetirements?.(engine);",
+            "Post-submit retirement scheduling",
+        );
+        const body = lowerPinnedBody(file, [flush], {
+            bindings: new Map(),
+            calls: new Map(),
+            expression: (node) =>
+                ts.isCallExpression(node) && node.questionDotToken
+                    ? "(engine.flush_gpu_retirements ? engine.flush_gpu_retirements() : void())"
+                    : undefined,
+        });
+        return `// ${this.context.provenance(module, "_renderFrame", "post-submit retirement flush")}
+void flush_frame_gpu_retirements(Engine& engine) {
+${body}
+}`;
     }
 
     private lowerSurfaceSize(): string {

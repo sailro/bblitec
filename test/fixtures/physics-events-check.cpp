@@ -11,7 +11,7 @@ std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) {
 } // namespace bbl::upstream
 namespace bbl {
 void flush_thin_instances(Engine& engine, MeshHandle mesh) {
-    ++engine.meshes.at(mesh.value).instance_version;
+    ++engine.meshes.at(mesh.value).thin_instances->version;
 }
 } // namespace bbl
 namespace p = bbl::pal;
@@ -28,14 +28,15 @@ int main() {
     const auto ordinary = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{0}),
                                                  u::PhysicsMotionType::STATIC, false);
 #if TEST_THIN
-    std::vector<float> matrices(48);
+    bbl::js::F32Array matrices(48);
     for (std::size_t i = 0; i < 3; ++i)
         u::thin_compose_matrix(matrices, static_cast<double>(i * 16), static_cast<double>(i * 10),
                                0, 0, 0, 0, 0, 1, 1, 1, 1);
     auto& carrier = engine.meshes[1];
-    carrier.thin_instanced = true;
-    carrier.instance_count = 3;
-    carrier.instance_source = &matrices;
+    carrier.thin_instances = std::make_shared<bbl::ThinInstancePoolData>();
+    carrier.thin_instances->count = 3;
+    carrier.thin_instances->capacity = 3;
+    carrier.thin_instances->matrices = matrices;
     u::enable_havok_thin_instance_physics(handle);
 #endif
     const auto target = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{1}),

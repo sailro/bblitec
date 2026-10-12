@@ -18,7 +18,6 @@ import type { LoweringServices } from "./lowering-services.js";
 // reach order, which is the generated variant table's index order, and
 // the uniform setters resolve their offsets from the reflected layout
 // of the reached program.
-import { typeComponents } from "../shader-ir.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sharedPinnedContext } from "../lowering/context.js";
@@ -35,6 +34,7 @@ import {
     shaderSamplerDeclarations,
     shaderSamplerName,
     shaderUniformValueLayout,
+    typeComponents,
 } from "../shader-material-programs.js";
 import {
     compileOptionalStaticBoolean,
@@ -334,7 +334,7 @@ export function compileShaderMaterialOptions(
                 `Shader uniform default '${entry.name}' has no typed declaration.`,
             );
         }
-        const componentCount = declaredVectorComponents(
+        const componentCount = typeComponents(
             declared.slice(declared.indexOf(":") + 1),
         );
         if (componentCount === 0) {
@@ -714,7 +714,7 @@ function compileShaderUniformSignatures(
         if (defaultExpression) {
             const resolvedDefault =
                 context.resolveStaticExpression(defaultExpression);
-            const componentCount = declaredVectorComponents(uniformType);
+            const componentCount = typeComponents(uniformType);
             if (componentCount === 0) {
                 context.fail(
                     type,
@@ -832,6 +832,7 @@ export function resolveShaderUniform(
     material: Value,
     nameExpression: ts.Expression,
     expectedCounts: number[],
+    compiledName?: string,
 ): ShaderUniformSlot {
     if (!material.shaderVariant) {
         context.fail(
@@ -843,7 +844,7 @@ export function resolveShaderUniform(
         material.shaderVariant,
         nameExpression,
     );
-    const name = context.compileStringLiteral(nameExpression);
+    const name = compiledName ?? context.compileStringLiteral(nameExpression);
     const entry = shaderUniformValueLayout(program.uniforms).get(name);
     if (!entry) {
         context.fail(
@@ -1034,7 +1035,13 @@ export function compileShaderUniformComponents(
     ) {
         return tupleComponents(value.cpp, count);
     }
-    if (value.kind === "data" && isTypedArrayType(value.dataType)) {
+    const numericArray =
+        value.dataType?.kind === "vector" &&
+        value.dataType.element.kind === "number";
+    if (
+        value.kind === "data" &&
+        (isTypedArrayType(value.dataType) || numericArray)
+    ) {
         // The pin's setter takes any ArrayLike: a length other than the
         // declared count throws (the pinned length check), then each lane is stored
         // through Math.fround.
@@ -1065,11 +1072,13 @@ export function compileShaderUniformComponents(
             kind: "expression",
             code: `if (${array}.size() != ${count}u) throw std::runtime_error(${message});`,
         });
-        const float = value.dataType.kind === "f32array";
+        const float = value.dataType?.kind === "f32array";
         return Array.from({ length: count }, (_, index) =>
-            float
-                ? `${array}.load(${index}u)`
-                : `static_cast<float>(${array}.load(${index}u))`,
+            numericArray
+                ? `static_cast<float>(${array}[${index}u])`
+                : float
+                  ? `${array}.load(${index}u)`
+                  : `static_cast<float>(${array}.load(${index}u))`,
         );
     }
     context.fail(expression, `Expected a ${count}-component array value.`);
@@ -1096,19 +1105,6 @@ function expectStaticNumber(
         );
     }
     return value;
-}
-
-/**
- * The scalar or vector float types a custom uniform default may fill, as a
- * component count -- zero for anything else, so the caller names the type.
- */
-function declaredVectorComponents(type: string): number {
-    return type === "f32" ||
-        type === "vec2<f32>" ||
-        type === "vec3<f32>" ||
-        type === "vec4<f32>"
-        ? typeComponents(type)
-        : 0;
 }
 
 function staticNumber(

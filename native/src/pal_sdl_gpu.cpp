@@ -1,3 +1,5 @@
+#include <bblite/features/gpu_retirement.hpp>
+#include <bblite/features/thin_instances.hpp>
 // The SDL_GPU scene renderer's driver: the pass helpers, the state's
 // release and the frame run. The feature families it draws through are
 // their own files (pal_sdl_gpu_scene_<family>.cpp), compiled with it as one
@@ -32,10 +34,14 @@
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/has_ui.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
+#include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/workers.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
+#if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
+#include "pal_sdl_gpu_source_device.hpp"
+#endif
 #include "pal_billboard_order.hpp"
 #if BBLITE_COMPUTE_FRAME_GRAPH
 #include <bblite/pal_compute_frame_graph.hpp>
@@ -45,6 +51,30 @@ namespace bbl::pal {
 inline namespace sdl_scene {
 
 #if BBLITE_HAS_PBR_RENDERER
+#if BBLITE_THIN_INSTANCES
+void bind_sdl_thin_buffers(GpuState& state, GpuMesh& row, const GpuHandle& args) {
+    const auto matrix = std::dynamic_pointer_cast<SdlStorageBuffer>(row.thin_pool->gpu_buffer);
+    if (!matrix || !matrix->buffer)
+        throw std::runtime_error("Thin-instance matrix buffer is unavailable on this device.");
+    if (row.instances != matrix->buffer && row.instances && !row.instance_owner)
+        state.kept_buffers.release(state.device, row.instances);
+    row.instances = matrix->buffer;
+    row.instance_owner = matrix;
+#if BBLITE_GPU_INSTANCE_COLORS
+    const auto colors =
+        std::dynamic_pointer_cast<SdlStorageBuffer>(row.thin_pool->color_gpu_buffer);
+    row.instance_colors = colors ? colors->buffer : nullptr;
+    row.instance_color_owner = colors;
+#endif
+    const auto indirect = std::dynamic_pointer_cast<SdlStorageBuffer>(args);
+    if (args && (!indirect || !indirect->buffer))
+        throw std::runtime_error("Thin-instance indirect buffer is unavailable on this device.");
+    row.indirect_args = indirect ? indirect->buffer : nullptr;
+}
+#else
+void bind_sdl_thin_buffers(GpuState&, GpuMesh&, const GpuHandle&) {}
+#endif
+
 SDL_GPUPrimitiveType gpu_primitive_type(MeshTopology topology) {
     switch (topology) {
     case MeshTopology::points:
@@ -478,7 +508,7 @@ class SdlSceneRun {
                     throw std::runtime_error("Scene frame task handle is invalid.");
                 }
                 handle_at(task_draw_lists, handle) = upstream::build_render_task_draw_lists(
-                    task_plan.items, engine, handle_at(engine.frame_tasks, handle));
+                    task_plan, engine, handle_at(engine.frame_tasks, handle));
                 auto& task = handle_at(engine.frame_tasks, handle);
                 task.render_recorded = true;
                 task.render_meshes_dirty = false;
@@ -698,7 +728,11 @@ public:
             }
         } else {
 #endif
-            create_sdl_gpu_device(engine.options, frame_device_options(frame_options), state);
+#if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
+            bind_sdl_source_device(engine, frame_device_options(frame_options), state);
+#else
+        create_sdl_gpu_device(engine.options, frame_device_options(frame_options), state);
+#endif
             sync_engine_canvas_size(state.window, engine);
 #if BBLITE_OFFSCREEN_SURFACES
         }
@@ -1689,54 +1723,25 @@ public:
         GpuState& state;
         GpuBufferUploadBatch& uploads;
 
-#if BBLITE_GPU_INSTANCING
-        void recreate_instances(GpuMesh& gpu, const MeshRecord& mesh) {
-            // SDL retires a released buffer only once the command buffers
-            // still holding it have finished.
-            const std::size_t rows = mesh.instance_matrices.size();
-            state.kept_buffers.release(state.device, gpu.instances);
-            gpu.instances = state.kept_buffers.upload(
-                uploads, SDL_GPU_BUFFERUSAGE_VERTEX | SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                mesh.instance_matrices.data(), rows * sizeof(mesh.instance_matrices.front()));
-#if BBLITE_GPU_INSTANCE_COLORS
-            if (gpu.instance_colors) {
-                // The colour mirror is the scene's own array and may still
-                // be the shorter one; pad to the pool the way registration
-                // does.
-                std::vector<float> instance_colors = instance_colors_for_upload(mesh);
-                instance_colors.resize(rows * 4, 1.0f);
-                state.kept_buffers.release(state.device, gpu.instance_colors);
-                gpu.instance_colors = state.kept_buffers.upload(
-                    uploads, SDL_GPU_BUFFERUSAGE_VERTEX, instance_colors.data(),
-                    instance_colors.size() * sizeof(float));
-            }
-#endif
-        }
-
-        void update_instances(GpuMesh& gpu, const MeshRecord& mesh, std::size_t active_count) {
-            uploads.update(gpu.instances, mesh.instance_matrices.data(),
-                           active_count * sizeof(mesh.instance_matrices.front()));
-#if BBLITE_GPU_INSTANCE_COLORS
-            if (gpu.instance_colors) {
-                const auto colors = instance_colors_for_upload(mesh);
-                if (colors.size() >= active_count * 4) {
-                    uploads.update(gpu.instance_colors, colors.data(),
-                                   active_count * 4 * sizeof(float));
-                }
-            }
-#endif
-        }
-#endif
-
         void write_mesh_blocks(const Scene&, const upstream::RenderItem&, const MeshRecord&,
                                GpuMesh&) {}
 
-#if BBLITE_MESH_ATTRIBUTE_UPDATE
+#if BBLITE_MESH_ATTRIBUTE_UPDATE || BBLITE_MESH_GEOMETRY_UPDATE
         void upload_vertices(GpuMesh& gpu, const std::vector<GpuVertex>& vertices) {
             uploads.update(gpu.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
             state.node_capture.update(gpu.vertices, vertices.data(),
                                       vertices.size() * sizeof(GpuVertex));
+#endif
+        }
+#endif
+
+#if BBLITE_MESH_GEOMETRY_UPDATE
+        void upload_indices(GpuMesh& gpu, const std::vector<std::uint32_t>& indices) {
+            uploads.update(gpu.indices, indices.data(), indices.size() * sizeof(std::uint32_t));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            state.node_capture.update(gpu.indices, indices.data(),
+                                      indices.size() * sizeof(std::uint32_t));
 #endif
         }
 #endif
@@ -2051,6 +2056,9 @@ public:
         [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
         [[maybe_unused]] const bool transmission_enabled = data_.transmission_enabled;
         [[maybe_unused]] auto& state = data_.resources.state;
+        const auto bind_thin_buffers = [&state](GpuMesh& row, const GpuHandle& args) {
+            bind_sdl_thin_buffers(state, row, args);
+        };
         [[maybe_unused]] auto& pass_blocks = data_.pass_blocks;
 #if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
@@ -2119,7 +2127,7 @@ public:
                 for (std::size_t graph_layer = 0;
                      graph_layer < data_.active_registered_scenes.size(); ++graph_layer) {
                     const Scene& graph_scene = *data_.active_registered_scenes[graph_layer];
-                    const auto& graph_meshes =
+                    auto& graph_meshes =
                         graph_layer == 0 ? state.meshes : state.overlay_meshes[graph_layer - 1];
                     const auto& graph_plan =
                         graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1];
@@ -2263,7 +2271,7 @@ public:
                         };
 #endif
                     const auto draw_scene = [&](const Scene& draw_context,
-                                                const std::vector<GpuMesh>& draw_meshes,
+                                                std::vector<GpuMesh>& draw_meshes,
                                                 SDL_GPURenderPass* task_pass,
                                                 const std::vector<SDL_GPUGraphicsPipeline*>&
                                                     shader_variant_pipelines,
@@ -2315,6 +2323,12 @@ public:
                                                 ,
                                                 std::optional<ShaderTaskTarget> shader_target =
                                                     {}) {
+                        update_material_bindings(draw_context, engine, draw_lists.opaque,
+                                                 draw_pass_matrices, draw_meshes,
+                                                 bind_thin_buffers);
+                        update_material_bindings(draw_context, engine, draw_lists.transparent,
+                                                 draw_pass_matrices, draw_meshes,
+                                                 bind_thin_buffers);
                         // Composed materials must use the render task's sample count,
                         // just as custom materials do, rather than the main target's.
                         [[maybe_unused]] const auto task_samples =
@@ -2366,12 +2380,18 @@ public:
                         // A pass without a camera pushes the block it last
                         // wrote, as the pin's task keeps its scene UBO.
                         upstream::SceneUniforms pass_scene_block =
+                            // Geometry tasks writeSceneUBO on every execution.
+                            geometry_task ? pinned_scene_block(draw_context, engine, *draw_camera,
+                                                               draw_matrix)
+                            :
 #if BBLITE_HAS_TAA
-                            deferred_scene ? temporal_clean_scene_block(*deferred_scene) :
+                            deferred_scene
+                                ? temporal_clean_scene_block(*deferred_scene)
+                                :
 #endif
-                                           write_pass_scene_block(
-                                               pass_blocks.pass(draw_context, pass_task),
-                                               draw_context, engine, draw_camera, draw_matrix);
+                                write_pass_scene_block(pass_blocks.pass(draw_context, pass_task),
+                                                       draw_context, engine, draw_camera,
+                                                       draw_matrix);
 #if BBLITE_SHADOW_RECEIVERS
                         // The pin installs the light-space matrices on a camera
                         // facade whose caches it pins, so its caster pass reads
@@ -2412,7 +2432,11 @@ public:
                                 if (draw.item_index >= draw_meshes.size()) {
                                     continue;
                                 }
-                                const GpuMesh& mesh = draw_meshes[draw.item_index];
+                                GpuMesh& mesh = draw_meshes[draw.item_index];
+#if BBLITE_THIN_INSTANCES
+                                publish_thin_binding(*draw.item.thin_binding, mesh,
+                                                     bind_thin_buffers);
+#endif
                                 const upstream::RenderItem& draw_item = draw.item;
                                 const MaterialRecord* material =
                                     handle_find(engine.materials, draw_item.material);
@@ -2530,6 +2554,10 @@ public:
                                 // dispatcher either way, with the task deciding
                                 // which of the graph's compiled modules draws.
                                 if (draw_item.material_kind == upstream::RenderMaterialKind::node) {
+#if BBLITE_THIN_INSTANCES
+                                    synchronize_node_thin_draw(engine, draw_item, mesh,
+                                                               bind_thin_buffers);
+#endif
                                     draw_node_variant(
                                         state, command, task_pass, draw_context, engine,
                                         pass_scene_block, pass_lights_block, draw, mesh,
@@ -2575,7 +2603,9 @@ public:
                                         handle_at(engine.meshes, draw_item.mesh),
                                         draw_pass_matrices);
                                     const ShaderPassMatrices shader_pass_matrices =
-                                        shader_matrices.apply(draw_pass_matrices);
+                                        shader_packet_published_matrices(
+                                            draw_item.shader_packet,
+                                            shader_matrices.apply(draw_pass_matrices));
                                     // Per-stage blocks from the generated
                                     // variant table: [the declared system
                                     // matrices][custom floats gathered from
@@ -2643,8 +2673,10 @@ public:
                                 bind_mesh_vertex_buffers(task_pass, mesh);
                                 SDL_BindGPUIndexBuffer(task_pass, &index_binding,
                                                        SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                                count_gpu_draw(SDL_DrawGPUIndexedPrimitives, task_pass,
-                                               mesh.index_count, mesh.instance_count, 0, 0, 0);
+                                encode_sdl_gpu_indexed_draw(
+                                    task_pass, mesh.index_count,
+                                    mesh.indirect_args ? 0u : mesh.instance_count(),
+                                    mesh.indirect_args);
                             }
                         };
                         draw_list(draw_lists.opaque);
@@ -2764,16 +2796,20 @@ public:
                             // viewport into whichever extent the task was
                             // configured for -- the canvas or the target.
                             const bool canvas_extent = task.render.canvas_size;
-                            CameraPassMatrices task_camera_pass =
-                                build_pass_camera(graph_scene, engine, task_camera,
-                                                  canvas_extent ? graph_extent.width
-                                                                : static_cast<double>(target.width),
-                                                  canvas_extent
-                                                      ? graph_extent.height
-                                                      : static_cast<double>(target.height))
-                                    .matrices;
+                            CameraPassMatrices task_camera_pass = camera_pass_matrices(
+                                graph_scene, engine, task_camera,
+                                canvas_extent ? graph_extent.width
+                                              : static_cast<double>(target.width),
+                                canvas_extent ? graph_extent.height
+                                              : static_cast<double>(target.height),
+                                true);
                             keep_view_projection(task_camera_pass, task_camera,
-                                                 pass_blocks.task(handle));
+                                                 pass_blocks.task(handle), graph_scene, engine,
+                                                 canvas_extent ? graph_extent.width
+                                                               : static_cast<double>(target.width),
+                                                 canvas_extent
+                                                     ? graph_extent.height
+                                                     : static_cast<double>(target.height));
                             // A shadow task renders from the light, not from
                             // a camera: the generator's own matrices replace
                             // the product below, which stays the zero matrix
@@ -2864,6 +2900,7 @@ public:
                                     caster_view_projection.data(), &caster_view, nullptr};
                                 caster_pass_matrices.camera_position =
                                     &task_camera_pass.camera_position;
+                                caster_pass_matrices.shadow_camera_facade = true;
                                 draw_scene(graph_scene, graph_meshes, shadow_pass,
                                            state.shader_shadow_pipelines,
                                            state.shader_shadow_pipelines, caster_view_projection,
@@ -2888,6 +2925,13 @@ public:
                             }
 #endif
                             if (!target_record.has_color) {
+                                update_material_bindings(
+                                    graph_scene, engine, handle_at(task_draw_lists, handle).opaque,
+                                    task_pass_matrices, graph_meshes, bind_thin_buffers);
+                                update_material_bindings(
+                                    graph_scene, engine,
+                                    handle_at(task_draw_lists, handle).transparent,
+                                    task_pass_matrices, graph_meshes, bind_thin_buffers);
                                 if (!target_record.has_depth || !target.depth) {
                                     throw std::runtime_error(
                                         "Depth-only render task has no depth attachment.");
@@ -2956,7 +3000,11 @@ public:
                                             throw std::runtime_error(
                                                 "Depth task mesh is not in the scene.");
                                         }
-                                        const GpuMesh& mesh = graph_meshes[mesh_index];
+                                        GpuMesh& mesh = graph_meshes[mesh_index];
+#if BBLITE_THIN_INSTANCES
+                                        publish_thin_binding(*entry.thin_binding, mesh,
+                                                             bind_thin_buffers);
+#endif
                                         push_mesh_stage_blocks(
                                             command, graph_scene, engine,
                                             handle_at(engine.meshes, entry.mesh));
@@ -2967,9 +3015,10 @@ public:
                                         bind_mesh_vertex_buffers(task_pass, mesh);
                                         SDL_BindGPUIndexBuffer(task_pass, &index_binding,
                                                                SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                                        count_gpu_draw(SDL_DrawGPUIndexedPrimitives, task_pass,
-                                                       mesh.index_count, mesh.instance_count, 0, 0,
-                                                       0);
+                                        encode_sdl_gpu_indexed_draw(
+                                            task_pass, mesh.index_count,
+                                            mesh.indirect_args ? 0u : mesh.instance_count(),
+                                            mesh.indirect_args);
                                     }
                                 }
                                 task_pass.end();
@@ -3281,7 +3330,7 @@ public:
                                 geometry_pass.camera);
 #if BBLITE_STANDARD_VARIANTS > 0
                             update_pinned_velocity_frame(geometry.velocity, graph_scene, engine,
-                                                         graph_plan.items);
+                                                         graph_plan.scene_items());
 #endif
                             draw_scene(graph_scene, graph_meshes, task_pass, {}, {},
                                        geometry_matrix, geometry_pass.camera, geometry_pass.pass(),
@@ -3736,7 +3785,7 @@ public:
             // composes no variants at all -- a splat-only scene, say --
             // sets it and never reads it.
             [[maybe_unused]] const Scene* pass_scene = &scene;
-            const std::vector<GpuMesh>* pass_meshes = &state.meshes;
+            std::vector<GpuMesh>* pass_meshes = &state.meshes;
 #if BBLITE_PINNED_MATERIALS
             // The frame's scene and lights blocks, once per frame rather
             // than per draw — the same hoist the Dawn backend's
@@ -3747,6 +3796,11 @@ public:
             std::vector<std::uint8_t> pass_lights_block = pinned_lights_block(scene, engine);
 #endif
             SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
+            ShaderPassMatrices active_shader_pass = frame_pass_matrices;
+            update_material_bindings(scene, engine, render_plan.draw_lists.opaque,
+                                     active_shader_pass, *pass_meshes, bind_thin_buffers);
+            update_material_bindings(scene, engine, render_plan.draw_lists.transparent,
+                                     active_shader_pass, *pass_meshes, bind_thin_buffers);
             const auto draw_render_list = [&](const auto& list) {
                 for (const upstream::RenderDrawCommand& draw : list.commands) {
                     if (!upstream::render_item_draws_now(draw.item, engine))
@@ -3755,7 +3809,10 @@ public:
                         continue;
                     }
                     const upstream::RenderItem& item = draw.item;
-                    const GpuMesh& mesh = (*pass_meshes)[draw.item_index];
+                    GpuMesh& mesh = (*pass_meshes)[draw.item_index];
+#if BBLITE_THIN_INSTANCES
+                    publish_thin_binding(*item.thin_binding, mesh, bind_thin_buffers);
+#endif
                     const MaterialRecord* material = handle_find(engine.materials, item.material);
 #if BBLITE_RENDERER_TRANSMISSION
                     if (transmission_enabled && !transmission_copied &&
@@ -3880,6 +3937,9 @@ public:
                     // composed family. Its variant is the graph's index,
                     // which the plan carries on the item.
                     if (item.material_kind == upstream::RenderMaterialKind::node) {
+#if BBLITE_THIN_INSTANCES
+                        synchronize_node_thin_draw(engine, item, mesh, bind_thin_buffers);
+#endif
                         draw_node_variant(state, command, pass, *pass_scene, engine,
                                           pass_scene_block, pass_lights_block, draw, mesh,
                                           item.shader_variant, bound_pipeline, false, material);
@@ -3907,9 +3967,10 @@ public:
                         }
                         const ShaderDrawMatrices shader_matrices(
                             *pass_scene, engine, handle_at(engine.meshes, item.mesh),
-                            frame_pass_matrices);
+                            active_shader_pass);
                         const ShaderPassMatrices shader_pass_matrices =
-                            shader_matrices.apply(frame_pass_matrices);
+                            shader_packet_published_matrices(
+                                item.shader_packet, shader_matrices.apply(active_shader_pass));
                         // Per-stage blocks from the generated variant
                         // table: [optional scene worldViewProjection]
                         // [custom floats gathered from the material's
@@ -3961,8 +4022,9 @@ public:
                     };
                     bind_mesh_vertex_buffers(pass, mesh);
                     SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, mesh.index_count,
-                                   mesh.instance_count, 0, 0, 0);
+                    encode_sdl_gpu_indexed_draw(pass, mesh.index_count,
+                                                mesh.indirect_args ? 0u : mesh.instance_count(),
+                                                mesh.indirect_args);
                 }
             };
 #if BBLITE_PINNED_BACKGROUNDS
@@ -4102,6 +4164,13 @@ public:
                 const std::array<float, 16>& overlay_matrix = overlay_pass.matrices.view_projection;
                 pass_scene = overlay_scene;
                 pass_meshes = &state.overlay_meshes[layer];
+                active_shader_pass = overlay_pass.pass();
+                update_material_bindings(*overlay_scene, engine,
+                                         overlay_plans[layer].draw_lists.opaque, active_shader_pass,
+                                         *pass_meshes, bind_thin_buffers);
+                update_material_bindings(*overlay_scene, engine,
+                                         overlay_plans[layer].draw_lists.transparent,
+                                         active_shader_pass, *pass_meshes, bind_thin_buffers);
 #if BBLITE_PINNED_MATERIALS
                 pass_scene_block = write_pass_scene_block(pass_blocks.scene(*overlay_scene),
                                                           *overlay_scene, engine, overlay_pass);
@@ -4334,18 +4403,19 @@ public:
                 gpu_error("SDL_SubmitGPUCommandBuffer");
             }
         }
+        flush_frame_gpu_retirements(engine);
         finish_gpu_task_timing_frame(engine);
 #if BBLITE_COMPUTE_FRAME_GRAPH
         finish_compute_frame_prefix(engine);
 #endif
         if (capture_ids) {
-            save_geometry_id_buffer_png(state, width, height, matrix, render_plan.items, scene,
-                                        engine, id_buffer_path, false);
+            save_geometry_id_buffer_png(state, width, height, matrix, render_plan.scene_items(),
+                                        scene, engine, id_buffer_path, false);
             captures.id_buffer_saved = true;
         }
         if (capture_clusters) {
-            save_geometry_id_buffer_png(state, width, height, matrix, render_plan.items, scene,
-                                        engine, cluster_buffer_path, true);
+            save_geometry_id_buffer_png(state, width, height, matrix, render_plan.scene_items(),
+                                        scene, engine, cluster_buffer_path, true);
             captures.cluster_buffer_saved = true;
         }
 #if BBLITE_DEVICE_RECOVERY

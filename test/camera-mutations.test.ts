@@ -455,7 +455,6 @@ test("TAA refuses lost camera ownership and late construction while preserving o
         `const target=camera.target;const k="x";target[k]=2;`,
         `Object.assign(camera.target,{x:2});`,
         `const target=camera.target;Object.assign(target,{x:2});`,
-        `attachControl(camera,engine.canvas,scene);const alias=camera;attachControl(alias,engine.canvas,scene);`,
     ]) {
         assert.doesNotThrow(() => compileSource(prefix + body));
         assert.throws(
@@ -466,6 +465,14 @@ test("TAA refuses lost camera ownership and late construction while preserving o
             () => compileSource(prefix + taa + body),
             /TAA requires tracked camera mutations:/,
         );
+    }
+    const repeatedControls = `attachControl(camera,engine.canvas,scene);const alias=camera;attachControl(alias,engine.canvas,scene);`;
+    for (const source of [
+        prefix + repeatedControls + taa,
+        prefix + taa + repeatedControls,
+    ]) {
+        const result = compileSource(source);
+        assert.deepEqual(result.manifest.deferredCapabilities ?? [], []);
     }
     // Object.assign has no plain properties to copy into on an engine handle,
     // so it refuses whether or not TAA tracks the camera.
@@ -510,14 +517,12 @@ test("TAA refuses lost camera ownership and late construction while preserving o
             ),
         /TAA task record epochs.*addTask/,
     );
-    assert.throws(
-        () =>
-            compileSource(
-                prefix +
-                    taa +
-                    `await registerScene(scene);await startEngine(engine);attachControl(camera,engine.canvas,scene);`,
-            ),
-        /TAA supports one startup control attachment/,
+    assert.doesNotThrow(() =>
+        compileSource(
+            prefix +
+                taa +
+                `await registerScene(scene);await startEngine(engine);attachControl(camera,engine.canvas,scene);`,
+        ),
     );
     assert.throws(
         () =>

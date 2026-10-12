@@ -7,6 +7,7 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { CameraMutationLowerer } from "../src/lowering/camera-mutation-lowerer.js";
 import { lowerConfigurableCameraControls } from "../src/lowering/configurable-camera-controls.js";
+import { lowerSceneBeforeRenderDispatch } from "../src/lowering/camera-control-attachment.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -166,6 +167,7 @@ test("configurable free controls match the pinned input, inertia and key default
 namespace bbl {
 void clamp_camera_to_limits(CameraRecord&) {}
 ${new CameraMutationLowerer(new LoweringContext()).setters()}
+${lowerSceneBeforeRenderDispatch(new LoweringContext())}
 }
 ` +
             `
@@ -185,23 +187,28 @@ int main() {
             options.upKeys = {"Space"}; options.downKeys = {"KeyC", "PageDown"};
             options.fastKeys = {"ShiftLeft", "ShiftRight"}; options.fastMultiplier = 5;
         }
-        const bbl::Scene scene;
-        bbl::attach_configurable_free_control(engine, bbl::CameraHandle{0}, scene, options);
-        if (camera.controls_scene.lock() != scene.state) return 1;
+        bbl::Scene scene;
+        const auto dispose = bbl::attach_configurable_free_control(engine, bbl::CameraHandle{0}, scene, options);
+        const auto control = engine.camera_control_bindings->entries.back();
+        if (scene.before_render.size() != 1 || scene.before_render[0] != control->update) return 1;
         ${frames
             .map(
                 (frame) => `{
             const std::vector<std::string> keys{${frame.keys.map((key) => JSON.stringify(key)).join(",")}};
-            camera.configurable_free_pointer(camera, ${frame.dx}, ${frame.dy});
-            camera.configurable_free_update(camera, ${frame.delta}, [&keys](std::string_view key) {
-                return std::find(keys.begin(), keys.end(), key) != keys.end();
-            });
+            for (const auto& key : keys) control->key_down(key);
+            control->pointer_down(2.0, false);
+            control->pointer_move(0.0, ${frame.dx}, ${frame.dy});
+            control->pointer_up();
+            bbl::run_scene_before_render(scene, ${frame.delta});
             for (double value : {camera.position.x, camera.position.y, camera.position.z,
                     camera.target.x, camera.target.y, camera.target.z, camera.free_yaw, camera.free_pitch, camera.world_matrix_version})
                 std::cout << value << '\\n';
+            for (const auto& key : keys) control->key_up(key);
         }`,
             )
             .join("\n")}
+        dispose();
+        if (!scene.before_render.empty() || !engine.camera_control_bindings->entries.empty() || !control->listeners.empty()) return 2;
     }
 }
 `,

@@ -152,6 +152,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:csg2": [],
     "mesh:from-data": [],
     "mesh:update-attributes": [],
+    "mesh:update-geometry": [],
     "mesh:resize-geometry": [],
     "mesh:render-bundle-invalidation": [],
     "mesh:ground": [],
@@ -357,6 +358,12 @@ export function asFeatures(names: readonly string[]): Feature[] {
  * same site, and its own implications follow in turn.
  */
 const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
+    "mesh:thin-instances": ["engine:gpu-retirement"],
+    "mesh:thin-instance-colors": ["mesh:thin-instances"],
+    "mesh:thin-instances-dynamic": ["mesh:thin-instances"],
+    "mesh:thin-instance-gpu-culling": ["mesh:thin-instances"],
+    "camera:view-projection": ["camera:world-matrix-version"],
+    "mesh:update-geometry": ["mesh:resize-geometry"],
     "compute:task-execution": [
         "compute:task",
         "compute:dispatch",
@@ -724,6 +731,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("material:node-inputs")
             ? "#include <bblite/node_material.hpp>\n"
+            : "") +
+        (features.includes("material:shader")
+            ? "#include <bblite/shader_uniforms.hpp>\n"
             : "") +
         (features.includes("data:json")
             ? "#include <bblite/js_json.hpp>\n"

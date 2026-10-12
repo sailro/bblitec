@@ -34,6 +34,8 @@ struct SdlStorageBuffer final : StorageBufferAllocation {
             SDL_ReleaseGPUBuffer(device, std::exchange(buffer, nullptr));
     }
     void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
+        if (!buffer)
+            throw std::runtime_error("GPU buffer has been destroyed.");
         write_sdl_gpu_buffer(device, buffer, offset, bytes);
     }
 };

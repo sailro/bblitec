@@ -1,6 +1,7 @@
 // SDL implementation of the platform abstraction layer: image decode, and
 // the engine entry point that dispatches to a GPU backend.
 #include <bblite/features/device_recovery.hpp>
+#include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/has_audio.hpp>
 #include <bblite/features/has_gamepad.hpp>
 #include <bblite/features/has_ui.hpp>
@@ -11,6 +12,9 @@
 #include <bblite/text_gpu.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_dom_events.hpp>
+#if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
+#include <bblite/pal_source_gpu_run.hpp>
+#endif
 #if BBLITE_WORKERS
 #include <bblite/pal_async_engine.hpp>
 #endif
@@ -380,6 +384,10 @@ static pal::Iteration<int> run_engine_iterations(Engine& engine) {
             throw;
         }
         if (!engine.renderer_restart_requested) {
+#if BBLITE_GPU_RETIREMENT
+            if (engine.scenes().empty())
+                flush_frame_gpu_retirements(engine);
+#endif
             // The page unloads once its frames end, however they end.
             dispatch_page_lifecycle(engine,
                                     [](auto& callback, const auto& payload) { callback(payload); });
@@ -395,8 +403,21 @@ void pal::run_engine(Engine& engine) {
     static_cast<void>(engine);
     throw std::logic_error("A Worker-enabled application must use asynchronous engine startup.");
 #else
+    auto frames = run_engine_iterations(engine);
+#if BBLITE_GPU_RETIREMENT
+    if (engine.source_gpu_host_closed)
+        throw std::runtime_error("Cannot restart an engine after its SDL application host closed.");
+    frames = source_gpu_iterations(engine, std::move(frames));
+    const auto before_shutdown = [&engine] {
+        engine.source_gpu_loop.reset();
+        engine.source_gpu_device.reset();
+        engine.source_gpu_host_closed = true;
+    };
     const int result =
-        run_sdl_application(run_engine_iterations(engine), read_frame_options().interactive());
+        run_sdl_application(std::move(frames), read_frame_options().interactive(), before_shutdown);
+#else
+    const int result = run_sdl_application(std::move(frames), read_frame_options().interactive());
+#endif
     if (result != 0)
         throw std::runtime_error("SDL application callbacks failed.");
 #endif

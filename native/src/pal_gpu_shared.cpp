@@ -15,6 +15,7 @@
 #include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadow_skeleton_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
+#include <bblite/features/thin_instances.hpp>
 
 #include "pal_gpu_common.hpp"
 #include "pal_gpu_frame.hpp"
@@ -652,18 +653,6 @@ PinnedVertexInput pinned_vertex_input(std::string_view name) {
 #endif
 #endif
     return PinnedVertexInput{};
-}
-#endif
-
-#if BBLITE_GPU_INSTANCE_COLORS
-std::vector<float> instance_colors_for_upload(const MeshRecord& mesh) {
-    if (!mesh.instance_color_source)
-        return mesh.instance_colors;
-    const auto& source = *mesh.instance_color_source;
-    std::vector<float> colors(source.size());
-    for (std::size_t lane = 0; lane < colors.size(); ++lane)
-        colors[lane] = source.load(lane);
-    return colors;
 }
 #endif
 
@@ -1419,15 +1408,15 @@ void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRecord& ge
         // transforms that result. One carrier per instance lets the pinned
         // cascade fold perform those same two transforms without reducing
         // rotated boxes to an intermediate AABB. The refresh gate already
-        // keys on `instance_version`, so this work runs only when the pin's
+        // keys on the pool's version, so this work runs only when the pin's
         // own cache would be invalidated.
 #if BBLITE_GPU_INSTANCING && BBLITE_SHADOWS_CSM
         const std::size_t active_instances = thin_instance_active_count(record);
-        if (generator.filter == ShadowFilter::csm_directional && record.thin_instanced &&
+        if (generator.filter == ShadowFilter::csm_directional && record.thin_instances &&
             active_instances > 0) {
             caster.world = upstream::mesh_world_matrix_f64(engine, record);
             for (std::size_t index = 0; index < active_instances; ++index) {
-                const std::array<float, 16>& instance = record.instance_matrices[index];
+                const auto instance = thin_instance_matrix(*record.thin_instances, index);
                 if (!upstream::csm_instance_contributes(instance))
                     continue;
                 caster.instance = instance;
@@ -1476,11 +1465,12 @@ upstream::SceneUniforms pinned_scene_block(const Scene& scene, const Engine& eng
     // The pin's fragment reads the view direction from `vEyePosition`, and its
     // reflection path from `view`. Both come from the camera the pass renders
     // with, the same one `build_pbr_uniforms` reads.
-    const std::array<upstream::CameraMatrixScalar, 16> camera_world =
-        upstream::camera_world_matrix(camera);
 #if BBLITE_FLOATING_ORIGIN
     const Vec3d fo_offset = floating_origin_offset(scene, engine);
     const Vec3d fo_camera_eye = upstream::arc_rotate_eye_position(camera);
+#else
+    const std::array<upstream::CameraMatrixScalar, 16> camera_world =
+        upstream::camera_world_matrix(camera);
 #endif
     scene_block.vEyePosition = {
 #if BBLITE_FLOATING_ORIGIN
@@ -1504,7 +1494,7 @@ upstream::SceneUniforms pinned_scene_block(const Scene& scene, const Engine& eng
 #endif
         1.0f,
     };
-    scene_block.view = upstream::build_view_matrix(camera_world);
+    scene_block.view = upstream::build_camera_view_matrix(camera);
     scene_block.envRotationY = scene.environment.rotation_y;
     // `vImageInfos` is documented in the pin's own declaration as
     // exposureLinear, contrast, lodGenerationScale, toneMappingEnabled.
@@ -2196,6 +2186,8 @@ DiagnosticClusterUniforms diagnostic_cluster_uniforms(std::uint32_t cluster_base
 
 #if BBLITE_HAS_PBR_RENDERER
 bool block_is_shared_scene_matrix(const upstream::ShaderVariantStageBlock& block) {
+    if constexpr (upstream::public_camera_matrix_caches)
+        return false;
     if (block.system_matrices.size() != 1 || !block.gather.empty()) {
         return false;
     }
@@ -2228,16 +2220,89 @@ std::array<float, 4> shader_camera_position(const Scene& scene, const Engine& en
 }
 
 CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine& engine,
-                                        const CameraRecord* camera, double width, double height) {
+                                        const CameraRecord* camera, double width, double height,
+                                        bool defer_projection_reads) {
     CameraPassMatrices matrices;
+    matrices.camera = camera;
+    matrices.target_width = width;
+    matrices.target_height = height;
     if (!camera)
         return matrices;
     matrices.aspect = upstream::effective_aspect_ratio(*camera, width, height);
-    matrices.view_projection = upstream::build_view_projection(*camera, matrices.aspect);
-    matrices.view = upstream::build_view_matrix(upstream::camera_world_matrix(*camera));
-    matrices.projection = upstream::build_scene_projection(*camera, matrices.aspect);
+    matrices.view = upstream::build_camera_view_matrix(*camera);
+    if (!upstream::public_camera_matrix_caches || !defer_projection_reads) {
+        matrices.view_projection = upstream::build_view_projection(*camera, matrices.aspect);
+        matrices.live_view_projection = matrices.view_projection;
+        matrices.projection = upstream::build_scene_projection(*camera, matrices.aspect);
+    }
     matrices.camera_position = shader_camera_position(scene, engine, *camera);
     return matrices;
+}
+
+ShaderPassMatrices shader_packet_system_matrices(const ShaderPacketSystemOwner& owner,
+                                                 const Scene& scene, const Engine& engine,
+                                                 const MeshRecord& mesh,
+                                                 const MaterialRecord& material,
+                                                 const ShaderPassMatrices& current) {
+    if constexpr (!upstream::public_camera_matrix_caches)
+        return current;
+    // shadow-base.ts#createShadowCamera owns distinct caches over light.worldMatrix.
+    // The existing caster transport carries matrices but not that source owner.
+    if (current.shadow_camera_facade)
+        throw std::runtime_error(
+            "Public camera matrix caches with shader shadow casters require the pinned createShadowCamera facade; this ownership combination is not supported.");
+    if (!owner || !material.shader_alpha_cutoff)
+        throw std::runtime_error(
+            "Shader camera caches require a published source packet and uniform owner.");
+    if (!*owner)
+        *owner = std::make_shared<ShaderPacketSystemState>();
+    auto& state = **owner;
+    upstream::update_shader_packet_system(
+        state, current.camera, mesh, current.target_width, current.target_height,
+        material.shader_alpha_cutoff(material), [&] {
+            const auto copy = [](auto& destination, const auto* source) {
+                if (source)
+                    std::copy_n(source, destination.size(), destination.begin());
+                else
+                    destination.fill(0.0f);
+            };
+            upstream::read_shader_packet_camera_matrices(current.camera, current.target_width,
+                                                         current.target_height, state.view,
+                                                         state.projection, state.view_projection);
+            state.world = mesh_block_world(scene, engine, mesh);
+            upstream::write_shader_packet_products(
+                current.camera,
+                [&] {
+                    state.world_view.fill(0.0f);
+                    state.world_view_projection.fill(0.0f);
+                },
+                [&] { state.world_view = upstream::matrix_product(state.view, state.world); },
+                [&] {
+                    state.world_view_projection =
+                        upstream::matrix_product(state.view_projection, state.world);
+                });
+            copy(state.camera_position,
+                 current.camera_position ? current.camera_position->data() : nullptr);
+        });
+    return shader_packet_published_matrices(owner, current);
+}
+
+ShaderPassMatrices shader_packet_published_matrices(const ShaderPacketSystemOwner& owner,
+                                                    const ShaderPassMatrices& current) {
+    if constexpr (!upstream::public_camera_matrix_caches)
+        return current;
+    if (!owner || !*owner)
+        throw std::runtime_error("Shader packet matrices have not been published.");
+    const auto& state = **owner;
+    auto result = current;
+    result.view_projection = state.view_projection.data();
+    result.view = &state.view;
+    result.projection = &state.projection;
+    result.world = &state.world;
+    result.world_view = &state.world_view;
+    result.world_view_projection = &state.world_view_projection;
+    result.camera_position = &state.camera_position;
+    return result;
 }
 
 void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
@@ -2296,12 +2361,27 @@ void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
             break;
         }
     }
+    const auto& uniform_values = material.shader_uniform_snapshot
+                                     ? material.shader_uniform_snapshot(material)
+                                     : material.shader_uniform_values;
     for (const std::array<std::uint32_t, 3>& gather : block.gather) {
         for (std::uint32_t index = 0; index < gather[2]; ++index) {
-            floats[gather[0] + index] = material.shader_uniform_values[gather[1] + index];
+            floats[gather[0] + index] = uniform_values[gather[1] + index];
         }
     }
 }
 #endif
 
 } // namespace bbl::pal
+
+#if BBLITE_HAS_PBR_RENDERER && BBLITE_THIN_INSTANCES
+namespace bbl {
+void upload_thin_instance_matrices(Engine& engine, MeshHandle mesh, const js::F32Array& matrices,
+                                   double count) {
+    const auto& pool = thin_instance_data(handle_at(engine.meshes, mesh).thin_instances);
+    pal::source_gpu_device(engine).write_buffer(pool.gpu_buffer, 0.0, matrices.buffer(),
+                                                static_cast<double>(matrices.byte_offset()),
+                                                count * 64.0);
+}
+} // namespace bbl
+#endif

@@ -290,9 +290,8 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
             const double aspect = csm_camera_aspect;
             // `renderCsmShadowMap` keys its gate on the camera the cascade
             // is fitted to — change key and aspect — in place of the
-            // single-map generators' floating-origin term. The key here is
-            // what the fit consumes: the camera view-projection (aspect
-            // folded in) and the near/far pair the split formula reads. A
+            // single-map generators' floating-origin term. Camera matrix
+            // alias writes do not change either source gate term. A
             // forced generator's gate returns before reading it, so the
             // key is built only when the gate will.
             const CameraRecord* const fit_camera = scene_camera(engine, scene);
@@ -302,9 +301,8 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
             if (csm_fit)
                 csm_camera = &camera_key;
             if (csm_fit && !generator.force_refresh_every_frame) {
-                camera_key.view_projection = upstream::build_view_projection(*fit_camera, aspect);
-                camera_key.near_plane = fit_camera->near_plane;
-                camera_key.far_plane = fit_camera->far_plane;
+                camera_key.change_key = upstream::scene_camera_change_key(*fit_camera);
+                camera_key.aspect = aspect;
             }
 #endif
             // The pin's render gate, ahead of each family's fit exactly as

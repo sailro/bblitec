@@ -538,10 +538,9 @@ int main() {
         ${
             mesh.thinInstances
                 ? `record.thin_instance_world_bounds = true;
-        record.instance_count = ${mesh.thinInstances.count};
-        const std::vector<float> lanes{${Array.from(mesh.thinInstances.matrices, (value) => `static_cast<float>(${value})`).join(", ")}};
-        record.instance_matrices.resize(lanes.size() / 16);
-        for (std::size_t lane = 0; lane < lanes.size(); ++lane) record.instance_matrices[lane / 16][lane % 16] = lanes[lane];`
+        record.thin_instances = std::make_shared<ThinInstancePoolData>();
+        record.thin_instances->count = ${mesh.thinInstances.count};
+        record.thin_instances->matrices = js::F32Array(std::vector<float>{${Array.from(mesh.thinInstances.matrices, (value) => `static_cast<float>(${value})`).join(", ")}});`
                 : ""
         }
         WorldAabbMesh mesh;

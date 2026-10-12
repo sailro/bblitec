@@ -21,14 +21,14 @@ double performance_milliseconds() { return 16.0; }
 } // namespace bbl::pal
 
 namespace bbl {
-std::vector<js::Callback<void(float)>> render_callbacks;
+std::vector<js::Callback<void(double)>> render_callbacks;
 Engine create_engine(EngineOptions) { return {}; }
 Scene create_scene_context(Engine& engine) {
     Scene scene;
     scene.engine = &engine;
     return scene;
 }
-void on_before_render(Scene&, js::Callback<void(float)> callback) {
+void on_before_render(Scene&, js::Callback<void(double)> callback) {
     render_callbacks.push_back(std::move(callback));
 }
 void defer_start_continuation(Engine& engine, std::function<void()> callback) {

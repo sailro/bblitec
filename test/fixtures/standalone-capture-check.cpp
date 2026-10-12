@@ -294,6 +294,7 @@ struct DawnDevice {
     WGPUSurface surface = &dawn_surface;
     WGPUTextureFormat surface_format = WGPUTextureFormat_RGBA8Unorm;
     std::string uncaptured_error;
+    const std::string& last_error() const { return uncaptured_error; }
 };
 #include "dawn-acquire.hpp"
 struct DawnSurfaceCapture {

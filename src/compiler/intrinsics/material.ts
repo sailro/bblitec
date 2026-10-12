@@ -3,7 +3,14 @@ import {
     compileIsExternalTextureReady,
     compileSetShaderExternalTexture,
 } from "./external-texture.js";
-import { EmissionMap, writable } from "../emission-transaction.js";
+import {
+    EmissionMap,
+    EmissionWeakMap,
+    writable,
+} from "../emission-transaction.js";
+import { sharedPinnedContext } from "../../lowering/context.js";
+import { lowerMaterialPredicate } from "../../lowering/material-predicate.js";
+import { shaderMatrixWriteProvenance } from "../../lowering/shader-matrix-write.js";
 import {
     compileCreateStorageBuffer,
     type StorageBufferIntrinsicContext,
@@ -16,7 +23,7 @@ import {
     compileLocalCubemapIntrinsic,
     type LocalCubemapIntrinsicContext,
 } from "./local-cubemap.js";
-import type { Value } from "../types.js";
+import { isStringValue, type Value } from "../types.js";
 import {
     emitMaterialPluginResources,
     foldMaterialPluginList,
@@ -45,6 +52,7 @@ import type {
     ScenePbrLightmapManifest,
 } from "../types.js";
 import { recordAt } from "../record-access.js";
+import { shaderUniformSlots } from "../../shader-material-programs.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -80,6 +88,8 @@ export interface MaterialIntrinsicContext
             | "objectProperty"
             | "cppString"
             | "fail"
+            | "bindings"
+            | "nativeEmission"
         > {}
 
 function compileStorageBufferData(
@@ -327,11 +337,13 @@ function compileShaderUniformWrite(
     material: Value,
     call: ts.CallExpression,
     expectedCounts: number[],
+    compiledName?: string,
 ): Value {
     const uniform = context.intrinsicOptions.resolveShaderUniform(
         material,
         argumentAt(call, 1),
         expectedCounts,
+        compiledName,
     );
     const { offset } = uniform;
     const components = context.intrinsicOptions.compileShaderUniformComponents(
@@ -340,6 +352,20 @@ function compileShaderUniformWrite(
         "setUniformValue",
     );
     const engine = context.requireEngine(material, call);
+    if (components.length > 4) {
+        const target =
+            material.sceneMaterialSlot === undefined
+                ? material.cpp
+                : `${engine}.scene_material_slots[${material.sceneMaterialSlot}u]`;
+        const guard =
+            material.sceneMaterialSlot === undefined
+                ? ""
+                : `if (${material.sceneMaterialSlot}u >= ${engine}.scene_material_slots.size() || ${target}.value == bbl::invalid_handle) return; `;
+        return {
+            kind: "void",
+            cpp: `([&]() { const std::array<float, ${components.length}> values{${components.join(", ")}}; ${guard}bbl::set_shader_uniform_values(${engine}, ${target}, ${offset}u, ${components.length}u, values.data()); }())`,
+        };
+    }
     if (material.sceneMaterialSlot !== undefined) {
         return {
             kind: "void",
@@ -355,6 +381,134 @@ function compileShaderUniformWrite(
             `bbl::set_shader_uniform_value(` +
             `${engine}, ${material.cpp}, ${offset}u, ` +
             `${components.join(", ")})`,
+    };
+}
+
+function compileGetShaderUniform(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const argument = argumentAt(call, 0);
+    const material = context.bindings.pinValueToTemporary(
+        context.compileValue(argument),
+        "uniform_material",
+        argument,
+    );
+    context.expectKind(material, "material", argument);
+    const name = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 1)),
+        "uniform_name",
+        call,
+    );
+    if (!isStringValue(name))
+        context.fail(
+            argumentAt(call, 1),
+            "Shader uniform names require a string.",
+        );
+    context.reachFeature("material:shader", call);
+    const cpp = `bbl::get_shader_uniform(${context.requireEngine(material, call)}, ${material.cpp}, ${name.cpp})`;
+    if (material.shaderVariant && name.staticString !== undefined) {
+        const program = context.sceneManifest.reachedShaderProgram(
+            material.shaderVariant,
+            call,
+        );
+        const slot = shaderUniformSlots(program.uniforms).find(
+            (slot) => slot.name === name.staticString,
+        );
+        if (slot)
+            return slot.count === 1
+                ? { kind: "number", cpp: `std::get<double>(${cpp})` }
+                : {
+                      kind: "data",
+                      cpp: `std::get<bbl::js::F32Array>(${cpp})`,
+                      dataType: { kind: "f32array" },
+                  };
+    }
+    return {
+        kind: "data",
+        cpp,
+        dataType: {
+            kind: "union",
+            members: [{ kind: "number" }, { kind: "f32array" }],
+        },
+    };
+}
+
+/** Runtime selector names use the pin's map lookup and existing number/array union storage. */
+function compileDynamicShaderUniformWrite(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    material: Value,
+    name: Value,
+): Value {
+    if (!isStringValue(name))
+        context.fail(
+            argumentAt(call, 1),
+            "Shader uniform names require a string.",
+        );
+    const input = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 2)),
+        "uniform_input",
+        call,
+    );
+    const numeric = (type: NonNullable<Value["dataType"]>): boolean =>
+        type.kind === "number" ||
+        isTypedArrayType(type) ||
+        (type.kind === "vector" && type.element.kind === "number") ||
+        (type.kind === "union" && type.members.every(numeric));
+    if (
+        input.kind !== "number" &&
+        !(input.kind === "data" && input.dataType && numeric(input.dataType))
+    )
+        context.fail(
+            argumentAt(call, 2),
+            "Dynamic shader uniform values require a number or numeric array.",
+        );
+    context.reachFeature("material:shader", call);
+    return {
+        kind: "void",
+        cpp: `bbl::set_shader_uniform(${context.requireEngine(material, call)}, ${material.cpp}, ${name.cpp}, ${input.cpp})`,
+    };
+}
+
+const materialPredicates = new EmissionWeakMap<object, Map<string, string>>();
+
+function compileMaterialPredicate(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    api: "isShaderMaterial" | "isStandardMaterial",
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const argument = argumentAt(call, 0);
+    const material = context.bindings.pinValueToTemporary(
+        context.compileValue(argument),
+        "material_predicate",
+        argument,
+    );
+    context.expectKind(material, "material", argument);
+    let functions = materialPredicates.get(context);
+    if (!functions) {
+        functions = new EmissionMap();
+        materialPredicates.set(context, functions);
+    }
+    let name = functions.get(api);
+    if (!name) {
+        name = context.allocateTemporaryCppName("material_predicate");
+        const lowered = lowerMaterialPredicate(
+            sharedPinnedContext(),
+            api,
+            name,
+        );
+        context.nativeEmission.registerNativeFunction(
+            lowered.prototype,
+            lowered.lines,
+        );
+        functions.set(api, name);
+    }
+    return {
+        kind: "boolean",
+        cpp: `bblscene::${name}(${context.requireEngine(material, call)}, ${material.cpp})`,
     };
 }
 
@@ -495,7 +649,8 @@ function compileCreatePbrMaterial(
     context.reachFeature("material:pbr", call);
     context.reachFeature("renderer:scene", call);
     // Typed Texture2D returns use StoredTexture even when every source return
-    // is a solid or file producer. Those producers occupy its FileTexture arm.
+    // is a solid or file producer. Realm loads retain their file provenance
+    // while reporting stored representation. Both occupy the FileTexture arm.
     const fileTexture = (texture: Value): string | undefined => {
         if (
             texture.dataType?.kind === "handle" &&
@@ -503,7 +658,8 @@ function compileCreatePbrMaterial(
         ) {
             if (
                 texture.textureStorage !== "solid" &&
-                texture.textureStorage !== "file"
+                texture.textureStorage !== "file" &&
+                !texture.textureFile
             ) {
                 context.fail(
                     call,
@@ -870,10 +1026,7 @@ function compileCreateShaderMaterial(
         for (const uniform of variant.dynamicUniforms) {
             context.emit({
                 kind: "expression",
-                code:
-                    `bbl::set_shader_uniform_value(${engine}, ` +
-                    `${material}, ${uniform.offset}u, ` +
-                    `${uniform.components.join(", ")});`,
+                code: `([&]() { const std::array<float, ${uniform.components.length}> values{${uniform.components.join(", ")}}; bbl::initialize_shader_uniform_values(${engine}, ${material}, ${uniform.offset}u, ${uniform.components.length}u, values.data()); }());`,
             });
         }
         materialCpp = material;
@@ -1038,9 +1191,26 @@ function compileSetShaderUniform(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
-    const material = context.compileValue(argumentAt(call, 0));
+    const material = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 0)),
+        "uniform_material",
+        call,
+    );
     context.expectKind(material, "material", argumentAt(call, 0));
-    return compileShaderUniformWrite(context, material, call, [1, 2, 3, 4]);
+    const name = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 1)),
+        "uniform_name",
+        call,
+    );
+    if (name.staticString === undefined)
+        return compileDynamicShaderUniformWrite(context, call, material, name);
+    return compileShaderUniformWrite(
+        context,
+        material,
+        call,
+        [1, 2, 3, 4],
+        name.staticString,
+    );
 }
 
 function compileSetShaderTexture(
@@ -1107,6 +1277,23 @@ function compileSetShaderVector3(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     return compileShaderUniformWrite(context, material, call, [3]);
+}
+
+function compileSetShaderMatrix(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 3, 3);
+    const argument = argumentAt(call, 0);
+    const material = context.bindings.pinValueToTemporary(
+        context.compileValue(argument),
+        "shader_matrix_material",
+        argument,
+    );
+    context.expectKind(material, "material", argument);
+    const provenance = shaderMatrixWriteProvenance(sharedPinnedContext());
+    const write = compileShaderUniformWrite(context, material, call, [16]);
+    return { ...write, cpp: `/* ${provenance} */ ${write.cpp}` };
 }
 
 function compileSetPbrEmissive(
@@ -1912,6 +2099,16 @@ const materialIntrinsicHandlers = new EmissionMap<
     ) => Value | undefined
 >([
     ["isPbrMaterial", compileIsPbrMaterial],
+    [
+        "isShaderMaterial",
+        (context, call) =>
+            compileMaterialPredicate(context, call, "isShaderMaterial"),
+    ],
+    [
+        "isStandardMaterial",
+        (context, call) =>
+            compileMaterialPredicate(context, call, "isStandardMaterial"),
+    ],
     ["createSolidTexture2D", compileCreateSolidTexture2D],
     ["createPbrMaterial", compileCreatePbrMaterial],
     ["enableSceneTransmission", compileEnableSceneTransmission],
@@ -1945,12 +2142,14 @@ const materialIntrinsicHandlers = new EmissionMap<
     ["setShadowCasterMaterial", compileSetShadowCasterMaterial],
     ["createLinearDepthMaterial", compileCreateLinearDepthMaterial],
     ["setShaderUniform", compileSetShaderUniform],
+    ["getShaderUniform", compileGetShaderUniform],
     ["setShaderTexture", compileSetShaderTexture],
     ["createExternalTexture", compileCreateExternalTexture],
     ["isExternalTextureReady", compileIsExternalTextureReady],
     ["setShaderExternalTexture", compileSetShaderExternalTexture],
     ["setShaderFloat", compileSetShaderFloat],
     ["setShaderVector3", compileSetShaderVector3],
+    ["setShaderMatrix", compileSetShaderMatrix],
     ["setPbrEmissive", compileSetPbrEmissive],
     ["setPbrGammaAlbedo", compileSetPbrGammaAlbedo],
     ["setShadowOnly", compileSetShadowOnly],

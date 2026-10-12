@@ -225,7 +225,7 @@ void check(const nlohmann::json& test_case) {
     const auto& input = test_case.at("input"); const auto variant = test_case.at("variant").get<std::size_t>();
     Engine engine; Scene scene; scene.engine = &engine;
     if (input.at("existingCamera").get<bool>()) scene.camera = CameraHandle{8};
-    scene.clear_color.r = 7; scene.before_render.push_back([](float) {});
+    scene.clear_color.r = 7; scene.before_render.push_back([](double) {});
     engine.assets.emplace_back(); auto& record = engine.assets.back();
     record.meshes = {MeshHandle{0}}; record.lights = {LightHandle{0}};
     record.has_camera = input.at("camera").get<bool>(); record.camera = CameraHandle{3};

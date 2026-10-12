@@ -104,17 +104,33 @@ inline float window_render_density(SDL_Window* window,
 
 class SdlWindowRun {
 public:
-    SdlWindowRun() : previous_(active_window_run) { active_window_run = this; }
+    struct Resources {
+        std::shared_ptr<Resources> parent;
+        SDL_Window* window = nullptr;
+        SDL_InitFlags initialized = 0;
+        ~Resources() {
+            if (window) {
+                trace_run_window("destroy", window);
+                SDL_DestroyWindow(window);
+            }
+            if (initialized && !parent)
+                SDL_QuitSubSystem(initialized);
+        }
+    };
+
+    SdlWindowRun() : previous_(active_window_run), resources_(std::make_shared<Resources>()) {
+        if (previous_)
+            resources_->parent = previous_->resources_;
+        active_window_run = this;
+    }
     SdlWindowRun(const SdlWindowRun&) = delete;
     SdlWindowRun& operator=(const SdlWindowRun&) = delete;
-    ~SdlWindowRun() {
-        if (window_) {
-            trace_run_window("destroy", window_);
-            SDL_DestroyWindow(window_);
-        }
-        active_window_run = previous_;
-        if (initialized_ && !previous_)
-            SDL_QuitSubSystem(initialized_);
+    ~SdlWindowRun() { active_window_run = previous_; }
+    std::shared_ptr<Resources> retain_resources() const { return resources_; }
+    void use_resources(const std::shared_ptr<Resources>& resources) {
+        if (resources_->window && resources_->window != resources->window)
+            throw std::runtime_error("An engine cannot replace a live GPU window.");
+        resources_ = resources;
     }
 
     bool initialize(SDL_InitFlags flags) {
@@ -124,7 +140,7 @@ public:
         // An outer run may not have initialized its own backend yet. It
         // still owns final SDL shutdown if a nested run initialized SDL.
         for (auto* run = this; run; run = run->previous_) {
-            run->initialized_ |= missing;
+            run->resources_->initialized |= missing;
         }
         return true;
     }
@@ -136,28 +152,27 @@ public:
         if (previous_)
             return previous_->acquire(options, flags);
 #endif
-        if (window_) {
+        if (resources_->window) {
             // Do not reset size, position, maximization or focus when the
             // scene changes. The renderer reads the live canvas size next.
-            trace_run_window("reuse", window_);
-            return window_;
+            trace_run_window("reuse", resources_->window);
+            return resources_->window;
         }
         configure_run_surface(options);
-        window_ = SDL_CreateWindow(options.title.c_str(), options.width, options.height,
-                                   run_window_flags(flags, options));
-        if (window_)
-            trace_run_window("create", window_);
-        return window_;
+        resources_->window = SDL_CreateWindow(options.title.c_str(), options.width, options.height,
+                                              run_window_flags(flags, options));
+        if (resources_->window)
+            trace_run_window("create", resources_->window);
+        return resources_->window;
     }
 
     bool owns(SDL_Window* window) const {
-        return window && (window == window_ || (previous_ && previous_->owns(window)));
+        return window && (window == resources_->window || (previous_ && previous_->owns(window)));
     }
 
 private:
     SdlWindowRun* previous_ = nullptr;
-    SDL_Window* window_ = nullptr;
-    SDL_InitFlags initialized_ = 0;
+    std::shared_ptr<Resources> resources_;
 };
 
 inline bool initialize_run_sdl(SDL_InitFlags flags) {

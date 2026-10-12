@@ -117,16 +117,22 @@ struct TextScenePass {
 
     /**
      * The scene pass's update: the text renderables read the pass camera
-     * (`context._camera ?? null`) as its product, change key and aspect, and
-     * a camera-less pass hands them none.
+     * (`context._camera ?? null`) as its live product, change key and aspect.
+     * Its own lowered dirty gate decides whether to publish those bytes;
+     * a camera-less pass hands it none.
      */
     void update_for_pass(CameraRecord* camera, const std::array<float, 16>& view_projection,
-                         double aspect, double width, double height) const {
+                         double aspect, double width, double height,
+                         std::function<js::TypedArray<float>()> read_view_projection = {}) const {
         const bbl::js::Nullable<TextCameraInput> input =
-            camera ? bbl::js::Nullable<TextCameraInput>{TextCameraInput{
-                         js::TypedArray<float>(view_projection.begin(), view_projection.end()),
-                         upstream::scene_camera_change_key(*camera), aspect}}
-                   : std::nullopt;
+            camera
+                ? bbl::js::Nullable<TextCameraInput>{TextCameraInput{
+                      read_view_projection ? std::nullopt
+                                           : std::optional{js::TypedArray<float>(
+                                                 view_projection.begin(), view_projection.end())},
+                      upstream::scene_camera_change_key(*camera), aspect,
+                      std::move(read_view_projection)}}
+                : std::nullopt;
         update(input ? &*input : nullptr, width, height);
     }
 

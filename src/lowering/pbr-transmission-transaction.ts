@@ -103,7 +103,10 @@ ${lowerRebuildTransaction(context)}`;
 }
 
 /** Source commit/rollback order around the synchronous native group build boundary. */
-function lowerRebuildTransaction(context: LoweringContext): string {
+export function lowerRebuildTransaction(
+    context: LoweringContext,
+    functionName = "run_pbr_rebuild_transaction_impl",
+): string {
     const module = "src/scene/scene-rebuild.ts",
         file = context.sourceFile(module);
     const installs = context.findNodes(
@@ -267,7 +270,7 @@ function lowerRebuildTransaction(context: LoweringContext): string {
         undefined,
     );
     return `// ${context.provenance(module, "rebuildSceneGroups")}
-std::optional<bool> run_pbr_rebuild_transaction_impl(Scene& scene, const std::vector<MeshHandle>& meshes,
+std::optional<bool> ${functionName}(Scene& scene, const std::vector<MeshHandle>& meshes,
     bool (*builder)(Scene&, const std::vector<MeshHandle>&)) {
     std::optional<PbrTransmissionTransaction> transmission;
     bool result = false;

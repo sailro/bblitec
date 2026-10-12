@@ -2,6 +2,7 @@
 // matrices, the per-draw products and the stage block gather.
 #pragma once
 #include <bblite/features/has_pbr_renderer.hpp>
+#include <bblite/features/thin_instances.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -12,7 +13,23 @@
 #if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
+#if BBLITE_THIN_INSTANCES
+#include <bblite/upstream/thin_instance_sync.hpp>
+#include <bblite/pal_source_gpu.hpp>
+#include <bblite/pal_offscreen.hpp>
 #endif
+#endif
+
+namespace bbl {
+struct ShaderPacketSystemState {
+    std::optional<const CameraRecord*> camera;
+    std::optional<double> camera_version, mesh_version, target_width, target_height, aspect,
+        alpha_cutoff;
+    std::array<float, 16> view_projection{}, view{}, projection{}, world{}, world_view{},
+        world_view_projection{};
+    std::array<float, 4> camera_position{};
+};
+} // namespace bbl
 
 namespace bbl::pal {
 
@@ -61,6 +78,9 @@ struct ShaderPassMatrices {
     const std::array<float, 16>* world_view = nullptr;
     const std::array<float, 16>* world_view_projection = nullptr;
     const std::array<float, 4>* camera_position = nullptr;
+    const CameraRecord* camera = nullptr;
+    double target_width = 0.0, target_height = 0.0;
+    bool shadow_camera_facade = false;
 };
 
 /**
@@ -72,23 +92,31 @@ struct ShaderPassMatrices {
  * through the block writes made against `apply`'s result.
  */
 struct ShaderDrawMatrices {
-    std::array<float, 16> world;
-    std::array<float, 16> world_view_projection;
+    std::array<float, 16> world{};
+    std::array<float, 16> world_view_projection{};
     std::optional<std::array<float, 16>> world_view;
 
     ShaderDrawMatrices(const Scene& scene, const Engine& engine, const MeshRecord& mesh,
-                       const ShaderPassMatrices& pass)
-        : world(mesh_block_world(scene, engine, mesh)),
-          world_view_projection(upstream::matrix_product(pass.view_projection, world)),
-          world_view(shader_world_view(pass.view, world)) {}
+                       const ShaderPassMatrices& pass) {
+        // Public-cache draws compute these only inside the source packet's gate.
+        if constexpr (!upstream::public_camera_matrix_caches) {
+            world = mesh_block_world(scene, engine, mesh);
+            world_view_projection = upstream::matrix_product(pass.view_projection, world);
+            world_view = shader_world_view(pass.view, world);
+        }
+    }
 
     /** The pass matrices with this draw's three lanes patched in. */
     [[nodiscard]] ShaderPassMatrices apply(const ShaderPassMatrices& pass) const {
-        ShaderPassMatrices patched = pass;
-        patched.world = &world;
-        patched.world_view = world_view ? &*world_view : nullptr;
-        patched.world_view_projection = &world_view_projection;
-        return patched;
+        if constexpr (upstream::public_camera_matrix_caches) {
+            return pass;
+        } else {
+            ShaderPassMatrices patched = pass;
+            patched.world = &world;
+            patched.world_view = world_view ? &*world_view : nullptr;
+            patched.world_view_projection = &world_view_projection;
+            return patched;
+        }
     }
 };
 
@@ -105,17 +133,120 @@ std::array<float, 4> shader_camera_position(const Scene& scene, const Engine& en
 struct CameraPassMatrices {
     double aspect = 0.0;
     std::array<float, 16> view_projection{};
+    std::array<float, 16> live_view_projection{};
     std::array<float, 16> view{};
     std::array<float, 16> projection{};
     std::array<float, 4> camera_position{};
+    const CameraRecord* camera = nullptr;
+    double target_width = 0.0, target_height = 0.0;
 
     /** The pass matrices a shader draw reads, pointing into this record. */
     [[nodiscard]] ShaderPassMatrices pass() const {
-        ShaderPassMatrices matrices{view_projection.data(), &view, &projection};
+        ShaderPassMatrices matrices{upstream::public_camera_matrix_caches
+                                        ? live_view_projection.data()
+                                        : view_projection.data(),
+                                    &view, &projection};
         matrices.camera_position = &camera_position;
+        matrices.camera = camera;
+        matrices.target_width = target_width;
+        matrices.target_height = target_height;
         return matrices;
     }
 };
+
+ShaderPassMatrices shader_packet_system_matrices(const ShaderPacketSystemOwner& owner,
+                                                 const Scene& scene, const Engine& engine,
+                                                 const MeshRecord& mesh,
+                                                 const MaterialRecord& material,
+                                                 const ShaderPassMatrices& current);
+ShaderPassMatrices shader_packet_published_matrices(const ShaderPacketSystemOwner& owner,
+                                                    const ShaderPassMatrices& current);
+#if BBLITE_THIN_INSTANCES
+inline GpuHandle synchronize_thin_binding(Engine& engine, ThinMaterialBinding& binding,
+                                          double index_count, bool has_color) {
+    return sync_thin_instance_for_draw(engine, thin_instance_data(binding.pool), has_color,
+                                       ThinInstanceGeometry{index_count, {}},
+                                       source_gpu_device(engine));
+}
+
+template <class Row, class BindBuffers>
+void publish_thin_binding(const ThinMaterialBinding& binding, Row& row, BindBuffers bind_buffers) {
+    row.thin_pool = binding.pool;
+    row.thin_draw_args = binding.draw_args;
+    row.indirect_args = nullptr;
+    if (binding.pool && binding.pool->gpu_buffer)
+        bind_buffers(row, binding.draw_args);
+}
+
+template <class Row, class BindBuffers>
+void synchronize_node_thin_draw(Engine& engine, const upstream::RenderItem& item, Row& row,
+                                BindBuffers bind_buffers) {
+    if (!item.thin_binding)
+        throw std::runtime_error("Node binding has no source thin-instance owner.");
+    auto& binding = *item.thin_binding;
+    const auto& mesh = handle_at(engine.meshes, item.mesh);
+    upstream::sync_node_thin_binding_for_draw(
+        false, static_cast<bool>(mesh.visible), upstream::render_item_material_draws(item, engine),
+        static_cast<bool>(mesh.thin_instances), binding.node_requires_instances, binding.draw_args,
+        [&](bool has_color) {
+            binding.pool = mesh.thin_instances;
+            return synchronize_thin_binding(engine, binding, static_cast<double>(row.index_count),
+                                            has_color);
+        });
+    publish_thin_binding(binding, row, bind_buffers);
+}
+#endif
+
+template <class Rows, class BindBuffers>
+void update_material_bindings(const Scene& scene, Engine& engine,
+                              const upstream::RenderDrawList& bindings,
+                              const ShaderPassMatrices& pass, Rows& rows,
+                              [[maybe_unused]] BindBuffers bind_buffers) {
+    for (const auto& binding : bindings.binding_updates) {
+        const auto& item = binding.item;
+        const auto& material = handle_at(engine.materials, item.material);
+        const auto update_custom = [&] {
+            if (material.shader_uniform_snapshot)
+                material.shader_uniform_snapshot(material);
+        };
+        const auto update_system = [&] {
+            if constexpr (upstream::public_camera_matrix_caches) {
+                const auto& mesh = handle_at(engine.meshes, item.mesh);
+                shader_packet_system_matrices(item.shader_packet, scene, engine, mesh, material,
+                                              pass);
+            }
+        };
+#if BBLITE_THIN_INSTANCES
+        auto& row = rows.at(binding.item_index);
+        const auto& mesh = handle_at(engine.meshes, item.mesh);
+        if (!item.thin_binding)
+            throw std::runtime_error("Material binding has no source thin-instance owner.");
+        auto& state = *item.thin_binding;
+        if (item.material_kind != upstream::RenderMaterialKind::shader || state.pool) {
+            upstream::update_thin_binding(
+                item.material_kind, false, static_cast<bool>(mesh.visible),
+                upstream::render_item_material_draws(item, engine),
+                static_cast<bool>(mesh.thin_instances), state.mesh_features, state.shader_has_color,
+                state.node_requires_instances, state.draw_args, update_custom, update_system,
+                [&](bool has_color) {
+                    if (item.material_kind != upstream::RenderMaterialKind::shader)
+                        state.pool = handle_at(engine.meshes, item.mesh).thin_instances;
+                    return synchronize_thin_binding(
+                        engine, state, static_cast<double>(row.index_count), has_color);
+                });
+            publish_thin_binding(state, row, bind_buffers);
+            continue;
+        }
+        publish_thin_binding(state, row, bind_buffers);
+#else
+        static_cast<void>(rows);
+#endif
+        if (item.material_kind == upstream::RenderMaterialKind::shader)
+            upstream::update_shader_binding(
+                item.bucket == upstream::RenderBucket::alpha_blend, false,
+                upstream::render_item_material_draws(item, engine), update_custom, update_system);
+    }
+}
 
 /**
  * `camera`'s pass over a `width` x `height` extent. The aspect is the
@@ -126,7 +257,8 @@ struct CameraPassMatrices {
  * rather than the perspective writer the skybox takes.
  */
 CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine& engine,
-                                        const CameraRecord* camera, double width, double height);
+                                        const CameraRecord* camera, double width, double height,
+                                        bool defer_projection_reads = false);
 
 /**
  * One custom-shader stage block: declared system matrices followed by the

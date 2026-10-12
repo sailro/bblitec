@@ -191,7 +191,7 @@ test("records exact static scene composition reachability", () => {
         } from "@babylonjs/lite";
 
         async function main() {
-            const engine = await createEngine({});
+            const engine = await createEngine(document.createElement("canvas"));
             const scene = createSceneContext(engine);
             addToScene(scene, createHemisphericLight([0, 1, 0], 1));
 
@@ -5621,7 +5621,7 @@ test("compiles generated mesh data and the file-texture contract", () => {
     assert.ok(result.manifest.features.includes("mesh:thin-instances-dynamic"));
     assert.ok(result.manifest.features.includes("scene:remove"));
     const mesh =
-        /bbl::create_retained_mesh_from_data\(v_engine, "lattice_a", (\w+), (\w+), (\w+), (\w+)\.to_optional\(\), std::nullopt, std::nullopt, std::nullopt\)/.exec(
+        /bbl::create_retained_mesh_from_data\([^,\n]+, "lattice_a", (\w+), (\w+), (\w+), (\w+)\.to_optional\(\), std::nullopt, std::nullopt, std::nullopt\)/.exec(
             result.cpp,
         );
     assert.ok(mesh);
@@ -5629,20 +5629,20 @@ test("compiles generated mesh data and the file-texture contract", () => {
         assert.match(
             result.cpp,
             new RegExp(
-                `auto ${mesh[index + 1]} = bbl::js::snapshot_value\\(v_cube\\.${field}\\);`,
+                `auto ${mesh[index + 1]} = bbl::js::snapshot_value\\(\\w*cube\\.${field}\\);`,
             ),
         );
     assert.match(
         result.cpp,
         new RegExp(
-            `auto ${mesh[4]} = bbl::js::Nullable<bbl::js::F32Array>\\{v_cube\\.uvs\\};`,
+            `auto ${mesh[4]} = bbl::js::Nullable<bbl::js::F32Array>\\{\\w*cube\\.uvs\\};`,
         ),
     );
     // The pool is adopted by name; the capacity expression itself is not
     // part of the contract.
     assert.match(
         result.cpp,
-        /bbl::set_thin_instances\(v_engine, v_latticeA, v_bufferA, /,
+        /std::variant<bbl::js::F32Array, bbl::js::F64Array> (\w+) = std::variant<bbl::js::F32Array, bbl::js::F64Array>\{std::in_place_index<0>, \w*bufferA\};\s*bbl::set_thin_instances\([^,\n]+, \w*latticeA, \1, /,
     );
     // A file texture materializes as a compile-time asset and loads through
     // the pinned sampler contract (nearest, unmipped, sRGB base color),
@@ -13278,7 +13278,7 @@ const instancedShaderSource = (extra: string) => `
 @fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`;
 
     async function main() {
-        const engine = await createEngine({});
+        const engine = await createEngine(document.createElement("canvas"));
         const material = createShaderMaterial({
             vertexSource,
             fragmentSource,
@@ -13331,7 +13331,7 @@ test("leaves a line material's own instanced form alone", () => {
         } from "@babylonjs/lite";
 
         async function main() {
-            const engine = await createEngine({});
+            const engine = await createEngine(document.createElement("canvas"));
             const box = createBox(engine);
             box.material = createLineMaterial({
                 color: { r: 1, g: 0, b: 0, a: 1 },
@@ -15420,7 +15420,7 @@ test("lowers a direct thin-instance upload helper", () => {
         }
 
         async function main() {
-            const engine = await createEngine({});
+            const engine = await createEngine(document.createElement("canvas"));
             await build(engine);
         }
     `);
@@ -15446,7 +15446,7 @@ const thinInstancePoolSource = (body: string): string => `
     } from "@babylonjs/lite";
 
     async function main() {
-        const engine = await createEngine({});
+        const engine = await createEngine(document.createElement("canvas"));
         const scene = createSceneContext(engine);
         const mesh = createBox(engine);
         setThinInstances(mesh, new Float32Array(16 * 16), 16);
@@ -15486,27 +15486,27 @@ test("lowers the pinned thin-instance pool lifecycle", () => {
     // The returned slot is a value the source binds and indexes with.
     assert.match(
         result.cpp,
-        /double v_first = bbl::add_thin_instance\(v_engine, v_mesh, bbl::upstream::create_identity_mat4\(/,
+        /double \w*first = bbl::add_thin_instance\([^,\n]+, \w*mesh, \w*thin_matrix_\d+\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::remove_thin_instance\(v_engine, v_mesh, v_first\)/,
+        /bbl::remove_thin_instance\([^,\n]+, \w*mesh, \w*first\)/,
     );
     // The live count read, backed by the record's active count.
-    assert.match(result.cpp, /bbl::thin_instance_count\(v_engine, v_mesh\)/);
+    assert.match(result.cpp, /bbl::thin_instance_count\([^,\n]+, \w*mesh\)/);
     // The pin's own `enabled = true` default, folded at the call site.
     assert.match(
         result.cpp,
-        /bbl::enable_thin_instance_gpu_culling\(v_engine, v_mesh, true\)/,
+        /bbl::enable_thin_instance_gpu_culling\([^,\n]+, \w*mesh, true\)/,
     );
     // The ranged typed-array pair, as generic helpers over the receiver.
     assert.match(
         result.cpp,
-        /bbl::js::array_fill_range\(v_colors, static_cast<float>\(1\.0\), \(v_second \* 4\.0\), \(\(v_second \* 4\.0\) \+ 4\.0\)\)/,
+        /bbl::js::array_fill_range\(\w*colors, static_cast<float>\(1\.0\), \(\w*second \* 4\.0\), \(\(\w*second \* 4\.0\) \+ 4\.0\)\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::js::array_copy_within\(v_colors, \(v_first \* 4\.0\), \(v_second \* 4\.0\), \(\(v_second \* 4\.0\) \+ 4\.0\)\)/,
+        /bbl::js::array_copy_within\(\w*colors, \(\w*first \* 4\.0\), \(\w*second \* 4\.0\), \(\(\w*second \* 4\.0\) \+ 4\.0\)\)/,
     );
 });
 
@@ -15539,7 +15539,7 @@ test("records the omitted thin-instance GPU culler as an adaptation", () => {
         } from "@babylonjs/lite";
 
         async function main() {
-            const engine = await createEngine({});
+            const engine = await createEngine(document.createElement("canvas"));
             const scene = createSceneContext(engine);
             const mesh = createBox(engine);
             setThinInstances(mesh, new Float32Array(16), 1);
@@ -15572,7 +15572,7 @@ ${call}
         const opted = compileSource(withCulling(call));
         assert.match(
             opted.cpp,
-            /bbl::enable_thin_instance_gpu_culling\(v_engine, v_mesh, true\)/,
+            /bbl::enable_thin_instance_gpu_culling\([^,\n]+, \w*mesh, true\)/,
         );
         assert.ok(
             opted.manifest.features.includes("mesh:thin-instance-gpu-culling"),
@@ -15594,7 +15594,7 @@ ${call}
     );
     assert.match(
         toggled.cpp,
-        /bbl::enable_thin_instance_gpu_culling\(v_engine, v_mesh, false\)/,
+        /bbl::enable_thin_instance_gpu_culling\([^,\n]+, \w*mesh, false\)/,
     );
 
     // The pin reads `mesh.thinInstances` and throws without one; a mesh
@@ -15611,7 +15611,7 @@ ${call}
                     } from "@babylonjs/lite";
 
                     async function main() {
-                        const engine = await createEngine({});
+                        const engine = await createEngine(document.createElement("canvas"));
                         const mesh = createBox(engine);
                         enableThinInstanceGpuCulling(mesh${argument});
                     }
@@ -15633,7 +15633,7 @@ test("refuses thin-instance pool calls the pin cannot serve", () => {
         } from "@babylonjs/lite";
 
         async function main() {
-            const engine = await createEngine({});
+            const engine = await createEngine(document.createElement("canvas"));
             const mesh = createBox(engine);
             setThinInstances(mesh, new Float32Array(16), 1);
 ${body}
@@ -15660,7 +15660,7 @@ ${body}
                 } from "@babylonjs/lite";
 
                 async function main() {
-                    const engine = await createEngine({});
+                    const engine = await createEngine(document.createElement("canvas"));
                     const mesh = createBox(engine);
                     const count = mesh.thinInstances!.count;
                     return count;
@@ -15673,7 +15673,7 @@ ${body}
             compileSource(`
                 import { createBox, createEngine } from "@babylonjs/lite";
                 async function main() {
-                    const engine = await createEngine({});
+                    const engine = await createEngine(document.createElement("canvas"));
                     const mesh = createBox(engine);
                     const values = new Float32Array(8);
                     values.copyWithin(0);
@@ -15698,7 +15698,7 @@ test("keeps a static thin-instance scene free of the pool helpers", () => {
         } from "@babylonjs/lite";
 
         async function main() {
-            const engine = await createEngine({});
+            const engine = await createEngine(document.createElement("canvas"));
             const scene = createSceneContext(engine);
             const mesh = createBox(engine);
             const matrices = new Float32Array(32);
@@ -16127,6 +16127,7 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
     assert.match(result.cmake, /gltf_loader\.cpp/);
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
+        "upstream/src/thin_instance_api.cpp",
         "upstream/src/scene_core.cpp",
         "upstream/src/variant_data.cpp",
         "upstream/src/camera_arc_rotate.cpp",
@@ -17260,7 +17261,7 @@ test("binds a numeric shader source factory default at its reached call", () => 
     ]);
     assert.match(
         result.cpp,
-        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\(0\.0\)\);/,
+        /const std::array<float, 1> values\{static_cast<float>\(0\.0\)\}; bbl::initialize_shader_uniform_values\([^;]*, 0u, 1u, values\.data\(\)\);/,
     );
     // An omitted argument runs the default inside the shared helper.
     assert.match(result.cpp, /bblscene::bbl_recursive_fn\d+_group\)\(\)/);
@@ -19631,7 +19632,7 @@ test("reads the thin-instance lanes the pin's own module appends", () => {
     // bound to a name whose lifetime is the frame loop.
     assert.match(
         result.cpp,
-        /bbl::js::F32Array v_bblite_thin_instances_\d+ = /,
+        /std::variant<bbl::js::F32Array, bbl::js::F64Array> v_bblite_thin_instances_\d+ = /,
     );
 });
 

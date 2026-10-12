@@ -7,6 +7,7 @@
 #include <bblite/upstream/render_capabilities.hpp>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -177,6 +178,11 @@ DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh);
 std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
                                          [[maybe_unused]] const MeshRecord& mesh);
 
+/** The physical GPU index image; retained CPU geometry may have a different active length. */
+inline const std::vector<std::uint32_t>& mesh_gpu_indices(const ModelGeometry& geometry) {
+    return geometry.render_indices_override ? *geometry.render_indices_override : geometry.indices;
+}
+
 /**
  * What identifies one immutable shader-geometry upload in a backend cache.
  *
@@ -279,25 +285,16 @@ inline void release_all_shared(Cache& cache, Release release) {
     cache.clear();
 }
 
-/**
- * Whether a live pool has outgrown the instance buffers its registration
- * allocated.
- *
- * `addThinInstance` doubles a full pool, so a mesh registered with sixteen
- * rows can be drawing thirty-two of them a frame later. Both backends size
- * both instance buffers -- matrices and the colour lane -- from the same
- * row count at registration, so this is one question rather than two, and
- * it is asked before the version-gated upload that would otherwise write
- * past the end.
- */
-inline bool thin_instance_pool_grew(const MeshRecord& record, std::uint32_t allocated_rows) {
-    return record.thin_instanced &&
-           record.instance_matrices.size() > static_cast<std::size_t>(allocated_rows);
-}
-
+/** The rows visited by `_thinInstanceWorldAabb`'s bounded `i < count` loop. */
 inline std::size_t thin_instance_active_count(const MeshRecord& record) {
-    return std::min(static_cast<std::size_t>(record.instance_count),
-                    record.instance_matrices.size());
+    if (!record.thin_instances)
+        return 0;
+    const auto& pool = *record.thin_instances;
+    const double rows =
+        std::visit([](const auto& values) { return static_cast<double>(values.size()) / 16.0; },
+                   pool.matrices);
+    const double count = std::min(pool.count, static_cast<double>(js::to_int32(rows)));
+    return count > 0 ? static_cast<std::size_t>(std::ceil(count)) : 0;
 }
 
 #if BBLITE_PINNED_MATERIALS
@@ -343,7 +340,7 @@ PinnedVertexInput pinned_vertex_input(std::string_view name);
 /** Whether a record draws through the pin's thin-instance arm: stamped by
  *  the scene setter or filled by the glTF EXT_mesh_gpu_instancing pool. */
 inline bool pinned_record_instanced(const MeshRecord& record) {
-    return record.thin_instanced || !record.instance_matrices.empty();
+    return static_cast<bool>(record.thin_instances);
 }
 
 /**
@@ -359,11 +356,6 @@ inline bool pinned_record_instance_colored(const MeshRecord& record) {
     return has_instance_colors(record);
 }
 
-#endif
-
-#if BBLITE_GPU_INSTANCE_COLORS
-// Snapshot a retained caller view at the versioned GPU upload boundary.
-std::vector<float> instance_colors_for_upload(const MeshRecord& mesh);
 #endif
 
 #if BBLITE_GPU_MORPH_STORAGE

@@ -51,9 +51,9 @@ export function lowerPhysicsThinInstances(
             {
                 pinned: "matrices",
                 cpp: "matrices",
-                kind: "matrix",
+                kind: "mat4F64",
                 annotation: "Mat4Storage",
-                cppType: "std::vector<float>",
+                cppType: "js::NumericArrayView",
             },
             { pinned: "index", cpp: "index", kind: "number" },
             {
@@ -114,7 +114,7 @@ export function lowerPhysicsThinInstances(
                     initializer: "matrices",
                     binding: { cpp: "source", type: "f64-buffer" },
                     declaration:
-                        "std::variant<std::span<const float>, std::span<const double>> source{std::span<const float>{matrices}};",
+                        "std::variant<js::NumericArrayView, std::span<const double>> source{matrices};",
                 },
             ],
             expression: (expression, numeric) => {
@@ -125,15 +125,8 @@ export function lowerPhysicsThinInstances(
                         "source",
                     )
                 )
-                    return `std::visit([index = static_cast<std::size_t>(${numeric.expression(expression.argumentExpression)})](const auto values) { return static_cast<double>(values[index]); }, source)`;
-                return [
-                    "matrices instanceof Float32Array",
-                    "carrier instanceof Float32Array",
-                ].some((shape) =>
-                    context.expressionMatchesShape(expression, shape),
-                )
-                    ? "true"
-                    : undefined;
+                    return `std::visit([index = ${numeric.expression(expression.argumentExpression)}](const auto& values) { return js::number_at(values, index); }, source)`;
+                return undefined;
             },
             statement: (statement, _numeric, indent) => {
                 if (
@@ -155,6 +148,11 @@ export function lowerPhysicsThinInstances(
                 ];
             },
             memberBindings: new Map<string, PinnedBinding>([
+                // The native carrier is Float32Array even for F64 instances.
+                [
+                    "matrices instanceof Float32Array || carrier instanceof Float32Array",
+                    { cpp: "true", type: "bool", staticBoolean: true },
+                ],
                 [
                     "Number.EPSILON",
                     {
@@ -299,11 +297,17 @@ export function lowerPhysicsThinInstances(
             ["mesh", binding("body.node")],
             [
                 "mesh.thinInstances!.matrices",
-                binding("thin_matrices(world, body.node)", "f32"),
+                {
+                    ...binding("thin_matrices(world, body.node)", "f64-buffer"),
+                    materializeAlias: true,
+                },
             ],
             [
                 "(body.node as Mesh).thinInstances!.matrices",
-                binding("thin_matrices(world, body.node)", "f32"),
+                {
+                    ...binding("thin_matrices(world, body.node)", "f64-buffer"),
+                    materializeAlias: true,
+                },
             ],
             ["handles", binding("state->handles")],
             [
@@ -434,7 +438,10 @@ export function lowerPhysicsThinInstances(
             ],
             [
                 "thin.count",
-                binding("thin_mesh(world, node)->instance_count", "index"),
+                binding(
+                    "thin_mesh(world, node)->thin_instances->count",
+                    "scalar",
+                ),
             ],
             [
                 "world._fo",
@@ -460,9 +467,9 @@ export function lowerPhysicsThinInstances(
         ],
         [
             "thin.count",
-            binding("thin_mesh(world, node)->instance_count", "index"),
+            binding("thin_mesh(world, node)->thin_instances->count", "scalar"),
         ],
-        ["thin.matrices", binding("thin_matrices(world, node)", "f32")],
+        ["thin.matrices", binding("source_matrices", "f64-buffer")],
         [
             "handles.length",
             binding("static_cast<double>(state.handles.size())", "scalar"),
@@ -576,7 +583,7 @@ export function lowerPhysicsThinInstances(
                                 "Expected thin handle allocation length.",
                             );
                         return [
-                            `${indent}ThinPhysicsState state{}; state.handles.resize(static_cast<std::size_t>(${lowerer.expression(local.initializer.arguments[0])}));`,
+                            `${indent}ThinPhysicsState state{}; state.handles.resize(bbl::pinned::array_length(${lowerer.expression(local.initializer.arguments[0])})); const auto source_matrices = thin_matrices(world, node);`,
                         ];
                     }
                     return [`${indent}${entry[1]}`];
@@ -862,7 +869,7 @@ export function lowerPhysicsThinInstances(
             ]),
         },
     );
-    const multiply = (width: "f32" | "f64") =>
+    const multiply = (width: "f64" | "view") =>
         lowerPinnedFunction(
             context,
             "src/math/multiply-mat4-into-buffer.ts",
@@ -871,11 +878,11 @@ export function lowerPhysicsThinInstances(
                 {
                     pinned: "dst",
                     cpp: "dst",
-                    kind: width === "f32" ? "mat4" : "mat4F64",
+                    kind: "mat4F64",
                     cppType:
-                        width === "f32"
-                            ? "std::vector<float>"
-                            : "std::vector<double>",
+                        width === "f64"
+                            ? "std::vector<double>"
+                            : "js::NumericArrayView",
                     mutableRecord: true,
                 },
                 { pinned: "d", cpp: "d", kind: "number" },
@@ -888,6 +895,35 @@ export function lowerPhysicsThinInstances(
                 cppName: `thin_multiply_${width}`,
                 returns: "void",
                 templateParameters: ["typename MatA", "typename MatB"],
+                memberBindings: new Map<string, PinnedBinding>([
+                    ...["a", "b"].map((name): [string, PinnedBinding] => [
+                        name,
+                        {
+                            cpp: name,
+                            type: "f64-buffer",
+                            indexedRead: (owner, index) =>
+                                `js::number_at(${owner}, ${index})`,
+                        },
+                    ]),
+                    ...(width === "view"
+                        ? [
+                              [
+                                  "dst",
+                                  {
+                                      cpp: "dst",
+                                      type: "f64-buffer",
+                                      mutable: true,
+                                      indexedStore: (
+                                          owner: string,
+                                          index: string,
+                                          value: string,
+                                      ) =>
+                                          `js::typed_array_write(${owner}, ${index}, ${value})`,
+                                  },
+                              ] as [string, PinnedBinding],
+                          ]
+                        : []),
+                ]),
             },
         );
     const identity = lowerPinnedFunction(
@@ -968,8 +1004,8 @@ export function lowerPhysicsThinInstances(
             {
                 pinned: "matrices",
                 cpp: "matrices",
-                kind: "mat4",
-                cppType: "std::vector<float>",
+                kind: "mat4F64",
+                cppType: "js::NumericArrayView",
                 mutableRecord: true,
             },
             { pinned: "index", cpp: "index", kind: "number" },
@@ -991,7 +1027,26 @@ export function lowerPhysicsThinInstances(
         {
             cppName: "thin_write_matrix",
             returns: "void",
-            memberBindings: new Map([
+            methods: new Map([
+                [
+                    "set",
+                    (receiver, args) =>
+                        `thin_copy_matrix(${receiver}, ${args.join(", ")})`,
+                ],
+            ]),
+            memberBindings: new Map<string, PinnedBinding>([
+                [
+                    "matrices",
+                    {
+                        cpp: "matrices",
+                        type: "f64-buffer",
+                        mutable: true,
+                        indexedRead: (owner, index) =>
+                            `js::number_at(${owner}, ${index})`,
+                        indexedStore: (owner, index, value) =>
+                            `js::typed_array_write(${owner}, ${index}, ${value})`,
+                    },
+                ],
                 [
                     "Number.EPSILON",
                     binding("std::numeric_limits<double>::epsilon()", "scalar"),
@@ -1008,11 +1063,7 @@ export function lowerPhysicsThinInstances(
                 ],
                 [
                     "multiplyMat4IntoBuffer",
-                    (args) => `thin_multiply_f32(${args.join(", ")})`,
-                ],
-                [
-                    "matrices.set",
-                    (args) => `thin_copy_matrix(matrices, ${args.join(", ")})`,
+                    (args) => `thin_multiply_view(${args.join(", ")})`,
                 ],
             ]),
         },
@@ -1097,9 +1148,11 @@ export function lowerPhysicsThinInstances(
     return {
         state: `using ThinScaledShapes = std::map<std::array<double, 3>, pal::PhysicsShapeHandle>;
 struct ThinPhysicsState { ThinScaledShapes scaled_shapes; PhysicsBody body; std::vector<pal::PhysicsBodyHandle> handles; pal::PhysicsTransform transform; std::array<double, 4> rotation; std::vector<double> scales; std::vector<double> scratch; std::vector<double> inverse; std::array<float, 16> carrier; double carrier_version = 0; bool carrier_identity = false; };`,
-        helpers: `${quat}\n${multiply("f32")}\n${multiply("f64")}\n${transform}\n${compose}\n${composeDouble}\n${identity}\n${inverse}
-void thin_copy_matrix(std::vector<float>& matrices, const std::vector<double>& values, double offset) {
-    std::transform(values.begin(), values.end(), matrices.begin() + static_cast<std::ptrdiff_t>(offset), [](double value) { return static_cast<float>(value); });
+        helpers: `${quat}\n${multiply("f64")}\n${multiply("view")}\n${transform}\n${compose}\n${composeDouble}\n${identity}\n${inverse}
+void thin_copy_matrix(js::NumericArrayView matrices, const std::vector<double>& values, double offset) {
+    const auto start = js::array_index(offset);
+    if (start > matrices.size() || values.size() > matrices.size() - start) throw std::runtime_error("TypedArray set does not fit the target array.");
+    for (std::size_t index = 0; index < values.size(); ++index) matrices.store(start + index, values[index]);
 }
 ${writeMatrix}
 ${update}
@@ -1112,12 +1165,12 @@ MeshRecord* thin_mesh(PhysicsWorld& world, PhysicsNodeRef node) {
     const auto* handle = std::get_if<MeshHandle>(&node);
     if (!handle) return nullptr;
     auto& mesh = ${recordAt("world.engine->meshes", "*handle")};
-    return mesh.thin_instanced ? &mesh : nullptr;
+    return mesh.thin_instances ? &mesh : nullptr;
 }
-std::vector<float>& thin_matrices(PhysicsWorld& world, PhysicsNodeRef node) {
+js::NumericArrayView thin_matrices(PhysicsWorld& world, PhysicsNodeRef node) {
     auto* mesh = thin_mesh(world, node);
-    if (!mesh || !mesh->instance_source) throw std::runtime_error("Thin-instance matrix storage is absent.");
-    return *mesh->instance_source;
+    if (!mesh) throw std::runtime_error("Thin-instance matrix storage is absent.");
+    return thin_instance_matrix_values(*mesh->thin_instances);
 }
 ThinPhysicsState* thin_state(PhysicsWorld& world, pal::PhysicsBodyHandle handle) {
     const auto found = world.thin_states.find(handle.value);

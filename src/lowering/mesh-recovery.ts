@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { meshCpuStreamFields } from "./mesh-cpu-streams.js";
+import { lowerMeshAttributeCapacities } from "./mesh-attribute-capacities.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
@@ -88,7 +89,8 @@ export function lowerRetainedMeshRecovery(context: LoweringContext): string {
             `    replacement.${member} = ${boolean(property.initializer)};`,
         );
     }
-    return `// ${context.provenance(module, "_rebuildMeshes, uploadRetainedMesh")}
+    return `${lowerMeshAttributeCapacities(context, true)}
+// ${context.provenance(module, "_rebuildMeshes, uploadRetainedMesh")}
 static void recover_retained_mesh(Engine& engine, MeshHandle mesh) {
     auto& record = handle_at(engine.meshes, mesh);
     const auto old = record.geometry;
@@ -101,6 +103,9 @@ static void recover_retained_mesh(Engine& engine, MeshHandle mesh) {
     // Preserve mesh metadata without copying buffers the new upload replaces.
     ModelGeometry replacement;
     replacement.owned_packed_geometry = previous.owned_packed_geometry;
+    replacement.attribute_capacities = recovered_mesh_attribute_capacities(
+        static_cast<double>(retained.positions.size()), static_cast<double>(retained.normals.size()),
+        ${["uvs", "uvs2", "tangents", "colors"].map((stream) => `retained.${stream} ? std::optional<double>{static_cast<double>(retained.${stream}.size())} : std::nullopt`).join(",\n        ")});
     replacement.source_indices_reversed = previous.source_indices_reversed;
     replacement.morph_positions = previous.morph_positions;
     replacement.morph_bounds = previous.morph_bounds;

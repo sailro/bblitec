@@ -74,6 +74,7 @@ enum class PinnedBackgroundArmKind { ground, hdr_skybox };
 double inverse_image_processed_channel(double value, double, double, bool) { return value; }
 std::array<float, 16> camera_world_matrix(int) { return {}; }
 std::array<float, 16> build_view_matrix(std::array<float, 16> value) { return value; }
+std::array<float, 16> build_camera_view_matrix(int) { return {}; }
 } // namespace bbl::upstream
 namespace bbl::pal {
 enum class SkyboxLayer { solid, environment, image };

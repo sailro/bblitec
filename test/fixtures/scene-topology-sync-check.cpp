@@ -59,6 +59,7 @@ bbl::pal::DecodedImage bbl::pal::decode_image(std::span<const std::uint8_t> byte
 
 // The row sync's vertex write is compiled in, as a position-updating scene's.
 static_assert(BBLITE_MESH_ATTRIBUTE_UPDATE);
+static_assert(BBLITE_MESH_GEOMETRY_UPDATE);
 
 namespace {
 
@@ -71,13 +72,18 @@ unsigned next_lease = 0;
 struct Row {
     unsigned lease = 0;
     std::uint64_t attribute_version = 0;
+    std::uint64_t index_version = 0;
+    std::uint32_t index_count = 0;
     explicit Row(unsigned value) : lease(value) {}
     Row(Row&& other) noexcept
-        : lease(std::exchange(other.lease, 0u)), attribute_version(other.attribute_version) {}
+        : lease(std::exchange(other.lease, 0u)), attribute_version(other.attribute_version),
+          index_version(other.index_version), index_count(other.index_count) {}
     Row& operator=(Row&& other) noexcept {
         assert(lease == 0);
         lease = std::exchange(other.lease, 0u);
         attribute_version = other.attribute_version;
+        index_version = other.index_version;
+        index_count = other.index_count;
         return *this;
     }
 };
@@ -86,12 +92,19 @@ struct Row {
 struct RowWrites {
     unsigned blocks = 0, vertex_uploads = 0;
     std::vector<GpuVertex> vertices;
+    std::vector<std::pair<unsigned, std::vector<std::uint32_t>>> index_uploads;
+    bool reject_indices = false;
     void write_mesh_blocks(const Scene&, const upstream::RenderItem&, const MeshRecord&, Row&) {
         ++blocks;
     }
     void upload_vertices(Row&, const std::vector<GpuVertex>& uploaded) {
         ++vertex_uploads;
         vertices = uploaded;
+    }
+    void upload_indices(Row& row, const std::vector<std::uint32_t>& uploaded) {
+        if (reject_indices)
+            throw std::runtime_error("Index upload failed");
+        index_uploads.emplace_back(row.lease, uploaded);
     }
 };
 
@@ -215,6 +228,61 @@ CameraRecord looking_down_z() {
 
 bool same_color(const Color4& left, const Color4& right) {
     return left.r == right.r && left.g == right.g && left.b == right.b && left.a == right.a;
+}
+
+/** Stable geometry writes publish separately to every row, using the padded GPU index image. */
+void check_mutable_index_rows() {
+    Engine engine;
+    Scene scene;
+    engine.geometries.resize(1);
+    engine.meshes.emplace_back().geometry = 0;
+    ModelGeometry& geometry = engine.geometries[0];
+    geometry.vertices.resize(3);
+    geometry.indices = {0, 1, 2};
+    geometry.render_indices_override = std::vector<std::uint32_t>{2, 1, 0, 0, 0, 0};
+    geometry.index_version = 1;
+    upstream::RenderPlan plan;
+    upstream::RenderItem item{};
+    item.mesh = MeshHandle{0};
+    item.geometry = 0;
+    plan.items = {item, item};
+    std::vector<Row> rows;
+    rows.emplace_back(101);
+    rows.emplace_back(102);
+    RowWrites writes;
+    const auto topology = scene.render_topology_version;
+    sync_plan_mesh_rows(scene, engine, plan, rows, writes);
+    assert(writes.index_uploads.size() == 2 && writes.vertex_uploads == 0);
+    for (std::size_t index = 0; index < rows.size(); ++index) {
+        assert(rows[index].lease == 101 + index && rows[index].index_version == 1);
+        assert(rows[index].index_count == 6);
+        assert(writes.index_uploads[index].first == rows[index].lease);
+        assert(writes.index_uploads[index].second == *geometry.render_indices_override);
+        assert(writes.index_uploads[index].second != geometry.indices);
+    }
+    assert(scene.render_topology_version == topology);
+    // Retained CPU mutations alone do not publish a new GPU write.
+    geometry.indices = {1, 2, 0};
+    sync_plan_mesh_rows(scene, engine, plan, rows, writes);
+    assert(writes.index_uploads.size() == 2);
+    geometry.render_indices_override = std::vector<std::uint32_t>{1, 0, 2, 0, 0, 0};
+    ++geometry.index_version;
+    writes.reject_indices = true;
+    bool rejected = false;
+    try {
+        sync_plan_mesh_rows(scene, engine, plan, rows, writes);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    assert(rejected && rows[0].index_version == 1 && rows[1].index_version == 1);
+    writes.reject_indices = false;
+    sync_plan_mesh_rows(scene, engine, plan, rows, writes);
+    assert(writes.index_uploads.size() == 4);
+    assert(rows[0].index_version == 2 && rows[1].index_version == 2);
+    assert(writes.index_uploads[2].second == *geometry.render_indices_override);
+    assert(writes.index_uploads[3].second == *geometry.render_indices_override);
+    assert(rows[0].lease == 101 && rows[1].lease == 102);
+    assert(scene.render_topology_version == topology);
 }
 
 /**
@@ -634,6 +702,7 @@ void check_native_preparation() {
 } // namespace
 
 int main() {
+    check_mutable_index_rows();
     check_pass_resolution();
     check_retained_blocks();
     check_camera_less_frame();

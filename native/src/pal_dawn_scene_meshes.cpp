@@ -11,6 +11,7 @@
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
+#include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_dawn_scene.hpp"
@@ -387,12 +388,13 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
     if (use_source_indices && geometry.source_indices_reversed) {
         node_source_indices(geometry, source_indices);
     }
-    const auto& upload_indices = source_indices.empty() ? geometry.indices : source_indices;
+    const auto& upload_indices =
+        source_indices.empty() ? mesh_gpu_indices(geometry) : source_indices;
     const bool shader_material = item.material_kind == upstream::RenderMaterialKind::shader;
     const std::vector<GpuVertex> vertices = mesh_gpu_vertices(geometry, mesh_record);
     DawnMesh mesh(state);
     if (shader_material) {
-#if BBLITE_MESH_ATTRIBUTE_UPDATE
+#if BBLITE_MESH_ATTRIBUTE_UPDATE || BBLITE_MESH_GEOMETRY_UPDATE
         // Mutable procedural geometry must own its upload instead of
         // borrowing the immutable shader-geometry cache.
         mesh.vertices = create_buffer(state, WGPUBufferUsage_Vertex, vertices.data(),
@@ -440,7 +442,7 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
         }
 #endif
     }
-    mesh.index_count = static_cast<std::uint32_t>(geometry.indices.size());
+    mesh.index_count = static_cast<std::uint32_t>(upload_indices.size());
 #if BBLITE_GPU_DEFORMATION
     mesh.deformation_uniforms =
         create_buffer(state, WGPUBufferUsage_Uniform, nullptr, sizeof(DeformationUniforms));
@@ -463,41 +465,11 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
     }
 #endif
 #if BBLITE_GPU_INSTANCING
-    {
-        std::vector<std::array<float, 16>> instance_matrices = mesh_record.instance_matrices;
-        if (instance_matrices.empty()) {
-            std::array<float, 16> identity{};
-            identity[0] = 1.0f;
-            identity[5] = 1.0f;
-            identity[10] = 1.0f;
-            identity[15] = 1.0f;
-            instance_matrices.push_back(identity);
-        }
-        // The buffer holds the full capacity pool; dynamic pools
-        // draw the record count and re-upload through the frame
-        // loop's version-gated mesh-sync pass.
-        mesh.instances = create_buffer(
-            state, WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage, instance_matrices.data(),
-            instance_matrices.size() * sizeof(instance_matrices.front()));
-        mesh.instance_count = mesh_record.thin_instanced
-                                  ? mesh_record.instance_count
-                                  : static_cast<std::uint32_t>(instance_matrices.size());
-        mesh.instance_version = mesh_record.instance_version;
-        mesh.instance_capacity = static_cast<std::uint32_t>(instance_matrices.size());
-#if BBLITE_GPU_INSTANCE_COLORS
-        {
-            // One tightly-packed RGBA row per matrix-pool slot. A
-            // colour setter may first run after registration, so the
-            // fallback must reserve the established capacity, not one
-            // row, before the versioned upload fills it.
-            std::vector<float> instance_colors = instance_colors_for_upload(mesh_record);
-            instance_colors.resize(std::max(instance_colors.size(), instance_matrices.size() * 4),
-                                   1.0f);
-            mesh.instance_colors =
-                create_buffer(state, WGPUBufferUsage_Vertex, instance_colors.data(),
-                              instance_colors.size() * sizeof(float));
-        }
-#endif
+    mesh.thin_pool = mesh_record.thin_instances;
+    if (!mesh.thin_pool) {
+        const std::array<float, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        mesh.instances = create_buffer(state, WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage,
+                                       identity.data(), sizeof(identity));
     }
 #endif
     const upstream::ShaderVariantInfo* mesh_shader_info =
@@ -524,6 +496,9 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
             std::max<std::uint64_t>(mesh_shader_info->vertex.float_size * 4ull, 16ull));
     }
     mesh.attribute_version = geometry.attribute_version;
+#if BBLITE_MESH_GEOMETRY_UPDATE
+    mesh.index_version = geometry.index_version;
+#endif
 
     // Per-slot texture selection reads the generated
     // `material_texture_slots` table -- the same rows the SDL_GPU

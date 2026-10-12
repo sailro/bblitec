@@ -99,8 +99,9 @@ inline CameraRecord* geometry_pass_camera(Engine& engine, const Scene& scene) {
 template <class Block> class RetainedBlock {
 public:
     /** The pass's write: `writer(camera)` with a camera, nothing without. */
-    template <class Writer> const Block& write(const CameraRecord* camera, Writer&& writer) {
-        if (!upstream::pass_scene_block_skips(camera))
+    template <class Writer>
+    const Block& write(const CameraRecord* camera, Writer&& writer, bool publish = true) {
+        if (publish && !upstream::pass_scene_block_skips(camera))
             block_ = std::forward<Writer>(writer)(*camera);
         return block_;
     }
@@ -155,6 +156,8 @@ private:
  * hold.
  */
 struct RetainedSceneBlock {
+    SceneUniformCache cache{};
+    bool publish = false;
     RetainedBlock<std::array<float, 16>> view_projection;
 #if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
     RetainedBlock<upstream::SceneUniforms> pass;
@@ -174,17 +177,54 @@ using RetainedSceneBlocks = PassBlocks<RetainedSceneBlock>;
  * camera-less pass's zeros.
  */
 inline void keep_view_projection(CameraPassMatrices& matrices, const CameraRecord* camera,
-                                 RetainedSceneBlock& retained) {
+                                 RetainedSceneBlock& retained, const Scene& scene,
+                                 const Engine& engine, double width, double height) {
+    struct SourceInput {
+        SceneUniformCache& cache;
+        double width{}, height{};
+        bool canvas_size = false;
+    } source{retained.cache, width, height};
+    struct EngineInput {
+        double width, height;
+    } dimensions{width, height};
+    struct SceneInput {
+        std::uint64_t fog_identity, environment_identity;
+        double exposure, contrast;
+    } inputs{scene.state->fog_identity, scene.state->environment_identity,
+             scene.environment.exposure, scene.environment.contrast};
+    retained.publish = false;
+    upstream::write_retained_pass_scene_ubo(
+        source, dimensions, inputs, camera,
+        [](const CameraRecord* value) { return upstream::scene_camera_change_key(*value); },
+        [&](SourceInput&, double) {
+            retained.publish = true;
+            if constexpr (upstream::public_camera_matrix_caches) {
+                matrices.view_projection =
+                    upstream::build_view_projection(*camera, matrices.aspect);
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
+                retained.pass.write(camera, [&](const CameraRecord& written) {
+                    return pinned_scene_block(scene, engine, written, matrices.view_projection);
+                });
+#endif
+#if BBLITE_HAS_BILLBOARDS
+                retained.billboard.write(camera, [&](const CameraRecord& written) {
+                    return billboard_scene_block(scene, engine, written, matrices.view_projection,
+                                                 matrices.view);
+                });
+#endif
+            }
+        });
+    (void)engine;
     matrices.view_projection = retained.view_projection.write(
-        camera, [&](const CameraRecord&) { return matrices.view_projection; });
+        camera, [&](const CameraRecord&) { return matrices.view_projection; }, retained.publish);
 }
 
 /** `build_pass_camera` with the view-projection its pass keeps. */
 inline PassCamera build_kept_pass_camera(const Scene& scene, const Engine& engine,
                                          CameraRecord* camera, double width, double height,
                                          RetainedSceneBlock& retained) {
-    PassCamera pass = build_pass_camera(scene, engine, camera, width, height);
-    keep_view_projection(pass.matrices, camera, retained);
+    PassCamera pass{camera, camera_pass_matrices(scene, engine, camera, width, height, true)};
+    keep_view_projection(pass.matrices, camera, retained, scene, engine, width, height);
     return pass;
 }
 
@@ -193,9 +233,14 @@ inline PassCamera build_kept_pass_camera(const Scene& scene, const Engine& engin
 inline const upstream::SceneUniforms&
 write_pass_scene_block(RetainedSceneBlock& retained, const Scene& scene, const Engine& engine,
                        const CameraRecord* camera, const std::array<float, 16>& view_projection) {
-    return retained.pass.write(camera, [&](const CameraRecord& written) {
-        return pinned_scene_block(scene, engine, written, view_projection);
-    });
+    if constexpr (upstream::public_camera_matrix_caches)
+        return retained.pass.block();
+    return retained.pass.write(
+        camera,
+        [&](const CameraRecord& written) {
+            return pinned_scene_block(scene, engine, written, view_projection);
+        },
+        retained.publish);
 }
 
 /** The same write over `pass`'s own camera and view-projection. */
@@ -214,9 +259,14 @@ write_billboard_scene_block(RetainedSceneBlock& retained, const Scene& scene, co
                             const CameraRecord* camera,
                             const std::array<float, 16>& view_projection,
                             const std::array<float, 16>& view) {
-    return retained.billboard.write(camera, [&](const CameraRecord& written) {
-        return billboard_scene_block(scene, engine, written, view_projection, view);
-    });
+    if constexpr (upstream::public_camera_matrix_caches)
+        return retained.billboard.block();
+    return retained.billboard.write(
+        camera,
+        [&](const CameraRecord& written) {
+            return billboard_scene_block(scene, engine, written, view_projection, view);
+        },
+        retained.publish);
 }
 #endif
 #endif

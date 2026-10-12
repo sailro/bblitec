@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -7,6 +6,11 @@ import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import {
+    lowerThinInstanceApi,
+    lowerThinInstanceSync,
+} from "../src/lowering/thin-instance-lowerer.js";
+import { thinInstanceSyncOracle } from "./thin-instance-sync-oracle.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
@@ -149,8 +153,8 @@ test(
                     const expected = multiply(root, local);
                     rows.push(`{
             MeshRecord record;
-            record.thin_instanced = ${pooled};
-            record.instance_matrices.resize(1);
+            if (${pooled}) { record.thin_instances = std::make_shared<ThinInstancePoolData>();
+                record.thin_instances->matrices = js::F32Array(16); record.thin_instances->count = 1; }
             record.parent_world = ${matrix(parent)};
             record.position = {${position.x}, ${position.y}, ${position.z}};
             record.scaling = {${scaling.x}, ${scaling.y}, ${scaling.z}};
@@ -274,72 +278,37 @@ int main() {
 );
 
 test(
-    "both backends resize instance streams and upload current matrices and colors",
+    "thin GPU synchronization matches pinned dirty writes, F64 packing and indirect retry",
     { skip: !tools },
-    () => {
+    async () => {
         const output = resolve("artifacts/thin-instance-upload");
         mkdirSync(output, { recursive: true });
-        const shared = sharedGpuSource().replaceAll("\r\n", "\n");
-        const helpers = [
-            "inline bool thin_instance_pool_grew(",
-            "inline std::size_t thin_instance_active_count(\n",
-            "std::vector<float> instance_colors_for_upload(",
-        ]
-            .map((signature) => cppFunction(shared, signature))
-            .join("\n");
-        // The pool's refresh is the shared row sync's (`sync_plan_mesh_rows`);
-        // each backend supplies only the two writes it asks for.
-        const synchronize = readFileSync(
-            "native/src/pal_scene_synchronize.hpp",
-            "utf8",
-        );
-        const condition = synchronize.indexOf("mesh.thin_instanced &&");
-        const start = synchronize.lastIndexOf("if (", condition);
-        assert.ok(condition >= 0 && start >= 0, "the shared pool refresh");
-        const refresh = `template <class Rows>
-        void refresh_pool(const MeshRecord& mesh, UploadedMesh& gpu, Rows& rows) {
-            ${cppFunction(synchronize.slice(start), "if (")}
-        }`;
-        const updates = [
-            ["sdl_gpu", "MeshRowUploads", "Uploads& uploads;"],
-            ["dawn", "MeshRowWrites", "Engine* engine = nullptr;"],
-        ].map(([backend, rows, member]) => {
-            const source = readFileSync(
-                `native/src/pal_${backend}.cpp`,
-                "utf8",
-            );
-            const record = source.slice(source.indexOf(`struct ${rows} {`));
-            const writes = [
-                "void recreate_instances(",
-                "void update_instances(",
-            ]
-                .map((signature) => cppFunction(record, signature))
-                .join("\n");
-            return `struct ${rows} {
-            State& state;
-            ${member}
-            ${writes}
-        };
-        void update_${backend}(const MeshRecord& mesh, UploadedMesh& gpu) {
-            State state;
-            [[maybe_unused]] Uploads uploads;
-            ${rows} rows{state, ${backend === "dawn" ? "nullptr" : "uploads"}};
-            refresh_pool(mesh, gpu, rows);
-        }`;
-        });
+        const context = new LoweringContext();
+        const oracle = await thinInstanceSyncOracle();
+        writeFileSync(join(output, "operations.inc"), oracle.statements);
         writeFileSync(
-            join(output, "updates.hpp"),
-            `namespace bbl { ${readFileSync("test/fixtures/gpu-writer-recorder.hpp", "utf8")}
-${helpers}\n${refresh}\n${updates.join("\n")} }`,
+            join(output, "thin-source.hpp"),
+            "namespace bbl {\n" +
+                lowerThinInstanceApi(context, [
+                    "mesh:thin-instances-dynamic",
+                    "mesh:thin-instance-colors",
+                    "mesh:thin-instance-gpu-culling",
+                ]) +
+                lowerThinInstanceSync(context) +
+                "\n}",
         );
-        runGeneratedProgram(
+        const actual = runGeneratedProgram(
             tools!,
             "thin-instance-upload",
             readFileSync(
                 "test/fixtures/thin-instance-upload-check.cpp",
                 "utf8",
             ),
-            { flags: ["/DBBLITE_HAS_PICKING=1", "/I", output] },
+            {
+                flags: ["/I", output],
+            },
         );
+        assert.equal(actual.replaceAll("\r\n", "\n"), oracle.expected);
     },
 );
+import assert from "node:assert/strict";

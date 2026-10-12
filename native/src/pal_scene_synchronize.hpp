@@ -8,6 +8,7 @@
 
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
+#include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/shader_external_textures.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/workers.hpp>
@@ -297,6 +298,12 @@ Iteration<bool> prepare_scene_pipelines(Engine& engine,
  * releases removed rows, and uploads only new rows. The GPU resource type and
  * its release/upload operations remain backend-owned.
  */
+inline bool same_render_mesh_source(const upstream::RenderItem& left,
+                                    const upstream::RenderItem& right) {
+    return left.mesh == right.mesh && left.geometry == right.geometry &&
+           left.material.value == right.material.value;
+}
+
 template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
 inline std::vector<GpuMesh>
 rematch_render_meshes(const std::vector<upstream::RenderItem>& previous_items,
@@ -309,17 +316,13 @@ rematch_render_meshes(const std::vector<upstream::RenderItem>& previous_items,
     // The whole mesh handle: a row uploaded for a retired mesh must not
     // survive into the mesh that reused its slot (and possibly its
     // geometry slot) before this rebuild.
-    const auto same_source = [](const upstream::RenderItem& left,
-                                const upstream::RenderItem& right) {
-        return left.mesh == right.mesh && left.geometry == right.geometry &&
-               left.material.value == right.material.value;
-    };
     std::vector<GpuMesh> result;
     result.reserve(updated_items.size());
     std::size_t previous_index = 0;
     for (const upstream::RenderItem& item : updated_items) {
         std::size_t scan = previous_index;
-        while (scan < previous_items.size() && !same_source(previous_items[scan], item)) {
+        while (scan < previous_items.size() &&
+               !same_render_mesh_source(previous_items[scan], item)) {
             ++scan;
         }
         if (scan < previous_items.size()) {
@@ -336,6 +339,23 @@ rematch_render_meshes(const std::vector<upstream::RenderItem>& previous_items,
         release_mesh(uploaded_meshes[dropped]);
     }
     return result;
+}
+
+/** Refresh native row membership without changing the source scene's membership or versions. */
+template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
+inline bool rebuild_render_plan_meshes(const Scene& scene, const Engine& engine,
+                                       upstream::RenderPlan& plan, std::vector<GpuMesh>& meshes,
+                                       ReleaseMesh&& release_mesh, UploadItem&& upload_item) {
+    upstream::RenderPlan updated = upstream::build_render_plan(scene, engine);
+    validate_render_plan_items(updated);
+    const bool changed = !std::equal(plan.items.begin(), plan.items.end(), updated.items.begin(),
+                                     updated.items.end(), same_render_mesh_source);
+    if (changed)
+        meshes = rematch_render_meshes(plan.items, updated.items, meshes,
+                                       std::forward<ReleaseMesh>(release_mesh),
+                                       std::forward<UploadItem>(upload_item));
+    plan = std::move(updated);
+    return changed;
 }
 
 /** Rebuild an existing overlay's rows before uploads/encoding, using backend-owned leases. */
@@ -356,15 +376,13 @@ inline bool refresh_overlay_render_plans(Engine& engine, std::vector<upstream::R
         Scene& scene = **overlay;
         if (scene.render_topology_version != versions[layer]) {
             reject_uncomposed_family_growth(scene.material_family_mask);
-            upstream::RenderPlan updated = upstream::build_render_plan(scene, engine);
-            validate_render_plan_items(updated);
-            meshes[layer] = rematch_render_meshes(plans[layer].items, updated.items, meshes[layer],
-                                                  release_mesh, upload_item);
-            plans[layer] = std::move(updated);
+            rebuild_render_plan_meshes(scene, engine, plans[layer], meshes[layer], release_mesh,
+                                       upload_item);
             versions[layer] = scene.render_topology_version;
             changed = true;
         } else if (draw_lists_changed) {
-            plans[layer].draw_lists = upstream::build_render_draw_lists(plans[layer].items, engine);
+            rebuild_render_plan_meshes(scene, engine, plans[layer], meshes[layer], release_mesh,
+                                       upload_item);
             changed = true;
         }
     }
@@ -372,16 +390,13 @@ inline bool refresh_overlay_render_plans(Engine& engine, std::vector<upstream::R
 }
 
 /**
- * One plan's per-frame row refresh over the meshes uploaded for it: the
- * thin-instance pool's re-upload (recreated when the pool grew past what was
- * allocated, which is also a full upload), the backend's per-mesh blocks, the
- * attribute-version gated vertex upload, and the morph weights. The vertex
+ * One plan's per-frame row refresh: the backend's per-mesh blocks,
+ * version-gated vertex and index uploads, and morph weights. The vertex
  * buffers hold the geometry's local lanes, so a transform uploads nothing
  * here; it reaches the draw through the mesh block.
  *
- * `Rows` supplies the GPU writes: `recreate_instances(gpu, mesh)`,
- * `update_instances(gpu, mesh, count)`, `write_mesh_blocks(scene, item,
- * mesh, gpu)`, `upload_vertices(gpu, vertices)` and
+ * `Rows` supplies the GPU writes: `write_mesh_blocks(scene, item,
+ * mesh, gpu)`, `upload_vertices(gpu, vertices)`, `upload_indices(gpu, indices)` and
  * `upload_morph_weights(gpu, geometry, mesh)`.
  */
 template <class Mesh, class Rows>
@@ -391,30 +406,20 @@ void sync_plan_mesh_rows(const Scene& scene, Engine& engine, const upstream::Ren
         const upstream::RenderItem& item = plan.items[index];
         const MeshRecord& mesh = handle_at(engine.meshes, item.mesh);
         Mesh& gpu = meshes[index];
-#if BBLITE_GPU_INSTANCING
-        if (mesh.thin_instanced && gpu.instance_version != mesh.instance_version) {
-            // Nothing caches the instance buffers -- every pass reads the
-            // row live at the draw -- so a shadow or depth task later this
-            // frame binds the recreated ones. Slots past the active count
-            // keep their previous contents and are never drawn.
-            const bool recreated = thin_instance_pool_grew(mesh, gpu.instance_capacity);
-            if (recreated) {
-                rows.recreate_instances(gpu, mesh);
-                gpu.instance_capacity = static_cast<std::uint32_t>(mesh.instance_matrices.size());
-            }
-            const std::size_t active_count = thin_instance_active_count(mesh);
-            if (!recreated && active_count > 0)
-                rows.update_instances(gpu, mesh, active_count);
-            gpu.instance_count = static_cast<std::uint32_t>(active_count);
-            gpu.instance_version = mesh.instance_version;
-        }
-#endif
         rows.write_mesh_blocks(scene, item, mesh, gpu);
-#if BBLITE_MESH_ATTRIBUTE_UPDATE
+#if BBLITE_MESH_ATTRIBUTE_UPDATE || BBLITE_MESH_GEOMETRY_UPDATE
         const ModelGeometry& geometry = engine.geometries[item.geometry];
         if (gpu.attribute_version != geometry.attribute_version) {
             rows.upload_vertices(gpu, mesh_gpu_vertices(geometry, mesh));
             gpu.attribute_version = geometry.attribute_version;
+        }
+#endif
+#if BBLITE_MESH_GEOMETRY_UPDATE
+        if (gpu.index_version != geometry.index_version) {
+            const auto& indices = mesh_gpu_indices(geometry);
+            rows.upload_indices(gpu, indices);
+            gpu.index_count = static_cast<std::uint32_t>(indices.size());
+            gpu.index_version = geometry.index_version;
         }
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
@@ -437,9 +442,16 @@ void update_scene_text(TextState& text, const Scene& scene, long frame,
     validate_text_scene(scene);
     text.device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
     text.scene.follow(scene);
-    text.scene.update_for_pass(pass.camera, pass.matrices.view_projection, pass.matrices.aspect,
-                               static_cast<double>(surface_extent.width),
-                               static_cast<double>(surface_extent.height));
+    std::function<js::TypedArray<float>()> read_view_projection;
+    if constexpr (upstream::public_camera_matrix_caches) {
+        read_view_projection = [camera = pass.camera, aspect = pass.matrices.aspect] {
+            return upstream::get_camera_view_projection_matrix(*camera, aspect);
+        };
+    }
+    text.scene.update_for_pass(pass.camera, pass.matrices.live_view_projection,
+                               pass.matrices.aspect, static_cast<double>(surface_extent.width),
+                               static_cast<double>(surface_extent.height),
+                               std::move(read_view_projection));
 }
 #endif
 
@@ -516,13 +528,8 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
             scene.material_family_mask & ~sync.synced_material_family_mask;
         reject_uncomposed_family_growth(added_families);
         backend.reject_unbuilt_family_growth(added_families);
-        upstream::RenderPlan updated_plan = upstream::build_render_plan(scene, engine);
-        validate_render_plan_items(updated_plan);
-        std::vector<Mesh> updated_meshes = rematch_render_meshes(
-            sync.render_plan.items, updated_plan.items, sync.meshes, release, upload);
+        rebuild_render_plan_meshes(scene, engine, sync.render_plan, sync.meshes, release, upload);
         backend.prune_shared_resources();
-        sync.meshes = std::move(updated_meshes);
-        sync.render_plan = std::move(updated_plan);
         sync.synced_render_topology_version = scene.render_topology_version;
         sync.synced_material_family_mask = scene.material_family_mask;
         const std::size_t shader_item_count = static_cast<std::size_t>(
@@ -535,11 +542,12 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
                              backend.shared_shader_material_count(), sync.frame);
         outcome.topology_updated = true;
     } else if (draw_lists_moved) {
-        // The pin's visibility epoch re-records the cached opaque render
-        // bundles; the draw lists are this port's bundles, so only they and
-        // the task lists rebuild -- mesh GPU state is untouched.
-        sync.render_plan.draw_lists =
-            upstream::build_render_draw_lists(sync.render_plan.items, engine);
+        // Visibility and explicit task population share the source epoch.
+        // Reconcile their native row table, retaining every unchanged GPU row.
+        outcome.topology_updated |= rebuild_render_plan_meshes(scene, engine, sync.render_plan,
+                                                               sync.meshes, release, upload);
+        if (outcome.topology_updated)
+            backend.prune_shared_resources();
     }
     if (outcome.topology_updated || draw_lists_moved)
         backend.rebuild_task_draw_lists();
@@ -568,8 +576,7 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     backend.publish_storage();
     backend.submit_uploads();
     backend.mark_uploaded();
-    // The cameras' control hooks, then the scene pass's own camera.
-    update_surface_cameras(engine, scene_camera(engine, scene));
+    // Control hooks ran in the source scene callback list.
     CameraRecord* camera = scene_pass_camera(engine, scene);
     trace_camera_state(camera, sync.camera_trace_state, sync.frame);
     upstream::sort_transparent_draws(sync.render_plan.draw_lists.transparent, engine, camera);

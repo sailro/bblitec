@@ -13,7 +13,7 @@ template <class Vector> class MeshCpuFloatView {
         Vector ModelVertex::* member = nullptr;
         bool present = false;
     };
-    using Dense = std::span<const float>;
+    using Dense = js::F32Array;
     std::variant<std::monostate, Dense, Packed> source_;
     static constexpr std::size_t width =
         2 + requires(Vector v) { v.z; } + requires(Vector v) { v.w; };
@@ -25,7 +25,7 @@ public:
                      bool present) {
         if (retained) {
             if (*retained)
-                source_ = Dense{(*retained)->data(), (*retained)->size()};
+                source_ = **retained;
         } else {
             source_ = Packed{vertices, member, present};
         }
@@ -47,7 +47,7 @@ public:
         if (index >= size())
             throw std::out_of_range("Mesh CPU stream index is out of range.");
         if (const auto* dense = std::get_if<Dense>(&source_))
-            return (*dense)[index];
+            return dense->load(index);
         const auto& packed = std::get<Packed>(source_);
         const auto& value = packed.vertices[index / width].*packed.member;
         const auto component = index % width;
@@ -65,8 +65,13 @@ public:
     }
     // Raw CPU accessors still expose packed lanes whose optional source stream is absent.
     std::vector<float> copy() const {
-        if (const auto* dense = std::get_if<Dense>(&source_))
-            return {dense->begin(), dense->end()};
+        if (const auto* dense = std::get_if<Dense>(&source_)) {
+            std::vector<float> result;
+            result.reserve(dense->size());
+            for (std::size_t index = 0; index < dense->size(); ++index)
+                result.push_back(dense->load(index));
+            return result;
+        }
         std::vector<float> result;
         if (const auto* packed = std::get_if<Packed>(&source_)) {
             result.reserve(packed->vertices.size() * width);
@@ -86,6 +91,7 @@ public:
 
 class MeshCpuIndexView {
     std::optional<std::span<const std::uint32_t>> source_;
+    std::optional<js::U32Array> retained_;
     bool reversed_ = false;
 
 public:
@@ -93,29 +99,34 @@ public:
     MeshCpuIndexView(const std::optional<js::U32Array>* retained, const ModelGeometry* geometry) {
         if (retained) {
             if (*retained)
-                source_ = std::span<const std::uint32_t>{(*retained)->data(), (*retained)->size()};
+                retained_ = **retained;
         } else if (geometry) {
             source_ = geometry->indices;
             reversed_ = geometry->source_indices_reversed;
         }
     }
-    explicit operator bool() const { return source_.has_value(); }
-    std::span<const std::uint32_t> raw() const {
-        return source_.value_or(std::span<const std::uint32_t>{});
+    explicit operator bool() const { return retained_.has_value() || source_.has_value(); }
+    std::size_t size() const {
+        return retained_ ? retained_->size() : source_ ? source_->size() : 0;
     }
-    std::size_t size() const { return raw().size(); }
-    bool empty() const { return raw().empty(); }
+    bool empty() const { return size() == 0; }
     std::uint32_t source_at(std::size_t index) const {
-        const auto values = raw();
-        if (index >= values.size())
+        if (index >= size())
             throw std::out_of_range("Mesh CPU index is out of range.");
         const auto base = index - index % 3;
-        if (reversed_ && base + 2 < values.size() && index % 3)
+        if (reversed_ && base + 2 < size() && index % 3)
             index = base + 3 - index % 3;
-        return values[index];
+        return retained_ ? retained_->load(index) : (*source_)[index];
     }
     std::vector<std::uint32_t> copy_raw() const {
-        const auto values = raw();
+        if (retained_) {
+            std::vector<std::uint32_t> result;
+            result.reserve(retained_->size());
+            for (std::size_t index = 0; index < retained_->size(); ++index)
+                result.push_back(retained_->load(index));
+            return result;
+        }
+        const auto values = source_.value_or(std::span<const std::uint32_t>{});
         return {values.begin(), values.end()};
     }
     std::vector<std::uint32_t> copy_source() const {

@@ -252,20 +252,12 @@ test("pinned public missing calls preserve engine arguments and original strict 
     assert.match(result.cpp, /deferred_capability<void>/);
 });
 
-test("pinned matrix and geometry descriptor batch retains declared result shapes", () => {
+test("pinned geometry descriptor batch retains declared result shapes", () => {
     const operations = [
         "disposeMeshGpu(mesh)",
         "enableThinInstanceDynamicDrawCount(mesh)",
         "setThinInstanceDrawCount(mesh,2)",
         "setVatTime(engine,mesh,1)",
-        "updateMeshColors(engine,mesh,bytes)",
-        "updateMeshNormals(engine,mesh,bytes)",
-        "updateMeshTangents(engine,mesh,bytes)",
-        "updateMeshUv2(engine,mesh,bytes)",
-        "updateMeshGeometry(engine,mesh,bytes,bytes,new Uint32Array([0]))",
-        "updateMeshGeometryCapacity(engine,mesh,bytes,bytes,new Uint32Array([0]))",
-        "getViewMatrix(camera)",
-        "getProjectionMatrix(camera,1)",
     ];
     const result = compileSource(
         `
@@ -278,15 +270,12 @@ test("pinned matrix and geometry descriptor batch retains declared result shapes
     `,
         { deferredCapabilities },
     );
-    assert.equal(
-        result.manifest.deferredCapabilities?.length,
-        operations.length,
+    assert.deepEqual(
+        result.manifest.deferredCapabilities?.map((site) => site.id),
+        ["babylon:disposeMeshGpu", "babylon:setVatTime"],
     );
-    assert.match(result.cpp, /deferred_capability<bbl::js::F32Array>/);
-    assert.match(
-        result.cpp,
-        /deferred_capability<bblscene::MeshGeometryCapacityResult>/,
-    );
+    assert.match(result.cpp, /bbl::enable_thin_instance_dynamic_draw_count\(/);
+    assert.match(result.cpp, /bbl::set_thin_instance_draw_count\(/);
 });
 
 test("deferred result templates never construct successful payloads", () => {

@@ -73,6 +73,14 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
     writeFileSync(
         join(output, "bindings.hpp"),
         [
+            cppFunction(
+                readFileSync("native/src/pal_sdl_gpu_indexed_draw.hpp", "utf8"),
+                "inline void encode_sdl_gpu_indexed_draw(",
+            ),
+            cppFunction(
+                readFileSync("native/src/pal_dawn_indexed_draw.hpp", "utf8"),
+                "inline void encode_dawn_indexed_draw(",
+            ),
             cppRecord(shared, "struct GpuVertex {"),
             cppRecord(shared, "enum class VertexInputLane {"),
             cppRecord(shared, "struct PinnedVertexInput {"),

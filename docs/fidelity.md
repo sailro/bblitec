@@ -178,7 +178,7 @@ can dispatch one frame earlier than the browser promise.
 | Contacts/rebound | Fitted substeps, speculative contacts, rebound, damping and rest stabilization |
 | Deep overlap | Approximately 5% recovery per 60 Hz frame, capped at 1 m/s |
 | Prestep | TELEPORT keeps zero kinematic velocity; ACTION uses immediate swept pose instead of Havok's deferred target |
-| Timing | Variable frame delta capped at 100 ms; explicit fixed steps once per rendered frame, including initial zero engine delta |
+| Timing | Variable frame delta capped at 100 ms; explicit fixed steps once per rendered frame, including initial zero engine delta. Native physics callback milliseconds retain float width; explicit world-step values retain source precision |
 | Triangle meshes | Static BVH; dynamic GImpact with approximate inertia |
 | Heightfields | Static triangle BVH with measured source grid orientation/diagonal |
 | Containers | Source relative transforms; Bullet convex children/inertia |

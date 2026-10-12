@@ -565,8 +565,30 @@ test("interleaved uploads retain shared buffer bytes, attribute offsets and inde
     const binary = await packageGltfMeshPlan(
         document,
         new DataView(values.buffer),
+        undefined,
+        { cpuGeometry: true },
     );
     const plan = packagedGltfMeshPlan(document);
+    assert.equal(
+        plan.meshes[0]!.cpu!.positions,
+        plan.meshes[1]!.cpu!.positions,
+    );
+    assert.deepEqual(
+        readPackedGltfAttribute(
+            document,
+            binary,
+            plan.meshes[0]!.cpu!.positions!,
+        ),
+        [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    );
+    assert.deepEqual(
+        readPackedGltfAttribute(
+            document,
+            binary,
+            plan.meshes[0]!.cpu!.normals!,
+        ),
+        [0, 0, 1, 0, 0, 1, 0, 0, 1],
+    );
     assert.equal(plan.geometries.length, 1);
     assert.deepEqual(
         plan.meshes.map((mesh) => [mesh.geometry, mesh.flatNormal]),

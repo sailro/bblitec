@@ -160,7 +160,7 @@ PhysicsRaycastResult physics_raycast(PhysicsWorldHandle, Vec3d from, Vec3d to,
 }
 }
 namespace bbl {
-void on_before_render(Scene& scene, js::Callback<void(float)> callback) {
+void on_before_render(Scene& scene, js::Callback<void(double)> callback) {
     assert(raycasts == 1);
     assert(scene.engine->meshes[0].position.x == (has_hit ? 7 : -7));
     for (const bool hit : {false, true}) {
@@ -207,7 +207,7 @@ test(
     `,
             `
 namespace bbl {
-void on_before_render(Scene& scene, js::Callback<void(float)> callback) {
+void on_before_render(Scene& scene, js::Callback<void(double)> callback) {
     for (const float delta : {16.0f, 32.0f}) {
         callback(delta);
         const auto& mesh = scene.engine->meshes[0];

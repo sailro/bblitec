@@ -17,6 +17,11 @@ import {
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import {
+    cameraControlLifecycleHelpers,
+    cameraControlPublication,
+    lowerCameraControlLifecycle,
+} from "./camera-control-attachment.js";
 
 const arcRotateEyeMembers = [
     "alpha",
@@ -389,7 +394,9 @@ CameraHandle create_arc_rotate_camera(
     }
 
     /** Translate the source projector, including each nullable plane fallback. */
-    public lowerOrthographicProjection(): string {
+    public lowerOrthographicProjection(
+        writer = "mat4_ortho_off_center_lh_to_ref",
+    ): string {
         const { file, declaration } = this.context.functionDeclaration(
             "src/camera/orthographic.ts",
             "writeOrthoProjection",
@@ -418,8 +425,7 @@ CameraHandle create_arc_rotate_camera(
                 calls: new Map([
                     [
                         "writeOrthoOffCenterMat4LHIntoBuffer",
-                        (args) =>
-                            `mat4_ortho_off_center_lh_to_ref(${args.join(", ")})`,
+                        (args) => `${writer}(${args.join(", ")})`,
                     ],
                 ]),
                 expression: (node, lowerer) => {
@@ -871,6 +877,10 @@ ${body}
         const symbolName = "attachControl";
         const freeModule = "src/camera/free-camera-controls.ts";
         const mutations = new CameraMutationLowerer(this.context);
+        const ownedMutations = new CameraMutationLowerer(
+            this.context,
+            "control",
+        );
         const free = lowerFreeCameraControls(this.context);
         return {
             modulePath,
@@ -910,10 +920,13 @@ ${free.declarations}`,
 #include <limits>
 #include <numbers>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 
 namespace bbl {
+
+${cameraControlLifecycleHelpers}
 
 void clamp_camera_to_limits(CameraRecord& camera);
 ${mutations.setters()}
@@ -951,20 +964,45 @@ void set_camera_limits(
 // second camera -- an anaglyph's left eye -- renders through the camera it
 // assigned, which is what the pin does. The scene is the one whose
 // \`_update\` hands the hook its delta.
-void attach_control(Engine& engine, CameraHandle camera, const Scene& scene) {
-    if (camera.value >= engine.cameras.size()) {
-        throw std::runtime_error("Invalid camera handle.");
-    }
-    CameraRecord& record = ${recordAt("engine.cameras", "camera")};
-    record.controls_enabled = true;
-    record.controls_scene = scene.state;
+js::Callback<void()> attach_control(Engine& engine, CameraHandle handle, const Scene& scene,
+                                    CameraControlOptions options) {
+    auto& camera = ${recordAt("engine.cameras", "handle")};
+    auto control = std::make_shared<CameraControlAttachment>();
+    control->should_handle_pointer_down = std::move(options.should_handle_pointer_down);
+    control->external_drag_active = std::move(options.external_drag_active);
+    control->external_pick_pending = std::move(options.external_pick_pending);
+    control->pointer_down = [pointer = control.get(), camera_record = &camera](double button, bool touch) {
+        [[maybe_unused]] auto& camera = *camera_record;
+        auto& control = *pointer;
+        auto& is_dragging = control.dragging;
+        auto& is_panning = control.panning;
+${ownedMutations.pointerDown()}
+    };
+    control->pointer_move = [pointer = control.get(), camera_record = &camera](double touch_count, double delta_x, double delta_y) {
+        [[maybe_unused]] auto& camera = *camera_record;
+        auto& control = *pointer;
+        auto& is_dragging = control.dragging;
+        auto& is_panning = control.panning;
+${ownedMutations.pointerMove()}
+    };
+    control->pointer_up = [pointer = control.get()] {
+        auto& is_dragging = pointer->dragging;
+        auto& is_panning = pointer->panning;
+${ownedMutations.pointerUp()}
+    };
+    control->wheel = [camera_record = &camera](double delta_y) {
+        [[maybe_unused]] auto& camera = *camera_record;
+${ownedMutations.wheel()}
+    };
+    control->update = [camera_record = &camera]([[maybe_unused]] double delta_ms) {
+        upstream::apply_arc_rotate_inertia(*camera_record);
+    };
+${cameraControlPublication(lowerCameraControlLifecycle(this.context, modulePath, symbolName))}
 }
 
 // The free-camera entry point is a separate pinned symbol reaching a separate
 // input handler, and the same runtime state.
-void attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene) {
-    attach_control(engine, camera, scene);
-}
+${free.attachment}
 
 } // namespace bbl
 

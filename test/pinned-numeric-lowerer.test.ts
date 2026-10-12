@@ -347,14 +347,6 @@ test("a string set and a composed throw message lower as JavaScript's", (t) => {
         body,
         /if \(bbl::js::number_truthy\(static_cast<double>\(static_cast<double>\(names\.size\(\)\)\)\)\) \{/,
     );
-    // A number inside a template would need JavaScript's own formatting.
-    assert.throws(
-        () =>
-            lower("const n = 2; throw new Error(`count ${n}`);", [
-                ["n", { cpp: "n", type: "scalar" }],
-            ]),
-        /string expression/,
-    );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("Native fixture compiler unavailable.");
@@ -383,6 +375,45 @@ test("a string set and a composed throw message lower as JavaScript's", (t) => {
             )
                 .sort()
                 .join(", ")}. Register them.`,
+        },
+    );
+});
+
+test("composed messages format numeric sums before string concatenation", (t) => {
+    const body = lower(
+        "throw new Error(label + (left + right) + `; sum ${left + right}; tiny ${tiny}; zero ${zero}`);",
+        [
+            ["label", { cpp: "label", type: "string" }],
+            ["left", { cpp: "left", type: "scalar" }],
+            ["right", { cpp: "right", type: "scalar" }],
+            ["tiny", { cpp: "tiny", type: "scalar" }],
+            ["zero", { cpp: "zero", type: "scalar" }],
+        ],
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "pinned-numeric-string-numbers",
+        `#include <bblite/js_data.hpp>
+        #include <cstdio>
+        #include <stdexcept>
+        #include <string>
+        int main() {
+            const std::string label = "count ";
+            const double left = 2, right = 3, tiny = 1e-7, zero = -0.0;
+            try {
+                ${body}
+            } catch (const std::runtime_error& error) {
+                std::fputs(error.what(), stdout);
+            }
+        }`,
+        {
+            expectedOutput:
+                "count " + (2 + 3) + `; sum ${2 + 3}; tiny ${1e-7}; zero ${-0}`,
         },
     );
 });

@@ -509,6 +509,76 @@ int main() {try {nlohmann::json rows; std::ifstream("cases.json") >> rows; for (
     );
 });
 
+test("standalone shader and PBR groups link their source rebuild transaction without glTF", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const source = lowerPbrMaterialGroups(new LoweringContext(), false);
+    const directory = resolve("artifacts/test-pbr-material-groups-standalone");
+    mkdirSync(directory, { recursive: true });
+    const file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
+#include <cassert>
+namespace bbl {
+void (*fixture_rebuild)(Scene&, bool, bool) = nullptr;
+void rebuild_scene_renderables(Scene& scene) { fixture_rebuild(scene, false, true); }
+${source}
+void check(bool include_pbr) {
+    Engine engine;
+    engine.materials.resize(3);
+    engine.materials[0].source_group_builder = 3;
+    engine.materials[1].source_pbr_group_builder = true;
+    engine.materials[2].source_pbr_group_builder = true;
+    engine.materials[2].source_gamma_albedo = true;
+    Scene scene; scene.engine = &engine;
+    scene.state->source_material_publication = true;
+    fixture_rebuild = rebuild_pbr_material_group;
+    const auto count = include_pbr ? 2u : 1u;
+    for (unsigned i = 0; i < count; ++i) {
+        engine.meshes.emplace_back().material = MaterialHandle{i};
+        scene.meshes.push_back(MeshHandle{i});
+        queue_pbr_material_group(scene, MeshHandle{i});
+    }
+    prepare_pbr_scene_build(scene);
+    auto builders = std::move(scene.deferred_builders);
+    scene.deferred_builders.clear();
+    for (const auto& builder : builders) builder();
+    finish_pbr_scene_build(scene);
+    assert(scene.state->material_outputs.size() == count);
+    if (include_pbr) engine.meshes[1].material = MaterialHandle{2};
+    rebuild_pbr_material_group(scene, true, true);
+    assert(scene.state->material_outputs.size() == count);
+    assert(!scene.state->pbr_transmission_transaction);
+    if (include_pbr) {
+        assert(!scene.state->pbr_material_group->gamma_invalidates);
+        assert(scene.state->pbr_material_group->outputs.at(0)->material.value == 2);
+    }
+    const auto cancelled = run_pbr_rebuild_transaction(scene, {}, [](Scene& target, const std::vector<MeshHandle>&) {
+        target.disposed = true;
+        return true;
+    });
+    assert(!cancelled);
+    assert(!scene.state->pbr_transmission_transaction);
+}
+}
+int main() { bbl::check(false); bbl::check(true); }
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        file,
+    ]);
+    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+});
+
 test("PBR group lowering refuses unrepresented membership and dispatch changes", () => {
     const context = new LoweringContext();
     assert.equal(materialGroupIdentity(context, "standard"), "2");

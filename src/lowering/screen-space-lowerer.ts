@@ -1344,17 +1344,14 @@ class FrameWalker {
             "getEffectiveAspectRatio",
             (args) => `effective_aspect_ratio(${args.join(", ")})`,
         );
-        // Each of the pin's three camera reads over the world matrix the
-        // frame function composed once: `build_view_projection` and
-        // `camera_position` compose it themselves, so their bodies are
-        // spelled here over `camera_world` instead.
         calls.set(
             "getViewProjectionMatrix",
-            (args) =>
-                `matrix_product(build_scene_projection(${args.join(", ")}), ` +
-                "build_view_matrix(camera_world))",
+            (args) => `build_view_projection(${args.join(", ")})`,
         );
-        calls.set("getViewMatrix", () => "build_view_matrix(camera_world)");
+        calls.set(
+            "getViewMatrix",
+            (args) => `build_camera_view_matrix(${args.join(", ")})`,
+        );
         calls.set(
             "getCameraPosition",
             () =>

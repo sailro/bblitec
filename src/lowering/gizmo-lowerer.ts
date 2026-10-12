@@ -1696,7 +1696,7 @@ EditGizmoHandle push_edit_gizmo(
     const EditGizmoHandle handle{
         static_cast<std::uint32_t>(engine.edit_gizmos.size() - 1u)};
     Engine* live_engine = &engine;
-    on_before_render(scene, [live_engine, handle, layer](float) {
+    on_before_render(scene, [live_engine, handle, layer](double) {
         Engine& e = *live_engine;
         EditGizmoRecord& g = ${recordAt("e.edit_gizmos", "handle")};
         if (g.attached_node.value >= e.meshes.size()) return;
@@ -4416,7 +4416,7 @@ BoundingBoxGizmoHandle push_bounding_box_gizmo(
     Engine* live_engine = &engine;
     // The pin subscribes the same refresh to the utility scene, because
     // the attached node moves outside a gizmo drag as well as inside one.
-    on_before_render(scene, [live_engine, handle](float) {
+    on_before_render(scene, [live_engine, handle](double) {
         bbox_refresh(*live_engine, handle);
     });
     return handle;
@@ -4813,7 +4813,7 @@ void attach_bounding_box_gizmo_to_node(
     const CameraGizmoHandle handle{
         static_cast<std::uint32_t>(engine.camera_gizmos.size() - 1u)};
     Engine* live_engine = &engine;
-    on_before_render(scene, [live_engine, handle, layer](float) {
+    on_before_render(scene, [live_engine, handle, layer](double) {
         Engine& e = *live_engine;
         CameraGizmoRecord& g = ${recordAt("e.camera_gizmos", "handle")};
         if (g.attached_camera.value >= e.cameras.size()) return;
@@ -5119,7 +5119,7 @@ void build_light_lines(
     const LightGizmoHandle handle{
         static_cast<std::uint32_t>(engine.light_gizmos.size() - 1u)};
     Engine* live_engine = &engine;
-    on_before_render(scene, [live_engine, handle, layer](float) {
+    on_before_render(scene, [live_engine, handle, layer](double) {
         Engine& e = *live_engine;
         LightGizmoRecord& g = ${recordAt("e.light_gizmos", "handle")};
         if (g.attached_light.value >= e.lights.size()) return;
@@ -5522,7 +5522,7 @@ UtilityLayerHandle create_utility_layer(
     record->scene.clear_color = Color4{0.0f, 0.0f, 0.0f, 0.0f};
     record->scene.camera = main_scene.camera;
     UtilityLayerRecord* live = record.get();
-    on_before_render(record->scene, [live](float) {
+    on_before_render(record->scene, [live](double) {
         if (live->scene.camera.value != live->main_scene->camera.value) {
             live->scene.camera = live->main_scene->camera;
         }

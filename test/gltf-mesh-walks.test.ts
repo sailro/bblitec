@@ -20,6 +20,7 @@ import { packageGltf } from "../src/gltf-packager.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerThinInstanceOwnership } from "../src/lowering/thin-instance-lowerer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
@@ -287,6 +288,7 @@ using JsonObject = ts::JsonValue::Object;
 ${helpers}
 void add_to_scene(Scene& scene, MeshHandle mesh) { scene.meshes.push_back(mesh); }
 void add_to_scene(Scene& scene, LightHandle light) { scene.lights.push_back(light); }
+${lowerThinInstanceOwnership(new LoweringContext())}
 ${cloneHelpers}
 Engine create_engine(EngineOptions) { return Engine{}; }
 std::string asset_path(const std::string& path) { return path; }

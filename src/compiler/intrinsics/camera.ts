@@ -19,6 +19,7 @@ export interface CameraIntrinsicContext
             LoweringServices,
             | "dataTypes"
             | "checker"
+            | "bindings"
             | "reachJsData"
             | "allocateTemporaryCppName"
             | "emit"
@@ -317,7 +318,7 @@ export function compileCameraIntrinsic(
             const engine = context.requireEngine(camera, call);
             context.emit({
                 kind: "expression",
-                code: `bbl::attach_control(${engine}, ${camera.cpp}, ${scene.cpp});`,
+                code: `{ auto& record = ${recordAt(`${engine}.cameras`, camera.cpp)}; record.controls_enabled = true; record.controls_scene = ${scene.cpp}.state; }`,
             });
             return {
                 kind: "data",
@@ -443,10 +444,21 @@ export function compileCameraIntrinsic(
             };
         }
 
+        case "getViewMatrix":
+        case "getProjectionMatrix":
         case "getViewProjectionMatrix": {
-            context.expectArgumentCount(call, 2, 2);
+            const hasAspect = importedName !== "getViewMatrix";
+            context.expectArgumentCount(
+                call,
+                hasAspect ? 2 : 1,
+                hasAspect ? 2 : 1,
+            );
             const cameraExpression = argumentAt(call, 0);
-            const camera = context.compileValue(cameraExpression);
+            const camera = context.bindings.pinValueToTemporary(
+                context.compileValue(cameraExpression),
+                "matrix_camera",
+                cameraExpression,
+            );
             context.expectKind(camera, "camera", cameraExpression);
             if (
                 presenceFlagCpp(camera) !== undefined &&
@@ -454,36 +466,46 @@ export function compileCameraIntrinsic(
             ) {
                 context.fail(
                     cameraExpression,
-                    "getViewProjectionMatrix camera may be absent; guard it before the call.",
+                    `${importedName} camera may be absent; guard it before the call.`,
                 );
             }
             const engine = context.requireEngine(camera, call);
-            const aspect = context.compileNumber(argumentAt(call, 1), "double");
             context.reachJsData();
             context.reachFeature("camera:view-projection", call);
-
-            // src/camera/camera.ts getViewProjectionMatrix returns the
-            // camera-owned Mat4 cache. The reached native camera pipeline
-            // already lowers that exact projection * view composition as
-            // build_view_projection, including the Float32Array stores.
-            // Copy those rounded lanes into an owning F32Array: indexed reads
-            // widen back to JavaScript numbers, and a local passed to another
-            // function keeps valid storage for the whole call. The pin applies
-            // no positive/finite aspect guard, so preserve that behavior while
-            // binding the argument once.
-            const result = context.allocateTemporaryCppName("view_projection");
+            let aspect = "";
+            if (hasAspect) {
+                const value = context.compileNumber(
+                    argumentAt(call, 1),
+                    "double",
+                );
+                const captured =
+                    context.allocateTemporaryCppName("camera_aspect");
+                context.emit({
+                    kind: "declaration",
+                    type: "const double",
+                    name: captured,
+                    initializer: value,
+                });
+                aspect = `, ${captured}`;
+            }
+            const getter =
+                importedName === "getViewMatrix"
+                    ? "get_camera_view_matrix"
+                    : importedName === "getProjectionMatrix"
+                      ? "get_camera_projection_matrix"
+                      : "get_camera_view_projection_matrix";
+            const result = context.allocateTemporaryCppName("camera_matrix");
             context.emit({
                 kind: "declaration",
                 type: "bbl::js::F32Array",
                 name: result,
-                initializer: `([&]() { const double aspect = ${aspect}; const auto matrix = bbl::upstream::build_view_projection(${recordAt(`${engine}.cameras`, camera.cpp)}, aspect); return bbl::js::F32Array(matrix.begin(), matrix.end()); }())`,
+                initializer: `bbl::upstream::${getter}(${recordAt(`${engine}.cameras`, camera.cpp)}${aspect})`,
                 attributes: "[[maybe_unused]] ",
             });
             return {
                 kind: "data",
                 cpp: result,
                 dataType: { kind: "f32array" },
-                freshData: true,
                 engineCpp: engine,
             };
         }

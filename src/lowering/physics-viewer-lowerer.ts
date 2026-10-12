@@ -64,7 +64,7 @@ struct PhysicsViewer {
     std::uint32_t material_variant;
     std::vector<PhysicsBody> bodies;
     std::vector<MeshHandle> meshes;
-    js::Callback<void(float)> update;
+    js::Callback<void(double)> update;
     bool registered = false;
     PhysicsViewer(Scene source_scene, PhysicsWorldHandle source_world, std::uint32_t variant)
         : scene(std::move(source_scene)), world(source_world), material_variant(variant) {}
@@ -103,7 +103,7 @@ void register_physics_viewer_update(PhysicsViewer& viewer) {
 
 PhysicsViewerHandle create_physics_viewer(Scene scene, PhysicsWorldHandle world, std::uint32_t material_variant) {
     auto viewer = js::make_gc_shared<PhysicsViewer>(std::move(scene), world, material_variant);
-    viewer->update = js::make_closure(viewer, [](const PhysicsViewerHandle& current, float) {
+    viewer->update = js::make_closure(viewer, [](const PhysicsViewerHandle& current, double) {
         Engine& engine = *physics_world_record(current->world).engine;
         for (std::size_t i = 0; i < current->bodies.size(); ++i) {
             copy_physics_body_debug_transform(current->bodies[i], engine, current->meshes[i]);

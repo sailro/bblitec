@@ -48,7 +48,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     light: "bbl::LightHandle",
     "shadow-generator": "bbl::ShadowGeneratorHandle",
     "hierarchy-instance-pool": "bbl::HierarchyInstancePoolHandle",
-    "thin-instance-pool": "bbl::MeshHandle",
+    "thin-instance-pool": "std::shared_ptr<bbl::ThinInstancePoolData>",
     "storage-buffer": "bbl::StorageBufferHandle",
     "compute-storage-texture": "std::shared_ptr<bbl::ComputeStorageTexture>",
     "compute-texture-resource": "std::shared_ptr<bbl::ComputeTextureResource>",

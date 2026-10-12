@@ -1203,6 +1203,27 @@ export class SceneManifestRecorder {
         }
     }
 
+    /** cloneMeshNode spreads the source's current thin-instance owner. */
+    public recordClonedThinInstanceMesh(
+        source: Value,
+        cloneIndex: number,
+    ): void {
+        const sourceIndex =
+            source.sceneMeshIndex ?? source.sceneMeshProfileIndex;
+        const clone = this.sceneMeshes[cloneIndex]!;
+        if (sourceIndex === undefined) {
+            writable(clone).thinInstances = "possible";
+            return;
+        }
+        const profile = this.sceneMeshes[sourceIndex];
+        if (profile?.thinInstances !== undefined)
+            writable(clone).thinInstances = profile.thinInstances;
+        if (profile?.thinInstanceColors)
+            writable(clone).thinInstanceColors = true;
+        if (profile?.thinInstanceGpuCulling)
+            writable(clone).thinInstanceGpuCulling = true;
+    }
+
     /**
      * Whether a `mesh.thinInstances` read on this value can stand.
      *

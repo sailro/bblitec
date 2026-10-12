@@ -17,7 +17,7 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 
-test("async configurable control attachment retains tracked versions while repeated attachments refuse", () => {
+test("async configurable control attachments retain tracked versions across repeated attachments", () => {
     const directory = resolve("artifacts/camera-ocean-reads");
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
@@ -34,17 +34,17 @@ test("async configurable control attachment retains tracked versions while repea
     const options = { fileName: join(directory, "entry.ts") };
     const result = compileSource(source, options);
     assert.ok(result.manifest.features.includes("camera:world-matrix-version"));
-    assert.throws(
-        () =>
-            compileSource(
-                source.replace(
-                    "if(camera.worldMatrixVersion",
-                    "attachConfigurableFreeControl(camera,canvas,scene,{});if(camera.worldMatrixVersion",
-                ),
-                options,
-            ),
-        /one startup control attachment/,
+    const repeated = compileSource(
+        source.replace(
+            "if(camera.worldMatrixVersion",
+            "attachConfigurableFreeControl(camera,canvas,scene,{});if(camera.worldMatrixVersion",
+        ),
+        options,
     );
+    assert.ok(
+        repeated.manifest.features.includes("camera:world-matrix-version"),
+    );
+    assert.deepEqual(repeated.manifest.deferredCapabilities ?? [], []);
 });
 
 interface PinCamera {

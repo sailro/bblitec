@@ -104,6 +104,11 @@ export class LineLowerer {
     ): CompiledShaderProgram & { topology: "line-list" } {
         const call = this.createShaderMaterialCall();
         this.assertMaterialState(call);
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(call, "useThinInstanceColors"),
+            "useThinInstanceColors",
+            "Line material thin-instance color option",
+        );
         const hasColorVarying =
             options.useVertexColor || options.useThinInstanceColors;
         const parameters = new Map<string, boolean>([
@@ -143,6 +148,7 @@ export class LineLowerer {
             backFaceCulling: false,
             useThinInstances: options.useThinInstances,
             useThinInstanceColors: options.useThinInstanceColors,
+            thinInstanceColorOption: options.useThinInstanceColors,
             // `createShaderMaterial`'s own resolution: an explicit option
             // always wins, and a blended material otherwise reads depth
             // without writing it.

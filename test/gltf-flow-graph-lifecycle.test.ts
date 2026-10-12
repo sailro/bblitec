@@ -217,10 +217,10 @@ struct AssetHandle { std::size_t value = 0; };
 struct SceneState {
     Engine* engine;
     std::vector<std::shared_ptr<FlowGraphRuntime>> flow_graphs;
-    js::Callback<void(float)> flow_graph_tick;
+    js::Callback<void(double)> flow_graph_tick;
     js::Callback<void()> flow_graph_dispose;
     bool flow_graph_pointer_refresh = true;
-    std::vector<js::Callback<void(float)>> before_render;
+    std::vector<js::Callback<void(double)>> before_render;
     std::vector<js::Callback<void()>> disposables;
 };
 struct AssetRecord {
@@ -230,7 +230,7 @@ struct AssetRecord {
 struct Engine { std::vector<AssetRecord> assets{1}; };
 struct Scene {
     std::shared_ptr<SceneState> state; Engine* engine;
-    std::vector<js::Callback<void(float)>>& before_render;
+    std::vector<js::Callback<void(double)>>& before_render;
     std::vector<js::Callback<void()>>& disposables;
     explicit Scene(std::shared_ptr<SceneState> shared) : state(shared), engine(shared->engine), before_render(shared->before_render), disposables(shared->disposables) {}
     static Scene from_state(std::shared_ptr<SceneState> shared) { return Scene(shared); }
@@ -247,7 +247,7 @@ ${lowerFlowGraphMembership(context)}
 ${lowerGltfFlowGraphLifecycle(context)}
 void ensure_flow_graph_coordinator(Scene& scene) {
     if (scene.state->flow_graph_tick) return;
-    scene.state->flow_graph_tick = [](float) {};
+    scene.state->flow_graph_tick = [](double) {};
     scene.state->flow_graph_dispose = [] {};
     scene.before_render.insert(scene.before_render.begin(), scene.state->flow_graph_tick);
     scene.disposables.push_back(scene.state->flow_graph_dispose);

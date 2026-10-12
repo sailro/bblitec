@@ -174,7 +174,7 @@ export function lowerAssetSceneAttachment(context: LoweringContext): string {
                             "Unrepresented change to the asset animation tick adapter",
                         );
                         return [
-                            `${indent}js::Callback<void(float)> hook = [tick = record.animation_tick](float delta_ms) { if (tick) tick(delta_ms); };`,
+                            `${indent}js::Callback<void(double)> hook = [tick = record.animation_tick](double delta_ms) { if (tick) tick(static_cast<float>(delta_ms)); };`,
                         ];
                     }
                 }

@@ -303,7 +303,7 @@ test(
                 assert(mesh.value == registered++); scene.meshes.push_back(mesh);
             }
             void mark_mesh_dirty(Engine&, MeshHandle mesh) { assert(mesh.value == updated++ % 16); }
-            void on_before_render(Scene& scene, js::Callback<void(float)> callback) {
+            void on_before_render(Scene& scene, js::Callback<void(double)> callback) {
                 assert(created == 16 && registered == 16);
                 callback(16); callback(16);
                 assert(created == 16 && updated == 32);

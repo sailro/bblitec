@@ -7,6 +7,7 @@ import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerThinInstanceOwnership } from "../src/lowering/thin-instance-lowerer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
@@ -51,6 +52,7 @@ test("source geometry resize preserves omitted owners, validates families and in
 #include <cassert>
 #include <bblite/js_data.hpp>
 namespace bbl {
+${lowerThinInstanceOwnership(new LoweringContext())}
 ${clone}
 void mark_mesh_dirty(Engine& engine,MeshHandle mesh){++engine.meshes.at(mesh.value).transform_version;}
 }

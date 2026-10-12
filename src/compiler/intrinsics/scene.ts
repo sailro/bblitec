@@ -4,13 +4,11 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { renderClosure } from "../closure-captures.js";
 import { validateObjectProperties } from "../option-helpers.js";
 import {
     type CameraDeferralContext,
     compileCameraDeferralOptions,
 } from "./gizmo.js";
-import { recordAt } from "../record-access.js";
 
 export interface SceneIntrinsicContext
     extends
@@ -19,6 +17,7 @@ export interface SceneIntrinsicContext
         Pick<
             LoweringServices,
             | "engineLifecycle"
+            | "bindings"
             | "admissions"
             | "compileNumber"
             | "compileColor3"
@@ -58,6 +57,7 @@ export function compileSceneIntrinsic(
             "removeFromScene",
             "addTask",
             "addTaskAtStart",
+            "addTaskAfter",
         ].includes(importedName)
     ) {
         context.admissions.noteTemporalRecordBoundary(
@@ -193,7 +193,7 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::on_before_render(${scene.cpp}, ` +
-                    `${context.callbacks.compileFrameCallback(argumentAt(call, 1))})`,
+                    `${context.callbacks.compileFrameCallback(argumentAt(call, 1), "double-delta")})`,
             };
         }
 
@@ -206,6 +206,51 @@ export function compileSceneIntrinsic(
                 cpp:
                     `bbl::on_scene_dispose(${scene.cpp}, ` +
                     `${context.callbacks.compileVoidCallback(argumentAt(call, 1))})`,
+            };
+        }
+
+        case "addTaskAfter": {
+            context.expectArgumentCount(call, 3, 3);
+            const argument = (index: number) =>
+                context.bindings.pinValueToTemporary(
+                    context.compileValue(argumentAt(call, index)),
+                    "task_after_argument",
+                    argumentAt(call, index),
+                );
+            const scene = argument(0),
+                task = argument(1),
+                after = argument(2);
+            if (scene.kind !== "scene" && scene.kind !== "frame-graph-context")
+                context.fail(
+                    argumentAt(call, 0),
+                    `addTaskAfter requires a scene or frame-graph context, received ${scene.kind}.`,
+                );
+            context.expectKind(task, "task", argumentAt(call, 1));
+            context.expectKind(after, "task", argumentAt(call, 2));
+            context.expectSameEngine(scene, task, call);
+            context.expectSameEngine(scene, after, call);
+            if (
+                context.isRuntimeResourceConstruction() ||
+                context.engineLifecycle.engineHasStarted() ||
+                context.admissions.temporalSceneRegistration
+            ) {
+                context.fail(
+                    call,
+                    "addTaskAfter requires initial setup before scene or frame-graph registration; native runtime task attachment is not represented.",
+                );
+            }
+            context.reachFeature("renderer:geometry-output", call);
+            const defaultTask =
+                scene.kind === "scene"
+                    ? context.ensureDefaultRenderTask(scene, call)
+                    : undefined;
+            const target = defaultTask?.sceneCpp ?? scene.cpp;
+            const insertion = `bbl::add_task_after(${target}, ${task.cpp}, ${after.cpp})`;
+            return {
+                kind: "void",
+                cpp: defaultTask
+                    ? `${defaultTask.setup};\n        ${insertion}`
+                    : insertion,
             };
         }
 
@@ -287,7 +332,6 @@ export function compileSceneIntrinsic(
             context.expectKind(camera, "camera", argumentAt(call, 0));
             context.expectKind(scene, "scene", sceneArgument);
             context.expectSameEngine(camera, scene, call);
-            context.admissions.noteTemporalCameraControl(call, configurable);
             context.admissions.noteTextCameraControl(
                 call,
                 camera,
@@ -339,43 +383,25 @@ export function compileSceneIntrinsic(
                 });
                 configuration = `bbl::ConfigurableFreeControlOptions{${fields.join(", ")}}`;
             }
-            // The scene is the render loop the pinned hooks push their
-            // per-frame update onto, and its `_update` decides the delta
-            // that update advances by. Install the native control
-            // immediately and preserve the pin's returned disposer, which
-            // disables controls and releases its callbacks.
-            context.emit({
-                kind: "expression",
-                code: configurable
-                    ? `bbl::attach_configurable_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp}, ${configuration});`
-                    : importedName === "attachFreeControl"
-                      ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp});`
-                      : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp});`,
-            });
             const engine = context.requireEngine(camera, call);
-            for (const { member, cpp } of deferrals) {
-                context.emit({
-                    kind: "expression",
-                    code: `${recordAt(`${engine}.cameras`, camera.cpp)}.${member} = ${cpp};`,
-                });
-            }
-            const cleanup = context.captureManagedClosureLines(() => {
-                context.useNativeValue(camera);
-                const owner = context.requireEngine(camera, call);
-                context.emit({
-                    kind: "declaration",
-                    type: "auto&",
-                    name: "record",
-                    initializer: recordAt(`${owner}.cameras`, camera.cpp),
-                });
-                context.emit({
-                    kind: "expression",
-                    code: "record.controls_enabled = false; record.should_handle_pointer_down = {}; record.external_drag_active = {}; record.external_pick_pending = {}; record.configurable_free_pointer = {}; record.configurable_free_update = {};",
-                });
-            });
+            const options = `bbl::CameraControlOptions{${[
+                "should_handle_pointer_down",
+                "external_drag_active",
+                "external_pick_pending",
+            ]
+                .map(
+                    (member) =>
+                        deferrals.find((entry) => entry.member === member)
+                            ?.cpp ?? "{}",
+                )
+                .join(", ")}}`;
             return {
                 kind: "data",
-                cpp: renderClosure(cleanup, ""),
+                cpp: configurable
+                    ? `bbl::attach_configurable_free_control(${engine}, ${camera.cpp}, ${scene.cpp}, ${configuration})`
+                    : importedName === "attachFreeControl"
+                      ? `bbl::attach_free_control(${engine}, ${camera.cpp}, ${scene.cpp})`
+                      : `bbl::attach_control(${engine}, ${camera.cpp}, ${scene.cpp}, ${options})`,
                 dataType: { kind: "function", parameters: [] },
             };
         }

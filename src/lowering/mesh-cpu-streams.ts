@@ -16,7 +16,7 @@ export const meshCpuStreamFields: ReadonlyMap<string, string> = new Map([
     ["_cpuIndices", "indices"],
 ]);
 
-const meshCpuStreamParameters =
+export const meshCpuStreamParameters =
     "const js::F32Array& positions, const js::F32Array& normals, const js::U32Array& indices, const std::optional<js::F32Array>& uvs, const std::optional<js::F32Array>& uvs2, const std::optional<js::F32Array>& tangents, const std::optional<js::F32Array>& colors";
 const meshCpuStreamArguments =
     "positions, normals, indices, uvs, uvs2, tangents, colors";

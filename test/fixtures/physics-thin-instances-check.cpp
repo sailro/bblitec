@@ -29,7 +29,7 @@ std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) {
 } // namespace bbl::upstream
 namespace bbl {
 void flush_thin_instances(Engine& engine, MeshHandle mesh) {
-    ++engine.meshes.at(mesh.value).instance_version;
+    ++engine.meshes.at(mesh.value).thin_instances->version;
 }
 TransformNodeHandle create_transform_node(Engine& engine, std::string name, Vec3d position,
                                           Vec4 rotation, Vec3 scaling) {
@@ -48,10 +48,11 @@ namespace p = bbl::pal;
 namespace u = bbl::upstream;
 void check_transform(const std::vector<float>& matrices, const p::PhysicsTransform& expected) {
     for (const std::size_t count : {1u, 1024u}) {
-        std::vector<float> pool;
-        pool.reserve(count * matrices.size());
+        bbl::js::F32Array pool(count * matrices.size());
         for (std::size_t index = 0; index < count; ++index)
-            pool.insert(pool.end(), matrices.begin(), matrices.end());
+            for (std::size_t lane = 0; lane < matrices.size(); ++lane)
+                pool[index * matrices.size() + lane] = matrices[lane];
+        const bbl::js::NumericArrayView view(pool);
         p::PhysicsTransform transform;
         std::array<double, 4> rotation{};
         std::vector<double> scratch(16), scales(count * 3);
@@ -73,7 +74,7 @@ void check_transform(const std::vector<float>& matrices, const p::PhysicsTransfo
                                                 identity ? 0.f : 4.f,
                                                 1};
             const auto before = allocation_count;
-            assert(&u::thin_instance_transform(pool, static_cast<double>(count - 1), carrier,
+            assert(&u::thin_instance_transform(view, static_cast<double>(count - 1), carrier,
                                                identity, scratch, transform, rotation,
                                                scales) == &transform);
             assert(allocation_count == before);
@@ -94,14 +95,15 @@ int main() {
     scene.engine = &engine;
     const auto handle = u::create_havok_world(scene, {0, -10, 0});
     auto& world = *handle.ownership.lock();
-    std::vector<float> matrices(48);
+    bbl::js::F32Array matrices(48);
     for (std::size_t i = 0; i < 3; ++i)
         u::thin_compose_matrix(matrices, static_cast<double>(i * 16), static_cast<double>(i * 10),
                                10, 0, 0, 0, 0, 1, 1, 1, 1);
     auto& carrier = engine.meshes[0];
-    carrier.thin_instanced = true;
-    carrier.instance_count = 3;
-    carrier.instance_source = &matrices;
+    carrier.thin_instances = std::make_shared<bbl::ThinInstancePoolData>();
+    carrier.thin_instances->count = 3;
+    carrier.thin_instances->capacity = 3;
+    carrier.thin_instances->matrices = matrices;
     carrier.position = {123, 456, 789};
     const auto ordinary = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{1}),
                                                  u::PhysicsMotionType::STATIC, false);
@@ -138,7 +140,7 @@ int main() {
     assert(u::thin_from(world, body));
     assert(matrices[44] == -46 && matrices[45] == -368 && matrices[46] == -690);
     assert(carrier.position.x == 123 && carrier.position.y == 456 && carrier.position.z == 789);
-    assert(carrier.instance_version == 1);
+    assert(carrier.thin_instances->version == 1);
     std::vector<std::weak_ptr<p::PhysicsBodyState>> native_lifetimes;
     for (const auto& native : state->handles)
         native_lifetimes.push_back(native.ownership);
@@ -155,7 +157,7 @@ int main() {
         }
         return false;
     };
-    carrier.instance_count = 0;
+    carrier.thin_instances->count = 0;
     assert(refuses([&] {
         static_cast<void>(u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{0}),
                                                  u::PhysicsMotionType::DYNAMIC, false));
@@ -163,7 +165,7 @@ int main() {
     assert(refuses([&] {
         static_cast<void>(u::create_physics_aggregate(handle, {0}, u::PhysicsShapeType::BOX, {}));
     }));
-    carrier.instance_count = 3;
+    carrier.thin_instances->count = 3;
     {
         namespace c = bbl::character;
         const auto instances = u::create_physics_body(handle, u::physics_node(bbl::MeshHandle{0}),

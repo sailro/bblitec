@@ -795,7 +795,8 @@ InstanceStreams instance_streams_for([[maybe_unused]] const MeshRecord& record,
     if (!pinned_record_instanced(record) || !mesh.instances) {
         return InstanceStreams{};
     }
-    InstanceStreams streams{mesh.instances, nullptr, mesh.instance_count};
+    InstanceStreams streams{mesh.instances, nullptr,
+                            mesh.indirect_args ? 0u : mesh.instance_count(), mesh.indirect_args};
 #if BBLITE_GPU_INSTANCE_COLORS
     // The colour lane rides the pool: the composed variant declares it only
     // for a record whose pool carries colours, so the same record test
@@ -842,7 +843,7 @@ void encode_variant_draw(WGPURenderPassEncoder pass, WGPURenderPipeline pipeline
     }
     wgpuRenderPassEncoderSetIndexBuffer(pass, index_buffer, WGPUIndexFormat_Uint32, 0,
                                         WGPU_WHOLE_SIZE);
-    count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, index_count, instances.count, 0, 0, 0);
+    encode_dawn_indexed_draw(pass, index_count, instances.count, instances.indirect_args);
 }
 #endif
 

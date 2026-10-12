@@ -127,15 +127,7 @@ double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock, doub
     engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     const double scene_delta_ms = scene_callback_delta(scene, delta_ms);
-    // The scene callback API is the engine's float delta.
-    const float callback_delta_ms = static_cast<float>(scene_delta_ms);
-    // A callback may dispose its own scene while it is running. Snapshot the
-    // dispatch list so clearing SceneState::before_render cannot destroy the
-    // currently executing std::function (or invalidate the next iterator).
-    const auto root_callbacks = scene.before_render;
-    for (const auto& callback : root_callbacks) {
-        callback(callback_delta_ms);
-    }
+    run_scene_before_render(scene, scene_delta_ms);
     if (scene.state->process_material_groups)
         scene.state->process_material_groups(scene);
     // Every other registered scene's own callbacks. A swapchain overlay
@@ -147,12 +139,7 @@ double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock, doub
     for (const std::shared_ptr<Scene>& registered : registered_scenes) {
         if (!registered || registered->shares_identity(scene))
             continue;
-        const auto registered_delta_ms =
-            static_cast<float>(scene_callback_delta(*registered, delta_ms));
-        const auto callbacks = registered->before_render;
-        for (const auto& callback : callbacks) {
-            callback(registered_delta_ms);
-        }
+        run_scene_before_render(*registered, scene_callback_delta(*registered, delta_ms));
         if (registered->state->process_material_groups)
             registered->state->process_material_groups(*registered);
     }

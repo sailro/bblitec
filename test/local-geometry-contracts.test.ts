@@ -39,7 +39,11 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
     );
     writeFileSync(
         join(output, "geometry.hpp"),
-        `namespace bbl::upstream {
+        `namespace bbl {
+        ${cppRecord(shared, "struct ShaderPacketSystemState")}
+        }
+        namespace bbl::upstream {
+        inline constexpr bool public_camera_matrix_caches = false;
         ${cppRecord(plan.header, "enum class ShaderSystemMatrix")}
         ${cppRecord(plan.header, "struct ShaderVariantStageBlock")}
         ${[
@@ -68,6 +72,7 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
             .join("\n")}
         ${cppRecord(shared, "struct ShaderPassMatrices {")}
         ${cppRecord(shared, "struct ShaderDrawMatrices {")}
+        ${cppFunction(shared, "ShaderPassMatrices shader_packet_published_matrices(")}
         ${cppFunction(shared, "bool block_is_shared_scene_matrix(")}
         ${cppFunction(shared, "void shader_stage_block_floats(")}
         ${shared.slice(shared.indexOf("struct SharedGeometryIdentity {"), shared.lastIndexOf("/**", shared.indexOf("inline void release_shared_user(")))}
@@ -93,11 +98,12 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
             // Each consumer names the scene it draws under differently.
             consumers.push(`std::vector<float> pack_${consumers.length}(const Engine& engine, const ShaderPassMatrices& pass_matrices,
                 const upstream::ShaderVariantStageBlock& block, const MaterialRecord& material) {
-                struct Item { MeshHandle mesh{0}; };
+                struct Item { MeshHandle mesh{0}; ShaderPacketSystemOwner shader_packet; };
                 [[maybe_unused]] const Item item{}, draw_item{};
                 [[maybe_unused]] const struct { Item item; } draw{};
                 [[maybe_unused]] const auto& draw_pass_matrices = pass_matrices;
                 [[maybe_unused]] const auto& frame_pass_matrices = pass_matrices;
+                [[maybe_unused]] const auto& active_shader_pass = pass_matrices;
                 const Scene scene{};
                 [[maybe_unused]] const Scene& draw_context = scene;
                 [[maybe_unused]] const Scene* pass_scene = &scene;

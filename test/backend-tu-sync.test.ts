@@ -13,7 +13,16 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { featureSources } from "../src/compiler/output-projection.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import { sceneBackendSource, sharedGpuSource } from "./native-fixture.js";
+import { lowerSceneBeforeRenderDispatch } from "../src/lowering/camera-control-attachment.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+    sceneBackendSource,
+    sharedGpuSource,
+} from "./native-fixture.js";
 
 const tools = discoverDevelopmentTools();
 const featureTus = [
@@ -242,16 +251,70 @@ test("diagnostic input resumes across renderer restarts", () => {
 
 test("frame dispatch survives a callback disposing its own scene", () => {
     const shared = sharedGpuSource();
-    assert.match(
-        shared,
-        /const auto root_callbacks = scene\.before_render;\s*for \(const auto& callback : root_callbacks\)/,
-    );
+    assert.match(shared, /run_scene_before_render\(scene, scene_delta_ms\);/);
     assert.match(shared, /const auto registered_scenes = engine\.scenes\(\);/);
     assert.match(
         shared,
-        /const auto callbacks = registered->before_render;\s*for \(const auto& callback : callbacks\)/,
+        /for \(const std::shared_ptr<Scene>& registered : registered_scenes\)/,
+    );
+    assert.match(
+        shared,
+        /run_scene_before_render\(\*registered, scene_callback_delta\(\*registered, delta_ms\)\);/,
+    );
+    const context = new LoweringContext();
+    assert.match(
+        cppFunction(
+            new SceneLowerer(context).lowerCore().source,
+            "void dispose_scene(",
+        ),
+        /scene\.before_render\.clear\(\);/,
+    );
+    assert.match(
+        lowerSceneBeforeRenderDispatch(context),
+        /index < scene\.before_render\.size\(\); \+\+index\) \{\s*const auto callback = scene\.before_render\[index\];\s*callback\(delta_ms\);/,
     );
 });
+
+const dispatchTools = optionalNativeFixtureTools(false);
+test(
+    "live scene dispatch retains its active closure when disposal clears callbacks",
+    { skip: !dispatchTools },
+    () => {
+        runGeneratedProgram(
+            dispatchTools!,
+            "live-scene-dispatch-disposal",
+            `#include <bblite/js_callback.hpp>
+#include <bblite/snapshot_list.hpp>
+#include <cassert>
+#include <memory>
+namespace bbl {
+struct Scene { SnapshotList<js::Callback<void(double)>> before_render; };
+${lowerSceneBeforeRenderDispatch(new LoweringContext())}
+}
+int main() {
+    bbl::Scene scene;
+    int calls = 0;
+    auto capture = std::make_shared<int>(42);
+    const std::weak_ptr<int> lifetime = capture;
+    scene.before_render.push_back([&, capture](double delta_ms) {
+        ++calls;
+        assert(delta_ms == 16.7);
+        scene.before_render.clear();
+        assert(!lifetime.expired());
+        assert(*capture == 42);
+    });
+    scene.before_render.push_back([&](double) { calls += 100; });
+    capture.reset();
+    bbl::run_scene_before_render(scene, 16.7);
+    assert(calls == 1);
+    assert(scene.before_render.empty());
+    assert(lifetime.expired());
+    bbl::run_scene_before_render(scene, 16.7);
+    assert(calls == 1);
+}`,
+        );
+    },
+);
 
 test("creating a camera during UI dispatch cannot invalidate the active camera", () => {
     const runtime = readFileSync("native/include/bblite/runtime.hpp", "utf8");
@@ -302,7 +365,7 @@ test("Dawn caches thin-pick bindings and invalidates them with their buffers", (
     );
     assert.match(
         dawn,
-        /gpu\.release_thin_pick_group\(\);[\s\S]{0,300}wgpuBufferRelease\(gpu\.instances\)/,
+        /if \(row\.instances != matrix->buffer\) \{[\s\S]{0,100}row\.release_thin_pick_group\(\);[\s\S]{0,100}if \(row\.instances && !row\.instance_owner\)\s*wgpuBufferRelease\(row\.instances\);\s*row\.instances = matrix->buffer;/,
     );
     const releaseMesh = dawn.slice(
         dawn.indexOf("void release_gpu_resources(DawnMeshResources&"),

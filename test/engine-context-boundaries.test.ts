@@ -63,7 +63,7 @@ test("camera callbacks retain construction owners after nullable engine reset", 
         "camera-context-snapshot",
         `
         #include <bblite/pal_async_engine.hpp>
-        namespace { std::weak_ptr<bbl::Engine> lifetime; unsigned attached = 0; }
+        namespace { std::weak_ptr<bbl::Engine> lifetime; unsigned attached = 0; unsigned disposed = 0; }
         namespace bbl::pal {
             std::shared_ptr<Engine> create_realm_engine(EngineOptions, const std::shared_ptr<OffscreenCanvas>&) {
                 auto engine = std::make_shared<Engine>();
@@ -83,15 +83,21 @@ test("camera callbacks retain construction owners after nullable engine reset", 
                 engine.cameras.back().alpha = alpha;
                 return {static_cast<std::uint32_t>(engine.cameras.size() - 1)};
             }
-            void attach_control(Engine& engine, CameraHandle camera, const Scene&) {
+            js::Callback<void()> attach_control(Engine& engine, CameraHandle camera, const Scene&, CameraControlOptions) {
                 if (lifetime.lock().get() != &engine || handle_at(engine.cameras, camera).alpha != 0.5)
                     throw std::runtime_error("wrong control owner");
                 ++attached;
+                return [camera] {
+                    const auto owner = lifetime.lock();
+                    if (!owner || handle_at(owner->cameras, camera).alpha != 0.5)
+                        throw std::runtime_error("lost control owner during disposal");
+                    ++disposed;
+                };
             }
         }
         int main() {
             const int result = generated_main();
-            if (attached != 1 || !lifetime.expired()) throw std::runtime_error("camera owner lifetime");
+            if (attached != 1 || disposed != 1 || !lifetime.expired()) throw std::runtime_error("camera owner lifetime");
             return result;
         }
         `,

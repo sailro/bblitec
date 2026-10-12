@@ -27,12 +27,13 @@ const compile = (body: string) =>
         }
     `);
 
-test("accepts resizeEngine and shader uniform caching with nothing left to run", () => {
+test("keeps native resizing implicit and enables the pinned shader uniform cache", () => {
     const { cpp } = compile(`
         enableShaderMaterialUniformCaching();
         resizeEngine(engine);
     `);
-    assert.doesNotMatch(cpp, /resize|uniform_caching/i);
+    assert.doesNotMatch(cpp, /resize/i);
+    assert.match(cpp, /bbl::enable_shader_uniform_caching\(\);/);
 });
 
 test("the pinned uniform caching only swaps the shader uniform writers", () => {

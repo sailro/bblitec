@@ -1863,8 +1863,8 @@ void register_node_particle_set(Engine& engine, Scene& scene, int request) {
         const BillboardSystemHandle billboard = create_node_particle_billboard(engine, entry.set_index, entry.system_index);
         add_billboard_system(scene, billboard);
         if (entry.auto_start) system.start();
-        scene.before_render.push_back([&engine, billboard, system = &system](float delta_ms) {
-            const double ratio = delta_ms > 0 ? static_cast<double>(delta_ms) / ${frameMs} : 1.0;
+        scene.before_render.push_back([&engine, billboard, system = &system](double delta_ms) {
+            const double ratio = delta_ms > 0 ? delta_ms / ${frameMs} : 1.0;
             system->animate(ratio);
             system->sync(engine, billboard);
         });

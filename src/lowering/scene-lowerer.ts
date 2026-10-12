@@ -1,3 +1,5 @@
+import { lowerSceneBeforeRenderDispatch } from "./camera-control-attachment.js";
+import { lowerHierarchyInstanceOperations } from "./hierarchy-instance-lowerer.js";
 import { renderingContextKind } from "./rendering-context-kind.js";
 import ts from "typescript";
 import { assetRootTransformSource } from "./asset-root-transform.js";
@@ -15,6 +17,7 @@ import { lowerPbrMaterialGroups } from "./pbr-material-groups.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerMeshGeometryAccess } from "./mesh-geometry-access.js";
 import { lowerSceneNodeRemoval } from "./scene-node-removal.js";
+import { shaderUniformPublication } from "./shader-uniforms.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -107,6 +110,8 @@ interface SceneCoreOptions {
     /** Node materials capture texture slots in deferred scene groups. */
     nodeMaterials?: boolean;
     pbrSceneHooks?: boolean;
+    gltfSceneHooks?: boolean;
+    thinBindings?: boolean;
 }
 
 export class SceneLowerer {
@@ -754,6 +759,7 @@ ${options.geometryAccess ? "#include <bblite/mesh_cpu_streams.hpp>" : ""}
 #include <bblite/features/has_sprites.hpp>
 ${options.text ? "#include <bblite/upstream_text_records.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
+#include <bblite/upstream/thin_instance_sync.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
 ${options.nodeMaterials ? "#include <bblite/node_material.hpp>" : ""}
@@ -806,7 +812,7 @@ std::uint32_t scene_material_families(const Scene& scene) {
 } // namespace
 
 ${lowerMeshMaterialSetter(this.context)}
-${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
+${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
@@ -1177,7 +1183,7 @@ void enable_mirrored_meshes(Scene& scene) {
     static_cast<void>(
         upstream::refresh_mirrored_meshes(scene, engine));
     std::weak_ptr<SceneState> watched_state = scene.state;
-    scene.before_render.push_back([watched_state](float) {
+    scene.before_render.push_back([watched_state](double) {
         std::shared_ptr<SceneState> retained = watched_state.lock();
         if (!retained) return;
         Scene watched = Scene::from_state(std::move(retained));
@@ -1656,18 +1662,6 @@ HierarchyInstancePoolRecord& hierarchy_instance_pool(
     return ${recordAt("engine.hierarchy_instance_pools", "handle")};
 }
 
-std::size_t hierarchy_instance_index(
-    double value,
-    std::size_t limit,
-    const char* message) {
-    if (
-        !std::isfinite(value) || value < 0.0 ||
-        std::floor(value) != value || value >= static_cast<double>(limit)) {
-        throw std::runtime_error(message);
-    }
-    return static_cast<std::size_t>(value);
-}
-
 std::array<float, 16> hierarchy_instance_matrix(
     const std::vector<float>& matrix) {
     if (matrix.size() < 16) {
@@ -1679,22 +1673,7 @@ std::array<float, 16> hierarchy_instance_matrix(
     return result;
 }
 
-void write_hierarchy_instance_matrix(
-    Engine& engine,
-    HierarchyInstancePoolRecord& pool,
-    std::size_t index,
-    const std::array<float, 16>& root_matrix,
-    bool mark_dirty) {
-    for (const HierarchyInstancePoolBinding& binding : pool.bindings) {
-        MeshRecord& mesh = ${recordAt("engine.meshes", "binding.mesh")};
-        mat4_multiply_into(
-            pool.scratch, 0, root_matrix, 0, binding.mesh_world, 0);
-        mat4_multiply_into(
-            mesh.instance_matrices.at(index), 0,
-            binding.mesh_world_inverse, 0, pool.scratch, 0);
-        if (mark_dirty) ++mesh.instance_version;
-    }
-}
+${lowerHierarchyInstanceOperations(this.context)}
 
 } // namespace
 
@@ -1717,7 +1696,7 @@ HierarchyInstancePoolHandle create_hierarchy_instance_pool(
     }
     HierarchyInstancePoolRecord pool;
     pool.root = root_handle;
-    pool.capacity = static_cast<std::uint32_t>(capacity_value);
+    pool.capacity = capacity_value;
     pool.meshes = ${recordAt("engine.assets", "root_handle")}.meshes;
     if (pool.meshes.empty()) {
         throw std::runtime_error(
@@ -1726,7 +1705,7 @@ HierarchyInstancePoolHandle create_hierarchy_instance_pool(
     pool.bindings.reserve(pool.meshes.size());
     for (const MeshHandle handle : pool.meshes) {
         MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
-        if (mesh.thin_instanced) {
+        if (mesh.thin_instances) {
             throw std::runtime_error(
                 "createHierarchyInstancePool source mesh already has thin instances");
         }
@@ -1740,13 +1719,11 @@ HierarchyInstancePoolHandle create_hierarchy_instance_pool(
             throw std::runtime_error(
                 "createHierarchyInstancePool requires an invertible world matrix");
         }
-        mesh.instance_matrices.resize(pool.capacity);
-        mesh.thin_instanced = true;
-        mesh.instance_count = 0;
-        mesh.instance_source = nullptr;
-        ++mesh.instance_version;
+        js::F32Array matrices = js::f32_array_sized(pool.capacity * 16.0);
+        set_thin_instances(engine, handle, matrices, pool.capacity);
+        set_thin_instance_count(engine, handle, 0.0);
         pool.bindings.push_back(HierarchyInstancePoolBinding{
-            handle, mesh_world, *inverse});
+            handle, matrices, mesh_world, *inverse});
     }
     const HierarchyInstancePoolHandle handle{
         static_cast<std::uint32_t>(engine.hierarchy_instance_pools.size())};
@@ -1754,77 +1731,22 @@ HierarchyInstancePoolHandle create_hierarchy_instance_pool(
     return handle;
 }
 
-void set_hierarchy_instance_count(
-    Engine& engine,
-    HierarchyInstancePoolHandle handle,
-    double count_value) {
-    HierarchyInstancePoolRecord& pool =
-        hierarchy_instance_pool(engine, handle);
-    if (
-        !std::isfinite(count_value) || count_value < 0.0 ||
-        std::floor(count_value) != count_value ||
-        count_value > static_cast<double>(pool.capacity)) {
-        throw std::runtime_error(
-            "setHierarchyInstanceCount count must be an integer within pool capacity");
-    }
-    pool.count = static_cast<std::uint32_t>(count_value);
-    for (const MeshHandle mesh_handle : pool.meshes) {
-        MeshRecord& mesh = ${recordAt("engine.meshes", "mesh_handle")};
-        mesh.instance_count = pool.count;
-        ++mesh.instance_version;
-    }
+void set_hierarchy_instance_count(Engine& engine, HierarchyInstancePoolHandle handle, double count) {
+    set_hierarchy_pool_count(engine, hierarchy_instance_pool(engine, handle), count);
 }
 
-double add_hierarchy_instance(
-    Engine& engine,
-    HierarchyInstancePoolHandle handle,
-    const std::vector<float>& matrix) {
-    HierarchyInstancePoolRecord& pool =
-        hierarchy_instance_pool(engine, handle);
-    if (pool.count >= pool.capacity) {
-        throw std::runtime_error("addHierarchyInstance exceeded pool capacity");
-    }
-    const std::size_t index = pool.count;
-    write_hierarchy_instance_matrix(
-        engine, pool, index, hierarchy_instance_matrix(matrix), false);
-    set_hierarchy_instance_count(
-        engine, handle, static_cast<double>(index + 1));
-    return static_cast<double>(index);
+double add_hierarchy_instance(Engine& engine, HierarchyInstancePoolHandle handle, const std::vector<float>& matrix) {
+    return add_hierarchy_pool_instance(engine, hierarchy_instance_pool(engine, handle), hierarchy_instance_matrix(matrix));
 }
 
-void set_hierarchy_instance_matrix(
-    Engine& engine,
-    HierarchyInstancePoolHandle handle,
-    double index_value,
-    const std::vector<float>& matrix) {
-    HierarchyInstancePoolRecord& pool =
-        hierarchy_instance_pool(engine, handle);
-    const std::size_t index = hierarchy_instance_index(
-        index_value, pool.count,
-        "setHierarchyInstanceMatrix index must reference an active hierarchy instance");
-    write_hierarchy_instance_matrix(
-        engine, pool, index, hierarchy_instance_matrix(matrix), true);
+void set_hierarchy_instance_matrix(Engine& engine, HierarchyInstancePoolHandle handle, double index, const std::vector<float>& matrix) {
+    set_hierarchy_pool_matrix(engine, hierarchy_instance_pool(engine, handle), index, hierarchy_instance_matrix(matrix));
 }
 
-void remove_hierarchy_instance(
-    Engine& engine,
-    HierarchyInstancePoolHandle handle,
-    double index_value) {
-    HierarchyInstancePoolRecord& pool =
-        hierarchy_instance_pool(engine, handle);
-    const std::size_t index = hierarchy_instance_index(
-        index_value, pool.count,
-        "removeHierarchyInstance index must reference an active hierarchy instance");
-    const std::size_t last = pool.count - 1;
-    if (index != last) {
-        for (const MeshHandle mesh_handle : pool.meshes) {
-            MeshRecord& mesh = ${recordAt("engine.meshes", "mesh_handle")};
-            mesh.instance_matrices[index] = mesh.instance_matrices[last];
-        }
-    }
-    set_hierarchy_instance_count(
-        engine, handle, static_cast<double>(last));
+void remove_hierarchy_instance(Engine& engine, HierarchyInstancePoolHandle handle, double index) {
+    remove_hierarchy_pool_instance(engine, hierarchy_instance_pool(engine, handle), index);
 }
+
 `
             : "";
     }
@@ -2136,11 +2058,14 @@ void remove_from_scene(Scene& scene, MeshHandle mesh) {
     // A disposed mesh whose slot another mesh took: removing it again
     // changes nothing upstream.
     if (!mesh_handle_current(engine, mesh)) return;
+    bool task_mesh_removed = false;
     for (const TaskHandle task : scene.tasks) {
-        std::erase_if(
+        task_mesh_removed |= std::erase_if(
             ${recordAt("engine.frame_tasks", "task")}.render_meshes,
-            [mesh](const RenderTaskMesh& entry) { return entry.mesh == mesh; });
+            [mesh](const RenderTaskMesh& entry) { return entry.mesh == mesh; }) != 0;
     }
+    // Native rows also own explicit task meshes that were never scene members.
+    if (task_mesh_removed) ++engine.draw_list_epoch;
     const auto listed = std::find(scene.meshes.begin(), scene.meshes.end(), mesh);
     if (listed != scene.meshes.end()) {
         scene.meshes.erase(listed);
@@ -2155,7 +2080,7 @@ ${options.nodeMaterials ? "    for (const auto& group : scene.state->node_materi
     }
     erase_first_mesh(scene.state->pbr_material_swap_queue, mesh);
     clear_mesh_parent(engine, mesh);
-    if (unregister_mesh_material_scene(scene, mesh)) retire_mesh_record(engine, mesh);
+    if (unregister_mesh_material_scene(scene, mesh)) retire_mesh_record(engine, mesh${options.thinBindings ? ", dispose_thin_instance_gpu" : ""});
     // removeChildren: a copy, since each removal may edit the list.
     const std::vector<MeshHandle> children = ${recordAt("engine.meshes", "mesh")}.children;
     for (const MeshHandle child : children) remove_from_scene(scene, child);
@@ -2265,6 +2190,7 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
         if (record.geometry < engine.geometries.size()) {
             ++engine.geometries[record.geometry].owners;
         }
+        if (record.thin_instances) retain_thin_instance_pool(record.thin_instances);
         record.name += "${cloneSuffix}";
         const MeshHandle cloned_mesh =
             store_mesh_record(engine, std::move(record));
@@ -2336,6 +2262,7 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
     if (record.geometry < engine.geometries.size()) {
         ++engine.geometries[record.geometry].owners;
     }
+    if (record.thin_instances) retain_thin_instance_pool(record.thin_instances);
     record.name += "${cloneSuffix}";
     record.parent = {};
     record.transform_parent = {};
@@ -2429,9 +2356,10 @@ void add_to_scene(Scene& scene, const SceneNodeHandle& node) {
     }
 
     private eventRegistrationSource(): string {
-        return `void on_before_render(
+        return `${lowerSceneBeforeRenderDispatch(this.context)}
+void on_before_render(
     Scene& scene,
-    js::Callback<void(float)> callback) {
+    js::Callback<void(double)> callback) {
     scene.before_render.insert(
         scene.before_render.begin(),
         std::move(callback));
@@ -2623,6 +2551,15 @@ void off_visibility_change(Engine& engine, std::size_t identity) {
             bindings: new Map(),
             calls: new Map(),
         }).expression(built[0]!.right);
+        const pending = this.context.functionDeclaration(
+            "src/frame-graph/render-task-transaction.ts",
+            "resolvePendingTaskMeshes",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(pending.declaration, "renderable"),
+            "rebuild(candidate.scene, mesh, material, resources)",
+            "Explicit render-task material construction",
+        );
         // The build publishes the deferred renderables with one
         // `_renderableVersion` bump, which the renderers follow.
         if (
@@ -2677,6 +2614,7 @@ ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
         const auto material = ${recordAt("scene.engine->meshes", "mesh")}.material;
         if (material.value < scene.engine->materials.size()) {
             auto& record = ${recordAt("scene.engine->materials", "material")};
+            ${shaderUniformPublication(this.context, "record")}
             if (!record.source_colors_registered) {
                 project_material_source_colors(record);
                 record.source_colors_registered = true;
@@ -2684,6 +2622,24 @@ ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
         }
     }
     scene.material_family_mask = scene_material_families(scene);
+    // registerScene builds the frame graph after the scene's material groups.
+    // resolvePendingTaskMeshes constructs the queued explicit task renderables there.
+    for (const auto task_handle : scene.tasks) {
+        auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
+        if (task.kind != FrameTaskKind::render || task.render_recorded) continue;
+        const auto task_scene = Scene::from_state(task.source_scene ? task.source_scene : scene.state);
+        for (const auto& entry : task.render_meshes) {
+            const auto material = render_task_mesh_material(*scene.engine, entry);
+            if (material.value >= scene.engine->materials.size()) continue;
+            const auto& record = ${recordAt("scene.engine->materials", "material")};
+            ${shaderUniformPublication(this.context, "record", "task_scene")}
+            if (record.shader_uniform_snapshot || record.shader_packet_initialize)
+                entry.shader_packet = std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
+${options.thinBindings ? "            entry.thin_binding = create_thin_material_binding(*scene.engine, entry.mesh, material);" : ""}
+        }
+        task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
+        task.render_recorded = true;
+    }
 ${
     options.text
         ? `    std::stable_sort(scene.state->text_renderables.begin(), scene.state->text_renderables.end(),

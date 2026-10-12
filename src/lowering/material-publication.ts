@@ -2,9 +2,13 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { shaderUniformPublication } from "./shader-uniforms.js";
 
 /** Output identities and captured material handles transport the source renderables. */
-export function lowerMaterialPublication(context: LoweringContext): string {
+export function lowerMaterialPublication(
+    context: LoweringContext,
+    thinBindings = false,
+): string {
     const source = "src/scene/scene-material-swap.ts";
     const { file, declaration } = context.functionDeclaration(
         source,
@@ -502,7 +506,7 @@ ${errorBody}
 void install_material_runtime(Scene& scene) {
     if (scene.state->material_runtime_installed) return;
     scene.state->material_runtime_installed = true;
-    scene.before_render.push_back([owner = std::weak_ptr<SceneState>(scene.state)](float) {
+    scene.before_render.push_back([owner = std::weak_ptr<SceneState>(scene.state)](double) {
         const auto state = owner.lock();
         if (!state) return;
         auto scene = Scene::from_state(state);
@@ -515,10 +519,13 @@ bool source_shader_material_draw_matches(MaterialHandle current, MaterialHandle 
 SourceMaterialOutput capture_material_output(Scene& scene, MeshHandle mesh) {
     const auto material = ${recordAt("scene.engine->meshes", "mesh")}.material;
     const auto& record = ${recordAt("scene.engine->materials", "material")};
+    ${shaderUniformPublication(context, "record")}
     const auto guard = record.source_pbr_group_builder ? source_material_draw_matches :
         record.source_group_builder == 2 ? source_standard_material_draw_matches :
         record.source_group_builder == 3 ? source_shader_material_draw_matches : nullptr;
-    return std::make_shared<SourceMaterialDraw>(SourceMaterialDraw{mesh, material, guard});
+    const auto output = std::make_shared<SourceMaterialDraw>(SourceMaterialDraw{mesh, material, guard});
+${thinBindings ? "    output->thin_binding = create_thin_material_binding(*scene.engine, mesh, material);" : ""}
+    return output;
 }
 SourceMaterialOutputs capture_material_outputs(Scene& scene, const std::vector<MeshHandle>& meshes) {
     SourceMaterialOutputs outputs;

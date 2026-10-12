@@ -92,7 +92,7 @@ update_pinned_velocity(PinnedVelocityHistory& history, MeshHandle mesh,
 #if BBLITE_PINNED_MATERIALS && BBLITE_PINNED_MATERIAL_VARIANTS
 inline void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene,
                                          const Engine& engine,
-                                         const std::vector<upstream::RenderItem>& items) {
+                                         std::span<const upstream::RenderItem> items) {
     if constexpr (!PinnedVelocityBlock<upstream::MeshUniforms>) {
         return;
     }

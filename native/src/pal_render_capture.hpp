@@ -753,9 +753,10 @@ inline void write_material(JsonWriter& json, std::size_t index, const MaterialRe
     }
     json.end_array();
 
-    if (!material.shader_uniform_values.empty()) {
-        json.field("shaderUniformValues", material.shader_uniform_values.data(),
-                   material.shader_uniform_values.size());
+    const auto& shader_uniform_values = material.shader_uniform_values;
+    if (!shader_uniform_values.empty()) {
+        json.field("shaderUniformValues", shader_uniform_values.data(),
+                   shader_uniform_values.size());
     }
 
     write_texture_transform(json, "baseColorTransform", material.base_color_transform);
@@ -818,13 +819,26 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
     json.field("clockwiseFrontFace", mesh.clockwise_front_face);
     json.field("gpuDeformation", mesh.gpu_deformation);
     json.field("boneMatrixCount", mesh.bone_matrices.size());
-    json.field("thinInstanced", mesh.thin_instanced);
-    json.field("instanceCount", mesh.instance_count);
-    json.field("loaderInstanceCount", mesh.instance_matrices.size());
-    if (mesh.thin_instanced && mesh.instance_source &&
-        mesh.instance_source->size() >= static_cast<std::size_t>(mesh.instance_count) * 16u) {
-        json.field("instanceMatrices", mesh.instance_source->data(),
-                   static_cast<std::size_t>(mesh.instance_count) * 16u);
+    json.field("thinInstanced", static_cast<bool>(mesh.thin_instances));
+    json.field("instanceCount", mesh.thin_instances ? mesh.thin_instances->count : 0.0);
+    json.field("loaderInstanceCount",
+               mesh.thin_instances
+                   ? std::visit([](const auto& values) { return values.size() / 16; },
+                                mesh.thin_instances->matrices)
+                   : 0);
+    if (mesh.thin_instances) {
+        std::visit(
+            [&](const auto& values) {
+                const double lane_count = mesh.thin_instances->count * 16.0;
+                if (!(lane_count >= 0 && lane_count <= static_cast<double>(values.size())))
+                    return;
+                json.key("instanceMatrices");
+                json.begin_array();
+                for (std::size_t lane = 0; lane < static_cast<std::size_t>(lane_count); ++lane)
+                    json.value(values.load(lane));
+                json.end_array();
+            },
+            mesh.thin_instances->matrices);
     }
     json.field("morphWeights", mesh.morph_weights.data(), 4);
     if (!mesh.morph_storage_weights.empty()) {
@@ -950,7 +964,8 @@ inline void write_draw_uniforms(JsonWriter& json, const Scene& scene, const Engi
             const MaterialRecord& material = handle_at(engine.materials, draw.item.material);
             const ShaderDrawMatrices shader_matrices(
                 scene, engine, handle_at(engine.meshes, draw.item.mesh), pass_matrices);
-            const ShaderPassMatrices shader_pass_matrices = shader_matrices.apply(pass_matrices);
+            const ShaderPassMatrices shader_pass_matrices = shader_packet_published_matrices(
+                draw.item.shader_packet, shader_matrices.apply(pass_matrices));
             const upstream::ShaderVariantInfo& info =
                 upstream::shader_variant_info(draw.item.shader_variant);
             // The scratch the shared packer fills -- the same
@@ -1036,9 +1051,7 @@ inline void write_draw_list(JsonWriter& json, const char* stage,
         }
         if (draw.item.mesh.value < engine.meshes.size()) {
             const MeshRecord& mesh = handle_at(engine.meshes, draw.item.mesh);
-            json.field("instanceCount", mesh.thin_instanced ? mesh.instance_count
-                                                            : static_cast<std::uint32_t>(
-                                                                  mesh.instance_matrices.size()));
+            json.field("instanceCount", mesh.thin_instances ? mesh.thin_instances->count : 0.0);
         }
         write_draw_uniforms(json, scene, engine, camera, draw, view_projection, pass_matrices);
         json.end_object();
@@ -1272,8 +1285,7 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
                                       const CameraRecord& camera,
                                       const std::array<float, 16>& view_projection) {
     // The same view the frame builds once for the sort and the draw.
-    const std::array<float, 16> view =
-        upstream::build_view_matrix(upstream::camera_world_matrix(camera));
+    const std::array<float, 16> view = upstream::build_camera_view_matrix(camera);
     // The pin's surface sample count, which the passes are built at unless
     // BBLITE_MSAA=1 forces a single-sample diagnostic run.
     const std::uint32_t sample_count =
@@ -1940,14 +1952,23 @@ inline void write_render_capture(const std::string& path, const char* backend, c
     // the frame loops do before building the matrix passed in here.
     const double capture_aspect = upstream::effective_aspect_ratio(
         camera, static_cast<double>(width), static_cast<double>(height));
-    const std::array<float, 16> frame_view =
-        upstream::build_view_matrix(upstream::camera_world_matrix(camera));
-    const std::array<float, 16> frame_projection =
-        upstream::build_scene_projection(camera, capture_aspect);
+    const std::array<float, 16> frame_view = upstream::build_camera_view_matrix(camera);
+    const std::array<float, 16> frame_projection = [&] {
+        if constexpr (upstream::public_camera_matrix_caches) {
+            std::array<float, 16> snapshot{};
+            if (camera.projection_cache)
+                std::copy_n(camera.projection_cache->begin(), snapshot.size(), snapshot.begin());
+            return snapshot;
+        }
+        return upstream::build_scene_projection(camera, capture_aspect);
+    }();
     const std::array<float, 4> frame_camera_position =
         shader_camera_position(scene, engine, camera);
     ShaderPassMatrices frame_pass_matrices{view_projection.data(), &frame_view, &frame_projection};
     frame_pass_matrices.camera_position = &frame_camera_position;
+    frame_pass_matrices.camera = &camera;
+    frame_pass_matrices.target_width = static_cast<double>(width);
+    frame_pass_matrices.target_height = static_cast<double>(height);
     write_draw_list(json, "opaque", render_plan.draw_lists.opaque, scene, engine, camera,
                     view_projection, frame_pass_matrices);
     write_draw_list(json, "transparent", render_plan.draw_lists.transparent, scene, engine, camera,

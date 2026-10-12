@@ -185,7 +185,15 @@ export const nativeDataIterationIntrinsics: ReadonlySet<string> =
         "setShaderUniform",
         "setShaderFloat",
         "setShaderVector3",
+        "setShaderMatrix",
+        "isShaderMaterial",
+        "isStandardMaterial",
         "setShaderTexture",
+        "getShaderUniform",
+        "computePath",
+        "findClosestPointWithinInto",
+        "navRayBlockedFast",
+        "disposeNavigationPlugin",
     ]);
 
 /**
@@ -195,7 +203,10 @@ export const nativeDataIterationIntrinsics: ReadonlySet<string> =
 export const sharedBodyIntrinsics: ReadonlySet<string> = new EmissionSet([
     ...nativeDataIterationIntrinsics,
     "createTexture2DFromPixels",
+    "getViewMatrix",
+    "getProjectionMatrix",
     "getViewProjectionMatrix",
+    "createNavMeshFromSources",
     "createPickingRay",
     "markMaterialUboDirty",
     "unlockAudioEngineAsync",
@@ -203,6 +214,10 @@ export const sharedBodyIntrinsics: ReadonlySet<string> = new EmissionSet([
     "invalidateRenderBundles",
     "updateMeshPositions",
     "updateMeshUvs",
+    "updateMeshNormals",
+    "updateMeshColors",
+    "updateMeshTangents",
+    "updateMeshUv2",
 ]);
 
 type IntrinsicCompiler = (

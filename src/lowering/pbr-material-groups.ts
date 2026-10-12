@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { lowerRebuildTransaction } from "./pbr-transmission-transaction.js";
 
 import {
     lowerMaterialPublication,
@@ -12,7 +13,11 @@ import { recordAt } from "../compiler/record-access.js";
 const sceneModule = "src/scene/scene-core.ts";
 
 /** Source builder identities own membership; the backend owns draw construction. */
-export function lowerPbrMaterialGroups(context: LoweringContext): string {
+export function lowerPbrMaterialGroups(
+    context: LoweringContext,
+    gltfSceneHooks = true,
+    thinBindings = false,
+): string {
     const { file, declaration } = context.functionDeclaration(
         sceneModule,
         "addToScene",
@@ -310,7 +315,8 @@ export function lowerPbrMaterialGroups(context: LoweringContext): string {
             calls: new Map(),
         },
     );
-    return `${lowerMaterialPublication(context)}
+    return `${gltfSceneHooks ? "" : lowerRebuildTransaction(context, "run_pbr_rebuild_transaction")}
+${lowerMaterialPublication(context, thinBindings)}
 ${materialPublicationTransport()}
 // ${context.provenance(sceneModule, "addToScene")}
 void process_pbr_material_swaps(Scene& scene);
@@ -345,7 +351,7 @@ void complete_scene_material_group(Scene& scene, MaterialHandle material) {
         group->rebuild_ready = true;
     }
 }
-${lowerPbrGroupBuild(context)}
+${lowerPbrGroupBuild(context, gltfSceneHooks)}
 void enqueue_pbr_material_swap(Scene& scene, MeshHandle mesh) {
 ${enqueue}
 }
@@ -370,7 +376,10 @@ ${lowerPbrGroupUpdates(context)}
 }
 
 /** Source owns scene hooks and invalidator inputs; GPU construction stays native. */
-function lowerPbrGroupBuild(context: LoweringContext): string {
+function lowerPbrGroupBuild(
+    context: LoweringContext,
+    gltfSceneHooks: boolean,
+): string {
     const module = "src/material/pbr/pbr-renderable.ts";
     const { file, declaration } = context.functionDeclaration(
         module,
@@ -556,7 +565,7 @@ function lowerPbrGroupBuild(context: LoweringContext): string {
         );
     return `bool build_pbr_material_group(Scene& scene, const std::vector<MeshHandle>& meshes) {
 ${body}
-    run_pbr_scene_hooks(scene, meshes);
+${gltfSceneHooks ? "    run_pbr_scene_hooks(scene, meshes);" : ""}
     return hasGammaAlbedo;
 }
 `;

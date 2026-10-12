@@ -58,10 +58,14 @@ import {
     type NavigationBuildArm,
 } from "./navigation-build-plan.js";
 import { navigationDebugGeometryDefinition } from "./navigation-library.js";
+import {
+    navigationSourceQueryDeclarations,
+    navigationMeshMergeDefinition,
+    navigationSourceQueryDefinitions,
+} from "./navigation-source-queries.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { pinnedOptionFallback } from "./pinned-option-defaults.js";
 import { doubleLiteral } from "../cpp-literals.js";
-import { recordAt } from "../compiler/record-access.js";
 import { featureMacroInclude } from "../feature-macros.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
@@ -663,6 +667,7 @@ void create_nav_mesh(
     const std::vector<MeshHandle>& meshes,
     const bbl::pal::NavMeshBuildParams& params);
 ${obstacleDeclarations}
+${navigationSourceQueryDeclarations}
 ${navigationQueryDefaultsDeclaration()}
 ${navigationBuildPlanDeclarations([arm])}
 bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
@@ -705,6 +710,7 @@ Vec3d get_agent_position(
             source: `// ${this.context.provenance(modulePath, symbolName, "createNavigationPluginAsync, createDebugNavMeshGeometry, raycast")}
 #include <${featureMacroInclude("BBLITE_HAS_NAV_CROWD")}>
 #include <bblite/upstream/navigation.hpp>
+#include <bblite/mesh_cpu_streams.hpp>
 // The merge composes each caster's own world through the one emitted
 // composition every consumer reads, so a mesh that gained a transform-node
 // parent follows it here too.
@@ -723,58 +729,8 @@ bbl::pal::NavigationHandle create_navigation_plugin() {
     return bbl::pal::navigation_create_plugin();
 }
 
-// src/scene/world-matrix-state.ts composeTrsLocalMatrix +
-// _mergeMeshes: the pin multiplies each mesh's CPU positions through
-// its worldMatrix and reverses the winding (i, i+2, i+1) over a running
-// vertex base.
-void create_nav_mesh(
-    Engine& engine,
-    bbl::pal::NavigationHandle plugin,
-    const std::vector<MeshHandle>& meshes,
-    const bbl::pal::NavMeshBuildParams& params) {
-    bbl::pal::NavMeshGeometry merged;
-    std::size_t vertex_base = 0;
-    for (const MeshHandle handle : meshes) {
-        if (handle.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle for navmesh");
-        }
-        const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
-        if (mesh.geometry >= engine.geometries.size()) {
-            throw std::runtime_error(
-                "Mesh '" + mesh.name +
-                "' missing CPU geometry for navmesh");
-        }
-        const ModelGeometry& geometry =
-            engine.geometries[mesh.geometry];
-        merged.positions.reserve(
-            merged.positions.size() +
-            geometry.vertices.size() * 3);
-        const std::array<float, 16> wm = upstream::mesh_world_matrix(engine, mesh);
-        for (const ModelVertex& vertex : geometry.vertices) {
-            const double x = vertex.position.x;
-            const double y = vertex.position.y;
-            const double z = vertex.position.z;
-            merged.positions.push_back(static_cast<float>(
-                x * wm[0] + y * wm[4] + z * wm[8] + wm[12]));
-            merged.positions.push_back(static_cast<float>(
-                x * wm[1] + y * wm[5] + z * wm[9] + wm[13]));
-            merged.positions.push_back(static_cast<float>(
-                x * wm[2] + y * wm[6] + z * wm[10] + wm[14]));
-        }
-        merged.indices.reserve(
-            merged.indices.size() + geometry.indices.size());
-        for (std::size_t index = 0;
-             index + 2 < geometry.indices.size();
-             index += 3) {
-            merged.indices.push_back(static_cast<std::uint32_t>(
-                geometry.indices[index] + vertex_base));
-            merged.indices.push_back(static_cast<std::uint32_t>(
-                geometry.indices[index + 2] + vertex_base));
-            merged.indices.push_back(static_cast<std::uint32_t>(
-                geometry.indices[index + 1] + vertex_base));
-        }
-        vertex_base += geometry.vertices.size();
-    }
+static void create_nav_mesh_from_merged(bbl::pal::NavigationHandle plugin,
+    const bbl::pal::NavMeshGeometry& merged, const bbl::pal::NavMeshBuildParams& params) {
     // The pin dispatches on maxObstacles here; generation already did,
     // and the arm it proved is the one emitted -- so a scene that builds a
     // cache carries no solo call, and one that does not carries neither
@@ -788,6 +744,25 @@ void create_nav_mesh(
         plugin, merged, solo_nav_mesh_build(merged, params),
         navigation_query_defaults);`
     }
+}
+
+${navigationSourceQueryDefinitions(this.context)}
+
+void create_nav_mesh_from_sources(bbl::pal::NavigationHandle plugin,
+    const std::vector<NavMeshSource>& sources, const bbl::pal::NavMeshBuildParams& params,
+    bool doNotReverseIndices) {
+    const auto merged = merge_nav_mesh_sources(sources, doNotReverseIndices);
+    create_nav_mesh_from_merged(plugin, merged, params);
+}
+
+${navigationMeshMergeDefinition(this.context)}
+void create_nav_mesh(
+    Engine& engine,
+    bbl::pal::NavigationHandle plugin,
+    const std::vector<MeshHandle>& meshes,
+    const bbl::pal::NavMeshBuildParams& params) {
+    const auto merged = merge_nav_meshes(engine, meshes);
+    create_nav_mesh_from_merged(plugin, merged, params);
 }
 
 /** A double the port carries, at the float width the seam takes. */

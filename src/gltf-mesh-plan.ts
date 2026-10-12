@@ -161,6 +161,7 @@ export interface GltfMeshPlan extends GltfLightPlan, GltfCameraPlan {
             name: string;
             flatNormal: boolean;
             setup: GltfMeshSetup;
+            cpu?: Record<string, number>;
         } & GltfMeshDeformation
     >;
     geometries: GltfMeshGeometry[];
@@ -178,6 +179,8 @@ export type GltfConstructedMaterialPlan = Pick<
 export interface GltfLoadFeatures {
     cameras?: boolean;
     boneControl?: boolean;
+    cpuGeometry?: boolean;
+    cpuTangents?: boolean;
     /**
      * Scene code writes SceneNode transforms, so the asset carries the
      * pin's node hierarchy for the loader to build.
@@ -191,7 +194,34 @@ interface MeshData {
     _primitive: JsonObject;
     _vertexCount: number;
 }
-interface Mesh extends RecordedMeshDeformation, RecordedMeshSetup {
+const cpuStreamFields = [
+    "positions",
+    "normals",
+    "uvs",
+    "uvs2",
+    "tangents",
+    "colors",
+    "indices",
+] as const;
+const cpuStreamSourceFields = [
+    "_cpuPositions",
+    "_cpuNormals",
+    "_cpuUvs",
+    "_cpuUv2s",
+    "_cpuTangents",
+    "_cpuColors",
+    "_cpuIndices",
+] as const;
+interface Mesh
+    extends
+        RecordedMeshDeformation,
+        RecordedMeshSetup,
+        Partial<
+            Record<
+                (typeof cpuStreamSourceFields)[number],
+                Float32Array | Uint32Array | null
+            >
+        > {
     material: Material;
     name: string;
     _gpu: GltfRecordedGeometry;
@@ -268,6 +298,7 @@ interface SourceLoader {
     __iblShaders: { rgbdShader: string; brdfShader: string };
     __cameraFeature?: MeshFeature;
     __enableGltfCameras?(): void;
+    __enableGltfCpuTangents?(): void;
     __cameraMatrices?: SourceCameraMatrices;
     __getPunctualLight(json: JsonObject, index: number): object | undefined;
     __addToScene(scene: object, entity: object): void;
@@ -314,7 +345,7 @@ interface SourceLoader {
         context: UploadContext,
     ): Promise<Mesh[]>;
 }
-const pinnedLoaders = new Map<boolean, Promise<SourceLoader>>();
+const pinnedLoaders = new Map<string, Promise<SourceLoader>>();
 let loaderIdentity = 0;
 
 function materialIdentity(buildGroup?: () => never): object {
@@ -389,6 +420,14 @@ async function recordingLoader(
             "__enableGltfCameras",
             "__cameraMatrices",
         );
+    }
+    if (options.cpuTangents) {
+        const cpuTangents = sourceModule(
+            "src/loader-gltf/gltf-feature-cpu-tangents.ts",
+            new Map([["./gltf-feature-hooks.js", hooks]]),
+        );
+        cameraImports += `\nimport {enableGltfCpuTangents as __enableGltfCpuTangents} from ${JSON.stringify(cpuTangents)};`;
+        cameraExports.push("__enableGltfCpuTangents");
     }
     const pointerBridge = gltfPointerBridgeUrl() + `#loader-${loaderIdentity}`;
     const animation = gltfAnimationBindingsSourceUrl(context, pointerBridge);
@@ -724,6 +763,11 @@ async function recordingLoader(
             throw new Error("Missing glTF camera activation module.");
         loader.__enableGltfCameras();
     }
+    if (options.cpuTangents) {
+        if (!loader.__enableGltfCpuTangents)
+            throw new Error("Missing glTF CPU tangent activation module.");
+        loader.__enableGltfCpuTangents();
+    }
     return loader;
 }
 
@@ -737,7 +781,7 @@ export async function recordMeshPlan(
     // fetchGltfAsset gives each load a fresh document. Feature WeakMaps must
     // not leak bindings between recordings of the same caller-owned object.
     document = structuredClone(document);
-    const enabledCameras = options.cameras === true;
+    const enabledCameras = `${options.cameras === true}:${options.cpuTangents === true}`;
     if (!context && !pinnedLoaders.has(enabledCameras))
         pinnedLoaders.set(
             enabledCameras,
@@ -1061,7 +1105,24 @@ export async function recordMeshPlan(
                     packer.geometry(mesh._gpu, input._vertexCount),
                 );
             }
+            const cpu: Record<string, number> = {};
+            if (options.cpuGeometry) {
+                for (const [index, field] of cpuStreamSourceFields.entries()) {
+                    const value = mesh[field];
+                    if (value === undefined || value === null) continue;
+                    if (
+                        field === "_cpuIndices"
+                            ? !(value instanceof Uint32Array)
+                            : !(value instanceof Float32Array)
+                    )
+                        throw new Error(
+                            `Invalid source glTF CPU stream ${field}.`,
+                        );
+                    cpu[cpuStreamFields[index]!] = packer.cpuArray(value);
+                }
+            }
             return {
+                ...(options.cpuGeometry ? { cpu } : {}),
                 node: input._nodeIndex,
                 primitive,
                 material,
@@ -1276,6 +1337,23 @@ export async function recordMeshPlan(
     }
 }
 
+function readCpuStreams(
+    value: unknown,
+    accessorCount: number,
+): Record<string, number> {
+    const record = asObject(value);
+    if (!record) throw new Error("Invalid packaged glTF CPU streams.");
+    const result: Record<string, number> = {};
+    for (const field of cpuStreamFields) {
+        if (record[field] === undefined) continue;
+        const accessor = asIndex(record[field]);
+        if (accessor === undefined || accessor >= accessorCount)
+            throw new Error("Invalid packaged glTF CPU stream accessor.");
+        result[field] = accessor;
+    }
+    return result;
+}
+
 /** Read the validated source-owned schedule carried by a packaged asset. */
 export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
     const plan = asObject(document[GLTF_MESH_PLAN]);
@@ -1371,6 +1449,9 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
             geometry,
             name: mesh.name,
             flatNormal: mesh.flatNormal,
+            ...(mesh.cpu === undefined
+                ? {}
+                : { cpu: readCpuStreams(mesh.cpu, accessorCount) }),
             setup: readMeshSetup(mesh.setup, accessorCount),
             ...readMeshDeformation(mesh, accessorCount, skinCount),
         };

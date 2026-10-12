@@ -72,13 +72,14 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
             } void graph() { ${encode.slice(graphStart, graphEnd)} }`,
             );
         } else {
-            const opaque = encode.lastIndexOf("render_task.draw_lists.opaque,");
-            const graphStart = encode.lastIndexOf("draw_list_into(", opaque);
+            const graphStart = encode.search(
+                /draw_list_into\(\s*task_pass,\s*render_task\.draw_lists\.opaque,/,
+            );
             const graphEnd = encode.indexOf(
                 "wgpuRenderPassEncoderEnd(task_pass);",
-                opaque,
+                graphStart,
             );
-            assert.ok(opaque >= 0 && graphStart >= 0 && graphEnd > graphStart);
+            assert.ok(graphStart >= 0 && graphEnd > graphStart);
             writeFileSync(
                 join(output, `${backend}GraphStages.hpp`),
                 `void graph() { ${encode.slice(graphStart, graphEnd)} }`,

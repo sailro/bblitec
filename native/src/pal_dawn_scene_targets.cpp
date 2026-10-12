@@ -592,7 +592,7 @@ void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFo
 }
 
 void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::uint32_t height,
-                                  const std::vector<upstream::RenderItem>& render_plan,
+                                  std::span<const upstream::RenderItem> render_plan,
                                   const Engine& engine, const std::string& path, bool cluster_ids) {
     if (cluster_ids && !state.diagnostic_cluster_module) {
         state.diagnostic_cluster_module = load_wgsl_module(state, "diagnostic-cluster.frag");
@@ -706,13 +706,13 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
 #endif
             wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
                                                 WGPU_WHOLE_SIZE);
-            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count,
+            encode_dawn_indexed_draw(pass, mesh.index_count,
 #if BBLITE_GPU_INSTANCING
-                           mesh.instance_count,
+                                     mesh.indirect_args ? 0u : mesh.instance_count(),
+                                     mesh.indirect_args);
 #else
-                           1,
+                                     1, nullptr);
 #endif
-                           0, 0, 0);
         }
     }
     wgpuRenderPassEncoderEnd(pass);

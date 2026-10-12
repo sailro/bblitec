@@ -92,10 +92,10 @@ struct RenderPlan {
     std::vector<unsigned> items;
 };
 // The fixture isolates native task routing from generated draw-list selection.
-RenderDrawLists build_render_task_draw_lists(const std::vector<unsigned>& items, const Engine&,
+RenderDrawLists build_render_task_draw_lists(const RenderPlan& plan, const Engine&,
                                              const FrameTaskRecord& task) {
     return task.kind == FrameTaskKind::render || task.kind == FrameTaskKind::geometry
-               ? RenderDrawLists{items}
+               ? RenderDrawLists{plan.items}
                : RenderDrawLists{};
 }
 } // namespace bbl::upstream
@@ -123,6 +123,7 @@ struct DawnState {
     std::vector<DawnRenderTask> render_tasks;
     WGPUSurface surface = &dawn_surface;
     std::string uncaptured_error;
+    const std::string& last_error() const { return uncaptured_error; }
 };
 #include "dawn-acquire.hpp"
 WGPUBuffer create_buffer(DawnState&, WGPUBufferUsage usage, const void* data, std::size_t bytes) {

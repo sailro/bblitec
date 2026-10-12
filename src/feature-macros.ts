@@ -35,6 +35,8 @@ interface FeatureMacro {
 export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_DEVICE_RECOVERY", anyOf: ["engine:device-recovery"] },
     { macro: "BBLITE_GPU_TASK_TIMING", anyOf: ["engine:gpu-task-timing"] },
+    { macro: "BBLITE_GPU_RETIREMENT", anyOf: ["engine:gpu-retirement"] },
+    { macro: "BBLITE_THIN_INSTANCES", anyOf: ["mesh:thin-instances"] },
     { macro: "BBLITE_SOURCE_PROFILE", anyOf: ["profile:source"] },
     { macro: "BBLITE_COMPUTE_TEXTURES", anyOf: ["compute:storage-texture"] },
     { macro: "BBLITE_COMPUTE_MIPMAPS", anyOf: ["compute:texture-mipmaps"] },
@@ -52,6 +54,10 @@ export const featureMacros: readonly FeatureMacro[] = [
     {
         macro: "BBLITE_MESH_ATTRIBUTE_UPDATE",
         anyOf: ["mesh:update-attributes"],
+    },
+    {
+        macro: "BBLITE_MESH_GEOMETRY_UPDATE",
+        anyOf: ["mesh:update-geometry"],
     },
     { macro: "BBLITE_HAS_IMAGE_DECODER", imageDecoder: true },
     { macro: "BBLITE_HAS_GAMEPAD", anyOf: ["input:gamepad"] },

@@ -11,6 +11,10 @@ import { materialGroupIdentity } from "../material-group-identity.js";
 import { recordAt } from "../../compiler/record-access.js";
 import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
 import { lowerNodeInputScalarSetter } from "../node-input-uniform-lowerer.js";
+import {
+    lowerShaderUniformApi,
+    lowerShaderUniformSnapshot,
+} from "../shader-uniforms.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -352,6 +356,11 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
             );
         }
         const returned = this.context.returnObject(declaration);
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(returned, "_tic"),
+            "options.useThinInstanceColors",
+            "Shader thin-instance color option storage",
+        );
         for (const contract of [
             {
                 property: "needAlphaTesting",
@@ -394,7 +403,7 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
                 "createShaderMaterial,setShaderUniform,setShaderFloat,setShaderVector3,setShaderTexture,setAlphaToCoverage",
             header: "",
             source: `// ${this.context.provenance(modulePath, "createShaderMaterial")}
-#include <bblite/runtime.hpp>
+#include <bblite/shader_uniforms.hpp>
 #include <bblite/features/shadows_csm.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
@@ -402,6 +411,9 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
 #include <stdexcept>
 
 namespace bbl {
+
+${lowerShaderUniformApi(this.context)}
+${lowerShaderUniformSnapshot(this.context)}
 
 // The generated shader-variant table carries the pinned fixed-function
 // mapping (needAlphaBlending -> blend alpha mode, backFaceCulling ->
@@ -416,6 +428,7 @@ MaterialHandle create_shader_material(
     material.shader_material = true;
     material.source_group_builder = ${materialGroupIdentity(this.context, "shader")};
     material.shader_variant = variant;
+    material.shader_thin_instance_colors = info.thin_instance_color_option;
     material.double_sided = !info.back_face_culling;
     material.shader_alpha_testing = info.alpha_testing;
     material.shader_depth_write = info.depth_write;
@@ -424,6 +437,17 @@ MaterialHandle create_shader_material(
     }
     material.shader_uniform_values = info.defaults;
     material.shader_uniform_values.resize(info.value_count, 0.0f);
+    material.shader_uniforms = std::make_shared<ShaderUniformState>();
+    material.shader_uniform_snapshot = shader_uniform_render_values;
+    material.shader_alpha_cutoff = shader_material_alpha_cutoff;
+    material.shader_packet_initialize = initialize_shader_packet_camera_cache;
+    for (const auto& slot : info.uniform_slots) {
+        auto values = slot.defaults;
+        if (values.empty()) values = default_shader_uniform_values(slot.name, slot.count);
+        material.shader_uniforms->slots.push_back(ShaderUniformSlot{
+            slot.name, slot.type, slot.offset,
+            normalize_shader_uniform_value(slot.name, slot.type, slot.count, values), 0.0});
+    }
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }
@@ -436,7 +460,23 @@ MaterialRecord& shader_material(Engine& engine, MaterialHandle handle) {
     if (!material.shader_material) {
         throw std::runtime_error("Material is not a shader material.");
     }
+    if (material.source_material.value != invalid_handle || !material.shader_uniforms) {
+        throw std::runtime_error("Shader uniform access requires owned material slots; shader views are unsupported.");
+    }
     return material;
+}
+
+// Construction installs defaults without the setter's equal-value suppression.
+void initialize_shader_uniform_values(
+    Engine& engine, MaterialHandle material, std::uint32_t offset,
+    std::uint32_t count, const float* values) {
+    auto& record = shader_material(engine, material);
+    for (auto& slot : record.shader_uniforms->slots) {
+        if (slot.offset != offset) continue;
+        slot.value = normalize_shader_uniform_value(slot.name, slot.type, slot.value.size(), std::vector<float>(values, values + count));
+        return;
+    }
+    throw std::runtime_error("Shader uniform initialization offset is absent.");
 }
 
 // Offset setter shared by setShaderUniform/setShaderFloat/
@@ -448,14 +488,14 @@ void set_shader_uniform_values(
     std::uint32_t offset,
     std::uint32_t count,
     const float* values) {
-    MaterialRecord& record = shader_material(engine, material);
-    if (offset + count > record.shader_uniform_values.size()) {
-        throw std::runtime_error("Shader uniform write out of range.");
+    auto& state = *shader_material(engine, material).shader_uniforms;
+    for (auto& slot : state.slots) {
+        if (slot.offset != offset) continue;
+        set_shader_uniform_slot(state, &slot, slot.name,
+            {count, [values](std::size_t index) { return static_cast<double>(values[index]); }});
+        return;
     }
-    std::copy_n(
-        values,
-        count,
-        record.shader_uniform_values.begin() + offset);
+    throw std::runtime_error("Shader uniform write offset is absent.");
 }
 
 void set_shader_uniform_value(

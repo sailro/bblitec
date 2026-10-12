@@ -34,7 +34,7 @@ function scene(body: string, helpers = ""): string {
         import type { EngineContext, SceneContext, Mesh, Material } from "@babylonjs/lite";
         ${helpers}
         async function main() {
-            const engine = await createEngine({});
+            const engine = await createEngine(document.createElement("canvas"));
             const scene = createSceneContext(engine);
             ${body}
         }

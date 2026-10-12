@@ -3,6 +3,7 @@
 // each paired with its Dawn twin (pal_dawn_scene_<family>.cpp), compiled as
 // one translation unit (pal_sdl_gpu_scene_all.cpp).
 #pragma once
+#include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
@@ -17,6 +18,7 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/workers.hpp>
 
@@ -64,6 +66,7 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_common.hpp"
+#include "pal_sdl_gpu_indexed_draw.hpp"
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
 #include "pal_gpu_materials.hpp"
@@ -110,7 +113,7 @@
 #include "pal_temporal_shared.hpp"
 #include <variant>
 #endif
-#if BBLITE_OFFSCREEN_SURFACES
+#if BBLITE_OFFSCREEN_SURFACES || BBLITE_GPU_RETIREMENT
 #include "pal_sdl_gpu_offscreen.hpp"
 #endif
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
@@ -212,12 +215,12 @@ struct GpuMeshResources {
     // reads, in its own tightly-packed instance buffer.
     SDL_GPUBuffer* instance_colors = nullptr;
 #endif
-    std::uint64_t instance_version = 0;
-    // How many instance rows the buffers above were allocated for. A live
-    // pool can double past it (`addThinInstance`), and every one of them is
-    // sized from this same count, so the frame sync recreates all three
-    // together when `thin_instance_pool_grew` says so.
-    std::uint32_t instance_capacity = 0;
+    std::shared_ptr<ThinInstancePoolData> thin_pool;
+    GpuHandle instance_owner, instance_color_owner, thin_draw_args;
+    SDL_GPUBuffer* indirect_args = nullptr;
+    std::uint32_t instance_count() const {
+        return thin_pool ? gpu_u32(gpu_size(thin_pool->count)) : 1u;
+    }
 #if BBLITE_GPU_MORPH_STORAGE
     SDL_GPUBuffer* morph_deltas = nullptr;
     SDL_GPUBuffer* morph_weights = nullptr;
@@ -351,8 +354,10 @@ struct GpuMeshResources {
     // same material; each mesh borrows this one backend upload.
     SharedComposedMaterialTextures* shared_composed_textures = nullptr;
     std::uint32_t index_count = 0;
-    std::uint32_t instance_count = 1;
     std::uint64_t attribute_version = 0;
+#if BBLITE_MESH_GEOMETRY_UPDATE
+    std::uint64_t index_version = 0;
+#endif
 };
 struct GpuState;
 void release_gpu_mesh_resources(GpuState*, GpuMeshResources&) noexcept;
@@ -1789,7 +1794,7 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
 
 void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint32_t height,
                                  const std::array<float, 16>& view_projection,
-                                 const std::vector<upstream::RenderItem>& render_plan,
+                                 std::span<const upstream::RenderItem> render_plan,
                                  const Scene& scene, const Engine& engine, const std::string& path,
                                  bool cluster_ids);
 

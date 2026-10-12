@@ -130,25 +130,26 @@ export function glbJsonText(bytes: Buffer): string | undefined {
     return bytes.subarray(20, 20 + jsonLength).toString("utf8");
 }
 
-/**
- * The first buffer or image URI of a glTF/GLB byte sequence that is not a
- * `data:` URI: what the pin's loader cannot resolve when it is handed raw
- * bytes, which carry no base URL. Undefined for a self-contained asset and
- * for bytes that are not a parseable glTF document.
- */
-export function externalGltfResourceUri(bytes: Uint8Array): string | undefined {
+/** The JSON document in glTF/GLB bytes, or undefined for unparseable input. */
+export function gltfDocumentFromBytes(
+    bytes: Uint8Array,
+): JsonObject | undefined {
     const buffer = Buffer.from(
         bytes.buffer,
         bytes.byteOffset,
         bytes.byteLength,
     );
     const text = glbJsonText(buffer) ?? buffer.toString("utf8");
-    let document: JsonObject | undefined;
     try {
-        document = asObject(JSON.parse(text));
+        return asObject(JSON.parse(text));
     } catch {
         return undefined;
     }
+}
+
+/** The first non-data buffer/image URI, unresolved by the pin for raw input. */
+export function externalGltfResourceUri(bytes: Uint8Array): string | undefined {
+    const document = gltfDocumentFromBytes(bytes);
     if (!document) return undefined;
     return [...asRecords(document.buffers), ...asRecords(document.images)]
         .map((resource) => asString(resource.uri))

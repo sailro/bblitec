@@ -130,9 +130,7 @@ void prepare_temporal_scene_uniforms(FrameTaskRecord& task, CameraRecord* camera
                 [](CameraRecord& value, double ratio) {
                     return upstream::build_view_projection(value, ratio);
                 },
-                [](CameraRecord& value) {
-                    return upstream::build_view_matrix(upstream::camera_world_matrix(value));
-                },
+                [](CameraRecord& value) { return upstream::build_camera_view_matrix(value); },
                 [](CameraRecord& value) { return upstream::camera_world_matrix(value); },
                 storage.clean, pack_engine, pack_scene, *camera, aspect);
             upstream::write_fog_scene_uniforms(storage.clean, pack_scene);

@@ -57,11 +57,12 @@ test(
                     assert(lists.transparent.commands[1].item.mesh.value == 2);
                 }
             }
-            engine.meshes[1].thin_instanced = true;
-            engine.meshes[1].instance_count = 0;
+            engine.meshes[1].thin_instances = std::make_shared<bbl::ThinInstancePoolData>();
+            engine.meshes[1].thin_instances->count = 0;
             bbl::upstream::sort_transparent_draws(lists.transparent, engine, &camera);
-            assert(lists.transparent.commands.size() == 1);
-            engine.meshes[1].instance_count = 1;
+            // The pinned drawList gates visibility; zero instance count belongs to draw encoding.
+            assert(lists.transparent.commands.size() == 2);
+            engine.meshes[1].thin_instances->count = 1;
             bbl::upstream::sort_transparent_draws(lists.transparent, engine, &camera);
             assert(lists.transparent.commands.size() == 2);
             // A camera-less pass skips the sort, not the visibility refresh.

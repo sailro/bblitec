@@ -1,7 +1,21 @@
-import { typeComponents } from "../shader-ir.js";
 import { resolve } from "node:path";
 import ts from "typescript";
 import { CameraLowerer } from "./camera-lowerer.js";
+import { lowerCameraMatrixCaches } from "./camera-matrix-cache.js";
+import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
+import { cameraChangeKeyHeader } from "./camera-change-key-lowerer.js";
+import {
+    lowerShaderSystemCache,
+    lowerShaderSystemProducts,
+    lowerShaderPacketCameraInitialization,
+    lowerShaderPacketCameraReads,
+} from "./shader-system-cache.js";
+import { renderTaskShaderPacketOwnersCpp } from "./render-task-mesh-refresh.js";
+import { lowerShaderBindingUpdate } from "./shader-binding-update.js";
+import {
+    lowerThinInstanceBindingCreation,
+    lowerThinInstanceBindingUpdate,
+} from "./thin-instance-binding-update.js";
 import { LightLowerer } from "./light-lowerer.js";
 import { doubleLiteral as dvalue } from "../cpp-literals.js";
 import { RendererFidelityManifest } from "../fidelity.js";
@@ -23,7 +37,11 @@ import type {
     ShaderProgramReflection,
     ShaderSystemMatrix,
 } from "../shader-ir.js";
-import { composeStandaloneWgsl } from "../shader-material-programs.js";
+import {
+    composeStandaloneWgsl,
+    shaderUniformSlots,
+    shaderUniformValueLayout,
+} from "../shader-material-programs.js";
 import {
     blitFragmentWgsl,
     blitVertexWgsl,
@@ -358,6 +376,7 @@ export class RendererLowerer {
              */
             nodeGeometryViews?: boolean;
             orthographicCamera?: boolean;
+            publicCameraMatrices?: boolean;
             shaderPrograms?: CompiledShaderProgram[];
             /**
              * The engine's floating-origin mode.
@@ -773,34 +792,20 @@ export class RendererLowerer {
     private loweredShaderVariants(
         reachedShaderPrograms: readonly CompiledShaderProgram[],
     ) {
-        const uniformComponentCount = (type: string): number =>
-            type === "f32" ||
-            type === "vec2<f32>" ||
-            type === "vec3<f32>" ||
-            type === "vec4<f32>"
-                ? typeComponents(type)
-                : 0;
         const shaderVariantTable = reachedShaderPrograms.map((program) => {
             const reflection = lowerWgslShaderProgram(program).reflection;
             // Canonical custom-uniform value layout: declaration
             // order, sized by component count. The material record
             // stores this flat vector; per-stage gathers map it into
             // the reflected vec4-slot block layout.
-            const valueOffsets = new Map<string, number>();
+            const valueLayout = shaderUniformValueLayout(program.uniforms);
             let valueCount = 0;
-            for (const signature of program.uniforms) {
-                const separator = signature.indexOf(":");
-                if (separator < 1) continue;
-                const memberName = signature.slice(0, separator);
-                const componentCount = uniformComponentCount(
-                    signature.slice(separator + 1),
-                );
-                valueOffsets.set(memberName, valueCount);
-                valueCount += componentCount;
+            for (const entry of valueLayout.values()) {
+                valueCount = entry.offset + entry.count;
             }
             const defaults = new Array<number>(valueCount).fill(0);
             for (const entry of program.uniformDefaults) {
-                const offset = valueOffsets.get(entry.name);
+                const offset = valueLayout.get(entry.name)?.offset;
                 if (offset === undefined) continue;
                 entry.values.forEach((value, index) => {
                     defaults[offset + index] = value;
@@ -824,7 +829,7 @@ export class RendererLowerer {
                     floatSize: block.size / 4,
                     gather: block.members.map((member) => [
                         member.offset / 4,
-                        valueOffsets.get(member.name) ?? 0,
+                        valueLayout.get(member.name)?.offset ?? 0,
                         member.size / 4,
                     ]),
                 };
@@ -837,6 +842,7 @@ export class RendererLowerer {
                 storageBuffers: reflection.storageBuffers,
                 topology: program.topology ?? "triangle-list",
                 instanceColors: program.useThinInstanceColors === true,
+                thinInstanceColorOption: program.thinInstanceColorOption,
                 alphaBlending: program.needAlphaBlending,
                 additiveBlending: program.blendMode === "additive",
                 alphaTesting: program.needAlphaTesting,
@@ -845,6 +851,15 @@ export class RendererLowerer {
                 depthCompare: program.depthCompare,
                 valueCount,
                 defaults,
+                uniformSlots: shaderUniformSlots(program.uniforms).map(
+                    (slot) => ({
+                        ...slot,
+                        defaults:
+                            program.uniformDefaults.find(
+                                (entry) => entry.name === slot.name,
+                            )?.values ?? [],
+                    }),
+                ),
                 vertex: stageBlock("vertex"),
                 fragment: stageBlock("fragment"),
             };
@@ -901,6 +916,8 @@ export class RendererLowerer {
             )
             .join(", ")}},
         ${info.externalTextures}u,
+        {${info.uniformSlots.map((slot) => `ShaderUniformInfo{"${slot.name}", "${slot.type}", ${slot.offset === undefined ? "bbl::invalid_handle" : `${slot.offset}u`}, ${slot.count}u, {${slot.defaults.map(floatLiteral).join(", ")}}}`).join(", ")}},
+        ${info.thinInstanceColorOption === undefined ? "js::Nullable<double>{}" : `js::Nullable<double>{${info.thinInstanceColorOption ? "1.0" : "0.0"}}`},
     },`,
             )
             .join("\n");
@@ -936,6 +953,7 @@ export class RendererLowerer {
             mirroredMeshes?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
+            publicCameraMatrices?: boolean;
         },
         systemMatrixEnumerators: string,
         linearToneMapping: number,
@@ -955,11 +973,20 @@ ${options.standardVertexAlpha ? "#include <bblite/js_data.hpp>\n" : ""}\
 
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
+${options.publicCameraMatrices ? new SceneUboLowerer(this.context).cacheHeader() : cameraChangeKeyHeader(this.context)}
 namespace bbl::upstream {${options.standardVertexAlpha ? lowerStandardMeshAlpha(this.context, options.standardVertexColors) : ""}
 
 ${renderTaskPassCpp(this.context)}
+
+inline constexpr bool public_camera_matrix_caches = ${options.publicCameraMatrices === true};
+template<class Source, class Engine, class Scene, class Camera, class CameraKey, class WriteFull>
+void write_retained_pass_scene_ubo(Source& source, const Engine& engine, const Scene& scene,
+    Camera* camera, CameraKey&& camera_key, WriteFull&& write_full) {
+${options.publicCameraMatrices ? "    write_pass_scene_ubo(source, engine, scene, camera, camera_key, write_full);" : "    (void)engine; (void)scene; (void)camera_key;\n    if (!pass_scene_block_skips(camera)) write_full(source, 0.0);"}
+}
 
 ${geometryTaskCameraCpp(this.context)}
 
@@ -1058,6 +1085,8 @@ struct RenderItem {
     std::uint32_t geometry = invalid_handle;
     MaterialHandle material{};
     SourceMaterialDrawGuard material_guard = nullptr;
+    ShaderPacketSystemOwner shader_packet{};
+${options.gpuInstancing ? "    ThinMaterialBindingOwner thin_binding{};\n" : ""}\
     bool material_override = false;
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     RenderBucket bucket = RenderBucket::opaque;
@@ -1088,6 +1117,8 @@ struct RenderDrawCommand {
 
 struct RenderDrawList {
     std::vector<RenderDrawCommand> commands;
+    // updateBindings precedes draw visibility filtering in render-task-base.ts.
+    std::vector<RenderDrawCommand> binding_updates;
     // Transparent bindings survive a bare visibility write between frames.
     std::vector<RenderDrawCommand> visibility_candidates;
 };
@@ -1099,6 +1130,11 @@ struct RenderDrawLists {
 
 struct RenderPlan {
     std::vector<RenderItem> items;
+    // GPU rows for explicit tasks follow the scene's own renderable rows.
+    std::size_t auxiliary_item_count = 0;
+    [[nodiscard]] std::span<const RenderItem> scene_items() const {
+        return std::span<const RenderItem>{items}.first(items.size() - auxiliary_item_count);
+    }
     RenderDrawLists draw_lists;
     std::array<RenderStage, 4> stages{
         RenderStage::skybox,
@@ -1171,6 +1207,14 @@ struct ShaderStorageBufferInfo {
     bool fragment = false;
 };
 
+struct ShaderUniformInfo {
+    const char* name;
+    const char* type;
+    std::uint32_t offset;
+    std::uint32_t count;
+    std::vector<float> defaults;
+};
+
 struct ShaderVariantInfo {
     const char* name = "";
     ShaderTopology topology = ShaderTopology::triangle_list;
@@ -1199,6 +1243,8 @@ struct ShaderVariantInfo {
     // How many trailing samplers are the material's externalTextures: the
     // slots setShaderExternalTexture fills with a video's frame.
     std::uint32_t external_textures = 0;
+    std::vector<ShaderUniformInfo> uniform_slots;
+    js::Nullable<double> thin_instance_color_option;
 };
 
 std::uint32_t shader_variant_count();
@@ -1238,10 +1284,10 @@ RenderFeatures build_render_features(
     const Scene& scene,
     const Engine& engine);
 RenderDrawLists build_render_draw_lists(
-    const std::vector<RenderItem>& items,
+    std::span<const RenderItem> items,
     const Engine& engine);
 RenderDrawLists build_render_task_draw_lists(
-    const std::vector<RenderItem>& items,
+    const RenderPlan& plan,
     const Engine& engine,
     const FrameTaskRecord& task);
 struct CameraBasis {
@@ -1272,6 +1318,10 @@ double effective_aspect_ratio(
     const CameraRecord& camera,
     double target_width,
     double target_height);
+${lowerShaderSystemCache(this.context)}
+${lowerShaderSystemProducts(this.context)}
+${lowerShaderBindingUpdate(this.context)}
+${lowerThinInstanceBindingUpdate(this.context)}
 /** The pixel rectangle a scene pass sets its viewport and scissor to. */
 PixelViewport resolve_camera_viewport(
     const CameraRecord& camera,
@@ -1296,6 +1346,12 @@ std::array<float, 16> build_view_projection(
 // transcribed fragment never needed it.
 std::array<float, 16> build_view_matrix(
     const std::array<CameraMatrixScalar, 16>& camera_world);
+std::array<float, 16> build_camera_view_matrix(const CameraRecord& camera);
+void read_shader_packet_camera_matrices(const CameraRecord* camera, double target_width, double target_height,
+    std::array<float, 16>& view, std::array<float, 16>& projection, std::array<float, 16>& view_projection);
+js::F32Array get_camera_view_matrix(const CameraRecord& camera);
+js::F32Array get_camera_projection_matrix(const CameraRecord& camera, double aspectRatio);
+js::F32Array get_camera_view_projection_matrix(const CameraRecord& camera, double aspectRatio);
 // One mesh's local matrix, from the pin's own composeTrsLocalMatrix: the
 // always-emitted pinned_world_transform.hpp composition (trs_matrix) over
 // the mesh record, kept as a plain function so a fixture can stand in for
@@ -1394,6 +1450,7 @@ PbrUniforms build_pbr_uniforms(
             meshProfiles?: MeshProfileTable;
             nodeVisibility?: boolean;
             orthographicCamera?: boolean;
+            publicCameraMatrices?: boolean;
             gpuInstancing?: boolean;
             environmentRotation?: boolean;
             floatingOrigin?: boolean;
@@ -1445,6 +1502,7 @@ PbrUniforms build_pbr_uniforms(
 #if BBLITE_STANDARD_VARIANTS > 0
 #include <bblite/upstream/standard_variants.hpp>
 #endif
+${options.gpuInstancing ? "#if BBLITE_NODE_VARIANTS > 0\n#include <bblite/upstream/node_variants.hpp>\n#endif\n" : ""}\
 
 #include <algorithm>
 #include <cmath>
@@ -1452,6 +1510,8 @@ PbrUniforms build_pbr_uniforms(
 #include <stdexcept>
 #include <iterator>
 
+${options.publicCameraMatrices ? lowerCameraMatrixCaches(this.context, options.orthographicCamera === true) : ""}
+${options.gpuInstancing ? `namespace bbl {\n${lowerThinInstanceBindingCreation(this.context)}\n}\n` : ""}
 namespace bbl::upstream {
 
 namespace {
@@ -1473,6 +1533,17 @@ std::array<float, 16> build_view_matrix(
     const std::array<CameraMatrixScalar, 16>& world) {
 ${viewMatrixBody}\
     return view;
+}
+
+std::array<float, 16> build_camera_view_matrix(const CameraRecord& camera) {
+${
+    options.publicCameraMatrices
+        ? `    const auto values = get_camera_view_matrix(camera);
+    std::array<float, 16> result{};
+    std::copy_n(values.begin(), 16, result.begin());
+    return result;`
+        : "    return build_view_matrix(camera_world_matrix(camera));"
+}
 }
 
 RenderItem bind_render_item(
@@ -1621,10 +1692,12 @@ void append_draw(
         // render-task.ts drawList reads transparent visibility every frame.
         list.visibility_candidates.push_back(command);
     }
+    list.binding_updates.push_back(command);
     if (!mesh_draws(${recordAt("engine.meshes", "item.mesh")})) {
         return;
     }
-    if (!${recordAt("engine.meshes", "item.mesh")}.thin_instance_gpu_culling && !render_item_material_draws(item, engine)) return;
+    const auto& mesh = ${recordAt("engine.meshes", "item.mesh")};
+    if (!(mesh.thin_instances && mesh.thin_instances->gpu_culling_enabled) && !render_item_material_draws(item, engine)) return;
     list.commands.push_back(command);
 }
 
@@ -1634,13 +1707,12 @@ void append_draw(
 // through stable_sort; an explicit Mesh.renderOrder moves only the draws the
 // source asked it to move.
 void order_draw_lists(RenderDrawLists& lists) {
-    std::stable_sort(
-        lists.opaque.commands.begin(),
-        lists.opaque.commands.end(),
-        [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
+    const auto before = [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
             if (left.item.direct != right.item.direct) return right.item.direct;
             return left.item.order < right.item.order;
-        });
+        };
+    std::stable_sort(lists.opaque.commands.begin(), lists.opaque.commands.end(), before);
+    std::stable_sort(lists.opaque.binding_updates.begin(), lists.opaque.binding_updates.end(), before);
 }
 
 double default_render_order(const RenderItem& item) {
@@ -1713,7 +1785,7 @@ ${shaderVariantEntries}
 }
 
 RenderDrawLists build_render_draw_lists(
-    const std::vector<RenderItem>& items,
+    std::span<const RenderItem> items,
     const Engine& engine) {
     RenderDrawLists result;
     result.opaque.commands.reserve(items.size());
@@ -1732,15 +1804,17 @@ RenderDrawLists build_render_draw_lists(
     return result;
 }
 
+${shaderVariantTable.length || options.gpuInstancing ? renderTaskShaderPacketOwnersCpp(this.context, options.gpuInstancing) : ""}
 RenderDrawLists build_render_task_draw_lists(
-    const std::vector<RenderItem>& items,
+    const RenderPlan& plan,
     const Engine& engine,
     const FrameTaskRecord& task) {
+    const auto items = std::span<const RenderItem>{plan.items};
     if (task.kind == FrameTaskKind::geometry) {
         RenderDrawLists result;
         result.opaque.commands.reserve(items.size());
         result.transparent.commands.reserve(items.size());
-        for (std::size_t index = 0; index < items.size(); ++index) {
+        for (std::size_t index = 0; index < plan.scene_items().size(); ++index) {
             const RenderItem item = bind_render_item(
                 items[index],
                 engine,
@@ -1769,17 +1843,19 @@ ${
         return result;
     }
     if (task.kind != FrameTaskKind::render) {
-        return build_render_draw_lists(items, engine);
+        return build_render_draw_lists(plan.scene_items(), engine);
     }
     if (task.render_meshes.empty()) {
         return task.render.auto_mirror
-            ? build_render_draw_lists(items, engine)
+            ? build_render_draw_lists(plan.scene_items(), engine)
             : RenderDrawLists{};
     }
     RenderDrawLists result;
     result.opaque.commands.reserve(task.render_meshes.size());
     result.transparent.commands.reserve(task.render_meshes.size());
-    for (const RenderTaskMesh& entry : task.render_meshes) {
+${shaderVariantTable.length || options.gpuInstancing ? `    const auto packet_owners = prepare_render_task_shader_packets(task${options.gpuInstancing ? ", engine" : ""});` : ""}
+    for (std::size_t entry_index = 0; entry_index < task.render_meshes.size(); ++entry_index) {
+        const RenderTaskMesh& entry = task.render_meshes[entry_index];
         const auto material = render_task_mesh_material(engine, entry);
         if (material.value == invalid_handle) continue;
         const auto found = std::find_if(
@@ -1789,13 +1865,15 @@ ${
                 return item.mesh == entry.mesh;
             });
         if (found == items.end()) {
-            continue;
+            throw std::runtime_error("Explicit render task mesh has no native GPU row.");
         }
         const std::uint32_t item_index =
             static_cast<std::uint32_t>(
                 std::distance(items.begin(), found));
         auto overridden = bind_render_item(*found, engine, material);
         overridden.material_override = true;
+${shaderVariantTable.length || options.gpuInstancing ? `        overridden.shader_packet = packet_owners[entry_index]${options.gpuInstancing ? ".shader_packet" : ""};` : ""}
+${options.gpuInstancing ? "        overridden.thin_binding = packet_owners[entry_index].thin_binding;" : ""}
         append_draw(
             result,
             item_index,
@@ -1803,6 +1881,7 @@ ${
             engine);
     }
     order_draw_lists(result);
+${shaderVariantTable.length || options.gpuInstancing ? "    publish_render_task_shader_packets(task, packet_owners);" : ""}
     return result;
 }
 
@@ -1911,14 +1990,43 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         result.items.push_back(bound);
     };
     if (scene.state->source_material_publication) {
-        for (const auto& output : scene.state->material_outputs) append_item(output->mesh, output->material, output->guard);
+        for (const auto& output : scene.state->material_outputs) {
+            const auto previous_size = result.items.size();
+            append_item(output->mesh, output->material, output->guard);
+${options.gpuInstancing ? "            if (result.items.size() != previous_size) result.items.back().thin_binding = output->thin_binding;" : ""}
+${
+    options.publicCameraMatrices
+        ? `            if (result.items.size() != previous_size && result.items.back().material_kind == RenderMaterialKind::shader) {
+                if (!output->shader_packet) output->shader_packet = std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
+                result.items.back().shader_packet = output->shader_packet;
+            }`
+        : "            (void)previous_size;"
+}
+        }
     } else {
         for (const auto handle : scene.meshes) {
             if (handle.value < engine.meshes.size()) append_item(handle, ${recordAt("engine.meshes", "handle")}.material, nullptr);
         }
     }
+    // resolvePendingTaskMeshes rebuilds queued mesh/material pairs independently
+    // of scene membership. These rows supply native geometry storage only;
+    // each task's existing packet owner still supplies its renderable state.
+    const std::size_t scene_item_count = result.items.size();
+    for (const auto task_handle : scene.tasks) {
+        const auto& task = ${recordAt("engine.frame_tasks", "task_handle")};
+        if (task.kind != FrameTaskKind::render) continue;
+        for (const auto& entry : task.render_meshes) {
+            const auto material = render_task_mesh_material(engine, entry);
+            if (material.value == invalid_handle) continue;
+            if (std::any_of(result.items.begin(), result.items.end(), [&](const RenderItem& item) {
+                    return item.mesh == entry.mesh;
+                })) continue;
+            append_item(entry.mesh, material, nullptr);
+        }
+    }
+    result.auxiliary_item_count = result.items.size() - scene_item_count;
     result.draw_lists =
-        build_render_draw_lists(result.items, engine);
+        build_render_draw_lists(result.scene_items(), engine);
     return result;
 }
 
@@ -1963,6 +2071,15 @@ std::array<float, 16> build_scene_projection(
     const CameraRecord& camera,
     double aspect) {
 ${
+    options.publicCameraMatrices
+        ? `    const auto values = get_camera_projection_matrix(camera, aspect);
+    std::array<float, 16> result{};
+    std::copy_n(values.begin(), 16, result.begin());
+    return result;
+}
+`
+        : `
+${
     options.orthographicCamera
         ? `    if (camera.orthographic) {
         std::array<float, 16> projection{};
@@ -1974,13 +2091,24 @@ ${new CameraLowerer(this.context).lowerOrthographicProjection()}
 }\
     return build_projection(camera, aspect);
 }
+`
+}
 
 std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
     double aspect) {
+${
+    options.publicCameraMatrices
+        ? `    const auto values = get_camera_view_projection_matrix(camera, aspect);
+    std::array<float, 16> result{};
+    std::copy_n(values.begin(), 16, result.begin());
+    return result;`
+        : `
     const std::array<float, 16> view =
         build_view_matrix(camera_world_matrix(camera));
     return matrix_product(build_scene_projection(camera, aspect), view);
+`
+}
 }
 
 // The same composition over a transform node, which upstream is the same
@@ -2146,12 +2274,10 @@ bool pick_candidate(const MeshRecord& mesh) {
         : ""
 }// scene-node.ts visible, written by scene code and materialized per mesh by
 // the KHR_node_visibility loader and the animation pointer, exactly as the
-    // pinned setSubtreeVisible materializes it per node. A thin-instance pool with
-    // no active rows issues no draw upstream; filter it before either backend asks
-    // for a pipeline, because no shader variant is needed for zero invocations.
+    // pinned setSubtreeVisible materializes it per node. Instance count belongs
+    // to draw encoding; zero-count bindings still synchronize before visibility.
     bool mesh_draws(const MeshRecord& mesh) {
-        return mesh.visible &&
-            (!mesh.thin_instanced || mesh.instance_count != 0);
+        return mesh.visible;
     }
 
 bool render_item_material_draws(const RenderItem& item, const Engine& engine) {
@@ -2162,8 +2288,9 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
     if (!item.material_guard || item.material_override) return true;
     // Ordinary opaque commands replay the source bundle. Direct and transparent
     // bindings evaluate their captured-material guard on every source draw.
+    const auto& mesh = ${recordAt("engine.meshes", "item.mesh")};
     return (item.bucket != RenderBucket::alpha_blend && !item.transmissive &&
-        !${recordAt("engine.meshes", "item.mesh")}.thin_instance_gpu_culling) || render_item_material_draws(item, engine);
+        !(mesh.thin_instances && mesh.thin_instances->gpu_culling_enabled)) || render_item_material_draws(item, engine);
 }
 
 // src/render/mesh-light-selection.ts affectsMesh.
@@ -2359,7 +2486,12 @@ ${
     return result;
 }
 
+${lowerShaderPacketCameraReads(this.context)}
 } // namespace bbl::upstream
+
+namespace bbl {
+${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.context) : "void initialize_shader_packet_camera_cache(const Scene&, const MaterialRecord&) {}"}
+} // namespace bbl
 `;
     }
 

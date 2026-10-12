@@ -268,11 +268,10 @@ void record_cloud_pick_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pa
         static_cast<Uint32>(shear.size() * sizeof(float)));
 
     upstream::SplatUniforms uniforms;
-    upstream::write_splat_uniforms(
-        uniforms, upstream::build_splat_world(record),
-        upstream::build_view_matrix(upstream::camera_world_matrix(camera)),
-        upstream::build_scene_projection(camera, width / height), width, height,
-        record.texture_width, record.texture_height);
+    upstream::write_splat_uniforms(uniforms, upstream::build_splat_world(record),
+                                   upstream::build_camera_view_matrix(camera),
+                                   upstream::build_scene_projection(camera, width / height), width,
+                                   height, record.texture_width, record.texture_height);
     SdlGpuWriteDevice{}.write_vertex_uniform(
         command, static_cast<Uint32>(state.pick_cloud_mesh_slot), &uniforms, sizeof(uniforms));
 
@@ -579,10 +578,9 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
     // The last contributor in the pin's own order: meshes own
     // 1..M, then each registered pick source's contiguous range.
     if (pick_sources) {
-        billboard_pick.record(
-            command, pass, engine, scene,
-            upstream::build_view_matrix(upstream::camera_world_matrix(*request->camera)),
-            scene_uniforms, ranges, next_id);
+        billboard_pick.record(command, pass, engine, scene,
+                              upstream::build_camera_view_matrix(*request->camera), scene_uniforms,
+                              ranges, next_id);
     }
 #endif
     pass.end();

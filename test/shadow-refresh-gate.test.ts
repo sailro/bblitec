@@ -8,7 +8,15 @@ import {
     pinnedShadowHeader,
     shadowFactorySource,
 } from "../src/lowering/shadow-lowerer.js";
-import { sceneBackendSource, sharedGpuSource } from "./native-fixture.js";
+import {
+    cppFunction,
+    cppRecord,
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+    sceneBackendSource,
+    sharedGpuSource,
+} from "./native-fixture.js";
+import { doctoredContext } from "./doctored-store.js";
 
 /**
  * The pinned render gate: `renderEsmShadowMap`, `renderPcfShadowMap` and
@@ -25,7 +33,7 @@ const header = pinnedShadowHeader(new LoweringContext());
 test("emits the pinned caster version sum over transform and thin-instance versions", () => {
     assert.match(
         header,
-        /inline std::uint64_t shadow_caster_version_sum\([\s\S]{0,800}sum \+= mesh\.transform_version \+ mesh\.instance_version;/,
+        /inline std::uint64_t shadow_caster_version_sum\([\s\S]{0,800}sum \+= mesh\.transform_version \+ static_cast<std::uint64_t>\(js::to_int32\(mesh\.thin_instances \? mesh\.thin_instances->version : 0\.0\)\);/,
     );
 });
 
@@ -90,9 +98,73 @@ test("swaps the floating-origin term for the camera key on the CSM arm", () => {
     );
     assert.match(
         header,
-        /: csm_camera->view_projection ==\s*gate\.last_camera_view_projection &&\s*csm_camera->near_plane == gate\.last_camera_near &&\s*csm_camera->far_plane == gate\.last_camera_far;/,
+        /csm_camera->change_key == gate\.last_camera_change_key.*&&.*csm_camera->aspect == gate\.last_camera_aspect/,
     );
     assert.match(header, /struct CsmCameraKey \{/);
+    assert.doesNotMatch(
+        header,
+        /last_camera_view_projection|last_camera_near|last_camera_far/,
+    );
+});
+
+test("CSM camera refresh uses source change keys and aspect, including gate publication", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("A native fixture compiler is required.");
+        return;
+    }
+    const changed = pinnedShadowHeader(
+        doctoredContext(
+            "src/shadow/csm-shadow-task-hooks.ts",
+            "state._lastCamAspect = camAspect;",
+            "state._lastCamAspect = camAspect + 1;",
+        ),
+    );
+    const gateSource = (source: string): string =>
+        [
+            cppRecord(source, "struct ShadowRefreshGate {"),
+            cppRecord(source, "struct CsmCameraKey {"),
+            cppFunction(
+                source,
+                "inline std::uint64_t shadow_caster_version_sum(",
+            ),
+            cppFunction(source, "inline bool shadow_refresh_due("),
+        ].join("\n");
+    runGeneratedProgram(
+        tools,
+        "csm-camera-refresh-gate",
+        `
+#include <bblite/runtime.hpp>
+#include <cassert>
+#include <limits>
+using namespace bbl;
+std::array<float,16> light_world_matrix(const LightRecord&) { return {}; }
+namespace original { ${gateSource(header)} }
+namespace changed { ${gateSource(changed)} }
+int main() {
+    Engine engine; ShadowGeneratorRecord generator; LightRecord light;
+    original::ShadowRefreshGate gate;
+    original::CsmCameraKey camera{12,1.5};
+    const auto refresh = [&] { return original::shadow_refresh_due(engine,generator,light,{},&camera,gate); };
+    assert(refresh() && !refresh());
+    camera.change_key += 1;
+    assert(refresh() && !refresh());
+    camera.aspect = 2;
+    assert(refresh() && !refresh());
+    camera.aspect = 0;
+    assert(refresh());
+    camera.aspect = -0.0;
+    assert(!refresh());
+    camera.aspect = std::numeric_limits<double>::quiet_NaN();
+    assert(refresh() && refresh());
+    changed::ShadowRefreshGate changed_gate;
+    changed::CsmCameraKey changed_camera{12,1.5};
+    assert(changed::shadow_refresh_due(engine,generator,light,{},&changed_camera,changed_gate));
+    assert(changed_gate.last_camera_aspect == 2.5);
+    assert(changed::shadow_refresh_due(engine,generator,light,{},&changed_camera,changed_gate));
+}`,
+        { flags: ["/DBBLITE_SHADOWS_CSM=1"], expectedOutput: "" },
+    );
 });
 
 test("carries forceRefreshEveryFrame into the ESM and CSM records", () => {
@@ -191,7 +263,7 @@ test("fits CSM casters to every active non-degenerate thin instance", () => {
     );
     assert.match(
         shared,
-        /generator\.filter == ShadowFilter::csm_directional &&\s*record\.thin_instanced &&\s*active_instances > 0/,
+        /generator\.filter == ShadowFilter::csm_directional &&\s*record\.thin_instances &&\s*active_instances > 0/,
     );
     assert.match(
         shared,
@@ -204,7 +276,7 @@ test("fits CSM casters to every active non-degenerate thin instance", () => {
         pinnedShadowHeader(context, ["shadow:csm"]) + csmShadowHeader(context);
     assert.match(
         header,
-        /std::array<float, 16> instance\{\};\s*bool has_instance = false;/,
+        /std::array<double, 16> instance\{\};\s*bool has_instance = false;/,
     );
     assert.match(header, /inline bool csm_instance_contributes\(/);
     assert.match(
