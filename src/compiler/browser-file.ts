@@ -150,6 +150,74 @@ function blobType(
     return type.toLowerCase();
 }
 
+/**
+ * A `{ type }` options literal whose type is not a string literal: the
+ * type's run-time text, read after the parts. Undefined for static options.
+ */
+function runtimeBlobType(
+    context: BrowserFileContext,
+    options: ts.Expression | undefined,
+): ((context: BrowserFileContext) => string) | undefined {
+    if (!options) return undefined;
+    const resolved = context.unwrap(context.resolveStaticExpression(options));
+    if (!ts.isObjectLiteralExpression(resolved)) return undefined;
+    const type = resolved.properties.find(
+        (property): property is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(property) &&
+            context.propertyName(property.name) === "type",
+    );
+    if (
+        resolved.properties.length !== 1 ||
+        !type ||
+        ts.isStringLiteralLike(context.unwrap(type.initializer))
+    )
+        return undefined;
+    return (current) =>
+        current.dataLowerer.compileForSink(type.initializer, {
+            kind: "string",
+        });
+}
+
+/**
+ * `new Blob(parts, { type })` over a run-time array of strings, byte views
+ * or buffers; the type is read after the parts and normalized at run time.
+ */
+function compileRuntimeBlob(
+    context: BrowserFileContext,
+    partsExpression: ts.Expression,
+    options: ts.Expression | undefined,
+): Value {
+    const parts = context.compileValue(partsExpression);
+    const element =
+        parts.dataType?.kind === "vector" ? parts.dataType.element : undefined;
+    if (
+        !element ||
+        !["u8array", "arraybuffer", "string"].includes(element.kind)
+    )
+        return context.fail(
+            partsExpression,
+            "Blob parts require an array literal, or an array of strings, Uint8Array or ArrayBuffer values.",
+        );
+    const held = context.bindings.pinValueToTemporary(parts, "blob_parts");
+    let type = context.cppString("");
+    if (options) {
+        const resolved = context.unwrap(options);
+        const runtime = runtimeBlobType(context, options);
+        type = runtime
+            ? runtime(context)
+            : context.cppString(blobType(context, resolved));
+    }
+    context.reachFeature("browser:file", partsExpression);
+    context.reachJsData();
+    return {
+        kind: "data",
+        dataType: { kind: "blob" },
+        cpp: `bbl::js::Blob::from_parts(${held.cpp}, ${type})`,
+        truthinessCpp: "true",
+        impure: true,
+    };
+}
+
 /** `new Blob(parts, options)` for the reached string/byte-part slice, and `new FileReader()`. */
 export function compileBrowserFileConstructor(
     context: BrowserFileContext,
@@ -180,12 +248,9 @@ export function compileBrowserFileConstructor(
     const partsExpression = arguments_[0]
         ? context.unwrap(arguments_[0])
         : undefined;
-    if (partsExpression && !ts.isArrayLiteralExpression(partsExpression)) {
-        context.fail(
-            arguments_[0]!,
-            "Blob parts require an array literal of strings or bytes.",
-        );
-    }
+    if (partsExpression && !ts.isArrayLiteralExpression(partsExpression))
+        return compileRuntimeBlob(context, partsExpression, arguments_[1]);
+    const runtimeType = runtimeBlobType(context, arguments_[1]);
     const parts: string[] = [];
     for (const element of partsExpression?.elements ?? []) {
         if (ts.isSpreadElement(element)) {
@@ -195,6 +260,16 @@ export function compileBrowserFileConstructor(
             );
         }
         parts.push(blobPartCpp(context, element));
+    }
+    if (runtimeType) {
+        context.reachFeature("browser:file", expression);
+        context.reachJsData();
+        return {
+            kind: "data",
+            dataType: { kind: "blob" },
+            cpp: `bbl::js::Blob::from_parts(std::vector<bbl::js::BlobPart>{${parts.join(", ")}}, ${runtimeType(context)})`,
+            truthinessCpp: "true",
+        };
     }
     const type = blobType(context, arguments_[1]);
     context.reachFeature("browser:file", expression);

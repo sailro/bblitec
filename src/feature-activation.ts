@@ -1505,6 +1505,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "owned fetch responses from the closed packaged asset manifest, without network transport",
         consumers: INVENTORY,
     },
+    "image:runtime-decode": {
+        provenance:
+            "the HTML createImageBitmap decode of run-time image bytes; generation adds the WebP codec it links (image-codecs.ts)",
+        consumers: CMAKE,
+    },
     "platform:window": {
         provenance:
             "the Window document, layout observers and native presentation host, independent of application and worker execution",

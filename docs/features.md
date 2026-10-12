@@ -256,6 +256,15 @@ matching files in an authored directory. URL expressions run once, and keys outs
 Request objects, reader options, `reader.closed`, piping, teeing, Headers iteration and wider options/methods refuse.
 A folded packaged response's `headers`/`body` keep deferred throwing boundaries. Transport limits are in [fidelity](fidelity.md).
 
+### Runtime image decoding
+
+`createImageBitmap(blob, options)` (application realm) decodes a run-time Blob to RGBA8 on the native workers and
+settles when that decode finishes; `premultiplyAlpha` is `"none"` or `"premultiply"`, `colorSpaceConversion` is
+`"none"` and `imageOrientation` is `"none"` or `"from-image"`. `width`/`height` read 0 after `close()`; undecodable
+bytes reject with an InvalidStateError DOMException. WebP decodes through libwebp, concurrently, and a run-time decode
+links it; another format decodes when the program's assets link its codec. Other sources, resize/crop options, default
+options and color conversion refuse; orientation metadata is not applied.
+
 ### Compressed geometry
 
 Pinned Draco/meshopt decoders run during packaging. Sparse/quantized/compressed inputs become native
