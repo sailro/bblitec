@@ -611,6 +611,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["Headers", "dom", "http-headers"],
     ["AbortController", "dom", "abort-controller"],
     ["AbortSignal", "dom", "abort-signal"],
+    ["URL", "dom", "url"],
     ["URLSearchParams", "dom", "search-params"],
     ["Date", "default", "date"],
     ["RegExp", "default", "regexp"],

@@ -10,6 +10,12 @@ import { bodyStreamProperty, compileBodyStreamMethod } from "./body-streams.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
+import {
+    compileUrlAssignment,
+    compileUrlMethod,
+    compileUrlNew,
+    urlProperty,
+} from "./urls.js";
 
 /**
  * One entry point per lowering hook for the runtime web platform objects:
@@ -29,13 +35,22 @@ const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["http-headers", compileBodyStreamMethod],
     ["byte-stream", compileBodyStreamMethod],
     ["byte-stream-reader", compileBodyStreamMethod],
+    ["url", compileUrlMethod],
 ]);
 
 export function compileWebPlatformNew(
     lowerer: DataLowerer,
     node: ts.NewExpression,
 ): Value | undefined {
-    return compileAbortNew(lowerer, node);
+    return compileAbortNew(lowerer, node) ?? compileUrlNew(lowerer, node);
+}
+
+/** `object.component = value` (or `+=`) on a web platform value; undefined for other targets. */
+export function compileWebPlatformAssignment(
+    lowerer: DataLowerer,
+    expression: ts.BinaryExpression,
+): Value | undefined {
+    return compileUrlAssignment(lowerer, expression);
 }
 
 /** A property of a web platform value; `access` is the read's site, when known. */
@@ -47,6 +62,7 @@ export function webPlatformProperty(
 ): Value | undefined {
     return (
         abortProperty(lowerer, owner, property) ??
+        urlProperty(lowerer, owner, property) ??
         bodyStreamProperty(lowerer, owner, property, access)
     );
 }

@@ -52,6 +52,53 @@ import {
  * keep their order.
  */
 
+/**
+ * DOM platform methods with state behind their receiver: a streaming
+ * decoder's pending bytes, a byte stream's queue and lock, an abort.
+ */
+type PlatformMethodEffect = "writes-receiver" | "runs-code";
+const PLATFORM_METHOD_EFFECTS: ReadonlyMap<
+    string,
+    ReadonlyMap<string, PlatformMethodEffect>
+> = new Map([
+    [
+        "TextDecoder",
+        new Map<string, PlatformMethodEffect>([["decode", "writes-receiver"]]),
+    ],
+    [
+        "ReadableStream",
+        new Map<string, PlatformMethodEffect>([
+            ["getReader", "writes-receiver"],
+            ["cancel", "writes-receiver"],
+        ]),
+    ],
+    [
+        "ReadableStreamDefaultReader",
+        new Map<string, PlatformMethodEffect>([
+            ["read", "writes-receiver"],
+            ["cancel", "writes-receiver"],
+            ["releaseLock", "writes-receiver"],
+        ]),
+    ],
+    [
+        "AbortController",
+        new Map<string, PlatformMethodEffect>([["abort", "runs-code"]]),
+    ],
+]);
+
+function platformMethodEffect(
+    receiver: ts.Type,
+    method: string,
+): PlatformMethodEffect | undefined {
+    for (const member of receiver.isUnion() ? receiver.types : [receiver]) {
+        const symbol = member.getSymbol();
+        if (!symbol || !declaredInDomLibrary(symbol)) continue;
+        const effect = PLATFORM_METHOD_EFFECTS.get(symbol.name)?.get(method);
+        if (effect) return effect;
+    }
+    return undefined;
+}
+
 /** Storage an evaluation reads or writes. */
 interface Storage {
     /** Code the analysis cannot follow ran: anything may be touched. */
@@ -1144,6 +1191,16 @@ export class EvaluationOrder {
             !this.isFresh(callee.expression, unit)
         ) {
             access.reads.heap = true;
+            const platform = platformMethodEffect(
+                this.checker.getTypeAtLocation(callee.expression),
+                callee.name.text,
+            );
+            // Aborting runs the signal's listeners: any program code.
+            if (platform === "runs-code") {
+                access.reads.any = true;
+                access.writes.any = true;
+            } else if (platform === "writes-receiver")
+                access.writes.heap = true;
             if (receiverWritingMethods.has(callee.name.text)) {
                 access.writes.heap = true;
                 if (

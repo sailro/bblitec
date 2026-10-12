@@ -80,8 +80,9 @@ export function compileTextCodecNew(
 }
 
 /**
- * `decoder.decode(bytes?)` over an ArrayBuffer or any view, and
- * `encoder.encode(text?)`. Streaming decodes and `encodeInto` refuse.
+ * `decoder.decode(bytes?, { stream })` over an ArrayBuffer or any view, and
+ * `encoder.encode(text?)`. A streaming decode keeps an incomplete sequence
+ * for the next call; `encodeInto` refuses.
  */
 export function compileTextCodecMethod(
     lowerer: DataLowerer,
@@ -96,7 +97,7 @@ export function compileTextCodecMethod(
             call,
             `${decoder ? "TextDecoder" : "TextEncoder"}.${method} is not lowered.`,
         );
-    context.expectArgumentCount(call, 0, 1);
+    context.expectArgumentCount(call, 0, decoder ? 2 : 1);
     context.reachJsData();
     const receiver = context.bindings.pinValueToTemporary(
         owner,
@@ -117,8 +118,14 @@ export function compileTextCodecMethod(
             dataType: { kind: "u8array" },
         };
     }
+    // `decode()` ends a stream, flushing its incomplete sequence.
     if (!argument)
-        return lowerer.leafValue(`std::string{}`, { kind: "string" });
+        return {
+            ...lowerer.leafValue(`bbl::js::text_decode(${receiver.cpp})`, {
+                kind: "string",
+            }),
+            impure: true,
+        };
     const source = context.compileValue(argument);
     const type = source.dataType;
     if (
@@ -132,8 +139,24 @@ export function compileTextCodecMethod(
             argument,
             "TextDecoder.decode reads an ArrayBuffer or an ArrayBuffer view.",
         );
-    return lowerer.leafValue(
-        `bbl::js::text_decode(${receiver.cpp}, ${source.cpp})`,
-        { kind: "string" },
+    const held = context.bindings.pinValueToTemporary(source, "decoded_bytes");
+    const { stream } = compileBooleanOptions(
+        context,
+        lowerer,
+        call.arguments[1],
+        ["stream"] as const,
+        {
+            subject: "TextDecoder.decode options",
+            member: "decode option",
+            forms: "a represented options record",
+            temporary: "decode_stream",
+        },
     );
+    return {
+        ...lowerer.leafValue(
+            `bbl::js::text_decode(${receiver.cpp}, ${held.cpp}${stream ? `, ${stream}` : ""})`,
+            { kind: "string" },
+        ),
+        impure: true,
+    };
 }

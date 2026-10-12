@@ -89,7 +89,10 @@ import {
     type SlotStep,
 } from "./numeric-slot-storage.js";
 import { httpResponseProperty } from "./http.js";
-import { webPlatformProperty } from "./web-platform.js";
+import {
+    compileWebPlatformAssignment,
+    webPlatformProperty,
+} from "./web-platform.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
 import { gpuValue } from "./gpu-value.js";
 import {
@@ -770,6 +773,8 @@ export class DataLowerer {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);
         if (deferred) return deferred;
+        const platform = compileWebPlatformAssignment(this, expression);
+        if (platform) return platform;
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
             const operator = ASSIGNMENT_OPERATORS.get(
                 expression.operatorToken.kind,
@@ -14646,6 +14651,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.deferredCapabilities.assignment(expression);
         if (deferred) {
             this.context.emit({ kind: "expression", code: `${deferred.cpp};` });
+            return true;
+        }
+        const platform = compileWebPlatformAssignment(this, expression);
+        if (platform) {
+            this.context.emitDiscardedValue(platform);
             return true;
         }
         const operator = ASSIGNMENT_OPERATORS.get(

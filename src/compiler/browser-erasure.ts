@@ -124,6 +124,7 @@ const NATIVE_PLATFORM_CLASSES: ReadonlySet<string> = new Set([
     "AbortController",
     "AbortSignal",
     "DOMException",
+    "URL",
 ]);
 
 /** A browser value the fold spells as a literal: a number, string, boolean, null or undefined. */
