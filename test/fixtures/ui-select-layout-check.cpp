@@ -52,7 +52,9 @@ int main() try {
         assert(arrow->GetTagName() == "selectarrow" && value->GetTagName() == "selectvalue");
         const auto arrow_position = arrow->GetAbsoluteOffset(Rml::BoxArea::Border);
         const auto arrow_size = arrow->GetBox().GetSize(Rml::BoxArea::Border);
-        assert(std::abs(arrow_position.y + arrow_size.y * .5f - 20 - size.y * .5f) < .1f);
+        // Chromium centers the arrow on the rounded-down middle.
+        assert(std::abs(arrow_position.y + arrow_size.y * .5f - 20 - std::floor(size.y * .5f)) <
+               .1f);
         assert(value->GetAbsoluteOffset().x + value->GetBox().GetSize().x <= arrow_position.x);
         const auto click = [&](float x, float y) {
             runtime.context->ProcessMouseMove(static_cast<int>(x), static_cast<int>(y), 0);

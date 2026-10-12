@@ -209,11 +209,11 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Position/box | Reached defaults, fixed/inset, viewport/px/rem calc/min/max/clamp, box sizing, physical edges, horizontal-LTR logical margins/padding | Vertical/RTL logical mapping; containing-block/element-font-relative math, rem math in font sizing or custom properties, and unrepresented shorthands |
 | Flex | Wrapping/reversal, grow/shrink/basis, numeric shorthand, flow, alignment, independent gaps | Intrinsic basis keywords and unrepresented CSS math |
 | Grid | Sparse row flow; numeric column/row lines, negative lines and spans; auto/px/fr, minmax(auto or px, auto/px/fr), integer/auto-fit/auto-fill repeat, implicit track patterns, gaps/alignment and intrinsic spans | 256 tracks per axis; named areas/lines, alternate flow, subgrid, percentage/relative tracks, broader intrinsic functions and absolute-item placement |
-| Grid items | Cell-relative widths/spacing, anonymous text items, live child/style changes | Percentage heights, baseline alignment and broader replaced-item sizing |
+| Grid items | Cell-relative widths/spacing, anonymous text items, live child/style changes; form controls stretch as non-replaced items, replaced content starts | Percentage heights, baseline alignment and broader replaced-item sizing |
 | Isolation | Reversible auto/isolate stacking contexts for painting and hit testing | Blend modes remain outside the retained surface |
 | Containers | inline-size containment; unnamed nearest-ancestor max-width:Npx queries | Named/min/height/style/scroll-state queries, relative units, other containment types |
 | Media | Reached max-width, portrait/landscape and reduced-motion rules | Reduced motion polls Windows/macOS accessibility preferences, Android animator scale or the Linux desktop portal (standard reduced-motion, then GNOME enable-animations); unavailable preferences refuse |
-| Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects, vertical-align keywords, text-decoration line keywords | Browser min-content, oblique, custom overflow, exact shaping/rasterization; vertical-align lengths/percentages; decoration colors, styles and thickness |
+| Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects, vertical-align keywords, text-decoration line keywords | Browser min-content, oblique, custom overflow, exact shaping/rasterization; vertical-align lengths/percentages; decoration colors, styles and thickness; pre-wrap trailing spaces count toward line alignment instead of hanging |
 | Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
 | Borders/backgrounds | Solid sides, px/em/rem widths, length/percentage corner radii, gradients, solid border/padding/content clipping | Slash-separated elliptical radius syntax; gradient/image clipping and broader border composition |
 | Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables; outer shadows blur before the border-box clip; a single box larger than the viewport renders its shadow with a stretched band; a runtime assignment is checked against the CSS grammar itself, so an invalid value is ignored as CSSOM does while a valid one RmlUi cannot represent refuses | Omitted/currentColor, non-pixel lengths; a multi-box (inline) shadow texture clips to viewport size |
@@ -256,8 +256,13 @@ or an opaque literal) fills checked checkboxes and range values and thumbs: as i
 under 3:1 contrast with its palette's control fill selects the other palette, hover and press move its
 HSL lightness by 0.11, and disabled controls ignore it. A range's thumb takes its own hover/press state.
 Preference-dependent scheme lists and translucent accents refuse; system colors (Canvas, CanvasText)
-are not represented, and an open select menu takes the closed control's palette. A select's height is
-its font's normal line height plus Chromium's 1px internal padding above and below.
+are not represented, and an open select menu takes the closed control's palette.
+
+Inside its CSS padding, a select keeps Chromium's internal insets: 4px before its longest option label
+(width rounded up) and 16px after it for the arrow, and 1px above and below its font's normal line height,
+whatever its line-height. Its arrow is a 2px chevron centered 9px from the right border edge; a closed or
+open summary marker is a 0.66em equilateral triangle on the first baseline, 0.4em before the text. Both
+are antialiased by pixel coverage.
 
 Packaged raster images expose decode/complete/natural dimensions before engine creation. Decode settles
 on realm microtasks; empty/broken images reject and source changes invalidate requests. Network/responsive

@@ -1,13 +1,19 @@
 #pragma once
 
 #include "pal_ui_control_scheme.hpp"
+#include "pal_ui_coverage.hpp"
+#include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/ComputedValues.h>
 #include <RmlUi/Core/Context.h>
+#include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/Decorator.h>
 #include <RmlUi/Core/Element.h>
+#include <RmlUi/Core/FontEngineInterface.h>
+#include <RmlUi/Core/FontMetrics.h>
 #include <RmlUi/Core/Geometry.h>
+#include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
-#include <array>
+#include <cmath>
 
 namespace bbl::pal {
 
@@ -17,12 +23,64 @@ class UiControlMarkDecorator final : public Rml::Decorator {
     const UiControlSchemeProperties& properties;
     struct Data {
         Rml::Geometry geometry;
+        Rml::CallbackTexture texture;
         Rml::Vector2f size{};
         Rml::ColourbPremultiplied color{};
         float font_size = 0;
+        float baseline = 0;
         bool open = false;
         bool initialized = false;
     };
+
+    // Chromium 152's disclosure marker, measured: a 0.66em square whose bottom
+    // sits on the first baseline holds an equilateral triangle, pointing right
+    // from its left edge when closed, and down and vertically centered when
+    // open, antialiased by pixel coverage.
+    static void render_disclosure(Rml::Element& element, Data& data,
+                                  Rml::ColourbPremultiplied color, float font_size, bool open) {
+        const auto face = element.GetFontFaceHandle();
+        if (!face)
+            return;
+        const auto& metrics = Rml::GetFontEngineInterface()->GetFontMetrics(face);
+        const float baseline =
+            (element.GetLineHeight() - metrics.ascent - metrics.descent) * .5f + metrics.ascent;
+        const float side = font_size * .66f, height = side * std::sqrt(3.f) * .5f;
+        const float top = std::floor(baseline - side);
+        const int width = static_cast<int>(std::ceil(side)) + 1,
+                  rows = static_cast<int>(std::ceil(baseline - top)) + 1;
+        auto& manager = element.GetContext()->GetRenderManager();
+        if (!data.initialized || data.color != color || data.font_size != font_size ||
+            data.open != open || data.baseline != baseline) {
+            const float square = baseline - side - top;
+            const auto inside = [=](float x, float y) {
+                y -= square;
+                if (open) {
+                    y -= (side - height) * .5f;
+                    return y >= 0.f && y <= height &&
+                           std::abs(x - side * .5f) <= (height - y) / std::sqrt(3.f);
+                }
+                return x >= 0.f && x <= height &&
+                       std::abs(y - side * .5f) <= (height - x) / std::sqrt(3.f);
+            };
+            data.texture = manager.MakeCallbackTexture(
+                [bytes = ui_coverage_pixels(width, rows, 1.f, color, inside), width,
+                 rows](const Rml::CallbackTextureInterface& out) {
+                    return out.GenerateTexture(bytes, {width, rows});
+                });
+            Rml::Mesh mesh;
+            Rml::MeshUtilities::GenerateQuad(
+                mesh, {0, 0}, {static_cast<float>(width), static_cast<float>(rows)},
+                Rml::ColourbPremultiplied{255, 255, 255, 255}, {0, 0}, {1, 1});
+            data.geometry = manager.MakeGeometry(std::move(mesh));
+            data.color = color;
+            data.font_size = font_size;
+            data.open = open;
+            data.baseline = baseline;
+            data.initialized = true;
+        }
+        const auto origin = element.GetAbsoluteOffset(Rml::BoxArea::Padding);
+        data.geometry.Render({std::round(origin.x), std::round(origin.y + top)}, data.texture);
+    }
 
 public:
     explicit UiControlMarkDecorator(const UiControlSchemeProperties& properties)
@@ -65,36 +123,23 @@ public:
         };
         const auto color = (summary ? style.color() : check()).ToPremultiplied(style.opacity());
         const float font_size = style.font_size();
-        if (!data.initialized || data.size != size || data.color != color ||
-            data.font_size != font_size || data.open != open) {
+        if (summary) {
+            render_disclosure(*element, data, color, font_size, open);
+            return;
+        }
+        if (!data.initialized || data.size != size || data.color != color) {
             Rml::Mesh mesh;
-            if (summary) {
-                const float width = font_size * .6f;
-                const float top = (element->GetLineHeight() - width) * .5f;
-                const auto triangle =
-                    open
-                        ? std::array{Rml::Vector2f{0, top}, Rml::Vector2f{width, top},
-                                     Rml::Vector2f{width * .5f, top + width}}
-                        : std::array{Rml::Vector2f{0, top}, Rml::Vector2f{width, top + width * .5f},
-                                     Rml::Vector2f{0, top + width}};
-                for (const auto point : triangle)
-                    mesh.vertices.push_back({point, color, {}});
-                mesh.indices = {0, 1, 2};
-            } else {
-                for (const auto point : {Rml::Vector2f{.12f, .49f},
-                                         {.39f, .77f},
-                                         {.91f, .23f},
-                                         {.79f, .11f},
-                                         {.39f, .53f},
-                                         {.24f, .37f}})
-                    mesh.vertices.push_back({point * size, color, {}});
-                mesh.indices = {0, 1, 4, 0, 4, 5, 1, 2, 3, 1, 3, 4};
-            }
+            for (const auto point : {Rml::Vector2f{.12f, .49f},
+                                     {.39f, .77f},
+                                     {.91f, .23f},
+                                     {.79f, .11f},
+                                     {.39f, .53f},
+                                     {.24f, .37f}})
+                mesh.vertices.push_back({point * size, color, {}});
+            mesh.indices = {0, 1, 4, 0, 4, 5, 1, 2, 3, 1, 3, 4};
             data.geometry = element->GetContext()->GetRenderManager().MakeGeometry(std::move(mesh));
             data.size = size;
             data.color = color;
-            data.font_size = font_size;
-            data.open = open;
             data.initialized = true;
         }
         data.geometry.Render(element->GetAbsoluteOffset(area));
