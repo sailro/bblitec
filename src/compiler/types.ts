@@ -2991,6 +2991,7 @@ export type Feature =
     | "loader:splat-sh"
     | "loader:splat-sog"
     | "loader:splat-spz"
+    | "loader:splat-stream"
     | "material:pbr"
     | "material:source-texture-read"
     | "material:clearcoat"

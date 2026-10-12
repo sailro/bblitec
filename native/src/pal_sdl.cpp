@@ -423,6 +423,14 @@ void pal::run_engine(Engine& engine) {
 #endif
 }
 
+void pal::bind_engine_webgpu_device(Engine& engine) {
+    const pal::GpuBackend& backend = pal::selected_gpu_backend();
+    if (!backend.bind_webgpu_device)
+        throw std::runtime_error(std::string(backend.name) +
+                                 " provides no engine WebGPU device in this build.");
+    backend.bind_webgpu_device(engine);
+}
+
 #if BBLITE_WORKERS
 js::Promise<js::PromiseVoid> pal::start_realm_engine(std::shared_ptr<Engine> engine) {
     if (engine->device_disposed)

@@ -14,6 +14,7 @@
 #include <bblite/features/has_picking.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/has_splat_stream.hpp>
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
@@ -66,7 +67,7 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_common.hpp"
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
 #include "pal_external_renderables.hpp"
 #endif
 #include "pal_sdl_gpu_indexed_draw.hpp"
@@ -961,7 +962,7 @@ struct GpuState : SdlGpuDevice {
 #if BBLITE_HAS_SPLATS
     std::vector<SplatPass> splat_passes;
 #endif
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
     /** Lowered renderables drawn in the scene's own pass (pal_external_renderables.hpp). */
     ExternalRenderablePass external_pass;
     /** `getSceneBindGroupLayout` for them, adopted once over the pass's group-0 layout. */

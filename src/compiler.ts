@@ -98,6 +98,7 @@ import {
     compileTextMutation,
 } from "./compiler/text-surface.js";
 import { promoteLiveTextData } from "./compiler/intrinsics/text.js";
+import { retainedOptions } from "./compiler/intrinsics/retained-options.js";
 import { compileNodeInputMutation } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
 import {
@@ -4099,6 +4100,47 @@ class Compiler implements LoweringServices {
         return unwrapped;
     }
 
+    /**
+     * `requiredLimits`: the record's present numeric members by WebGPU limit
+     * name, in property order, as the device request reads them
+     * (`EngineOptions::required_limits`; an undefined member requests nothing).
+     */
+    private compileRequiredLimits(site: ts.Expression): string {
+        const target = this.allocateTemporaryCppName("required_limits");
+        this.emit({
+            kind: "declaration",
+            type: "std::vector<std::pair<std::string, double>>",
+            name: target,
+            initializer: "{}",
+        });
+        for (const field of retainedOptions(
+            this,
+            this.compileValue(site),
+            site,
+        )) {
+            const type =
+                field.type?.kind === "optional" ? field.type.inner : field.type;
+            if (type?.kind !== "number")
+                this.fail(
+                    site,
+                    `Engine requiredLimits.${field.name} requires a number.`,
+                );
+            const value =
+                field.value && field.type?.kind !== "optional"
+                    ? this.castNumber(field.value, "double")
+                    : field.cpp;
+            const entry = `${target}.emplace_back(${this.cppString(field.name)}, `;
+            this.emit({
+                kind: "expression",
+                code:
+                    field.type?.kind === "optional"
+                        ? `if (${value}.has_value()) ${entry}*${value});`
+                        : `${entry}${value});`,
+            });
+        }
+        return target;
+    }
+
     public compileEngineCreation(
         call: ts.CallExpression,
         cppName: string,
@@ -4139,6 +4181,7 @@ class Compiler implements LoweringServices {
         let pixelRatioCap: number | undefined;
         let highPrecisionMatrix = false;
         let floatingOrigin = false;
+        let requiredLimits: string | undefined;
         if (call.arguments[1]) {
             const options = this.expectObjectLiteral(call.arguments[1]);
             validateObjectProperties(
@@ -4199,9 +4242,7 @@ class Compiler implements LoweringServices {
                 }
             }
             const limits = this.objectProperty(options, "requiredLimits");
-            if (limits) {
-                this.expectObjectLiteral(limits);
-            }
+            if (limits) requiredLimits = this.compileRequiredLimits(limits);
         }
         if (this.defaultEngineCpp) {
             this.fail(
@@ -4218,11 +4259,26 @@ class Compiler implements LoweringServices {
             engineOptions.push(sampleOverride ?? "0");
         if (pixelRatioCap !== undefined)
             engineOptions.push(String(pixelRatioCap));
+        let engineOptionsCpp = `bbl::EngineOptions{${engineOptions.join(", ")}}`;
+        if (requiredLimits) {
+            const named = this.allocateTemporaryCppName("engine_options");
+            this.emit({
+                kind: "declaration",
+                type: "bbl::EngineOptions",
+                name: named,
+                initializer: engineOptionsCpp,
+            });
+            this.emit({
+                kind: "expression",
+                code: `${named}.required_limits = std::move(${requiredLimits});`,
+            });
+            engineOptionsCpp = `std::move(${named})`;
+        }
         this.emit({
             kind: "declaration",
             type: "auto",
             name: cppName,
-            initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${engineOptions.join(", ")}}${canvasArgument})`,
+            initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(${engineOptionsCpp}${canvasArgument})`,
         });
         this.registerNativeBindingType(
             cppName,

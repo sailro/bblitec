@@ -28,6 +28,7 @@
 #include <bblite/features/has_picking.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/has_splat_stream.hpp>
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
@@ -41,7 +42,7 @@
 #if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
 #include "pal_dawn_source_device.hpp"
 #endif
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
 #include "pal_dawn_webgpu.hpp"
 #endif
 #include "pal_billboard_order.hpp"
@@ -2533,7 +2534,7 @@ public:
 #endif
             }
         };
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
         if (!scene.tasks.empty() && !scene.state->external_renderables.empty())
             dawn_error("External renderables draw in the scene's own pass; a scene with render "
                        "tasks refuses them.");
@@ -2607,7 +2608,7 @@ public:
             pass_descriptor.colorAttachmentCount = 1;
             pass_descriptor.colorAttachments = &color_attachment;
             pass_descriptor.depthStencilAttachment = &depth_attachment;
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
             // External renderables bind to this pass's target, update, and record
             // their batches' compute into the frame encoder before the pass begins.
             GpuHandle external_group;
@@ -2782,7 +2783,7 @@ public:
                         record_dawn_splat_pass(pass, splat);
                     }
 #endif
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
                     if (external_group) {
                         state.external_pass.draw(DawnWebGpuDevice::borrow_render_pass(pass),
                                                  external_group);

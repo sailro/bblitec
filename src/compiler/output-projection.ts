@@ -108,6 +108,10 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:splat-sh": [],
     "loader:splat-sog": [],
     "loader:splat-spz": [],
+    // The pin's splat-stream library, lowered whole, and the engine's
+    // WebGPU-subset device it runs on from createEngine (each backend's
+    // unit; CMake derives the Dawn twin).
+    "loader:splat-stream": ["src/pal_sdl_gpu_webgpu_device.cpp"],
     "material:pbr": [],
     "material:source-texture-read": [],
     "material:clearcoat": [],
@@ -360,6 +364,15 @@ export function asFeatures(names: readonly string[]): Feature[] {
  */
 const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
     "mesh:thin-instances": ["engine:gpu-retirement"],
+    // The stream fetches its sources, decodes WebP images, retires GPU
+    // generations behind the queue, parses JSON and collates source URLs.
+    "loader:splat-stream": [
+        "engine:gpu-retirement",
+        "platform:http",
+        "image:runtime-decode",
+        "data:json",
+        "data:locale",
+    ],
     "mesh:thin-instance-colors": ["mesh:thin-instances"],
     "mesh:thin-instances-dynamic": ["mesh:thin-instances"],
     "mesh:thin-instance-gpu-culling": ["mesh:thin-instances"],

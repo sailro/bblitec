@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/has_splat_stream.hpp>
+
 #include <bblite/js_promise.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
@@ -27,6 +29,12 @@ void bind_canvas_engine(const std::shared_ptr<CanvasElement>& canvas,
 inline void bind_canvas_engine(const std::shared_ptr<OffscreenCanvas>&,
                                const std::shared_ptr<Engine>&) {}
 
+/**
+ * `Engine::webgpu_device` over the engine's source device, on the backend
+ * BBLITE_GPU_BACKEND selects: what lowered `engine._device` calls reach.
+ */
+void bind_engine_webgpu_device(Engine& engine);
+
 /** Optional graphics ownership layered on the renderer-independent realm loop. */
 template <typename Canvas>
 std::shared_ptr<Engine> create_realm_engine(EngineOptions options,
@@ -42,6 +50,11 @@ std::shared_ptr<Engine> create_realm_engine(EngineOptions options,
     engine->offscreen_run = std::move(context);
     engine->source_gpu_device =
         std::shared_ptr<OffscreenDevice>(engine->offscreen_run, &engine->offscreen_run->device());
+#if BBLITE_HAS_SPLAT_STREAM
+    // The pin creates buffers and pipelines on `engine._device` as soon as
+    // createEngine resolves, before any renderer runs.
+    bind_engine_webgpu_device(*engine);
+#endif
     bind_canvas_engine(canvas, engine);
     EventLoop::current().defer_cleanup([engine] {
         if (engine->dispose_storage_buffers)

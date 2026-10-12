@@ -30,4 +30,9 @@ SceneRun run_effect_dawn_engine(Engine& engine);
 SceneRun run_frame_graph_gpu_engine(Engine& engine);
 SceneRun run_frame_graph_dawn_engine(Engine& engine);
 
+// `engine._device` from `createEngine` on: `Engine::webgpu_device` over the
+// device the engine's canvas shares with its presentation host.
+void bind_sdl_gpu_engine_webgpu_device(Engine& engine);
+void bind_dawn_engine_webgpu_device(Engine& engine);
+
 } // namespace bbl::pal
