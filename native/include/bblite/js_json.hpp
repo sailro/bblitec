@@ -571,6 +571,21 @@ public:
         return kind_ == Kind::number && number_ == 0.0 ? from_number(0.0) : *this;
     }
 
+    /**
+     * The parsed object or array this value holds, as the identity a weak
+     * collection keys it by; null for a primitive. A native view has no
+     * stable owner to key.
+     */
+    [[nodiscard]] std::shared_ptr<const void> shared_identity() const {
+        if (native_ || native_array_)
+            throw std::runtime_error("A native JSON view has no weak identity.");
+        if (kind_ == Kind::array)
+            return array_;
+        if (kind_ == Kind::object)
+            return object_;
+        return {};
+    }
+
     [[nodiscard]] Kind kind() const { return kind_; }
     [[nodiscard]] bool is_undefined() const { return kind_ == Kind::undefined; }
     [[nodiscard]] bool is_null() const { return kind_ == Kind::null; }

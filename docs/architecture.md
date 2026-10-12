@@ -78,7 +78,11 @@ their storage policies select record ownership. Pinned classes are structs of
 their fields with their accessors, methods and constructor lowered over the instance. A closure is a
 `bbl::js::Callback` over its frame's environment struct, which holds the bindings closures capture and is
 shared by the frame and all of its closures; records and environments that can close a cycle describe
-their edges to cycle collection. A parameter whose type a type-only module erased takes each call's
+their edges to cycle collection. A function literal an array iteration method receives is a native
+lambda over its frame's own storage; an object literal's method reading `this` closes over an
+environment holding the object. `unknown` is the runtime's dynamic `JsonValue`, read as the primitive a
+checker narrowing proves (`pinned_json.hpp`); an anonymous object type the schema does not name is a
+struct named by its members' native types, or the schema record with exactly those members. A parameter whose type a type-only module erased takes each call's
 argument shape (one overload per signature). A bundled package's classes and calls bind by
 `package#name` to native records and adapters: text-shaper's font, shaping buffers and `shapeInto` are
 HarfBuzz (`text_layout.hpp`). A lazy loader's root is the module function its
