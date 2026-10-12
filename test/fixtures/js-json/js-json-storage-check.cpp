@@ -222,10 +222,10 @@ void check_parse() {
         bool rejected = false;
         try {
             static_cast<void>(bbl::js::json_parse(text));
-        } catch (const nlohmann::json::parse_error&) {
-            rejected = true;
+        } catch (const bbl::js::NamedError& error) {
+            rejected = error.name == "SyntaxError";
         }
-        check(rejected, "malformed JSON preserves the parser exception: " + text);
+        check(rejected, "malformed JSON throws the browser's SyntaxError: " + text);
     }
 }
 

@@ -82,7 +82,15 @@ their edges to cycle collection. A function literal an array iteration method re
 lambda over its frame's own storage; an object literal's method reading `this` closes over an
 environment holding the object. `unknown` is the runtime's dynamic `JsonValue`, read as the primitive a
 checker narrowing proves (`pinned_json.hpp`); an anonymous object type the schema does not name is a
-struct named by its members' native types, or the schema record with exactly those members. A parameter whose type a type-only module erased takes each call's
+struct named by its members' native types, or the schema record with exactly those members. Async
+functions and arrows are C++20 coroutines over `bbl::js::Promise` (`pinned_async.hpp`); an `await` in a
+`catch` handler runs after the handler recorded its exception, and a `finally` block is a guard run once
+on every exit (an `await` or exit inside it refuses). A `class X extends Error` is a record thrown as a
+typed error object and matched by `instanceof`. A captured binding of a nested block or a `for (let ...)`
+header lives in an environment per block execution or per iteration; other loop-header and case-clause
+captures refuse. A generic arrow lowers once per instantiation its calls reach. The web APIs the
+splat-stream transport calls (`fetch`, abort signals, timers, `createImageBitmap`) are schema adapters
+onto `splat_stream_platform.hpp`, which the platform build or a test defines. A parameter whose type a type-only module erased takes each call's
 argument shape (one overload per signature). A bundled package's classes and calls bind by
 `package#name` to native records and adapters: text-shaper's font, shaping buffers and `shapeInto` are
 HarfBuzz (`text_layout.hpp`). A lazy loader's root is the module function its

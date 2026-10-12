@@ -64,6 +64,65 @@ private:
     double (*load_)(const void*, std::size_t) = nullptr;
 };
 
+// ── Thrown values ─────────────────────────────────────────────────────
+
+/**
+ * A thrown value that is not an Error (`throw reason` of a dynamic value,
+ * or `reject(undefined)`), carried as its own exception. `payload` is the
+ * dynamic value (`js::JsonValue`, see `pinned_json.hpp`); null is
+ * `undefined`.
+ */
+struct ThrownValue final : std::exception {
+    explicit ThrownValue(std::shared_ptr<const void> value = {}) : payload(std::move(value)) {}
+    [[nodiscard]] const char* what() const noexcept override { return "Uncaught non-Error value"; }
+    std::shared_ptr<const void> payload;
+};
+
+/** `error !== undefined`: an empty error is no error. */
+[[nodiscard]] inline bool truthy_object(const js::Error& error) {
+    return static_cast<std::exception_ptr>(error) != nullptr;
+}
+[[nodiscard]] inline bool truthy(const js::Error& error) { return truthy_object(error); }
+
+/** `error ?? fallback`, the fallback evaluated only for an absent error. */
+template <class R, class F> [[nodiscard]] R nullish(const js::Error& left, F right) {
+    return truthy_object(left) ? R(left) : R(right());
+}
+
+/** `throw error`: the thrown object itself, with its identity. */
+[[noreturn]] inline void throw_error(const js::Error& error) {
+    const std::exception_ptr thrown = error;
+    if (!thrown)
+        throw ThrownValue();
+    std::rethrow_exception(thrown);
+}
+
+/** `value instanceof Error` over a thrown value. */
+[[nodiscard]] inline bool is_error(const js::Error& error) {
+    const std::exception_ptr thrown = error;
+    if (!thrown)
+        return false;
+    try {
+        std::rethrow_exception(thrown);
+    } catch (const ThrownValue&) {
+        return false;
+    } catch (...) {
+        return true;
+    }
+}
+
+/** An authored `class X extends Error` instance as the error it is thrown as. */
+template <class T> [[nodiscard]] js::Error class_error(const std::shared_ptr<T>& instance) {
+    if (!instance)
+        return {};
+    return js::make_object_error(instance, "Error");
+}
+
+/** `error instanceof X` for an authored error class: its instance, or null. */
+template <class T> [[nodiscard]] std::shared_ptr<T> error_instance(const js::Error& error) {
+    return js::error_object<std::shared_ptr<T>>(error);
+}
+
 /** The numbers a spread of a number list passes, read when the spread evaluates. */
 template <class T>
 [[nodiscard]] std::vector<double> spread_numbers(const js::TypedArray<T>& values) {
@@ -272,12 +331,30 @@ template <class T, class Values>
     return result;
 }
 
+/**
+ * A `for (let ...)` loop's next iteration environment: a copy of the
+ * current one (its bindings' values and its enclosing scope), so closures
+ * of the finished iteration keep theirs.
+ */
+template <class Environment>
+[[nodiscard]] std::shared_ptr<Environment>
+next_iteration(const std::shared_ptr<Environment>& current) {
+    return js::make_gc_shared<Environment>(*current);
+}
+
 /** A template literal's substitution: ToString of a primitive or of `undefined`. */
 [[nodiscard]] inline std::string template_part(double value) { return js::number_to_string(value); }
 [[nodiscard]] inline std::string template_part(bool value) { return value ? "true" : "false"; }
 [[nodiscard]] inline std::string template_part(const std::string& value) { return value; }
 template <class T> [[nodiscard]] std::string template_part(const js::Nullable<T>& value) {
     return value ? template_part(*value) : std::string("undefined");
+}
+
+/** `tuple[index] = value`: an element of its fixed length (growing it is not represented). */
+template <std::size_t N> void tuple_write(js::Tuple<N>& values, double index, double value) {
+    if (!js::array_has_index(values, index))
+        throw std::runtime_error("A pinned tuple write outside its length is not represented.");
+    values[static_cast<std::size_t>(index)] = value;
 }
 
 /** `ArrayLike<number>[index]`. */
