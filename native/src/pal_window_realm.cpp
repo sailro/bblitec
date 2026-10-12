@@ -22,9 +22,12 @@
 #include "pal_camera_controls.hpp"
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <charconv>
+#include <optional>
+#include <string_view>
 #include <condition_variable>
 #include <iostream>
 #include <sstream>
@@ -169,6 +172,48 @@ struct LayoutSnapshot {
     }
 };
 
+/**
+ * `BBLITE_CAPTURE_SETTLE` (`data-attribute=value|value;milliseconds`): the
+ * canvas state a capture waits on, held for the settle time. An application
+ * whose content arrives over the network reaches it at a different frame on
+ * every run, so the capture follows the state rather than a frame.
+ */
+struct CaptureSettle {
+    std::string attribute;
+    std::vector<std::string> values;
+    double milliseconds = 0;
+};
+
+const std::optional<CaptureSettle>& capture_settle() {
+    static const std::optional<CaptureSettle> settle = []() -> std::optional<CaptureSettle> {
+        const std::string text = environment_variable("BBLITE_CAPTURE_SETTLE");
+        if (text.empty())
+            return std::nullopt;
+        const auto equals = text.find('=');
+        const auto separator = text.rfind(';');
+        CaptureSettle parsed;
+        const auto [end, error] =
+            separator == std::string::npos
+                ? std::from_chars_result{text.data(), std::errc::invalid_argument}
+                : std::from_chars(text.data() + separator + 1, text.data() + text.size(),
+                                  parsed.milliseconds);
+        if (equals == std::string::npos || separator < equals || error != std::errc{} ||
+            end != text.data() + text.size() || parsed.milliseconds < 0)
+            throw std::runtime_error(
+                "BBLITE_CAPTURE_SETTLE must read data-attribute=value|value;milliseconds.");
+        parsed.attribute = text.substr(0, equals);
+        std::string_view values(text.data() + equals + 1, separator - equals - 1);
+        for (std::size_t start = 0; start <= values.size();) {
+            const auto bar = values.find('|', start);
+            const auto stop = bar == std::string_view::npos ? values.size() : bar;
+            parsed.values.emplace_back(values.substr(start, stop - start));
+            start = stop + 1;
+        }
+        return parsed;
+    }();
+    return settle;
+}
+
 /** Only native records cross this mailbox. Source callbacks are removed on
  * their owning thread before a snapshot becomes visible to the window. */
 struct WindowServices final : CanvasProvider {
@@ -219,7 +264,10 @@ struct WindowServices final : CanvasProvider {
     }
     std::shared_ptr<OffscreenDevice> graphics;
     const std::uint64_t capture_frame_count;
-    std::shared_ptr<std::atomic<bool>> capture_ready = std::make_shared<std::atomic<bool>>(true);
+    std::shared_ptr<std::atomic<bool>> capture_ready =
+        std::make_shared<std::atomic<bool>>(!capture_settle());
+    /** When `capture_ready` last became true, for a settle capture. */
+    std::atomic<double> capture_ready_since = 0;
     std::shared_ptr<AnimationFrameSource> animation_frames =
         std::make_shared<AnimationFrameSource>();
     std::shared_ptr<EventLoop::Inbox> inbox = std::make_shared<EventLoop::Inbox>();
@@ -253,7 +301,8 @@ struct WindowDocument {
                                              const std::string& attribute) {
             for (const auto& observer : mutation_observers)
                 observer->notify(element, attribute);
-            if (attribute == "data-ready" || attribute == "data-error")
+            if (attribute == "data-ready" || attribute == "data-error" ||
+                (capture_settle() && attribute == capture_settle()->attribute))
                 update_capture_ready();
         };
         engine.ui_measure_element = [](Engine& owner, UiElementHandle element) {
@@ -266,20 +315,27 @@ struct WindowDocument {
     std::shared_ptr<WindowServices> host;
     bool wait_for_canvas_ready = false;
     void update_capture_ready() {
-        if (!wait_for_canvas_ready)
+        const auto& settle = capture_settle();
+        if (!wait_for_canvas_ready && !settle)
             return;
         // GPU canvases and retained Canvas2D canvases both render the page.
-        bool ready = false;
+        bool ready = !wait_for_canvas_ready, settled = !settle;
         std::string failure;
         for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index) {
             if (handle_at(engine.ui_elements, UiElementHandle{index}).tag != "canvas")
                 continue;
             ready =
                 ready || ui_get_attribute(engine, UiElementHandle{index}, "data-ready") == "true";
+            if (!settled)
+                settled = std::ranges::find(settle->values,
+                                            ui_get_attribute(engine, UiElementHandle{index},
+                                                             settle->attribute)) !=
+                          settle->values.end();
             if (failure.empty())
                 failure = ui_get_attribute(engine, UiElementHandle{index}, "data-error");
         }
-        host->capture_ready->store(ready);
+        if (!host->capture_ready->exchange(ready && settled) && ready && settled)
+            host->capture_ready_since.store(monotonic_milliseconds());
         std::lock_guard lock(host->mutex);
         host->capture_failure = std::move(failure);
     }
@@ -1391,6 +1447,9 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 services->wake.notify_all();
                 const bool source_ready =
                     services->capture_ready->load() &&
+                    (!capture_settle() || monotonic_milliseconds() -
+                                                  services->capture_ready_since.load() >=
+                                              capture_settle()->milliseconds) &&
                     std::all_of(frames.begin(), frames.end(),
                                 [](const auto& canvas) { return canvas.frame.capture_ready; });
                 // Engine frames every canvas has rendered, or presented

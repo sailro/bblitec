@@ -1032,6 +1032,9 @@ async function runSceneParity(
         ...(config.referenceSearch !== undefined
             ? { search: config.referenceSearch }
             : {}),
+        ...(config.referenceSettle !== undefined
+            ? { settle: config.referenceSettle }
+            : {}),
     };
     await captureSuiteReference(
         scene.source,

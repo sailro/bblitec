@@ -1,3 +1,24 @@
+/** A canvas dataset state a capture waits on (`SceneParityDefinition.referenceSettle`). */
+export interface ReferenceSettle {
+    /** The `canvas.dataset` key, camelCase as the program writes it. */
+    key: string;
+    values: readonly string[];
+    settleMilliseconds: number;
+}
+
+/**
+ * The native run's form of a settle: `BBLITE_CAPTURE_SETTLE` names the
+ * canvas attribute, its accepted values and the settle time.
+ */
+export function referenceSettleEnvironment(
+    settle: ReferenceSettle,
+): Record<string, string> {
+    const attribute = `data-${settle.key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+    return {
+        BBLITE_CAPTURE_SETTLE: `${attribute}=${settle.values.join("|")};${settle.settleMilliseconds}`,
+    };
+}
+
 export interface SceneParityDefinition {
     /** Fixed capture bounds for live measurements; neutrality checks every other pixel exactly. */
     neutralityPartition?: import("./parity.js").ImagePartition;
@@ -10,6 +31,13 @@ export interface SceneParityDefinition {
      * this instead of a wall-clock settle.
      */
     referenceFrame?: number;
+    /**
+     * Capture once the primary canvas has held one of `values` in its
+     * `dataset[key]` for `settleMilliseconds`, instead of on a frozen frame:
+     * an application whose content arrives over the network reaches the same
+     * state at a different frame on every run. Both captures wait on it.
+     */
+    referenceSettle?: ReferenceSettle;
     /** Number of independently frozen engine timelines, across any realms. */
     independentEngines?: number;
     /** Exact upstream host HTML used for the reference page. */
@@ -5220,6 +5248,15 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
     if (!parity) {
         return resolved;
     }
+    if (
+        parity.referenceSettle !== undefined &&
+        (parity.referenceFrame !== undefined ||
+            parity.referenceTimeSeconds !== undefined)
+    ) {
+        throw new Error(
+            `Scene '${scene.id}' captures on a settled canvas state; it cannot also freeze a frame or seek.`,
+        );
+    }
     const parityWithSeek = {
         ...parity,
         ...derivedSeekEnvironment(scene.id, parity),
@@ -5227,6 +5264,15 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
     const parityWithFrame = {
         ...parityWithSeek,
         ...derivedReferenceFrameEnvironment(scene.id, parityWithSeek),
+        // The native run waits on the same canvas state the browser does.
+        ...(parity.referenceSettle !== undefined
+            ? {
+                  nativeEnvironment: {
+                      ...parityWithSeek.nativeEnvironment,
+                      ...referenceSettleEnvironment(parity.referenceSettle),
+                  },
+              }
+            : {}),
     };
     return {
         ...resolved,

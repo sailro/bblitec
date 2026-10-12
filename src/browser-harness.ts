@@ -66,6 +66,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { transpileForBrowser } from "./typescript-transpile.js";
 import { resolveBrowserPath } from "./browser-path.js";
 import { captureSettleMilliseconds } from "./capture-timing.js";
+import type { ReferenceSettle } from "./scene-registry.js";
 import {
     generationBrowserEndpoint,
     launchOptions,
@@ -212,6 +213,7 @@ export async function waitForSceneReady(
     awaitFrozenPose: boolean,
     search?: string,
     fixedAnimationFrame?: number,
+    settle?: ReferenceSettle,
 ): Promise<void> {
     await gotoScenePage(page, origin, search);
     // Any canvas the page marks ready (a host page names its own canvases),
@@ -265,8 +267,47 @@ export async function waitForSceneReady(
                 { cause: error },
             );
         }
+    } else if (settle !== undefined) {
+        await waitForCanvasSettle(page, settle);
     } else {
         await page.waitForTimeout(captureSettleMilliseconds);
+    }
+}
+
+/** How long a settle capture waits for its state, network included. */
+const settleTimeoutMilliseconds = 600_000;
+
+/**
+ * Wait until the primary canvas has held one of the settle values in its
+ * dataset for the settle time, polling the live (unfrozen) page.
+ */
+async function waitForCanvasSettle(
+    page: Page,
+    settle: ReferenceSettle,
+): Promise<void> {
+    const deadline = Date.now() + settleTimeoutMilliseconds;
+    let since: number | undefined;
+    let last: string | undefined;
+    for (;;) {
+        last = await page.evaluate(
+            (key) =>
+                document.getElementById("renderCanvas")?.dataset[key] ??
+                undefined,
+            settle.key,
+        );
+        const now = Date.now();
+        if (last !== undefined && settle.values.includes(last)) {
+            since ??= now;
+            if (now - since >= settle.settleMilliseconds) return;
+        } else {
+            since = undefined;
+        }
+        if (now >= deadline) {
+            throw new Error(
+                `Timed out waiting for canvas dataset ${settle.key} in [${settle.values.join(", ")}] (last ${last ?? "unset"}).`,
+            );
+        }
+        await page.waitForTimeout(250);
     }
 }
 

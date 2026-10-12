@@ -419,6 +419,7 @@ export async function runInstrumentedCapture(
                 seekSeconds !== undefined,
                 scene.parity?.referenceSearch,
                 referenceFrame,
+                scene.parity?.referenceSettle,
             );
             mkdirSync(captureShadersDirectory(outputDirectory), {
                 recursive: true,
