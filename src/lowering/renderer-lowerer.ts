@@ -6,9 +6,11 @@ import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
 import { cameraChangeKeyHeader } from "./camera-change-key-lowerer.js";
 import {
     lowerShaderSystemCache,
-    lowerShaderSystemProducts,
+    lowerShaderSystemDependencyConstants,
+    lowerShaderSystemMatrixRouting,
+    lowerShaderSystemWriter,
     lowerShaderPacketCameraInitialization,
-    lowerShaderPacketCameraReads,
+    shaderSystemLayouts,
 } from "./shader-system-cache.js";
 import { renderTaskShaderPacketOwnersCpp } from "./render-task-mesh-refresh.js";
 import { lowerShaderBindingUpdate } from "./shader-binding-update.js";
@@ -792,6 +794,7 @@ export class RendererLowerer {
     private loweredShaderVariants(
         reachedShaderPrograms: readonly CompiledShaderProgram[],
     ) {
+        const systemLayout = shaderSystemLayouts(this.context);
         const shaderVariantTable = reachedShaderPrograms.map((program) => {
             const reflection = lowerWgslShaderProgram(program).reflection;
             // Canonical custom-uniform value layout: declaration
@@ -862,6 +865,7 @@ export class RendererLowerer {
                 ),
                 vertex: stageBlock("vertex"),
                 fragment: stageBlock("fragment"),
+                system: systemLayout(program.uniforms),
             };
         });
         const floatLiteral = (value: number): string =>
@@ -918,6 +922,7 @@ export class RendererLowerer {
         ${info.externalTextures}u,
         {${info.uniformSlots.map((slot) => `ShaderUniformInfo{"${slot.name}", "${slot.type}", ${slot.offset === undefined ? "bbl::invalid_handle" : `${slot.offset}u`}, ${slot.count}u, {${slot.defaults.map(floatLiteral).join(", ")}}}`).join(", ")}},
         ${info.thinInstanceColorOption === undefined ? "js::Nullable<double>{}" : `js::Nullable<double>{${info.thinInstanceColorOption ? "1.0" : "0.0"}}`},
+        {${info.system.map((bits) => `${bits}u`).join(", ")}},
     },`,
             )
             .join("\n");
@@ -1087,6 +1092,9 @@ struct RenderItem {
     SourceMaterialDrawGuard material_guard = nullptr;
     ShaderPacketSystemOwner shader_packet{};
 ${options.gpuInstancing ? "    ThinMaterialBindingOwner thin_binding{};\n" : ""}\
+    // The forward renderable the item was published from (SourceMaterialDraw::identity),
+    // zero for an item no source output publishes.
+    std::uint64_t source_identity = 0;
     bool material_override = false;
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     RenderBucket bucket = RenderBucket::opaque;
@@ -1160,8 +1168,9 @@ struct RenderFeatures {
 // Which matrix each system slot carries, emitted from
 // shaderSystemMatrixTable so this order and the compiler's cannot
 // disagree. The pin lets a caller name any of nine system uniforms; these
-// are the three a reached scene declares, and they head the block in the
-// order the caller declared them.
+// are the ones a reached scene can declare (all but screenSize and
+// alphaCutoff), and they head the block in the order the caller declared
+// them.
 enum class ShaderSystemMatrix : std::uint8_t {
 ${systemMatrixEnumerators}
 };
@@ -1245,6 +1254,9 @@ struct ShaderVariantInfo {
     std::uint32_t external_textures = 0;
     std::vector<ShaderUniformInfo> uniform_slots;
     js::Nullable<double> thin_instance_color_option;
+    // The declared system uniforms' dependency bits, in their layout's order
+    // (shader-system-dependencies.ts).
+    std::vector<std::uint32_t> system_dependencies;
 };
 
 std::uint32_t shader_variant_count();
@@ -1318,8 +1330,9 @@ double effective_aspect_ratio(
     const CameraRecord& camera,
     double target_width,
     double target_height);
+${lowerShaderSystemDependencyConstants(this.context)}
+${lowerShaderSystemMatrixRouting(this.context)}
 ${lowerShaderSystemCache(this.context)}
-${lowerShaderSystemProducts(this.context)}
 ${lowerShaderBindingUpdate(this.context)}
 ${lowerThinInstanceBindingUpdate(this.context)}
 /** The pixel rectangle a scene pass sets its viewport and scissor to. */
@@ -1347,8 +1360,7 @@ std::array<float, 16> build_view_projection(
 std::array<float, 16> build_view_matrix(
     const std::array<CameraMatrixScalar, 16>& camera_world);
 std::array<float, 16> build_camera_view_matrix(const CameraRecord& camera);
-void read_shader_packet_camera_matrices(const CameraRecord* camera, double target_width, double target_height,
-    std::array<float, 16>& view, std::array<float, 16>& projection, std::array<float, 16>& view_projection);
+${lowerShaderSystemWriter(this.context)}
 js::F32Array get_camera_view_matrix(const CameraRecord& camera);
 js::F32Array get_camera_projection_matrix(const CameraRecord& camera, double aspectRatio);
 js::F32Array get_camera_view_projection_matrix(const CameraRecord& camera, double aspectRatio);
@@ -1993,14 +2005,17 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         for (const auto& output : scene.state->material_outputs) {
             const auto previous_size = result.items.size();
             append_item(output->mesh, output->material, output->guard);
-${options.gpuInstancing ? "            if (result.items.size() != previous_size) result.items.back().thin_binding = output->thin_binding;" : ""}
+            if (result.items.size() == previous_size) continue;
+            auto& item = result.items.back();
+            item.source_identity = output->identity;
+${options.gpuInstancing ? "            item.thin_binding = output->thin_binding;" : ""}
 ${
     options.publicCameraMatrices
-        ? `            if (result.items.size() != previous_size && result.items.back().material_kind == RenderMaterialKind::shader) {
+        ? `            if (item.material_kind == RenderMaterialKind::shader) {
                 if (!output->shader_packet) output->shader_packet = std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
-                result.items.back().shader_packet = output->shader_packet;
+                item.shader_packet = output->shader_packet;
             }`
-        : "            (void)previous_size;"
+        : ""
 }
         }
     } else {
@@ -2486,7 +2501,6 @@ ${
     return result;
 }
 
-${lowerShaderPacketCameraReads(this.context)}
 } // namespace bbl::upstream
 
 namespace bbl {

@@ -11,6 +11,10 @@ import {
     meshCpuStreamParameters,
 } from "./mesh-cpu-streams.js";
 import { recordAt } from "../compiler/record-access.js";
+import {
+    absentDrawRangeBinding,
+    assertDrawRangesUnreached,
+} from "./mesh-draw-range.js";
 
 const modulePath = "src/mesh/mesh-factories.ts";
 const optionalStreams = new Set(["uvs", "uvs2", "tangents", "colors"]);
@@ -27,6 +31,14 @@ const paddedStreams = new Map([
 /** Source algorithms over retained arrays and PAL byte-storage ports. */
 export function lowerMeshGeometryUpdates(context: LoweringContext): string {
     const signatures = [
+        [
+            "validateGeometryRange",
+            "static void validate_geometry_range(const MeshGeometryRange& range, double length)",
+        ],
+        [
+            "matchesGeometryAttribute",
+            "static bool matches_geometry_attribute(const std::optional<js::F32Array>& values, bool present, double length)",
+        ],
         [
             "validateGeometryRanges",
             "static void validate_geometry_ranges(const js::Array<MeshGeometryRange>& ranges, double length)",
@@ -113,6 +125,10 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
             bind("mesh._gpu", `${record}.geometry`, "index");
             for (const owner of ["gpu", "oldGpu", "mesh._gpu"]) {
                 const target = geometry(owner);
+                bindings.set(
+                    `${owner}._drawRangeSource`,
+                    absentDrawRangeBinding(context),
+                );
                 bind(
                     `${owner}._vbLayout`,
                     `!${target}.owned_packed_geometry`,
@@ -201,6 +217,20 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
                     });
                 }
             }
+            if (name === "validateGeometryRange")
+                for (const member of ["offset", "count"])
+                    bind(member, `range.${member}`, "scalar");
+            if (name === "matchesGeometryAttribute") {
+                bind("values", "values", "opaque", "!values.has_value()");
+                // Read only under `!!` and `===`, where an absent length's
+                // `undefined` and NaN agree.
+                bind(
+                    "values?.length",
+                    "(values ? static_cast<double>(values->size()) : std::numeric_limits<double>::quiet_NaN())",
+                    "scalar",
+                );
+                bind("present", "present", "bool");
+            }
             if (name === "validateGeometryRanges") bind("ranges", "ranges");
             else bind("ranges", "ranges", "opaque", "!ranges.has_value()");
             for (const member of ["vertices", "indices"]) {
@@ -217,6 +247,15 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
                 ],
                 ["Number.isFinite", (args) => `std::isfinite(${args[0]})`],
                 ["isFinite", (args) => `std::isfinite(${args[0]})`],
+                [
+                    "validateGeometryRange",
+                    (args) => `(validate_geometry_range)(${args.join(", ")})`,
+                ],
+                [
+                    "matchesGeometryAttribute",
+                    (args) =>
+                        `(matches_geometry_attribute)(${args.join(", ")})`,
+                ],
                 [
                     "validateGeometryRanges",
                     (args) => `(validate_geometry_ranges)(${args.join(", ")})`,
@@ -269,18 +308,94 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
                 ],
             ]);
             bind("queue", "0");
-            const body = lowerPinnedBody(file, declaration.body!.statements, {
+            const drawRangeReset =
+                name === "retainMeshGeometry"
+                    ? declaration.body!.statements.slice(0, 2)
+                    : [];
+            if (drawRangeReset.length) {
+                context.assertStatementShapes(
+                    declaration,
+                    drawRangeReset,
+                    `
+                    const gpu = mesh._gpu;
+                    if (gpu._drawRangeSource && !preserveDrawRange) {
+                        gpu._drawRangeSource = undefined;
+                        gpu._firstIndex = gpu._baseVertex = undefined;
+                        invalidateRenderBundles(engine);
+                    }`,
+                    "Retained geometry draw-range reset",
+                );
+                assertDrawRangesUnreached(context);
+            }
+            const statements = declaration.body!.statements.slice(
+                drawRangeReset.length,
+            );
+            const body = lowerPinnedBody(file, statements, {
                 bindings,
                 calls,
                 foldConditions: false,
                 callShapes: new Map([
                     ["validateCapacityGeometry", "scalar"],
+                    ["matchesGeometryAttribute", "bool"],
                     ["Number.isInteger", "bool"],
                     ["Number.isFinite", "bool"],
                     ["isFinite", "bool"],
                 ]),
                 expression(node, lowerer) {
                     node = unwrapExpression(node);
+                    // `(owner._drawRangeSource?.stream ?? mesh.stream)?.length`
+                    // with the draw-range source absent: the retained stream's
+                    // own optional length, compared or defaulted as the pin does.
+                    const drawRangeLength = (read: ts.Expression) => {
+                        read = unwrapExpression(read);
+                        if (
+                            !ts.isPropertyAccessExpression(read) ||
+                            !read.questionDotToken ||
+                            read.name.text !== "length"
+                        )
+                            return undefined;
+                        const choice = unwrapExpression(read.expression);
+                        if (
+                            !ts.isBinaryExpression(choice) ||
+                            choice.operatorToken.kind !==
+                                ts.SyntaxKind.QuestionQuestionToken ||
+                            !ts.isPropertyAccessExpression(choice.left) ||
+                            !ts.isPropertyAccessExpression(
+                                choice.left.expression,
+                            ) ||
+                            choice.left.expression.name.text !==
+                                "_drawRangeSource"
+                        )
+                            return undefined;
+                        const source = lowerer.binding(choice.left.expression);
+                        const length = bindings.get(
+                            `${choice.right.getText(file)}?.length`,
+                        );
+                        if (!source?.staticallyAbsent || !length?.nullish)
+                            return context.contractError(
+                                read,
+                                "Expected an absent draw-range source over a retained stream length.",
+                            );
+                        return { cpp: length.cpp, absent: length.nullish };
+                    };
+                    if (
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.QuestionQuestionToken
+                    ) {
+                        const length = drawRangeLength(node.left);
+                        if (length)
+                            return `(${length.absent} ? ${lowerer.expression(node.right)} : ${length.cpp})`;
+                    }
+                    if (
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.ExclamationEqualsEqualsToken
+                    ) {
+                        const length = drawRangeLength(node.left);
+                        if (length)
+                            return `(${length.absent} || ${length.cpp} != ${lowerer.expression(node.right)})`;
+                    }
                     if (
                         ts.isCallExpression(node) &&
                         node.expression.getText(file) === "engine._dlr?.m"
@@ -425,6 +540,25 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
                         ts.isVariableDeclarationList(node.initializer)
                     ) {
                         const variable = node.initializer.declarations[0];
+                        if (variable && ts.isIdentifier(variable.name)) {
+                            context.assertExpressionShape(
+                                node.expression,
+                                "ranges",
+                                "Geometry range iteration",
+                            );
+                            lowerer.bindLocal(variable.name, {
+                                cpp: "range",
+                                type: "opaque",
+                            });
+                            return [
+                                `${indent}for (const auto& range : ranges) {`,
+                                ...lowerer.statement(
+                                    node.statement,
+                                    indent + "    ",
+                                ),
+                                `${indent}}`,
+                            ];
+                        }
                         if (
                             !variable ||
                             !ts.isObjectBindingPattern(variable.name)

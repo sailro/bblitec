@@ -1,7 +1,10 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 
 const modulePath = "src/material/shader/shader-material.ts";
 
@@ -155,7 +158,7 @@ export function lowerShaderUniformApi(context: LoweringContext): string {
     context.assertStatementShapes(
         getter,
         getter.body!.statements,
-        "const slot = material._uniformValues.get(name); if (!slot) { ThrowLiteError(476, name); } return slot.value.length === 1 ? slot.value[0]! : slot.value;",
+        'const slot = material._uniformValues.get(name); if (!slot) { throw new Error(`ShaderMaterial: uniform "${name}" was not declared.`); } return slot.value.length === 1 ? slot.value[0]! : slot.value;',
         "Shader uniform readback",
     );
     const read = lowerPinnedBody(file, getter.body!.statements.slice(1), {
@@ -193,7 +196,7 @@ export function lowerShaderUniformApi(context: LoweringContext): string {
     context.assertStatementShapes(
         setter,
         statements.slice(0, 2),
-        "const slot = material._uniformValues.get(name); if (!slot) { ThrowLiteError(474, name); }",
+        'const slot = material._uniformValues.get(name); if (!slot) { throw new Error(`ShaderMaterial: uniform "${name}" was not declared.`); }',
         "Shader uniform slot lookup",
     );
     const writeBindings = new Map<string, PinnedBinding>([
@@ -300,14 +303,32 @@ export function lowerShaderUniformApi(context: LoweringContext): string {
         packet.declaration,
         "alphaCutoff",
     );
+    // The packet keys the live value only where its layout declares the
+    // uniform; the gate (shader-system-cache.ts) lowers that selection.
+    const selected = context.unwrapExpression(alpha);
+    if (!ts.isConditionalExpression(selected))
+        return context.contractError(
+            alpha,
+            "Expected the declared alpha cutoff selection.",
+        );
     context.assertExpressionShape(
-        alpha,
+        selected.condition,
+        "dependencies & ALPHA_CUTOFF",
+        "Shader packet alpha cutoff dependency",
+    );
+    context.assertExpressionShape(
+        selected.whenFalse,
+        "0",
+        "Undeclared shader packet alpha cutoff",
+    );
+    const live = context.unwrapExpression(selected.whenTrue);
+    context.assertExpressionShape(
+        live,
         'material._uniformValues.get("alphaCutoff")?.value[0] ?? 0.4',
         "Shader packet live alpha cutoff",
     );
-    const alphaBody = lowerPinnedBody(
+    const alphaBody = `    const double alphaCutoff = ${new PinnedNumericLowerer(
         packet.file,
-        [alpha.parent.parent.parent as ts.VariableStatement],
         {
             bindings: new Map<string, PinnedBinding>([
                 [
@@ -321,7 +342,7 @@ export function lowerShaderUniformApi(context: LoweringContext): string {
             ]),
             calls: new Map(),
         },
-    );
+    ).expression(live)};`;
     return `// ${context.provenance(modulePath, "getShaderUniform")}
 // ${context.provenance(modulePath, "setUniformValue")}
 [[maybe_unused]] static std::vector<float> default_shader_uniform_values(const std::string& name, std::size_t slot_count) {

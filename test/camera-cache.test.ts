@@ -8,7 +8,10 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { CameraMutationLowerer } from "../src/lowering/camera-mutation-lowerer.js";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
-import { lowerShaderSystemProducts } from "../src/lowering/shader-system-cache.js";
+import {
+    lowerShaderSystemDependencyConstants,
+    lowerShaderSystemWriter,
+} from "../src/lowering/shader-system-cache.js";
 import { lowerCameraMatrixCaches } from "../src/lowering/camera-matrix-cache.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
@@ -306,19 +309,21 @@ ${cppFunction(render, "std::array<float, 16> build_camera_view_matrix(")}
 ${cppFunction(render, "std::array<float, 16> build_scene_projection(")}
 ${cppFunction(render, "std::array<float, 16> build_view_projection(")}
 ${cppFunction(render, "double effective_aspect_ratio(")}
-${cppFunction(render, "void read_shader_packet_camera_matrices(")}
 }
 ${new SceneUboLowerer(context).cacheHeader()}
 namespace bbl::upstream {
 inline constexpr bool public_camera_matrix_caches = true;
+${lowerShaderSystemDependencyConstants(context)}
 ${cppFunction(plan.header, "inline bool pass_scene_block_skips(")}
 template<class Source,class Engine,class Scene,class Camera,class CameraKey,class WriteFull>
 ${cppFunction(plan.header, "void write_retained_pass_scene_ubo(")}
 struct SceneUniforms { std::array<float,16> viewProjection{},view{}; };
-template<class Cache,class WriteSystem>
+template<class State>
+${cppFunction(plan.header, "std::array<float, 16>& shader_system_matrix(")}
+template<class Cache,class AlphaCutoff,class WriteSystem>
 ${cppFunction(plan.header, "void update_shader_packet_system(")}
-template<class Clear,class WriteView,class WriteViewProjection>
-${cppFunction(plan.header, "void write_shader_packet_products(")}
+template<class Clear,class ReadWorld,class Store,class StoreProduct,class StoreCameraPosition>
+${cppFunction(plan.header, "void write_shader_packet_system(")}
 template<class Custom,class System>
 ${cppFunction(plan.header, "void update_shader_binding(")}
 enum class RenderBucket { opaque,alpha_blend };
@@ -360,7 +365,7 @@ void check_pass_cache(bbl::Engine& engine,bbl::CameraHandle handle){
  const auto hit=prepare(camera);assert(!retained.publish&&packed==2&&hit.view_projection==first.view_projection);assert(retained.pass.block().view==first_view&&retained.billboard.block().view==first_view);
  // A hit must not re-read projection at the pass aspect after an unrelated public read.
  get_camera_projection_matrix(*camera,5);prepare(camera);assert(camera->projection_cache_aspect==5);
- MeshRecord mesh;MaterialRecord material;material.shader_alpha_cutoff=+[](const MaterialRecord&){return .4;};
+ MeshRecord mesh;MaterialRecord material;material.shader_alpha_cutoff=+[](const MaterialRecord&){return .4;};material.shader_system_dependencies={1,2,4,8,3,9};material.shader_system_dependency_mask=15;
  const auto owner=std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();auto& world=world_value;world[0]=world[5]=world[10]=world[15]=1;
  ShaderPassMatrices input{};input.camera=camera;input.target_width=640;input.target_height=320;input.world=&world;
  const auto packet=shader_packet_system_matrices(owner,scene,engine,mesh,material,input);const auto packet_vp=**owner;
@@ -374,6 +379,11 @@ void check_pass_cache(bbl::Engine& engine,bbl::CameraHandle handle){
  input.camera=nullptr;world[0]=std::numeric_limits<float>::infinity();world[1]=std::numeric_limits<float>::quiet_NaN();shader_packet_system_matrices(owner,scene,engine,mesh,material,input);assert((*owner)->camera.has_value()&&*(*owner)->camera==nullptr);for(const auto value:(*owner)->world_view)assert(value==0);for(const auto value:(*owner)->world_view_projection)assert(value==0);(*owner)->view_projection[0]=59;shader_packet_system_matrices(owner,scene,engine,mesh,material,input);assert((*owner)->view_projection[0]==59);input.camera=camera;world[0]=1;world[1]=0;
  input.shadow_camera_facade=true;bool refused=false;try{shader_packet_system_matrices(owner,scene,engine,mesh,material,input);}catch(const std::runtime_error& error){refused=std::string(error.what()).find("createShadowCamera")!=std::string::npos;}assert(refused);input.shadow_camera_facade=false;
  const auto before_capture=(*owner)->camera;shader_packet_published_matrices(owner,input);assert((*owner)->camera==before_capture&&(*owner)->view_projection[0]==59);
+ // A world-only layout keys neither the camera nor the target, and reads no camera cache.
+ MaterialRecord world_only=material;world_only.shader_system_dependencies={1};world_only.shader_system_dependency_mask=1;const auto world_owner=std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
+ get_camera_projection_matrix(*camera,5);const int reads_before=world_reads;shader_packet_system_matrices(world_owner,scene,engine,mesh,world_only,input);assert(world_reads==reads_before+1&&camera->projection_cache_aspect==5&&*(*world_owner)->camera==nullptr&&(*world_owner)->world==world_value);
+ input.target_width=1280;shader_packet_system_matrices(world_owner,scene,engine,mesh,world_only,input);assert(world_reads==reads_before+1&&camera->projection_cache_aspect==5);input.target_width=640;
+ ++mesh.transform_version;shader_packet_system_matrices(world_owner,scene,engine,mesh,world_only,input);assert(world_reads==reads_before+2&&camera->projection_cache_aspect==5);
  live_vp[3]=31;live_view[3]=37;
  engine.meshes.push_back(MeshRecord{});engine.materials.push_back(material);const MeshHandle hidden_mesh{static_cast<std::uint32_t>(engine.meshes.size()-1)};const MaterialHandle hidden_material{static_cast<std::uint32_t>(engine.materials.size()-1)};
  handle_at(engine.meshes,hidden_mesh).visible=false;const auto hidden_owner=std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();RenderDrawList bindings;bindings.binding_updates.push_back({{hidden_mesh,hidden_material,hidden_owner}});assert(bindings.commands.empty());int rows=0;
@@ -403,14 +413,14 @@ ${checks.join("\n")}
 });
 
 test("camera cache math and cache conditions remain source-derived", () => {
-    const products = lowerShaderSystemProducts(
+    const writer = lowerShaderSystemWriter(
         doctoredContext(
             "src/material/shader/shader-renderable.ts",
-            'case "worldView":\n                if (view)',
-            'case "worldView":\n                if (!view)',
+            "if (camera) {\n                const matrix",
+            "if (!camera) {\n                const matrix",
         ),
     );
-    assert.match(products, /if \(camera == nullptr\)/);
+    assert.match(writer, /if \(camera == nullptr\)/);
     const altered = lowerCameraMatrixCaches(
         doctoredContext("src/camera/camera.ts", "v[15] = 1;", "v[15] = 2;"),
         false,

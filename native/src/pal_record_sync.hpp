@@ -17,6 +17,8 @@ template <class Buffer> struct VersionedGpuBuffer {
     std::size_t size = 0;
     std::uint64_t version = 0;
     std::shared_ptr<void> borrowed_owner;
+    /** A GPU-role allocation device recovery dropped: binding it refuses. */
+    bool lost = false;
 };
 
 /** Invalidate dependent bindings before retiring buffers; publish versions after upload. */
@@ -29,7 +31,7 @@ void sync_storage_records(const std::vector<Source>& sources,
     for (std::size_t index = 0; index < sources.size(); ++index) {
         const auto& source = sources[index];
         const auto external = borrow(source);
-        if (!source.disposed && !external.buffer && source.bytes.empty()) {
+        if (!source.disposed && !external.buffer && !external.lost && source.bytes.empty()) {
             throw std::runtime_error("A shader storage buffer cannot be empty.");
         }
         if (index < targets.size()) {
@@ -53,10 +55,11 @@ void sync_storage_records(const std::vector<Source>& sources,
         const auto& source = sources[index];
         auto& target = targets[index];
         auto external = borrow(source);
-        if (source.disposed) {
+        if (source.disposed || external.lost) {
             if (target.buffer && !target.borrowed_owner)
                 release(target.buffer);
             target = {};
+            target.lost = external.lost;
         } else if (external.buffer) {
             if (target.buffer && !target.borrowed_owner)
                 release(target.buffer);

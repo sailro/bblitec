@@ -3,6 +3,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { LoweringContext } from "../src/lowering/context.js";
+import { assertGeometryTaskSync } from "../src/lowering/geometry-task-sync.js";
+import { doctoredContext } from "./doctored-store.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
@@ -59,10 +62,11 @@ namespace bbl::upstream {
 enum class RenderMaterialKind { standard, pbr };
 struct RenderItem {
     MeshHandle mesh;
-    int material = 0;
+    MaterialHandle material{};
+    std::uint64_t source_identity = 0;
     RenderMaterialKind material_kind = RenderMaterialKind::standard;
 };
-inline RenderItem bind_render_item(RenderItem item, const Engine&, int) { return item; }
+inline RenderItem bind_render_item(RenderItem item, const Engine&, MaterialHandle) { return item; }
 }
 `,
     );
@@ -106,6 +110,11 @@ test("only the geometry task's Standard draws write the velocity tail", () => {
             1,
             `${backend} updates each geometry task's renderables once a frame`,
         );
+        assert.equal(
+            text.match(/record_pinned_velocity\(task\.velocity\);/g)?.length,
+            1,
+            `${backend} re-syncs each geometry task's history at its record`,
+        );
         assert.match(
             text,
             /pinned_mesh_block\(scene, engine, (?:draw\.item|item)\.mesh, velocity_history\)/,
@@ -122,4 +131,39 @@ test("only the geometry task's Standard draws write the velocity tail", () => {
         /colour_state, &geometry\.velocity\);/,
         "the Dawn geometry task hands its history to its draws",
     );
+});
+
+test("the history's sync points are the pin's geometry re-sync", () => {
+    assertGeometryTaskSync(new LoweringContext());
+    const module = "src/frame-graph/geometry-renderer-task.ts";
+    for (const [needle, replacement] of [
+        // record() no longer re-syncs.
+        [
+            "rebuildBoundMeshes(task, config, eng, sc);\n    rebuildRenderPassDescriptor(task, config);",
+            "rebuildRenderPassDescriptor(task, config);",
+        ],
+        // The stamp drops the effective camera.
+        [
+            "config.camera ?? sc.camera, config.reverseCulling]",
+            "config.reverseCulling]",
+        ],
+        // The carry no longer compares the source material.
+        ["prev._view.source === resolved._mat", "prev._view === resolved._mat"],
+        // A version move no longer re-syncs.
+        [
+            "if (sc._renderableVersion !== task._boundVer) {",
+            "if (sc._renderableVersion > task._boundVer) {",
+        ],
+        // The floating-origin camera switch keeps the stamp.
+        ["task._cfg.length = 0;", "task._cfg = [...task._cfg];"],
+    ] as const) {
+        assert.throws(
+            () =>
+                assertGeometryTaskSync(
+                    doctoredContext(module, needle, replacement),
+                ),
+            /Expected|carries|changed/,
+            needle,
+        );
+    }
 });

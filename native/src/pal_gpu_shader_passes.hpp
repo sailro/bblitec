@@ -25,6 +25,7 @@ struct ShaderPacketSystemState {
     std::optional<const CameraRecord*> camera;
     std::optional<double> camera_version, mesh_version, target_width, target_height, aspect,
         alpha_cutoff;
+    std::optional<bool> floating_origin;
     std::array<float, 16> view_projection{}, view{}, projection{}, world{}, world_view{},
         world_view_projection{};
     std::array<float, 4> camera_position{};

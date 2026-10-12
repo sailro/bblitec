@@ -208,8 +208,8 @@ Physics rows measure Bullet against Havok: their residuals include solver differ
 | 224 | <img src="images/scenes/scene224.png" alt="Scene 224 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Bounding Box Gizmo |
 | 225 | <img src="images/scenes/scene225.png" alt="Scene 225 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Geospatial Camera; renders its pose, controls attach without input arms. |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001/0.003 | 0.001/0.003 | Gaussian Splatting glTF |
-| 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.001/0.001 | 0.001/0.001 | Shared Scene Surfaces |
-| 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.000/0.001 | 0.000/0.001 | Independent Scene Surfaces |
+| 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.000/0.001 | 0.001/0.001 | Shared Scene Surfaces |
+| 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.000/0.000 | 0.000/0.001 | Independent Scene Surfaces |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Triangle Without Indices |
 | 231 | <img src="images/scenes/scene231.png" alt="Scene 231 rendering" width="160"> | 0.000/0.001 | 0.000/0.000 | Standard Material Deform Features |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Animated Triangle |

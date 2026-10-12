@@ -108,7 +108,7 @@ test("task insertion lowers pinned first-identity lookup, append and duplicate b
     }
     assert.throws(
         () => Reflect.apply(addTaskAfter, undefined, [{}, tasks[0], tasks[1]]),
-        /#116/,
+        /#119/,
     );
     const context = new LoweringContext();
     const generated = lowerFrameGraphTaskActions(context);

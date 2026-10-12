@@ -887,6 +887,83 @@ ${force.body}
 }`;
 }
 
+/**
+ * storage-buffer-recovery.ts `rebuildCpuStorageBuffers` over the native
+ * storage records. A shadowed allocation is CPU-authoritative, so the one the
+ * native storage device kept already holds what the pin rebuilds from its
+ * shadow; a GPU-role allocation has no shadow and loses its handle, which
+ * every update, binding and readback then refuses as the pin does.
+ */
+function storageRecoveryCpp(context: LoweringContext): string {
+    const module = "src/resource/storage-buffer-recovery.ts";
+    const { file, declaration } = context.functionDeclaration(
+        module,
+        "rebuildCpuStorageBuffers",
+    );
+    const loop = declaration.body!.statements[0];
+    if (
+        declaration.body!.statements.length !== 1 ||
+        !loop ||
+        !ts.isForOfStatement(loop)
+    )
+        return context.contractError(
+            declaration,
+            "Expected one pass over the registered storage buffers.",
+        );
+    context.assertExpressionShape(
+        loop.expression,
+        "engine._storageBuffers ?? []",
+        "Registered storage buffers",
+    );
+    const body = lowerPinnedBody(
+        file,
+        ts.isBlock(loop.statement)
+            ? loop.statement.statements
+            : [loop.statement],
+        {
+            bindings: new Map([
+                ["buffer._destroyed", { cpp: "record.disposed", type: "bool" }],
+                ["buffer._data", { cpp: "record.has_shadow", type: "bool" }],
+            ]),
+            calls: new Map(),
+            statement(node, lowerer, indent) {
+                if (
+                    ts.isExpressionStatement(node) &&
+                    ts.isBinaryExpression(node.expression) &&
+                    context.expressionMatchesShape(
+                        node.expression.left,
+                        "buffer._buffer",
+                    )
+                ) {
+                    const allocation = node.expression.right;
+                    context.assertExpressionShape(
+                        allocation,
+                        "buffer._data ? createMappedBuffer(engine, buffer._data, BU.STORAGE, buffer._label) : null",
+                        "Storage recovery allocation",
+                    );
+                    // The shadowed arm's re-upload is the native rebuild of
+                    // every retained allocation; the other loses its handle.
+                    const shadowed = lowerer.expression(
+                        (allocation as ts.ConditionalExpression).condition,
+                    );
+                    return [
+                        `${indent}if (!(${shadowed}) && record.gpu) record.gpu->allocation.reset();`,
+                    ];
+                }
+                return undefined;
+            },
+        },
+        "        ",
+    );
+    return `// ${context.provenance(module, "rebuildCpuStorageBuffers")}
+static void rebuild_cpu_storage_buffers(Engine& engine) {
+    for (auto& record : engine.storage_buffers) {
+        if (!record.registered) continue;
+${body}
+    }
+}`;
+}
+
 export function lowerDeviceRecovery(
     context: LoweringContext,
     thinBindings = false,
@@ -924,6 +1001,8 @@ ${registrationCpp(context)}
 
 ${sceneRecoveryCpp(context)}
 
+${storageRecoveryCpp(context)}
+
 ${forcedLossCpp(context)}
 
 ${contextKindAssertionCpp(context)}
@@ -955,6 +1034,7 @@ void begin_device_recovery(Engine& engine) {
     assert_every_active_context_kind_is_recoverable(engine, state.in_flight);
     state.environments.clear(); state.shadows.clear(); state.renderable_counts.clear(); state.fallback = {};
     ++engine.device_generation;
+    rebuild_cpu_storage_buffers(engine);
     ${shaderUniformRecoveryReset(context)}
     recover_retained_meshes(engine);
     ${shaderUniformRecoveryPublication(context, thinBindings)}

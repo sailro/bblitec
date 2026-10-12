@@ -2219,7 +2219,7 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
     // Depth-hosted layers are out of the pin's own support boundary.
     assert.match(
         sorted,
-        /if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("#712"\);/,
+        /if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("#755"\);/,
     );
     // Every canonical mutation observes the extension where the pin does.
     for (const observer of [

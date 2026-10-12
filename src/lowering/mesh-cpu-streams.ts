@@ -88,7 +88,7 @@ function lowerFactoryRecoveryCapture(context: LoweringContext): string {
         );
     context.assertExpressionShape(
         call,
-        'engine._dlr?.m(mesh, uvs2 ?? null, tangents ?? null, colors ?? null, indices, "uint32")',
+        'engine._dlr?.m(mesh, uvs2, tangents, colors, indices, "uint32")',
         "data mesh capture arguments",
     );
     return `// ${context.provenance(module, "attachRecoveryCapture", "mesh hook")}

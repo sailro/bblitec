@@ -210,6 +210,7 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
         if (record.kind != FrameTaskKind::geometry)
             continue;
         DawnGeometryTask& task = state.geometry_tasks[index];
+        record_pinned_velocity(task.velocity);
         task.depth_borrowed = geometry_depth_is_borrowed(engine, index);
         const std::uint32_t samples = task_sample_count(state, record.geometry.samples);
         task.colors.reserve(record.geometry.attachments.size());

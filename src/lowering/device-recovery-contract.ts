@@ -1,4 +1,5 @@
 import type { LoweringContext } from "./context.js";
+import { assertDrawRangesUnreached } from "./mesh-draw-range.js";
 
 /** Full AST contracts for the pinned lifecycle represented by native resource ownership. */
 export function assertDeviceRecoveryContracts(context: LoweringContext): void {
@@ -37,6 +38,13 @@ function getState(engine: EngineContext): DeviceLostRecoveryState {
 `,
     );
     // Adapter/device acquisition, surface configuration and texture ownership settlement use synchronous backend teardown/reconstruction over retained owners.
+    // The replacement device's event hook exists only once onEngineGpuError
+    // or onEngineDeviceLost subscribed, which no lowered program reaches.
+    context.assertWrittenOnlyBy(
+        "_attachGpuEvents",
+        "src/engine/engine-gpu-events.ts",
+        "eventsFor",
+    );
     check(
         "device-lost-recovery-run",
         "runDeviceLostRecovery",
@@ -63,6 +71,7 @@ export async function runDeviceLostRecovery(engine: EngineContext, state: Device
         requiredFeatures: state._requiredFeatures,
         requiredLimits: { ...engine._options?.requiredLimits, ...storageRecovery?.getCpuStorageRecoveryLimits(engine) },
     }));
+    engine._attachGpuEvents?.(engine);
     await runRecoveryStep("rebuilding engine storage buffers", async () => {
         const recovery = storageRecovery ?? (engine._storageBuffers?.size ? await loadCpuStorageRecovery() : undefined);
         recovery?.rebuildCpuStorageBuffers(engine);
@@ -306,11 +315,25 @@ export async function _rebuildMeshes(engine: EngineContext, scene: SceneContext)
 }
 `,
     );
+    // The draw-range arm restores what only setMeshDrawRange selects, which no
+    // program reaches; the native rebuild is the ordinary arm after it.
+    assertDrawRangesUnreached(context);
     check(
         "recovery-rebuild",
         "uploadRetainedMesh",
         `
 function uploadRetainedMesh(engine: EngineContext, mesh: Mesh): MeshGPU {
+    const old = mesh._gpu;
+    const source = old._drawRangeSource;
+    if (source) {
+        const gpu = uploadMeshToGPU(engine, source.positions, source.normals, source.indices, source.uvs, source.uvs2, source.tangents, source.colors);
+        setMeshDrawRangeSource(gpu, { ...source });
+        gpu._firstIndex = old._firstIndex;
+        gpu._baseVertex = old._baseVertex;
+        gpu._vertexCapacity = source.positions.length / 3;
+        gpu._indexCapacity = source.indices.length;
+        return gpu;
+    }
     const positions = mesh._cpuPositions!;
     const normals = mesh._cpuNormals!;
     const uvs = mesh._cpuUvs;
@@ -501,16 +524,17 @@ function attachRecoveryCapture(engine: EngineContext): void {
         r(tex: Texture2D, width: number, height: number, format: GPUTextureFormat, samplerDesc: GPUSamplerDescriptor): void {
             stamp(tex, { kind: "render", width, height, format, samplerDesc });
         },
-        w(tex: Texture2D, data: Uint8Array, x: number, y: number, width: number, height: number, dataOffset = 0, bytesPerRow = width * 4): void {
+        w(tex: Texture2D, data: ArrayBufferView, x: number, y: number, width: number, height: number, dataOffset = 0, bytesPerRow = width * 4): void {
             const source = tex._recoverySource;
             if (source?.kind !== "pixels") {
                 return;
             }
+            const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
             const rowBytes = width * 4;
             for (let row = 0; row < height; row++) {
                 const srcStart = dataOffset + row * bytesPerRow;
                 const dstStart = ((y + row) * source.width + x) * 4;
-                source.data.set(data.subarray(srcStart, srcStart + rowBytes), dstStart);
+                source.data.set(bytes.subarray(srcStart, srcStart + rowBytes), dstStart);
             }
         },
         m(mesh: Mesh, uv2s: Float32Array | null | undefined, tangents: Float32Array | null | undefined, colors: Float32Array | null | undefined, gpuIndices: Uint16Array | Uint32Array, indexFormat: GPUIndexFormat): void {

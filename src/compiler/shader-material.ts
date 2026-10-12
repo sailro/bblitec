@@ -284,10 +284,9 @@ export function compileShaderMaterialOptions(
             "Scene-local shader material names must contain letters or digits.",
         );
     }
-    // The pin names nine system uniforms; the reached subset is the three
-    // that name a matrix a draw already holds, so serving one is a copy
-    // rather than a derivation. `cameraPosition`, `screenSize` and
-    // `alphaCutoff` refuse by name.
+    // The pin names nine system uniforms; the reached subset is the
+    // shaderSystemMatrixTable rows, the six matrices and the camera
+    // position. `screenSize` and `alphaCutoff` refuse by name.
     for (const signature of uniforms) {
         if (!signature.includes(":") && !isShaderSystemMatrix(signature)) {
             context.fail(

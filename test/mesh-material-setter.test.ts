@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { compileSource } from "../src/compiler.js";
@@ -32,8 +33,24 @@ function sourceResult(context: LoweringContext): object {
                 .replace("export ", ""),
         )
         .join("\n");
+    // The module's own state: the scene subscriptions and the validator hook.
+    const state = context
+        .sourceFile(module)
+        .statements.filter(
+            (statement) =>
+                ts.isVariableStatement(statement) &&
+                statement.declarationList.declarations.some(
+                    ({ name }) =>
+                        ts.isIdentifier(name) &&
+                        ["_meshScenes", "_materialValidator"].includes(
+                            name.text,
+                        ),
+                ),
+        )
+        .map((statement) => statement.getText())
+        .join("\n");
     const code = transpileCommonJs(
-        `let _meshScenes = null; ${declarations}
+        `${state} ${declarations}
         return {add: registerMeshScene, remove: unregisterMeshScene, dirty: markMeshRenderableDirty};`,
         module,
     );

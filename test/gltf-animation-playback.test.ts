@@ -351,7 +351,7 @@ function contexts(): LoweringContext[] {
         ),
         doctoredContext(
             controllerModule,
-            "ThrowLiteError(681)",
+            "ThrowLiteError(724)",
             "ThrowLiteError(9999)",
         ),
     ];

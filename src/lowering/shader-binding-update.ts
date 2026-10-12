@@ -1,7 +1,63 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
+
+/**
+ * An expression hook lowering shader-renderable.ts's inactive-packet test,
+ * `isPacketInactive(packet, material, isOverride)`, over the caller's
+ * bindings of its three parameters: every caller passes its own packet,
+ * material and override, which are the parameters' names.
+ */
+export function shaderPacketInactiveHook(
+    context: LoweringContext,
+    bindings: Map<string, PinnedBinding>,
+): (node: ts.Expression) => string | undefined {
+    const inactive = context.functionDeclaration(
+        "src/material/shader/shader-renderable.ts",
+        "isPacketInactive",
+    );
+    const parameters = inactive.declaration.parameters.map((parameter) =>
+        parameter.name.getText(inactive.file),
+    );
+    if (parameters.join(",") !== "packet,material,isOverride")
+        return context.contractError(
+            inactive.declaration,
+            "Expected the inactive-packet test over a packet, its material and the override.",
+        );
+    const test = inactive.declaration.body!.statements[0];
+    if (
+        inactive.declaration.body!.statements.length !== 1 ||
+        !test ||
+        !ts.isReturnStatement(test) ||
+        !test.expression
+    )
+        return context.contractError(
+            inactive.declaration,
+            "Expected the inactive-packet test's one return.",
+        );
+    // Lowered at the first call site: a caller whose source never tests the
+    // packet need not bind the test's operands.
+    const tested = test.expression;
+    let inactiveCpp: string | undefined;
+    return (node) => {
+        if (
+            !context.expressionMatchesShape(
+                node,
+                "isPacketInactive(packet, material, isOverride)",
+            )
+        )
+            return undefined;
+        inactiveCpp ??= new PinnedNumericLowerer(inactive.file, {
+            bindings,
+            calls: new Map(),
+        }).expression(tested);
+        return inactiveCpp;
+    };
+}
 
 /** One native candidate transports one packet of the pin's bound shader update. */
 export function lowerShaderBindingUpdate(context: LoweringContext): string {
@@ -23,7 +79,7 @@ export function lowerShaderBindingUpdate(context: LoweringContext): string {
         `
         updateCustomUbo(scene.surface.engine, material, uniformBatch);
         for (const packet of packets) {
-            if (packet._disposed || (!isOverride && packet.mesh.material !== material)) { continue; }
+            if (isPacketInactive(packet, material, isOverride)) { continue; }
             updatePacket(scene, material, packet, context, uniformBatch);
         }`,
         "Opaque shader binding update order",
@@ -40,27 +96,27 @@ export function lowerShaderBindingUpdate(context: LoweringContext): string {
         transparent.update,
         transparentUpdates,
         `
-        if (packet._disposed || (!isOverride && packet.mesh.material !== material)) { return; }
+        if (isPacketInactive(packet, material, isOverride)) { return; }
         updateCustomUbo(scene.surface.engine, material, uniformBatch);
         updatePacket(scene, material, packet, context, uniformBatch);`,
         "Transparent shader binding update order",
     );
+    const bindings = new Map<string, PinnedBinding>([
+        ["packet._disposed", { cpp: "disposed", type: "bool" }],
+        // The native draw guard already includes the override arm.
+        ["isOverride", { cpp: "false", type: "bool" }],
+        ["packet.mesh.material", { cpp: "material_matches", type: "bool" }],
+        ["material", { cpp: "true", type: "bool" }],
+    ]);
+    const inactive = shaderPacketInactiveHook(context, bindings);
     const lower = (file: ts.SourceFile, statements: readonly ts.Statement[]) =>
         lowerPinnedBody(
             file,
             statements,
             {
-                bindings: new Map<string, PinnedBinding>([
-                    ["packet._disposed", { cpp: "disposed", type: "bool" }],
-                    // The native draw guard already includes the override arm.
-                    ["isOverride", { cpp: "false", type: "bool" }],
-                    [
-                        "packet.mesh.material",
-                        { cpp: "material_matches", type: "bool" },
-                    ],
-                    ["material", { cpp: "true", type: "bool" }],
-                ]),
+                bindings,
                 calls: new Map(),
+                expression: inactive,
                 statement(node, _lowerer, indent) {
                     if (
                         ts.isExpressionStatement(node) &&

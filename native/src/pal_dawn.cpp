@@ -2069,7 +2069,8 @@ public:
                         update_pinned_velocity_frame(
                             handle_at(state.geometry_tasks, handle).velocity, graph_scene, engine,
                             (graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1])
-                                .scene_items());
+                                .scene_items(),
+                            geometry_pass.camera);
                         write_standard_geometry_task(
                             state, graph_scene, engine, task,
                             handle_at(state.geometry_tasks, handle),

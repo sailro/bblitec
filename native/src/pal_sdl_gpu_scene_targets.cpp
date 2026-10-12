@@ -429,6 +429,7 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
         if (record.kind != FrameTaskKind::geometry)
             continue;
         GpuGeometryTask& task = state.geometry_tasks[index];
+        record_pinned_velocity(task.velocity);
         task.depth_borrowed = geometry_depth_is_borrowed(engine, index);
         const SDL_GPUSampleCount samples = task_sample_count(state, record.geometry.samples);
         task.colors.reserve(record.geometry.attachments.size());

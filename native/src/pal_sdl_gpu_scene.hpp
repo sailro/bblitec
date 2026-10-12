@@ -1094,7 +1094,8 @@ struct GpuState : SdlGpuDevice {
 void sync_shader_storage_buffers(GpuState& state, const Engine& engine,
                                  GpuBufferUploadBatch& uploads);
 
-SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const MaterialRecord& material,
+SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
+                                     const MaterialRecord& material,
                                      const upstream::ShaderVariantInfo& info,
                                      const std::string& name);
 

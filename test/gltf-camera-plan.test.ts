@@ -138,7 +138,7 @@ test("camera API reach and the actual feature predicate remain isolated between 
     );
     await assert.rejects(
         gltfMeshPlan(invalid.document, invalid.bin, undefined, enabled),
-        /#177/,
+        /#180/,
     );
 });
 
@@ -196,7 +196,7 @@ test("source camera scale checks and changing-scale skip run before native packa
         const { document, bin } = fixture({ nodes: [{ camera: 0, scale }] });
         await assert.rejects(
             gltfMeshPlan(document, bin, undefined, enabled),
-            /#178/,
+            /#181/,
         );
     }
     const { document, bin } = fixture();

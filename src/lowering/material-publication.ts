@@ -1,7 +1,9 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { shaderPacketInactiveHook } from "./shader-binding-update.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 
 /** Output identities and captured material handles transport the source renderables. */
@@ -186,19 +188,20 @@ export function lowerMaterialPublication(
                 source.declaration,
                 "Expected the family's captured-material draw guard.",
             );
+        const bindings = new Map<string, PinnedBinding>([
+            ["isOverride", { cpp: "is_override", type: "bool" }],
+            // Native outputs are removed before packet storage is released.
+            [
+                "packet._disposed",
+                { cpp: "false", type: "bool", staticallyAbsent: true },
+            ],
+            [current, { cpp: "current.value", type: "scalar" }],
+            [captured, { cpp: "captured.value", type: "scalar" }],
+        ]);
         return lowerPinnedBody(source.file, checks, {
-            bindings: new Map([
-                ["isOverride", { cpp: "is_override", type: "bool" }],
-                // Native outputs are removed before packet storage is released.
-                [
-                    "packet._disposed",
-                    { cpp: "false", type: "bool", staticallyAbsent: true },
-                ],
-                [current, { cpp: "current.value", type: "scalar" }],
-                [captured, { cpp: "captured.value", type: "scalar" }],
-            ]),
+            bindings,
             calls: new Map(),
-
+            expression: shaderPacketInactiveHook(context, bindings),
             returnValue: () => "false",
         });
     };
@@ -212,7 +215,7 @@ export function lowerMaterialPublication(
     const shaderGuard = familyGuard(
         "src/material/shader/shader-renderable.ts",
         "createTransparentRenderable",
-        "packet._disposed || (!isOverride && packet.mesh.material !== material)",
+        "isPacketInactive(packet, material, isOverride)",
         "packet.mesh.material",
         "material",
     );
@@ -524,6 +527,7 @@ SourceMaterialOutput capture_material_output(Scene& scene, MeshHandle mesh) {
         record.source_group_builder == 2 ? source_standard_material_draw_matches :
         record.source_group_builder == 3 ? source_shader_material_draw_matches : nullptr;
     const auto output = std::make_shared<SourceMaterialDraw>(SourceMaterialDraw{mesh, material, guard});
+    output->identity = ++scene.engine->source_output_identity;
 ${thinBindings ? "    output->thin_binding = create_thin_material_binding(*scene.engine, mesh, material);" : ""}
     return output;
 }

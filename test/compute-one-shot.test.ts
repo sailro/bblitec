@@ -29,7 +29,7 @@ bbl::js::Promise<bbl::js::PromiseVoid> checks(bbl::pal::EventLoop& loop,bool& do
  auto engine=std::make_shared<bbl::Engine>();auto device=std::make_shared<Device>();engine->offscreen_run=std::make_shared<bbl::pal::OffscreenRun>(std::make_shared<bbl::pal::OffscreenSurface>(1,1),device);
  {
   int ran=0,cancelled=0;
-  rejects([&]{(void)bbl::add_frame_post_submit_hook(engine,"frame",[&](auto){++ran;});},"#50");
+  rejects([&]{(void)bbl::add_frame_post_submit_hook(engine,"frame",[&](auto){++ran;});},"#53");
   const auto first_encoder=std::make_shared<bbl::pal::ComputeCommandEncoder>(device);
   const auto second_encoder=std::make_shared<bbl::pal::ComputeCommandEncoder>(device);
   engine->current_compute_encoder=first_encoder;
@@ -61,7 +61,7 @@ bbl::js::Promise<bbl::js::PromiseVoid> checks(bbl::pal::EventLoop& loop,bool& do
  const auto makeTask=[&]{auto task=bbl::js::make_gc_shared<bbl::ComputeTask>();task->engine=engine;task->name="spectrum";return task;};
  auto task=makeTask(),other=makeTask();auto shot=bbl::create_compute_one_shot(task),second=bbl::create_compute_one_shot(other);
  auto first=shot->completion;assert(shot->generation==1&&shot->armed&&task->execution_enabled&&bbl::arm_compute_one_shot(shot)==first);
- rejects([&]{(void)bbl::create_compute_one_shot(task);},"#883");
+ rejects([&]{(void)bbl::create_compute_one_shot(task);},"#938");
  auto oldRecord=task->one_shot_recorded;
  auto encoder=std::make_shared<bbl::pal::ComputeCommandEncoder>(device);task->one_shot_recorded(encoder);task->one_shot_recorded(encoder);other->one_shot_recorded(encoder);
  engine->gpu_task_timer_resolve(encoder,true);assert(!shot->armed&&!task->execution_enabled&&!second->armed&&first.pending()&&device->pending.size()==1);
@@ -74,7 +74,7 @@ bbl::js::Promise<bbl::js::PromiseVoid> checks(bbl::pal::EventLoop& loop,bool& do
  rejected=false;try{(void)co_await pending;}catch(const std::exception& error){rejected=std::string(error.what())=="ComputeOneShot was disposed before submission.";}assert(rejected);
  rejected=false;try{(void)co_await bbl::arm_compute_one_shot(shot);}catch(const std::exception& error){rejected=std::string(error.what())=="ComputeOneShot has been disposed.";}assert(rejected);
  bbl::dispose_compute_one_shot(shot);bbl::dispose_compute_one_shot(second);assert(!engine->gpu_task_timer_resolve&&!engine->gpu_timer_resolve&&!bbl::find_compute_one_shot_state(engine));
- auto dead=makeTask();dead->disposed=true;rejects([&]{(void)bbl::create_compute_one_shot(dead);},"#882");
+ auto dead=makeTask();dead->disposed=true;rejects([&]{(void)bbl::create_compute_one_shot(dead);},"#937");
  auto detached=makeTask();auto detachedShot=bbl::create_compute_one_shot(detached);detached->disposed=true;
  rejected=false;try{(void)co_await bbl::arm_compute_one_shot(detachedShot);}catch(const std::exception& error){rejected=std::string(error.what())=="ComputeTask \\"spectrum\\" has been disposed.";}assert(rejected);
  detached->one_shot_dispose();

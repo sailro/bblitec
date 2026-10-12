@@ -831,6 +831,105 @@ export class LoweringContext {
     }
 
     /**
+     * Every assignment (`=`, `??=`) anywhere in the pinned sources whose
+     * target is the binding or property `name`, whatever the receiver.
+     */
+    public writersOf(name: string): readonly ts.BinaryExpression[] {
+        let index = writerIndexes.get(this);
+        if (!index) {
+            const built = new Map<string, ts.BinaryExpression[]>();
+            for (const modulePath of this.store.listSources()) {
+                if (!modulePath.startsWith("src/")) continue;
+                for (const write of findNodes(
+                    this.sourceFile(modulePath),
+                    (node): node is ts.BinaryExpression =>
+                        ts.isBinaryExpression(node) &&
+                        (node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken ||
+                            node.operatorToken.kind ===
+                                ts.SyntaxKind.QuestionQuestionEqualsToken),
+                )) {
+                    const target = unwrapExpression(write.left);
+                    const written = ts.isIdentifier(target)
+                        ? target.text
+                        : ts.isPropertyAccessExpression(target)
+                          ? target.name.text
+                          : undefined;
+                    if (written === undefined) continue;
+                    const writes = built.get(written) ?? [];
+                    writes.push(write);
+                    built.set(written, writes);
+                }
+            }
+            index = built;
+            writerIndexes.set(this, index);
+        }
+        return index.get(name) ?? [];
+    }
+
+    /**
+     * Assert that the hook `name` (a module binding or an opt-in property) is
+     * written, anywhere in the pin, only inside `installer` of `module`: a
+     * lowering may then bind it absent where no reached program calls the
+     * installer.
+     */
+    public assertWrittenOnlyBy(
+        name: string,
+        module: string,
+        installer: string,
+    ): void {
+        const owner = this.functionDeclaration(module, installer).declaration;
+        const writes = this.writersOf(name);
+        // By span, not node identity: a store may parse a module per read.
+        const inOwner = (write: ts.Node): boolean =>
+            write.getSourceFile().fileName === owner.getSourceFile().fileName &&
+            write.pos >= owner.pos &&
+            write.end <= owner.end;
+        if (!writes.length || !writes.every(inOwner))
+            this.contractError(
+                owner,
+                `Expected '${name}' written only by '${installer}'.`,
+            );
+    }
+
+    /**
+     * A pinned object literal of named numeric constants, by key: an enum the
+     * pin spells as a table, or a lookup over a null prototype (whose
+     * `__proto__: null` entry is the prototype, not a key).
+     */
+    public numericObject(
+        declaration: ts.Node,
+        variableName: string,
+    ): Map<string, number> {
+        const literal = this.objectInitializer(declaration, variableName);
+        const file = literal.getSourceFile();
+        const members = new Map<string, number>();
+        for (const member of literal.properties) {
+            const name =
+                ts.isPropertyAssignment(member) &&
+                (ts.isIdentifier(member.name) ||
+                    ts.isStringLiteral(member.name))
+                    ? member.name.text
+                    : undefined;
+            if (name === undefined || !ts.isPropertyAssignment(member))
+                return this.contractError(
+                    member,
+                    `Expected ${variableName} members to be named numeric properties.`,
+                );
+            if (name === "__proto__") {
+                this.assertExpressionShape(
+                    member.initializer,
+                    "null",
+                    `${variableName} null prototype`,
+                );
+                continue;
+            }
+            members.set(name, this.numericValue(member.initializer, file));
+        }
+        return members;
+    }
+
+    /**
      * The module and export a registry arm resolves to: `return (await
      * import("./x.js")).name`, or the same awaited access wrapped in an
      * arrow the registry calls on demand. Two pinned registries (node
@@ -1656,6 +1755,11 @@ export class LoweringContext {
 }
 
 let sharedPinned: LoweringContext | undefined;
+/** `LoweringContext.writersOf`'s index, one per context's sources. */
+const writerIndexes = new WeakMap<
+    LoweringContext,
+    ReadonlyMap<string, ts.BinaryExpression[]>
+>();
 
 /**
  * The one context a process reads pinned facts through outside a scene's
