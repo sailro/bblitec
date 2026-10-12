@@ -640,12 +640,11 @@ void window_location_set_search(const std::string& value) {
     window_location_reload();
 }
 void window_location_assign(const std::string& target, const std::string& current) {
-    const js::Url document(current);
-    const js::Url destination(target, &document);
-    if (destination.protocol() != document.protocol() ||
-        destination.username() != document.username() ||
-        destination.password() != document.password() || destination.host() != document.host() ||
-        destination.pathname() != document.pathname())
+    const js::Url page(current);
+    const js::Url destination(target, &page);
+    if (destination.protocol() != page.protocol() || destination.username() != page.username() ||
+        destination.password() != page.password() || destination.host() != page.host() ||
+        destination.pathname() != page.pathname())
         throw js::make_dom_exception("location.assign navigates only within this document by "
                                      "its query; " +
                                          destination.href() + " is another document.",
