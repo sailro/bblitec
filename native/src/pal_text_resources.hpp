@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "pal_gpu_lease_retirement.hpp"
 #include "pal_text_capture.hpp"
 
 namespace bbl::pal {
@@ -141,33 +142,5 @@ inline TextBindingRole text_binding_role(std::string_view name) {
         return TextBindingRole::styles;
     throw std::runtime_error("Unmapped text shader resource: " + std::string(name));
 }
-
-/** Source text owners may outlive a renderer run; retire their device leases first. */
-class TextResourceRetirement {
-public:
-    template <class Resource> void track(const std::shared_ptr<Resource>& resource) {
-        std::erase_if(resources_, [](const Entry& entry) { return entry.resource.expired(); });
-        resources_.push_back({resource, [](const std::shared_ptr<void>& value) {
-                                  std::static_pointer_cast<Resource>(value)->retire();
-                              }});
-    }
-
-    void retire() noexcept {
-        for (const auto& entry : resources_) {
-            if (const auto value = entry.resource.lock())
-                entry.release(value);
-        }
-        resources_.clear();
-    }
-
-    std::size_t tracked_resource_count() const noexcept { return resources_.size(); }
-
-private:
-    struct Entry {
-        std::weak_ptr<void> resource;
-        void (*release)(const std::shared_ptr<void>&);
-    };
-    std::vector<Entry> resources_;
-};
 
 } // namespace bbl::pal

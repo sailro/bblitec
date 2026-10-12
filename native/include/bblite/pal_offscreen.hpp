@@ -132,7 +132,7 @@ struct OffscreenDevice : GpuDevice {
         throw std::runtime_error("This device does not provide compute texture mipmaps.");
     }
     virtual std::unique_ptr<OffscreenCompletion>
-    on_submitted_work_done(std::function<void(std::exception_ptr)>) {
+    notify_submitted_work_done(std::function<void(std::exception_ptr)>) {
         throw std::runtime_error("This device does not provide a GPU completion fence.");
     }
 

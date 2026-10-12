@@ -178,7 +178,7 @@ struct SdlOffscreenDevice final : OffscreenDevice {
     }
 #endif
     std::unique_ptr<OffscreenCompletion>
-    on_submitted_work_done(std::function<void(std::exception_ptr)> complete) override {
+    notify_submitted_work_done(std::function<void(std::exception_ptr)> complete) override {
         return std::make_unique<SdlSubmissionCompletion>(device, std::move(complete));
     }
     SDL_GPUDevice* device;

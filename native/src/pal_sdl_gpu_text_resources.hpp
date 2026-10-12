@@ -14,7 +14,7 @@ namespace bbl::pal {
 
 struct SdlTextDevice {
     SDL_GPUDevice* device = nullptr;
-    TextResourceRetirement resources;
+    GpuLeaseRetirement resources;
     TextGpuCapture capture;
 
     void retire() noexcept {

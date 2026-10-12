@@ -16,7 +16,7 @@ namespace bbl::pal {
 struct DawnTextDevice {
     WGPUDevice device = nullptr;
     WGPUQueue queue = nullptr;
-    TextResourceRetirement resources;
+    GpuLeaseRetirement resources;
     TextGpuCapture capture;
 
     void retire() noexcept {

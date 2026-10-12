@@ -32,8 +32,8 @@ inline GpuCompletion submitted_gpu_work(const std::shared_ptr<OffscreenDevice>& 
     try {
         if (!device)
             throw std::runtime_error("Engine has no GPU device.");
-        pending->operation =
-            device->on_submitted_work_done([inbox = loop.inbox(), id](std::exception_ptr error) {
+        pending->operation = device->notify_submitted_work_done(
+            [inbox = loop.inbox(), id](std::exception_ptr error) {
                 inbox->post(std::make_unique<Completion>(id, std::move(error)));
             });
     } catch (...) {

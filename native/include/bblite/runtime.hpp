@@ -177,6 +177,8 @@ struct EngineOptions {
     /** Zero retains the generated default; source runtime choices store one or four. */
     std::uint32_t msaa_samples = 0;
     double max_device_pixel_ratio = std::numeric_limits<double>::infinity();
+    /** `requiredLimits` the engine's `requestDevice` passes, by WebGPU limit name. */
+    std::vector<std::pair<std::string, double>> required_limits;
 };
 
 /** Browser-neutral keyboard data delivered by the platform event loop. */
