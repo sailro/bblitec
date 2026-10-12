@@ -26,7 +26,8 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
 
 ## Integration
 
-- TypeScript owns live controls; reviewed `ui/*.json` companions or an HTML page describe static host chrome.
+- TypeScript owns live controls; reviewed `ui/*.json` companions (elements, interleaved text nodes and
+  bounded style rules) or an HTML page describe static host chrome.
 - An HTML page (`bblitec page.html [--site-root <dir>]`) is parsed by Chromium; its markup, text, attributes and
   `<style>` sheets are the host, and its one module script names the entry. `/` paths resolve beneath the site root
   (the page's directory by default).
