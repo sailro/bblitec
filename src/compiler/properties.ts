@@ -53,6 +53,7 @@ import {
 import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
+import { webPlatformProperty } from "./web-platform.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
@@ -2591,6 +2592,12 @@ export class PropertyAccessLowerer {
             expression.name.text,
         );
         if (httpProperty) return httpProperty;
+        const platformProperty = webPlatformProperty(
+            this.context.dataLowerer,
+            owner,
+            expression.name.text,
+        );
+        if (platformProperty) return platformProperty;
         if (
             owner.kind === "json-null" &&
             (expression.questionDotToken ||

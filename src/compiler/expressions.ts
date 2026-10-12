@@ -113,6 +113,7 @@ import {
     compileNumberLocaleString,
 } from "./locale.js";
 import { compileSearchParams } from "./search-params.js";
+import { compileWebPlatformNew } from "./web-platform.js";
 import { compileHttpFunction, compileHttpCall } from "./http.js";
 import { compileWindowServiceCall } from "./window-events.js";
 import { CompileError } from "./compile-error.js";
@@ -1081,6 +1082,11 @@ export class ExpressionLowerer {
                 ? undefined
                 : compileSearchParams(this.context.dataLowerer, unwrapped);
             if (query) return query;
+            const platform = compileWebPlatformNew(
+                this.context.dataLowerer,
+                unwrapped,
+            );
+            if (platform) return platform;
             const audio = compileAudioConstructor(this.context, unwrapped);
             if (audio) return audio;
             const browserFile = compileBrowserFileConstructor(

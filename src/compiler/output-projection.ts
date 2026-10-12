@@ -561,6 +561,8 @@ interface MainCppProjection {
     deferredCapabilitiesReached?: boolean;
     windowStorageReached?: boolean;
     responseStorageReached?: boolean;
+    /** Header-only web platform storage the program reaches (`bblite/<name>.hpp`). */
+    webPlatformHeaders?: readonly string[];
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     imageDecodeReached: boolean;
     runtimeMeshProfiles?: boolean;
@@ -762,6 +764,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("platform:packaged-fetch")
             ? "#include <bblite/pal_packaged_fetch.hpp>\n"
             : "") +
+        (projection.webPlatformHeaders ?? [])
+            .map((header) => `#include <bblite/${header}.hpp>\n`)
+            .join("") +
         (features.includes("storage:local")
             ? "#include <bblite/js_storage.hpp>\n"
             : "") +

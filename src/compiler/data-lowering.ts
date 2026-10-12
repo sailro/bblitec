@@ -89,6 +89,7 @@ import {
     type SlotStep,
 } from "./numeric-slot-storage.js";
 import { httpResponseProperty } from "./http.js";
+import { webPlatformProperty } from "./web-platform.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
 import { gpuValue } from "./gpu-value.js";
 import {
@@ -4921,6 +4922,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (exported) return exported;
         const http = httpResponseProperty(this, owner, property);
         if (http) return http;
+        const platform = webPlatformProperty(this, owner, property);
+        if (platform) return platform;
         const gpu = gpuAdapterProperty(this, owner, property);
         if (gpu) return gpu;
         if (owner.dataType?.kind === "storage") {

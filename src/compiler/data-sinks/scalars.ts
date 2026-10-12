@@ -467,6 +467,14 @@ export const scalarsSinks: DataSinkOperations<
     | "deferred-platform-object"
     | "search-params"
     | "http-response"
+    | "http-headers"
+    | "byte-stream"
+    | "byte-stream-reader"
+    | "byte-read-result"
+    | "abort-controller"
+    | "abort-signal"
+    | "url"
+    | "image-bitmap"
     | "gpu-adapter"
     | "gpu"
     | "gpu-adapter-info"
@@ -599,6 +607,14 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     "gpu-adapter": opaqueSink,
+    "http-headers": opaqueSink,
+    "byte-stream": opaqueSink,
+    "byte-stream-reader": opaqueSink,
+    "byte-read-result": opaqueSink,
+    "abort-controller": opaqueSink,
+    "abort-signal": opaqueSink,
+    url: opaqueSink,
+    "image-bitmap": opaqueSink,
     gpu: sameKindSink("gpu"),
     file: opaqueSink,
     blob: opaqueSink,

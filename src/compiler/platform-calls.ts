@@ -1,3 +1,4 @@
+import { compileWebPlatformCall } from "./web-platform.js";
 import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
@@ -226,6 +227,8 @@ export class PlatformCalls {
 
     /** Platform-backed browser APIs that remain ordinary expression values. */
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
+        const web = compileWebPlatformCall(this.context, call);
+        if (web) return web;
         if (this.emitPlatformEventListener(call))
             return { kind: "void", cpp: "" };
         const styled = computedStyleElement(this.context, call);
