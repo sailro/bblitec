@@ -57,16 +57,17 @@ const Native& sdl_compute_resource(const std::shared_ptr<Base>& value) {
         throw std::runtime_error("Compute resource belongs to a different backend.");
     return *native;
 }
-inline std::shared_ptr<ComputePipeline>
-create_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const ComputePipelineDescriptor& source) {
-    const auto& module = sdl_compute_resource<SdlComputeShaderModule>(source.compute.module);
+/** A compute stage compiled at generation: `<artifact>` and its `.slots` sidecar. */
+inline std::shared_ptr<SdlComputePipeline>
+load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact,
+                              const std::string& entry_point) {
     const std::string override = environment_variable("BBLITE_GPU_SHADER_DIR");
     const std::string root =
         override.empty() ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR) : override;
     auto result = std::make_shared<SdlComputePipeline>();
     result->device = device;
     const auto supported = SDL_GetGPUShaderFormats(device);
-    std::string extension, entry = source.compute.entry_point;
+    std::string extension, entry = entry_point;
     if (supported & SDL_GPU_SHADERFORMAT_DXIL) {
         result->format = SDL_GPU_SHADERFORMAT_DXIL;
         extension = ".dxil";
@@ -79,8 +80,8 @@ create_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const ComputePipelineDesc
         entry = "main0";
     } else
         throw std::runtime_error("SDL compute has no supported shader format.");
-    const auto code = read_binary_file(join_path(root, module.artifact + extension));
-    const auto metadata = read_binary_file(join_path(root, module.artifact + ".slots"));
+    const auto code = read_binary_file(join_path(root, artifact + extension));
+    const auto metadata = read_binary_file(join_path(root, artifact + ".slots"));
     std::istringstream input(std::string(metadata.begin(), metadata.end()));
     SDL_GPUComputePipelineCreateInfo info{};
     std::string line;
@@ -134,6 +135,11 @@ create_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const ComputePipelineDesc
             gpu_error("SDL_CreateGPUSampler compute texture load");
     }
     return result;
+}
+inline std::shared_ptr<ComputePipeline>
+create_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const ComputePipelineDescriptor& source) {
+    const auto& module = sdl_compute_resource<SdlComputeShaderModule>(source.compute.module);
+    return load_sdl_gpu_compute_pipeline(device, module.artifact, source.compute.entry_point);
 }
 inline std::shared_ptr<ComputeBindGroup>
 create_sdl_gpu_compute_bind_group(const ComputeBindGroupDescriptor& source) {

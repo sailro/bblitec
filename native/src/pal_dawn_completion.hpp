@@ -1,9 +1,12 @@
 #pragma once
 #include <bblite/pal_offscreen.hpp>
 #include <bblite/joining_thread.hpp>
+#include "pal_dawn_string.hpp"
 #include <webgpu/webgpu.h>
 #include <atomic>
 #include <limits>
+#include <memory>
+#include <stdexcept>
 #include <type_traits>
 
 namespace bbl::pal {
@@ -37,4 +40,45 @@ struct DawnFutureCompletion final : OffscreenCompletion {
                       std::runtime_error("Dawn asynchronous GPU completion wait failed.")));
           }) {}
 };
+
+/** `queue.onSubmittedWorkDone()`: `complete` runs once the queue's earlier submissions finish. */
+inline std::unique_ptr<OffscreenCompletion>
+dawn_queue_work_done(WGPUInstance instance, WGPUQueue queue,
+                     std::function<void(std::exception_ptr)> complete) {
+    auto state = std::make_shared<DawnCompletionState>(std::move(complete));
+    WGPUQueueWorkDoneCallbackInfo callback = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+    callback.mode = WGPUCallbackMode_WaitAnyOnly;
+    callback.userdata1 = new std::shared_ptr<DawnCompletionState>(state);
+    callback.callback = [](WGPUQueueWorkDoneStatus status, WGPUStringView message, void* userdata,
+                           void*) {
+        const std::unique_ptr<std::shared_ptr<DawnCompletionState>> handler(
+            static_cast<std::shared_ptr<DawnCompletionState>*>(userdata));
+        (*handler)->deliver(status == WGPUQueueWorkDoneStatus_Success
+                                ? std::exception_ptr{}
+                                : std::make_exception_ptr(std::runtime_error(
+                                      "GPU queue completion failed: " + view_text(message))));
+    };
+    const auto future = wgpuQueueOnSubmittedWorkDone(queue, callback);
+    return std::make_unique<DawnFutureCompletion>(instance, future, std::move(state));
+}
+
+/** `buffer.mapAsync(READ, offset, size)`: `complete` runs once the range is mapped or failed. */
+inline std::unique_ptr<OffscreenCompletion>
+dawn_buffer_map_read(WGPUInstance instance, WGPUBuffer buffer, std::size_t offset,
+                     std::size_t count, std::function<void(std::exception_ptr)> complete) {
+    auto state = std::make_shared<DawnCompletionState>(std::move(complete));
+    WGPUBufferMapCallbackInfo callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+    callback.mode = WGPUCallbackMode_WaitAnyOnly;
+    callback.userdata1 = new std::shared_ptr<DawnCompletionState>(state);
+    callback.callback = [](WGPUMapAsyncStatus status, WGPUStringView message, void* data, void*) {
+        const std::unique_ptr<std::shared_ptr<DawnCompletionState>> owner(
+            static_cast<std::shared_ptr<DawnCompletionState>*>(data));
+        (*owner)->deliver(status == WGPUMapAsyncStatus_Success
+                              ? std::exception_ptr{}
+                              : std::make_exception_ptr(std::runtime_error(
+                                    "Dawn buffer mapping failed: " + view_text(message))));
+    };
+    const auto future = wgpuBufferMapAsync(buffer, WGPUMapMode_Read, offset, count, callback);
+    return std::make_unique<DawnFutureCompletion>(instance, future, std::move(state));
+}
 } // namespace bbl::pal

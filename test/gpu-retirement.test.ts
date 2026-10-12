@@ -156,7 +156,7 @@ struct Device final : bbl::pal::OffscreenDevice {
     std::thread::id owner = std::this_thread::get_id();
     int calls = 0;
     std::unique_ptr<bbl::pal::OffscreenCompletion>
-    on_submitted_work_done(std::function<void(std::exception_ptr)> done) override {
+    notify_submitted_work_done(std::function<void(std::exception_ptr)> done) override {
         assert(std::this_thread::get_id()==owner); ++calls;
         return std::make_unique<Pending>(gate, std::move(done));
     }
@@ -226,7 +226,7 @@ struct Device final : pal::OffscreenDevice {
         ~Pending() override { events.push_back("joined"); }
     };
     std::unique_ptr<pal::OffscreenCompletion>
-    on_submitted_work_done(std::function<void(std::exception_ptr)> done) override {
+    notify_submitted_work_done(std::function<void(std::exception_ptr)> done) override {
         events.push_back("fence");
         if (mode != 2 && mode != 4)
             done(mode == 1 ? std::make_exception_ptr(std::runtime_error("lost")) : nullptr);

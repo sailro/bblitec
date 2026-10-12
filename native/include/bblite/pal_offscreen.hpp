@@ -74,6 +74,8 @@ struct OffscreenDevice : GpuDevice {
     create_compute_shader_module(const ComputeShaderModuleDescriptor&, const std::string&) {
         throw std::runtime_error("This device does not provide compute shader modules.");
     }
+    // The WebGPU subset's own overload stays visible beside the compute tasks'.
+    using GpuDevice::create_compute_pipeline;
     virtual std::shared_ptr<ComputePipeline>
     create_compute_pipeline(const ComputePipelineDescriptor&) {
         throw std::runtime_error("This device does not provide compute pipelines.");
@@ -132,7 +134,7 @@ struct OffscreenDevice : GpuDevice {
         throw std::runtime_error("This device does not provide compute texture mipmaps.");
     }
     virtual std::unique_ptr<OffscreenCompletion>
-    on_submitted_work_done(std::function<void(std::exception_ptr)>) {
+    notify_submitted_work_done(std::function<void(std::exception_ptr)>) {
         throw std::runtime_error("This device does not provide a GPU completion fence.");
     }
 

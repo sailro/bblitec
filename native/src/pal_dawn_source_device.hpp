@@ -40,7 +40,8 @@ inline void bind_dawn_source_device(Engine& engine, const DeviceOptions& options
     WGPULimits limits = WGPU_LIMITS_INIT;
     if (wgpuDeviceGetLimits(device.device, &limits) != WGPUStatus_Success ||
         options.max_vertex_attributes > limits.maxVertexAttributes ||
-        options.max_color_attachment_bytes_per_sample > limits.maxColorAttachmentBytesPerSample)
+        options.max_color_attachment_bytes_per_sample > limits.maxColorAttachmentBytesPerSample ||
+        !dawn_limits_satisfy(limits, gpu_required_limits(engine.options.required_limits)))
         throw std::runtime_error("The engine GPU device limits do not satisfy this renderer.");
     if (active_window_run && adapter->window_resources)
         active_window_run->use_resources(adapter->window_resources);

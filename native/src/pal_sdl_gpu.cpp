@@ -42,6 +42,9 @@
 #if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
 #include "pal_sdl_gpu_source_device.hpp"
 #endif
+#if BBLITE_GPU_RETIREMENT
+#include "pal_sdl_gpu_webgpu.hpp"
+#endif
 #include "pal_billboard_order.hpp"
 #if BBLITE_COMPUTE_FRAME_GRAPH
 #include <bblite/pal_compute_frame_graph.hpp>
@@ -2099,6 +2102,11 @@ public:
         }
 #endif
         current_frame().graph = !scene.tasks.empty();
+#if BBLITE_GPU_RETIREMENT
+        if (current_frame().graph && !scene.state->external_renderables.empty())
+            throw std::runtime_error("External renderables draw in the scene's own pass; a scene "
+                                     "with render tasks refuses them.");
+#endif
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         current_frame().ui_frame = &record_ui_rml_frame(*data_.resources.ui_runtime, width, height);
         current_frame().present_swapchain = swapchain;
@@ -3756,6 +3764,43 @@ public:
             }
             depth_info.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
             depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+#if BBLITE_GPU_RETIREMENT
+            // External renderables bind to this pass's target, update, and encode
+            // their batches' compute into the frame's command buffer before the pass.
+            GpuHandle external_group;
+            if (!scene.state->external_renderables.empty() || !state.external_pass.empty()) {
+                auto& webgpu = sdl_engine_webgpu_device(engine, state.device);
+                if (!state.external_scene_layout) {
+                    state.external_scene_layout = SdlWebGpuDevice::renderer_bind_group_layout();
+                    state.external_scene_group =
+                        SdlWebGpuDevice::renderer_bind_group(state.external_scene_layout);
+                }
+                const bool other_transparent =
+                    !render_plan.draw_lists.transparent.commands.empty() ||
+                    !scene.splat_meshes.empty() || !scene.state->text_renderables.empty() ||
+                    !scene.state->billboard_renderables.empty() ||
+                    !scene.depth_hosted_sprite_layers.empty();
+                state.external_pass.follow(
+                    engine, scene, state.external_scene_layout,
+                    GpuRenderTargetSignature{
+                        sdl_webgpu_format_name(state.frame_color_format),
+                        sdl_webgpu_format_name(state.depth_format),
+                        {},
+                        static_cast<double>(gpu_sample_count_value(state.sample_count))},
+                    other_transparent);
+                if (!state.external_pass.empty()) {
+                    const auto frame = webgpu.frame_command_encoder();
+                    state.external_pass.prepare(
+                        engine,
+                        GpuDrawUpdateContext{
+                            static_cast<double>(width), static_cast<double>(height),
+                            camera ? std::optional<CameraHandle>(scene.camera) : std::nullopt},
+                        frame);
+                    frame->encode(command);
+                    external_group = state.external_scene_group;
+                }
+            }
+#endif
             SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info)};
             set_pass_camera_viewport(pass, scene, engine, camera, width, height);
             bool scene_matrix_bound = true;
@@ -4123,6 +4168,14 @@ public:
                         record_splat_pass(command, pass, engine, splat, frame_view,
                                           frame_projection, frame_camera_position,
                                           static_cast<double>(width), static_cast<double>(height));
+                    }
+#endif
+#if BBLITE_GPU_RETIREMENT
+                    if (external_group) {
+                        state.external_pass.draw(SdlWebGpuDevice::borrow_render_pass(command, pass),
+                                                 external_group);
+                        bound_pipeline = nullptr;
+                        scene_matrix_bound = false;
                     }
 #endif
                     break;

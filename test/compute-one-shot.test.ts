@@ -21,7 +21,7 @@ test("one-shot source preserves armed identity, submission generations, GPU comp
 #include <cassert>
 struct Device final:bbl::pal::OffscreenDevice {
  std::vector<std::function<void(std::exception_ptr)>> pending;
- std::unique_ptr<bbl::pal::OffscreenCompletion> on_submitted_work_done(std::function<void(std::exception_ptr)> callback)override {pending.push_back(std::move(callback));return std::make_unique<bbl::pal::OffscreenCompletion>();}
+ std::unique_ptr<bbl::pal::OffscreenCompletion> notify_submitted_work_done(std::function<void(std::exception_ptr)> callback)override {pending.push_back(std::move(callback));return std::make_unique<bbl::pal::OffscreenCompletion>();}
  void finish(std::exception_ptr error={}){auto callbacks=std::move(pending);pending.clear();for(auto& callback:callbacks)callback(error);}
 };
 template<class F> void rejects(F callback,const std::string& expected){bool failed=false;try{callback();}catch(const std::exception& error){failed=error.what()==expected;}assert(failed);}

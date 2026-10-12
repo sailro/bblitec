@@ -108,6 +108,26 @@ Interactive desktop runs use SDL main callbacks, including iteration during Win3
 Suspended frame state owns renderer resources until shutdown. Capture, benchmark and mobile runs
 use explicit iteration; Worker renderers retain their realm RAF scheduling.
 
+## WebGPU subset devices
+
+`DawnWebGpuDevice` maps `gpu.hpp`'s WebGPU subset one to one. `SdlWebGpuDevice` emulates it: a runtime
+WGSL module resolves to the stages generation compiled under `wgsl-<text digest>.<entry>.<stage>`
+(`src/wgsl-artifacts.ts`); bind groups keep
+their entries and each dispatch or draw binds the resources its stage's sidecar names, at the group's
+dynamic offsets; storage buffers bind whole; uniform buffers are CPU bytes pushed when a command is
+encoded; command encoders record and encode at submission (or before a renderer's passes); each dispatch
+is its own compute pass; indirect dispatch reads a copy of its arguments, since D3D12 holds a buffer
+bound as storage in a shader-resource state; `clearBuffer` uploads zeros; `MAP_READ` buffers are
+download transfer buffers mapped after a fence. Device limits are WebGPU's defaults raised by the
+engine's `requiredLimits`; SDL_GPU admits 32-bit sizes.
+
+In builds reaching GPU retirement, a scene's own pass draws its external renderables
+(`gpu_renderable.hpp`, `pal_external_renderables.hpp`) with render-task-base.ts's protocol: bound per
+target signature and published renderable version, prepared before the pass (batch reset, update,
+batch flush recorded into the frame encoder), drawn after the transparent bucket with group 0 bound
+(the pinned frame group; an empty one without pinned materials). Scenes with render tasks or other
+transparent renderables refuse them, as do opaque ones.
+
 ## Temporal post-process transport
 
 Each TAA source task owns scratch, uniforms and history. Hooks run once in source order.

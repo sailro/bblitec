@@ -131,6 +131,40 @@ using DawnCommandEncoder = DawnOwned<WGPUCommandEncoder, wgpuCommandEncoderRelea
 using DawnCommandBuffer = DawnOwned<WGPUCommandBuffer, wgpuCommandBufferRelease>;
 using DawnRenderPass = DawnOwned<WGPURenderPassEncoder, wgpuRenderPassEncoderRelease>;
 
+/**
+ * Raises a device request's limits to an engine's `requiredLimits`
+ * (`gpu_required_limits`); false when every limit keeps its default.
+ */
+inline bool request_dawn_limits(WGPULimits& limits, const GpuSupportedLimits& required) {
+    bool raised = false;
+    if (required.max_buffer_size > gpu_default_limits.max_buffer_size) {
+        limits.maxBufferSize = static_cast<std::uint64_t>(required.max_buffer_size);
+        raised = true;
+    }
+    if (required.max_storage_buffer_binding_size >
+        gpu_default_limits.max_storage_buffer_binding_size) {
+        limits.maxStorageBufferBindingSize =
+            static_cast<std::uint64_t>(required.max_storage_buffer_binding_size);
+        raised = true;
+    }
+    if (required.max_compute_workgroups_per_dimension >
+        gpu_default_limits.max_compute_workgroups_per_dimension) {
+        limits.maxComputeWorkgroupsPerDimension =
+            gpu_u32(static_cast<std::size_t>(required.max_compute_workgroups_per_dimension));
+        raised = true;
+    }
+    return raised;
+}
+
+/** Whether a device's limits satisfy an engine's `requiredLimits`. */
+inline bool dawn_limits_satisfy(const WGPULimits& limits, const GpuSupportedLimits& required) {
+    return static_cast<double>(limits.maxBufferSize) >= required.max_buffer_size &&
+           static_cast<double>(limits.maxStorageBufferBindingSize) >=
+               required.max_storage_buffer_binding_size &&
+           static_cast<double>(limits.maxComputeWorkgroupsPerDimension) >=
+               required.max_compute_workgroups_per_dimension;
+}
+
 inline void submit_dawn_command(WGPUQueue queue, WGPUCommandBuffer command) {
     wgpuQueueSubmit(queue, 1, &command);
 }

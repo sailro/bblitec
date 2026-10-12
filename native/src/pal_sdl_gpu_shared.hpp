@@ -774,6 +774,8 @@ public:
         write_buffer(buffer, destination_offset, data, size, false);
     }
 
+    // The queue's `submit(commandBuffers)` stays visible beside the batch's own.
+    using SdlGpuWriteDevice::submit;
     void submit() {
         if (uploads_.empty())
             return;

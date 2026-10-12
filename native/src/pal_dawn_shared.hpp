@@ -338,6 +338,7 @@ struct DawnOffscreenDevice final : OffscreenDevice {
                                  const std::string&) override {
         return create_dawn_compute_shader_module(device, descriptor);
     }
+    using OffscreenDevice::create_compute_pipeline;
     std::shared_ptr<ComputePipeline>
     create_compute_pipeline(const ComputePipelineDescriptor& descriptor) override {
         return create_dawn_compute_pipeline(device, descriptor);
@@ -389,22 +390,8 @@ struct DawnOffscreenDevice final : OffscreenDevice {
     }
 #endif
     std::unique_ptr<OffscreenCompletion>
-    on_submitted_work_done(std::function<void(std::exception_ptr)> complete) override {
-        auto state = std::make_shared<DawnCompletionState>(std::move(complete));
-        WGPUQueueWorkDoneCallbackInfo callback = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
-        callback.mode = WGPUCallbackMode_WaitAnyOnly;
-        callback.userdata1 = new std::shared_ptr<DawnCompletionState>(state);
-        callback.callback = [](WGPUQueueWorkDoneStatus status, WGPUStringView message,
-                               void* userdata, void*) {
-            const std::unique_ptr<std::shared_ptr<DawnCompletionState>> handler(
-                static_cast<std::shared_ptr<DawnCompletionState>*>(userdata));
-            (*handler)->deliver(status == WGPUQueueWorkDoneStatus_Success
-                                    ? std::exception_ptr{}
-                                    : std::make_exception_ptr(std::runtime_error(
-                                          "GPU queue completion failed: " + view_text(message))));
-        };
-        const auto future = wgpuQueueOnSubmittedWorkDone(queue, callback);
-        return std::make_unique<DawnFutureCompletion>(instance, future, std::move(state));
+    notify_submitted_work_done(std::function<void(std::exception_ptr)> complete) override {
+        return dawn_queue_work_done(instance, queue, std::move(complete));
     }
     const WGPUInstance instance;
     const WGPUAdapter adapter;
@@ -619,7 +606,8 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
         if (wgpuDeviceGetLimits(shared->device, &limits) != WGPUStatus_Success ||
             options.max_vertex_attributes > limits.maxVertexAttributes ||
             options.max_color_attachment_bytes_per_sample >
-                limits.maxColorAttachmentBytesPerSample) {
+                limits.maxColorAttachmentBytesPerSample ||
+            !dawn_limits_satisfy(limits, gpu_required_limits(engine_options.required_limits))) {
             dawn_error("Shared offscreen device limits do not satisfy this renderer.");
         }
         // Immutable device/queue handles may cross realms. Every engine's
@@ -833,7 +821,9 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
     device_descriptor.requiredFeatureCount = device_features.size();
     device_descriptor.requiredFeatures = device_features.data();
     WGPULimits required_limits = WGPU_LIMITS_INIT;
-    bool needs_limits = false;
+    // `requestDevice({requiredLimits})`: an adapter below them fails creation.
+    bool needs_limits =
+        request_dawn_limits(required_limits, gpu_required_limits(engine_options.required_limits));
     if (options.max_vertex_attributes > 0) {
         required_limits.maxVertexAttributes = options.max_vertex_attributes;
         needs_limits = true;
