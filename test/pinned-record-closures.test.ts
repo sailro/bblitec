@@ -262,17 +262,27 @@ int main() {
 });
 
 test("pinned closures refuse what their environment cannot represent", () => {
-    // A closure over a binding declared inside a block would need an
-    // environment per block execution.
+    // A closure over a for-of binding: no block environment holds it.
     assert.throws(
         () =>
             lowered(
                 SOURCE.replace(
                     "    const probe: Probe = {",
-                    "    if (seed > 0) { const inner = seed; log.push((() => inner)()); }\n    const probe: Probe = {",
+                    "    for (const inner of log) log.push((() => inner)());\n    const probe: Probe = {",
                 ),
             ),
-        /captures a block-scoped binding/,
+        /captures a binding no block scope holds/,
+    );
+    // A closure over a case clause's binding.
+    assert.throws(
+        () =>
+            lowered(
+                SOURCE.replace(
+                    "    const probe: Probe = {",
+                    "    switch (seed) {\n        case 1:\n            break;\n        default:\n            const inner = seed;\n            log.push((() => inner)());\n    }\n    const probe: Probe = {",
+                ),
+            ),
+        /captures a binding no block scope holds/,
     );
     // A closure declaring parameters its callers never pass.
     assert.throws(

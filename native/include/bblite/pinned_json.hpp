@@ -28,6 +28,37 @@ namespace bbl::pinned {
     return !value.is_undefined() && !value.is_null();
 }
 
+/** An error passed where `unknown` is taken: the dynamic value holding it. */
+[[nodiscard]] inline js::JsonValue json_error(const js::Error& error) {
+    const std::exception_ptr thrown = error;
+    if (!thrown)
+        return {};
+    try {
+        std::rethrow_exception(thrown);
+    } catch (const ThrownValue& value) {
+        return value.payload ? *std::static_pointer_cast<const js::JsonValue>(value.payload)
+                             : js::JsonValue{};
+    } catch (...) {
+        return js::JsonValue::from_native(error);
+    }
+}
+
+/** `value instanceof Error` over a dynamic value. */
+[[nodiscard]] inline bool json_is_error(const js::JsonValue& value) {
+    return value.instance_of<js::Error>();
+}
+
+/**
+ * A dynamic value thrown or rejected with (`throw reason`): the error it
+ * holds, or the value itself as a thrown non-Error.
+ */
+[[nodiscard]] inline js::Error error_of(const js::JsonValue& value) {
+    if (json_is_error(value))
+        return value.asserted_instance<js::Error>();
+    return std::make_exception_ptr(
+        ThrownValue(value.is_undefined() ? nullptr : std::make_shared<const js::JsonValue>(value)));
+}
+
 /** A template literal's substitution of a dynamic value: its ToString. */
 [[nodiscard]] inline std::string template_part(const js::JsonValue& value) {
     return value.to_string();
