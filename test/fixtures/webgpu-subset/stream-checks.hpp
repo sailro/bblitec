@@ -540,6 +540,14 @@ inline js::Promise<js::PromiseVoid> check_mapping(bbl::GpuDevice& device) {
     const auto words = values_of<std::uint32_t>(co_await read_back(device, created, 0, 32));
     require(words[0] == 0x11223344u && words[7] == 0x55667788u && words[1] == 0,
             "written ranges reach the buffer at unmap");
+    // Bytes no returned range covered keep WebGPU's zero initialization.
+    const auto partial = buffer(device, 32, BU::COPY_SRC, true);
+    js::TypedArray<std::uint32_t>(bbl::gpu_buffer_mapping(partial).get_mapped_range(8.0, 8.0))
+        .store(1, 0xabcdef01u);
+    bbl::gpu_buffer_mapping(partial).unmap();
+    const auto partial_words = values_of<std::uint32_t>(co_await read_back(device, partial, 0, 32));
+    require((partial_words == std::vector<std::uint32_t>{0, 0, 0, 0xabcdef01u, 0, 0, 0, 0}),
+            "an unreturned mapped range stays zero");
     const auto plain = buffer(device, 16, BU::COPY_DST | BU::STORAGE);
     bool rejected = false;
     try {

@@ -402,15 +402,19 @@ inline void encode_sdl_webgpu_copy(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* 
     static_cast<void>(owner);
 }
 
-inline void encode_sdl_webgpu_clear(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
-                                    const SdlWebGpuClear& clear) {
-    if (!clear.size)
+/** Zeroes `size` bytes from `offset`, uploading from the owner's zero bytes (at most 1 MiB). */
+inline void encode_sdl_webgpu_zeros(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
+                                    SDL_GPUBuffer* buffer, std::uint32_t offset,
+                                    std::uint32_t size) {
+    if (!size)
         return;
     auto* device = owner.live_device();
-    if (!owner.zeros || owner.zero_bytes < clear.size) {
+    const std::uint32_t capacity =
+        std::min<std::uint32_t>(std::max<std::uint32_t>(size, 4096), 1u << 20);
+    if (!owner.zeros || owner.zero_bytes < capacity) {
         SDL_GPUTransferBufferCreateInfo info{};
         info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        info.size = std::max<std::uint32_t>(clear.size, 4096);
+        info.size = capacity;
         auto zeros = owner.adopt<SdlWebGpuTransferLease>(SDL_CreateGPUTransferBuffer(device, &info),
                                                          "SDL_CreateGPUTransferBuffer clear");
         auto* mapped = SDL_MapGPUTransferBuffer(device, zeros->get(), false);
@@ -425,8 +429,16 @@ inline void encode_sdl_webgpu_clear(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer*
     if (!pass)
         gpu_error("SDL_BeginGPUCopyPass clear");
     const SDL_GPUTransferBufferLocation from{owner.zeros->get(), 0};
-    const SDL_GPUBufferRegion to{clear.buffer->gpu_buffer(), clear.offset, clear.size};
-    SDL_UploadToGPUBuffer(pass, &from, &to, false);
+    for (std::uint32_t done = 0; done < size;) {
+        const auto count = std::min(owner.zero_bytes, size - done);
+        const SDL_GPUBufferRegion to{buffer, offset + done, count};
+        SDL_UploadToGPUBuffer(pass, &from, &to, false);
+        done += count;
+    }
+}
+inline void encode_sdl_webgpu_clear(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
+                                    const SdlWebGpuClear& clear) {
+    encode_sdl_webgpu_zeros(owner, command, clear.buffer->gpu_buffer(), clear.offset, clear.size);
 }
 
 inline void encode_sdl_webgpu_dispatch(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
@@ -867,13 +879,14 @@ struct SdlWebGpuDevice : GpuDevice {
                                                                 "SDL_CreateGPUBuffer");
             if (descriptor.label)
                 SDL_SetGPUBufferName(device, buffer->buffer->get(), descriptor.label->c_str());
-            // WebGPU buffers start zeroed.
-            if (!descriptor.mapped_at_creation) {
-                GpuBufferUploadBatch uploads(device);
-                const std::vector<std::uint8_t> zeros(bytes, 0);
-                uploads.update(buffer->buffer->get(), 0, zeros.data(), zeros.size());
-                uploads.submit();
-            }
+            // WebGPU buffers start zeroed, mapped ones included: unmap writes only the
+            // ranges getMappedRange returned.
+            SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
+            if (!command)
+                gpu_error("SDL_AcquireGPUCommandBuffer buffer zeroes");
+            encode_sdl_webgpu_zeros(*owner, command, buffer->buffer->get(), 0, info.size);
+            if (!command.submit())
+                gpu_error("SDL_SubmitGPUCommandBuffer buffer zeroes");
         }
         if (descriptor.mapped_at_creation)
             buffer->mapping.map_at_creation(bytes);
