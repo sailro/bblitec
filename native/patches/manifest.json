@@ -282,6 +282,13 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0035-grid-form-controls.patch",
+      "purpose": "Form controls stretch as non-replaced grid items",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

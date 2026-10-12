@@ -1,0 +1,26 @@
+Lay out form controls as non-replaced grid items: a select, range or text input
+reports an intrinsic size but is not replaced content, so normal self-alignment
+stretches it as Chromium does; only replaced content (images, canvases) starts.
+
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -1,6 +1,7 @@
+ #include "FlexFormattingContext.h"
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../../Include/RmlUi/Core/Element.h"
++#include "../../../Include/RmlUi/Core/Elements/ElementFormControl.h"
+ #include "../../../Include/RmlUi/Core/ElementScroll.h"
+ #include "../../../Include/RmlUi/Core/Profiling.h"
+ #include "../../../Include/RmlUi/Core/Types.h"
+@@ -377,7 +378,9 @@
+ 		if (item.align_self == Style::AlignSelf::Auto)
+ 			item.align_self = static_cast<Style::AlignSelf>(static_cast<int>(computed_flex.align_items()) + 1);
+ 
+-		if (is_grid && element->IsReplaced()) {
++		// Form controls report intrinsic sizes but are not replaced elements:
++		// normal self-alignment stretches them, as it does in Chromium.
++		if (is_grid && element->IsReplaced() && !rmlui_dynamic_cast<ElementFormControl*>(element)) {
+ 			if (computed.justify_self() == Style::AlignSelf::Auto && !element_flex->GetLocalProperty(PropertyId::JustifyItems))
+ 				item.justify_self = Style::AlignSelf::Start;
+ 			if (computed.align_self() == Style::AlignSelf::Auto && !element_flex->GetLocalProperty(PropertyId::AlignItems))

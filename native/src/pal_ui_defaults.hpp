@@ -12,7 +12,8 @@ inline constexpr std::string_view ui_user_agent_css =
     "div,canvas{display:block;}\n"
     "details,summary{display:block;}\n"
     "summary{tab-index:auto;pointer-events:auto;cursor:pointer;}\n"
-    "details > summary:first-of-type{padding-left:1em;decorator:bbl-native-control-mark();}\n"
+    // Chromium's inside disclosure marker: a 0.66em symbol and 0.4em before the text.
+    "details > summary:first-of-type{padding-left:1.06em;decorator:bbl-native-control-mark();}\n"
     "summary *{focus:none;}\n"
     "details:not([open]) > :not(summary){display:none;}\n"
     "details:not([open]) > summary:not(:first-of-type){display:none;}\n"
@@ -54,7 +55,7 @@ inline constexpr std::string_view ui_user_agent_css =
     "input[type=color]:where(:bbl-dark-scheme){border-color:#6b6b6b;background-color:#6b6b6b;}\n"
     "input[type=color]:disabled{opacity:0.45;}\n"
     "select{display:inline-block;box-sizing:border-box;min-width:48px;height:auto;"
-    "padding:0 20px 0 3px;border-width:1px;border-color:#767676;border-radius:2px;"
+    "padding:0;border-width:1px;border-color:#767676;border-radius:2px;"
     "background-color:#ffffff;color:#000000;font-family:sans-serif;font-size:13.333333px;"
     "font-weight:normal;font-style:normal;line-height:1.1499;"
     "tab-index:auto;pointer-events:auto;nav-up:none;nav-down:none;}\n"
