@@ -1358,7 +1358,8 @@ export class BrowserErasure {
                 return true;
             }
             // Runtime web platform classes (`instanceof`, `new`) are native.
-            if (NATIVE_PLATFORM_CLASSES.has(global)) return false;
+            if (NATIVE_PLATFORM_CLASSES.has(global) && global !== "URL")
+                return false;
             const value = this.context.bindings.lookupOptional(unwrapped);
             const bound = value?.kind;
             // A FROZEN pure-2D particle binding has no native counterpart
