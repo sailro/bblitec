@@ -30,11 +30,18 @@ function encodedImageCodec(bytes: Buffer | undefined): string | undefined {
     )?.codec;
 }
 
+/**
+ * The image codecs a program links: those its packaged assets reach, and
+ * WebP for a run-time `createImageBitmap` decode (`image:runtime-decode`),
+ * whose bytes generation cannot see.
+ */
 export function reachedImageCodecs(
     outputPath: string,
     assets: readonly CompileAsset[],
+    features: readonly string[] = [],
 ): string[] {
     const reached = new Set<string>();
+    if (features.includes("image:runtime-decode")) reached.add("webp");
     for (const asset of assets) {
         const materialized = resolve(outputPath, "assets", asset.output);
         const bytes = existsSync(materialized)

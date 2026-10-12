@@ -188,17 +188,18 @@ test("deferred promise methods reject on the realm reaction queue", () => {
         `
         async function main():Promise<void>{
             let synchronous=true; let reactions=0;
-            const pending=new Blob(["payload"]).text();
+            const pending=document.exitFullscreen();
             const handled=pending.catch(error=>{
-                if(synchronous||!error.message.includes("dom:Blob.text"))throw new Error("rejection timing");
+                if(synchronous||!error.message.includes("dom:Document.exitFullscreen"))throw new Error("rejection timing");
                 ++reactions;
-                return "recovered";
             });
             synchronous=false;
             try{await pending;}catch{}
             await handled;
-            try{await new Blob(["payload"]).arrayBuffer();}catch{++reactions;}
+            try{await document.exitFullscreen();}catch{++reactions;}
             if(reactions!==2)throw new Error("rejections");
+            // Blob reads are native.
+            if(await new Blob(["payload"]).text()!=="payload")throw new Error("blob text");
             globalThis.close();
         }
         void main();
@@ -217,6 +218,7 @@ test("deferred promise methods reject on the realm reaction queue", () => {
         result.cpp +
             `
         namespace bbl::pal {
+        Engine& window_document_engine() { static Engine engine; return engine; }
         int run_window_application(WorkerEntry initialize, EngineOptions) {
             const js::RealmScope scope;
             EventLoop loop;

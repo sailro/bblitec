@@ -612,6 +612,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["AbortController", "dom", "abort-controller"],
     ["AbortSignal", "dom", "abort-signal"],
     ["URL", "dom", "url"],
+    ["ImageBitmap", "dom", "image-bitmap"],
     ["URLSearchParams", "dom", "search-params"],
     ["Date", "default", "date"],
     ["RegExp", "default", "regexp"],

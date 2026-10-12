@@ -96,8 +96,8 @@ test("refuses unsupported Blob parts and options by name", () => {
         /Blob option 'endings' is not lowered/,
     );
     refusal(
-        `const parts = ["x"]; const blob = new Blob(parts);`,
-        /Blob parts require an array literal/,
+        `const parts = [1, 2]; const blob = new Blob(parts);`,
+        /Blob parts require an array literal, or an array of strings, Uint8Array or ArrayBuffer values/,
     );
     refusal(
         `const blob = new Blob([new Float32Array([1])]);`,

@@ -127,9 +127,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
     ...[
         "Document.exitFullscreen",
         "Element.requestFullscreen",
-        "Blob.text",
-        "Blob.arrayBuffer",
-        "Blob.bytes",
         "HTMLMediaElement.play",
     ].map((api): Descriptor => ({ origin: "dom", api, timing: "reject" })),
     ...[

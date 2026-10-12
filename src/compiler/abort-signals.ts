@@ -210,6 +210,7 @@ export type WebPlatformCallContext = Pick<
     | "fail"
     | "libraryGlobal"
     | "options"
+    | "probeEmission"
     | "reachFeature"
     | "reachJsData"
     | "unwrap"

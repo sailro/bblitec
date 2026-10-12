@@ -157,6 +157,9 @@ Window object URLs share the document's lifetime, including before rendering-eng
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
 snapshot bytes/name before change dispatch; cancellation dispatches `cancel` and preserves the selection.
 File, Blob and FileList aliases retain identity through owned containers, callbacks and promise results.
+A Blob builds from an array literal or a run-time array of strings, Uint8Array or ArrayBuffer values (64 MiB bound),
+with a static or run-time type (lowercased; one with a non-printable character is empty); `text()`, `arrayBuffer()`
+and `bytes()` resolve copies in an application realm.
 FileList values retain immutable snapshots; only index zero is represented, with a missing file yielding undefined. Selections have a 256 MiB
 live cap and per-file limits. Drops count up to 4096 files and snapshot the first (64 MiB maximum). Completion may occur before click returns. FileReader reads a
 File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
