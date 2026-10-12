@@ -8,6 +8,7 @@
 
 #include <bblite/js_data.hpp>
 #include <bblite/js_encoding.hpp>
+#include <bblite/js_promise.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_dom_events.hpp>
 #include <bblite/runtime.hpp>
@@ -62,22 +63,26 @@ class Blob {
 public:
     Blob() : Blob({}, "") {}
     Blob(std::initializer_list<BlobPart> parts, std::string mime_type)
-        : mime_type_(normalize_type(std::move(mime_type))) {
-        std::size_t size = 0;
-        for (const BlobPart& part : parts) {
-            if (part.size() > maximum_blob_bytes - size) {
-                throw std::runtime_error("Blob exceeds the native 64 MiB payload bound.");
-            }
-            size += part.size();
-        }
-        auto bytes = std::make_shared<std::vector<std::uint8_t>>();
-        bytes->reserve(size);
-        for (const BlobPart& part : parts) {
-            if (part.size() != 0u) {
-                bytes->insert(bytes->end(), part.data(), part.data() + part.size());
-            }
-        }
-        bytes_ = std::move(bytes);
+        : bytes_(concatenate(parts)), mime_type_(normalize_type(std::move(mime_type))) {}
+
+    /**
+     * `new Blob(parts, { type })` over a run-time list of strings, byte views or buffers. A type
+     * with a character outside U+0020-U+007E is the empty string (File API); others lowercase.
+     */
+    template <typename Parts>
+    [[nodiscard]] static Blob from_parts(const Parts& parts, std::string type) {
+        std::vector<BlobPart> views;
+        views.reserve(std::size(parts));
+        for (const auto& part : parts)
+            views.emplace_back(part);
+        Blob blob;
+        blob.bytes_ = concatenate(views);
+        blob.mime_type_ =
+            std::any_of(type.begin(), type.end(),
+                        [](unsigned char byte) { return byte < 0x20u || byte > 0x7eu; })
+                ? std::string()
+                : normalize_type(std::move(type));
+        return blob;
     }
 
     [[nodiscard]] std::size_t size() const noexcept { return bytes_->size(); }
@@ -93,6 +98,25 @@ public:
     }
 
 private:
+    template <typename Parts>
+    [[nodiscard]] static std::shared_ptr<const std::vector<std::uint8_t>>
+    concatenate(const Parts& parts) {
+        std::size_t size = 0;
+        for (const BlobPart& part : parts) {
+            if (part.size() > maximum_blob_bytes - size) {
+                throw std::runtime_error("Blob exceeds the native 64 MiB payload bound.");
+            }
+            size += part.size();
+        }
+        auto bytes = std::make_shared<std::vector<std::uint8_t>>();
+        bytes->reserve(size);
+        for (const BlobPart& part : parts) {
+            if (part.size() != 0u) {
+                bytes->insert(bytes->end(), part.data(), part.data() + part.size());
+            }
+        }
+        return bytes;
+    }
     [[nodiscard]] static std::string normalize_type(std::string value) {
         for (char& character : value) {
             const auto byte = static_cast<unsigned char>(character);
@@ -605,5 +629,22 @@ inline void click_file_input(Engine& engine, UiElementHandle handle) {
         listeners->dispatch(PlatformMouseEvent{});
 }
 #endif
+
+/** `blob.text()`: UTF-8 decoding with replacement, without a leading BOM. */
+[[nodiscard]] inline Promise<std::string> blob_text(const Blob& blob) {
+    return Promise<std::string>::resolved(decode_utf8_removing_bom(
+        std::string_view(reinterpret_cast<const char*>(blob.bytes().data()), blob.size())));
+}
+
+/** `blob.arrayBuffer()`: a fresh buffer over a copy of the bytes. */
+[[nodiscard]] inline Promise<ArrayBuffer> blob_array_buffer(const Blob& blob) {
+    return Promise<ArrayBuffer>::resolved(ArrayBuffer(std::vector<std::uint8_t>(blob.bytes())));
+}
+
+/** `blob.bytes()`: a fresh Uint8Array over a copy of the bytes. */
+[[nodiscard]] inline Promise<U8Array> blob_bytes(const Blob& blob) {
+    return Promise<U8Array>::resolved(
+        U8Array(ArrayBuffer(std::vector<std::uint8_t>(blob.bytes()))));
+}
 
 } // namespace bbl::js

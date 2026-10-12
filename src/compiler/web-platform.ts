@@ -9,6 +9,11 @@ import {
 import { bodyStreamProperty, compileBodyStreamMethod } from "./body-streams.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
+import {
+    compileImageBitmapCall,
+    compileImageBitmapMethod,
+    imageBitmapProperty,
+} from "./image-bitmaps.js";
 import type { Value } from "./types.js";
 import {
     compileUrlAssignment,
@@ -27,7 +32,7 @@ type MethodLowerer = (
     call: ts.CallExpression,
     owner: Value,
     method: string,
-) => Value;
+) => Value | undefined;
 
 const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["abort-controller", compileAbortMethod],
@@ -36,6 +41,9 @@ const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["byte-stream", compileBodyStreamMethod],
     ["byte-stream-reader", compileBodyStreamMethod],
     ["url", compileUrlMethod],
+    ["image-bitmap", compileImageBitmapMethod],
+    // Blob reads; other Blob members keep the browser file bridge.
+    ["blob", compileImageBitmapMethod],
 ]);
 
 export function compileWebPlatformNew(
@@ -63,6 +71,7 @@ export function webPlatformProperty(
     return (
         abortProperty(lowerer, owner, property) ??
         urlProperty(lowerer, owner, property) ??
+        imageBitmapProperty(lowerer, owner, property) ??
         bodyStreamProperty(lowerer, owner, property, access)
     );
 }
@@ -72,7 +81,10 @@ export function compileWebPlatformCall(
     context: WebPlatformCallContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    return compileAbortListenerCall(context, call);
+    return (
+        compileAbortListenerCall(context, call) ??
+        compileImageBitmapCall(context, call)
+    );
 }
 
 /** A method of a web platform value, or undefined for another receiver. */

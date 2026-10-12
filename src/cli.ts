@@ -1685,7 +1685,11 @@ async function main(): Promise<void> {
     ).cmake;
     for (const [path, cpp] of result.cppFiles) tree.write(path, cpp);
     tree.prune("sources");
-    const imageCodecs = reachedImageCodecs(outputPath, result.manifest.assets);
+    const imageCodecs = reachedImageCodecs(
+        outputPath,
+        result.manifest.assets,
+        result.manifest.features,
+    );
     const imageCodecLines = imageCodecs
         .map((codec) => `    "${codec}"`)
         .join("\n");
