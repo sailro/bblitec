@@ -254,8 +254,13 @@ or an opaque literal) fills checked checkboxes and range values and thumbs: as i
 under 3:1 contrast with its palette's control fill selects the other palette, hover and press move its
 HSL lightness by 0.11, and disabled controls ignore it. A range's thumb takes its own hover/press state.
 Preference-dependent scheme lists and translucent accents refuse; system colors (Canvas, CanvasText)
-are not represented, and an open select menu takes the closed control's palette. A select's height is
-its font's normal line height plus Chromium's 1px internal padding above and below.
+are not represented, and an open select menu takes the closed control's palette.
+
+Inside its CSS padding, a select keeps Chromium's internal insets: 4px before its longest option label
+(width rounded up) and 16px after it for the arrow, and 1px above and below its font's normal line height,
+whatever its line-height. Its arrow is a 2px chevron centered 9px from the right border edge; a closed or
+open summary marker is a 0.66em equilateral triangle on the first baseline, 0.4em before the text. Both
+are antialiased by pixel coverage.
 
 Packaged raster images expose decode/complete/natural dimensions before engine creation. Decode settles
 on realm microtasks; empty/broken images reject and source changes invalidate requests. Network/responsive
