@@ -1,13 +1,15 @@
+import { lowerFrameGraphTaskActions } from "./frame-graph-task-actions.js";
 import { pinnedHeader } from "./pinned-header.js";
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { renderTaskMeshRefreshCpp } from "./render-task-mesh-refresh.js";
 import { recordAt } from "../compiler/record-access.js";
+import { shaderUniformPublication } from "./shader-uniforms.js";
 
 export class GeometryOutputLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerTaskRecords(): LoweredSource {
+    public lowerTaskRecords(thinBindings = false): LoweredSource {
         const geometryModule = "src/frame-graph/geometry-renderer-task.ts";
         const copyModule = "src/frame-graph/copy-to-texture-task.ts";
         const actionsModule = "src/frame-graph/frame-graph-actions.ts";
@@ -266,7 +268,7 @@ export class GeometryOutputLowerer {
         return {
             modulePath: geometryModule,
             symbolName:
-                "createGeometryRendererTask,createRenderTask,createCopyToTextureTask,addTask,addTaskAtStart,RenderTask.addMesh",
+                "createGeometryRendererTask,createRenderTask,createCopyToTextureTask,addTask,addTaskAtStart,addTaskAfter,RenderTask.addMesh",
             header: pinnedHeader(
                 ["<bblite/runtime.hpp>", "", "<cstdint>"],
                 `
@@ -279,7 +281,7 @@ PixelViewport resolve_copy_viewport(
             source: `// ${this.context.provenance(
                 geometryModule,
                 "createGeometryRendererTask",
-                `${renderModule}#createRenderTask,RenderTask.addMesh, ${copyModule}#createCopyToTextureTask, and ${actionsModule}#addTask,addTaskAtStart`,
+                `${renderModule}#createRenderTask,RenderTask.addMesh, ${copyModule}#createCopyToTextureTask, and ${actionsModule}#addTask,addTaskAtStart,addTaskAfter`,
             )}
 #include <bblite/upstream/frame_graph_geometry.hpp>
 #include <bblite/js_data.hpp>
@@ -341,6 +343,24 @@ TaskHandle append_task(Engine& engine, FrameTaskRecord task) {
 }
 
 } // namespace
+
+static void initialize_render_task_shader_material(Engine& engine, FrameTaskRecord& task,
+                                                   const RenderTaskMesh& entry) {
+    const auto material = render_task_mesh_material(engine, entry);
+    if (material.value == invalid_handle) return;
+    auto task_scene = Scene::from_state(task.source_scene);
+    const auto& record = handle_at(engine.materials, material);
+    ${shaderUniformPublication(this.context, "record", "task_scene")}
+${thinBindings ? "    entry.thin_binding = create_thin_material_binding(engine, entry.mesh, material);" : ""}
+}
+
+static void initialize_refreshed_render_task_shader_materials(Engine& engine, FrameTaskRecord& task) {
+    for (const auto& entry : task.render_meshes)
+        if (entry.follows_material)
+            initialize_render_task_shader_material(engine, task, entry);
+    task.shader_packet_rebuild_pending = true;
+    ++engine.draw_list_epoch;
+}
 
 ${renderTaskMeshRefreshCpp(this.context)}
 
@@ -446,6 +466,8 @@ void add_task_at_start(Scene& scene, TaskHandle task) {
     scene.tasks.insert(scene.tasks.begin(), task);
 }
 
+${lowerFrameGraphTaskActions(this.context)}
+
 void add_render_task_mesh(
     Engine& engine,
     TaskHandle task,
@@ -465,7 +487,10 @@ void add_render_task_mesh(
     if (record.render_mesh_refresh) {
         add_refreshed_render_task_mesh(engine, record, mesh, material, material_override);
     } else if (material.value != invalid_handle) {
-        record.render_meshes.push_back(RenderTaskMesh{mesh, material});
+        RenderTaskMesh entry{mesh, material};
+        if (record.render_recorded) initialize_render_task_shader_material(engine, record, entry);
+        record.render_meshes.push_back(std::move(entry));
+        if (record.render_recorded) ++engine.draw_list_epoch;
     }
 }
 

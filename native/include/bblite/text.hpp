@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -58,9 +59,17 @@ struct TextTargetSignature {
 
 /** The scene camera as the pin's text uniform update reads it. */
 struct TextCameraInput {
-    js::TypedArray<float> view_projection;
+    std::optional<js::TypedArray<float>> view_projection;
     double change_key = 0;
     double effective_aspect = 0;
+    std::function<js::TypedArray<float>()> read_view_projection;
+    js::TypedArray<float> get_view_projection() const {
+        if (read_view_projection)
+            return read_view_projection();
+        if (!view_projection)
+            throw std::runtime_error("Text camera has no view-projection source.");
+        return *view_projection;
+    }
 };
 using TextCameraInputPointer = const TextCameraInput*;
 /** The pin's `DrawUpdateContext` for a text renderable. */

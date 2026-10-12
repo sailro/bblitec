@@ -55,14 +55,14 @@ test("capture and draw paths take their matrices from one record", () => {
         (header.match(/struct ShaderDrawMatrices \{/g) ?? []).length,
         1,
     );
-    assert.match(header, /world\(mesh_block_world\(scene, engine, mesh\)\),/);
+    assert.match(header, /world = mesh_block_world\(scene, engine, mesh\);/);
     assert.match(
         header,
-        /world_view_projection\(\s*upstream::matrix_product\(pass\.view_projection, world\)\),/,
+        /world_view_projection = upstream::matrix_product\(pass\.view_projection, world\);/,
     );
     assert.match(
         header,
-        /world_view\(shader_world_view\(pass\.view, world\)\) \{\}/,
+        /world_view = shader_world_view\(pass\.view, world\);/,
     );
     for (const [name, source] of Object.entries(consumers())) {
         // Every consumer of a shader draw's matrices — the two backend

@@ -4902,9 +4902,6 @@ const sceneInputs: readonly SceneInput[] = [
         nativeHostUi: "ui/antigravity-racer-host.json",
         parity: {
             referenceFrame: 180,
-            // Dynamic thin-instance uploads are visible on the browser's next
-            // draw; the native renderer consumes them in the same frame.
-            nativeFrameOffset: 1,
             // Measured 2.393 full / 2.437 foreground on both backends. The residual
             // is retained text rasterization; the canvas-only lane below
             // isolates the renderer.

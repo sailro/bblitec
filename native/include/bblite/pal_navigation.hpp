@@ -287,6 +287,25 @@ struct NavRaycastHit {
 /** `createNavigationPluginAsync`: a fresh plugin slot. */
 NavigationHandle navigation_create_plugin();
 
+/** Raw query carriers: native stack storage replaces the wrapper's reusable WASM refs. */
+struct NavQueryScratch {
+    std::array<double, 3> position{};
+    std::array<double, 3> end{};
+    std::array<double, 3> extents{};
+    double poly_ref = 0;
+    NavVec3 point;
+    bool over_poly = false;
+    double t = 0;
+};
+bool navigation_has_query(NavigationHandle plugin);
+bool navigation_status_succeed(double status);
+double navigation_raw_closest_point(NavigationHandle plugin, NavQueryScratch& scratch);
+double navigation_raw_nearest_poly(NavigationHandle plugin, NavQueryScratch& scratch);
+double navigation_raw_raycast(NavigationHandle plugin, NavQueryScratch& scratch);
+void navigation_destroy_query(NavigationHandle plugin);
+void navigation_destroy_tile_cache(NavigationHandle plugin);
+void navigation_destroy_nav_mesh(NavigationHandle plugin);
+
 /** `calcGridSize(bbMin, bbMax, cs)`, which each plan reads part-way. */
 NavGridSize navigation_grid_size(const NavBounds& bounds, float cs);
 

@@ -54,6 +54,11 @@ import { EngineLowerer } from "./lowering/engine-lowerer.js";
 import { lowerDeviceRecovery } from "./lowering/device-recovery-lowerer.js";
 import { lowerEngineDisposal } from "./lowering/engine-dispose-lowerer.js";
 import { lowerGpuRetirement } from "./lowering/gpu-retirement-lowerer.js";
+import {
+    lowerThinInstanceApi,
+    lowerThinInstanceSync,
+    thinInstanceHeader,
+} from "./lowering/thin-instance-lowerer.js";
 import { lowerGpuTaskTiming } from "./lowering/gpu-task-timing-lowerer.js";
 import { lowerComputeTexture } from "./lowering/compute-texture-lowerer.js";
 import { lowerComputeTextureMipmaps } from "./lowering/compute-texture-mipmaps-lowerer.js";
@@ -1144,6 +1149,36 @@ class GeneratedSourceWriter {
         emitReached("upstream/src/gpu_retirement.cpp", () =>
             lowerGpuRetirement(context),
         );
+        this.tree.write(
+            "upstream/include/bblite/upstream/thin_instance_sync.hpp",
+            thinInstanceHeader(context),
+        );
+        emitReached("upstream/src/thin_instance_api.cpp", () => ({
+            modulePath: "src/mesh/thin-instance.ts",
+            symbolName:
+                "setThinInstances,setThinInstanceCount,setThinInstanceDrawCount,enableThinInstanceDynamicDrawCount",
+            header: "",
+            source: `#include <bblite/runtime.hpp>
+#include <bblite/thin_instance.hpp>
+namespace bbl {
+${lowerThinInstanceApi(context, features)}
+}
+`,
+        }));
+        emitReached("upstream/src/thin_instance_sync.cpp", () => ({
+            modulePath: "src/mesh/thin-instance-gpu.ts",
+            symbolName:
+                "syncThinInstanceGpuData,syncThinInstanceDrawArgs,syncThinInstanceForDraw",
+            header: "",
+            source: `#include <bblite/runtime.hpp>
+#include <bblite/gpu.hpp>
+#include <bblite/pal_source_gpu.hpp>
+#include <bblite/upstream/thin_instance_sync.hpp>
+namespace bbl {
+${lowerThinInstanceSync(context)}
+}
+`,
+        }));
         emitReached("upstream/src/compute_texture.cpp", () =>
             lowerComputeTexture(context),
         );
@@ -1235,7 +1270,7 @@ class GeneratedSourceWriter {
             lowerConfigurableCameraControls(context),
         );
         emitReached("upstream/src/device_recovery.cpp", () =>
-            lowerDeviceRecovery(context),
+            lowerDeviceRecovery(context, options.gpuInstancing),
         );
         emitReached("upstream/src/engine_dispose.cpp", () =>
             lowerEngineDisposal(context),
@@ -1256,7 +1291,12 @@ class GeneratedSourceWriter {
                 vat: features.includes("mesh:vat"),
                 text: features.includes("text:renderable"),
                 nodeMaterials: nodeVariantList.length > 0,
-                pbrSceneHooks: features.includes("loader:gltf"),
+                pbrSceneHooks:
+                    features.includes("loader:gltf") ||
+                    features.includes("material:shader") ||
+                    features.includes("mesh:thin-instances"),
+                gltfSceneHooks: features.includes("loader:gltf"),
+                thinBindings: options.gpuInstancing,
             }),
         );
         this.emitTextData(features, context, options, generated);
@@ -1477,7 +1517,11 @@ class GeneratedSourceWriter {
             deployUtility,
             deployMipBlit,
         );
-        this.emitRendererGeometryOutput(context, generated);
+        this.emitRendererGeometryOutput(
+            context,
+            generated,
+            options.gpuInstancing,
+        );
         this.emitRendererPostProcess(
             features,
             options,
@@ -2204,6 +2248,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     selectedMaterialVariant: options.selectedMaterialVariant,
                     gltfCameras: features.includes("loader:gltf-cameras"),
                     cpuTangents: features.includes("loader:gltf-cpu-tangents"),
+                    cpuGeometry: features.includes("mesh:geometry-access"),
                     boneControl: features.includes("loader:gltf-bone-control"),
                 }),
                 generated,
@@ -2849,6 +2894,9 @@ ${wgsl}`,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
+                    publicCameraMatrices: features.includes(
+                        "camera:view-projection",
+                    ),
                     shaderPrograms: options.shaderPrograms,
                 }),
                 generated,
@@ -2945,13 +2993,18 @@ ${wgsl}`,
                 );
             }
         } else if (this.reaches("upstream/src/renderer_plan.cpp")) {
-            // getViewProjectionMatrix is a public camera helper and can be
-            // reached before a scene renderer. Its implementation already
-            // lives in the generated render-plan math; emit that source and
-            // header without pulling the renderer's shaders or PAL.
+            // Public camera caches can be reached before a scene renderer.
+            // Emit their source without pulling renderer shaders or PAL.
             this.writeSource(
                 "upstream/src/renderer_plan.cpp",
-                new RendererLowerer(context).lowerRenderPlan(),
+                new RendererLowerer(context).lowerRenderPlan({
+                    publicCameraMatrices: features.includes(
+                        "camera:view-projection",
+                    ),
+                    orthographicCamera: features.includes(
+                        "camera:orthographic",
+                    ),
+                }),
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
             );
@@ -2961,11 +3014,14 @@ ${wgsl}`,
     private emitRendererGeometryOutput(
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
+        thinBindings: boolean,
     ): void {
         if (this.reaches("upstream/src/frame_graph_geometry.cpp")) {
             this.writeSource(
                 "upstream/src/frame_graph_geometry.cpp",
-                new GeometryOutputLowerer(context).lowerTaskRecords(),
+                new GeometryOutputLowerer(context).lowerTaskRecords(
+                    thinBindings,
+                ),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_geometry.hpp",
             );

@@ -322,7 +322,7 @@ scoped engine context. A scene or raw resource handle alone does not supply that
 Runtime `msaaSamples` selects one sample for numeric 1, four otherwise, evaluated once. Engine reads,
 default scene targets and effect/frame-graph targets share this selection. Explicit numeric constants
 other than 1/4 refuse. `enableSurfaceResizeObserver` admits engines and auxiliary surfaces; native loops
-own extent refresh. `resizeEngine` and `enableShaderMaterialUniformCaching` are native no-ops;
+own extent refresh. `resizeEngine` is a native no-op;
 `invalidateRenderBundles` moves the visibility epoch and each scene's renderable version.
 
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
@@ -332,6 +332,7 @@ scene strategy registers, so a loss with an active sprite, text, effect or frame
 the pin's own message. Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
 `disposeEngine` preserves retirement, stop, surface and resource cleanup order, including device
 teardown after a disposer throws. It is independent of recovery.
+Scene-only GPU-instanced engines refuse restart after their desktop interactive SDL host closes.
 GPU task timing queries and enable requests expose the [native capability result](fidelity.md#semantic-contract).
 Timing refuses tasks whose source passes this port does not reproduce: temporal anti-aliasing and
 screen-space tasks, copies that may take the source's pass-less fast path, and on SDL_GPU the colour
@@ -359,10 +360,16 @@ on Dawn and patched SDL D3D12/Vulkan/Metal; other SDL drivers refuse this combin
 
 ArcRotate/Free cameras, framing, orthographic projection, viewports and supported SDL controls are live;
 ArcRotate `wheelPrecision`, `angularSensibility` and `panningSensibility` writes reach attached controls.
+`attachControl`, `attachFreeControl` and `attachConfigurableFreeControl` retain independent attachment
+state and callback order. Their disposers remove only that attachment; runtime reattachment is supported.
 Orthographic options admit halfHeight and optional left/right/bottom/top planes; later plane writes refuse.
 World matrices admit copied typed-array reads and constant indices 0–15. Tracked transforms and
-configurable FreeCamera controls retain worldMatrixVersion; mutable matrix aliases refuse.
-Control restoration, geospatial input and broader camera combinations remain limited.
+configurable FreeCamera controls retain worldMatrixVersion; mutable world-matrix aliases refuse.
+`getViewMatrix`, `getProjectionMatrix` and `getViewProjectionMatrix` retain shared Float32 caches for
+unparented Free/ArcRotate cameras. Parented/geospatial cameras, high-precision matrices and floating
+origin refuse with public matrix caches. Shader shadow casters also refuse: their light-backed
+`createShadowCamera` cache owner is not represented by native caster matrices.
+Geospatial input and broader camera combinations remain limited.
 
 ## Android
 
@@ -403,15 +410,25 @@ existing scene cameras and fresh callback identities. Native animation retains s
 Reached primitives, data factories, ribbons/extrusions/polyhedra, lines, CSG and thin instances use their
 admitted option sets. Box/sphere data is mutable and shared through aliases. Unknown-count mesh/Standard/
 PBR/shader factories require compatible profiles. Static expansion is capped at 4,096 iterations/1 MiB;
-parameterized composition tables at 65,536 records each. Wider dynamic geometry updates, line
-topology/colors/dashes and dynamic draw counts remain limited.
+parameterized composition tables at 65,536 records each. Wider dynamic geometry updates and line
+topology/colors/dashes remain limited.
 Owned data meshes support geometry resizing and shared-family rebinding; omitted clones retain their
-existing geometry. Unshared, tightly packed meshes support GPU-only position and UV range uploads; imported
-geometry updates and resizing refuse. Data meshes retain their input CPU array aliases.
+existing geometry. Unshared, tightly packed meshes support GPU-only position, normal, UV, UV2, tangent
+and color range uploads; imported geometry updates and resizing refuse. Data meshes retain their input CPU array aliases.
+`updateMeshGeometry` and `updateMeshGeometryCapacity` admit owned, unshared packed geometry with
+Float32 attributes and Uint32 indices, including subviews. Ranged capacity updates retain full CPU
+arrays and bounds while preserving untouched GPU bytes and padded index capacity.
+Indexed uploads beyond the represented position stream refuse.
 Clones share those owners; resizing replaces them for the selected meshes. Device recovery uploads
 the retained arrays' current contents and discards GPU-only writes.
 `getMeshGeometry` and `getMeshTriangles` return independent CPU stream copies. Authored glTF tangents
 are retained when `enableGltfCpuTangents` precedes loading.
+
+Thin-instance pools retain Float32/Float64 matrix views and shared clone ownership.
+`enableThinInstanceDynamicDrawCount` and `setThinInstanceDrawCount` preserve the pinned upload and
+draw-count boundaries; count-only changes do not publish unmarked CPU matrix or color writes.
+Thin pools with compute frame-graph tasks, geometry-output tasks or device recovery refuse until their
+buffer submission, material binding and recovery ownership are represented.
 
 ## Scene hierarchy
 
@@ -450,6 +467,7 @@ Standard, PBR, Grid, shader and selected no-color views support reached properti
 clearcoat, sheen, iridescence, anisotropy and transmission. Created PBR materials take loaded base color,
 ORM and normal textures. UV/lightmap/vertex-color opt-ins remain explicit;
 lightmap binding precedes registration. Runtime texture-producer choices refuse.
+`isShaderMaterial` and `isStandardMaterial` inspect represented materials and their source-backed views.
 
 Public factors retain array identity/double precision. Reads require one registered scene and represented
 producer identity. Rebuilds and replacement after binding refuse; direct array writes do not bump UBO
@@ -457,8 +475,12 @@ versions. Public glTF albedo reads exclude material extensions, transforms and B
 environment rotation and wider metallic-reflectance fields remain limited.
 
 Shader materials admit bounded 2D/array samplers, float/depth/comparison sampling, storage buffers and
-selected uniform/system matrices; uniform writes take arrays, tuples and typed arrays. Wider descriptors,
-pipeline state and live composition profiles refuse. External textures bind a video from a closed
+selected uniform/system matrices; uniform writes, including `setShaderMatrix`, take arrays, tuples and
+typed-array views. `getShaderUniform` and `setShaderUniform` admit runtime names; reads return scalar
+values or retained Float32Array aliases. Direct alias writes leave upload versions unchanged;
+`enableShaderMaterialUniformCaching` selects the pinned per-slot upload gate. Shader declarations and
+variants remain generation-known. Wider descriptors, pipeline
+state and live composition profiles refuse. External textures bind a video from a closed
 zero-parameter producer before the engine starts and draw after the opaque bundle, as the pin's direct
 bucket does; its missing-source, not-ready and unbound checks run at every frame's bind.
 A source, template text or plugin `getCustomCode` a scene builds with a function is run at generation
@@ -591,15 +613,20 @@ Generator enable changes retain resources and update receiver darkness; CSM call
 
 ## Navigation
 
-Recast/Detour supports solo and obstacle tile-cache builds, debug geometry, bounded queries, crowds,
-agents and obstacles. Tiled builds without obstacles, tile-cache builds with off-mesh connections and
-unimplemented query/disposal APIs refuse.
+Recast/Detour supports solo and obstacle tile-cache builds from meshes or raw typed-array sources,
+debug geometry, bounded queries, crowds, agents and obstacles. `findClosestPointWithinInto` preserves
+the output on failure; `navRayBlockedFast` retains the pinned fail-closed query. Plugin disposal refuses
+while live crowds borrow its mesh. Tiled builds without obstacles, tile-cache builds with off-mesh
+connections, runtime-selected build modes and wider query APIs refuse.
 
 ## Frame graph
 
 Scene-owned and scene-less graphs support ordered targets/tasks, overrides, depth, MRTs, blits and MSAA
-resolve. Default tasks retain source ordering; authored tasks use explicit lists. Task
-reordering/removal/disposal and broader resource views/samplers remain limited.
+resolve. Default tasks retain source ordering; authored tasks use explicit lists. `addTaskAfter`
+inserts ordinary tasks after the first matching anchor during initial setup before registration,
+appends for a missing anchor and retains duplicates. Runtime task attachment is unrepresented.
+Compute/shadow aggregate anchors, broader task reordering/removal/disposal and resource
+views/samplers remain limited.
 RenderTarget handles retain identity in typed containers and mutable records; SceneContext values
 can key those caches. Dynamically retrieved targets lack the attachment proofs required by TAA.
 

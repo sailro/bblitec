@@ -178,7 +178,7 @@ Scene create_scene_context(Engine& engine) {
     scene.engine = &engine;
     return scene;
 }
-void on_before_render(Scene& scene, js::Callback<void(float)> callback) {
+void on_before_render(Scene& scene, js::Callback<void(double)> callback) {
     callback(0);
     for (double x : {21.0, 42.0}) {
         const auto event = dom_event(PlatformMouseEvent{.client_x=x}, "pointerup",

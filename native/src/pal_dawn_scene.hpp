@@ -20,6 +20,7 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/workers.hpp>
 
@@ -80,6 +81,7 @@
 #include "pal_dawn_effect.hpp"
 #endif
 #include "pal_gpu_common.hpp"
+#include "pal_dawn_indexed_draw.hpp"
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
 #include "pal_gpu_materials.hpp"
@@ -371,6 +373,9 @@ struct DawnMeshResources {
     // Alpha-card shader vertex uniforms (center/angle/depth).
     WGPUBuffer shader_vertex_uniforms = nullptr;
     std::uint64_t attribute_version = 0;
+#if BBLITE_MESH_GEOMETRY_UPDATE
+    std::uint64_t index_version = 0;
+#endif
 #if BBLITE_GPU_DEFORMATION
     WGPUBuffer deformation_uniforms = nullptr;
 #endif
@@ -394,13 +399,12 @@ struct DawnMeshResources {
         thin_pick_bound_size = 0;
     }
 #endif
-    std::uint32_t instance_count = 1;
-    std::uint64_t instance_version = 0;
-    // How many instance rows the buffers were allocated for. A live pool
-    // can double past it (`addThinInstance`), and the matrices and the
-    // colour lane are both sized from this one count, so
-    // `thin_instance_pool_grew` recreates them together.
-    std::uint32_t instance_capacity = 0;
+    std::shared_ptr<ThinInstancePoolData> thin_pool;
+    GpuHandle instance_owner, instance_color_owner, thin_draw_args;
+    WGPUBuffer indirect_args = nullptr;
+    std::uint32_t instance_count() const {
+        return thin_pool ? gpu_u32(gpu_size(thin_pool->count)) : 1u;
+    }
 #endif
 #if BBLITE_GPU_INSTANCE_COLORS
     WGPUBuffer instance_colors = nullptr;
@@ -1456,10 +1460,10 @@ struct DawnState : DawnDevice {
             wgpuBufferRelease(mesh.mesh_world_uniform);
         }
 #if BBLITE_GPU_INSTANCING
-        if (mesh.instances)
+        if (mesh.instances && !mesh.instance_owner)
             wgpuBufferRelease(mesh.instances);
 #if BBLITE_GPU_INSTANCE_COLORS
-        if (mesh.instance_colors) {
+        if (mesh.instance_colors && !mesh.instance_color_owner) {
             wgpuBufferRelease(mesh.instance_colors);
         }
 #endif
@@ -2400,6 +2404,7 @@ struct InstanceStreams {
     WGPUBuffer matrices = nullptr;
     WGPUBuffer colors = nullptr;
     std::uint32_t count = 1;
+    WGPUBuffer indirect_args = nullptr;
 };
 
 /**
@@ -3102,7 +3107,7 @@ void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFo
                             const std::string& raw_path = {});
 
 void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::uint32_t height,
-                                  const std::vector<upstream::RenderItem>& render_plan,
+                                  std::span<const upstream::RenderItem> render_plan,
                                   const Engine& engine, const std::string& path, bool cluster_ids);
 
 #if BBLITE_HAS_POST_PROCESS

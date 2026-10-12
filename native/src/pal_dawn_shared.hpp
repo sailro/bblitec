@@ -1,5 +1,6 @@
 #pragma once
 #include <bblite/features/compute_buffers.hpp>
+#include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/compute_mipmaps.hpp>
 #include <bblite/features/compute_shaders.hpp>
 #include <bblite/features/compute_textures.hpp>
@@ -33,7 +34,7 @@
 #if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS
 #include "pal_dawn_compute_commands.hpp"
 #endif
-#if BBLITE_COMPUTE_BUFFERS
+#if BBLITE_COMPUTE_BUFFERS || BBLITE_GPU_RETIREMENT
 #include "pal_dawn_storage_buffer.hpp"
 #if BBLITE_STORAGE_READBACK
 #include "pal_dawn_storage_readback.hpp"
@@ -230,7 +231,7 @@ private:
     std::span<const std::uint8_t> bytes_;
 };
 
-#if BBLITE_OFFSCREEN_SURFACES
+#if BBLITE_OFFSCREEN_SURFACES || BBLITE_GPU_RETIREMENT
 class SharedDawnErrors {
 public:
     void report(std::string message) {
@@ -250,6 +251,8 @@ private:
 };
 
 struct DawnOffscreenDevice final : OffscreenDevice {
+    DawnDevice* window_device = nullptr;
+    std::shared_ptr<SdlWindowRun::Resources> window_resources;
     const void* device_identity() const override { return queue; }
     std::optional<GpuAdapterInfo> adapter_info() const override { return info; }
 #if BBLITE_GPU_TASK_TIMING
@@ -360,6 +363,8 @@ struct DawnOffscreenDevice final : OffscreenDevice {
             throw std::runtime_error("Dawn storage buffer limits are unavailable.");
         return static_cast<double>(limits.maxBufferSize);
     }
+#endif
+#if BBLITE_COMPUTE_BUFFERS || BBLITE_GPU_RETIREMENT
     std::shared_ptr<StorageBufferAllocation>
     create_storage_buffer(const StorageBufferDescriptor& options,
                           std::optional<std::span<const std::uint8_t>> initial) override {
@@ -596,7 +601,7 @@ inline bool acquire_dawn_surface_texture(DawnDevice& state, WGPUSurfaceTexture& 
     }
 #endif
     dawn_error("wgpuSurfaceGetCurrentTexture failed (status " +
-               std::to_string(static_cast<int>(texture.status)) + "): " + state.uncaptured_error);
+               std::to_string(static_cast<int>(texture.status)) + "): " + state.last_error());
 }
 
 inline void create_dawn_device(const EngineOptions& engine_options, const DeviceOptions& options,
@@ -787,7 +792,7 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
     wait_for(state.instance,
              wgpuInstanceRequestAdapter(state.instance, &adapter_options, adapter_callback));
     if (!state.adapter) {
-        dawn_error("no compatible GPU adapter: " + state.uncaptured_error);
+        dawn_error("no compatible GPU adapter: " + state.last_error());
     }
 
     WGPUDeviceDescriptor device_descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
@@ -899,7 +904,7 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
     wait_for(state.instance,
              wgpuAdapterRequestDevice(state.adapter, &device_descriptor, device_callback));
     if (!state.device) {
-        dawn_error("device creation failed: " + state.uncaptured_error);
+        dawn_error("device creation failed: " + state.last_error());
     }
     state.queue = wgpuDeviceGetQueue(state.device);
 

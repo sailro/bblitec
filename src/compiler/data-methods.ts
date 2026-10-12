@@ -879,6 +879,14 @@ export function compileDataMethodCall(
             "constructed_receiver",
             ownerExpression,
         );
+    } else if (
+        method === "set" &&
+        dynamicOwner?.dataType?.kind === "union" &&
+        dynamicOwner.dataType.members.every(isTypedArrayType)
+    ) {
+        // Reading an evaluated property chain again would repeat its calls.
+        // The set lowerer captures the selected array before its arguments.
+        constructedOwner = dynamicOwner;
     }
     // An array literal receiver, or the array a built-in just created
     // (`entries.map(f).sort()`), is a fresh array only this call sees: a
@@ -1397,6 +1405,13 @@ function compileKnownDataMethod(
         return lowerer.compileTypedArraySet(call, narrowed, dataType.kind);
     }
     if (
+        dataType?.kind === "union" &&
+        dataType.members.every(isTypedArrayType) &&
+        method === "set"
+    ) {
+        return compileTypedArrayUnionSet(lowerer, call, narrowed);
+    }
+    if (
         isTypedArrayType(dataType) &&
         (method === "slice" || method === "subarray")
     ) {
@@ -1530,6 +1545,62 @@ function compileKnownDataMethod(
             `Array method '${method}' is not supported.`,
         )
     );
+}
+
+/** The selected typed-array arm owns conversion; argument reads retain their views. */
+function compileTypedArrayUnionSet(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    owner: Value,
+): Value {
+    const { context } = lowerer;
+    context.expectArgumentCount(call, 1, 2);
+    context.reachJsData();
+    const target = captureArrayReceiver(lowerer, owner);
+    const sourceNode = argumentAt(call, 0);
+    let value = context.compileValue(sourceNode);
+    if (value.kind === "tuple") {
+        const type: DataType = {
+            kind: "vector",
+            element: { kind: "number" },
+        };
+        value = lowerer.leafValue(
+            lowerer.compileKnownValueForSink(value, type, sourceNode),
+            type,
+        );
+    }
+    const sourceUnion =
+        value.dataType?.kind === "union" &&
+        value.dataType.members.every(isTypedArrayType);
+    const typedSource = isTypedArrayType(value.dataType) || sourceUnion;
+    const initializer = typedSource
+        ? value.cpp
+        : lowerer.compileKnownValueForSink(
+              value,
+              { kind: "numberindex" },
+              sourceNode,
+          );
+    if (typedSource) {
+        lowerer.invalidateEscapingCollection(value);
+        lowerer.markEscaped(value);
+    }
+    const source = context.allocateTemporaryCppName("set_source");
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: source,
+        initializer,
+    });
+    const offset = lowerer.compileNumberArgument(call.arguments[1], "0.0");
+    const write = (values: string): string =>
+        `if constexpr (std::is_same_v<Target, std::decay_t<decltype(${values})>>) { bbl::js::typed_array_set(array, ${values}, ${offset}); } else { const auto converted = bbl::js::typed_array_from_values<Target>(${values}, [](double value) { return bbl::js::numeric_store_value<typename Target::value_type>(value); }); bbl::js::typed_array_set(array, converted, ${offset}); }`;
+    const store = sourceUnion
+        ? `std::visit([&](const auto& values) { ${write("values")} }, ${source});`
+        : write(source);
+    return {
+        kind: "void",
+        cpp: `std::visit([&](const auto& array) { using Target = std::decay_t<decltype(array)>; ${store} }, ${target})`,
+    };
 }
 
 interface ArrayMethodState {

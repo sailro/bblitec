@@ -146,9 +146,9 @@ MeshVisibility& scene_node_visibility(Engine& engine, const SceneNodeHandle& nod
     }, node);
 }
 
-js::Nullable<MeshHandle> scene_node_thin_instance_pool(Engine& engine, const SceneNodeHandle& node) {
+js::Nullable<std::shared_ptr<ThinInstancePoolData>> scene_node_thin_instance_pool(Engine& engine, const SceneNodeHandle& node) {
     const auto* mesh = std::get_if<MeshHandle>(&node);
-    return mesh && engine.meshes.at(mesh->value).thin_instanced ? js::Nullable<MeshHandle>{*mesh} : js::Nullable<MeshHandle>{};
+    return mesh && engine.meshes.at(mesh->value).thin_instances ? js::Nullable<std::shared_ptr<ThinInstancePoolData>>{engine.meshes.at(mesh->value).thin_instances} : js::Nullable<std::shared_ptr<ThinInstancePoolData>>{};
 }
 
 bool scene_node_has_thin_instance_property(Engine& engine, const SceneNodeHandle& node) {

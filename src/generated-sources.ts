@@ -111,6 +111,14 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["engine:gpu-retirement"],
     },
     {
+        source: "upstream/src/thin_instance_sync.cpp",
+        features: ["mesh:thin-instances"],
+    },
+    {
+        source: "upstream/src/thin_instance_api.cpp",
+        features: ["mesh:thin-instances", "mesh:parenting", "loader:gltf"],
+    },
+    {
         source: "upstream/src/gpu_task_timing.cpp",
         features: ["engine:gpu-task-timing"],
     },
@@ -375,6 +383,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:tube",
             "mesh:from-data",
             "mesh:update-attributes",
+            "mesh:update-geometry",
             "mesh:resize-geometry",
             "mesh:render-bundle-invalidation",
             "mesh:ground",
@@ -382,10 +391,6 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:morph-targets",
             "mesh:plane",
             "mesh:sphere",
-            "mesh:thin-instance-colors",
-            "mesh:thin-instances",
-            "mesh:thin-instances-dynamic",
-            "mesh:thin-instance-gpu-culling",
             "mesh:torus",
             "mesh:torus-knot",
         ],

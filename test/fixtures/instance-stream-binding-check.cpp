@@ -10,12 +10,28 @@
 #include "expected.hpp"
 struct SDL_GPUBuffer {
     unsigned id;
+    std::array<std::uint32_t, 5> arguments{};
 };
 struct WGPUBufferImpl {
     unsigned id;
+    std::array<std::uint32_t, 5> arguments{};
 };
 std::vector<unsigned> bound;
 unsigned instances_drawn = 0, pipeline_binds = 0;
+bool forbid_count_read = false;
+SDL_GPUBuffer* sdl_indirect = nullptr;
+WGPUBuffer dawn_indirect = nullptr;
+extern "C" void SDLCALL SDL_DrawGPUIndexedPrimitivesIndirect(SDL_GPURenderPass*,
+                                                             SDL_GPUBuffer* args, Uint32 offset,
+                                                             Uint32 count) {
+    assert(offset == 0 && count == 1);
+    sdl_indirect = args;
+}
+extern "C" void wgpuRenderPassEncoderDrawIndexedIndirect(WGPURenderPassEncoder, WGPUBuffer args,
+                                                         uint64_t offset) {
+    assert(offset == 0);
+    dawn_indirect = args;
+}
 extern "C" void SDLCALL SDL_BindGPUIndexBuffer(SDL_GPURenderPass*, const SDL_GPUBufferBinding*,
                                                SDL_GPUIndexElementSize) {}
 extern "C" void SDLCALL SDL_DrawGPUIndexedPrimitives(SDL_GPURenderPass*, Uint32 count,
@@ -69,12 +85,23 @@ struct SdlMesh {
     SDL_GPUBuffer* instances;
     SDL_GPUBuffer* instance_colors;
     SDL_GPUBuffer* indices = nullptr;
-    unsigned index_count = 6, instance_count = 7;
+    unsigned index_count = 6;
+    SDL_GPUBuffer* indirect_args = nullptr;
+    std::shared_ptr<ThinInstancePoolData> thin_pool;
+    unsigned instance_count() const {
+        assert(!forbid_count_read);
+        return thin_pool ? gpu_u32(gpu_size(thin_pool->count)) : 1;
+    }
 };
 struct DawnMesh {
     WGPUBuffer instances;
     WGPUBuffer instance_colors;
-    unsigned instance_count = 7;
+    WGPUBuffer indirect_args = nullptr;
+    std::shared_ptr<ThinInstancePoolData> thin_pool;
+    unsigned instance_count() const {
+        assert(!forbid_count_read);
+        return thin_pool ? gpu_u32(gpu_size(thin_pool->count)) : 1;
+    }
 };
 #include "bindings.hpp"
 } // namespace bbl::pal
@@ -88,33 +115,36 @@ int main() {
     Engine engine;
     engine.meshes.resize(1);
     auto& record = engine.meshes[0];
-    for (bool explicit_pool : {false, true})
-        for (bool pool : {false, true})
-            for (bool colored : {false, true}) {
-                record.thin_instanced = pool && explicit_pool;
-                record.instance_matrices.resize(pool && !explicit_pool ? 1 : 0);
-                record.instance_colors.assign(colored ? 4 : 0, .5f);
-                const auto key = features(engine);
-                assert(key == expected_features[2 * static_cast<unsigned>(pool) +
-                                                static_cast<unsigned>(colored)]);
-                std::vector<unsigned> expected{1};
-                if (pool)
-                    expected.push_back(2);
-                if (pool && colored)
-                    expected.push_back(3);
-                bound.clear();
-                sdl_bind(engine, sdl);
-                assert(bound == expected);
-                bound.clear();
-                WGPURenderPipeline pipeline = nullptr;
-                encode_variant_draw(nullptr, nullptr, pipeline, nullptr, nullptr, &dawn_vertices,
-                                    instance_streams_for(record, dawn), &dawn_vertices, 6);
-                assert(bound == expected && instances_drawn == (pool ? 7u : 1u));
-                // Every family reads the one instance stream: the pin's
-                // matrices, composed under the mesh world in the vertex stage.
-                assert(instance_streams_for(record, dawn).matrices ==
-                       (pool ? &dawn_matrices : nullptr));
+    for (bool pool : {false, true})
+        for (bool colored : {false, true}) {
+            record.thin_instances = pool ? std::make_shared<ThinInstancePoolData>() : nullptr;
+            if (pool) {
+                record.thin_instances->count = 7;
+                if (colored)
+                    record.thin_instances->colors = js::F32Array(4);
             }
+            sdl.thin_pool = dawn.thin_pool = record.thin_instances;
+            const auto key = features(engine);
+            assert(key == expected_features[2 * static_cast<unsigned>(pool) +
+                                            static_cast<unsigned>(colored)]);
+            std::vector<unsigned> expected{1};
+            if (pool)
+                expected.push_back(2);
+            if (pool && colored)
+                expected.push_back(3);
+            bound.clear();
+            sdl_bind(engine, sdl);
+            assert(bound == expected);
+            bound.clear();
+            WGPURenderPipeline pipeline = nullptr;
+            encode_variant_draw(nullptr, nullptr, pipeline, nullptr, nullptr, &dawn_vertices,
+                                instance_streams_for(record, dawn), &dawn_vertices, 6);
+            assert(bound == expected && instances_drawn == (pool ? 7u : 1u));
+            // Every family reads the one instance stream: the pin's
+            // matrices, composed under the mesh world in the vertex stage.
+            assert(instance_streams_for(record, dawn).matrices ==
+                   (pool ? &dawn_matrices : nullptr));
+        }
     assert(pipeline_binds == 0);
     // A matrix pool only repeats a node graph that actually consumes it.
     for (const auto& view :
@@ -143,8 +173,9 @@ int main() {
         assert(dawn_layouts[1].stepMode == WGPUVertexStepMode_Instance);
         assert(sdl_layouts[1].pitch == upstream::pinned_instance_group_stride("ti-matrix"));
         assert(dawn_layouts[1].arrayStride == sdl_layouts[1].pitch);
-        record.thin_instanced = true;
-        record.instance_colors.clear();
+        record.thin_instances = std::make_shared<ThinInstancePoolData>();
+        record.thin_instances->count = 7;
+        sdl.thin_pool = dawn.thin_pool = record.thin_instances;
         bound.clear();
         node_sdl_draw(engine, sdl, view);
         const std::vector<unsigned> expected =
@@ -157,4 +188,37 @@ int main() {
                             &dawn_vertices, 6);
         assert(bound == expected && instances_drawn == (instanced ? 7u : 1u));
     }
+    // Encoding retains the argument buffer. The queue reads its current words
+    // at submission, including zero, without consulting the pool's CPU count.
+    SDL_GPUBuffer sdl_args{4, {6, 9, 0, 0, 0}};
+    WGPUBufferImpl dawn_args{4, {6, 9, 0, 0, 0}};
+    sdl.indirect_args = &sdl_args;
+    dawn.indirect_args = &dawn_args;
+    record.thin_instances->count = std::numeric_limits<double>::quiet_NaN();
+    forbid_count_read = true;
+    bound.clear();
+    node_sdl_draw(engine, sdl, upstream::node_instanced);
+    assert(sdl_indirect == &sdl_args);
+    bound.clear();
+    WGPURenderPipeline pipeline = nullptr;
+    encode_variant_draw(nullptr, nullptr, pipeline, nullptr, nullptr, &dawn_vertices,
+                        instance_streams_for(record, dawn), &dawn_vertices, 6);
+    assert(dawn_indirect == &dawn_args);
+    sdl_args.arguments[1] = dawn_args.arguments[1] = 0;
+    assert(sdl_indirect->arguments[1] == 0 && dawn_indirect->arguments[1] == 0);
+    sdl_args.arguments[1] = dawn_args.arguments[1] = 5;
+    assert(sdl_indirect->arguments[1] == 5 && dawn_indirect->arguments[1] == 5);
+    forbid_count_read = false;
+    record.thin_instances->count = 7;
+    sdl.indirect_args = nullptr;
+    dawn.indirect_args = nullptr;
+    sdl_indirect = nullptr;
+    dawn_indirect = nullptr;
+    bound.clear();
+    node_sdl_draw(engine, sdl, upstream::node_instanced);
+    assert(sdl_indirect == nullptr && instances_drawn == 7);
+    bound.clear();
+    encode_variant_draw(nullptr, nullptr, pipeline, nullptr, nullptr, &dawn_vertices,
+                        instance_streams_for(record, dawn), &dawn_vertices, 6);
+    assert(dawn_indirect == nullptr && instances_drawn == 7);
 }

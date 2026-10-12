@@ -1,4 +1,6 @@
 import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
+import { thinInstanceOwnershipFailure } from "./thin-instance-admission.js";
+import { lowerThinInstanceUploadBody } from "./compiler/thin-instance-upload.js";
 import {
     provenUndefinedValue,
     isNonThenableDataType,
@@ -253,7 +255,7 @@ import {
     parameterIsReadOnly,
 } from "./compiler/parameter-effects.js";
 import { recordComponents } from "./compiler/record-components.js";
-import { callArgumentProjectionIsReadOnly } from "./compiler/parameter-projection-effects.js";
+import { visitMutableArgumentReferences } from "./compiler/parameter-projection-effects.js";
 import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
@@ -537,6 +539,9 @@ function compileSourceApplication(
         workers?: ResolvedCompileOptions["workers"],
     ): CompileResult => {
         const resolved: ResolvedCompileOptions = {
+            ...(options.readAssetBytes
+                ? { readAssetBytes: options.readAssetBytes }
+                : {}),
             ...(options.deferredCapabilities
                 ? { deferredCapabilities: options.deferredCapabilities }
                 : {}),
@@ -689,6 +694,12 @@ function compileSourceApplication(
         }
     };
     const result = lowered();
+    const thinInstanceFailure = thinInstanceOwnershipFailure(
+        new Set(result.manifest.features),
+        { geometryOutputTasks: result.manifest.geometryOutputTasks.length },
+    );
+    if (thinInstanceFailure)
+        throw new CompileError(fileName, 1, 1, thinInstanceFailure);
     requireSourceProfileScopes(options.sourceProfile, result);
     return result;
 }
@@ -2838,13 +2849,51 @@ class Compiler implements LoweringServices {
         const mentions = (expression: ts.Expression): boolean =>
             someAnalysisNode(
                 expression,
-                (node) =>
-                    ts.isExpression(node) &&
-                    !typeCanCarryReference(this.checker.getTypeAtLocation(node))
-                        ? "skip"
-                        : names(node),
+                (node) => {
+                    if (
+                        ts.isExpression(node) &&
+                        !typeCanCarryReference(
+                            this.checker.getTypeAtLocation(node),
+                        )
+                    )
+                        return "skip";
+                    if (ts.isCallExpression(node)) {
+                        let retained = someAnalysisNode(
+                            node.expression,
+                            names,
+                            { functions: "skip" },
+                        );
+                        node.arguments.forEach((_, index) => {
+                            visitMutableArgumentReferences(
+                                this.checker,
+                                node,
+                                index,
+                                (reference) => {
+                                    if (names(reference)) retained = true;
+                                },
+                            );
+                        });
+                        return retained ? true : "skip";
+                    }
+                    return names(node);
+                },
                 { functions: "skip" },
             );
+        const writesArgument = (
+            call: ts.CallExpression,
+            index: number,
+        ): boolean => {
+            let written = false;
+            visitMutableArgumentReferences(
+                this.checker,
+                call,
+                index,
+                (reference) => {
+                    if (names(reference)) written = true;
+                },
+            );
+            return written;
+        };
         let changed = true;
         const alias = (binding: ts.BindingName): void => {
             for (const identifier of bindingNameIdentifiers(binding)) {
@@ -2898,12 +2947,7 @@ class Compiler implements LoweringServices {
                                     node,
                                     index,
                                 ) &&
-                                !callArgumentProjectionIsReadOnly(
-                                    this.checker,
-                                    node,
-                                    index,
-                                    [],
-                                ),
+                                writesArgument(node, index),
                         ))
                 );
             });
@@ -3178,7 +3222,7 @@ class Compiler implements LoweringServices {
      * Some applications update an established thin-instance pool
      * through `GPUQueue.writeBuffer`, falling back to the pin's dirty range
      * when the GPU buffer does not exist yet. Native owns that upload boundary,
-     * so the exact helper shape lowers to one pool-copy/version operation while
+     * so the helper shape lowers to a retained raw-byte upload while
      * every other raw GPU use remains refused by the property surface.
      */
     public compileThinInstanceUploadHelper(
@@ -3207,21 +3251,43 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         this.expectArgumentCount(call, 3, 3);
-        const mesh = this.compileValue(argumentAt(call, 0));
-        this.expectKind(mesh, "mesh", argumentAt(call, 0));
-        const matrices = this.compileTypedArrayArgument(
-            argumentAt(call, 1),
-            "f32array",
+        const mesh = this.bindings.pinValueToTemporary(
+            this.compileValue(argumentAt(call, 0)),
+            "thin_upload_mesh",
+            argumentAt(call, 0),
         );
-        const count = this.compileNumber(argumentAt(call, 2));
+        this.expectKind(mesh, "mesh", argumentAt(call, 0));
+        const matrices = this.bindings.pinValueToTemporary(
+            this.compileValue(argumentAt(call, 1)),
+            "thin_upload_matrices",
+            argumentAt(call, 1),
+        );
+        if (matrices.kind !== "data" || matrices.dataType?.kind !== "f32array")
+            this.fail(
+                argumentAt(call, 1),
+                "Direct thin-instance GPU uploads require a Float32Array byte view; Float64Array and union views need the source-managed synchronization path.",
+            );
+        const count = this.allocateTemporaryCppName("thin_upload_count");
+        this.emit({
+            kind: "declaration",
+            type: "double",
+            name: count,
+            initializer: this.compileNumber(argumentAt(call, 2), "double"),
+        });
         this.reachFeature("mesh:thin-instances", call);
         this.reachFeature("mesh:thin-instances-dynamic", call);
         this.sceneManifest.recordThinInstanceMesh(mesh.sceneMeshIndex);
         return {
             kind: "void",
-            cpp:
-                `bbl::upload_thin_instance_matrices(${this.requireEngine(mesh, call)}, ` +
-                `${mesh.cpp}, ${matrices}, ${count})`,
+            cpp: lowerThinInstanceUploadBody(
+                declaration,
+                [meshParameter!, bufferParameter!, countParameter!],
+                this.requireEngine(mesh, call),
+                mesh.cpp,
+                matrices.cpp,
+                count,
+                this.allocateTemporaryCppName("thin_upload_pool"),
+            ),
         };
     }
 
@@ -8903,7 +8969,25 @@ class Compiler implements LoweringServices {
      * feature an audited companion file reaches with no call in the scene
      * to name — the already-formatted location of that file.
      */
-    public reachFeature(feature: Feature, site?: ts.Node | string): void {
+    public reachFeature(
+        feature: Feature,
+        site?: ts.Node | string,
+        impliedBy?: Feature,
+    ): void {
+        if (
+            feature === "mesh:thin-instances" ||
+            feature === "compute:frame-graph" ||
+            feature === "engine:device-recovery"
+        ) {
+            const failure = thinInstanceOwnershipFailure(this.features, {
+                reached: feature,
+            });
+            if (failure)
+                this.fail(
+                    typeof site === "object" ? site : this.sourceFile,
+                    failure,
+                );
+        }
         if (
             !this.options.workers &&
             (feature === "frame-graph:surface-target" ||
@@ -8913,16 +8997,19 @@ class Compiler implements LoweringServices {
                 feature === "compute:task" ||
                 feature === "compute:shader" ||
                 feature === "compute:uniform-buffer" ||
-                feature === "engine:gpu-retirement")
+                (feature === "engine:gpu-retirement" &&
+                    impliedBy !== "mesh:thin-instances"))
         )
             throw new ApplicationRealmRequired();
         if (
             ((feature === "math:mat4-invert" ||
-                feature === "math:mat4-create") &&
+                feature === "math:mat4-create" ||
+                feature === "camera:view-projection") &&
                 this.features.has("renderer:high-precision-matrix")) ||
             (feature === "renderer:high-precision-matrix" &&
                 (this.features.has("math:mat4-invert") ||
-                    this.features.has("math:mat4-create")))
+                    this.features.has("math:mat4-create") ||
+                    this.features.has("camera:view-projection")))
         ) {
             this.fail(
                 typeof site === "object" ? site : this.sourceFile,
@@ -8930,7 +9017,7 @@ class Compiler implements LoweringServices {
             );
         }
         for (const implied of impliedFeatures(feature))
-            this.reachFeature(implied, site);
+            this.reachFeature(implied, site, feature);
         this.features.add(feature);
         if (site !== undefined && !this.featureSites.has(feature)) {
             this.featureSites.set(feature, this.featureSite(site));

@@ -1,5 +1,6 @@
 import { floatLiteral } from "./cpp-literals.js";
-import { typeComponents, type ShaderExpression } from "./shader-ir.js";
+import type { ShaderExpression } from "./shader-ir.js";
+import { typeComponents } from "./shader-material-programs.js";
 
 interface ShaderCppScalar {
     cpp: string;

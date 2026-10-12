@@ -112,8 +112,8 @@ int main() {
     draw.item.material = {0}; draw.item.mesh = {1};
     auto& record = engine.meshes[1]; record.receives_shadows = false;
     for (bool pool : {false, true}) for (bool colors : {false, true}) {
-        record.thin_instanced = pool;
-        record.instance_colors.resize(colors ? 1 : 0);
+        record.thin_instances = pool ? std::make_shared<ThinInstancePoolData>() : nullptr;
+        if (pool && colors) record.thin_instances->colors = js::F32Array(4);
         const auto expected = upstream::base | (pool ? upstream::pinned_msh_has_thin_instances : 0) |
             (pool && colors ? upstream::pinned_msh_has_instance_color : 0);
         draw.item.material_kind = upstream::RenderMaterialKind::pbr;
@@ -121,7 +121,7 @@ int main() {
         draw.item.material_kind = upstream::RenderMaterialKind::standard;
         assert(pal::standard_variant_key(scene, engine, draw).mesh_features == expected);
     }
-    record.thin_instanced = false; record.instance_colors.clear();
+    record.thin_instances.reset();
     record.composition_feature_row = 0;
     upstream::pbr_renderable_mesh_features[0] |= 1u << 21;
     upstream::standard_renderable_mesh_features[0] |= 1u << 21;

@@ -35,12 +35,22 @@ export interface ShaderMaterialProgramSource {
     useThinInstanceColors?: boolean;
 }
 
-/**
- * The canonical flat value layout for a program's custom uniforms:
- * declaration order, sized by component count. Both the generated
- * variant table's gathers and the compiled uniform setters resolve
- * offsets through this single definition.
- */
+/** Float components of an admitted custom uniform; unknown types have no layout. */
+export function typeComponents(type: string): number {
+    return type === "f32"
+        ? 1
+        : type === "vec2<f32>"
+          ? 2
+          : type === "vec3<f32>"
+            ? 3
+            : type === "vec4<f32>"
+              ? 4
+              : type === "mat4x4<f32>"
+                ? 16
+                : 0;
+}
+
+/** Declaration-order offsets shared by compiled setters and reflected gathers. */
 export function shaderUniformValueLayout(
     uniforms: string[],
 ): Map<string, { offset: number; count: number }> {
@@ -51,16 +61,7 @@ export function shaderUniformValueLayout(
         if (separator < 1) continue;
         const name = signature.slice(0, separator);
         const type = signature.slice(separator + 1);
-        const count =
-            type === "f32"
-                ? 1
-                : type === "vec2<f32>"
-                  ? 2
-                  : type === "vec3<f32>"
-                    ? 3
-                    : type === "vec4<f32>"
-                      ? 4
-                      : 0;
+        const count = typeComponents(type);
         if (count === 0) continue;
         layout.set(name, { offset, count });
         offset += count;
@@ -146,6 +147,28 @@ function uniformField(signature: string): {
         type: signature.slice(separator + 1),
         system: false,
     };
+}
+
+/** Public uniform slots include system declarations even though their stored values are not camera caches. */
+export function shaderUniformSlots(uniforms: string[]): Array<{
+    name: string;
+    type: string;
+    count: number;
+    offset?: number;
+}> {
+    const layout = shaderUniformValueLayout(uniforms);
+    return uniforms.map((signature) => {
+        const field = uniformField(signature);
+        const count = typeComponents(field.type);
+        if (count === 0)
+            throw new Error(`Unsupported shader uniform slot '${signature}'.`);
+        return {
+            name: field.name,
+            type: field.type,
+            count,
+            ...(field.system ? {} : { offset: layout.get(field.name)!.offset }),
+        };
+    });
 }
 
 export function composeStandaloneWgsl(

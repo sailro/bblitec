@@ -268,7 +268,10 @@ test("scene sizing, billboard axes and spot accessors execute their pinned bodie
 #include <cassert>
 #include <cmath>
 #include <limits>
-struct MeshRecord { bool thin_instance_world_bounds = false; std::vector<std::array<float, 16>> instance_matrices; std::size_t instance_count = 0; };
+#include <bblite/thin_instance.hpp>
+using bbl::thin_instance_matrix_values;
+namespace js = bbl::js;
+struct MeshRecord { bool thin_instance_world_bounds = false; std::shared_ptr<bbl::ThinInstancePoolData> thin_instances; };
 ${lowerWorldAabbHelpers(context, { emptyAccumulator: true })}
 enum class CameraKind { arc_rotate, other };
 struct Camera { CameraKind kind = CameraKind::other; std::optional<double> upper_radius_limit; };

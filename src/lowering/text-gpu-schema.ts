@@ -280,7 +280,7 @@ export const textGpuAdapters: readonly (readonly [string, CallAdapter])[] = [
     ],
     [
         `${CAMERA}#getViewProjectionMatrix`,
-        { cpp: (argument) => `${argument(0)}->view_projection` },
+        { cpp: (argument) => `${argument(0)}->get_view_projection()` },
     ],
     [
         // Its only rejection is a node material's build group, which a text

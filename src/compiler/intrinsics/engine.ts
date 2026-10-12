@@ -248,16 +248,12 @@ export function compileEngineIntrinsic(
         }
 
         case "enableShaderMaterialUniformCaching": {
-            // The pin swaps in writers that memoize each material's write
-            // plan; native shader-material writers are planned at generation.
-            // The memoized custom writer skips a slot whose version did not
-            // move, so a `getShaderUniform` backing array mutated in place
-            // stops reaching the GPU there while native uploads the stored
-            // values: the two agree while writes go through
-            // `setShaderUniform`, as `getShaderUniform`'s contract requires.
             assertPinnedUniformCaching();
             context.expectArgumentCount(call, 0, 0);
-            return { kind: "void", cpp: "" };
+            return {
+                kind: "void",
+                cpp: "bbl::enable_shader_uniform_caching()",
+            };
         }
 
         case "createSceneContext": {

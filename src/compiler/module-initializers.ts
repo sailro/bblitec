@@ -5,7 +5,7 @@ import { moduleImportKind } from "../module-imports.js";
 import { findAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { isInstantiatedNamespace } from "./namespace-declarations.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
-import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
+import { visitMutableArgumentReferences } from "./parameter-projection-effects.js";
 import { isSupportedFunction } from "./user-functions.js";
 import {
     callArgumentIsReadOnly,
@@ -30,7 +30,6 @@ import {
     isAssignmentExpression,
     isUpdateExpression,
     mutatingCallTarget,
-    propertyNameText,
     unwrapExpression,
 } from "./syntax.js";
 
@@ -349,109 +348,7 @@ function collectMutatedContainerSymbols(
                     callArgumentIsReadOnly(checker, node, index)
                 )
                     return;
-                const visit = (
-                    value: ts.Expression,
-                    path: readonly string[],
-                    consumer: ts.CallExpression = node,
-                    parameterIndex = index,
-                ): void => {
-                    if (
-                        !typeCanCarryReference(checker.getTypeAtLocation(value))
-                    )
-                        return;
-                    if (
-                        callArgumentProjectionIsReadOnly(
-                            checker,
-                            consumer,
-                            parameterIndex,
-                            path,
-                        )
-                    )
-                        return;
-                    const current = unwrapExpression(value);
-                    if (
-                        ts.isObjectLiteralExpression(current) &&
-                        current.properties.every(
-                            (property) =>
-                                (ts.isPropertyAssignment(property) ||
-                                    ts.isShorthandPropertyAssignment(
-                                        property,
-                                    )) &&
-                                (ts.isIdentifier(property.name) ||
-                                    ts.isStringLiteralLike(property.name) ||
-                                    ts.isNumericLiteral(property.name)),
-                        )
-                    ) {
-                        for (const property of current.properties) {
-                            if (
-                                ts.isPropertyAssignment(property) ||
-                                ts.isShorthandPropertyAssignment(property)
-                            )
-                                visit(
-                                    ts.isPropertyAssignment(property)
-                                        ? property.initializer
-                                        : property.name,
-                                    [...path, propertyNameText(property.name)!],
-                                    consumer,
-                                    parameterIndex,
-                                );
-                        }
-                        return;
-                    }
-                    if (
-                        ts.isArrayLiteralExpression(current) &&
-                        !current.elements.some(ts.isSpreadElement)
-                    ) {
-                        current.elements.forEach((element, i) => {
-                            if (!ts.isOmittedExpression(element))
-                                visit(
-                                    element,
-                                    [...path, String(i)],
-                                    consumer,
-                                    parameterIndex,
-                                );
-                        });
-                        return;
-                    }
-                    const collect = (part: ts.Node): "skip" | undefined => {
-                        // A copied scalar cannot carry its containing object's
-                        // identity. Nested calls still receive their own analysis.
-                        if (
-                            ts.isExpression(part) &&
-                            !typeCanCarryReference(
-                                checker.getTypeAtLocation(part),
-                            )
-                        )
-                            return "skip";
-                        if (ts.isCallExpression(part)) {
-                            // The outer consumer receives this call's result, not
-                            // every reference used to compute it. Only inputs the
-                            // nested call can retain propagate to that result.
-                            part.arguments.forEach((argument, argumentIndex) =>
-                                visit(argument, [], part, argumentIndex),
-                            );
-                            forEachAnalysisNode(part.expression, collect, {
-                                functions: "skip",
-                            });
-                            return "skip";
-                        }
-                        if (
-                            ts.isIdentifier(part) ||
-                            ts.isPropertyAccessExpression(part) ||
-                            ts.isElementAccessExpression(part)
-                        ) {
-                            const symbol = moduleContainerSymbol(
-                                part,
-                                checker,
-                                symbols,
-                            );
-                            if (symbol) mutated.add(symbol);
-                        }
-                        return undefined;
-                    };
-                    forEachAnalysisNode(value, collect, { functions: "skip" });
-                };
-                visit(argument, []);
+                visitMutableArgumentReferences(checker, node, index, record);
             });
         }
         if (isAssignmentExpression(node)) {

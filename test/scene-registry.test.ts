@@ -420,11 +420,14 @@ test("registers unique generated scene targets", () => {
     );
     assert.equal(getScene("antigravity-racer").name, "Antigravity Racer");
     assert.equal(getScene("antigravity-racer").parity?.referenceFrame, 180);
-    assert.equal(getScene("antigravity-racer").parity?.nativeFrameOffset, 1);
+    assert.equal(
+        getScene("antigravity-racer").parity?.nativeFrameOffset ?? 0,
+        0,
+    );
     assert.equal(
         getScene("antigravity-racer").parity?.nativeEnvironment
             ?.BBLITE_SCREENSHOT_FRAME,
-        "181",
+        "180",
     );
     assert.equal(getScene("littlest-tokyo").parity?.referenceFrame, 180);
     assert.equal(

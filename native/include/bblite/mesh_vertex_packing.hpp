@@ -1,14 +1,13 @@
 #pragma once
 #include <bblite/runtime.hpp>
-#include <span>
 
 namespace bbl::pal {
 
 /** Native interleaved storage for the source's separate attribute buffers. */
+template <class Positions, class Normals, class Uvs, class Uv2s, class Tangents, class Colors>
 inline std::vector<ModelVertex>
-pack_mesh_vertices(std::span<const float> positions, std::span<const float> normals,
-                   std::span<const float> uvs, std::span<const float> uvs2,
-                   std::span<const float> tangents, std::span<const float> colors) {
+pack_mesh_vertices(const Positions& positions, const Normals& normals, const Uvs& uvs,
+                   const Uv2s& uvs2, const Tangents& tangents, const Colors& colors) {
     std::vector<ModelVertex> vertices(positions.size() / 3);
     for (std::size_t index = 0; index < vertices.size(); ++index) {
         auto& vertex = vertices[index];

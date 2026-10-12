@@ -263,7 +263,8 @@ test("material output publication and captured draw identity follow source frame
         engine.materials[1].source_gamma_albedo = gamma;
         engine.meshes.emplace_back().material = MaterialHandle{0};
         engine.meshes[0].geometry = 0;
-        engine.meshes[0].thin_instance_gpu_culling = direct;
+        engine.meshes[0].thin_instances = std::make_shared<ThinInstancePoolData>();
+        engine.meshes[0].thin_instances->gpu_culling_enabled = direct;
         engine.geometries.emplace_back();
         Scene scene; scene.engine = &engine; scene.state->source_material_publication = true;
         const auto add = [&] { scene.meshes.push_back(MeshHandle{0}); queue_pbr_material_group(scene, MeshHandle{0}); };

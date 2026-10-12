@@ -40,6 +40,7 @@ export class GltfGeometryPacker {
     public readonly accessors: JsonObject[];
     public readonly bufferViews: JsonObject[];
     private readonly binary: BinaryBuilder;
+    private readonly cpuArrays = new Map<Float32Array | Uint32Array, number>();
     private readonly buffers = new Map<
         object,
         { offset: number; views: Map<number, number> }
@@ -137,6 +138,23 @@ export class GltfGeometryPacker {
             componentType: 5126,
             type: components === 1 ? "SCALAR" : `VEC${components}`,
         });
+        return index;
+    }
+
+    /** Source CPU owners retain both typed-array and backing-buffer identity. */
+    public cpuArray(data: Float32Array | Uint32Array): number {
+        const cached = this.cpuArrays.get(data);
+        if (cached !== undefined) return cached;
+        const view = this.bufferView(data.buffer, new Uint8Array(data.buffer));
+        const index = this.accessors.length;
+        this.accessors.push({
+            bufferView: view,
+            byteOffset: data.byteOffset,
+            count: data.length,
+            componentType: data instanceof Float32Array ? 5126 : 5125,
+            type: "SCALAR",
+        });
+        this.cpuArrays.set(data, index);
         return index;
     }
 

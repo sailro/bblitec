@@ -64,6 +64,24 @@ int main() {
     } catch (const std::runtime_error&) {
     }
     assert(!active_window_run && SDL_WasInit(SDL_INIT_VIDEO) == 0);
+    // Engine device leases retain the same window across separate run activations.
+    std::shared_ptr<SdlWindowRun::Resources> retained;
+    SDL_WindowID retained_id = 0;
+    {
+        SdlWindowRun first_run;
+        assert(initialize_run_sdl(SDL_INIT_VIDEO | SDL_INIT_EVENTS));
+        retained_id = SDL_GetWindowID(acquire_run_window(options, flags));
+        retained = first_run.retain_resources();
+    }
+    assert(!active_window_run && SDL_GetWindowFromID(retained_id));
+    {
+        SdlWindowRun second_run;
+        second_run.use_resources(retained);
+        assert(SDL_GetWindowID(acquire_run_window(options, flags)) == retained_id);
+    }
+    assert(!active_window_run && SDL_GetWindowFromID(retained_id));
+    retained.reset();
+    assert(SDL_WasInit(SDL_INIT_VIDEO) == 0);
     // Direct backend entry points retain their independent cleanup behavior.
     assert(initialize_run_sdl(SDL_INIT_VIDEO | SDL_INIT_EVENTS));
     auto* standalone = acquire_run_window(options, flags);

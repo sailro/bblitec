@@ -7,6 +7,7 @@ import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
+import { lowerThinInstanceOwnership } from "../src/lowering/thin-instance-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
@@ -62,7 +63,10 @@ test(
             file,
             `#include <bblite/runtime.hpp>
 #include <cassert>
-namespace bbl { ${cppFunction(lowerer, "MeshHandle clone_mesh_node(")} }
+namespace bbl {
+${lowerThinInstanceOwnership(new LoweringContext())}
+${cppFunction(lowerer, "MeshHandle clone_mesh_node(")}
+}
 int main() {
     bbl::Engine engine;
     bbl::ModelGeometry geometry;
@@ -152,7 +156,11 @@ test(
 #include <bblite/js_data.hpp>
 #include <cassert>
 #include <tuple>
-namespace bbl { ${lowerMeshMaterialSetter(new LoweringContext())} ${functions} }
+namespace bbl {
+${lowerThinInstanceOwnership(new LoweringContext())}
+${lowerMeshMaterialSetter(new LoweringContext())}
+${functions}
+}
 int main() {
     bbl::Engine engine;
     bbl::Scene scene;

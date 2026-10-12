@@ -199,3 +199,109 @@ int main() {
         },
     );
 });
+
+test("legacy GPU turns fence after submit and keep the device through completion cleanup", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "legacy-gpu-retirement-check",
+        lowerGpuRetirement(new LoweringContext()).source +
+            `
+#include <bblite/pal_source_gpu_run.hpp>
+#include <cassert>
+#include <algorithm>
+using namespace bbl;
+struct Device final : pal::OffscreenDevice {
+    std::vector<std::string>& events;
+    int mode;
+    Device(std::vector<std::string>& value, int kind) : events(value), mode(kind) {}
+    ~Device() override { events.push_back("device"); }
+    struct Pending final : pal::OffscreenCompletion {
+        std::vector<std::string>& events;
+        explicit Pending(std::vector<std::string>& value) : events(value) {}
+        ~Pending() override { events.push_back("joined"); }
+    };
+    std::unique_ptr<pal::OffscreenCompletion>
+    on_submitted_work_done(std::function<void(std::exception_ptr)> done) override {
+        events.push_back("fence");
+        if (mode != 2 && mode != 4)
+            done(mode == 1 ? std::make_exception_ptr(std::runtime_error("lost")) : nullptr);
+        return std::make_unique<Pending>(events);
+    }
+};
+static pal::Iteration<int> frames(Engine& engine, std::vector<std::string>& events, int mode) {
+    auto state = pal::gpu_retirement_state(engine);
+    for (int batch = 0; batch != 2; ++batch) {
+        const auto fence_count = std::count(events.begin(), events.end(), "fence");
+        retire_gpu_resources(state, [&events] { events.push_back("retired"); });
+        // stopEngine may flush here; its fence must still follow this turn's submit.
+        engine.flush_gpu_retirements();
+        assert(std::count(events.begin(), events.end(), "fence") == fence_count);
+        events.push_back("submit");
+        if (mode == 3)
+            throw std::runtime_error("frame failure");
+        co_yield true;
+    }
+    co_return 0;
+}
+int main() {
+    for (int mode = 0; mode != 5; ++mode) {
+        std::vector<std::string> events;
+        Engine engine;
+        // State can precede device binding; the fence resolves the current lease lazily.
+        auto state = pal::gpu_retirement_state(engine);
+        engine.source_gpu_device = std::make_shared<Device>(events, mode);
+        const auto* identity = engine.source_gpu_device.get();
+        {
+            auto run = pal::source_gpu_iterations(engine, frames(engine, events, mode));
+            if (mode == 3) {
+                bool threw = false;
+                try { static_cast<void>(run.advance()); } catch (const std::runtime_error&) { threw = true; }
+                assert(threw);
+            } else if (mode == 4) {
+                assert(run.advance());
+                run.reset();
+            } else {
+                while (run.advance()) {}
+                assert(run.result() == 0);
+            }
+        }
+        int batches = mode >= 3 ? 1 : 2;
+        if (mode == 1) {
+            const auto* scheduler = engine.source_gpu_loop.get();
+            auto restarted = pal::source_gpu_iterations(engine, frames(engine, events, mode));
+            while (restarted.advance()) {}
+            assert(engine.source_gpu_loop.get() == scheduler);
+            assert(engine.source_gpu_device.get() == identity);
+            batches += 2;
+        }
+        if (mode == 1 || mode == 2 || mode == 4)
+            assert(std::count(events.begin(), events.end(), "retired") == 0);
+        // A stopped deterministic host remains reusable; rejected batches stay source-owned.
+        const auto* loop_identity = engine.source_gpu_loop.get();
+        engine.source_gpu_loop.reset();
+        assert(loop_identity != nullptr);
+        assert(std::count(events.begin(), events.end(), "retired") == batches);
+        assert(std::count(events.begin(), events.end(), "device") == 0);
+        assert(engine.source_gpu_device.get() == identity);
+        if (mode != 3) {
+            assert(std::count(events.begin(), events.end(), "fence") == batches);
+            assert(std::count(events.begin(), events.end(), "joined") == batches);
+            assert(events[0] == "submit" && events[1] == "fence");
+        }
+        // CPU-only source stop after rendering has no pending retirement microtask.
+        engine.flush_gpu_retirements();
+        engine.dispose_gpu_retirements();
+        assert(std::count(events.begin(), events.end(), "retired") == batches);
+        engine.source_gpu_device.reset();
+        assert(events.back() == "device");
+    }
+}
+`,
+        { flags: ["/DBBLITE_WORKERS=0"], timeoutMs: 10000, expectedOutput: "" },
+    );
+});

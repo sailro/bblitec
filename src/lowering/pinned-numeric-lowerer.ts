@@ -657,6 +657,8 @@ export interface PinnedNumericScope {
      * would hide it.
      */
     localPrefix?: string;
+    /** Keep source numeric loop values when callers do not guarantee integral bounds. */
+    loopVariableType?: "index" | "scalar";
     /**
      * How a `for (const x of xs)` spells its range, and what `x` binds to.
      *
@@ -1100,7 +1102,7 @@ export class PinnedNumericLowerer {
             if (
                 !ts.isNewExpression(thrown) ||
                 !ts.isIdentifier(thrown.expression) ||
-                thrown.expression.text !== "Error" ||
+                !["Error", "RangeError"].includes(thrown.expression.text) ||
                 thrown.arguments?.length !== 1
             ) {
                 this.fail(statement, "throw statement");
@@ -1111,7 +1113,11 @@ export class PinnedNumericLowerer {
             const message = ts.isStringLiteral(argument)
                 ? stringLiteral(argument.text)
                 : this.stringExpression(argument);
-            return [`${indent}throw std::runtime_error(${message});`];
+            return [
+                thrown.expression.text === "Error"
+                    ? `${indent}throw std::runtime_error(${message});`
+                    : `${indent}throw bbl::js::NamedError(${stringLiteral(thrown.expression.text)}, ${message});`,
+            ];
         }
         if (ts.isReturnStatement(statement)) {
             if (!this.scope.returnValue) {
@@ -1386,7 +1392,10 @@ export class PinnedNumericLowerer {
     ): string {
         const cpp = this.localName(name.text);
         const value = this.expression(initial);
-        this.bindLocal(name, { cpp, type: "index" });
+        const type = this.scope.loopVariableType ?? "index";
+        this.bindLocal(name, { cpp, type });
+        if (type === "scalar")
+            return `${declareType ? "double " : ""}${cpp} = ${value}`;
         return (
             `${declareType ? "std::int64_t " : ""}${cpp} = ` +
             `static_cast<std::int64_t>(${value})`
@@ -3045,9 +3054,8 @@ export class PinnedNumericLowerer {
      */
     /**
      * A string the pin composes: a literal, a bound string, a template or a
-     * `+` over strings, or `join` over a string array. A number inside a
-     * template would need JavaScript's own number formatting, so it refuses
-     * rather than printing C++'s.
+     * `+` over strings, or `join` over a string array. Numeric operands use
+     * JavaScript's number formatting after their arithmetic is evaluated.
      */
     protected stringExpression(expression: ts.Expression): string {
         const node = unwrapExpression(expression);
@@ -3069,12 +3077,6 @@ export class PinnedNumericLowerer {
             return `(${parts.join(" + ")})`;
         }
         if (
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.PlusToken
-        ) {
-            return `(${this.stringExpression(node.left)} + ${this.stringExpression(node.right)})`;
-        }
-        if (
             ts.isCallExpression(node) &&
             ts.isPropertyAccessExpression(node.expression) &&
             node.expression.name.text === "join" &&
@@ -3085,6 +3087,14 @@ export class PinnedNumericLowerer {
                 `${this.stringArray(node.expression.expression)}, ` +
                 `${this.stringExpression(node.arguments[0]!)})`
             );
+        }
+        if (this.valueKind(node) === "number")
+            return `bbl::js::number_to_string(static_cast<double>(${this.expression(node)}))`;
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.PlusToken
+        ) {
+            return `(${this.stringExpression(node.left)} + ${this.stringExpression(node.right)})`;
         }
         return this.fail(node, "string expression");
     }
@@ -4185,6 +4195,12 @@ export class PinnedNumericLowerer {
         if (ts.isBinaryExpression(node)) {
             if (PINNED_COMPARISON_OPERATORS.has(node.operatorToken.kind))
                 return "boolean";
+            if (
+                node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+                (this.valueKind(node.left) === "string" ||
+                    this.valueKind(node.right) === "string")
+            )
+                return "string";
             if (
                 node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
                 node.operatorToken.kind ===

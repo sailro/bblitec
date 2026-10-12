@@ -248,6 +248,54 @@ test("packages both textures a record-returning producer made", () => {
     }
 });
 
+test("realm activation preserves the browser texture producer boundary", () => {
+    const result = compileFixture(`
+        import { waitForGpuResourceRetirements } from "@babylonjs/lite";
+        import { createTilePair } from "./fixtures/browser-texture/tiles.js";
+        async function main() {
+            const engine = await createEngine(document.createElement("canvas"));
+            const pending = createTilePair(engine);
+            const tiles = await pending;
+            console.log(tiles.baseColor.width, tiles.normalMap.width);
+            await waitForGpuResourceRetirements(engine);
+        }
+        void main();
+    `);
+    assert.ok(result.manifest.features.includes("engine:gpu-retirement"));
+    assert.ok(result.manifest.features.includes("platform:workers"));
+    assert.ok(!result.manifest.features.includes("browser:file"));
+    assert.equal(
+        result.manifest.adaptations.filter(
+            (adaptation) => adaptation.id === "browser-produced-textures",
+        ).length,
+        1,
+    );
+    assert.equal(
+        [...result.cpp.matchAll(/bbl::load_file_texture\(/g)].length,
+        2,
+    );
+    assert.match(result.cpp, /bbl::js::Promise<[^\n]+>::resolved\(/);
+    assert.deepEqual(
+        result.manifest.assets.map((asset) => asset.kind),
+        ["texture", "texture"],
+    );
+    const { checker, declaration } = fixtureDeclarations("tiles");
+    const shape = browserTextureFunctionShape(
+        checker,
+        declaration("createTilePair"),
+    );
+    assert.ok(shape);
+    const bake = bakeBrowserTextureFunction(shape, process.cwd());
+    for (const [index, asset] of result.manifest.assets.entries()) {
+        const payload = parseDataUrl(result.assetPayloads.get(asset.source)!);
+        assert.ok(payload);
+        const texture = bake.textures[index];
+        assert.equal(texture?.factory, "loadTexture2D");
+        assert.deepEqual(payload.bytes, Buffer.from(texture.image));
+        assert.deepEqual(pngDimensions(payload.bytes), { width: 4, height: 4 });
+    }
+});
+
 test("carries a produced pixels texture into the Standard diffuse slot", () => {
     // The sandblox character's route: a non-exported producer, returned
     // through a local helper, bound to a local, handed to a second local

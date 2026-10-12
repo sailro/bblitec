@@ -3,6 +3,7 @@
 #include <bblite/runtime.hpp>
 #include <SDL3/SDL_gpu.h>
 #include "pal_sdl_gpu_commands.hpp"
+#include "pal_sdl_gpu_indexed_draw.hpp"
 #include "pal_sdl_gpu_writes.hpp"
 
 #include <array>
@@ -63,6 +64,8 @@ struct PreparedSdlDraw {
     std::vector<SDL_GPUBuffer*> vertex_storage{}, fragment_storage{};
     std::vector<SDL_GPUBufferBinding> vertex_buffers{};
     SDL_GPUBufferBinding indices{};
+    SDL_GPUBuffer* indirect_args = nullptr;
+    GpuHandle instance_owner{}, instance_color_owner{}, thin_draw_args{};
     Uint32 index_count = 0;
     Uint32 instance_count = 1;
 };
@@ -103,7 +106,7 @@ inline void encode_sdl_gpu_prepared_draw(SDL_GPUCommandBuffer* command, SDL_GPUR
     SDL_BindGPUVertexBuffers(pass, 0, draw.vertex_buffers.data(),
                              static_cast<Uint32>(draw.vertex_buffers.size()));
     SDL_BindGPUIndexBuffer(pass, &draw.indices, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    SDL_DrawGPUIndexedPrimitives(pass, draw.index_count, draw.instance_count, 0, 0, 0);
+    encode_sdl_gpu_indexed_draw(pass, draw.index_count, draw.instance_count, draw.indirect_args);
 }
 
 inline void encode_sdl_gpu_prepared_scene(SDL_GPUCommandBuffer* command,

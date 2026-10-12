@@ -230,7 +230,15 @@ export function lowerWorldAabbHelpers(
             ["boundMin", { cpp: "(*mesh.bound_min)", type: "f32" }],
             ["boundMax", { cpp: "(*mesh.bound_max)", type: "f32" }],
             ["world", { cpp: "mesh.world_matrix", type: "f32" }],
-            ["matrices", { cpp: "mesh.instance_matrices", type: "f32" }],
+            [
+                "matrices",
+                {
+                    cpp: "mesh.instance_matrices",
+                    type: "f64-buffer",
+                    indexedRead: (owner, index) =>
+                        `${owner}.load(static_cast<std::size_t>(${index}))`,
+                },
+            ],
             [
                 "thinInstances.count",
                 { cpp: "mesh.instance_count", type: "scalar" },
@@ -295,19 +303,18 @@ struct WorldAabbMesh {
     std::optional<std::array<float, 3>> bound_max;
     std::array<float, 16> world_matrix{};
     bool thin_instance_world_bounds = false;
-    std::vector<float> instance_matrices;
+    js::NumericArrayView instance_matrices;
     double instance_count = 0.0;
 };
 
 // The hook's inputs off one native record: its flag, and the instance
-// matrices flattened the way the pin's Float32Array stores them.
+// retained Float32Array or Float64Array, with no CPU narrowing or copy.
 void read_thin_instance_world_bounds(WorldAabbMesh& target, const MeshRecord& mesh) {
     target.thin_instance_world_bounds = mesh.thin_instance_world_bounds;
     if (!target.thin_instance_world_bounds) return;
-    target.instance_matrices.reserve(mesh.instance_matrices.size() * 16u);
-    for (const std::array<float, 16>& matrix : mesh.instance_matrices)
-        target.instance_matrices.insert(target.instance_matrices.end(), matrix.begin(), matrix.end());
-    target.instance_count = static_cast<double>(mesh.instance_count);
+    if (!mesh.thin_instances) throw std::runtime_error("Thin-instance world bounds require a pool.");
+    target.instance_matrices = thin_instance_matrix_values(*mesh.thin_instances);
+    target.instance_count = mesh.thin_instances->count;
 }
 
 void expand_thin_instance_world_bounds(WorldAabb& bounds, const WorldAabbMesh& mesh) {

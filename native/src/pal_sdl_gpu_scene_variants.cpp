@@ -839,8 +839,10 @@ void draw_pinned_variant(
         0,
     };
     SDL_BindGPUIndexBuffer(pass, &pinned_index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, mesh.index_count,
-                   instanced_draw ? mesh.instance_count : 1, 0, 0, 0);
+    encode_sdl_gpu_indexed_draw(pass, mesh.index_count,
+                                instanced_draw ? (mesh.indirect_args ? 0u : mesh.instance_count())
+                                               : 1,
+                                instanced_draw ? mesh.indirect_args : nullptr);
 }
 #endif
 
@@ -1288,8 +1290,10 @@ void draw_node_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPURe
                                       instanced_draw ? mesh.instances : nullptr, nullptr);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
     SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, mesh.index_count,
-                   instanced_draw ? mesh.instance_count : 1u, 0, 0, 0);
+    encode_sdl_gpu_indexed_draw(pass, mesh.index_count,
+                                instanced_draw ? (mesh.indirect_args ? 0u : mesh.instance_count())
+                                               : 1u,
+                                instanced_draw ? mesh.indirect_args : nullptr);
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     if (state.node_capture.capture.enabled()) {
         NodeGpuDrawCapture receipt;
@@ -1301,7 +1305,8 @@ void draw_node_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPURe
         receipt.vertex_offset = 0;
         receipt.index_offset = index_binding.offset;
         receipt.index_count = mesh.index_count;
-        receipt.instance_count = instanced_draw ? mesh.instance_count : 1u;
+        receipt.instance_count =
+            instanced_draw ? (mesh.indirect_args ? 0u : mesh.instance_count()) : 1u;
         receipt.bindings = std::move(captured_bindings);
         receipt.pushed_uniform_bytes = std::move(captured_mesh_uniform);
         state.node_capture.capture.draw(std::move(receipt));
@@ -1674,12 +1679,17 @@ void draw_standard_variant(
         prepared.vertex_buffers.push_back({mesh.vertices, 0});
         if (instanced_draw) {
             prepared.vertex_buffers.push_back({mesh.instances, 0});
+            prepared.instance_owner = mesh.instance_owner;
             if (instance_colors)
                 prepared.vertex_buffers.push_back({instance_colors, 0});
+            prepared.instance_color_owner = instance_colors ? mesh.instance_color_owner : nullptr;
+            prepared.indirect_args = mesh.indirect_args;
+            prepared.thin_draw_args = mesh.thin_draw_args;
         }
         prepared.indices = {mesh.indices, 0};
         prepared.index_count = mesh.index_count;
-        prepared.instance_count = instanced_draw ? mesh.instance_count : 1;
+        prepared.instance_count =
+            instanced_draw ? (mesh.indirect_args ? 0u : mesh.instance_count()) : 1;
         deferred->push_back(std::move(prepared));
         return;
     }
@@ -1712,8 +1722,10 @@ void draw_standard_variant(
                                       instanced_draw ? mesh.instances : nullptr, instance_colors);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
     SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, mesh.index_count,
-                   instanced_draw ? mesh.instance_count : 1, 0, 0, 0);
+    encode_sdl_gpu_indexed_draw(pass, mesh.index_count,
+                                instanced_draw ? (mesh.indirect_args ? 0u : mesh.instance_count())
+                                               : 1,
+                                instanced_draw ? mesh.indirect_args : nullptr);
 }
 #endif
 

@@ -800,6 +800,81 @@ bool navigation_has_nav_mesh(NavigationHandle plugin) {
     return plugin_state(plugin).nav_mesh != nullptr;
 }
 
+bool navigation_has_query(NavigationHandle plugin) { return plugin_state(plugin).query != nullptr; }
+
+bool navigation_status_succeed(double status) {
+    return dtStatusSucceed(static_cast<dtStatus>(status));
+}
+
+double navigation_raw_nearest_poly(NavigationHandle plugin, NavQueryScratch& scratch) {
+    auto& state = plugin_state(plugin);
+    const float position[]{static_cast<float>(scratch.position[0]),
+                           static_cast<float>(scratch.position[1]),
+                           static_cast<float>(scratch.position[2])};
+    const float extents[]{static_cast<float>(scratch.extents[0]),
+                          static_cast<float>(scratch.extents[1]),
+                          static_cast<float>(scratch.extents[2])};
+    dtPolyRef reference = static_cast<dtPolyRef>(scratch.poly_ref);
+    const auto status = state.query->findNearestPoly(position, extents, &state.filter, &reference,
+                                                     &scratch.point.x, &scratch.over_poly);
+    scratch.poly_ref = static_cast<double>(reference);
+    return static_cast<double>(status);
+}
+
+double navigation_raw_closest_point(NavigationHandle plugin, NavQueryScratch& scratch) {
+    auto& state = plugin_state(plugin);
+    const float position[]{static_cast<float>(scratch.position[0]),
+                           static_cast<float>(scratch.position[1]),
+                           static_cast<float>(scratch.position[2])};
+    const float extents[]{static_cast<float>(scratch.extents[0]),
+                          static_cast<float>(scratch.extents[1]),
+                          static_cast<float>(scratch.extents[2])};
+    dtPolyRef reference = static_cast<dtPolyRef>(scratch.poly_ref);
+    const auto status =
+        state.query->findNearestPoly(position, extents, &state.filter, &reference, nullptr);
+    scratch.poly_ref = static_cast<double>(reference);
+    if (dtStatusFailed(status))
+        return static_cast<double>(status);
+    return static_cast<double>(
+        state.query->closestPointOnPoly(reference, position, &scratch.point.x, &scratch.over_poly));
+}
+
+double navigation_raw_raycast(NavigationHandle plugin, NavQueryScratch& scratch) {
+    auto& state = plugin_state(plugin);
+    const float position[]{static_cast<float>(scratch.position[0]),
+                           static_cast<float>(scratch.position[1]),
+                           static_cast<float>(scratch.position[2])};
+    const float end[]{static_cast<float>(scratch.end[0]), static_cast<float>(scratch.end[1]),
+                      static_cast<float>(scratch.end[2])};
+    dtRaycastHit hit{};
+    const auto status = state.query->raycast(static_cast<dtPolyRef>(scratch.poly_ref), position,
+                                             end, &state.filter, 0, &hit, 0);
+    scratch.t = hit.t;
+    return static_cast<double>(status);
+}
+
+void navigation_destroy_query(NavigationHandle plugin) {
+    auto& state = plugin_state(plugin);
+    if (plugin.ownership->mesh.use_count() > 1)
+        throw std::runtime_error(
+            "Explicit navigation disposal with a live crowd is not represented.");
+    state.query.reset();
+}
+
+void navigation_destroy_tile_cache(NavigationHandle plugin) {
+#if BBLITE_HAS_NAV_TILE_CACHE
+    auto& state = plugin_state(plugin);
+    state.tile_cache.reset();
+    state.mesh_process.reset();
+    state.compressor.reset();
+    state.allocator.reset();
+#else
+    static_cast<void>(plugin_state(plugin));
+#endif
+}
+
+void navigation_destroy_nav_mesh(NavigationHandle plugin) { plugin_state(plugin).nav_mesh.reset(); }
+
 NavMeshPositionsAndIndices navigation_positions_and_indices(NavigationHandle plugin) {
     NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh) {

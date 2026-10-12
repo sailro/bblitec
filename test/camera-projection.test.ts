@@ -179,7 +179,7 @@ test("a class-held scene camera narrows through the Handles-style guard", () => 
     assert.ok(presence);
     const guard = result.cpp.indexOf(`|| !(${presence[1]})`);
     const projection = result.cpp.indexOf(
-        "bbl::upstream::build_view_projection(",
+        "bbl::upstream::get_camera_view_projection_matrix(",
         guard,
     );
     const handleValidation = result.cpp.indexOf("bbl::handle_at(", projection);
@@ -268,21 +268,19 @@ test("projection intrinsic keeps f32 storage across ArrayLike calls", () => {
 
     assert.match(
         result.cpp,
-        /const double aspect = \(bbl::handle_at\(v_engine\.cameras, v_camera\)\.radius \/ 3\.0\); const auto matrix = bbl::upstream::build_view_projection\(\s*bbl::handle_at\(v_engine\.cameras, v_camera\),\s*aspect\)/,
+        /const double \w+camera_aspect\w* = \(bbl::handle_at\(v_engine\.cameras, v_camera\)\.radius \/ 3\.0\);/,
     );
     assert.equal(
         result.cpp.match(/\.cameras, v_camera\)\.radius \/ 3\.0/g)?.length,
         1,
     );
     const projectionStorage = result.cpp.match(
-        /bbl::js::F32Array (v_[A-Za-z0-9_]*view_projection[A-Za-z0-9_]*) = \(\[&\]\(\) \{ const double aspect =/,
+        /bbl::js::F32Array (v_[A-Za-z0-9_]*camera_matrix[A-Za-z0-9_]*) = bbl::upstream::get_camera_view_projection_matrix\(/,
     );
     assert.ok(projectionStorage);
-    assert.match(
+    assert.doesNotMatch(
         result.cpp,
-        new RegExp(
-            `bbl::js::F32Array v_vp = bbl::js::snapshot_value\\(${projectionStorage[1]}\\);`,
-        ),
+        /F32Array\(matrix\.begin\(\), matrix\.end\(\)\)/,
     );
     assert.match(
         result.cpp,
@@ -404,7 +402,7 @@ test("Sandblox-shaped camera construction stays live and reaches its sources", (
     );
     assert.match(
         result.cpp,
-        /bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::alpha,[\s\S]*bbl::upstream::build_view_projection\(/,
+        /bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::alpha,[\s\S]*bbl::upstream::get_camera_view_projection_matrix\(/,
     );
 });
 

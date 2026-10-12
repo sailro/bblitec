@@ -1,4 +1,5 @@
 #pragma once
+#include <bblite/features/gpu_retirement.hpp>
 
 #include <bblite/features/compute_buffers.hpp>
 #include <bblite/features/compute_mipmaps.hpp>
@@ -26,7 +27,7 @@
 #if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS || BBLITE_GPU_TASK_TIMING
 #include "pal_sdl_gpu_compute_commands.hpp"
 #endif
-#if BBLITE_COMPUTE_BUFFERS
+#if BBLITE_COMPUTE_BUFFERS || BBLITE_GPU_RETIREMENT
 #include "pal_sdl_gpu_storage_buffer.hpp"
 #endif
 #include <bblite/joining_thread.hpp>
@@ -69,6 +70,8 @@ private:
 
 /** The host retains the device until all producers and image leases end. */
 struct SdlOffscreenDevice final : OffscreenDevice {
+    SdlGpuDevice* window_device = nullptr;
+    std::shared_ptr<SdlWindowRun::Resources> window_resources;
     const void* device_identity() const override { return device; }
     std::optional<GpuAdapterInfo> adapter_info() const override { return info; }
 #if BBLITE_GPU_TASK_TIMING
@@ -155,6 +158,8 @@ struct SdlOffscreenDevice final : OffscreenDevice {
         // SDL exposes the API's Uint32 size range; allocation validates device capacity.
         return static_cast<double>(std::numeric_limits<Uint32>::max());
     }
+#endif
+#if BBLITE_COMPUTE_BUFFERS || BBLITE_GPU_RETIREMENT
     std::shared_ptr<StorageBufferAllocation>
     create_storage_buffer(const StorageBufferDescriptor& options,
                           std::optional<std::span<const std::uint8_t>> initial) override {

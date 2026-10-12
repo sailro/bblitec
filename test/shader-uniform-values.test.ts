@@ -62,6 +62,6 @@ test("spreads a numeric tuple into a uniform default lane by lane", () => {
     const { cpp } = compileSource(spread);
     assert.match(
         cpp,
-        /set_shader_uniform_value\([^;]*static_cast<float>\(v_bblite_spread_lane_\d+\), static_cast<float>\(v_bblite_spread_lane_\d+\), static_cast<float>\(v_bblite_spread_lane_\d+\), 1\.0f\)/,
+        /std::array<float, 4> values\{static_cast<float>\(v_bblite_spread_lane_\d+\), static_cast<float>\(v_bblite_spread_lane_\d+\), static_cast<float>\(v_bblite_spread_lane_\d+\), 1\.0f\}; bbl::initialize_shader_uniform_values/,
     );
 });

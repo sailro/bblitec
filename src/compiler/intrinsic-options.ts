@@ -263,12 +263,14 @@ export class IntrinsicOptions {
         material: Value,
         nameExpression: ts.Expression,
         expectedCounts: number[],
+        compiledName?: string,
     ): ShaderUniformSlot {
         return resolveShaderUniform(
             this.context,
             material,
             nameExpression,
             expectedCounts,
+            compiledName,
         );
     }
 

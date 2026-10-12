@@ -80,7 +80,10 @@ interface ControlAdapter {
 /** Source setters are the only transform-version writers. Matrix reads cannot
  * recover writes that returned a value to its starting point before a draw. */
 export class CameraMutationLowerer {
-    constructor(private readonly context: LoweringContext) {}
+    constructor(
+        private readonly context: LoweringContext,
+        private readonly controls = "camera",
+    ) {}
 
     private lower(
         file: ts.SourceFile,
@@ -588,7 +591,7 @@ ${bulkBody}
      */
     private pointerAdapter(): ControlAdapter {
         const hook = (member: string): string =>
-            `(camera.${member} && camera.${member}())`;
+            `(${this.controls}.${member} && ${this.controls}.${member}())`;
         return {
             bindings: new Map<string, PinnedBinding>([
                 ["isDragging", { cpp: "is_dragging", type: "bool" }],
@@ -631,7 +634,7 @@ ${bulkBody}
             type: "bool",
         });
         bindings.set("options?.shouldHandlePointerDown", {
-            cpp: "static_cast<bool>(camera.should_handle_pointer_down)",
+            cpp: `static_cast<bool>(${this.controls}.should_handle_pointer_down)`,
             type: "bool",
         });
         bindings.set("pointerAction", {
@@ -642,7 +645,7 @@ ${bulkBody}
         const calls = new Map(adapter.calls);
         calls.set(
             "options.shouldHandlePointerDown",
-            () => "camera.should_handle_pointer_down()",
+            () => `${this.controls}.should_handle_pointer_down()`,
         );
         const platform = adapter.statement!;
         return this.controlBody("onPointerDown", {

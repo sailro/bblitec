@@ -57,6 +57,14 @@ struct DawnDevice {
             quit_run_sdl();
     }
 
+    std::shared_ptr<OffscreenDevice> source_owner;
+    const DawnDevice* shared_owner = nullptr;
+    const std::string& last_error() const {
+        return shared_owner && uncaptured_error.empty() ? shared_owner->last_error()
+                                                        : uncaptured_error;
+    }
+    bool is_lost() const { return shared_owner ? shared_owner->is_lost() : device_lost.load(); }
+
     SDL_Window* window = nullptr;
 #if defined(__APPLE__)
     SDL_MetalView metal_view = nullptr;

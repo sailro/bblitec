@@ -79,6 +79,12 @@ test(
         writeFileSync(path, compiled.cpp);
         runNativeFixtureCompiler(tools!, [
             "/c",
+            ...(compiled.manifest.features.includes("platform:workers")
+                ? ["/DBBLITE_WORKERS=1"]
+                : []),
+            ...(compiled.manifest.features.includes("platform:window")
+                ? ["/DBBLITE_OFFSCREEN_SURFACES=1"]
+                : []),
             "/I",
             join(output, "upstream/include"),
             `/Fo:${join(output, "check.obj")}`,

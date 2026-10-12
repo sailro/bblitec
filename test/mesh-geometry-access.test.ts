@@ -9,6 +9,7 @@ import { lowerMeshGeometryAccess } from "../src/lowering/mesh-geometry-access.js
 import { lowerMeshAttributeFeatures } from "../src/lowering/mesh-attribute-features.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerThinInstanceOwnership } from "../src/lowering/thin-instance-lowerer.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
     cppFunction,
@@ -82,6 +83,7 @@ test("mesh CPU aliases survive GPU-only writes, clones and geometry replacement"
 ${factories}
 #include <cassert>
 namespace bbl {
+${lowerThinInstanceOwnership(context)}
 ${lowerMeshGeometryAccess(context)}
 ${readers}
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh) { ++handle_at(engine.meshes, mesh).transform_version; }

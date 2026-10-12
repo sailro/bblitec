@@ -20,6 +20,8 @@ struct DawnStorageBuffer final : StorageBufferAllocation {
         }
     }
     void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
+        if (!buffer)
+            throw std::runtime_error("GPU buffer has been destroyed.");
         write_dawn_gpu_buffer(queue, buffer, offset, bytes);
     }
 };

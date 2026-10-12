@@ -761,11 +761,12 @@ function emittedDefines(): Map<string, string> {
 
 /**
  * The emitted names that are constants rather than activation units: the
- * build stamp string and an include guard.
+ * build stamp string and include guards.
  */
 const emittedConstants = new Set([
     "BBLITE_BUILD_STAMP",
     "BBLITE_UPSTREAM_CAMERA_CHANGE_KEY_HPP",
+    "BBLITE_UPSTREAM_SCENE_UBO_CACHE_HPP",
 ]);
 
 test("every emitted BBLITE_ define has a capability row", () => {

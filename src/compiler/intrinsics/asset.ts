@@ -1,9 +1,13 @@
-import { EmissionMap, writable } from "../emission-transaction.js";
+import {
+    EmissionMap,
+    EmissionWeakMap,
+    writable,
+} from "../emission-transaction.js";
 import { compileAssetDecoderConfiguration } from "../asset-decoders.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type { SplatFragmentManifest, Value } from "../types.js";
+import type { CompileAsset, SplatFragmentManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { splatContainerByLoader } from "../assets.js";
 import { compressedTextureUrls } from "../compressed-texture.js";
@@ -21,7 +25,11 @@ import {
     knownDescriptorProperties,
     requireStableRetainedDescriptor,
 } from "../retained-descriptor.js";
-import { externalGltfResourceUri } from "../../gltf-document.js";
+import {
+    externalGltfResourceUri,
+    gltfDocumentFromBytes,
+} from "../../gltf-document.js";
+import { pinnedGltfThinInstanceSelection } from "../../pinned-gltf-feature-selection.js";
 import {
     validateObjectProperties,
     type ObjectValidationContext,
@@ -53,6 +61,7 @@ export interface AssetIntrinsicContext
             | "compileNumber"
             | "intrinsicOptions"
             | "assetRegistry"
+            | "assetPayloads"
             | "emitDiscardedValue"
             | "hasFeature"
             | "unwrap"
@@ -321,6 +330,8 @@ function fetchedGltfSource(
     return source;
 }
 
+const gltfThinInstanceSelections = new EmissionWeakMap<CompileAsset, boolean>();
+
 function compileLoadGltf(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
@@ -335,6 +346,25 @@ function compileLoadGltf(
     context.assetRegistry.recordGltfContainerLoad(asset, call);
     context.reachFeature("loader:gltf", call);
     context.reachFeature("renderer:scene", call);
+    if (context.options.readAssetBytes) {
+        let instancing = gltfThinInstanceSelections.get(asset);
+        if (instancing === undefined) {
+            const document = gltfDocumentFromBytes(
+                context.options.readAssetBytes(
+                    context.assetPayloads.get(asset.source) ?? asset.source,
+                    context.options.fileName,
+                ),
+            );
+            if (!document)
+                context.fail(
+                    call,
+                    `Cannot read the glTF document for '${asset.source}'.`,
+                );
+            instancing = pinnedGltfThinInstanceSelection()(document);
+            gltfThinInstanceSelections.set(asset, instancing);
+        }
+        if (instancing) context.reachFeature("mesh:thin-instances", call);
+    }
     const result: Value = {
         kind: "asset",
         cpp:

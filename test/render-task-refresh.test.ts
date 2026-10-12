@@ -38,21 +38,29 @@ test("render-task shared depth policy and mesh refresh preserve source guards an
             `
 #include <cassert>
 #include <bblite/upstream/pinned_depth_state.hpp>
+int shader_snapshots = 0, shader_packets = 0;
 template<class F> void rejects(F fn,const char* text){try{fn();assert(false);}catch(const std::runtime_error& error){assert(std::string(error.what()).find(text)!=std::string::npos);}}
 int main(){
  using namespace bbl; Engine engine; Scene scene;scene.engine=&engine;
  engine.render_targets.emplace_back();engine.materials.resize(2);engine.meshes.resize(2);
+ engine.materials[1].shader_uniform_snapshot=[](const MaterialRecord& material)->const std::vector<float>&{++shader_snapshots;return material.shader_uniform_values;};
+ engine.materials[1].shader_packet_initialize=[](const Scene&,const MaterialRecord&){++shader_packets;};
  engine.meshes[0].material={0};engine.meshes[1].material={1};
  RenderTaskOptions options;options.target={0};options.auto_mirror=false;
  auto task=create_render_task(engine,scene,options);enable_render_task_mesh_refresh(engine,task);
  add_render_task_mesh(engine,task,{0},{0},false);add_render_task_mesh(engine,task,{0},{0},false);
  auto& record=engine.frame_tasks[task.value];assert(record.render_meshes.size()==1);
+ assert(shader_snapshots==0 && shader_packets==0);
  record.render_recorded=true;enable_render_task_mesh_refresh(engine,task);
  engine.meshes[0].material={1};assert(render_task_mesh_material(engine,record.render_meshes[0]).value==1);
  const auto version=engine.draw_list_epoch;add_render_task_mesh(engine,task,{1},{1},false);assert(engine.draw_list_epoch==version+1);
+ assert(shader_snapshots==2 && shader_packets==2 && record.shader_packet_rebuild_pending);
+ add_render_task_mesh(engine,task,{1},{1},false);assert(shader_packets==2);
  rejects([&]{add_render_task_mesh(engine,task,{1},{0},true);},"per-task material overrides");
  auto late=create_render_task(engine,scene,options);engine.frame_tasks[late.value].render_recorded=true;
  rejects([&]{enable_render_task_mesh_refresh(engine,late);},"#150");
+ add_render_task_mesh(engine,late,{1},{1},true);
+ assert(shader_snapshots==3 && shader_packets==3);
  options.auto_mirror=true;auto automatic=create_render_task(engine,scene,options);
  rejects([&]{enable_render_task_mesh_refresh(engine,automatic);},"#151");
  scene.disposed=true;rejects([&]{add_render_task_mesh(engine,task,{0},{1},false);},"#152");

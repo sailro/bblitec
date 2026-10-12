@@ -43,6 +43,8 @@ import {
     parseFlowGraphs,
     type FlowGraphAssetPrograms,
 } from "./pinned-flow-graph.js";
+import { refuseGeneration } from "./generation-refusal.js";
+import { thinInstanceOwnershipFailure } from "./thin-instance-admission.js";
 
 /** A merged capability and every reason that turned it on. */
 export interface Activation {
@@ -145,6 +147,15 @@ export async function joinAssetFeatures({
     splatHarmonics,
 }: AssetFeatureJoinInputs): Promise<AssetFeatureJoin> {
     const { manifest } = result;
+    if (
+        specialization.gpuInstancing &&
+        !manifest.features.includes("mesh:thin-instances")
+    )
+        refuseGeneration(
+            "mesh:thin-instances",
+            "The packaged glTF loader selected thin instances without entry-time asset discovery; compile with asset bytes before joining loader features.",
+            manifest.featureSites,
+        );
     const compiled = asFeatures(manifest.features);
     const joined = new Map<string, string>();
     const join = (feature: Feature, asset: string): void => {
@@ -219,6 +230,17 @@ export async function joinAssetFeatures({
         if (lights.some((light) => light.type === 0))
             join("light:point", asset.output);
     }
+
+    const thinInstanceFailure = thinInstanceOwnershipFailure(
+        new Set(manifest.features),
+        { geometryOutputTasks: manifest.geometryOutputTasks.length },
+    );
+    if (thinInstanceFailure)
+        refuseGeneration(
+            "mesh:thin-instances",
+            thinInstanceFailure,
+            manifest.featureSites,
+        );
 
     if (joined.size > 0) {
         const features = asFeatures(manifest.features);

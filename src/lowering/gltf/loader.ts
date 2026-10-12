@@ -118,6 +118,8 @@ export interface GltfLoaderOptions {
     gltfCameras?: boolean;
     /** Retain authored tangent streams through the opt-in source loader feature. */
     cpuTangents?: boolean;
+    /** Source CPU array identity is observable through the geometry API. */
+    cpuGeometry?: boolean;
     /**
      * The scene reached `enableBoneControl`, so the loader builds the
      * skeletons the pin's own opt-in chunk builds and carries its eager

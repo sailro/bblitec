@@ -54,6 +54,8 @@ test("each macro follows the features its row names", () => {
         [["platform:window"], "BBLITE_OFFSCREEN_SURFACES"],
         [["audio:decode-ogg", "audio:engine"], "BBLITE_AUDIO_DECODE_OGG"],
         [["compute:uniform-buffer"], "BBLITE_COMPUTE_BUFFERS"],
+        [["engine:gpu-retirement"], "BBLITE_GPU_RETIREMENT"],
+        [["mesh:thin-instances"], "BBLITE_THIN_INSTANCES"],
     ] as const) {
         const reached = values(features);
         assert.equal(reached.get(macro), 1, macro);

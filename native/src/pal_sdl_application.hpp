@@ -9,6 +9,7 @@
 #include <SDL3/SDL_main.h>
 #endif
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -94,7 +95,9 @@ struct SdlApplication {
     std::deque<QueuedSdlEvent> events;
     std::optional<QueuedSdlEvent> delivered;
     bool iterating = false;
-    explicit SdlApplication(Iteration<int> sequence) : frames(std::move(sequence)) {}
+    std::function<void()> before_shutdown;
+    explicit SdlApplication(Iteration<int> sequence, std::function<void()> cleanup)
+        : frames(std::move(sequence)), before_shutdown(std::move(cleanup)) {}
     void fail(std::exception_ptr error) {
         std::lock_guard lock(events_mutex);
         if (!failure)
@@ -119,12 +122,13 @@ inline bool poll_sdl_event(SDL_Event* event) {
 }
 
 /** Capture and benchmark runs retain their explicit, deterministic iteration loop. */
-inline int run_sdl_application(Iteration<int> frames, bool interactive) {
+inline int run_sdl_application(Iteration<int> frames, bool interactive,
+                               std::function<void()> before_shutdown = {}) {
 #if defined(SDL_PLATFORM_WINDOWS) || defined(SDL_PLATFORM_MACOS) || defined(SDL_PLATFORM_LINUX)
     if (interactive) {
         if (active_sdl_application)
             throw std::logic_error("Nested SDL application callbacks.");
-        SdlApplication app(std::move(frames));
+        SdlApplication app(std::move(frames), std::move(before_shutdown));
         struct Binding {
             explicit Binding(SdlApplication& value) { active_sdl_application = &value; }
             ~Binding() { active_sdl_application = nullptr; }
@@ -166,7 +170,10 @@ inline int run_sdl_application(Iteration<int> frames, bool interactive) {
             },
             [](void* state, SDL_AppResult) {
                 // All native frame owners die before SDL performs its final SDL_Quit.
-                static_cast<SdlApplication*>(state)->frames.reset();
+                auto& current = *static_cast<SdlApplication*>(state);
+                current.frames.reset();
+                if (current.before_shutdown)
+                    current.before_shutdown();
             });
         if (app.failure)
             std::rethrow_exception(app.failure);
@@ -174,6 +181,7 @@ inline int run_sdl_application(Iteration<int> frames, bool interactive) {
     }
 #else
     (void)interactive;
+    (void)before_shutdown;
 #endif
     while (frames.advance()) {
     }

@@ -101,7 +101,7 @@ const lightShape = record({
     },
     direction: record({ x: number, y: number, z: number }),
 });
-const thinShape = record({ count: number, matrices: f32 });
+const thinShape = record({ count: number, matrices: f64 });
 const boundsShape = record({ _bounds: f64 });
 const casterShape = record({
     worldMatrix: field(f64, "world"),
@@ -1022,11 +1022,11 @@ function lowerInstancePredicate(context: LoweringContext): string {
         );
     }
     const scope = numericScope();
-    scope.bindings.set("mats", { cpp: "instance", type: "f32" });
+    scope.bindings.set("mats", { cpp: "instance", type: "f64-buffer" });
     scope.bindings.set("o", { cpp: "0.0", type: "scalar" });
     const lowerer = new PinnedNumericLowerer(file, scope);
     return `// ${context.provenance(modulePath, "_thinInstanceWorldAabb", "its parked-instance guard")}
-inline bool csm_instance_contributes(const std::array<float, 16>& instance) {
+inline bool csm_instance_contributes(const std::array<double, 16>& instance) {
 ${lowerer.statement(statement, "    ").join("\n")}
     return !(${lowerer.expression(guard.expression)});
 }`;
@@ -1280,7 +1280,7 @@ struct CsmCascadeScratch {
 };
 
 struct CsmThinInstanceInput {
-    const std::array<float, 16>& matrices;
+    const std::array<double, 16>& matrices;
     double count;
 };
 struct CsmThinBounds { std::array<double, 6> _bounds{}; };

@@ -7,19 +7,26 @@ import { recordAt } from "../compiler/record-access.js";
 /** Pinned range validation and wrappers; PAL only scatters attribute bytes. */
 export function lowerMeshAttributeUpdates(context: LoweringContext): string {
     const module = "src/mesh/mesh-factories.ts";
+    const updates = [
+        ["updateMeshPositions", "positions", "positions"],
+        ["updateMeshUvs", "uvs", "uvs"],
+        ["updateMeshNormals", "normals", "normals"],
+        ["updateMeshColors", "colors", "colors"],
+        ["updateMeshTangents", "tangents", "tangents"],
+        ["updateMeshUv2", "uv2", "uvs2"],
+    ] as const;
     const signatures = [
         [
             "writeVertexAttributeRange",
-            "static void write_vertex_attribute_range(Engine& engine, MeshHandle mesh, pal::MeshAttributeBuffer buffer, const std::vector<float>& values, double components, double vertexOffset, std::optional<double> vertexCount, double sourceVertexOffset)",
+            "static void write_vertex_attribute_range(Engine& engine, MeshHandle mesh, pal::MeshAttributeBuffer buffer, const js::F32Array& values, double components, double vertexOffset, std::optional<double> vertexCount, double sourceVertexOffset)",
         ],
-        [
-            "updateMeshPositions",
-            "void update_mesh_positions(Engine& engine, MeshHandle mesh, const std::vector<float>& positions, double vertexOffset, std::optional<double> vertexCount, double sourceVertexOffset)",
-        ],
-        [
-            "updateMeshUvs",
-            "void update_mesh_uvs(Engine& engine, MeshHandle mesh, const std::vector<float>& uvs, double vertexOffset, std::optional<double> vertexCount, double sourceVertexOffset)",
-        ],
+        ...updates.map(
+            ([name, suffix, values]) =>
+                [
+                    name,
+                    `void update_mesh_${suffix}(Engine& engine, MeshHandle mesh, const js::F32Array& ${values}, double vertexOffset, std::optional<double> vertexCount, double sourceVertexOffset)`,
+                ] as const,
+        ),
     ] as const;
     return signatures
         .map(([name, signature]) => {
@@ -60,6 +67,10 @@ export function lowerMeshAttributeUpdates(context: LoweringContext): string {
                 "values",
                 "positions",
                 "uvs",
+                "normals",
+                "colors",
+                "tangents",
+                "uvs2",
             ])
                 bind(value, value);
             for (const value of [
@@ -101,14 +112,18 @@ export function lowerMeshAttributeUpdates(context: LoweringContext): string {
             );
             bind("mesh.name", `${recordAt("engine.meshes", "mesh")}.name`);
             for (const owner of ["mesh._gpu", "gpu"]) {
-                bind(
-                    `${owner}.positionBuffer`,
-                    `pal::MeshAttributeBuffer{&${geometry}, pal::MeshAttribute::Position}`,
-                );
-                bind(
-                    `${owner}.uvBuffer`,
-                    `pal::MeshAttributeBuffer{&${geometry}, pal::MeshAttribute::Uv}`,
-                );
+                for (const [buffer, attribute] of [
+                    ["positionBuffer", "Position"],
+                    ["normalBuffer", "Normal"],
+                    ["uvBuffer", "Uv"],
+                    ["uv2Buffer", "Uv2"],
+                    ["tangentBuffer", "Tangent"],
+                    ["colorBuffer", "Color"],
+                ])
+                    bind(
+                        `${owner}.${buffer}`,
+                        `pal::MeshAttributeBuffer{&${geometry}, pal::MeshAttribute::${attribute}}`,
+                    );
             }
             bind(
                 "values.length",

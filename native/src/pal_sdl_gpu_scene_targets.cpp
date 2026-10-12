@@ -457,7 +457,7 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
 
 void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint32_t height,
                                  const std::array<float, 16>& view_projection,
-                                 const std::vector<upstream::RenderItem>& render_plan,
+                                 std::span<const upstream::RenderItem> render_plan,
                                  const Scene& scene, const Engine& engine, const std::string& path,
                                  bool cluster_ids) {
     SDL_GPUTextureCreateInfo color_info{};
@@ -550,8 +550,9 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
             bind_mesh_vertex_buffers(pass, mesh);
             SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
             SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-            count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, mesh.index_count,
-                           mesh.instance_count, 0, 0, 0);
+            encode_sdl_gpu_indexed_draw(pass, mesh.index_count,
+                                        mesh.indirect_args ? 0u : mesh.instance_count(),
+                                        mesh.indirect_args);
         }
     }
     pass.end();

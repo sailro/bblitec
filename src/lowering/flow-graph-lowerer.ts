@@ -2741,7 +2741,7 @@ void ensure_flow_graph_coordinator(Scene& scene) {
     SceneState& state = *scene.state;
     if (state.flow_graph_tick) return;
     const std::weak_ptr<SceneState> weak = scene.state;
-    state.flow_graph_tick = js::Callback<void(float)>{[weak](float) {
+    state.flow_graph_tick = js::Callback<void(double)>{[weak](double) {
         const std::shared_ptr<SceneState> shared = weak.lock();
         if (!shared || shared->disposed) return;
         std::vector<std::shared_ptr<FlowGraphRuntime>> pending_start;

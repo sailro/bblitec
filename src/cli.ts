@@ -81,6 +81,7 @@ import {
 import { GeneratedTree } from "./generated-tree.js";
 import { asFeatures, projectFeatures } from "./compiler/output-projection.js";
 import { downloadCached } from "./asset-download-cache.js";
+import { readAssetBytesSync } from "./compiler/asset-bytes-sync.js";
 import {
     emitAssetSpecializations,
     gltfAssetDocuments,
@@ -396,6 +397,8 @@ async function materializeAsset(
     meshWalks: NonNullable<CompileResult["manifest"]["meshWalks"]> = [],
     decoders: AssetDecoders = {},
     boneControl = false,
+    cpuGeometry = false,
+    cpuTangents = false,
 ): Promise<MaterializedAssetFacts | undefined> {
     const inlineSource = assetPayloads.get(asset.source);
     if (
@@ -479,6 +482,8 @@ async function materializeAsset(
                     cameras: asset.gltfCameras === true,
                     nodeTransforms,
                     boneControl,
+                    cpuGeometry,
+                    cpuTangents,
                 },
                 decoders,
             ),
@@ -581,6 +586,8 @@ async function materializeAsset(
                       cameras: asset.gltfCameras === true,
                       nodeTransforms,
                       boneControl,
+                      cpuGeometry,
+                      cpuTangents,
                   },
                   decoders,
               ),
@@ -918,7 +925,10 @@ async function main(): Promise<void> {
     }
     const outputPath = resolve(options.target.output);
     const result = withCoverage(options.coverage, () =>
-        compileSource(source, compileOptions),
+        compileSource(source, {
+            ...compileOptions,
+            readAssetBytes: readAssetBytesSync,
+        }),
     );
 
     // The frozen node-particle bake is a Chromium run that nothing between
@@ -968,6 +978,8 @@ async function main(): Promise<void> {
                 result.manifest.meshWalks,
                 decodersFor(asset),
                 result.manifest.features.includes("loader:gltf-bone-control"),
+                result.manifest.features.includes("mesh:geometry-access"),
+                result.manifest.features.includes("loader:gltf-cpu-tangents"),
             ),
         ),
     );
@@ -1210,6 +1222,8 @@ async function main(): Promise<void> {
                 result.manifest.meshWalks,
                 {},
                 result.manifest.features.includes("loader:gltf-bone-control"),
+                result.manifest.features.includes("mesh:geometry-access"),
+                result.manifest.features.includes("loader:gltf-cpu-tangents"),
             );
         }
     }

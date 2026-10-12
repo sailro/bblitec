@@ -178,7 +178,7 @@ const CAMERA_SPELLINGS: ReadonlyMap<
         {
             arity: 1,
             spell: (args: readonly string[]) =>
-                `build_view_matrix(camera_world_matrix(*${args[0]}))`,
+                `build_camera_view_matrix(*${args[0]})`,
         },
     ],
     [

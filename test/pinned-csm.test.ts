@@ -239,7 +239,7 @@ function casterInput(caster: PinCaster): string[] {
     return Array.from(
         { length: matrices.count },
         (_, index) =>
-            `ShadowCaster{${base}${cppArray(matrices.matrices.subarray(index * 16, index * 16 + 16), "float")}, true${bounds}}`,
+            `ShadowCaster{${base}${cppArray(matrices.matrices.subarray(index * 16, index * 16 + 16))}, true${bounds}}`,
     );
 }
 
@@ -519,7 +519,7 @@ test(
                 pin._createCascadeScratch(1),
             );
             cases.push(
-                `assert(csm_instance_contributes(${cppArray(instance, "float")}) == ${expected});`,
+                `assert(csm_instance_contributes(${cppArray(instance)}) == ${expected});`,
             );
         }
         const point: [number, number, number] = [
@@ -585,7 +585,7 @@ test(
 #include <bblite/js_data.hpp>
 struct FixtureCaster {
     std::array<double, 16> world{};
-    std::array<float, 16> instance{};
+    std::array<double, 16> instance{};
     bool has_instance = false;
     std::array<float, 3> bounds_min{}, bounds_max{};
 };

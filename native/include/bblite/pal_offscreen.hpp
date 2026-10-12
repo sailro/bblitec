@@ -21,6 +21,7 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace bbl::pal {
 
@@ -33,7 +34,25 @@ struct OffscreenCompletion {
 };
 
 struct OffscreenDevice : GpuDevice {
-    virtual ~OffscreenDevice() = default;
+    ~OffscreenDevice() override {
+        for (const auto& resource : source_buffers_) {
+            if (const auto buffer = resource.lock())
+                buffer->destroy();
+        }
+    }
+    GpuHandle create_buffer(const GpuBufferDescriptor& descriptor) override {
+        const StorageBufferDescriptor options{gpu_size(descriptor.size),
+                                              gpu_u32(gpu_size(descriptor.usage)),
+                                              descriptor.label.value_or(std::string{})};
+        auto allocation = create_storage_buffer(options, std::nullopt);
+        if (!allocation)
+            throw std::runtime_error("GPU buffer creation returned no allocation.");
+        allocation->size = static_cast<double>(options.byte_length);
+        const std::lock_guard lock(source_buffers_mutex_);
+        std::erase_if(source_buffers_, [](const auto& resource) { return resource.expired(); });
+        source_buffers_.push_back(allocation);
+        return allocation;
+    }
     virtual std::optional<GpuAdapterInfo> adapter_info() const { return std::nullopt; }
     virtual bool supports_gpu_timestamps() const { return false; }
     virtual std::shared_ptr<GpuTimestampQuerySet> create_gpu_timestamp_query_set(std::uint32_t) {
@@ -116,6 +135,12 @@ struct OffscreenDevice : GpuDevice {
     on_submitted_work_done(std::function<void(std::exception_ptr)>) {
         throw std::runtime_error("This device does not provide a GPU completion fence.");
     }
+
+private:
+    // A retained source pool may outlive this device. Retire its native handles
+    // before the host destroys the device, preserving the source receipt fields.
+    std::mutex source_buffers_mutex_;
+    std::vector<std::weak_ptr<StorageBufferAllocation>> source_buffers_;
 };
 
 struct OffscreenImage {

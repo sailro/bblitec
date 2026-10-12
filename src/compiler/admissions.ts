@@ -21,8 +21,6 @@ interface AdmissionContext
     /** Where `startEngine` landed, once it has. */
     readonly engineLifecycle: Pick<EngineLifecycle, "engineStartMark">;
     readonly features: ReadonlySet<Feature>;
-    /** How many frame callbacks enclose the current emission. */
-    readonly frameCallbackDepth: number;
 }
 
 /**
@@ -56,7 +54,6 @@ export class AdmissionRecorder {
     public readonly temporalRegisteredScenes: Array<
         Value["sceneTopologyState"]
     > = emissionArray([]);
-    @journaled private accessor temporalControlAttachment: ts.Node | undefined;
 
     /**
      * Refuses the deferred admission failures whose capability the finished
@@ -394,25 +391,5 @@ export class AdmissionRecorder {
                 this.temporalRegisteredScenes.push(identity);
             }
         }
-    }
-
-    public noteTemporalCameraControl(
-        node: ts.Node,
-        tracksWorldMatrixVersion = false,
-    ): void {
-        if (
-            this.temporalControlAttachment ||
-            this.context.frameCallbackDepth > 0 ||
-            this.context.engineLifecycle.engineStartMark !== undefined
-        ) {
-            this.untrackedTaaCameraWrites.push({
-                node,
-                reason: "TAA supports one startup control attachment until per-attachment inertia callbacks are represented",
-                ...(tracksWorldMatrixVersion && !this.temporalControlAttachment
-                    ? { cameraVersionSafe: true as const }
-                    : {}),
-            });
-        }
-        this.temporalControlAttachment ??= node;
     }
 }

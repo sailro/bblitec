@@ -31,6 +31,7 @@ test("both renderers synchronize a scene in one order, keep surviving uploads, a
         "/DSDL_STATIC_LIB",
         "/DBBLITE_HAS_PBR_RENDERER=1",
         "/DBBLITE_MESH_ATTRIBUTE_UPDATE=1",
+        "/DBBLITE_MESH_GEOMETRY_UPDATE=1",
         "/DBBLITE_WORKERS=1",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,

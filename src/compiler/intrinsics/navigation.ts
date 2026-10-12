@@ -9,7 +9,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // and the answers are expected to match the browser reference.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { handleCppType } from "../data-types.js";
+import { handleCppType, isTypedArrayType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { NativeCaptureBinding } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -25,7 +25,9 @@ import {
     emitPresentOption,
     emitScalarOption,
     retainedOptions,
+    type RetainedOption,
 } from "./retained-options.js";
+import { writeVec3Lanes } from "./vec3-write.js";
 
 export interface NavigationIntrinsicContext
     extends
@@ -185,6 +187,181 @@ export function compileNavigationIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "createNavMeshFromSources": {
+            context.expectArgumentCount(call, 3, 3);
+            const pluginSite = argumentAt(call, 0);
+            const plugin = context.bindings.pinValueToTemporary(
+                context.compileValue(pluginSite),
+                "nav_plugin",
+                pluginSite,
+            );
+            context.expectKind(plugin, "navigation", pluginSite);
+            const sourceSite = argumentAt(call, 1);
+            const sources = context.bindings.pinValueToTemporary(
+                context.compileValue(sourceSite),
+                "nav_sources",
+                sourceSite,
+            );
+            const optionSite = argumentAt(call, 2);
+            const options = context.compileValue(optionSite);
+            const members = new Map(
+                retainedOptions(context, options, optionSite).map((member) => [
+                    member.name,
+                    member,
+                ]),
+            );
+            for (const name of members.keys())
+                if (!NAV_MESH_PARAM_NAMES.includes(name))
+                    context.fail(
+                        optionSite,
+                        `Unrepresented navigation option '${name}'.`,
+                    );
+            const gate = (name: string): number => {
+                const member = members.get(name);
+                if (!member || member.value?.kind === "json-null") return 0;
+                if (member.value?.staticNumber === undefined)
+                    return context.fail(
+                        optionSite,
+                        `Navigation build arm '${name}' must be known at compilation.`,
+                    );
+                return member.value.staticNumber;
+            };
+            const obstacles = gate("maxObstacles"),
+                tiles = gate("tileSize");
+            if (obstacles <= 0 && tiles > 0)
+                context.fail(
+                    optionSite,
+                    "Tiled navigation without obstacles is not lowered.",
+                );
+            if (obstacles > 0 && members.has("tileSize") && tiles === 0)
+                context.fail(
+                    optionSite,
+                    "Navigation tile cache requires nonzero tileSize.",
+                );
+            if (obstacles > 0 && members.has("offMeshConnections"))
+                context.fail(
+                    optionSite,
+                    "Tile-cache off-mesh connections are not lowered.",
+                );
+            context.reachFeature("navigation:recast", call);
+            if (obstacles > 0)
+                context.reachFeature("navigation:tile-cache", call);
+            const parameters = emitNavMeshBuildParams(
+                context,
+                members,
+                optionSite,
+            );
+            const reverse =
+                context.allocateTemporaryCppName("nav_keep_winding");
+            context.emit({
+                kind: "declaration",
+                type: "bool",
+                name: reverse,
+                initializer: "false",
+            });
+            const winding = members.get("doNotReverseIndices");
+            if (winding)
+                emitPresentOption(context, winding, (present) =>
+                    emitScalarOption(
+                        context,
+                        present,
+                        "boolean",
+                        reverse,
+                        optionSite,
+                    ),
+                );
+            const packed = emitNavMeshSources(context, sources, sourceSite);
+            return {
+                kind: "void",
+                cpp: `bbl::upstream::create_nav_mesh_from_sources(${plugin.cpp}, ${packed}, ${parameters}, ${reverse})`,
+            };
+        }
+        case "findClosestPointWithinInto": {
+            context.expectArgumentCount(call, 4, 4);
+            const site = argumentAt(call, 0);
+            const plugin = context.bindings.pinValueToTemporary(
+                context.compileValue(site),
+                "nav_plugin",
+                site,
+            );
+            context.expectKind(plugin, "navigation", site);
+            const positionSite = argumentAt(call, 1),
+                extentSite = argumentAt(call, 2),
+                outSite = argumentAt(call, 3);
+            const position = context.bindings.pinValueToTemporary(
+                context.compileValue(positionSite),
+                "nav_position",
+                positionSite,
+            );
+            const extents = context.bindings.pinValueToTemporary(
+                context.compileValue(extentSite),
+                "nav_extents",
+                extentSite,
+            );
+            const out = context.bindings.pinValueToTemporary(
+                context.compileValue(outSite),
+                "nav_output",
+                outSite,
+            );
+            const result = context.allocateTemporaryCppName("nav_result");
+            context.emit({
+                kind: "declaration",
+                type: "bbl::Vec3d",
+                name: result,
+                initializer: "",
+                initialization: "default",
+            });
+            const found = context.allocateTemporaryCppName("nav_found");
+            context.emit({
+                kind: "declaration",
+                type: "const bool",
+                name: found,
+                initializer: `bbl::upstream::nav_closest_point_within_into(${plugin.cpp}, ${context.vec3FromRecord(position, positionSite, "double")}, ${context.vec3FromRecord(extents, extentSite, "double")}, ${result})`,
+            });
+            context.emit({ kind: "open", code: `if (${found}) {` });
+            writeVec3Lanes(context, out, outSite, [
+                `${result}.x`,
+                `${result}.y`,
+                `${result}.z`,
+            ]);
+            context.emit({ kind: "close", code: "}" });
+            return { kind: "boolean", cpp: found };
+        }
+        case "navRayBlockedFast": {
+            context.expectArgumentCount(call, 3, 3);
+            const site = argumentAt(call, 0);
+            const plugin = context.bindings.pinValueToTemporary(
+                context.compileValue(site),
+                "nav_plugin",
+                site,
+            );
+            context.expectKind(plugin, "navigation", site);
+            const startSite = argumentAt(call, 1),
+                endSite = argumentAt(call, 2);
+            const start = context.bindings.pinValueToTemporary(
+                context.compileValue(startSite),
+                "nav_start",
+                startSite,
+            );
+            const end = context.bindings.pinValueToTemporary(
+                context.compileValue(endSite),
+                "nav_end",
+                endSite,
+            );
+            return {
+                kind: "boolean",
+                cpp: `bbl::upstream::nav_ray_blocked_fast(${plugin.cpp}, ${context.vec3FromRecord(start, startSite, "double")}, ${context.vec3FromRecord(end, endSite, "double")})`,
+            };
+        }
+        case "disposeNavigationPlugin": {
+            context.expectArgumentCount(call, 1, 1);
+            const plugin = context.compileValue(argumentAt(call, 0));
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
+            return {
+                kind: "void",
+                cpp: `bbl::upstream::dispose_navigation_plugin(${plugin.cpp})`,
+            };
+        }
         case "createNavigationPluginAsync": {
             // The pinned factory loads the wasm; the native toolset is
             // linked, so the options (`locateFile`) name a browser
@@ -236,37 +413,12 @@ export function compileNavigationIntrinsic(
             if (tileCache) {
                 context.reachFeature("navigation:tile-cache", call);
             }
-            const parameters = context.allocateTemporaryCppName("nav_params");
-            context.emit({
-                kind: "declaration",
-                type: "bbl::pal::NavMeshBuildParams",
-                name: parameters,
-                initializer: "",
-                initialization: "default",
-            });
-            for (const [name, field] of NAV_MESH_BUILD_PARAM_FIELDS) {
-                const value = values.get(name);
-                if (value)
-                    emitPresentOption(context, value, (present) =>
-                        emitScalarOption(
-                            context,
-                            present,
-                            "number",
-                            `${parameters}.${field}`,
-                            options,
-                        ),
-                    );
-            }
-            const connections = values.get("offMeshConnections");
-            if (connections)
-                emitPresentOption(context, connections, (present) =>
-                    emitOffMeshConnections(
-                        context,
-                        present.value!,
-                        context.objectProperty(options, "offMeshConnections")!,
-                        parameters,
-                    ),
-                );
+            const parameters = emitNavMeshBuildParams(
+                context,
+                values,
+                options,
+                context.objectProperty(options, "offMeshConnections"),
+            );
             return {
                 kind: "void",
                 cpp:
@@ -588,6 +740,161 @@ export function compileNavigationIntrinsic(
         default:
             return undefined;
     }
+}
+
+function emitNavMeshBuildParams(
+    context: NavigationIntrinsicContext,
+    members: ReadonlyMap<string, RetainedOption>,
+    site: ts.Expression,
+    connectionSite = site,
+): string {
+    const parameters = context.allocateTemporaryCppName("nav_params");
+    context.emit({
+        kind: "declaration",
+        type: "bbl::pal::NavMeshBuildParams",
+        name: parameters,
+        initializer: "",
+        initialization: "default",
+    });
+    for (const [name, field] of NAV_MESH_BUILD_PARAM_FIELDS) {
+        const member = members.get(name);
+        if (member)
+            emitPresentOption(context, member, (present) =>
+                emitScalarOption(
+                    context,
+                    present,
+                    "number",
+                    `${parameters}.${field}`,
+                    site,
+                ),
+            );
+    }
+    const connections = members.get("offMeshConnections");
+    if (connections)
+        emitPresentOption(context, connections, (present) =>
+            emitOffMeshConnections(
+                context,
+                present.value!,
+                connectionSite,
+                parameters,
+            ),
+        );
+    return parameters;
+}
+
+/** Retain source ArrayLikes after all arguments have evaluated, as `_mergeSources` observes them. */
+function emitNavMeshSources(
+    context: NavigationIntrinsicContext,
+    sources: Value,
+    site: ts.Expression,
+): string {
+    const packed = context.allocateTemporaryCppName("nav_source_values");
+    context.emit({
+        kind: "declaration",
+        type: "std::vector<bbl::upstream::NavMeshSource>",
+        name: packed,
+        initializer: "",
+        initialization: "default",
+    });
+    const emitSource = (source: Value): void => {
+        const fields = new Map(
+            retainedOptions(context, source, site).map((field) => [
+                field.name,
+                field,
+            ]),
+        );
+        if (
+            [...fields.keys()].some(
+                (name) => name !== "positions" && name !== "indices",
+            )
+        )
+            context.fail(
+                site,
+                "Navigation sources admit positions and indices arrays.",
+            );
+        const record = context.allocateTemporaryCppName("nav_source");
+        context.emit({
+            kind: "declaration",
+            type: "bbl::upstream::NavMeshSource",
+            name: record,
+            initializer: "",
+            initialization: "default",
+        });
+        for (const name of ["positions", "indices"]) {
+            const value = fields.get(name)?.value;
+            if (!value)
+                context.fail(site, `Navigation sources require ${name}.`);
+            if (value.kind === "tuple" && value.tupleElements) {
+                const numbers = value.tupleElements.map((entry) =>
+                    context.dataLowerer.compileKnownValueForSink(
+                        entry,
+                        { kind: "number" },
+                        site,
+                    ),
+                );
+                context.emit({
+                    kind: "expression",
+                    code: `${record}.${name} = bbl::js::NumericArrayView(bbl::js::Array<double>{${numbers.join(", ")}});`,
+                });
+                continue;
+            }
+            const type = value.dataType;
+            if (
+                value.kind !== "data" ||
+                (!isTypedArrayType(type) &&
+                    !(
+                        type?.kind === "vector" &&
+                        type.element.kind === "number"
+                    ))
+            )
+                context.fail(
+                    site,
+                    `Navigation ${name} require represented numeric arrays.`,
+                );
+            const owner = context.bindings.pinValueToTemporary(
+                value,
+                "nav_stream",
+                site,
+            );
+            const view = context.dataLowerer.compileKnownValueForSink(
+                owner,
+                { kind: "numberindex" },
+                site,
+            );
+            context.emit({
+                kind: "expression",
+                code: `${record}.${name} = ${view};`,
+            });
+        }
+        context.emit({
+            kind: "expression",
+            code: `${packed}.push_back(std::move(${record}));`,
+        });
+    };
+    if (sources.kind === "tuple" && sources.tupleElements)
+        sources.tupleElements.forEach(emitSource);
+    else {
+        const range = context.dataLowerer.iterationTarget(site, sources);
+        const type = range?.container.dataType;
+        if (!range || (type?.kind !== "vector" && type?.kind !== "span"))
+            context.fail(
+                site,
+                "Navigation sources require a represented array of geometry records.",
+            );
+        const owner = context.bindings.pinValueToTemporary(
+            range.container,
+            "nav_source_owner",
+            site,
+        );
+        const element = context.allocateTemporaryCppName("nav_source_record");
+        context.emit({
+            kind: "open",
+            code: `for (const auto& ${element} : ${owner.cpp}) {`,
+        });
+        emitSource(context.dataLowerer.leafValue(element, type.element));
+        context.emit({ kind: "close", code: "}" });
+    }
+    return packed;
 }
 
 /**

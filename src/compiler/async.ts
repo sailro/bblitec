@@ -59,6 +59,7 @@ interface AsyncContext extends Pick<
     | "dataLowerer"
     | "dataTypes"
     | "compileValue"
+    | "compileBrowserTextureFunctionCall"
     | "compileCallbackWithValues"
     | "captureManagedClosureLines"
     | "withOwnedCallbackBody"
@@ -507,6 +508,13 @@ export class AsyncLowerer {
             return undefined;
         if (context.browserErasure.isBrowserOnlyLocalCall(node))
             return undefined;
+        if (ts.isIdentifier(callee)) {
+            const textures = context.compileBrowserTextureFunctionCall(
+                node,
+                callee,
+            );
+            if (textures) return this.asPromise(textures, node);
+        }
         const values = node.arguments.map((argument, index) =>
             this.pinArgument(
                 context.compileValue(argument),

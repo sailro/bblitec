@@ -33,14 +33,19 @@ int main() {
             pal::physics_body_set_linear_velocity(body, {1, 0, 0});
             double simulated_seconds = 0;
             int calls = 0;
+            double public_delta_ms = 0;
+            on_before_render(scene, [&](double milliseconds) { public_delta_ms = milliseconds; });
             on_physics_after_step(world, [&](float seconds) {
                 simulated_seconds += seconds;
                 ++calls;
             });
             for (int frame = 0; frame < fps; ++frame) {
                 const double delta = scene.fixed_delta_ms > 0 ? scene.fixed_delta_ms : 1000.0 / fps;
-                for (const auto& callback : scene.before_render)
-                    callback(static_cast<float>(delta));
+                run_scene_before_render(scene, delta);
+                assert(public_delta_ms == delta);
+                assert(public_delta_ms != static_cast<double>(static_cast<float>(delta)));
+                assert(world.ownership.lock()->engine_delta_ms ==
+                       static_cast<double>(static_cast<float>(delta)));
             }
             const double distance = pal::physics_body_get_transform(body).position[0];
             const double expected = fixed ? fps * 0.0125 : 1;

@@ -9,6 +9,8 @@ import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerHierarchyInstanceOperations } from "../src/lowering/hierarchy-instance-lowerer.js";
+import { lowerThinInstanceApi } from "../src/lowering/thin-instance-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
@@ -131,7 +133,7 @@ test(
                         assert.ok(mesh.thinInstances);
                         return `{
                         const auto& mesh = engine.meshes[${i}];
-                        assert(mesh.thin_instanced && mesh.instance_count == ${placements.length});
+                        assert(mesh.thin_instances && mesh.thin_instances->count == ${placements.length});
                         const auto world = bbl::upstream::mesh_world_matrix(engine, mesh);
                         ${placements
                             .map((_placement, index) => {
@@ -140,8 +142,11 @@ test(
                                         index * 16,
                                         (index + 1) * 16,
                                     );
-                                return `check(mesh.instance_matrices[${index}], ${literal(instance)});
-                                check(bbl::upstream::matrix_product(world, mesh.instance_matrices[${index}]),
+                                return `std::array<float,16> instance_${index};
+                                for (std::size_t lane = 0; lane < 16; ++lane)
+                                    instance_${index}[lane] = static_cast<float>(bbl::thin_instance_matrix_values(*mesh.thin_instances).load(${index} * 16 + lane));
+                                check(instance_${index}, ${literal(instance)});
+                                check(bbl::upstream::matrix_product(world, instance_${index}),
                                     ${literal(multiplyMat4(mesh.worldMatrix, instance))});`;
                             })
                             .join("\n")}
@@ -167,7 +172,6 @@ test(
         const helpers = [
             "HierarchyInstancePoolRecord& hierarchy_instance_pool(",
             "std::array<float, 16> hierarchy_instance_matrix(",
-            "void write_hierarchy_instance_matrix(",
             "HierarchyInstancePoolHandle create_hierarchy_instance_pool(",
             "void set_hierarchy_instance_count(",
             "double add_hierarchy_instance(",
@@ -190,6 +194,7 @@ test(
             `#include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/thin_instance.hpp>
 #include <cassert>
 namespace bbl::upstream {
 ${worlds}
@@ -200,6 +205,8 @@ AssetRecord& asset_record(Engine& engine, std::uint32_t asset) { return engine.a
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh) { ++engine.meshes.at(mesh.value).transform_version; }
 ${assetRootTransformSource(context)}
 ${lowerMat4InvertCpp(context)}
+${lowerThinInstanceApi(context, ["mesh:thin-instances"])}
+${lowerHierarchyInstanceOperations(context)}
 ${helpers}
 }
 void check(const std::array<float,16>& actual, const std::array<float,16>& expected) {

@@ -12,6 +12,7 @@
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
+#include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
@@ -349,9 +350,11 @@ void release_gpu_mesh_resources([[maybe_unused]] GpuState* state, GpuMeshResourc
     if (mesh.owns_geometry_buffers) {
         state->kept_buffers.release(state->device, mesh.indices);
     }
-    state->kept_buffers.release(state->device, mesh.instances);
+    if (!mesh.instance_owner)
+        state->kept_buffers.release(state->device, mesh.instances);
 #if BBLITE_GPU_INSTANCE_COLORS
-    state->kept_buffers.release(state->device, mesh.instance_colors);
+    if (!mesh.instance_color_owner)
+        state->kept_buffers.release(state->device, mesh.instance_colors);
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
     if (mesh.owns_morph_buffers) {
@@ -434,19 +437,26 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
     if (use_source_indices && geometry.source_indices_reversed) {
         node_source_indices(geometry, source_indices);
     }
-    const auto& upload_indices = source_indices.empty() ? geometry.indices : source_indices;
+    const auto& upload_indices =
+        source_indices.empty() ? mesh_gpu_indices(geometry) : source_indices;
     const bool shader_material = item.material_kind == upstream::RenderMaterialKind::shader;
     const std::vector<GpuVertex> vertices = mesh_gpu_vertices(geometry, mesh_record);
     const auto upload_mesh_buffer = [&, buffer_uploads](SDL_GPUBufferUsageFlags usage,
                                                         const void* data, std::size_t size) {
+        // Empty source streams still need a bindable native allocation.
+        static constexpr std::uint32_t empty = 0;
+        if (size == 0) {
+            data = &empty;
+            size = sizeof(empty);
+        }
         return buffer_uploads ? state.kept_buffers.upload(*buffer_uploads, usage, data, size)
                               : upload_buffer(state.device, usage, data, size);
     };
     GpuMesh gpu_mesh{&state};
     if (shader_material) {
-#if BBLITE_MESH_ATTRIBUTE_UPDATE
-        // A procedural position stream is mutable and therefore
-        // cannot borrow the immutable shader-geometry cache.
+#if BBLITE_MESH_ATTRIBUTE_UPDATE || BBLITE_MESH_GEOMETRY_UPDATE
+        // Mutable vertex or index streams own their upload instead of
+        // borrowing the immutable shader-geometry cache.
         gpu_mesh.vertices = upload_mesh_buffer(SDL_GPU_BUFFERUSAGE_VERTEX, vertices.data(),
                                                vertices.size() * sizeof(GpuVertex));
         gpu_mesh.indices = upload_mesh_buffer(SDL_GPU_BUFFERUSAGE_INDEX, upload_indices.data(),
@@ -509,45 +519,19 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
     }
 #endif
 #if BBLITE_GPU_INSTANCING
-    {
-        std::vector<std::array<float, 16>> instance_matrices = mesh_record.instance_matrices;
-        if (instance_matrices.empty()) {
-            std::array<float, 16> identity{};
-            identity[0] = 1.0f;
-            identity[5] = 1.0f;
-            identity[10] = 1.0f;
-            identity[15] = 1.0f;
-            instance_matrices.push_back(identity);
-        }
-        // The buffer holds the full capacity pool; dynamic pools
-        // draw record.instance_count of it and re-upload through the
-        // version-gated per-frame sync below.
-        gpu_mesh.instances = upload_mesh_buffer(
-            SDL_GPU_BUFFERUSAGE_VERTEX | SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-            instance_matrices.data(), instance_matrices.size() * sizeof(instance_matrices.front()));
-        gpu_mesh.instance_count = mesh_record.thin_instanced
-                                      ? mesh_record.instance_count
-                                      : static_cast<std::uint32_t>(instance_matrices.size());
-        gpu_mesh.instance_version = mesh_record.instance_version;
-        gpu_mesh.instance_capacity = static_cast<std::uint32_t>(instance_matrices.size());
-#if BBLITE_GPU_INSTANCE_COLORS
-        {
-            // One tightly-packed RGBA row per matrix-pool slot. A
-            // colour setter may first run after registration, so
-            // the fallback must reserve the established capacity,
-            // not one row, before the versioned upload fills it.
-            std::vector<float> instance_colors = instance_colors_for_upload(mesh_record);
-            instance_colors.resize(std::max(instance_colors.size(), instance_matrices.size() * 4),
-                                   1.0f);
-            gpu_mesh.instance_colors =
-                upload_mesh_buffer(SDL_GPU_BUFFERUSAGE_VERTEX, instance_colors.data(),
-                                   instance_colors.size() * sizeof(float));
-        }
-#endif
+    gpu_mesh.thin_pool = mesh_record.thin_instances;
+    if (!gpu_mesh.thin_pool) {
+        const std::array<float, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        gpu_mesh.instances = upload_mesh_buffer(SDL_GPU_BUFFERUSAGE_VERTEX |
+                                                    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                                                identity.data(), sizeof(identity));
     }
 #endif
-    gpu_mesh.index_count = static_cast<std::uint32_t>(geometry.indices.size());
+    gpu_mesh.index_count = static_cast<std::uint32_t>(upload_indices.size());
     gpu_mesh.attribute_version = geometry.attribute_version;
+#if BBLITE_MESH_GEOMETRY_UPDATE
+    gpu_mesh.index_version = geometry.index_version;
+#endif
     const bool standard_material = item.material_kind == upstream::RenderMaterialKind::standard;
     const MaterialRecord* material = nullptr;
     if (item.material.value < engine.materials.size()) {

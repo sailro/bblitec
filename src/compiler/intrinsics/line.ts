@@ -37,8 +37,10 @@ export interface LineIntrinsicContext
             LoweringServices,
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
+            | "executedModuleConstantElements"
             | "objectProperty"
             | "compileVec3"
+            | "vec3FromRecord"
             | "compileColor4"
             | "compileBoolean"
             | "compileStringLiteral"
@@ -377,6 +379,25 @@ function compileLines(
     context: LineIntrinsicContext,
     expression: ts.Expression,
 ): { cpp: string; counts: number[] } {
+    // A realm may own an immutable module array as native data. Reuse the
+    // compiler's mutation-checked constant execution for its static geometry.
+    const executed = context.executedModuleConstantElements(expression);
+    if (executed) {
+        const counts: number[] = [];
+        const rows = executed.map((row) => {
+            const points = row.tupleElements;
+            if (!points)
+                context.fail(expression, "Expected a static array literal.");
+            counts.push(points.length);
+            return `{${points
+                .map((point) => context.vec3FromRecord(point, expression))
+                .join(", ")}}`;
+        });
+        return {
+            cpp: `std::vector<std::vector<bbl::Vec3>>{${rows.join(", ")}}`,
+            counts,
+        };
+    }
     const lines = context.expectStaticArrayLiteral(expression);
     const counts: number[] = [];
     const rows = lines.elements.map((line) => {

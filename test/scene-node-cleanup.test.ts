@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
-import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
+import { lowerThinInstanceApi } from "../src/lowering/thin-instance-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { lowerSceneNodeRemoval } from "../src/lowering/scene-node-removal.js";
 import { sceneNodeTraversalSource } from "../src/lowering/scene-node-transforms.js";
@@ -20,7 +20,7 @@ import {
 test("SceneNode removal dispatches retained nodes and snapshots children before recursive removal", (t) => {
     const compiled = compileSource(`
         import {createEngine,createSceneContext,createTransformNode,removeFromScene,type SceneNode} from "@babylonjs/lite";
-        const engine=await createEngine({});
+        const engine=await createEngine(document.createElement("canvas"));
         const scene=createSceneContext(engine);
         const nodes:SceneNode[]=[createTransformNode("root")];
         for(const node of nodes) {
@@ -93,9 +93,12 @@ int main(){
     scene_node_visibility(engine,MeshHandle{0})=true;
     assert(engine.meshes[0].visible==true);
     assert(!scene_node_has_thin_instance_property(engine,MeshHandle{0}));
-    engine.meshes[0].thin_instanced=true;
+    engine.meshes[0].thin_instances=std::make_shared<ThinInstancePoolData>();
     assert(scene_node_has_thin_instance_property(engine,MeshHandle{0}));
-    assert(scene_node_thin_instance_pool(engine,MeshHandle{0})->value==0);
+    const auto retained_pool=scene_node_thin_instance_pool(engine,MeshHandle{0});
+    assert(retained_pool.value()==engine.meshes[0].thin_instances);
+    engine.meshes[0].thin_instances.reset();
+    assert(retained_pool.value()&&!scene_node_has_thin_instance_property(engine,MeshHandle{0}));
     assert(!scene_node_has_thin_instance_property(engine,AssetHandle{0}));
     Scene scene;scene.engine=&engine;
     remove_from_scene(scene,SceneNodeHandle{AssetHandle{0}});
@@ -113,7 +116,7 @@ int main(){
 test("SceneNode thin-instance queries preserve optional matrices and material discrimination", (t) => {
     const compiled = compileSource(`
         import {createEngine,createBox,createTransformNode,setThinInstances,setThinInstanceCount,type SceneNode} from "@babylonjs/lite";
-        const engine=await createEngine({});
+        const engine=await createEngine(new OffscreenCanvas(1,1));
         const mesh=createBox(engine,1);
         setThinInstances(mesh,new Float32Array(16),1);
         const nodes:SceneNode[]=[mesh,createTransformNode("root")];
@@ -130,9 +133,11 @@ test("SceneNode thin-instance queries preserve optional matrices and material di
             return -1;
         }
         if(inspect(nodes[0]!)!==17||inspect(nodes[1]!)!==-1)throw new Error("optional matrices or mesh identity");
+        globalThis.close();
     `);
     assert.match(compiled.cpp, /scene_node_thin_instance_pool/);
     assert.match(compiled.cpp, /Nullable<bbl::js::F32Array>/);
+    assert.match(compiled.cpp, /std::get<0>\(bbl::thin_instance_matrices\(/);
     assert.match(compiled.cpp, /holds_alternative<bbl::MeshHandle>/);
     const native = optionalNativeFixtureTools();
     if (!native) {
@@ -144,30 +149,34 @@ test("SceneNode thin-instance queries preserve optional matrices and material di
     emitUpstreamGenerated(output, compiled.manifest.features);
     const file = join(output, "check.cpp"),
         executable = join(output, "check.exe");
-    const factories = new FactoryLowerer(
-        new LoweringContext(),
-    ).lowerMeshFactories(["mesh:thin-instances"]).source;
+    const factories = lowerThinInstanceApi(new LoweringContext(), [
+        "mesh:thin-instances",
+    ]);
     writeFileSync(
         file,
-        compiled.cpp +
+        `#include <bblite/pal_async_engine.hpp>
+namespace bbl::pal {
+std::shared_ptr<Engine> create_realm_engine(EngineOptions, const std::shared_ptr<OffscreenCanvas>&) {return std::make_shared<Engine>();}
+}
+` +
+            compiled.cpp +
             `
 namespace bbl {
 Engine create_engine(EngineOptions){return {};}
 MeshHandle create_box(Engine& engine,BoxOptions){engine.meshes.emplace_back();return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size()-1)};}
 TransformNodeHandle create_transform_node(Engine& engine,std::string,Vec3d,Vec4,Vec3){engine.transform_nodes.emplace_back();return TransformNodeHandle{static_cast<std::uint32_t>(engine.transform_nodes.size()-1)};}
-void set_thin_instances(Engine& engine,MeshHandle mesh,js::F32Array& matrices,double count){
-    auto& record=engine.meshes.at(mesh.value);record.thin_instanced=true;
-    record.owned_instance_source=matrices.storage();record.instance_count=static_cast<std::uint32_t>(count);
-}
-void set_thin_instance_count(Engine& engine,MeshHandle mesh,double count){engine.meshes.at(mesh.value).instance_count=static_cast<std::uint32_t>(count);}
+${cppFunction(factories, "void set_thin_instances(")}
+${cppFunction(factories, "void set_thin_instance_count(")}
 MeshHandle clone_mesh_node(Engine&,MeshHandle mesh){return mesh;}
 AssetHandle clone_asset_root(Engine&,AssetHandle asset){return asset;}
-${cppFunction(factories, "js::F32Array thin_instance_matrices(")}
+${cppFunction(factories, "ThinInstanceMatrices thin_instance_matrices(const std::shared_ptr<ThinInstancePoolData>&")}
 ${sceneNodeTraversalSource(new LoweringContext())}
 }
 `,
     );
     runNativeFixtureCompiler(native, [
+        "/DBBLITE_WORKERS=1",
+        "/DBBLITE_OFFSCREEN_SURFACES=1",
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
         "/I",

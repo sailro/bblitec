@@ -25,6 +25,7 @@ struct DawnDevice {
     ANativeWindow* android_window = nullptr;
     bool surface_recovery_pending = false;
     std::string uncaptured_error;
+    const std::string& last_error() const { return uncaptured_error; }
     WGPUTextureFormat surface_format = WGPUTextureFormat_Undefined;
     WGPUPresentMode present_mode = WGPUPresentMode_Undefined;
     std::uint32_t surface_width = 0, surface_height = 0;

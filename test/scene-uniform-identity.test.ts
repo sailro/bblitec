@@ -212,13 +212,13 @@ test("scene object keys observe pin defaults, fresh fog, retained glTF setup and
 #include <cassert>
 #include <iostream>
 namespace {
-std::vector<std::uint8_t> bytes;
+std::vector<std::uint8_t> environment_bytes;
 bool fail_brdf = false;
 }
 namespace bbl::pal {
 std::vector<std::uint8_t> read_binary_file(const std::string& path) {
     if (path == "brdf") { if (fail_brdf) throw std::runtime_error("brdf"); return {1,2,3}; }
-    return bytes;
+    return environment_bytes;
 }
 }
 namespace bbl {
@@ -248,8 +248,8 @@ int main() {
     assert(alias.state->fog_identity == fog_a && scene.fog_density == .3f);
     bbl::set_scene_fog(alias, 0,.3f,0,10,{.2f,.3f,.4f});
     assert(scene.state->fog_identity != fog_a);
-    bytes.resize(124 + 6*8); const std::uint8_t magic[]{0x42,0x42,0x4c,0x48,0x44,0x52,0x31,0};
-    std::copy(std::begin(magic),std::end(magic),bytes.begin()); bytes[8]=1; bytes[12]=1;
+    environment_bytes.resize(124 + 6*8); const std::uint8_t magic[]{0x42,0x42,0x4c,0x48,0x44,0x52,0x31,0};
+    std::copy(std::begin(magic),std::end(magic),environment_bytes.begin()); environment_bytes[8]=1; environment_bytes[12]=1;
     auto dds = [&] { bbl::load_dds_environment(scene, {"environment","brdf"}); };
     auto hdr = [&] { bbl::load_hdr_environment(scene, {"environment","brdf"}); };
     auto env = [&] { bbl::EnvironmentOptions options; options.environment_url="environment"; options.brdf_url="brdf";
@@ -259,9 +259,9 @@ int main() {
         load(); assert(scene.state->environment_identity != first);
         const auto committed = scene.state->environment_identity;
         const auto previous = scene.environment.specular_faces[0].bytes;
-        bytes[124] ^= 1; fail_brdf = true; bool failed = false;
+        environment_bytes[124] ^= 1; fail_brdf = true; bool failed = false;
         try { load(); } catch(const std::runtime_error&) { failed = true; }
-        fail_brdf = false; bytes[124] ^= 1;
+        fail_brdf = false; environment_bytes[124] ^= 1;
         assert(failed && scene.state->environment_identity == committed);
         const auto& current = scene.environment.specular_faces[0].bytes;
         assert(current.size() == previous.size() && std::equal(current.begin(), current.end(), previous.begin()));
@@ -269,13 +269,13 @@ int main() {
     verify(dds); verify(hdr); verify(env);
     const auto retained = env();
     const auto retained_byte = retained->specular_faces[0].bytes[124];
-    bytes[124] ^= 1;
+    environment_bytes[124] ^= 1;
     const auto replacement = env();
     assert(retained != replacement);
     assert(retained->specular_faces[0].bytes[124] == retained_byte);
     assert(replacement->specular_faces[0].bytes[124] != retained_byte);
     const auto committed = scene.state->environment_identity;
-    bytes.pop_back(); bool failed=false;
+    environment_bytes.pop_back(); bool failed=false;
     try { dds(); } catch(const std::runtime_error&) { failed=true; }
     assert(failed && scene.state->environment_identity == committed);
     std::cout << "scene-uniform-identity: ok\\n";

@@ -4,7 +4,11 @@ import { refuseEitherAbsence } from "./absence-tag-storage.js";
 import { numericSlotKind } from "./numeric-slot-storage.js";
 import { unwrapExpression } from "./syntax.js";
 import type { DataLowerer } from "./data-lowering.js";
-import { dataTypesEqual, type DataType } from "./data-types.js";
+import {
+    dataTypesEqual,
+    isTypedArrayType,
+    type DataType,
+} from "./data-types.js";
 import {
     absenceKind,
     absentValueKind,
@@ -201,7 +205,8 @@ export function strictEqualsCpp(
     // when the two name one array (two views compare as such).
     if (
         (left.dataType?.kind === "numberindex") !==
-        (right.dataType?.kind === "numberindex")
+            (right.dataType?.kind === "numberindex") ||
+        (isTypedArrayType(left.dataType) && isTypedArrayType(right.dataType))
     ) {
         const present = (value: Value): boolean =>
             value.dataType?.kind !== "optional" &&
@@ -268,7 +273,8 @@ export function dataUnionEquality(
             ? type.members.every(supported)
             : type.kind === "optional"
               ? supported(type.inner)
-              : [
+              : isTypedArrayType(type) ||
+                [
                     "number",
                     "boolean",
                     "string",
@@ -304,7 +310,21 @@ export function dataUnionEquality(
             if (owner?.kind === "vector" || owner?.kind === "span")
                 return owner.element;
         }
-        return lowerer.dataTypeAt(node);
+        const type = lowerer.dataTypeAt(node);
+        // An engine getter can retain union storage even when TypeScript has
+        // narrowed a previous read. Compare the current array arm each time.
+        if (isTypedArrayType(type)) {
+            const stored = lowerer.context.probeEmission(
+                () => lowerer.context.compileValue(node).dataType,
+                () => false,
+            );
+            if (
+                stored?.kind === "union" &&
+                stored.members.every(isTypedArrayType)
+            )
+                return stored;
+        }
+        return type;
     };
     const leftType = storageType(left),
         rightType = storageType(right);

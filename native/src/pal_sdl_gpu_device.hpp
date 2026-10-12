@@ -17,17 +17,19 @@ struct SdlGpuDevice {
             SDL_ReleaseWindowFromGPUDevice(device, window);
         if (auto* value = std::exchange(device, nullptr); value && owns_device)
             SDL_DestroyGPUDevice(value);
-        if (auto* value = std::exchange(window, nullptr))
+        if (auto* value = std::exchange(window, nullptr); value && owns_window)
             release_run_window(value);
         if (std::exchange(sdl_initialized, false))
             quit_run_sdl();
     }
 
+    std::shared_ptr<OffscreenDevice> source_owner;
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
     SDL_GPUTextureFormat swapchain_format = SDL_GPU_TEXTUREFORMAT_INVALID;
     bool window_claimed = false;
     bool owns_device = true;
+    bool owns_window = true;
     bool sdl_initialized = false;
 };
 

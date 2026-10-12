@@ -14,6 +14,11 @@ import {
     cameraPointerDeltaBindings,
 } from "./camera-mutation-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import {
+    cameraControlLifecycleHelpers,
+    cameraControlPublication,
+    lowerCameraControlLifecycle,
+} from "./camera-control-attachment.js";
 
 const configurableModule = "src/camera/configurable-free-camera-controls.ts";
 const freeModule = "src/camera/free-camera-controls.ts";
@@ -216,6 +221,7 @@ const draggingReference: PinnedBinding = { type: "bool", cpp: "is_dragging" };
 export function lowerFreeCameraControls(context: LoweringContext): {
     declarations: string;
     definitions: string;
+    attachment: string;
 } {
     const pointer = (
         name: "onPointerDown" | "onPointerMove" | "onPointerUp",
@@ -228,6 +234,7 @@ export function lowerFreeCameraControls(context: LoweringContext): {
             draggingReference,
         );
     return {
+        attachment: lowerOwnedFreeControl(context),
         declarations: `
 // ${context.provenance(freeModule, "attachFreeControl")}
 // The handlers of the pinned closure: the drag flag is the platform
@@ -266,6 +273,97 @@ ${lowerFreeUpdate(context, freeControl, freeAccumulators)}
 }
 `,
     };
+}
+
+function ownedCallbacks(
+    context: LoweringContext,
+    control: FreeControlSource,
+    state: ReadonlyMap<string, PinnedBinding>,
+    update: string,
+): string {
+    const pointer = (name: "onPointerDown" | "onPointerMove" | "onPointerUp") =>
+        lowerFreePointer(context, control, name, state, {
+            type: "bool",
+            cpp: "pointer->dragging",
+        });
+    const keyboard = (name: "onKeyDown" | "onKeyUp") => {
+        const { file, declaration } = nestedFunctionDeclaration(
+            context,
+            control.modulePath,
+            control.symbol,
+            name,
+        );
+        return lowerPinnedBody(file, declaration.body!.statements, {
+            bindings: new Map([
+                [`${control.event}.code`, { type: "opaque", cpp: "code" }],
+            ]),
+            calls: new Map([
+                [
+                    "keys.add",
+                    (args: readonly string[]) =>
+                        `state->keys.insert(std::string(${args[0]}))`,
+                ],
+                [
+                    "keys.delete",
+                    (args: readonly string[]) =>
+                        `state->keys.erase(std::string(${args[0]}))`,
+                ],
+            ]),
+        });
+    };
+    return `
+    auto control = std::make_shared<CameraControlAttachment>();
+    control->pointer_down = [pointer = control.get()](double button, [[maybe_unused]] bool touch) {
+${pointer("onPointerDown")}
+    };
+    control->pointer_move = [state, pointer = control.get(), camera_record = &camera]([[maybe_unused]] double touch_count, double delta_x, double delta_y) {
+        auto& camera = *camera_record;
+${pointer("onPointerMove")}
+    };
+    control->pointer_up = [pointer = control.get()] {
+${pointer("onPointerUp")}
+    };
+    control->key_down = [state](std::string_view code) {
+${keyboard("onKeyDown")}
+    };
+    control->key_up = [state](std::string_view code) {
+${keyboard("onKeyUp")}
+    };
+    control->update = [state, camera_record = &camera](double delta_ms) {
+        auto& camera = *camera_record;
+        const auto pressed = [&state](std::string_view code) { return state->keys.contains(code); };
+${update}
+    };
+`;
+}
+
+function lowerOwnedFreeControl(context: LoweringContext): string {
+    const { file, declaration } = context.functionDeclaration(
+        freeModule,
+        freeControl.symbol,
+    );
+    const state = new Map<string, PinnedBinding>();
+    const fields: string[] = [];
+    for (const name of ["cdX", "cdY", "cdZ", "crX", "crY"]) {
+        fields.push(
+            `double ${name} = ${context.doubleLiteral(context.numericValue(context.variableInitializer(declaration, name), file))};`,
+        );
+        state.set(name, { type: "scalar", cpp: `state->${name}` });
+    }
+    context.assertExpressionShape(
+        context.variableInitializer(declaration, "keys"),
+        "new Set<string>()",
+        "Free control key owner",
+    );
+    return `
+js::Callback<void()> attach_free_control(Engine& engine, CameraHandle handle, const Scene& scene) {
+    struct State { ${fields.join(" ")} std::set<std::string, std::less<>> keys; };
+    auto state = std::make_shared<State>();
+    auto& camera = ${recordAt("engine.cameras", "handle")};
+${ownedCallbacks(context, freeControl, state, lowerFreeUpdate(context, freeControl, state))}
+${cameraControlPublication(lowerCameraControlLifecycle(context, freeModule, freeControl.symbol))}
+}
+`;
 }
 
 /** Control state and event units are native adapters; every update expression comes from the pin. */
@@ -364,47 +462,6 @@ export function lowerConfigurableCameraControls(
         state,
         new Map([["hasAny", (args) => `has_any(${args.join(", ")})`]]),
     );
-    // The platform layer only moves a dragging configurable camera, so the
-    // drag flag the callback tests is the one it was called under.
-    const pointerBody = lowerFreePointer(
-        context,
-        configurableControl,
-        "onPointerMove",
-        state,
-        { type: "bool", cpp: "true", staticBoolean: true },
-    );
-    // The record has no configurable pointer-down or pointer-up slot: the
-    // platform layer starts and ends a free-camera drag through
-    // attachFreeControl's lowered handlers, which is exact only while this
-    // module's handlers lower to the same statements.
-    for (const name of ["onPointerDown", "onPointerUp"] as const) {
-        const configurable = lowerFreePointer(
-            context,
-            configurableControl,
-            name,
-            state,
-            draggingReference,
-        );
-        if (
-            configurable !==
-            lowerFreePointer(
-                context,
-                freeControl,
-                name,
-                freeAccumulators,
-                draggingReference,
-            )
-        )
-            context.contractError(
-                nestedFunctionDeclaration(
-                    context,
-                    configurableControl.modulePath,
-                    configurableControl.symbol,
-                    name,
-                ).declaration,
-                `Configurable ${name} no longer matches attachFreeControl's.`,
-            );
-    }
     return {
         modulePath: configurableModule,
         symbolName: "attachConfigurableFreeControl",
@@ -417,25 +474,29 @@ export function lowerConfigurableCameraControls(
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <set>
 namespace bbl {
-void attach_configurable_free_control(Engine& engine, CameraHandle handle, const Scene& scene, ConfigurableFreeControlOptions options) {
+${cameraControlLifecycleHelpers}
+js::Callback<void()> attach_configurable_free_control(Engine& engine, CameraHandle handle, const Scene& scene, ConfigurableFreeControlOptions options) {
     struct State {
 ${fields.join("\n")}
+        std::set<std::string, std::less<>> keys;
     };
     auto state = std::make_shared<State>();
 ${optionInitializers.join("\n")}
     auto& camera = ${recordAt("engine.cameras", "handle")};
-    camera.controls_enabled = true;
-    camera.controls_scene = scene.state;
-    camera.configurable_free_pointer = [state](CameraRecord& camera, double delta_x, double delta_y) {
-${pointerBody}
-    };
-    camera.configurable_free_update = [state](CameraRecord& camera, double delta_ms, const std::function<bool(std::string_view)>& pressed) {
+${ownedCallbacks(
+    context,
+    configurableControl,
+    state,
+    `
         const auto has_any = [&pressed](const std::vector<std::string>& codes) -> bool {
 ${predicate}
         };
 ${updateBody}
-    };
+`,
+)}
+${cameraControlPublication(lowerCameraControlLifecycle(context, configurableModule, configurableControl.symbol))}
 }
 }
 `,

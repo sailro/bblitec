@@ -1183,8 +1183,7 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
     // The caster sum itself: worldMatrixVersion (bumped eagerly per write
     // and pushed down the subtree, which is `MeshRecord::transform_version`
     // to the letter) plus the thin-instance pool's version, with the pin's
-    // `~~` mapping an absent pool to the zero an unbound `instance_version`
-    // holds.
+    // `~~` mapping an absent pool to zero.
     const { declaration: sumDeclaration } = context.functionDeclaration(
         baseModule,
         "casterVersionSum",
@@ -1503,6 +1502,81 @@ inline constexpr std::size_t shadow_params_block_bytes =
     8 * sizeof(float);`;
 }
 
+/** The CSM camera comparisons and publication, projected from its render gate. */
+function lowerCsmCameraGate(context: LoweringContext): {
+    unchanged: string;
+    publish: string;
+} {
+    const { file, declaration } = context.functionDeclaration(
+        csmHooksModule,
+        "renderCsmShadowMap",
+    );
+    const gate = declaration.body!.statements.find(
+        (statement) =>
+            ts.isIfStatement(statement) &&
+            context.countNodes(
+                statement.expression,
+                (node) =>
+                    ts.isPropertyAccessExpression(node) &&
+                    context.expressionMatchesShape(
+                        node,
+                        "state._lastCamAspect",
+                    ),
+            ) > 0,
+    );
+    if (
+        !gate ||
+        !ts.isIfStatement(gate) ||
+        !ts.isBinaryExpression(gate.expression) ||
+        !ts.isBinaryExpression(gate.expression.left)
+    )
+        return context.contractError(
+            declaration,
+            "Expected CSM camera gate terms.",
+        );
+    const cameraCondition = ts.factory.updateBinaryExpression(
+        gate.expression,
+        gate.expression.left.right,
+        gate.expression.operatorToken,
+        gate.expression.right,
+    );
+    const lowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map<string, PinnedBinding>([
+            ["camVersion", { cpp: "csm_camera->change_key", type: "scalar" }],
+            ["camAspect", { cpp: "csm_camera->aspect", type: "scalar" }],
+            [
+                "state._lastCamVersion",
+                { cpp: "gate.last_camera_change_key", type: "scalar" },
+            ],
+            [
+                "state._lastCamAspect",
+                { cpp: "gate.last_camera_aspect", type: "scalar" },
+            ],
+        ]),
+        calls: new Map(),
+    });
+    const publish = declaration.body!.statements.filter((statement) => {
+        if (
+            !ts.isExpressionStatement(statement) ||
+            !ts.isBinaryExpression(statement.expression)
+        )
+            return false;
+        const left = statement.expression.left;
+        return ["state._lastCamVersion", "state._lastCamAspect"].some((field) =>
+            context.expressionMatchesShape(left, field),
+        );
+    });
+    if (publish.length !== 2)
+        context.contractError(
+            declaration,
+            "Expected CSM camera gate publication.",
+        );
+    return {
+        unchanged: lowerer.expression(cameraCondition),
+        publish: lowerer.statements(publish, "        ").join("\n"),
+    };
+}
+
 /** The generated header carrying the pinned shadow family. */
 export function pinnedShadowHeader(
     context: LoweringContext,
@@ -1510,6 +1584,7 @@ export function pinnedShadowHeader(
 ): string {
     assertShadowUboLayout(context);
     assertShadowRenderGateContracts(context);
+    const csmCameraGate = lowerCsmCameraGate(context);
     const target = assertPcfResourceContracts(context);
     const defaults = pcfSpotDefaults(context);
     const esm = esmDefaults(context);
@@ -1695,7 +1770,7 @@ struct ShadowCaster {
      * mesh.world; retaining both preserves that exact two-step arithmetic.
      */
 #if BBLITE_SHADOWS_CSM
-    std::array<float, 16> instance{};
+    std::array<double, 16> instance{};
     bool has_instance = false;
 #endif
     std::array<float, 3> bounds_min{};
@@ -1875,9 +1950,8 @@ ${lowerShadowEnabled(context)}
  * transform write and pushed down the subtree by \`world-matrix-state.ts\`,
  * which is \`mark_mesh_dirty\`'s contract for
  * \`MeshRecord::transform_version\` to the letter — plus the thin-instance
- * pool's \`_version\`, with \`~~\` mapping an absent pool to the zero an
- * unbound \`instance_version\` holds. Versions only grow, so an equal sum
- * means no term moved.
+ * pool's \`_version\`, with \`~~\` mapping its source Number to Int32 and
+ * an absent pool to zero.
  *
  * A caster of a generator with morph-target bounds carries a THIRD term,
  * which is the pin's proxy mesh: \`enableDeformableShadowBounds\` defines
@@ -1897,7 +1971,7 @@ inline std::uint64_t shadow_caster_version_sum(
         // The caster array keeps a removed mesh, and names it, so its
         // record is still there to be moved (\`caster_names\`).
         const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
-        sum += mesh.transform_version + mesh.instance_version;${
+        sum += mesh.transform_version + static_cast<std::uint64_t>(js::to_int32(mesh.thin_instances ? mesh.thin_instances->version : 0.0));${
             morphBounds
                 ? `
         if (generator.morph_shadow_bounds) sum += mesh.morph_weights_version;`
@@ -1927,9 +2001,8 @@ struct ShadowRefreshGate {
     double last_light_angle = 0.0;
     Vec3d last_fo_offset{};
 #if BBLITE_SHADOWS_CSM
-    std::array<float, 16> last_camera_view_projection{};
-    double last_camera_near = 0.0;
-    double last_camera_far = 0.0;
+    double last_camera_change_key = 0.0;
+    double last_camera_aspect = 0.0;
 #endif
     bool rendered = false;
     /** This frame's verdict, written beside the gate test by the shared
@@ -1942,16 +2015,13 @@ struct ShadowRefreshGate {
 
 /**
  * The CSM gate's camera terms — \`_cameraChangeKey(camera)\` and the
- * fitted aspect — as the values the single-map fit actually consumes: the
- * camera view-projection (the aspect is folded into its projection) and
- * the near/far pair the split formula reads directly.
+ * fitted aspect. Mutable camera matrix bytes do not change this key.
  */
 struct CsmCameraKey;
 #if BBLITE_SHADOWS_CSM
 struct CsmCameraKey {
-    std::array<float, 16> view_projection{};
-    double near_plane = 0.0;
-    double far_plane = 0.0;
+    double change_key = 0.0;
+    double aspect = 0.0;
 };
 #endif
 
@@ -2005,10 +2075,7 @@ inline bool shadow_refresh_due(
         ? eye.x == gate.last_fo_offset.x &&
             eye.y == gate.last_fo_offset.y &&
             eye.z == gate.last_fo_offset.z
-        : csm_camera->view_projection ==
-                gate.last_camera_view_projection &&
-            csm_camera->near_plane == gate.last_camera_near &&
-            csm_camera->far_plane == gate.last_camera_far;
+        : ${csmCameraGate.unchanged};
 #else
     const bool camera_unchanged =
         eye.x == gate.last_fo_offset.x && eye.y == gate.last_fo_offset.y &&
@@ -2039,9 +2106,7 @@ inline bool shadow_refresh_due(
     gate.last_fo_offset = eye;
 #if BBLITE_SHADOWS_CSM
     if (csm_camera != nullptr) {
-        gate.last_camera_view_projection = csm_camera->view_projection;
-        gate.last_camera_near = csm_camera->near_plane;
-        gate.last_camera_far = csm_camera->far_plane;
+${csmCameraGate.publish}
     }
 #endif
     return true;

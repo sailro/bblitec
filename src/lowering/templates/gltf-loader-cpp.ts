@@ -1,3 +1,4 @@
+import { gltfCpuStreamsCpp } from "../gltf/cpu-streams.js";
 import { outlineLoweredBody } from "../../compiler/lowered-body.js";
 import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 import { compressedTextureFormat } from "../../compressed-texture-format.js";
@@ -599,7 +600,11 @@ ${nodeTransforms ? gltfNodeHierarchyCpp() : ""}`,
                       ]
                     : []),
             ],
-            code: `    for (std::size_t gltf_mesh_counter = 0; gltf_mesh_counter < planned_meshes.size(); ++gltf_mesh_counter) {
+            code: `    // gltf-feature-gpu-instancing builds one matrix array per node and
+    // passes that same array to each of the node's mesh primitives.
+    std::unordered_map<std::size_t, js::F32Array> node_instance_matrices;
+${options.cpuGeometry ? "    GltfCpuStreamCache cpu_stream_cache;" : ""}
+    for (std::size_t gltf_mesh_counter = 0; gltf_mesh_counter < planned_meshes.size(); ++gltf_mesh_counter) {
             const auto& planned = planned_meshes[gltf_mesh_counter].as_object();
             const auto node_index = unsigned_value(required(planned, "node"));
             const auto& node = node_json.at(node_index).as_object();
@@ -635,7 +640,7 @@ ${nodeTransforms ? gltfNodeHierarchyCpp() : ""}`,
             const Matrix mesh_world = read_matrix(source_world, 0);
             const bool mirrored_world =
                 upstream::pinned_mat4_determinant3(mesh_world) < 0.0;
-            std::vector<Matrix> instance_matrices;
+            std::optional<js::F32Array> instance_matrices;
             if (const auto* instance_value = optional(setup, "instances")) {
                 if (animated || planned_skin || planned_morph)
                     throw std::runtime_error("Animated or deformed GPU instances are not supported.");
@@ -644,9 +649,17 @@ ${nodeTransforms ? gltfNodeHierarchyCpp() : ""}`,
                 const auto& matrices = accessors.at(unsigned_value(required(instances, "matrices")));
                 if (matrices.type != "VEC4" || matrices.component_type != 5126 || matrices.count != count * 4)
                     throw std::runtime_error("Invalid glTF instance matrix storage.");
-                instance_matrices.reserve(count);
-                for (std::size_t instance = 0; instance < count; ++instance)
-                    instance_matrices.push_back(read_matrix(matrices, instance));
+                const auto found = node_instance_matrices.find(node_index);
+                if (found != node_instance_matrices.end()) {
+                    instance_matrices = found->second;
+                } else {
+                    instance_matrices.emplace(static_cast<std::size_t>(count) * 16u);
+                    for (std::size_t instance = 0; instance < count; ++instance) {
+                        const Matrix matrix = read_matrix(matrices, instance);
+                        std::copy(matrix.begin(), matrix.end(), instance_matrices->begin() + static_cast<std::ptrdiff_t>(instance * 16u));
+                    }
+                    node_instance_matrices.emplace(node_index, *instance_matrices);
+                }
             }
             const std::size_t material_index =
                 ${
@@ -686,6 +699,7 @@ ${nodeTransforms ? gltfNodeHierarchyCpp() : ""}`,
                 : "node_" + std::to_string(node_index);
             record.name = required(planned, "name").as_string();
             record.geometry = geometry_slot;
+${options.cpuGeometry ? `            record.cpu_streams = read_gltf_cpu_streams(required(planned, "cpu").as_object(), cpu_stream_cache, buffer, container, views, accessors);` : ""}
             // load-gltf.ts sets boundMin/boundMax on every primitive.
             record.has_bounds = true;
             record.material = materials[material_index];
@@ -719,20 +733,13 @@ ${nodeTransforms ? gltfNodeHierarchyCpp() : ""}`,
             record.parent_world.reset();`
                     : ""
             }
-            record.instance_matrices =
-                std::move(instance_matrices);
-            // Loader-built pools are static: the thin-instance flag routes
-            // the draw through the pin's instance arm and the record count,
-            // while the version/source fields stay unused so the PAL never
-            // re-uploads them.
-            record.thin_instanced =
-                !record.instance_matrices.empty();
-            // The GPU-instancing feature's enableThinInstanceWorldBounds.
-            record.thin_instance_world_bounds = record.thin_instanced;
-            record.instance_count = static_cast<std::uint32_t>(
-                record.instance_matrices.size());
             const MeshHandle mesh_handle =
                 store_mesh_record(engine, std::move(record));
+            if (instance_matrices) {
+                set_thin_instances(engine, mesh_handle, *instance_matrices, static_cast<double>(instance_matrices->size()) / 16.0);
+                // The GPU-instancing feature's enableThinInstanceWorldBounds.
+                ${recordAt("engine.meshes", "mesh_handle")}.thin_instance_world_bounds = true;
+            }
 ${
     nodeTransforms
         ? `            set_mesh_transform_parent(engine, mesh_handle, asset.nodes.at(node_index));
@@ -1053,6 +1060,7 @@ struct AccessorInfo {
     bool normalized = false;
 };
 
+${options.cpuGeometry ? gltfCpuStreamsCpp() : ""}
 using Matrix = std::array<float, 16>;
 
 ${gltfCameras ? `struct AnimatedCameraBinding { CameraHandle camera{}; std::size_t node=0; Matrix local{}; };` : ""}

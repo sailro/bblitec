@@ -458,8 +458,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     // -- WebGPU forbids a queue write between draws inside a pass.
     if (pick_sources) {
         billboard_pick.prepare(state.device, state.queue, state.pick_scene_layout, engine, scene,
-                               upstream::build_view_matrix(upstream::camera_world_matrix(camera)),
-                               ranges, next_id);
+                               upstream::build_camera_view_matrix(camera), ranges, next_id);
     }
 #endif
 

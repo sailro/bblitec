@@ -51,6 +51,8 @@ import {
 } from "../../pinned-csg2.js";
 import { recordAt } from "../record-access.js";
 import { compileNullableHitRecord } from "./hit-record.js";
+import { writeVec3Lanes } from "./vec3-write.js";
+import { emitPresentOption, retainedOptions } from "./retained-options.js";
 
 /**
  * Native math and instance-buffer work: these may record reached stream facts,
@@ -69,9 +71,13 @@ export const nativeMeshDataIntrinsics: ReadonlySet<string> = new EmissionSet([
     "setThinInstanceColor",
     "setThinInstanceCullBoundsPad",
     "setThinInstanceCount",
+    "setThinInstanceDrawCount",
+    "enableThinInstanceDynamicDrawCount",
     "flushThinInstances",
     "addThinInstance",
     "removeThinInstance",
+    "updateMeshGeometry",
+    "updateMeshGeometryCapacity",
 ]);
 
 export interface MeshIntrinsicContext
@@ -82,6 +88,7 @@ export interface MeshIntrinsicContext
         Pick<
             LoweringServices,
             | "dataTypes"
+            | "bindings"
             | "dataLowerer"
             | "checker"
             | "sceneManifest"
@@ -111,58 +118,6 @@ export interface MeshIntrinsicContext
             | "heldTypedArrayValue"
             | "fail"
         > {}
-
-function writableVec3Lanes(
-    context: MeshIntrinsicContext,
-    value: Value,
-    node: ts.Node,
-): [string, string, string] {
-    if (value.kind === "record") {
-        const lanes = ["x", "y", "z"].map(
-            (name) => value.recordProperties?.[name],
-        );
-        if (
-            lanes.every(
-                (lane) => lane?.kind === "number" && lane.cpp.length > 0,
-            )
-        ) {
-            return lanes.map((lane) => lane!.cpp) as [string, string, string];
-        }
-    }
-    if (value.kind === "data" && value.dataType?.kind === "struct") {
-        const dataType = value.dataType;
-        const separator = context.dataTypes.isReferenceStruct(dataType.name)
-            ? "->"
-            : ".";
-        return ["x", "y", "z"].map((name) => {
-            const field = context.dataTypes.structField(
-                dataType.name,
-                name,
-                node,
-            );
-            return `${value.cpp}${separator}${field.name}`;
-        }) as [string, string, string];
-    }
-    return context.fail(
-        node,
-        "A Vec3 *ToRef output must be a writable Vec3 record.",
-    );
-}
-
-function writeVec3Lanes(
-    context: MeshIntrinsicContext,
-    output: Value,
-    outputNode: ts.Node,
-    components: readonly [string, string, string],
-): void {
-    const lanes = writableVec3Lanes(context, output, outputNode);
-    for (let index = 0; index < 3; index += 1) {
-        context.emit({
-            kind: "expression",
-            code: `${lanes[index]} = ${components[index]};`,
-        });
-    }
-}
 
 function compileVec3Temporary(
     context: MeshIntrinsicContext,
@@ -1061,8 +1016,9 @@ function compileNormalizeVec3ToRef(
         argumentAt(call, 0),
         "normalize_input",
     );
-    const output = context.compileValue(argumentAt(call, 1));
-    const lanes = writableVec3Lanes(context, output, argumentAt(call, 1));
+    const output = context.bindings.bindCameraVector(
+        context.compileValue(argumentAt(call, 1)),
+    );
     const epsilonCpp = call.arguments[2]
         ? context.compileNumber(call.arguments[2], "double")
         : "1e-10";
@@ -1090,13 +1046,11 @@ function compileNormalizeVec3ToRef(
         name: inverse,
         initializer: `1.0 / ${length}`,
     });
-    for (let index = 0; index < 3; index += 1) {
-        const component = ["x", "y", "z"][index]!;
-        context.emit({
-            kind: "expression",
-            code: `${lanes[index]} = ${input}.${component} * ${inverse};`,
-        });
-    }
+    writeVec3Lanes(context, output, argumentAt(call, 1), [
+        `${input}.x * ${inverse}`,
+        `${input}.y * ${inverse}`,
+        `${input}.z * ${inverse}`,
+    ]);
     context.emit({ kind: "close", code: "}" });
     return output;
 }
@@ -1243,6 +1197,10 @@ function compileCloneTransformNode(
         const engine = context.requireEngine(source, call);
         const sceneMeshIndex =
             context.sceneManifest.recordSceneMesh("mesh-clone");
+        context.sceneManifest.recordClonedThinInstanceMesh(
+            source,
+            sceneMeshIndex,
+        );
         return {
             kind: "mesh",
             sceneMeshIndex,
@@ -1522,10 +1480,224 @@ function compileResizeMeshGeometry(
     };
 }
 
+function compileMeshGeometryRanges(
+    context: MeshIntrinsicContext,
+    expression: ts.Expression | undefined,
+): string {
+    if (!expression || context.symbols.isGlobalUndefined(expression))
+        return "std::nullopt";
+    const value = context.bindings.pinValueToTemporary(
+        context.compileValue(expression),
+        "geometry_ranges_owner",
+        expression,
+    );
+    const destination = context.allocateTemporaryCppName("geometry_ranges");
+    context.emit({
+        kind: "declaration",
+        type: "std::optional<bbl::MeshGeometryRanges>",
+        name: destination,
+        initializer: "std::nullopt",
+    });
+    emitPresentOption(
+        context,
+        {
+            name: "ranges",
+            cpp: value.cpp,
+            type: value.dataType,
+            value,
+            ...(value.dataType?.kind === "struct" &&
+            context.dataTypes.isReferenceStruct(value.dataType.name)
+                ? { present: `static_cast<bool>(${value.cpp})` }
+                : {}),
+        },
+        (present) => {
+            context.emit({
+                kind: "expression",
+                code: `${destination}.emplace();`,
+            });
+            const members = new Map(
+                retainedOptions(context, present.value!, expression).map(
+                    (member) => [member.name, member],
+                ),
+            );
+            for (const name of ["vertices", "indices"]) {
+                const values = members.get(name)?.value;
+                if (!values)
+                    context.fail(
+                        expression,
+                        `Geometry ranges require ${name}.`,
+                    );
+                const emitRange = (range: Value): void => {
+                    const fields = new Map(
+                        retainedOptions(context, range, expression).map(
+                            (member) => [member.name, member],
+                        ),
+                    );
+                    const lanes = ["offset", "count"].map((field) => {
+                        const member = fields.get(field);
+                        if (member?.type?.kind !== "number")
+                            context.fail(
+                                expression,
+                                `Geometry ranges require a numeric ${field}.`,
+                            );
+                        return member.cpp;
+                    });
+                    context.emit({
+                        kind: "expression",
+                        code: `${destination}->${name}.push_back(bbl::MeshGeometryRange{${lanes.join(",")}});`,
+                    });
+                };
+                if (values.kind === "tuple" && values.tupleElements) {
+                    values.tupleElements.forEach(emitRange);
+                    continue;
+                }
+                const range = context.dataLowerer.iterationTarget(
+                    expression,
+                    values,
+                );
+                const type = range?.container.dataType;
+                if (
+                    !range ||
+                    (type?.kind !== "vector" && type?.kind !== "span")
+                )
+                    context.fail(
+                        expression,
+                        "Geometry ranges require represented arrays of records.",
+                    );
+                const owner = context.bindings.pinValueToTemporary(
+                    range.container,
+                    "geometry_range_list",
+                    expression,
+                );
+                const element = context.allocateTemporaryCppName(
+                    "geometry_range_source",
+                );
+                context.emit({
+                    kind: "open",
+                    code: `for (const auto& ${element} : ${owner.cpp}) {`,
+                });
+                emitRange(context.dataLowerer.leafValue(element, type.element));
+                context.emit({ kind: "close", code: "}" });
+            }
+        },
+    );
+    return destination;
+}
+
+function compileUpdateMeshGeometry(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+    capacity: boolean,
+): Value {
+    context.expectArgumentCount(call, 5, capacity ? 11 : 9);
+    const engineSite = argumentAt(call, 0),
+        meshSite = argumentAt(call, 1);
+    const engine = context.bindings.pinValueToTemporary(
+        context.compileValue(engineSite),
+        "geometry_engine",
+        engineSite,
+    );
+    context.expectKind(engine, "engine", engineSite);
+    const mesh = context.bindings.pinValueToTemporary(
+        context.compileValue(meshSite),
+        "geometry_mesh",
+        meshSite,
+    );
+    context.expectKind(mesh, "mesh", meshSite);
+    context.expectSameEngine(engine, mesh, call);
+    const positions = compileMeshStream(
+        context,
+        argumentAt(call, 2),
+        "f32array",
+        "geometry_positions",
+    );
+    const normals = compileMeshStream(
+        context,
+        argumentAt(call, 3),
+        "f32array",
+        "geometry_normals",
+    );
+    const indices = compileMeshStream(
+        context,
+        argumentAt(call, 4),
+        "u32array",
+        "geometry_indices",
+    );
+    const args = [
+        engine.cpp,
+        mesh.cpp,
+        positions,
+        normals,
+        indices,
+        ...compileMeshOptionalStreams(context, call).map(
+            (stream) => stream.cpp,
+        ),
+    ];
+    context.reachFeature("mesh:update-geometry", call);
+    context.reachFeature("renderer:scene", call);
+    if (!capacity)
+        return {
+            kind: "void",
+            cpp: `bbl::update_mesh_geometry(${args.join(",")})`,
+        };
+    const reserveSite = call.arguments[9];
+    if (!reserveSite) args.push("std::nullopt");
+    else {
+        const type: DataType = {
+            kind: "optional",
+            inner: { kind: "number" },
+            undefinedOnly: true,
+        };
+        const cpp = context.dataLowerer.compileForSink(reserveSite, type);
+        const retained = context.bindings.pinValueToTemporary(
+            context.dataLowerer.leafValue(
+                `${context.dataTypes.cppType(type)}{${cpp}}`,
+                type,
+            ),
+            "geometry_reserve",
+            reserveSite,
+        );
+        args.push(`${retained.cpp}.to_optional()`);
+    }
+    args.push(compileMeshGeometryRanges(context, call.arguments[10]));
+    const type = context.dataLowerer.dataTypeAt(call);
+    if (type?.kind !== "struct")
+        context.fail(
+            call,
+            "Geometry capacity update requires the source result record.",
+        );
+    const fields = context.dataTypes.structFields(type.name, call);
+    if (
+        fields.length !== 3 ||
+        fields.some(
+            (field) =>
+                !["stable", "vertexCapacity", "indexCapacity"].includes(
+                    field.sourceName,
+                ) ||
+                field.type.kind !==
+                    (field.sourceName === "stable" ? "boolean" : "number"),
+        )
+    )
+        context.fail(
+            call,
+            "Geometry capacity result requires stable, vertexCapacity and indexCapacity.",
+        );
+    const result = context.allocateTemporaryCppName("geometry_update_result");
+    const aggregate = context.dataLowerer.structAggregate(
+        type,
+        fields.map((field) => `${result}.${field.sourceName}`),
+    );
+    return {
+        kind: "data",
+        dataType: type,
+        cpp: `([&] { const auto ${result} = bbl::update_mesh_geometry_capacity(${args.join(",")}); return ${aggregate}; }())`,
+    };
+}
+
 function compileUpdateMeshAttribute(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
-    attribute: "positions" | "uvs",
+    attribute: "positions" | "uvs" | "normals" | "colors" | "tangents" | "uv2",
 ): Value {
     context.expectArgumentCount(call, 3, 6);
     const engine = context.compileValue(argumentAt(call, 0));
@@ -1712,26 +1884,29 @@ function compileSetThinInstances(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
-    const mesh = context.compileValue(argumentAt(call, 0));
-    context.expectKind(mesh, "mesh", argumentAt(call, 0));
-    // The F32Array overload retains the shared buffer owner, preserving
-    // the source array identity after a local or argument leaves scope.
-    const matricesArgument = context.unwrap(argumentAt(call, 1));
-    const matricesExpression = context.compileTypedArrayArgument(
-        argumentAt(call, 1),
-        "f32array",
+    const mesh = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 0)),
+        "thin_mesh",
+        argumentAt(call, 0),
     );
-    let matrices = matricesExpression;
-    if (!ts.isIdentifier(matricesArgument)) {
-        matrices = context.allocateTemporaryCppName("thin_instances");
-        context.emit({
-            kind: "declaration",
-            type: "bbl::js::F32Array",
-            name: matrices,
-            initializer: matricesExpression,
-        });
-    }
-    const count = context.compileNumber(argumentAt(call, 2));
+    context.expectKind(mesh, "mesh", argumentAt(call, 0));
+    // setThinInstances retains either numeric view unchanged; the pin packs
+    // Float64Array values only at the GPU upload boundary.
+    const matricesType: DataType = {
+        kind: "union",
+        members: [{ kind: "f32array" }, { kind: "f64array" }],
+    };
+    const matrices = context.allocateTemporaryCppName("thin_instances");
+    context.emit({
+        kind: "declaration",
+        type: context.dataTypes.cppType(matricesType),
+        name: matrices,
+        initializer: context.dataLowerer.compileForSink(
+            argumentAt(call, 1),
+            matricesType,
+        ),
+    });
+    const count = context.compileNumber(argumentAt(call, 2), "double");
     context.reachFeature("mesh:thin-instances", call);
     context.sceneManifest.recordThinInstanceMesh(
         mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
@@ -1807,6 +1982,7 @@ function compileSetThinInstanceCullBoundsPad(
 function compileSetThinInstanceCount(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
+    drawOnly = false,
 ): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const source = context.compileValue(argumentAt(call, 0));
@@ -1818,7 +1994,7 @@ function compileSetThinInstanceCount(
               })
             : source;
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
-    const count = context.compileNumber(argumentAt(call, 1));
+    const count = context.compileNumber(argumentAt(call, 1), "double");
     context.reachFeature("mesh:thin-instances", call);
     context.reachFeature("mesh:thin-instances-dynamic", call);
     context.sceneManifest.recordThinInstanceMesh(
@@ -1827,9 +2003,73 @@ function compileSetThinInstanceCount(
     return {
         kind: "void",
         cpp:
-            `bbl::set_thin_instance_count(${context.requireEngine(mesh, call)}, ` +
+            `bbl::${drawOnly ? "set_thin_instance_draw_count" : "set_thin_instance_count"}(${context.requireEngine(mesh, call)}, ` +
             `${mesh.cpp}, ${count})`,
     };
+}
+
+function compileEnableThinInstanceDynamicDrawCount(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const mesh = context.compileValue(argumentAt(call, 0));
+    context.expectKind(mesh, "mesh", argumentAt(call, 0));
+    context.reachFeature("mesh:thin-instances-dynamic", call);
+    context.sceneManifest.recordThinInstanceMesh(
+        mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
+    );
+    return {
+        kind: "void",
+        cpp: `bbl::enable_thin_instance_dynamic_draw_count(${context.requireEngine(mesh, call)}, ${mesh.cpp})`,
+    };
+}
+
+/** Mat4 reads numeric lanes without converting them before the pool's own store. */
+function compileThinInstanceMatrixArgument(
+    context: MeshIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    const value = context.compileValue(expression);
+    const view: DataType = { kind: "numberindex" };
+    let initializer: string;
+    if (value.kind === "tuple" && value.tupleElements) {
+        const lanes = value.tupleElements.map((lane) =>
+            context.dataLowerer.compileKnownValueForSink(
+                lane,
+                { kind: "number" },
+                expression,
+            ),
+        );
+        initializer = `bbl::js::NumericArrayView(bbl::js::Array<double>{${lanes.join(", ")}})`;
+    } else if (value.dataType?.kind === "union") {
+        const source = context.allocateTemporaryCppName("matrix_source");
+        const arms = value.dataType.members.map((member, index) => {
+            const read = context.dataLowerer.compileKnownValueForSink(
+                { ...value, cpp: source, dataType: member },
+                view,
+                expression,
+            );
+            return `${index ? "else " : ""}if constexpr (std::is_same_v<std::decay_t<decltype(${source})>, ${context.dataTypes.cppType(member)}>) { return ${read}; }`;
+        });
+        context.dataLowerer.invalidateEscapingCollection(value);
+        context.dataLowerer.markEscaped(value);
+        initializer = `std::visit([](const auto& ${source}) -> bbl::js::NumericArrayView { ${arms.join(" ")} }, ${value.cpp})`;
+    } else {
+        initializer = context.dataLowerer.compileKnownValueForSink(
+            value,
+            view,
+            expression,
+        );
+    }
+    const matrix = context.allocateTemporaryCppName("thin_matrix");
+    context.emit({
+        kind: "declaration",
+        type: context.dataTypes.cppType(view),
+        name: matrix,
+        initializer,
+    });
+    return matrix;
 }
 
 function compileSetThinInstanceMatrix(
@@ -1837,12 +2077,22 @@ function compileSetThinInstanceMatrix(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
-    const mesh = context.compileValue(argumentAt(call, 0));
+    const mesh = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 0)),
+        "thin_mesh",
+        argumentAt(call, 0),
+    );
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
-    const index = context.compileNumber(argumentAt(call, 1), "double");
-    const matrix = context.compileTypedArrayArgument(
+    const index = context.allocateTemporaryCppName("thin_matrix_index");
+    context.emit({
+        kind: "declaration",
+        type: "const double",
+        name: index,
+        initializer: context.compileNumber(argumentAt(call, 1), "double"),
+    });
+    const matrix = compileThinInstanceMatrixArgument(
+        context,
         argumentAt(call, 2),
-        "f32array",
     );
     context.reachFeature("mesh:thin-instances-dynamic", call);
     context.sceneManifest.recordThinInstanceMesh(
@@ -1886,11 +2136,15 @@ function compileAddThinInstance(
     // `matrices.set(matrix, index * 16)` reads it once -- so an
     // inline `createIdentityMat4()` needs no named binding here.
     context.expectArgumentCount(call, 2, 2);
-    const mesh = context.compileValue(argumentAt(call, 0));
+    const mesh = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 0)),
+        "thin_mesh",
+        argumentAt(call, 0),
+    );
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
-    const matrix = context.compileTypedArrayArgument(
+    const matrix = compileThinInstanceMatrixArgument(
+        context,
         argumentAt(call, 1),
-        "f32array",
     );
     context.reachFeature("mesh:thin-instances", call);
     context.reachFeature("mesh:thin-instances-dynamic", call);
@@ -3125,6 +3379,14 @@ const meshIntrinsicHandlers = new EmissionMap<
     ["cloneTransformNode", compileCloneTransformNode],
     ["createMeshFromData", compileCreateMeshFromData],
     [
+        "updateMeshGeometry",
+        (context, call) => compileUpdateMeshGeometry(context, call, false),
+    ],
+    [
+        "updateMeshGeometryCapacity",
+        (context, call) => compileUpdateMeshGeometry(context, call, true),
+    ],
+    [
         "updateMeshPositions",
         (context, call) =>
             compileUpdateMeshAttribute(context, call, "positions"),
@@ -3132,6 +3394,23 @@ const meshIntrinsicHandlers = new EmissionMap<
     [
         "updateMeshUvs",
         (context, call) => compileUpdateMeshAttribute(context, call, "uvs"),
+    ],
+    [
+        "updateMeshNormals",
+        (context, call) => compileUpdateMeshAttribute(context, call, "normals"),
+    ],
+    [
+        "updateMeshColors",
+        (context, call) => compileUpdateMeshAttribute(context, call, "colors"),
+    ],
+    [
+        "updateMeshTangents",
+        (context, call) =>
+            compileUpdateMeshAttribute(context, call, "tangents"),
+    ],
+    [
+        "updateMeshUv2",
+        (context, call) => compileUpdateMeshAttribute(context, call, "uv2"),
     ],
     [
         "resizeMeshGeometry",
@@ -3181,6 +3460,14 @@ const meshIntrinsicHandlers = new EmissionMap<
     ["setThinInstanceColor", compileSetThinInstanceColor],
     ["setThinInstanceCullBoundsPad", compileSetThinInstanceCullBoundsPad],
     ["setThinInstanceCount", compileSetThinInstanceCount],
+    [
+        "setThinInstanceDrawCount",
+        (context, call) => compileSetThinInstanceCount(context, call, true),
+    ],
+    [
+        "enableThinInstanceDynamicDrawCount",
+        compileEnableThinInstanceDynamicDrawCount,
+    ],
     ["setThinInstanceMatrix", compileSetThinInstanceMatrix],
     ["flushThinInstances", compileFlushThinInstances],
     ["addThinInstance", compileAddThinInstance],

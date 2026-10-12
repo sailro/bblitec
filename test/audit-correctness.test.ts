@@ -537,7 +537,7 @@ test(
         #include <cassert>
         namespace bbl::upstream {
             struct Item { MeshHandle mesh; };
-            struct RenderPlan { std::vector<Item> items; };
+            struct RenderPlan { std::vector<Item> items; const auto& scene_items() const { return items; } };
             ${cppFunction(renderer, "bool pick_candidate(const MeshRecord& mesh) {")}
             std::array<float,16> mesh_world_matrix(const Engine&, const MeshRecord&) { return {}; }
         }
@@ -552,7 +552,9 @@ test(
             bbl::Scene scene;
             engine.meshes.emplace_back(); engine.meshes.emplace_back();
             auto& thin = engine.meshes[1];
-            thin.thin_instanced = true; thin.instance_count = 2; thin.instance_matrices.resize(2);
+            thin.thin_instances = std::make_shared<bbl::ThinInstancePoolData>();
+            thin.thin_instances->count = 2; thin.thin_instances->matrices = bbl::js::F32Array(32);
+            thin.thin_instances->gpu_buffer = std::make_shared<bbl::GpuObject>();
             bbl::upstream::RenderPlan plan; plan.items.push_back({{0}});
             const auto collect = [&](bool detailed, bool geometry, const bbl::Engine::PickFilter* filter = nullptr) {
                 std::vector<bbl::pal::PickRange> ranges;
@@ -567,7 +569,7 @@ test(
             bbl::Engine::PickFilter filter = [](bbl::MeshHandle handle) { return handle.value == 0; };
             assert(collect(true, true, &filter).size() == 1);
             thin.pickable = false; assert(collect(true, true).size() == 1); thin.pickable = true;
-            thin.instance_count = 0; assert(collect(true, true).size() == 1); thin.instance_count = 2;
+            thin.thin_instances->count = 0; assert(collect(true, true).size() == 1); thin.thin_instances->count = 2;
             // Hidden meshes remain pick candidates in the pin.
             thin.visible = false;
             bool refused = false;
@@ -785,10 +787,10 @@ test(
             result.cpp +
                 `
         namespace bbl {
-            static std::vector<js::Callback<void(float)>> callbacks;
+            static std::vector<js::Callback<void(double)>> callbacks;
             Engine create_engine(EngineOptions) { return {}; }
             Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
-            void on_before_render(Scene&, js::Callback<void(float)> callback) { callbacks.push_back(std::move(callback)); }
+            void on_before_render(Scene&, js::Callback<void(double)> callback) { callbacks.push_back(std::move(callback)); }
             void start_engine(Engine&) { for (const auto& callback : callbacks) callback(16); callbacks.clear(); }
         }
     `,
@@ -1473,10 +1475,10 @@ test(
         #include <cassert>
         namespace bbl {
             ${pal.slice(start, end)}
-            static std::vector<js::Callback<void(float)>> callbacks;
+            static std::vector<js::Callback<void(double)>> callbacks;
             Engine create_engine(EngineOptions) { return {}; }
             Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
-            void on_before_render(Scene&, js::Callback<void(float)> callback) { callbacks.push_back(std::move(callback)); }
+            void on_before_render(Scene&, js::Callback<void(double)> callback) { callbacks.push_back(std::move(callback)); }
             void start_engine(Engine& engine) {
                 run_deferred_callbacks(engine);
                 for (const auto& callback : callbacks) { callback(16); callback(16); }
@@ -1599,10 +1601,10 @@ test(
             result.cpp +
                 `
         namespace bbl {
-        static std::vector<js::Callback<void(float)>> callbacks;
+        static std::vector<js::Callback<void(double)>> callbacks;
         Engine create_engine(EngineOptions) { return {}; }
         Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
-        void on_before_render(Scene&, js::Callback<void(float)> callback) { callbacks.push_back(std::move(callback)); }
+        void on_before_render(Scene&, js::Callback<void(double)> callback) { callbacks.push_back(std::move(callback)); }
         void start_engine(Engine&) { for (const auto& callback : callbacks) callback(16); callbacks.clear(); }
         }
     `,

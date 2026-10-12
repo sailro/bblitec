@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { joinAssetFeatures } from "../src/asset-feature-join.js";
+import { emitAssetSpecializations } from "../src/asset-specializer.js";
+import { featureMacroHeaders } from "../src/feature-macros.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import {
@@ -27,7 +30,7 @@ function scene(body: string, helpers = ""): string {
         import type { EngineContext, Mesh, Material, ShaderMaterial } from "@babylonjs/lite";
         ${helpers}
         async function main() {
-            const engine = await createEngine({});
+            const engine = await createEngine(document.createElement("canvas"));
             const scene = createSceneContext(engine);
             ${body}
         }
@@ -557,3 +560,56 @@ int main() {
         execFileSync(executable, { encoding: "utf8" });
     },
 );
+
+test("Node instance layout without a pool does not reach thin synchronization", async () => {
+    const json = readFileSync(
+        "corpus/babylon-lite/lab/public/playroom/shaders/domino.json",
+        "utf8",
+    );
+    for (const retirement of [false, true]) {
+        const result = compileSource(
+            scene(
+                `
+            const mesh = createBox(engine);
+            mesh.material = await parseNodeMaterialFromSnippet(engine, "", {
+                json: ${JSON.stringify(json)}, hasInstances: true,
+            });
+            addToScene(scene, mesh);
+            await registerScene(scene);
+            ${retirement ? "await waitForGpuResourceRetirements(engine);" : ""}
+        `,
+                'import {parseNodeMaterialFromSnippet, waitForGpuResourceRetirements} from "@babylonjs/lite";',
+            ),
+        );
+        const joined = await joinAssetFeatures({
+            result,
+            outputPath: "",
+            documents: new Map(),
+            specialization: emitAssetSpecializations("", [], new Map()),
+            splatHarmonics: undefined,
+        });
+        assert.equal(joined.plan.gpuInstancing.value, true);
+        assert.ok(!result.manifest.features.includes("mesh:thin-instances"));
+        assert.equal(
+            result.manifest.features.includes("engine:gpu-retirement"),
+            retirement,
+        );
+        assert.ok(
+            !result.manifest.generatedSources.includes(
+                "upstream/src/thin_instance_sync.cpp",
+            ),
+        );
+        const headers = featureMacroHeaders({
+            features: result.manifest.features,
+            imageCodecs: [],
+        });
+        assert.match(
+            headers.get("bblite/features/thin_instances.hpp")!,
+            /#define BBLITE_THIN_INSTANCES 0/,
+        );
+        assert.match(
+            headers.get("bblite/features/gpu_retirement.hpp")!,
+            new RegExp(`#define BBLITE_GPU_RETIREMENT ${retirement ? 1 : 0}`),
+        );
+    }
+});

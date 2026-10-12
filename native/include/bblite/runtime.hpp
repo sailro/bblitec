@@ -4,6 +4,7 @@
 #include <bblite/pal_audio_types.hpp>
 #include <bblite/audio_types.hpp>
 #include <bblite/pal_storage_buffer.hpp>
+#include <bblite/thin_instance.hpp>
 
 #include <bblite/js_callback.hpp>
 #include <bblite/snapshot_list.hpp>
@@ -36,6 +37,8 @@
 namespace bbl {
 
 struct Engine;
+void flush_frame_gpu_retirements(Engine& engine);
+void dispose_thin_instance_gpu(const std::shared_ptr<ThinInstancePoolData>& pool);
 struct DomInput;
 struct PlatformCustomEvent;
 struct UiImageRequest;
@@ -43,6 +46,11 @@ struct ComputeStorageTextureRegistry;
 struct UniformBufferRegistry;
 struct ComputeTask;
 struct MaterialPluginUniformState;
+struct ShaderUniformState;
+struct Scene;
+struct ShaderUniformUploadState;
+struct ShaderPacketSystemState;
+using ShaderPacketSystemOwner = std::shared_ptr<std::shared_ptr<ShaderPacketSystemState>>;
 /** The first OS language preference, with a hyphenated region when available. */
 [[nodiscard]] std::string preferred_language();
 [[nodiscard]] std::string native_platform();
@@ -55,6 +63,8 @@ struct PropertyAnimationManagerRecord;
 namespace pal {
 class AudioSession;
 class OffscreenRun;
+struct OffscreenDevice;
+class EventLoop;
 struct ComputeTextureAllocation;
 struct ComputeCommandEncoder;
 struct GpuRetirementState;
@@ -649,6 +659,7 @@ struct RenderTargetHandle {
 
 struct TaskHandle {
     std::uint32_t value = invalid_handle;
+    [[nodiscard]] bool operator==(const TaskHandle&) const = default;
 };
 
 struct SpriteAtlasHandle {
@@ -1249,6 +1260,8 @@ struct RenderTaskMesh {
     MeshHandle mesh{};
     MaterialHandle material{};
     bool follows_material = false;
+    mutable ShaderPacketSystemOwner shader_packet{};
+    mutable ThinMaterialBindingOwner thin_binding{};
 };
 
 struct GeometryTaskOptions {
@@ -1642,6 +1655,8 @@ struct FrameTaskRecord {
     bool render_mesh_refresh = false;
     bool render_recorded = false;
     bool render_meshes_dirty = false;
+    mutable double shader_packet_scene_version = -1;
+    mutable bool shader_packet_rebuild_pending = false;
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
     /**
@@ -2173,9 +2188,15 @@ struct SkinnedBoneBounds {
     std::array<std::array<float, 3>, 2> base{};
 };
 
+struct MeshAttributeCapacities {
+    double position = 0, normal = 0, uv = 0, uv2 = 0, tangent = 0, color = 0;
+};
+
 struct ModelGeometry {
     /** Source procedural streams own one tightly packed allocation. */
     bool owned_packed_geometry = false;
+    /** Byte capacities of the source's separate GPU attribute allocations. */
+    MeshAttributeCapacities attribute_capacities;
     /**
      * The mesh's own local vertex lanes, which the GPU receives unchanged:
      * a node's world reaches the vertex stage as `mesh.world`, never through
@@ -2184,6 +2205,12 @@ struct ModelGeometry {
     std::vector<ModelVertex> vertices;
     /** GPU-only attribute writes leave retained CPU geometry unchanged. */
     std::optional<std::vector<ModelVertex>> render_vertices_override;
+    /** Physical GPU indices may differ from retained active CPU indices. */
+    std::optional<std::vector<std::uint32_t>> render_indices_override;
+    /** Source capacity metadata and scratch are independent of uploaded bytes. */
+    std::optional<double> vertex_capacity, index_capacity;
+    std::optional<js::U32Array> index_scratch;
+    std::uint64_t index_version = 0;
     /** The loader reversed source triangles for the loaded world's winding. */
     bool source_indices_reversed = false;
     std::vector<std::vector<Vec3>> morph_positions;
@@ -2260,6 +2287,10 @@ template <typename T> void release_storage(std::vector<T>& storage) {
 inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
     geometry.render_vertices_override.reset();
+    geometry.render_indices_override.reset();
+    geometry.vertex_capacity.reset();
+    geometry.index_capacity.reset();
+    geometry.index_scratch.reset();
     geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
     release_storage(geometry.morph_bounds);
@@ -2542,46 +2573,13 @@ struct MeshRecord {
      * last streamed, so a still skeleton costs no upload.
      */
     std::uint64_t bone_matrices_version = 0;
-    std::vector<std::array<float, 16>> instance_matrices;
-    // Thin-instance pool state mirroring the pinned ThinInstanceData:
-    // instance_matrices holds the fixed capacity pool, instance_count is
-    // the active draw count, and instance_version gates the PAL re-upload
-    // exactly like morph_weights_version. instance_source aliases the
-    // caller's matrix array bound by set_thin_instances; the typed-array
-    // overload also retains its storage in owned_instance_source.
-    // Loader-built instancing (glTF EXT_mesh_gpu_instancing)
-    // leaves it null and never bumps the version.
-    bool thin_instanced = false;
+    std::shared_ptr<ThinInstancePoolData> thin_instances;
     bool source_runtime_thin_builder = false;
-    std::uint32_t instance_count = 0;
-    std::uint64_t instance_version = 0;
-    std::vector<float>* instance_source = nullptr;
-    // Retained caller storage, or the pool allocated by an
-    // `addThinInstance` that found no pool (the pin's own `new F32(capacity
-    // * 16)`, which has no caller array to adopt) and again by every growth,
-    // where the pin allocates a longer array and repoints `ti.matrices` at
-    // it. Growth therefore DETACHES the record from the scene's own array
-    // instead of resizing it: the caller keeps its array at its own length,
-    // exactly as upstream, and later writes land here. Held through a shared
-    // pointer so the alias above survives a `meshes` reallocation, which a
-    // runtime mesh append can cause.
-    std::shared_ptr<std::vector<float>> owned_instance_source;
-    // `ThinInstanceData._gpuCullingEnabled`, the pin's opt-in to compute
-    // frustum culling and indirect draws. This port omits the culler and
-    // draws every active instance (fidelity: thin-instance-gpu-culling),
-    // so the flag records the opt-in and keeps its renderable in the pin's
-    // live direct-draw path: it does not enable a native compute culler.
-    bool thin_instance_gpu_culling = false;
     // Whether the pin's `_expandWorldBounds` hook is installed: framing and
     // scene sizing then take `worldMatrix x instanceMatrix x localBounds`
     // over every instance. `enableThinInstanceWorldBounds` installs it, which
     // only the glTF GPU-instancing feature calls, on every mesh it instances.
     bool thin_instance_world_bounds = false;
-    // The per-instance RGBA stream `setThinInstanceColors` bound, as the
-    // pin's own tightly-packed float4 rows. Empty where the mesh has none.
-    std::vector<float> instance_colors;
-    std::shared_ptr<js::F32Array> instance_color_source;
-    double thin_instance_cull_bounds_pad = 0;
     // `Mesh._linePointCounts`: the polyline sizes a line system was built
     // from, kept because `updateLineSystem` refuses a changed connectivity
     // rather than rewriting a mesh whose segments moved. The flag beside it
@@ -2621,7 +2619,7 @@ struct MeshCompositionRows {
 };
 
 inline bool has_instance_colors(const MeshRecord& mesh) {
-    return mesh.instance_color_source || !mesh.instance_colors.empty();
+    return mesh.thin_instances && mesh.thin_instances->colors.has_value();
 }
 
 inline void apply_mesh_bound_overrides(const MeshRecord& mesh, Vec3& minimum, Vec3& maximum) {
@@ -3016,10 +3014,14 @@ struct MaterialRecord {
     // material, `upstream::node_variants`. Ids are assigned in reach order
     // by the compiler and drive pipeline selection and uniform layout.
     std::uint32_t shader_variant = 0;
-    // Flat custom-uniform storage laid out by the variant's reflected
-    // member offsets; created (and defaults-applied) by the emitted
-    // create_shader_material, written by the emitted offset setters.
-    std::vector<float> shader_uniform_values;
+    js::Nullable<double> shader_thin_instance_colors;
+    std::shared_ptr<ShaderUniformState> shader_uniforms;
+    mutable std::shared_ptr<ShaderUniformUploadState> shader_uniform_upload;
+    // The serialized custom packet; live getShaderUniform aliases own separate slots.
+    mutable std::vector<float> shader_uniform_values;
+    const std::vector<float>& (*shader_uniform_snapshot)(const MaterialRecord&) = nullptr;
+    double (*shader_alpha_cutoff)(const MaterialRecord&) = nullptr;
+    void (*shader_packet_initialize)(const Scene&, const MaterialRecord&) = nullptr;
     /** Storage slots in the shader's declared order. */
     std::vector<StorageBufferHandle> shader_storage_buffers;
     /** `externalTextures` slots, keyed by the sampler slot they bind at. */
@@ -3206,12 +3208,46 @@ struct GeospatialLimits {
 // `allocateMat4()` cache performs -- into float32 by default, and into
 // float64 under the high-precision matrix a floating-origin engine asks
 // for, which is the width `getViewMatrix` then reads the basis back at.
+struct CameraControlAttachment {
+    std::weak_ptr<SceneState> scene;
+    bool dragging = false;
+    bool panning = false;
+    std::uint32_t buttons = 0;
+    std::map<std::pair<std::uint64_t, std::uint64_t>, std::array<double, 2>> touches;
+    std::vector<std::string_view> listeners;
+    std::function<void(double, bool)> pointer_down;
+    std::function<void(double, double, double)> pointer_move;
+    std::function<void()> pointer_up;
+    std::function<void(double)> wheel;
+    std::function<void(std::string_view)> key_down, key_up;
+    js::Callback<void(double)> update;
+    std::function<bool()> should_handle_pointer_down;
+    std::function<bool()> external_drag_active;
+    std::function<bool()> external_pick_pending;
+    [[nodiscard]] bool listens(std::string_view name) const {
+        return std::find(listeners.begin(), listeners.end(), name) != listeners.end();
+    }
+};
+struct CameraControlBindings {
+    std::vector<std::shared_ptr<CameraControlAttachment>> entries;
+};
+struct CameraControlOptions {
+    std::function<bool()> should_handle_pointer_down;
+    std::function<bool()> external_drag_active;
+    std::function<bool()> external_pick_pending;
+};
 struct CameraRecord {
     double world_matrix_version = 0.0;
-    double projection_revision = 0.0;
-    double projection_fov = std::numeric_limits<double>::quiet_NaN();
-    double projection_near = std::numeric_limits<double>::quiet_NaN();
-    double projection_far = std::numeric_limits<double>::quiet_NaN();
+    mutable double projection_revision = 0.0;
+    mutable double projection_fov = std::numeric_limits<double>::quiet_NaN();
+    mutable double projection_near = std::numeric_limits<double>::quiet_NaN();
+    mutable double projection_far = std::numeric_limits<double>::quiet_NaN();
+    // Public F32 matrix aliases retain their camera-owned storage across table growth.
+    // Allocation is lazy; generated pinned getters own every cache read and write.
+    mutable std::optional<js::F32Array> view_cache, projection_cache, view_projection_cache;
+    mutable std::optional<double> view_cache_version;
+    mutable std::optional<double> projection_cache_version, projection_cache_aspect;
+    mutable std::optional<double> view_projection_cache_version, view_projection_cache_aspect;
     bool limits_installed = false;
     CameraKind kind = CameraKind::arc_rotate;
     Vec3d position{};
@@ -3260,9 +3296,6 @@ struct CameraRecord {
      * installed without one, which the pin runs no per-frame hook for.
      */
     std::weak_ptr<SceneState> controls_scene;
-    std::function<void(CameraRecord&, double, double)> configurable_free_pointer;
-    std::function<void(CameraRecord&, double, const std::function<bool(std::string_view)>&)>
-        configurable_free_update;
     std::function<bool()> should_handle_pointer_down;
     std::function<bool()> external_drag_active;
     std::function<bool()> external_pick_pending;
@@ -3461,7 +3494,7 @@ struct AssetRecord {
     std::function<void(double)> animation_seek;
     std::shared_ptr<GltfAnimationRuntimeState> source_animation;
     std::function<void(std::size_t, double, bool)> animation_tick_group;
-    js::Callback<void(float)> before_render_hook;
+    js::Callback<void(double)> before_render_hook;
     /**
      * Registers a cloned mesh with the source asset's animation runtime.
      * Babylon Lite clones retain the same skeleton/morph resources, so a
@@ -3617,6 +3650,7 @@ inline void install_asset_mesh_walks(AssetRecord& asset,
 
 struct HierarchyInstancePoolBinding {
     MeshHandle mesh{};
+    js::F32Array matrices;
     std::array<float, 16> mesh_world{};
     std::array<float, 16> mesh_world_inverse{};
 };
@@ -3624,8 +3658,8 @@ struct HierarchyInstancePoolBinding {
 /** Engine-owned state for the pin's fixed-capacity hierarchy instance pool. */
 struct HierarchyInstancePoolRecord {
     AssetHandle root{};
-    std::uint32_t capacity = 0;
-    std::uint32_t count = 0;
+    double capacity = 0;
+    double count = 0;
     std::vector<MeshHandle> meshes;
     std::vector<HierarchyInstancePoolBinding> bindings;
     std::array<float, 16> scratch{};
@@ -4113,6 +4147,10 @@ struct Engine {
         mesh_material_scenes;
     struct DeviceRecoveryState;
     std::shared_ptr<DeviceRecoveryState> device_recovery;
+    /** Retains the SDK device until all source resources and retirement state are released. */
+    std::shared_ptr<pal::OffscreenDevice> source_gpu_device;
+    std::shared_ptr<pal::EventLoop> source_gpu_loop;
+    bool source_gpu_host_closed = false;
     std::shared_ptr<pal::GpuRetirementState> gpu_retirements;
     std::shared_ptr<pal::GpuTaskTimingState> gpu_task_timing;
     std::weak_ptr<ComputeStorageTextureRegistry> compute_storage_textures;
@@ -4338,6 +4376,7 @@ struct Engine {
     // therefore preserve those references until the loop observes the scene
     // replacement and restarts.
     std::deque<CameraRecord> cameras;
+    std::shared_ptr<CameraControlBindings> camera_control_bindings;
     std::vector<ModelGeometry> geometries;
     /** Geometry slots no record names any more (see `store_geometry_record`). */
     std::vector<std::uint32_t> free_geometry_slots;
@@ -4942,7 +4981,9 @@ inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
  * so the Mesh keeps its `boundMin`/`boundMax`: the geometry's box moves
  * onto the record's own bound lanes for the tables that still read it.
  */
-inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
+inline void retire_mesh_record(
+    Engine& engine, MeshHandle mesh,
+    void (*dispose_thin_instances)(const std::shared_ptr<ThinInstancePoolData>&) = nullptr) {
     MeshRecord& record = handle_at(engine.meshes, mesh);
     if (record.retired) {
         return;
@@ -4965,6 +5006,8 @@ inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
             release_unowned_geometry(engine, geometry);
         }
     }
+    if (dispose_thin_instances)
+        dispose_thin_instances(record.thin_instances);
     offer_retired_mesh_slot(engine, mesh);
 }
 
@@ -5359,6 +5402,8 @@ struct SourceMaterialDraw {
     MeshHandle mesh;
     MaterialHandle material;
     SourceMaterialDrawGuard guard = nullptr;
+    mutable ShaderPacketSystemOwner shader_packet{};
+    mutable ThinMaterialBindingOwner thin_binding{};
 };
 using SourceMaterialOutput = std::shared_ptr<SourceMaterialDraw>;
 using SourceMaterialOutputs = std::vector<SourceMaterialOutput>;
@@ -5430,7 +5475,7 @@ struct SceneState {
      * generated record.
      */
     ClusteredLightContainerHandle clustered_lights{};
-    SnapshotList<js::Callback<void(float)>> before_render;
+    SnapshotList<js::Callback<void(double)>> before_render;
     std::vector<js::Callback<void()>> disposables;
     /**
      * `scene._flowGraphs` and the coordinator/pointer-bridge state the
@@ -5439,7 +5484,7 @@ struct SceneState {
      * the bridge, and the bridge's own teardown while it is installed.
      */
     std::vector<std::shared_ptr<FlowGraphRuntime>> flow_graphs;
-    js::Callback<void(float)> flow_graph_tick;
+    js::Callback<void(double)> flow_graph_tick;
     js::Callback<void()> flow_graph_dispose;
     bool flow_graph_pointer_refresh = false;
     std::function<void()> flow_graph_pointer_cleanup;
@@ -5534,7 +5579,7 @@ struct Scene {
     std::vector<Sprite2DLayerHandle>& depth_hosted_sprite_layers;
     std::vector<SplatMeshHandle>& splat_meshes;
     ClusteredLightContainerHandle& clustered_lights;
-    SnapshotList<js::Callback<void(float)>>& before_render;
+    SnapshotList<js::Callback<void(double)>>& before_render;
     std::vector<js::Callback<void()>>& disposables;
     std::vector<js::Callback<void(double)>>& animation_seekers;
     bool& seeks_animation_managers;
@@ -5979,12 +6024,44 @@ MeshHandle create_retained_mesh_from_data(Engine& engine, const std::string& nam
                                           const std::optional<js::F32Array>& uvs2,
                                           const std::optional<js::F32Array>& tangents,
                                           const std::optional<js::F32Array>& colors);
-void update_mesh_positions(Engine& engine, MeshHandle mesh, const std::vector<float>& positions,
+struct MeshGeometryRange {
+    double offset = 0, count = 0;
+};
+struct MeshGeometryRanges {
+    js::Array<MeshGeometryRange> vertices, indices;
+};
+struct MeshGeometryUpdateResult {
+    bool stable = false;
+    double vertexCapacity = 0, indexCapacity = 0;
+};
+void update_mesh_geometry(Engine& engine, MeshHandle mesh, const js::F32Array& positions,
+                          const js::F32Array& normals, const js::U32Array& indices,
+                          const std::optional<js::F32Array>& uvs,
+                          const std::optional<js::F32Array>& uvs2,
+                          const std::optional<js::F32Array>& tangents,
+                          const std::optional<js::F32Array>& colors);
+MeshGeometryUpdateResult update_mesh_geometry_capacity(
+    Engine& engine, MeshHandle mesh, const js::F32Array& positions, const js::F32Array& normals,
+    const js::U32Array& indices, const std::optional<js::F32Array>& uvs,
+    const std::optional<js::F32Array>& uvs2, const std::optional<js::F32Array>& tangents,
+    const std::optional<js::F32Array>& colors, std::optional<double> requestedReserveFactor,
+    const std::optional<MeshGeometryRanges>& ranges);
+void update_mesh_positions(Engine& engine, MeshHandle mesh, const js::F32Array& positions,
                            double vertex_offset, std::optional<double> vertex_count,
                            double source_vertex_offset);
-void update_mesh_uvs(Engine& engine, MeshHandle mesh, const std::vector<float>& uvs,
-                     double vertex_offset, std::optional<double> vertex_count,
-                     double source_vertex_offset);
+void update_mesh_uvs(Engine& engine, MeshHandle mesh, const js::F32Array& uvs, double vertex_offset,
+                     std::optional<double> vertex_count, double source_vertex_offset);
+void update_mesh_normals(Engine& engine, MeshHandle mesh, const js::F32Array& normals,
+                         double vertex_offset, std::optional<double> vertex_count,
+                         double source_vertex_offset);
+void update_mesh_colors(Engine& engine, MeshHandle mesh, const js::F32Array& colors,
+                        double vertex_offset, std::optional<double> vertex_count,
+                        double source_vertex_offset);
+void update_mesh_tangents(Engine& engine, MeshHandle mesh, const js::F32Array& tangents,
+                          double vertex_offset, std::optional<double> vertex_count,
+                          double source_vertex_offset);
+void update_mesh_uv2(Engine& engine, MeshHandle mesh, const js::F32Array& uv2, double vertex_offset,
+                     std::optional<double> vertex_count, double source_vertex_offset);
 void invalidate_render_bundles(Engine& engine);
 void resize_mesh_geometry(Engine& engine, MeshHandle mesh, const std::vector<float>& positions,
                           const std::vector<float>& normals,
@@ -6010,14 +6087,12 @@ void resize_shared_retained_mesh_geometry(Engine& engine, std::span<const MeshHa
                                           const std::optional<js::F32Array>& uvs2,
                                           const std::optional<js::F32Array>& tangents,
                                           const std::optional<js::F32Array>& colors);
-// The matrices parameter is a non-const lvalue reference on purpose: the
-// record keeps aliasing the caller's array for later per-frame updates
-// (the pinned setThinInstances adopts the array by reference), so a
-// temporary here would dangle. The compiler only passes named bindings.
-void set_thin_instances(Engine& engine, MeshHandle mesh, std::vector<float>& matrices,
+void set_thin_instances(Engine& engine, MeshHandle mesh, const ThinInstanceMatrices& matrices,
                         double count);
-void set_thin_instances(Engine& engine, MeshHandle mesh, js::F32Array& matrices, double count);
-[[nodiscard]] js::F32Array thin_instance_matrices(Engine& engine, MeshHandle mesh);
+[[nodiscard]] ThinInstanceMatrices thin_instance_matrices(Engine& engine, MeshHandle mesh);
+[[nodiscard]] ThinInstanceMatrices
+thin_instance_matrices(const std::shared_ptr<ThinInstancePoolData>& pool);
+double thin_instance_count(const std::shared_ptr<ThinInstancePoolData>& pool);
 HierarchyInstancePoolHandle create_hierarchy_instance_pool(Engine& engine, AssetHandle root,
                                                            double capacity);
 double add_hierarchy_instance(Engine& engine, HierarchyInstancePoolHandle pool,
@@ -6027,6 +6102,8 @@ void set_hierarchy_instance_matrix(Engine& engine, HierarchyInstancePoolHandle p
 void remove_hierarchy_instance(Engine& engine, HierarchyInstancePoolHandle pool, double index);
 void set_hierarchy_instance_count(Engine& engine, HierarchyInstancePoolHandle pool, double count);
 void set_thin_instance_count(Engine& engine, MeshHandle mesh, double count);
+void set_thin_instance_draw_count(Engine& engine, MeshHandle mesh, double count);
+void enable_thin_instance_dynamic_draw_count(Engine& engine, MeshHandle mesh);
 /**
  * The growing half of the pool, emitted where a scene reaches it.
  *
@@ -6035,16 +6112,17 @@ void set_thin_instance_count(Engine& engine, MeshHandle mesh, double count);
  * swap-removes; `thin_instance_count` is the live `thinInstances.count`
  * read those two are written against.
  */
-double add_thin_instance(Engine& engine, MeshHandle mesh, const std::vector<float>& matrix);
+double add_thin_instance(Engine& engine, MeshHandle mesh, const js::NumericArrayView& matrix);
 void remove_thin_instance(Engine& engine, MeshHandle mesh, double index);
 double thin_instance_count(const Engine& engine, MeshHandle mesh);
-/** The pinned GPU-culling opt-in; see MeshRecord::thin_instance_gpu_culling. */
+/** The pinned GPU-culling opt-in. */
 void enable_thin_instance_gpu_culling(Engine& engine, MeshHandle mesh, bool enabled);
 void set_thin_instance_matrix(Engine& engine, MeshHandle mesh, double index,
-                              const std::vector<float>& matrix);
+                              const js::NumericArrayView& matrix);
 void flush_thin_instances(Engine& engine, MeshHandle mesh);
-void upload_thin_instance_matrices(Engine& engine, MeshHandle mesh,
-                                   const std::vector<float>& matrices, double count);
+void upload_thin_instance_matrices(Engine& engine, MeshHandle mesh, const js::F32Array& matrices,
+                                   double count);
+ThinMaterialBindingOwner create_thin_material_binding(const Engine&, MeshHandle, MaterialHandle);
 void set_thin_instance_colors(Engine& engine, MeshHandle mesh, const js::F32Array& colors);
 void set_thin_instance_color(Engine& engine, MeshHandle mesh, double index, double r, double g,
                              double b, double a);
@@ -6117,6 +6195,7 @@ void load_hdr_environment(Scene& scene, HdrEnvironmentOptions options);
 void load_dds_environment(Scene& scene, DdsEnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
 MaterialHandle create_shader_material(Engine& engine, std::uint32_t variant);
+void initialize_shader_packet_camera_cache(const Scene& scene, const MaterialRecord& material);
 /**
  * One texture a scene handed `parseNodeMaterialFromSnippet` through its
  * `textures` record, under the binding name it keyed it by.
@@ -6141,6 +6220,11 @@ MaterialHandle create_node_material(Engine& engine, std::uint32_t variant,
 void queue_node_material_group(Scene& scene, MeshHandle mesh);
 void set_shader_uniform_values(Engine& engine, MaterialHandle material, std::uint32_t offset,
                                std::uint32_t count, const float* values);
+void initialize_shader_uniform_values(Engine& engine, MaterialHandle material, std::uint32_t offset,
+                                      std::uint32_t count, const float* values);
+/** The pin installs cached shader writers process-wide for subsequent uploads. */
+inline bool shader_uniform_caching_enabled = false;
+inline void enable_shader_uniform_caching() { shader_uniform_caching_enabled = true; }
 void set_shader_uniform_value(Engine& engine, MaterialHandle material, std::uint32_t offset,
                               float v0);
 void set_shader_uniform_value(Engine& engine, MaterialHandle material, std::uint32_t offset,
@@ -6456,8 +6540,10 @@ RenderTextureRef geometry_task_output_texture(TaskHandle task);
 RenderTextureRef geometry_task_depth_texture(TaskHandle task);
 void add_task(Scene& scene, TaskHandle task);
 void add_task_at_start(Scene& scene, TaskHandle task);
+void add_task_after(Scene& scene, TaskHandle task, TaskHandle after);
 void add_task(FrameGraphContext& context, TaskHandle task);
 void add_task_at_start(FrameGraphContext& context, TaskHandle task);
+void add_task_after(FrameGraphContext& context, TaskHandle task, TaskHandle after);
 
 /**
  * `PcfSpotlightShadowGeneratorConfig`, as the reached slice resolves it.
@@ -6660,7 +6746,8 @@ void set_light_asset_parent(Engine& engine, LightHandle light, AssetHandle paren
 
 // A retained SceneNode may be a mesh, a transform node, or an imported root.
 MeshVisibility& scene_node_visibility(Engine& engine, const SceneNodeHandle& node);
-js::Nullable<MeshHandle> scene_node_thin_instance_pool(Engine& engine, const SceneNodeHandle& node);
+js::Nullable<std::shared_ptr<ThinInstancePoolData>>
+scene_node_thin_instance_pool(Engine& engine, const SceneNodeHandle& node);
 bool scene_node_has_thin_instance_property(Engine& engine, const SceneNodeHandle& node);
 Vec3d scene_node_position(Engine& engine, const SceneNodeHandle& node);
 Vec3 scene_node_rotation(Engine& engine, const SceneNodeHandle& node);
@@ -6681,7 +6768,8 @@ void set_scene_node_rotation_quaternion_component(Engine& engine, const SceneNod
 void remove_from_scene(Scene& scene, MeshHandle mesh);
 void remove_from_scene(Scene& scene, LightHandle light);
 void remove_from_scene(Scene& scene, const SceneNodeHandle& node);
-void on_before_render(Scene& scene, js::Callback<void(float)> callback);
+void on_before_render(Scene& scene, js::Callback<void(double)> callback);
+void run_scene_before_render(Scene& scene, double delta_ms);
 void on_scene_dispose(Scene& scene, js::Callback<void()> callback);
 void on_key_down(Engine& engine, std::size_t identity,
                  js::Callback<void(const PlatformKeyboardEvent&)> callback, bool once = false);
@@ -6754,22 +6842,24 @@ void set_animation_current_time(Engine& engine, AnimationGroupHandle group, doub
 void set_animation_additive(Engine& engine, AnimationGroupHandle group, double reference_time);
 void set_animation_additive_from_frame(Engine& engine, AnimationGroupHandle group,
                                        double reference_frame);
-void attach_control(Engine& engine, CameraHandle camera, const Scene& scene);
+js::Callback<void()> attach_control(Engine& engine, CameraHandle camera, const Scene& scene,
+                                    CameraControlOptions options = {});
 void write_camera_scalar(CameraRecord& camera, double CameraRecord::* field, double value);
 void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::* vector,
                                    double Vec3d::* component, double value);
 void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::* vector, Vec3d value);
 void set_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
                        const std::array<double, 6>& limits);
-void attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene);
+js::Callback<void()> attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene);
 struct ConfigurableFreeControlOptions {
     std::optional<std::vector<std::string>> upKeys;
     std::optional<std::vector<std::string>> downKeys;
     std::optional<std::vector<std::string>> fastKeys;
     std::optional<double> fastMultiplier;
 };
-void attach_configurable_free_control(Engine& engine, CameraHandle camera, const Scene& scene,
-                                      ConfigurableFreeControlOptions options);
+js::Callback<void()> attach_configurable_free_control(Engine& engine, CameraHandle camera,
+                                                      const Scene& scene,
+                                                      ConfigurableFreeControlOptions options);
 #include <bblite/runtime/sprite-options.hpp>
 
 // `attachParsedSplat`'s two halves, which the pin keeps apart and this port
@@ -6932,6 +7022,18 @@ void set_asset_root_parent(Engine& engine, AssetHandle child, TransformNodeHandl
 void reparent_transform_node(Engine& engine, TransformNodeHandle child, TransformNodeHandle parent);
 /** src/scene/visibility.ts setMeshVisible cascade. */
 void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
+/** Private source fields share their retained typed-array owner; public geometry getters copy. */
+template <class Values>
+[[nodiscard]] js::Nullable<Values>
+mesh_cpu_stream_owner(const Engine& engine, MeshHandle mesh,
+                      std::optional<Values> MeshCpuStreams::* member) {
+    const auto& retained = handle_at(engine.meshes, mesh).cpu_streams;
+    if (!retained)
+        throw std::runtime_error(
+            "Private mesh CPU array ownership is not represented for this geometry.");
+    const auto& values = (*retained).*member;
+    return values ? js::Nullable<Values>{*values} : js::Nullable<Values>{};
+}
 [[nodiscard]] std::vector<float> mesh_cpu_positions(const Engine& engine, MeshHandle mesh);
 struct MeshCpuGeometry {
     js::F32Array positions, normals;

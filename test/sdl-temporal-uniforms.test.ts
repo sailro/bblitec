@@ -5,7 +5,7 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 
-test("SDL deferred draws observe final source UBO bytes while ordinary blocks retain prepared values", (t) => {
+test("SDL deferred draws retain GPU owners and observe final source UBO bytes while ordinary blocks retain prepared values", (t) => {
     const native = optionalNativeFixtureTools();
     if (!native) {
         t.skip("Native fixture compiler and SDL headers unavailable.");
@@ -56,6 +56,28 @@ int main() {
         }, first[0].source);
     } catch (const std::runtime_error&) { failed = true; }
     assert(failed);
+    // Deferred replay keeps the exact GPU objects even after the row retires them.
+    struct Args : bbl::GpuObject { std::array<std::uint32_t, 5> words{6, 1, 0, 0, 0}; };
+    auto args = std::make_shared<Args>();
+    auto matrices = std::make_shared<bbl::GpuObject>();
+    auto colors = std::make_shared<bbl::GpuObject>();
+    const std::weak_ptr<bbl::GpuObject> args_weak = args, matrices_weak = matrices,
+        colors_weak = colors;
+    bbl::pal::PreparedSdlDraw draw;
+    draw.indirect_args = reinterpret_cast<SDL_GPUBuffer*>(args.get());
+    draw.thin_draw_args = args;
+    draw.instance_owner = matrices;
+    draw.instance_color_owner = colors;
+    draw.instance_count = 1;
+    args->words[1] = 4;
+    args.reset(); matrices.reset(); colors.reset();
+    auto moved = std::move(draw);
+    assert(!args_weak.expired() && !matrices_weak.expired() && !colors_weak.expired());
+    assert(moved.indirect_args == reinterpret_cast<SDL_GPUBuffer*>(moved.thin_draw_args.get()));
+    assert(static_cast<const Args&>(*moved.thin_draw_args).words[1] == 4);
+    assert(moved.instance_count == 1);
+    moved = {};
+    assert(args_weak.expired() && matrices_weak.expired() && colors_weak.expired());
 }
 `,
         { flags: [`/I${resolve("native/src")}`] },

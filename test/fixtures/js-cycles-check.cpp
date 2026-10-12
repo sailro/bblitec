@@ -311,7 +311,7 @@ int main() {
         record->callback = make_closure(
             std::tuple{scene}, [](auto& captures) { std::get<0>(captures).before_render.clear(); });
         scene.before_render.push_back(make_closure(
-            std::tuple{record}, [](auto& captures, float) { std::get<0>(captures)->callback(); }));
+            std::tuple{record}, [](auto& captures, double) { std::get<0>(captures)->callback(); }));
         const auto snapshot = scene.before_render;
         record.reset();
         assert(collect_cycles() == 0);
@@ -321,7 +321,7 @@ int main() {
     assert(managed_node_count() == baseline);
     {
         bbl::Scene scene;
-        scene.before_render.push_back(make_closure(std::tuple{scene}, [](auto&, float) {}));
+        scene.before_render.push_back(make_closure(std::tuple{scene}, [](auto&, double) {}));
     }
     for (int frame = 0; frame < 60; ++frame)
         collect_at_frame_boundary();

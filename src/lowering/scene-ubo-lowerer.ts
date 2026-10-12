@@ -541,7 +541,8 @@ ${this.advance()}
     }
 
     public cacheHeader(): string {
-        return `#pragma once
+        return `#ifndef BBLITE_UPSTREAM_SCENE_UBO_CACHE_HPP
+#define BBLITE_UPSTREAM_SCENE_UBO_CACHE_HPP
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -551,6 +552,7 @@ ${cameraChangeKeyHeader(this.context)}
 namespace bbl::upstream {
 ${this.writeScene()}
 } // namespace bbl::upstream
+#endif
 `;
     }
 
