@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pal_ui_control_scheme.hpp"
 #include <RmlUi/Core/ComputedValues.h>
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Decorator.h>
@@ -13,6 +14,7 @@ namespace bbl::pal {
 // Retained native controls own their state. These marks supply only the
 // browser-default check and disclosure glyphs that RmlUi does not paint.
 class UiControlMarkDecorator final : public Rml::Decorator {
+    const UiControlSchemeProperties& properties;
     struct Data {
         Rml::Geometry geometry;
         Rml::Vector2f size{};
@@ -23,6 +25,8 @@ class UiControlMarkDecorator final : public Rml::Decorator {
     };
 
 public:
+    explicit UiControlMarkDecorator(const UiControlSchemeProperties& properties)
+        : properties(properties) {}
     Rml::DecoratorDataHandle GenerateElementData(Rml::Element*, Rml::BoxArea) const override {
         return reinterpret_cast<Rml::DecoratorDataHandle>(new Data{});
     }
@@ -52,8 +56,14 @@ public:
         const auto area = summary ? Rml::BoxArea::Padding : Rml::BoxArea::Content;
         const auto size = element->GetBox().GetSize(area);
         const auto& style = element->GetComputedValues();
-        const auto color = (summary ? style.color() : Rml::Colourb{255, 255, 255})
-                               .ToPremultiplied(style.opacity());
+        // A check takes the checkmark color of its accent-adjusted palette.
+        const auto check = [&] {
+            const auto mark =
+                ui_control_colors(*element, properties, element->IsPseudoClassSet("disabled"))
+                    .palette->checkmark;
+            return Rml::Colourb{mark.r, mark.g, mark.b};
+        };
+        const auto color = (summary ? style.color() : check()).ToPremultiplied(style.opacity());
         const float font_size = style.font_size();
         if (!data.initialized || data.size != size || data.color != color ||
             data.font_size != font_size || data.open != open) {
@@ -93,11 +103,16 @@ public:
 
 class UiControlMarkDecoratorInstancer final : public Rml::DecoratorInstancer {
 public:
+    explicit UiControlMarkDecoratorInstancer(const UiControlSchemeProperties& properties)
+        : properties(properties) {}
     Rml::SharedPtr<Rml::Decorator>
     InstanceDecorator(const Rml::String&, const Rml::PropertyDictionary&,
                       const Rml::DecoratorInstancerInterface&) override {
-        return Rml::MakeShared<UiControlMarkDecorator>();
+        return Rml::MakeShared<UiControlMarkDecorator>(properties);
     }
+
+private:
+    const UiControlSchemeProperties& properties;
 };
 
 } // namespace bbl::pal

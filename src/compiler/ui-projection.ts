@@ -1340,6 +1340,7 @@ export class UiProjection {
     private static readonly PROJECTED_UI_STYLE_PROPERTIES =
         new EmissionSet<string>([
             ...uiLogicalSpacingProperties,
+            "accent-color",
             "appearance",
             "-webkit-appearance",
             "align-content",
@@ -1376,6 +1377,7 @@ export class UiProjection {
             "box-shadow",
             "bottom",
             "color",
+            "color-scheme",
             "clip",
             "clear",
             "column-gap",
@@ -1446,6 +1448,7 @@ export class UiProjection {
             "scrollbar-width",
             "scrollbar-color",
             "text-align",
+            "text-decoration",
             "text-shadow",
             "text-transform",
             "text-overflow",
@@ -1489,6 +1492,9 @@ export class UiProjection {
         ],
         ["-webkit-tap-highlight-color", ["transparent"]],
         ["text-transform", ["none", "uppercase", "lowercase", "capitalize"]],
+        // A preference-dependent list (`light dark`) has no native preference.
+        ["color-scheme", ["normal", "light", "dark"]],
+        ["text-decoration", ["none", "underline", "overline", "line-through"]],
         ["text-overflow", ["clip", "ellipsis"]],
         ["font-style", ["normal", "italic"]],
         ["scrollbar-gutter", ["auto", "stable"]],
@@ -1549,6 +1555,18 @@ export class UiProjection {
             ? `${second!} ${first!}${depth ?? ""}`
             : value;
     }
+
+    /**
+     * An accent the native control palette can derive its states from:
+     * Chromium composites a translucent accent onto a scheme-dependent base,
+     * which the native palette does not represent.
+     */
+    private static readonly UI_ACCENT_COLOR = (() => {
+        const channel = String.raw`\s*(?:25[0-5]|2[0-4]\d|1?\d?\d)\s*`;
+        return new RegExp(
+            String.raw`^(?:auto|#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\(${channel},${channel},${channel}\)|rgba\(${channel},${channel},${channel},\s*1(?:\.0*)?\s*\)|black|silver|gr[ae]y|white|maroon|red|orange|purple|fuchsia|green|lime|olive|yellow|navy|blue|teal|aqua)$`,
+        );
+    })();
 
     /** font-feature-settings naming only the numeral variants font-variant-numeric covers. */
     private static readonly UI_NUMERAL_FEATURES = (() => {
@@ -1840,6 +1858,15 @@ export class UiProjection {
                         site,
                         property,
                         "only a single raster image with auto, contain, cover or zero sizing and centered or default positioning is represented",
+                    );
+                return;
+            }
+            if (property === "accent-color") {
+                if (!UiProjection.UI_ACCENT_COLOR.test(literalValue))
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "only auto or an opaque literal hex, rgb() or named color is represented",
                     );
                 return;
             }

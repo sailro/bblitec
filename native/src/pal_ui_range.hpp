@@ -2,6 +2,7 @@
 // Browser control geometry/palette adapted from Chromium 152.0.7977.76
 // (ui/native_theme/native_theme_base.cc, ui/color/color_provider_utils.cc).
 // BSD-3-Clause notice: native/notices/Chromium.txt.
+#include "pal_ui_control_scheme.hpp"
 #include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/ComputedValues.h>
 #include <RmlUi/Core/Context.h>
@@ -55,8 +56,8 @@ protected:
     }
 };
 
-// Chromium 152 NativeThemeBase::PaintSliderTrack/PaintSliderThumb and the
-// default light control palette. RmlUi still owns slider layout and input.
+// Chromium 152 NativeThemeBase::PaintSliderTrack/PaintSliderThumb over the
+// color-scheme and accent-color palette. RmlUi still owns slider layout and input.
 class UiRangeDecorator final : public Rml::Decorator {
     using Owner = std::pair<Rml::Element*, Rml::RenderManager*>;
     struct OwnerLess {
@@ -66,15 +67,22 @@ class UiRangeDecorator final : public Rml::Decorator {
                        : std::less<Rml::RenderManager*>{}(left.second, right.second);
         }
     };
+    /** The track takes the input's state, the thumb its own. */
+    struct Paint {
+        UiRgba fill, border, value, thumb;
+        friend bool operator==(const Paint&, const Paint&) = default;
+    };
     struct Data {
         Owner owner;
         std::size_t references = 0;
-        std::tuple<int, int, float, int, bool, bool> key{};
+        std::tuple<int, int, float, bool, bool> key{};
+        Paint paint{};
         float opacity = 0;
         Rml::CallbackTexture texture;
         Rml::Geometry geometry;
         bool initialized = false;
     };
+    const UiControlSchemeProperties& properties;
     mutable std::map<Owner, std::unique_ptr<Data>, OwnerLess> retained;
     // Pixel coverage of an axis-aligned rounded rectangle. Integrate the
     // horizontal circle interval; full interior pixels take the fast path.
@@ -100,35 +108,33 @@ class UiRangeDecorator final : public Rml::Decorator {
         }
         return area / samples;
     }
-    static std::vector<Rml::byte> pixels(int width, int height, float thumb, int state,
+    static std::vector<Rml::byte> pixels(int width, int height, float thumb, const Paint& paint,
                                          bool themed_track, bool themed_thumb) {
-        const std::array<unsigned, 3> accent = state == 3   ? std::array<unsigned, 3>{203, 203, 203}
-                                               : state == 2 ? std::array<unsigned, 3>{55, 147, 255}
-                                               : state == 1 ? std::array<unsigned, 3>{0, 92, 200}
-                                                            : std::array<unsigned, 3>{0, 117, 255};
-        const unsigned fill = state == 1 ? 229 : state == 2 ? 245 : 239;
-        const unsigned border = state == 1 ? 79 : state == 2 ? 141 : 118;
         const float center = height * .5f, track_top = center - 4, track_bottom = center + 4;
         std::vector<Rml::byte> result(static_cast<std::size_t>(width) * height * 4);
         for (int y = 0; y < height; ++y)
             for (int x = 0; x < width; ++x) {
                 std::array<float, 4> color{};
-                const auto over = [&](const std::array<unsigned, 3>& rgb, float alpha) {
+                const auto over = [&](UiRgba rgba, float alpha) {
+                    alpha *= rgba.a / 255.f;
+                    const std::array<float, 3> rgb{static_cast<float>(rgba.r),
+                                                   static_cast<float>(rgba.g),
+                                                   static_cast<float>(rgba.b)};
                     for (unsigned channel = 0; channel < 3; ++channel)
                         color[channel] = rgb[channel] * alpha + color[channel] * (1 - alpha);
                     color[3] = 255 * alpha + color[3] * (1 - alpha);
                 };
                 if (themed_track) {
                     const float outer = coverage(x, y, 1, track_top, width - 1.f, track_bottom, 4);
-                    over({fill, fill, fill}, outer * (state == 3 ? 77.f / 255.f : 1.f));
-                    over(accent, outer * std::clamp(thumb + 4 - x, 0.f, 1.f));
+                    over(paint.fill, outer);
+                    over(paint.value, outer * std::clamp(thumb + 4 - x, 0.f, 1.f));
                     const float inner =
                         coverage(x, y, 2, track_top + 1, width - 2.f, track_bottom - 1, 3);
-                    over({border, border, border}, (outer - inner) * 128.f / 255.f);
+                    over(paint.border, outer - inner);
                 }
                 if (themed_thumb)
-                    over(accent, coverage(x, y, thumb - 7.5f, center - 7.5f, thumb + 7.5f,
-                                          center + 7.5f, 7.5f));
+                    over(paint.thumb, coverage(x, y, thumb - 7.5f, center - 7.5f, thumb + 7.5f,
+                                               center + 7.5f, 7.5f));
                 for (unsigned channel = 0; channel < 4; ++channel)
                     result[(static_cast<std::size_t>(y) * width + x) * 4 + channel] =
                         static_cast<Rml::byte>(std::clamp(std::lround(color[channel]), 0l, 255l));
@@ -137,6 +143,8 @@ class UiRangeDecorator final : public Rml::Decorator {
     }
 
 public:
+    explicit UiRangeDecorator(const UiControlSchemeProperties& properties)
+        : properties(properties) {}
     Rml::DecoratorDataHandle GenerateElementData(Rml::Element* element,
                                                  Rml::BoxArea) const override {
         // RmlUi generates replacement data before releasing the previous handle.
@@ -181,18 +189,26 @@ public:
             return;
         const float thumb = bar->GetAbsoluteOffset(Rml::BoxArea::Border).x - origin.x +
                             bar->GetBox().GetSize(Rml::BoxArea::Border).x * .5f;
-        const int state = element->IsPseudoClassSet("disabled") ? 3
-                          : element->IsPseudoClassSet("active") ? 2
-                          : element->IsPseudoClassSet("hover")  ? 1
-                                                                : 0;
+        const bool disabled = element->IsPseudoClassSet("disabled");
+        const auto state = [disabled](Rml::Element& part) {
+            return disabled                          ? UiControlState::Disabled
+                   : part.IsPseudoClassSet("active") ? UiControlState::Pressed
+                   : part.IsPseudoClassSet("hover")  ? UiControlState::Hovered
+                                                     : UiControlState::Normal;
+        };
+        const auto track = state(*element);
+        const auto colors = ui_control_colors(*element, properties, disabled);
+        const auto index = static_cast<std::size_t>(track);
+        const Paint paint{colors.palette->fill[index], colors.palette->border[index],
+                          colors.accent_color(track), colors.accent_color(state(*bar))};
         const float opacity = element->GetComputedValues().opacity();
-        const auto key = std::tuple{width, height, thumb, state, themed_track, themed_thumb};
+        const auto key = std::tuple{width, height, thumb, themed_track, themed_thumb};
         const bool geometry_changed = !data.initialized || width != std::get<0>(data.key) ||
                                       height != std::get<1>(data.key) || opacity != data.opacity;
         auto& manager = element->GetContext()->GetRenderManager();
-        if (!data.initialized || key != data.key) {
+        if (!data.initialized || key != data.key || !(paint == data.paint)) {
             data.texture = manager.MakeCallbackTexture(
-                [bytes = pixels(width, height, thumb, state, themed_track, themed_thumb), width,
+                [bytes = pixels(width, height, thumb, paint, themed_track, themed_thumb), width,
                  height](const Rml::CallbackTextureInterface& out) {
                     const char* profile = std::getenv("BBLITE_CPU_PROFILE");
                     if (profile && std::string_view(profile) == "1")
@@ -209,6 +225,7 @@ public:
             data.geometry = manager.MakeGeometry(std::move(mesh));
         }
         data.key = key;
+        data.paint = paint;
         data.opacity = opacity;
         data.initialized = true;
         data.geometry.Render(origin, data.texture);
@@ -216,10 +233,15 @@ public:
 };
 class UiRangeDecoratorInstancer final : public Rml::DecoratorInstancer {
 public:
+    explicit UiRangeDecoratorInstancer(const UiControlSchemeProperties& properties)
+        : properties(properties) {}
     Rml::SharedPtr<Rml::Decorator>
     InstanceDecorator(const Rml::String&, const Rml::PropertyDictionary&,
                       const Rml::DecoratorInstancerInterface&) override {
-        return Rml::MakeShared<UiRangeDecorator>();
+        return Rml::MakeShared<UiRangeDecorator>(properties);
     }
+
+private:
+    const UiControlSchemeProperties& properties;
 };
 } // namespace bbl::pal
