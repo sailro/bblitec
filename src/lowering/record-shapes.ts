@@ -5,7 +5,19 @@ import ts from "typescript";
 export type RecordShape =
     | {
           readonly kind:
-              "number" | "boolean" | "string" | "void" | "object" | "buffer";
+              | "number"
+              | "boolean"
+              | "string"
+              | "void"
+              | "object"
+              | "buffer"
+              /** `unknown`: a dynamic JSON value (`bbl::js::JsonValue`). */
+              | "json"
+              | "dataview"
+              /** `ArrayLike<number>`: a read-only view over any number list. */
+              | "arraylike"
+              /** A thrown value: `bbl::js::Error`. */
+              | "error";
       }
     | {
           readonly kind: "native";
@@ -23,12 +35,17 @@ export type RecordShape =
       }
     | { readonly kind: "weakmap"; readonly value: RecordShape }
     | { readonly kind: "weakset" }
-    | { readonly kind: "typed"; readonly element: "f32" | "u32" | "i32" | "u8" }
+    | {
+          readonly kind: "typed";
+          readonly element: "f32" | "f64" | "u32" | "i32" | "u8";
+      }
     | {
           readonly kind: "function";
           readonly parameters: readonly RecordShape[];
           readonly result: RecordShape;
       }
+    /** `Promise<T>`: `bbl::js::Promise<T>` (`void` for `Promise<void>`). */
+    | { readonly kind: "promise"; readonly value: RecordShape }
     | { readonly kind: "optional"; readonly value: RecordShape }
     | { readonly kind: "variant"; readonly members: readonly RecordShape[] };
 
@@ -98,6 +115,10 @@ export class RecordRepresentation {
         return (
             shape.kind === "object" ||
             shape.kind === "function" ||
+            // A dynamic value holds `undefined`/`null` itself; an empty
+            // error is no error.
+            shape.kind === "json" ||
+            shape.kind === "error" ||
             (shape.kind === "native" && shape.nullable === true) ||
             (shape.kind === "record" &&
                 this.storage.record(shape.name).reference)
@@ -122,6 +143,16 @@ export class RecordRepresentation {
                 return "void";
             case "object":
                 return this.storage.object;
+            case "json":
+                return `${js}::JsonValue`;
+            case "dataview":
+                return `${js}::DataView`;
+            case "arraylike":
+                return "bbl::pinned::NumberArrayLike";
+            case "error":
+                return `${js}::Error`;
+            case "promise":
+                return `${js}::Promise<${shape.value.kind === "void" ? `${js}::PromiseVoid` : this.cppType(shape.value)}>`;
             case "native":
                 return shape.cpp;
             case "record":
