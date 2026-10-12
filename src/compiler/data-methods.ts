@@ -3433,27 +3433,28 @@ function compileMapDataMethod(
                 "Map.set key",
             );
         }
-        // A key is read before the value argument can replace its source
-        // binding; one a binding nothing reassigns holds is already read.
-        // Its retained sink also snapshots an engine-owned key.
         const keyNode = argumentAt(call, 0);
-        const readKey =
-            lowerer.context.evaluationOrder.operandsToPin([
-                keyNode,
-                argumentAt(call, 1),
-            ])[0] && !lowerer.context.hasStableNativeBinding(keyValue)
-                ? pinOperand(lowerer.context, keyValue, keyNode, "map_key")
-                : keyValue;
         const key = lowerer.context.allocateTemporaryCppName("map_key");
+        const keyCpp = lowerer.compileKnownValueForSink(
+            keyValue,
+            dataType.key,
+            keyNode,
+        );
+        // A converted key can refer into a temporary nullable/union lane.
+        // Only borrow a named value the value argument cannot change;
+        // own every other key across the declaration boundary.
+        const borrowKey =
+            cppIdentifierPattern.test(keyCpp) &&
+            (lowerer.context.hasStableNativeBinding(keyValue) ||
+                !lowerer.context.evaluationOrder.operandsToPin([
+                    keyNode,
+                    argumentAt(call, 1),
+                ])[0]);
         lowerer.context.emit({
             kind: "declaration",
-            type: "const auto&",
+            type: borrowKey ? "const auto&" : "const auto",
             name: key,
-            initializer: lowerer.compileKnownValueForSink(
-                readKey,
-                dataType.key,
-                keyNode,
-            ),
+            initializer: keyCpp,
         });
         const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
         if (

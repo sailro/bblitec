@@ -10678,6 +10678,41 @@ check(
 );
 
 check(
+    "map-keys-outlive-temporary-destructured-lanes",
+    `
+    const entries: Array<readonly [string, number]> = [
+        ["short", 1],
+        ["bowling-ball-carpet-thump.mp3", 2],
+        ["bowling-pin-hard-1.mp3", 3],
+    ];
+    const values = new Map<string, number>();
+    for (const [key, value] of entries) values.set(key, value);
+    if (values.size !== 3 || values.get("short") !== 1 ||
+        values.get("bowling-ball-carpet-thump.mp3") !== 2 ||
+        values.get("bowling-pin-hard-1.mp3") !== 3)
+        throw new Error("destructured Map key lifetime");
+    if (Array.from(values.keys()).join(",") !== entries.map(([key]) => key).join(","))
+        throw new Error("Map key contents and order");
+    let key = entries[1]![0];
+    function nextValue(): number { key = "changed"; return 4; }
+    values.set(key, nextValue());
+    if (values.get("bowling-ball-carpet-thump.mp3") !== 4 || values.has("changed"))
+        throw new Error("Map key must be read before its value");
+    const keys = ["array-key-one", "array-key-two"];
+    const observed = new Map<string, number>();
+    function replaceKeys(): number {
+        keys[0] = "replaced";
+        if (keys.length === 2) keys.push("array-key-three");
+        return 4;
+    }
+    for (const key of keys) observed.set(key, replaceKeys());
+    if (Array.from(observed.keys()).join(",") !== "array-key-one,array-key-two,array-key-three" ||
+        observed.get("array-key-one") !== 4)
+        throw new Error("Map key must survive source array mutation");
+`,
+);
+
+check(
     "heterogeneous-tuple-lanes-destructure-as-declared",
     `
     const pair: [string, (id: number) => string] = ["tower", (id) => "tower#" + id];

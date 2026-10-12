@@ -5119,6 +5119,13 @@ template <typename T> [[nodiscard]] inline bool array_has_index(const T& values,
     return static_cast<std::size_t>(static_cast<std::int64_t>(index));
 }
 
+/** A numeric array read: an absent element is `undefined`, NaN as a number. */
+template <typename Values>
+[[nodiscard]] inline double number_at(const Values& values, double index) {
+    return array_has_index(values, index) ? static_cast<double>(values[accepted_index(index)])
+                                          : std::numeric_limits<double>::quiet_NaN();
+}
+
 template <typename T> typename Arguments<T>::Result Arguments<T>::get(double index) const {
     if (!array_has_index(values_, index))
         return Result{};

@@ -3470,6 +3470,8 @@ export class PinnedNumericLowerer {
         if (!binding) this.fail(expression, "element access owner");
         const index = this.expression(expression.argumentExpression);
         if (binding.indexedRead) return binding.indexedRead(binding.cpp, index);
+        if (binding.type === "f64-list")
+            return `bbl::js::number_at(${binding.cpp}, static_cast<double>(${index}))`;
         return `${binding.cpp}[static_cast<std::size_t>(${index})]`;
     }
 
