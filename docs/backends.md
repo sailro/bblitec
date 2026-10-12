@@ -108,6 +108,18 @@ Interactive desktop runs use SDL main callbacks, including iteration during Win3
 Suspended frame state owns renderer resources until shutdown. Capture, benchmark and mobile runs
 use explicit iteration; Worker renderers retain their realm RAF scheduling.
 
+## WebGPU subset devices
+
+`DawnWebGpuDevice` maps `gpu.hpp`'s WebGPU subset one to one. `SdlWebGpuDevice` emulates it: a runtime
+WGSL module resolves to its generation-compiled stages by exact text and entry point; bind groups keep
+their entries and each dispatch or draw binds the resources its stage's sidecar names, at the group's
+dynamic offsets; storage buffers bind whole; uniform buffers are CPU bytes pushed when a command is
+encoded; command encoders record and encode at submission (or before a renderer's passes); each dispatch
+is its own compute pass; indirect dispatch reads a copy of its arguments, since D3D12 holds a buffer
+bound as storage in a shader-resource state; `clearBuffer` uploads zeros; `MAP_READ` buffers are
+download transfer buffers mapped after a fence. Device limits are WebGPU's defaults raised by the
+engine's `requiredLimits`; SDL_GPU admits 32-bit sizes.
+
 ## Temporal post-process transport
 
 Each TAA source task owns scratch, uniforms and history. Hooks run once in source order.

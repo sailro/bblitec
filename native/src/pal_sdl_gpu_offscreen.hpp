@@ -10,6 +10,7 @@
 
 #include "pal_sdl_gpu_shared.hpp"
 #include "pal_sdl_gpu_adapter.hpp"
+#include "pal_sdl_gpu_completion.hpp"
 #include "pal_offscreen_gpu.hpp"
 #if BBLITE_GPU_TASK_TIMING
 #include "pal_sdl_gpu_timestamp.hpp"
@@ -36,37 +37,6 @@
 #endif
 
 namespace bbl::pal {
-
-/** Capture the queue boundary on its owner; only the native fence wait leaves that thread. */
-class SdlSubmissionCompletion final : public OffscreenCompletion {
-public:
-    SdlSubmissionCompletion(SDL_GPUDevice* owner, std::function<void(std::exception_ptr)> complete)
-        : device_(owner), fence_(capture(owner), {owner}),
-          waiter_([this, complete = std::move(complete)] {
-              std::exception_ptr error;
-              try {
-                  if (!wait_sdl_gpu_fence(device_, fence_.get()))
-                      gpu_error("SDL_WaitForGPUFences submitted work");
-              } catch (...) {
-                  error = std::current_exception();
-              }
-              complete(error);
-          }) {}
-
-private:
-    static SDL_GPUFence* capture(SDL_GPUDevice* device) {
-        SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
-        if (!command)
-            gpu_error("SDL_AcquireGPUCommandBuffer completion fence");
-        auto* fence = command.submit_with_fence();
-        if (!fence)
-            gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence completion");
-        return fence;
-    }
-    SDL_GPUDevice* device_;
-    OwnedSdlFence fence_;
-    JoiningThread waiter_;
-};
 
 /** The host retains the device until all producers and image leases end. */
 struct SdlOffscreenDevice final : OffscreenDevice {
