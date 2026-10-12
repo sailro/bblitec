@@ -328,10 +328,10 @@ struct WindowDocument {
             ready =
                 ready || ui_get_attribute(engine, UiElementHandle{index}, "data-ready") == "true";
             if (!settled)
-                settled = std::ranges::find(settle->values,
-                                            ui_get_attribute(engine, UiElementHandle{index},
-                                                             settle->attribute)) !=
-                          settle->values.end();
+                settled =
+                    std::ranges::find(settle->values,
+                                      ui_get_attribute(engine, UiElementHandle{index},
+                                                       settle->attribute)) != settle->values.end();
             if (failure.empty())
                 failure = ui_get_attribute(engine, UiElementHandle{index}, "data-error");
         }
@@ -1460,9 +1460,9 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 services->wake.notify_all();
                 const bool source_ready =
                     services->capture_ready->load() &&
-                    (!capture_settle() || monotonic_milliseconds() -
-                                                  services->capture_ready_since.load() >=
-                                              capture_settle()->milliseconds) &&
+                    (!capture_settle() ||
+                     monotonic_milliseconds() - services->capture_ready_since.load() >=
+                         capture_settle()->milliseconds) &&
                     std::all_of(frames.begin(), frames.end(),
                                 [](const auto& canvas) { return canvas.frame.capture_ready; });
                 // Engine frames every canvas has rendered, or presented
