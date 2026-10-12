@@ -1324,15 +1324,15 @@ public:
     }
     template <typename Exception>
     bool parse_error(std::size_t, const std::string&, const Exception& error) {
-        throw error;
+        throw NamedError("SyntaxError", error.what());
     }
     [[nodiscard]] JsonValue take_result() { return std::move(result_); }
 };
 
 /**
- * `JSON.parse(text)`. nlohmann owns the grammar and throws on a malformed
- * document, which is the browser's SyntaxError: a surrounding `try`/`catch`
- * in the source sees it exactly where it would there.
+ * `JSON.parse(text)`. nlohmann owns the grammar; a malformed document throws
+ * the browser's SyntaxError (named so, its message the parser's): a
+ * surrounding `try`/`catch` in the source sees it exactly where it would there.
  */
 [[nodiscard]] inline JsonValue json_parse(const std::string& text) {
     JsonValueParser parser;

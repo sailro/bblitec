@@ -28,8 +28,10 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
  * generation with the pinned source location.
  */
 import ts from "typescript";
+import { findAnalysisNode } from "../compiler/analysis-walk.js";
 import { numberConstant } from "../compiler/number-intrinsics.js";
 import {
+    declarationInDefaultLibrary,
     declaredInDefaultLibrary,
     libraryGlobal,
     declaredSymbol,
@@ -203,6 +205,16 @@ interface RecordSchema {
      */
     readonly constructors?: ReadonlyMap<string, CallAdapter>;
     /**
+     * Tests `error instanceof C` of platform error classes, keyed by the
+     * library global (`DOMException`), over the error's native spelling.
+     */
+    readonly instanceOf?: ReadonlyMap<string, (error: string) => string>;
+    /**
+     * Platform globals read as values (`globalThis.fetch` stored as a
+     * function), keyed by the global's name.
+     */
+    readonly globalValues?: ReadonlyMap<string, ModuleValue>;
+    /**
      * Platform globals the pin calls or reads (`fetch`, `setTimeout`,
      * `performance.now`), keyed by the global's dotted name; a call is the
      * adapter's.
@@ -310,6 +322,17 @@ function detailNamespace(module: string): string {
     return `bbl::${stem.replaceAll("-", "_")}_detail`;
 }
 
+/** Whether a function-like is `async`. */
+function isAsyncFunction(node: ts.FunctionLikeDeclaration): boolean {
+    return (
+        ts
+            .getModifiers(node)
+            ?.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            ) ?? false
+    );
+}
+
 /** Whether a node is a function-like body the record model lowers. */
 function isFunctionLike(node: ts.Node): node is ts.FunctionLikeDeclaration {
     return (
@@ -383,6 +406,15 @@ function isInlineCallback(node: ts.Node, checker: ts.TypeChecker): boolean {
         child = parent;
         parent = parent.parent;
     }
+    // `new Promise(executor)` runs its executor before it returns.
+    if (
+        ts.isNewExpression(parent) &&
+        parent.arguments?.[0] === child &&
+        ts.isIdentifier(parent.expression) &&
+        parent.expression.text === "Promise" &&
+        declaredInDefaultLibrary(resolvedSymbol(checker, parent.expression))
+    )
+        return true;
     if (
         !ts.isCallExpression(parent) ||
         parent.expression === child ||
@@ -649,8 +681,28 @@ export class PinnedRecordModel {
         return this.erased(type) ? undefined : this.shapeOf(type, node);
     }
 
+    /**
+     * The types a generic closure's type parameters stand for while one
+     * instantiation of it is lowered, innermost last.
+     */
+    public readonly typeBindings: Map<ts.Type, ts.Type>[] = [];
+
     /** The native form of a checked pinned type. */
     public shapeOf(type: ts.Type, site: ts.Node): RecordShape {
+        if (type.flags & ts.TypeFlags.TypeParameter) {
+            for (
+                let index = this.typeBindings.length - 1;
+                index >= 0;
+                index--
+            ) {
+                const bound = this.typeBindings[index]!.get(type);
+                if (bound) return this.shapeOf(bound, site);
+            }
+            return this.fail(
+                site,
+                `Pinned type parameter '${this.checker.typeToString(type)}' is unbound.`,
+            );
+        }
         const anonymous = this.anonymous.get(type);
         if (anonymous !== undefined) return { kind: "record", name: anonymous };
         const alias = type.aliasSymbol?.name;
@@ -1383,18 +1435,37 @@ export class PinnedRecordModel {
     ): Map<string, ResolvedMember> {
         if (!spec.reference)
             this.fail(declaration, "A pinned class is shared by identity.");
-        if (
-            declaration.heritageClauses?.some(
-                (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-            )
-        )
-            this.fail(declaration, "Pinned class inheritance is not lowered.");
+        const error = this.extendsError(declaration);
         const members = new Map<string, ResolvedMember>();
         const record = spec.pinned[0]!;
         for (const property of this.checker.getPropertiesOfType(type)) {
             const name = property.getName();
             if (spec.omit?.has(name)) continue;
             const declarations = property.declarations ?? [];
+            // An Error subclass stores the `name` and `message` it is
+            // thrown with; its stack and cause are the runtime's.
+            if (
+                error &&
+                declarations.every((candidate) =>
+                    declarationInDefaultLibrary(candidate),
+                )
+            ) {
+                if (name === "stack" || name === "cause") continue;
+                if (name !== "name" && name !== "message")
+                    this.fail(
+                        declaration,
+                        `Pinned Error member '${name}' is not represented.`,
+                    );
+                members.set(name, {
+                    name,
+                    field: name,
+                    declaredBy: record,
+                    shape: { kind: "string" },
+                    access: (owner) => `${owner}->${name}`,
+                    storage: "field",
+                });
+                continue;
+            }
             const shapeOf = (site: ts.Node): RecordShape =>
                 spec.members?.get(name)?.shape ??
                 this.declaredShape(
@@ -1410,6 +1481,14 @@ export class PinnedRecordModel {
             const setter = declarations.find(ts.isSetAccessorDeclaration);
             const method = declarations.find(ts.isMethodDeclaration);
             const field = declarations.find(ts.isPropertyDeclaration);
+            const parameterProperty = declarations.find(
+                (candidate): candidate is ts.ParameterDeclaration =>
+                    ts.isParameter(candidate) &&
+                    ts.isParameterPropertyDeclaration(
+                        candidate,
+                        candidate.parent,
+                    ),
+            );
             // An accessor's or method's shape is read only when a lowered
             // body uses it: a member nothing reaches may take a type a
             // type-only module erased.
@@ -1472,6 +1551,15 @@ export class PinnedRecordModel {
                     access: (owner) => `${owner}->${base.field}`,
                     storage: "field",
                 });
+            } else if (parameterProperty) {
+                // `constructor(readonly url: string)`: a field the
+                // constructor assigns from its parameter.
+                members.set(name, {
+                    ...base,
+                    shape: shapeOf(parameterProperty),
+                    access: (owner) => `${owner}->${base.field}`,
+                    storage: "field",
+                });
             } else
                 this.fail(
                     declaration,
@@ -1486,6 +1574,73 @@ export class PinnedRecordModel {
             }),
         );
         return members;
+    }
+
+    /** Whether a record is an authored `class X extends Error`. */
+    public errorClass(name: string): boolean {
+        const spec = this.record(name).spec;
+        if (spec.native || this.literalTypes.has(spec.pinned[0]!)) return false;
+        const { site } = this.recordSource(spec);
+        return ts.isClassDeclaration(site) && this.extendsError(site);
+    }
+
+    /**
+     * An Error subclass without a constructor takes Error's: its optional
+     * message, the library's own parameter.
+     */
+    private errorMessageParameter(
+        declaration: ts.ClassDeclaration,
+    ): NativeParameter[] {
+        const base = declaration.heritageClauses?.[0]?.types[0]?.expression;
+        const parameter = base
+            ? this.checker
+                  .getTypeAtLocation(base)
+                  .getConstructSignatures()
+                  .map((signature) => signature.getDeclaration().parameters[0])
+                  .find(
+                      (candidate) =>
+                          candidate !== undefined &&
+                          ts.isIdentifier(candidate.name) &&
+                          candidate.name.text === "message",
+                  )
+            : undefined;
+        if (!parameter || !ts.isIdentifier(parameter.name))
+            return this.fail(
+                declaration,
+                "Pinned Error constructor has no message parameter.",
+            );
+        return [
+            {
+                name: parameter.name,
+                shape: { kind: "optional", value: { kind: "string" } },
+                optional: true,
+                node: parameter,
+            },
+        ];
+    }
+
+    /**
+     * Whether a class extends the library's `Error` (its instances are
+     * thrown as authored errors); any other base refuses.
+     */
+    public extendsError(declaration: ts.ClassDeclaration): boolean {
+        const clause = declaration.heritageClauses?.find(
+            (candidate) => candidate.token === ts.SyntaxKind.ExtendsKeyword,
+        );
+        if (!clause) return false;
+        const base = clause.types[0]?.expression;
+        if (
+            clause.types.length !== 1 ||
+            !base ||
+            !ts.isIdentifier(base) ||
+            base.text !== "Error" ||
+            !declaredInDefaultLibrary(resolvedSymbol(this.checker, base))
+        )
+            return this.fail(
+                declaration,
+                "Pinned class inheritance is not lowered.",
+            );
+        return true;
     }
 
     private mergeShapes(shapes: readonly RecordShape[]): RecordShape {
@@ -2185,7 +2340,10 @@ export class PinnedRecordModel {
     /** A lowered function's pinned parameters with their native shapes. */
     public parametersOf(entry: LoweredFunction): NativeParameter[] {
         const declaration = entry.declaration;
-        if (ts.isClassDeclaration(declaration)) return [];
+        if (ts.isClassDeclaration(declaration))
+            return this.extendsError(declaration)
+                ? this.errorMessageParameter(declaration)
+                : [];
         return declaration.parameters.map((parameter, index) => {
             if (!ts.isIdentifier(parameter.name))
                 return this.fail(parameter, "Pinned parameters must be named.");
@@ -2219,7 +2377,15 @@ export class PinnedRecordModel {
                     };
                 }
             }
-            if (ts.getModifiers(parameter)?.length)
+            // A constructor's parameter property is also its field, which
+            // the constructor body assigns.
+            if (
+                ts.getModifiers(parameter)?.length &&
+                !(
+                    ts.isConstructorDeclaration(declaration) &&
+                    ts.isParameterPropertyDeclaration(parameter, declaration)
+                )
+            )
                 this.fail(
                     parameter,
                     "Pinned parameter properties are not lowered.",
@@ -2415,11 +2581,17 @@ function memberInitializer(shape: RecordShape): string {
 
 interface Local {
     readonly storage: RecordShape;
+    /**
+     * A generic closure's instantiations, by their function shape's native
+     * type: one closure per type argument set its calls use.
+     */
+    readonly specializations?: ReadonlyMap<string, Local>;
     /** The C++ name of a local its frame declares itself. */
     readonly cpp?: string;
     /** A binding closures capture: its field in its frame's environment. */
     readonly captured?: {
-        readonly frame: Frame;
+        /** The function-like or block whose environment holds it. */
+        readonly scope: ts.Node;
         readonly field: string;
         /** Its slot is a `LexicalBinding`: a closure may read it first. */
         readonly temporal: boolean;
@@ -2433,7 +2605,8 @@ interface Local {
  * per invocation, as JavaScript's scope is.
  */
 interface Environment {
-    readonly owner: Frame;
+    /** The function-like or block whose bindings it holds. */
+    readonly owner: ts.Node;
     readonly struct: string;
     /** The C++ name of the environment pointer inside its own frame. */
     readonly variable: string;
@@ -2461,8 +2634,16 @@ interface Frame {
     readonly self?: string;
     /** An inline callback: a native lambda over its defining frame's storage. */
     readonly inline?: true;
+    /** An async function or closure: a coroutine over `js::Promise`. */
+    readonly async?: true;
     /** An object literal's method: the environment holding its `this`. */
     readonly literalThis?: Environment;
+    /**
+     * The block environments entered so far, innermost last: bindings a
+     * block declares that closures capture, one environment per execution
+     * of the block (per loop iteration), as JavaScript's block scope is.
+     */
+    readonly scopes: Environment[];
 }
 
 /** How a sink receives a converted value. */
@@ -2520,7 +2701,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         this.frames.push({
             node: entry.declaration,
             returns: model.returnShapeOf(entry),
+            scopes: [],
             ...(self || constructs ? { self: "self" } : {}),
+            ...(!ts.isClassDeclaration(entry.declaration) &&
+            isAsyncFunction(entry.declaration)
+                ? { async: true as const }
+                : {}),
         });
         if (self || constructs) this.names[0]!.add("self");
         for (const parameter of model.parametersOf(entry)) {
@@ -2592,13 +2778,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ts.isConstructorDeclaration(declaration)
         )
             return this.constructorBody(lines);
-        return [
+        const body = [
             ...lines,
             ...this.statements(
                 this.hoisted(declaration.body!.statements),
                 "    ",
             ),
-        ].join("\n");
+        ];
+        return (
+            this.frame.async ? this.coroutine(declaration, body, "    ") : body
+        ).join("\n");
     }
 
     /** The environment structs this function's frames declared. */
@@ -2627,25 +2816,96 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             `    auto self = bbl::js::make_gc_shared<bbl::${spec.cpp}>();`,
             ...prolog,
         ];
-        for (const member of classDeclaration.members) {
-            if (
-                !ts.isPropertyDeclaration(member) ||
-                !member.initializer ||
-                ts
-                    .getModifiers(member)
-                    ?.some(
-                        (modifier) =>
-                            modifier.kind === ts.SyntaxKind.StaticKeyword,
+        // What construction does before the constructor's own statements:
+        // the class's field initializers, then its parameter properties.
+        const initialize = (): string[] => {
+            const assigned: string[] = [];
+            for (const member of classDeclaration.members) {
+                if (
+                    !ts.isPropertyDeclaration(member) ||
+                    !member.initializer ||
+                    ts
+                        .getModifiers(member)
+                        ?.some(
+                            (modifier) =>
+                                modifier.kind === ts.SyntaxKind.StaticKeyword,
+                        )
+                )
+                    continue;
+                const resolved = members.get(member.name.getText());
+                if (!resolved)
+                    this.refuse(
+                        member,
+                        "Pinned class field is not represented.",
+                    );
+                assigned.push(
+                    `    ${resolved.access("self")} = ${this.convert(member.initializer, resolved.shape)};`,
+                );
+            }
+            if (ts.isConstructorDeclaration(declaration))
+                for (const parameter of declaration.parameters) {
+                    if (
+                        !ts.isParameterPropertyDeclaration(
+                            parameter,
+                            declaration,
+                        ) ||
+                        !ts.isIdentifier(parameter.name)
                     )
-            )
-                continue;
-            const resolved = members.get(member.name.getText());
-            if (!resolved)
-                this.refuse(member, "Pinned class field is not represented.");
+                        continue;
+                    const resolved = members.get(parameter.name.text);
+                    if (!resolved)
+                        this.refuse(
+                            parameter,
+                            "Pinned parameter property is not represented.",
+                        );
+                    assigned.push(
+                        `    ${resolved.access("self")} = ${this.value(parameter.name)};`,
+                    );
+                }
+            return assigned;
+        };
+        // An Error subclass is an error first: `super(message)` sets its
+        // message (absent, the empty one); its name is Error's until the
+        // constructor sets its own.
+        const error = this.model.extendsError(classDeclaration);
+        let statements: readonly ts.Statement[] =
+            ts.isConstructorDeclaration(declaration) && declaration.body
+                ? declaration.body.statements
+                : [];
+        if (error) {
+            let message: string;
+            if (ts.isConstructorDeclaration(declaration)) {
+                const first = statements[0];
+                const call =
+                    first &&
+                    ts.isExpressionStatement(first) &&
+                    ts.isCallExpression(first.expression) &&
+                    first.expression.expression.kind ===
+                        ts.SyntaxKind.SuperKeyword
+                        ? first.expression
+                        : undefined;
+                if (!call || call.arguments.length > 1)
+                    return this.refuse(
+                        declaration,
+                        "A pinned Error subclass's constructor starts with super(message).",
+                    );
+                const [argument] = call.arguments;
+                message = argument
+                    ? this.convert(argument, { kind: "string" })
+                    : 'std::string("")';
+                statements = statements.slice(1);
+            } else {
+                const [parameter] = this.model.parametersOf(this.entry);
+                message = parameter
+                    ? `(${this.presentTest(parameterCpp(parameter))} ? ${this.coerce(parameterCpp(parameter), parameter.shape, { kind: "string" }, declaration)} : std::string(""))`
+                    : 'std::string("")';
+            }
             lines.push(
-                `    ${resolved.access("self")} = ${this.convert(member.initializer, resolved.shape)};`,
+                '    self->name = "Error";',
+                `    self->message = ${message};`,
             );
         }
+        lines.push(...initialize());
         if (ts.isConstructorDeclaration(declaration) && declaration.body) {
             const returns = this.model.context.findNodes(
                 declaration.body,
@@ -2655,12 +2915,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             );
             if (returns.length > 0)
                 this.refuse(returns[0]!, "A pinned constructor returns early.");
-            lines.push(
-                ...this.statements(
-                    this.hoisted(declaration.body.statements),
-                    "    ",
-                ),
-            );
+            lines.push(...this.statements(this.hoisted(statements), "    "));
         }
         lines.push("    return self;");
         return lines.join("\n");
@@ -2697,11 +2952,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     this.captureFrame(declaration) !== this.captureFrame(node)
                 ) {
                     this.captured.add(symbol);
+                    // A block-scoped binding lives in its block's
+                    // environment (one per execution of the block).
                     if (!this.topLevel(declaration))
-                        this.refuse(
-                            node,
-                            "A pinned closure captures a block-scoped binding.",
-                        );
+                        this.blockScope(declaration, node);
                     if (ts.isBindingElement(declaration))
                         this.refuse(
                             node,
@@ -2827,21 +3081,28 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return false;
     }
 
-    /** Whether a binding is declared at its function's top level. */
+    /**
+     * Whether a binding is declared by a statement of its function's body
+     * itself: a loop header's or a case clause's binding is not.
+     */
     private topLevel(declaration: ts.Node): boolean {
         if (ts.isParameter(declaration)) return true;
         const owner = enclosingFunctionLike(declaration);
         const body = owner && isFunctionLike(owner) ? owner.body : undefined;
-        let statement: ts.Node = declaration;
+        let node: ts.Node = declaration;
         while (
-            statement.parent &&
-            !ts.isBlock(statement.parent) &&
-            !ts.isSourceFile(statement.parent)
-        ) {
-            if (isFunctionLike(statement.parent)) return false;
-            statement = statement.parent;
+            ts.isBindingElement(node) ||
+            ts.isObjectBindingPattern(node) ||
+            ts.isArrayBindingPattern(node)
+        )
+            node = node.parent;
+        if (ts.isVariableDeclaration(node)) {
+            const statement = node.parent.parent;
+            return (
+                ts.isVariableStatement(statement) && statement.parent === body
+            );
         }
-        return statement.parent === body;
+        return node.parent === body;
     }
 
     /** A frame's statements with its nested function declarations hoisted out. */
@@ -2911,7 +3172,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     owned(declaration)
                 );
             })
-            .map(({ name, storage }) => ({ name, storage: storage() }));
+            .map(({ name, storage }) => {
+                // A generic closure holds one slot per instantiation.
+                const generic = ts.isVariableDeclaration(name.parent)
+                    ? this.instantiations(name.parent)
+                    : undefined;
+                return generic
+                    ? { name, storage: { kind: "void" as const }, generic }
+                    : { name, storage: storage() };
+            });
         const lines: string[] = [];
         if (capturedHere.length > 0) {
             const struct = this.model.environmentName(this.entry);
@@ -2923,7 +3192,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             }[] = [];
             const taken = new Set(["enclosing", "gc_trace"]);
             const environment: Environment = {
-                owner: frame,
+                owner: frame.node,
                 struct,
                 variable,
                 fields,
@@ -2934,11 +3203,34 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             frame.environment = environment;
             // A captured parameter moves into the environment it shares.
             const moves: string[] = [];
-            for (const { name, storage } of capturedHere) {
+            for (const { name, storage, generic } of capturedHere) {
+                const symbol = declaredSymbol(this.checker, name)!;
+                if (generic) {
+                    const specializations = new Map<string, Local>();
+                    for (const variant of generic.variants) {
+                        let field = cppIdentifier(name.text);
+                        while (taken.has(field)) field = `${field}_`;
+                        taken.add(field);
+                        fields.push({
+                            field,
+                            storage: variant.shape,
+                            temporal: false,
+                        });
+                        specializations.set(variant.key, {
+                            storage: variant.shape,
+                            captured: {
+                                scope: frame.node,
+                                field,
+                                temporal: false,
+                            },
+                        });
+                    }
+                    this.locals.set(symbol, { storage, specializations });
+                    continue;
+                }
                 let field = cppIdentifier(name.text);
                 while (taken.has(field)) field = `${field}_`;
                 taken.add(field);
-                const symbol = declaredSymbol(this.checker, name)!;
                 const temporal = this.temporal(symbol, name.parent);
                 fields.push({ field, storage, temporal });
                 const parameter = this.locals.get(symbol);
@@ -2948,7 +3240,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     );
                 this.locals.set(symbol, {
                     storage,
-                    captured: { frame, field, temporal },
+                    captured: { scope: frame.node, field, temporal },
                 });
             }
             this.environments.push(this.environmentStruct(environment));
@@ -2979,6 +3271,158 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 );
         }
         return lines;
+    }
+
+    /**
+     * A `const f = <T>(...) => ...` closure's instantiations: one per
+     * distinct function shape its calls in this body resolve to, with the
+     * types its type parameters take there. Reading it otherwise refuses.
+     */
+    private instantiations(declaration: ts.VariableDeclaration):
+        | {
+              readonly closure: ts.ArrowFunction | ts.FunctionExpression;
+              readonly variants: readonly {
+                  readonly key: string;
+                  readonly shape: RecordShape;
+                  readonly bindings: Map<ts.Type, ts.Type>;
+              }[];
+          }
+        | undefined {
+        const closure = declaration.initializer
+            ? this.skipParentheses(declaration.initializer)
+            : undefined;
+        if (
+            !closure ||
+            !(
+                ts.isArrowFunction(closure) || ts.isFunctionExpression(closure)
+            ) ||
+            !closure.typeParameters?.length ||
+            !ts.isIdentifier(declaration.name)
+        )
+            return undefined;
+        const symbol = declaredSymbol(this.checker, declaration.name);
+        const declared = this.checker.getSignatureFromDeclaration(closure);
+        if (!symbol || !declared)
+            return this.refuse(declaration, "Pinned generic closure shape.");
+        const variants = new Map<
+            string,
+            { key: string; shape: RecordShape; bindings: Map<ts.Type, ts.Type> }
+        >();
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isIdentifier(node) &&
+                node !== declaration.name &&
+                declaredSymbol(this.checker, node) === symbol
+            ) {
+                const call = node.parent;
+                if (!ts.isCallExpression(call) || call.expression !== node)
+                    this.refuse(
+                        node,
+                        "A pinned generic closure is only called, never read as a value.",
+                    );
+                else {
+                    const variant = this.instantiation(call, declared);
+                    if (!variants.has(variant.key))
+                        variants.set(variant.key, variant);
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(this.entry.declaration);
+        return { closure, variants: [...variants.values()] };
+    }
+
+    /** One call's instantiation of a generic closure: its shape and type arguments. */
+    private instantiation(
+        call: ts.CallExpression,
+        declared: ts.Signature,
+    ): { key: string; shape: RecordShape; bindings: Map<ts.Type, ts.Type> } {
+        const resolved = this.checker.getResolvedSignature(call);
+        if (!resolved)
+            return this.refuse(call, "Pinned generic call has no signature.");
+        const bindings = new Map<ts.Type, ts.Type>();
+        const unify = (generic: ts.Type, actual: ts.Type, depth = 0): void => {
+            if (depth > 8) return;
+            if (generic.flags & ts.TypeFlags.TypeParameter) {
+                bindings.set(generic, actual);
+                return;
+            }
+            const references = (type: ts.Type): boolean =>
+                (type.flags & ts.TypeFlags.Object) !== 0 &&
+                ((type as ts.ObjectType).objectFlags &
+                    ts.ObjectFlags.Reference) !==
+                    0;
+            if (references(generic) && references(actual)) {
+                const genericArguments = this.checker.getTypeArguments(
+                    generic as ts.TypeReference,
+                );
+                const actualArguments = this.checker.getTypeArguments(
+                    actual as ts.TypeReference,
+                );
+                genericArguments.forEach((argument, index) => {
+                    const other = actualArguments[index];
+                    if (other) unify(argument, other, depth + 1);
+                });
+                return;
+            }
+            const [genericSignature] = generic.getCallSignatures();
+            const [actualSignature] = actual.getCallSignatures();
+            if (genericSignature && actualSignature) {
+                genericSignature.getParameters().forEach((parameter, index) => {
+                    const other = actualSignature.getParameters()[index];
+                    if (other)
+                        unify(
+                            this.checker.getTypeOfSymbolAtLocation(
+                                parameter,
+                                call,
+                            ),
+                            this.checker.getTypeOfSymbolAtLocation(other, call),
+                            depth + 1,
+                        );
+                });
+                unify(
+                    genericSignature.getReturnType(),
+                    actualSignature.getReturnType(),
+                    depth + 1,
+                );
+            }
+        };
+        declared.getParameters().forEach((parameter, index) => {
+            const actual = resolved.getParameters()[index];
+            if (actual)
+                unify(
+                    this.checker.getTypeOfSymbolAtLocation(parameter, call),
+                    this.checker.getTypeOfSymbolAtLocation(actual, call),
+                );
+        });
+        unify(declared.getReturnType(), resolved.getReturnType());
+        const shape: RecordShape = {
+            kind: "function",
+            parameters: resolved
+                .getParameters()
+                .map((parameter) =>
+                    this.model.shapeOf(
+                        this.checker.getTypeOfSymbolAtLocation(parameter, call),
+                        call,
+                    ),
+                ),
+            result: this.model.shapeOf(resolved.getReturnType(), call),
+        };
+        return { key: this.cpp(shape), shape, bindings };
+    }
+
+    /** `f` lowered once per instantiation, its type parameters bound. */
+    private instantiated(
+        closure: ts.ArrowFunction | ts.FunctionExpression,
+        variant: { shape: RecordShape; bindings: Map<ts.Type, ts.Type> },
+        indent: string,
+    ): string {
+        this.model.typeBindings.push(variant.bindings);
+        try {
+            return this.closure(closure, variant.shape, indent);
+        } finally {
+            this.model.typeBindings.pop();
+        }
     }
 
     /** The indent of a closure's closing brace, by how deeply it nests. */
@@ -3036,8 +3480,152 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     /** A captured binding's environment slot, as the current frame reaches it. */
     private localSlot(local: Local): string {
         if (!local.captured) return local.cpp!;
-        const owner = local.captured.frame;
+        const owner = local.captured.scope;
         return `${this.environmentPath((environment) => environment.owner === owner)}->${local.captured.field}`;
+    }
+
+    /**
+     * The innermost environment code at the current point of `frame` sees
+     * (its innermost block's, its own, or the one it received), and the
+     * native variable holding it there.
+     */
+    private visibleEnvironment(
+        frame: Frame = this.frame,
+    ): { environment: Environment; variable: string } | undefined {
+        const scope = frame.scopes[frame.scopes.length - 1];
+        if (scope) return { environment: scope, variable: scope.variable };
+        if (frame.environment)
+            return {
+                environment: frame.environment,
+                variable: frame.environment.variable,
+            };
+        return frame.received
+            ? {
+                  environment: frame.received.environment,
+                  variable: frame.received.variable,
+              }
+            : undefined;
+    }
+
+    /**
+     * The block a captured `let`/`const` belongs to when it is not its
+     * function's top level: a block statement, or the `for` whose header
+     * declares it (one binding per iteration). Anything else refuses.
+     */
+    private blockScope(
+        declaration: ts.Node,
+        site: ts.Node,
+    ): ts.Block | ts.ForStatement {
+        if (ts.isVariableDeclaration(declaration)) {
+            const list = declaration.parent;
+            const owner = list.parent;
+            if (
+                ts.isVariableDeclarationList(list) &&
+                (list.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0
+            ) {
+                if (ts.isForStatement(owner) && owner.initializer === list)
+                    return owner;
+                if (ts.isVariableStatement(owner) && ts.isBlock(owner.parent))
+                    return owner.parent;
+            }
+        }
+        return this.refuse(
+            site,
+            "A pinned closure captures a binding no block scope holds.",
+        );
+    }
+
+    /**
+     * A block's statements; when closures capture bindings it declares,
+     * a fresh environment holds them for this execution of the block.
+     */
+    public override statements(
+        list: readonly ts.Statement[],
+        indent: string,
+    ): string[] {
+        const block = list[0]?.parent;
+        if (!block || !ts.isBlock(block) || isFunctionLike(block.parent))
+            return super.statements(list, indent);
+        const bindings: { name: ts.Identifier; storage: RecordShape }[] = [];
+        for (const statement of list)
+            if (ts.isVariableStatement(statement))
+                for (const declaration of statement.declarationList
+                    .declarations) {
+                    const name = declaration.name;
+                    const symbol = ts.isIdentifier(name)
+                        ? declaredSymbol(this.checker, name)
+                        : undefined;
+                    if (
+                        ts.isIdentifier(name) &&
+                        symbol &&
+                        this.captured.has(symbol)
+                    )
+                        bindings.push({
+                            name,
+                            storage: this.storageOf(declaration),
+                        });
+                }
+        if (bindings.length === 0) return super.statements(list, indent);
+        const { prolog, scope } = this.enterScope(block, bindings, indent);
+        try {
+            return [...prolog, ...super.statements(list, indent)];
+        } finally {
+            this.leaveScope(scope);
+        }
+    }
+
+    /**
+     * Allocate a block environment for `bindings`, enclosing the current
+     * innermost one, and make it the frame's innermost scope.
+     */
+    private enterScope(
+        owner: ts.Node,
+        bindings: readonly { name: ts.Identifier; storage: RecordShape }[],
+        indent: string,
+    ): { prolog: string[]; scope: Environment } {
+        const frame = this.frame;
+        const visible = this.visibleEnvironment(frame);
+        const fields: Environment["fields"] = [];
+        const scope: Environment = {
+            owner,
+            struct: this.model.environmentName(this.entry),
+            variable: this.temporary("environment"),
+            fields,
+            ...(visible ? { enclosing: visible.environment } : {}),
+        };
+        const taken = new Set(["enclosing", "gc_trace"]);
+        for (const { name, storage } of bindings) {
+            let field = cppIdentifier(name.text);
+            while (taken.has(field)) field = `${field}_`;
+            taken.add(field);
+            const symbol = declaredSymbol(this.checker, name)!;
+            const temporal = this.temporal(symbol, name.parent);
+            fields.push({ field, storage, temporal });
+            this.locals.set(symbol, {
+                storage,
+                captured: { scope: owner, field, temporal },
+            });
+        }
+        this.environments.push(this.environmentStruct(scope));
+        frame.scopes.push(scope);
+        return {
+            prolog: [
+                `${indent}auto ${scope.variable} = bbl::js::make_gc_shared<${scope.struct}>();`,
+                ...(visible
+                    ? [
+                          `${indent}${scope.variable}->enclosing = ${visible.variable};`,
+                      ]
+                    : []),
+            ],
+            scope,
+        };
+    }
+
+    private leaveScope(scope: Environment): void {
+        const scopes = this.frame.scopes;
+        if (scopes[scopes.length - 1] !== scope)
+            throw new Error("Pinned block environments left out of order.");
+        scopes.pop();
     }
 
     /**
@@ -3048,9 +3636,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         found: (environment: Environment) => boolean,
     ): string {
         const frame = this.frame;
-        let environment = frame.environment ?? frame.received?.environment;
-        let path =
-            frame.environment?.variable ?? frame.received?.variable ?? "";
+        const visible = this.visibleEnvironment(frame);
+        let environment = visible?.environment;
+        let path = visible?.variable ?? "";
         while (environment && !found(environment)) {
             path = `${path}->enclosing`;
             environment = environment.enclosing;
@@ -3092,12 +3680,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             node.asteriskToken
         )
             return this.refuse(node, "Pinned generator closure.");
-        if (this.isAsync(node))
-            return this.refuse(node, "Pinned async closure.");
+        const async = isAsyncFunction(node);
+        if (async && to.result.kind !== "promise")
+            return this.refuse(
+                node,
+                `Pinned async closure as ${this.cpp(to)}.`,
+            );
         const outer = this.frame;
-        let visible = outer.environment ?? outer.received?.environment;
-        let visibleVariable =
-            outer.environment?.variable ?? outer.received?.variable;
+        let visible = this.visibleEnvironment(outer)?.environment;
+        let visibleVariable = this.visibleEnvironment(outer)?.variable;
         // `this` in an object literal's method: the object, held by an
         // environment of its own that encloses the frame's.
         const prelude: string[] = [];
@@ -3106,7 +3697,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const variable = this.temporary("this_environment");
             thisEnvironment = {
                 // Its own owner: no frame's bindings live in it.
-                owner: { node, returns: { kind: "void" } },
+                owner: node.parent,
                 struct: this.model.environmentName(this.entry),
                 variable,
                 fields: [
@@ -3132,8 +3723,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         this.frames.push({
             node,
             returns: to.result,
+            scopes: [],
             ...(received ? { received } : {}),
             ...(thisEnvironment ? { literalThis: thisEnvironment } : {}),
+            ...(async ? { async: true as const } : {}),
         });
         try {
             return this.withBindings(() => {
@@ -3146,10 +3739,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     ...parameters.prolog,
                     ...this.closureBody(node, to.result, inner),
                 ];
+                // A coroutine keeps its own reference to the environment: a
+                // reference parameter would outlive the callback's copy.
+                // A closure that reads nothing of its environment still
+                // holds it (the callback's identity owns it).
+                const unused =
+                    received !== undefined &&
+                    !lines.some((line) => line.includes(received.variable));
                 const signature = [
                     ...(received
                         ? [
-                              `std::shared_ptr<${received.environment.struct}>& ${received.variable}`,
+                              `${unused ? "[[maybe_unused]] " : ""}std::shared_ptr<${received.environment.struct}>${async ? "" : "&"} ${received.variable}`,
                           ]
                         : []),
                     ...parameters.signature,
@@ -3165,17 +3765,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         } finally {
             this.frames.pop();
         }
-    }
-
-    /** Whether a function-like is `async`. */
-    private isAsync(node: ts.FunctionLikeDeclaration): boolean {
-        return (
-            ts
-                .getModifiers(node)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ) ?? false
-        );
     }
 
     /** Whether an object-literal method's body reads `this` (arrows inherit it). */
@@ -3209,17 +3798,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 node,
                 "A pinned callback takes more parameters than its caller passes.",
             );
-        if (this.isAsync(node) || node.asteriskToken)
+        if (isAsyncFunction(node) || node.asteriskToken)
             return this.refuse(node, "Pinned async or generator callback.");
         const outer = this.frame;
-        const visible = outer.environment ?? outer.received?.environment;
-        const visibleVariable =
-            outer.environment?.variable ?? outer.received?.variable;
+        const visible = this.visibleEnvironment(outer)?.environment;
+        const visibleVariable = this.visibleEnvironment(outer)?.variable;
         const indent = this.closureIndent();
         const inner = `${indent}    `;
         this.frames.push({
             node,
             returns: result,
+            scopes: [],
             inline: true,
             ...(visible && visibleVariable
                 ? {
@@ -3303,11 +3892,204 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             lines.push(
                 ...this.statements(this.hoisted(body.statements), inner),
             );
+        else if (this.frame.async)
+            lines.push(`${inner}${this.asyncReturn(body)};`);
         else if (result.kind === "void") {
             const effect = this.effect(this.skipParentheses(body));
             if (effect !== null) lines.push(`${inner}${effect};`);
         } else lines.push(`${inner}return ${this.convert(body, result)};`);
-        return lines;
+        return this.frame.async ? this.coroutine(node, lines, inner) : lines;
+    }
+
+    /**
+     * An async body as a coroutine: it is one even without an `await`
+     * (`co_await` of a ready awaiter), and a `Promise<void>` body ends by
+     * fulfilling it.
+     */
+    private coroutine(
+        node: ts.FunctionLikeDeclaration,
+        lines: readonly string[],
+        inner: string,
+    ): string[] {
+        const body = node.body;
+        if (!body) return [...lines];
+        const statements = ts.isBlock(body) ? body.statements : [];
+        const last = statements[statements.length - 1];
+        const ends =
+            ts.isBlock(body) &&
+            this.frame.returns.kind === "promise" &&
+            this.frame.returns.value.kind === "void" &&
+            !(
+                last &&
+                (ts.isReturnStatement(last) || ts.isThrowStatement(last))
+            );
+        const coroutine =
+            ends ||
+            !ts.isBlock(body) ||
+            this.containsAwait(body) ||
+            this.containsOwnReturn(node);
+        return [
+            ...(coroutine ? [] : [`${inner}co_await std::suspend_never{};`]),
+            ...lines,
+            ...(ends ? [`${inner}co_return bbl::js::PromiseVoid{};`] : []),
+        ];
+    }
+
+    /** The native value a promise settles with (`PromiseVoid` for `Promise<void>`). */
+    private promiseValueCpp(shape: RecordShape): string {
+        if (shape.kind !== "promise")
+            return this.refuse(
+                this.frame.node,
+                "Pinned promise value of a non-promise.",
+            );
+        return shape.value.kind === "void"
+            ? "bbl::js::PromiseVoid"
+            : this.cpp(shape.value);
+    }
+
+    /** The shape a promise's fulfillment callbacks take its value as. */
+    private settledShape(shape: RecordShape): RecordShape {
+        if (shape.kind !== "promise")
+            return this.refuse(
+                this.frame.node,
+                "Pinned settlement of a non-promise.",
+            );
+        return shape.value.kind === "void"
+            ? { kind: "native", cpp: "bbl::js::PromiseVoid" }
+            : shape.value;
+    }
+
+    /** `resolve` and `reject` of `new Promise<T>`: `resolve()` for `Promise<void>`. */
+    private resolvingFunctions(shape: RecordShape): {
+        resolve: RecordShape;
+        reject: RecordShape;
+    } {
+        const value =
+            shape.kind === "promise" ? shape.value : { kind: "void" as const };
+        return {
+            resolve: {
+                kind: "function",
+                parameters: value.kind === "void" ? [] : [value],
+                result: { kind: "void" },
+            },
+            reject: {
+                kind: "function",
+                parameters: [{ kind: "error" }],
+                result: { kind: "void" },
+            },
+        };
+    }
+
+    /**
+     * `promise.then(onFulfilled, onRejected)`, `.catch(onRejected)` and
+     * `.finally(onFinally)`: each reaction a callback the promise calls
+     * later (a closure), with the value or the error it settled with.
+     */
+    private promiseMethod(
+        node: ts.CallExpression,
+        name: string,
+        shape: RecordShape,
+        receiver: string,
+    ): string | undefined {
+        const [first, second] = node.arguments;
+        const error: RecordShape = { kind: "error" };
+        const reaction = (
+            argument: ts.Expression | undefined,
+            parameters: readonly RecordShape[],
+        ): string => {
+            if (!argument)
+                return this.refuse(node, `Pinned ${name} needs a callback.`);
+            const result = this.callbackResult(argument);
+            return this.convert(argument, {
+                kind: "function",
+                parameters,
+                result,
+            });
+        };
+        this.model.include("bblite/pinned_async.hpp");
+        switch (name) {
+            case "then":
+                if (node.arguments.length > 2)
+                    return this.refuse(node, "Pinned then arity.");
+                return second
+                    ? `${receiver}.then(${reaction(first, [this.settledShape(shape)])}, ${reaction(second, [error])})`
+                    : `${receiver}.then(${reaction(first, [this.settledShape(shape)])})`;
+            case "catch":
+                if (node.arguments.length !== 1)
+                    return this.refuse(node, "Pinned catch arity.");
+                return `${receiver}.catch_error(${reaction(first, [error])})`;
+            case "finally":
+                if (node.arguments.length !== 1)
+                    return this.refuse(node, "Pinned finally arity.");
+                return `${receiver}.finally(${reaction(first, [])})`;
+            default:
+                return undefined;
+        }
+    }
+
+    /**
+     * What `await value` suspends on: a promise, an absent promise as
+     * `undefined`'s, any other value as a fulfilled promise (one tick, as
+     * JavaScript awaits it).
+     */
+    private awaited(expression: ts.Expression): string {
+        if (!this.frame.async)
+            return this.refuse(
+                expression,
+                "Pinned await outside an async function.",
+            );
+        const shape = this.shapeAt(expression);
+        const present = stripOptional(shape);
+        if (present.kind === "promise") {
+            if (shape.kind !== "optional") return this.value(expression);
+            if (present.value.kind !== "void")
+                return this.refuse(
+                    expression,
+                    "Pinned await of an optional value promise.",
+                );
+            this.model.include("bblite/pinned_async.hpp");
+            return `bbl::pinned::present_promise(${this.value(expression)})`;
+        }
+        if (shape.kind === "void")
+            return this.refuse(expression, "Pinned await of a void value.");
+        return `bbl::js::Promise<${this.cpp(shape)}>::resolved(${this.value(expression)})`;
+    }
+
+    /** Whether a function-like returns from its own body (not a nested one's). */
+    private containsOwnReturn(node: ts.FunctionLikeDeclaration): boolean {
+        let found = false;
+        const visit = (child: ts.Node): void => {
+            if (found || isFunctionLike(child)) return;
+            if (ts.isReturnStatement(child)) found = true;
+            else ts.forEachChild(child, visit);
+        };
+        if (node.body) ts.forEachChild(node.body, visit);
+        return found;
+    }
+
+    /**
+     * `return value` in an async function: its promise fulfills with the
+     * value, or adopts a promise returned.
+     */
+    private asyncReturn(expression: ts.Expression | undefined): string {
+        const returns = this.frame.returns;
+        if (returns.kind !== "promise")
+            return this.refuse(
+                expression ?? this.frame.node,
+                "Pinned async function without a promise result.",
+            );
+        if (
+            !expression ||
+            this.isAbsentLiteral(this.skipParentheses(expression))
+        )
+            return returns.value.kind === "void"
+                ? "co_return bbl::js::PromiseVoid{}"
+                : `co_return ${this.model.absent(returns.value, this.frame.node)}`;
+        if (stripOptional(this.shapeAt(expression)).kind === "promise")
+            return `co_return ${this.convert(expression, returns)}`;
+        if (returns.value.kind === "void")
+            return `co_return (static_cast<void>(${this.value(expression)}), bbl::js::PromiseVoid{})`;
+        return `co_return ${this.convert(expression, returns.value)}`;
     }
 
     /**
@@ -3364,8 +4146,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const declaration = this.model.declarationOf(
             ts.isPropertyAccessExpression(callee) ? callee.name : callee,
         );
+        // A library function's own parameter types are the platform's to
+        // spell; the argument passes as it is.
         const parameter =
-            declaration && ts.isFunctionDeclaration(declaration)
+            declaration &&
+            ts.isFunctionDeclaration(declaration) &&
+            !declaration.getSourceFile().isDeclarationFile
                 ? declaration.parameters[index]
                 : undefined;
         if (!parameter) {
@@ -3386,9 +4172,30 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return this.model.absent(optionalOf(shape), parameter);
     }
 
+    /**
+     * The dotted name of a library global a callee or read names: `fetch`,
+     * `globalThis.fetch` (`fetch`), `performance.now`.
+     */
+    private libraryPath(node: ts.Expression): string | undefined {
+        const unwrapped = this.skipParentheses(node);
+        if (ts.isIdentifier(unwrapped)) return this.libraryName(unwrapped);
+        if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
+        const owner = this.libraryName(unwrapped.expression);
+        if (owner === undefined) return undefined;
+        return owner === "globalThis"
+            ? unwrapped.name.text
+            : `${owner}.${unwrapped.name.text}`;
+    }
+
     /** The platform adapter standing in for a pinned call, if one does. */
     private adapterOf(node: ts.CallExpression): CallAdapter | undefined {
         const callee = this.skipParentheses(node.expression);
+        const global = this.libraryPath(callee);
+        const platform =
+            global !== undefined
+                ? this.model.schema.globals?.get(global)
+                : undefined;
+        if (platform) return platform;
         const declaration =
             ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)
                 ? this.model.declarationOf(
@@ -3453,6 +4260,18 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         }
         this.names[this.names.length - 1]!.add(chosen);
         this.locals.set(symbol, { cpp: chosen, storage });
+        // A parameter property is also a member: its body reads it by the
+        // parameter's own symbol.
+        const parameter = name.parent;
+        if (
+            ts.isParameter(parameter) &&
+            ts.isParameterPropertyDeclaration(parameter, parameter.parent)
+        )
+            for (const alias of this.checker.getSymbolsOfParameterPropertyDeclaration(
+                parameter,
+                name.text,
+            ))
+                this.locals.set(alias, { cpp: chosen, storage });
         return chosen;
     }
 
@@ -3541,6 +4360,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private shapeAt(node: ts.Node): RecordShape {
         if (this.jsonSource(node))
             return this.jsonNarrowed(this.typeAt(node), node);
+        if (ts.isPropertyAccessExpression(node)) {
+            const global = this.libraryPath(node);
+            const platform =
+                global !== undefined
+                    ? this.model.schema.globalValues?.get(global)
+                    : undefined;
+            if (platform) return platform.shape;
+        }
         if (node.kind === ts.SyntaxKind.ThisKeyword) {
             // An object literal's method: the literal's record.
             const method = this.objectMethodThis(node);
@@ -3559,6 +4386,38 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const symbol = declaredSymbol(this.checker, node);
             const local = symbol ? this.locals.get(symbol) : undefined;
             if (local?.storage.kind === "record") return local.storage;
+            // A function, promise or thrown value the lowering chose the
+            // storage of (a promise's resolving functions, a caught error
+            // the checker types `unknown`): the storage, narrowed present.
+            const storage = local?.storage;
+            const present = storage ? stripOptional(storage) : undefined;
+            // A caught error narrowed to several classes stays the error.
+            const narrowedType = this.typeAt(node);
+            if (
+                present?.kind === "error" &&
+                narrowedType.isUnion() &&
+                narrowedType.types.every(
+                    (part) => (part.flags & nullishFlags) === 0,
+                )
+            )
+                return present;
+            if (
+                storage &&
+                present &&
+                (present.kind === "function" ||
+                    present.kind === "promise" ||
+                    (present.kind === "error" &&
+                        this.typeAt(node).flags &
+                            (ts.TypeFlags.Unknown | ts.TypeFlags.Any)))
+            ) {
+                const type = this.typeAt(node);
+                const nullish = type.isUnion()
+                    ? type.types.some(
+                          (part) => (part.flags & nullishFlags) !== 0,
+                      )
+                    : (type.flags & nullishFlags) !== 0;
+                return nullish || present.kind === "error" ? storage : present;
+            }
             const declaration = this.model.declarationOf(node);
             const platform = declaration
                 ? this.moduleValue(declaration)
@@ -3890,6 +4749,34 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             )
                 return `bbl::js::json_value(${value})`;
         }
+        // Thrown values: an authored Error instance is the error it is
+        // thrown as; an error in an `unknown` slot is the dynamic value
+        // holding it, and a dynamic value thrown is its error.
+        const errorClass = (shape: RecordShape): boolean =>
+            shape.kind === "record" && this.model.errorClass(shape.name);
+        if (to.kind === "error" && errorClass(from)) {
+            this.model.include("bblite/pinned_values.hpp");
+            return `bbl::pinned::class_error(${value})`;
+        }
+        if (from.kind === "error" && to.kind === "record" && errorClass(to)) {
+            this.model.include("bblite/pinned_values.hpp");
+            return `bbl::pinned::error_instance<bbl::${this.model.record(to.name).spec.cpp}>(${value})`;
+        }
+        if (from.kind === "error" && to.kind === "json") {
+            this.model.include("bblite/pinned_json.hpp");
+            return `bbl::pinned::json_error(${value})`;
+        }
+        if (from.kind === "json" && to.kind === "error") {
+            this.model.include("bblite/pinned_json.hpp");
+            return `bbl::pinned::error_of(${value})`;
+        }
+        if (to.kind === "json" && errorClass(from))
+            return this.coerce(
+                this.coerce(value, from, { kind: "error" }, site),
+                { kind: "error" },
+                to,
+                site,
+            );
         if (from.kind === "optional") {
             const present = this.model.representations.present(value, from);
             return this.coerce(present, from.value, to, site);
@@ -3905,6 +4792,43 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 this.same(candidate, from),
             );
             if (member) return `${this.cpp(to)}(${value})`;
+        }
+        // A function passed where callers pass more arguments ignores the
+        // rest, as JavaScript's does (`then(resolve)` of a void promise).
+        // The function receives each argument as its own parameter type (a
+        // caught error as the `unknown` it declares) and its result is
+        // the caller's.
+        if (
+            from.kind === "function" &&
+            to.kind === "function" &&
+            from.parameters.length <= to.parameters.length &&
+            (from.parameters.length < to.parameters.length ||
+                from.parameters.some(
+                    (parameter, index) =>
+                        !this.same(parameter, to.parameters[index]!),
+                ) ||
+                (!this.same(from.result, to.result) &&
+                    to.result.kind !== "void"))
+        ) {
+            const parameters = to.parameters.map(
+                (parameter, index) =>
+                    `[[maybe_unused]] ${this.cpp(parameter)} argument_${index}`,
+            );
+            const call = `std::get<0>(captured)(${from.parameters
+                .map((parameter, index) =>
+                    this.coerce(
+                        `argument_${index}`,
+                        to.parameters[index]!,
+                        parameter,
+                        site,
+                    ),
+                )
+                .join(", ")})`;
+            const body =
+                to.result.kind === "void"
+                    ? `static_cast<void>(${call});`
+                    : `return ${this.coerce(call, from.result, to.result, site)};`;
+            return `${this.cpp(to)}(bbl::js::make_closure(std::tuple{${value}}, [](auto& captured${parameters.map((parameter) => `, ${parameter}`).join("")}) -> ${this.cpp(to.result)} { ${body} }))`;
         }
         if (to.kind === "native" || to.kind === "function")
             return `${this.cpp(to)}(${value})`;
@@ -3971,6 +4895,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         }
         const filled = this.filledArray(unwrapped, to);
         if (filled !== undefined) return filled;
+        // `Promise.resolve(value)` / `Promise.reject(reason)` settle the
+        // promise type the sink holds (`Promise.reject` is `Promise<never>`).
+        if (
+            ts.isCallExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
+            ["resolve", "reject"].includes(unwrapped.expression.name.text) &&
+            this.libraryName(unwrapped.expression.expression) === "Promise" &&
+            stripOptional(to).kind === "promise"
+        )
+            return this.coerce(
+                this.callValue(unwrapped, false, stripOptional(to)),
+                stripOptional(to),
+                to,
+                unwrapped,
+            );
         // `list.map(...)` / `list.reduce(...)` build what the sink holds:
         // the callback returns the sink's element (an object literal's
         // record), the accumulator is the sink's.
@@ -4123,6 +5062,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         )
             return this.renderExpression(node).text;
         if (ts.isIdentifier(node)) return this.identifier(node);
+        if (ts.isAwaitExpression(node))
+            return `(co_await ${this.awaited(node.expression)})`;
         if (node.kind === ts.SyntaxKind.ThisKeyword) {
             // An object literal's method: the object its environment holds.
             const method = this.objectMethodThis(node);
@@ -4413,6 +5354,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.equality(node);
         if (kind === ts.SyntaxKind.QuestionQuestionEqualsToken)
             return this.nullishAssign(node);
+        if (kind === ts.SyntaxKind.InstanceOfKeyword)
+            return this.instanceOf(node);
         if (
             kind === ts.SyntaxKind.PlusToken &&
             this.shapeAt(node).kind === "string"
@@ -4491,6 +5434,72 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ? `(${literal(left)} == ${literal(right)})`
                 : `(${this.value(left)} == ${this.value(right)})`;
         return negated ? `!${comparison}` : comparison;
+    }
+
+    /**
+     * `value instanceof C` over a thrown value: the library's Error
+     * classes by their name, an authored `class extends Error` by its
+     * native record, a platform class (`DOMException`) by its schema test.
+     */
+    private instanceOf(node: ts.BinaryExpression): string {
+        const target = this.skipParentheses(node.right);
+        if (!ts.isIdentifier(target))
+            return this.refuse(node, "Pinned instanceof of a computed class.");
+        if (!this.pure(node.left))
+            return this.refuse(
+                node,
+                "Pinned instanceof of an effectful value.",
+            );
+        const shape = stripOptional(this.shapeAt(node.left));
+        const value = this.value(node.left);
+        // The error a value holds, once it is known to hold one.
+        const error = (): string => {
+            if (shape.kind === "json") {
+                this.model.include("bblite/pinned_json.hpp");
+                return `bbl::pinned::error_of(${value})`;
+            }
+            return this.coerce(value, shape, { kind: "error" }, node.left);
+        };
+        const isError = (): string => {
+            this.model.include("bblite/pinned_values.hpp");
+            if (shape.kind === "json") {
+                this.model.include("bblite/pinned_json.hpp");
+                return `bbl::pinned::json_is_error(${value})`;
+            }
+            if (shape.kind === "error")
+                return `bbl::pinned::is_error(${value})`;
+            if (shape.kind === "record" && this.model.errorClass(shape.name))
+                return `bbl::pinned::truthy_object(${value})`;
+            return "false";
+        };
+        const library = this.libraryName(target);
+        const platform =
+            library !== undefined
+                ? this.model.schema.instanceOf?.get(library)
+                : undefined;
+        if (platform) return `(${isError()} && ${platform(error())})`;
+        if (library === "Error") return isError();
+        if (library === "RangeError" || library === "TypeError")
+            return `(${isError()} && bbl::js::error_is(${error()}, ${stringLiteral(library)}))`;
+        const declaration = this.model.declarationOf(target);
+        if (
+            declaration &&
+            ts.isClassDeclaration(declaration) &&
+            declaration.name &&
+            this.model.isRecordName(declaration.name.text) &&
+            this.model.errorClass(declaration.name.text)
+        ) {
+            const record = this.model.recordKey(declaration.name.text);
+            if (shape.kind === "record")
+                return this.model.recordKey(shape.name) === record
+                    ? `bbl::pinned::truthy_object(${value})`
+                    : "false";
+            return `(${isError()} && bbl::pinned::error_instance<bbl::${this.model.record(record).spec.cpp}>(${error()}) != nullptr)`;
+        }
+        return this.refuse(
+            node,
+            `Pinned instanceof ${target.text} has no native test.`,
+        );
     }
 
     /**
@@ -4608,6 +5617,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.optionalChain(node);
         const name = node.name.text;
         const owner = node.expression;
+        // A platform global read as a value (`globalThis.fetch`).
+        const global = this.libraryPath(node);
+        const platformValue =
+            global !== undefined
+                ? this.model.schema.globalValues?.get(global)
+                : undefined;
+        if (platformValue)
+            return this.narrowed(platformValue.cpp, platformValue.shape, node);
         const constant = this.constant(node);
         if (constant !== undefined) return doubleCpp(constant);
         // An enum member (`const enum` included) is its value.
@@ -4671,6 +5688,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "arraylike":
                 if (name === "length")
                     return `static_cast<double>(${value()}.size())`;
+                break;
+            case "error":
+                // A thrown error's `message`, `name` and `cause`.
+                if (name === "message" || name === "name")
+                    return `bbl::js::error_${name}(${value()})`;
+                if (name === "cause")
+                    return this.narrowed(
+                        `bbl::js::error_cause(${value()})`,
+                        { kind: "error" },
+                        node,
+                    );
                 break;
             case "json":
                 // A member of a dynamic value: `undefined` where it has
@@ -4888,6 +5916,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             this.substitutions.delete(head);
         }
         const innerShape = this.chainShape(node);
+        // `owner?.method()` returning nothing: the call when present.
+        if (result.kind === "void")
+            return `(bbl::pinned::truthy_object(${headValue}) ? static_cast<void>(${inner}) : static_cast<void>(0))`;
         return `(bbl::pinned::truthy_object(${headValue}) ? ${this.coerce(inner, innerShape, result, node)} : ${this.model.absent(result, node)})`;
     }
 
@@ -5007,6 +6038,35 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (ts.isIdentifier(callee)) {
             const symbol = declaredSymbol(this.checker, callee);
             const local = symbol ? this.locals.get(symbol) : undefined;
+            // A generic closure: the instantiation this call resolves to.
+            if (local?.specializations) {
+                const declaration = symbol?.valueDeclaration;
+                const signature =
+                    declaration &&
+                    ts.isVariableDeclaration(declaration) &&
+                    declaration.initializer &&
+                    (ts.isArrowFunction(declaration.initializer) ||
+                        ts.isFunctionExpression(declaration.initializer))
+                        ? this.checker.getSignatureFromDeclaration(
+                              declaration.initializer,
+                          )
+                        : undefined;
+                if (!signature)
+                    return this.refuse(node, "Pinned generic closure call.");
+                const variant = local.specializations.get(
+                    this.instantiation(node, signature).key,
+                );
+                if (!variant)
+                    return this.refuse(
+                        node,
+                        "Pinned generic closure instantiation was not lowered.",
+                    );
+                return this.functionValueCall(
+                    node,
+                    this.localCpp(variant),
+                    variant.storage,
+                );
+            }
             if (local)
                 return this.functionValueCall(
                     node,
@@ -5114,7 +6174,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const receiverNode = callee.expression;
         const library = this.libraryName(receiverNode);
         if (library !== undefined) {
-            const lowered = this.libraryMethod(node, library, name);
+            const lowered = this.libraryMethod(node, library, name, to);
             if (lowered !== undefined) return lowered;
         }
         // `Object.prototype.hasOwnProperty.call(value, key)`.
@@ -5270,6 +6330,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         return `${receiver()}.add(${this.convert(node.arguments[0]!, shape.element)})`;
                     case "has":
                         return `${receiver()}.has(${this.convert(node.arguments[0]!, shape.element)})`;
+                    case "delete":
+                        return `${receiver()}.erase(${this.convert(node.arguments[0]!, shape.element)})`;
+                    case "clear":
+                        return `${receiver()}.clear()`;
                     default:
                         break;
                 }
@@ -5293,6 +6357,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             }
             case "string":
                 return this.stringMethod(node, name, receiverNode);
+            case "promise":
+                return this.promiseMethod(node, name, shape, receiver());
             case "weakset":
                 switch (name) {
                     case "add":
@@ -5328,9 +6394,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     /** The library global a receiver names (`Math`, `JSON`), not a pinned binding. */
     private libraryName(node: ts.Expression): string | undefined {
         const unwrapped = this.skipParentheses(node);
-        return ts.isIdentifier(unwrapped) &&
-            declaredInDefaultLibrary(resolvedSymbol(this.checker, unwrapped))
-            ? unwrapped.text
+        return ts.isIdentifier(unwrapped)
+            ? libraryGlobal(this.checker, unwrapped)
             : undefined;
     }
 
@@ -5343,6 +6408,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         node: ts.CallExpression,
         library: string,
         name: string,
+        to?: RecordShape,
     ): string | undefined {
         const [first, second] = node.arguments;
         const spread = node.arguments.some(ts.isSpreadElement);
@@ -5435,6 +6501,22 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 return this.refuse(node, `Pinned JSON.${name}.`);
             case "console":
                 return `bbl::pinned::console_line(${node.arguments.map((argument) => this.value(argument)).join(", ")})`;
+            case "Promise": {
+                // `Promise.resolve(value)` / `Promise.reject(reason)`, of
+                // the promise type the sink holds.
+                const shape = stripOptional(to ?? this.shapeAt(node));
+                if (shape.kind !== "promise" || node.arguments.length > 1)
+                    return this.refuse(node, `Pinned Promise.${name}.`);
+                this.model.include("bblite/pinned_async.hpp");
+                const value = this.promiseValueCpp(shape);
+                if (name === "resolve")
+                    return first
+                        ? `bbl::js::Promise<${value}>::resolved(${shape.value.kind === "void" ? "{}" : this.convert(first, shape.value)})`
+                        : `bbl::js::Promise<${value}>::resolved({})`;
+                if (name === "reject")
+                    return `bbl::pinned::rejected_promise<${value}>(${first ? this.convert(first, { kind: "error" }) : "bbl::js::Error{}"})`;
+                return this.refuse(node, `Pinned Promise.${name}.`);
+            }
             default:
                 return undefined;
         }
@@ -6465,6 +7547,71 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     `Pinned new ${name} from ${this.cpp(argumentShape)}.`,
                 );
             }
+            case "Promise": {
+                // `new Promise<T>((resolve, reject) => ...)`: the executor
+                // runs now, an inline lambda over the resolving functions.
+                const executor = args[0]
+                    ? this.skipParentheses(args[0])
+                    : undefined;
+                if (
+                    library !== "Promise" ||
+                    shape.kind !== "promise" ||
+                    args.length !== 1 ||
+                    !executor ||
+                    !(
+                        ts.isArrowFunction(executor) ||
+                        ts.isFunctionExpression(executor)
+                    )
+                )
+                    return this.refuse(
+                        node,
+                        "Pinned new Promise takes one executor literal.",
+                    );
+                this.model.include("bblite/pinned_async.hpp");
+                const { resolve, reject } = this.resolvingFunctions(shape);
+                return `bbl::pinned::construct_promise<${this.promiseValueCpp(shape)}>(${this.inlineLambda(executor, [resolve, reject], { kind: "void" })})`;
+            }
+            case "Error":
+            case "RangeError":
+            case "TypeError": {
+                // `new Error(message, { cause })`: a builtin error value.
+                if (library !== name || args.length > 2)
+                    return this.refuse(node, `Pinned new ${name}.`);
+                const [message, options] = args;
+                let cause = "std::exception_ptr{}";
+                if (options) {
+                    const literal = this.skipParentheses(options);
+                    const property = ts.isObjectLiteralExpression(literal)
+                        ? literal.properties[0]
+                        : undefined;
+                    if (
+                        !ts.isObjectLiteralExpression(literal) ||
+                        literal.properties.length !== 1 ||
+                        !property ||
+                        !(
+                            ts.isPropertyAssignment(property) ||
+                            ts.isShorthandPropertyAssignment(property)
+                        ) ||
+                        property.name.getText() !== "cause"
+                    )
+                        return this.refuse(
+                            options,
+                            "Pinned error options name only a cause.",
+                        );
+                    cause = `static_cast<std::exception_ptr>(${this.convert(
+                        ts.isPropertyAssignment(property)
+                            ? property.initializer
+                            : property.name,
+                        { kind: "error" },
+                    )})`;
+                }
+                return this.coerce(
+                    `bbl::js::make_error(${stringLiteral(name)}, ${message ? this.convert(message, { kind: "string" }) : "std::string()"}, ${cause}, ${message ? "true" : "false"})`,
+                    { kind: "error" },
+                    to,
+                    node,
+                );
+            }
             case "ArrayBuffer":
                 if (shape.kind !== "buffer" || args.length !== 1)
                     return this.refuse(node, "Pinned new ArrayBuffer.");
@@ -6573,6 +7720,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     store: (value) =>
                         `bbl::js::typed_array_write(${owner}, ${index}, ${value})`,
                 };
+            if (shape.kind === "tuple") {
+                this.model.include("bblite/pinned_values.hpp");
+                return {
+                    storage: { kind: "number" },
+                    store: (value) =>
+                        `bbl::pinned::tuple_write(${owner}, ${index}, ${value})`,
+                };
+            }
             if (shape.kind === "record") {
                 // `entry[key] = value` over literal member names; the owner
                 // and key are names, so reading them after the value is
@@ -6648,7 +7803,23 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ...this.nested(statement.statement, indent),
                 `${indent}}`,
             ];
+        if (ts.isForStatement(statement)) {
+            const captured = this.capturedFor(statement, indent);
+            if (captured) return captured;
+        }
+        if (ts.isThrowStatement(statement)) {
+            const thrown = this.throwStatement(statement, indent);
+            if (thrown) return thrown;
+        }
+        // A type declared in a body has no runtime statement.
+        if (
+            ts.isInterfaceDeclaration(statement) ||
+            ts.isTypeAliasDeclaration(statement)
+        )
+            return [];
         if (ts.isReturnStatement(statement)) {
+            if (this.frame.async)
+                return [`${indent}${this.asyncReturn(statement.expression)};`];
             if (!statement.expression) return [`${indent}return;`];
             return [
                 `${indent}return ${this.convert(statement.expression, this.returns)};`,
@@ -6701,6 +7872,40 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (this.omittedReason(declaration.name)) return [];
         const symbol = declaredSymbol(this.checker, declaration.name);
         const captured = symbol ? this.locals.get(symbol) : undefined;
+        // A generic closure: one closure per instantiation its calls use.
+        const generic = this.instantiations(declaration);
+        if (generic && symbol) {
+            const lines: string[] = [];
+            const specializations = new Map<string, Local>();
+            for (const variant of generic.variants) {
+                const value = this.instantiated(
+                    generic.closure,
+                    variant,
+                    this.closureIndent(),
+                );
+                const slot = captured?.specializations?.get(variant.key);
+                if (slot) {
+                    lines.push(`${indent}${this.localCpp(slot)} = ${value};`);
+                    continue;
+                }
+                const cpp = this.temporary(
+                    cppIdentifier(declaration.name.text),
+                );
+                specializations.set(variant.key, {
+                    cpp,
+                    storage: variant.shape,
+                });
+                lines.push(
+                    `${indent}${this.cpp(variant.shape)} ${cpp} = ${value};`,
+                );
+            }
+            if (!captured)
+                this.locals.set(symbol, {
+                    storage: { kind: "void" },
+                    specializations,
+                });
+            return lines;
+        }
         const storage = captured?.captured
             ? captured.storage
             : this.storageOf(declaration);
@@ -6910,6 +8115,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
      * adapted platform call with no native effect.
      */
     private effect(expression: ts.Expression): string | null {
+        // `() => undefined`: nothing to evaluate.
+        if (this.isAbsentLiteral(expression)) return null;
+        // `await p;` and `void p;`: evaluated, the value dropped.
+        if (ts.isAwaitExpression(expression))
+            return `static_cast<void>(${this.value(expression)})`;
+        if (ts.isVoidExpression(expression))
+            return `static_cast<void>(${this.value(expression.expression)})`;
         if (ts.isCallExpression(expression)) {
             const adapter = this.adapterOf(expression);
             if (adapter)
@@ -7038,6 +8250,275 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             (place, index) => `${place.store(temporaries[index]!)};`,
         );
         return `[&] { ${[...reads, ...stores].join(" ")} }()`;
+    }
+
+    /** Catch clauses the numeric lowering spells itself (`throw caught` is `throw;`). */
+    private readonly rethrowingCatches = new Set<ts.CatchClause>();
+
+    /**
+     * `throw value` of any thrown value: an error rethrown with its
+     * identity, a dynamic value as what it holds. `throw new Error(text)`
+     * and a rethrow in a catch the numeric lowering spells stay its own.
+     */
+    private throwStatement(
+        statement: ts.ThrowStatement,
+        indent: string,
+    ): string[] | undefined {
+        const thrown = this.skipParentheses(statement.expression);
+        if (
+            ts.isNewExpression(thrown) &&
+            ts.isIdentifier(thrown.expression) &&
+            ["Error", "RangeError"].includes(thrown.expression.text) &&
+            thrown.arguments?.length === 1 &&
+            this.libraryName(thrown.expression) === thrown.expression.text
+        )
+            return undefined;
+        if (ts.isIdentifier(thrown)) {
+            const declaration = this.model.declarationOf(thrown);
+            if (
+                declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                ts.isCatchClause(declaration.parent) &&
+                this.rethrowingCatches.has(declaration.parent)
+            )
+                return undefined;
+        }
+        this.model.include("bblite/pinned_values.hpp");
+        const shape = this.shapeAt(thrown);
+        const error =
+            stripOptional(shape).kind === "json"
+                ? this.coerce(
+                      this.value(thrown),
+                      stripOptional(shape),
+                      { kind: "error" },
+                      thrown,
+                  )
+                : this.convert(thrown, { kind: "error" });
+        return [`${indent}bbl::pinned::throw_error(${error});`];
+    }
+
+    /**
+     * `try`/`catch`/`finally` over thrown values: the catch binds the
+     * error it catches; a catch that awaits runs after its handler (C++
+     * has no `co_await` in a handler); `finally` runs on every exit of the
+     * try statement, explicitly before an exception propagates. A catch
+     * whose binding is only rethrown, in a synchronous body, is the
+     * numeric lowering's.
+     */
+    protected override tryStatement(
+        statement: ts.TryStatement,
+        indent: string,
+    ): string[] {
+        const clause = statement.catchClause;
+        const variable = clause?.variableDeclaration;
+        const binding =
+            variable && ts.isIdentifier(variable.name)
+                ? declaredSymbol(this.checker, variable.name)
+                : undefined;
+        if (variable && !binding)
+            return this.refuse(variable, "Pinned catch binding pattern.");
+        const readsBinding =
+            binding !== undefined &&
+            clause !== undefined &&
+            findAnalysisNode(
+                clause.block,
+                (node) =>
+                    ts.isIdentifier(node) &&
+                    declaredSymbol(this.checker, node) === binding &&
+                    !ts.isThrowStatement(node.parent),
+            ) !== undefined;
+        const awaits = (node: ts.Node | undefined): boolean =>
+            node !== undefined && this.containsAwait(node);
+        if (
+            !this.frame.async &&
+            !statement.finallyBlock &&
+            clause &&
+            !readsBinding
+        ) {
+            this.rethrowingCatches.add(clause);
+            return super.tryStatement(statement, indent);
+        }
+        if (awaits(statement.finallyBlock))
+            return this.refuse(
+                statement.finallyBlock!,
+                "Pinned finally block awaits.",
+            );
+        if (statement.finallyBlock) this.refuseExits(statement.finallyBlock);
+        const inner = `${indent}    `;
+        const lines: string[] = [];
+        const tryLines = (body: string): string[] => [
+            `${body}try {`,
+            ...this.withBindings(() =>
+                this.statements(statement.tryBlock.statements, `${body}    `),
+            ),
+        ];
+        const handler = (body: string, caught: string): string[] =>
+            this.withBindings(() => {
+                const declared =
+                    variable && ts.isIdentifier(variable.name)
+                        ? [
+                              `${body}bbl::js::Error ${this.declare(variable.name, { kind: "error" })} = ${caught};`,
+                          ]
+                        : [];
+                return [
+                    ...declared,
+                    ...this.statements(clause!.block.statements, body),
+                ];
+            });
+        const guarded = (body: string): string[] => {
+            if (!clause)
+                return [
+                    `${body}{`,
+                    ...this.withBindings(() =>
+                        this.statements(
+                            statement.tryBlock.statements,
+                            `${body}    `,
+                        ),
+                    ),
+                    `${body}}`,
+                ];
+            if (!awaits(clause.block))
+                return [
+                    ...tryLines(body),
+                    `${body}} catch (...) {`,
+                    ...handler(`${body}    `, "std::current_exception()"),
+                    `${body}}`,
+                ];
+            // A handler that awaits runs once the C++ handler has ended.
+            const caught = this.temporary("caught");
+            return [
+                `${body}std::exception_ptr ${caught};`,
+                ...tryLines(body),
+                `${body}} catch (...) {`,
+                `${body}    ${caught} = std::current_exception();`,
+                `${body}}`,
+                `${body}if (${caught}) {`,
+                ...handler(`${body}    `, caught),
+                `${body}}`,
+            ];
+        };
+        if (!statement.finallyBlock) return guarded(indent);
+        const cleanup = this.temporary("finally");
+        const finallyBody = this.withBindings(() =>
+            this.statements(statement.finallyBlock!.statements, `${inner}    `),
+        );
+        const guard = this.frame.async
+            ? "bbl::pinned::async_finally"
+            : "bbl::js::finally";
+        if (this.frame.async) this.model.include("bblite/pinned_async.hpp");
+        lines.push(
+            `${indent}{`,
+            `${inner}auto ${cleanup} = ${guard}([&] {`,
+            ...finallyBody,
+            `${inner}});`,
+            `${inner}try {`,
+            ...guarded(`${inner}    `),
+            `${inner}} catch (...) {`,
+            `${inner}    ${cleanup}.run();`,
+            `${inner}    throw;`,
+            `${inner}}`,
+            `${indent}}`,
+        );
+        return lines;
+    }
+
+    /** Whether a node holds an `await` of its own function (not a nested one's). */
+    private containsAwait(node: ts.Node): boolean {
+        let found = false;
+        const visit = (child: ts.Node): void => {
+            if (found || isFunctionLike(child)) return;
+            if (ts.isAwaitExpression(child)) found = true;
+            else ts.forEachChild(child, visit);
+        };
+        visit(node);
+        return found;
+    }
+
+    /** A `finally` body runs as a native lambda: no return or loop exit leaves it. */
+    private refuseExits(block: ts.Block): void {
+        const visit = (node: ts.Node, loops: number): void => {
+            if (isFunctionLike(node)) return;
+            if (
+                ts.isReturnStatement(node) ||
+                ts.isLabeledStatement(node) ||
+                ((ts.isBreakStatement(node) || ts.isContinueStatement(node)) &&
+                    (node.label !== undefined || loops === 0))
+            )
+                this.refuse(node, "Pinned finally block leaves its statement.");
+            const loop =
+                ts.isForStatement(node) ||
+                ts.isForOfStatement(node) ||
+                ts.isForInStatement(node) ||
+                ts.isWhileStatement(node) ||
+                ts.isDoStatement(node) ||
+                ts.isSwitchStatement(node);
+            ts.forEachChild(node, (child) =>
+                visit(child, loops + Number(loop)),
+            );
+        };
+        visit(block, 0);
+    }
+
+    /**
+     * `for (let i = ...; ...; ...)` whose header binding a closure
+     * captures: each iteration has its own binding, copied from the last
+     * one before the update runs (CreatePerIterationEnvironment), so a
+     * closure keeps the value of the iteration that created it.
+     */
+    private capturedFor(
+        statement: ts.ForStatement,
+        indent: string,
+    ): string[] | undefined {
+        const list = statement.initializer;
+        if (!list || !ts.isVariableDeclarationList(list)) return undefined;
+        const bindings: { name: ts.Identifier; storage: RecordShape }[] = [];
+        for (const declaration of list.declarations) {
+            const name = declaration.name;
+            const symbol = ts.isIdentifier(name)
+                ? declaredSymbol(this.checker, name)
+                : undefined;
+            if (ts.isIdentifier(name) && symbol && this.captured.has(symbol))
+                bindings.push({ name, storage: this.storageOf(declaration) });
+        }
+        if (bindings.length === 0) return undefined;
+        return this.withBindings(() => {
+            const inner = `${indent}    `;
+            const { prolog, scope } = this.enterScope(
+                statement,
+                bindings,
+                inner,
+            );
+            try {
+                const initial = list.declarations.map((declaration) => {
+                    if (!ts.isIdentifier(declaration.name))
+                        return this.refuse(
+                            declaration,
+                            "Pinned for initializer.",
+                        );
+                    return this.declaration(declaration, inner);
+                });
+                const condition = statement.condition
+                    ? this.condition(statement.condition)
+                    : "";
+                const update = [
+                    `${scope.variable} = bbl::pinned::next_iteration(${scope.variable})`,
+                    ...(statement.incrementor
+                        ? [this.loopIncrementor(statement.incrementor)]
+                        : []),
+                ].join(", ");
+                return [
+                    `${indent}{`,
+                    ...prolog,
+                    ...initial.flat(),
+                    `${inner}for (; ${condition}; ${update}) {`,
+                    ...this.nested(statement.statement, inner),
+                    `${inner}}`,
+                    `${indent}}`,
+                ];
+            } finally {
+                this.leaveScope(scope);
+            }
+        });
     }
 
     protected override forInitializer(
