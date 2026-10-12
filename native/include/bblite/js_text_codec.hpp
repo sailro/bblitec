@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 
 namespace bbl::js {
@@ -27,7 +28,10 @@ struct TextEncoderTag {};
 using TextEncoder = Ref<TextEncoderTag>;
 
 [[nodiscard]] inline TextDecoder make_text_decoder(bool fatal, bool ignore_bom) {
-    return make_ref<TextDecoderOptions>(TextDecoderOptions{fatal, ignore_bom});
+    TextDecoderOptions options;
+    options.fatal = fatal;
+    options.ignore_bom = ignore_bom;
+    return make_ref<TextDecoderOptions>(std::move(options));
 }
 [[nodiscard]] inline TextEncoder make_text_encoder() { return make_ref<TextEncoderTag>(); }
 
