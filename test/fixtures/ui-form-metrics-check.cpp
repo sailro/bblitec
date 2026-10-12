@@ -80,6 +80,22 @@ int main() try {
         const auto summary = ui_create_element(engine, "summary");
         ui_set_text(engine, summary, "Camera pose");
         ui_append_child(engine, details, summary);
+        // A select in a grid area stretches like Chromium's non-replaced
+        // menulist; a canvas, replaced content, keeps its size at the start.
+        const auto grid =
+            add("div", "display:grid;grid-template-columns:85px 1fr 58px;gap:8px;width:310px;");
+        const auto grid_child = [&](std::string_view tag, std::string style) {
+            const auto handle = ui_create_element(engine, tag);
+            ui_set_attribute(engine, handle, "style", std::move(style));
+            ui_append_child(engine, grid, handle);
+            return handle;
+        };
+        static_cast<void>(grid_child("span", ""));
+        const auto stretched = grid_child("select", "grid-column:2 / 4;min-width:0;");
+        option(stretched, "Lower memory");
+        const auto canvas = grid_child("canvas", "grid-column:2 / 4;");
+        ui_canvas_set_width(engine, canvas, 20);
+        ui_canvas_set_height(engine, canvas, 10);
 
         UiRmlRuntime runtime(engine, window, 640, 480);
         update_ui_rml_runtime(runtime, 640, 480);
@@ -119,6 +135,10 @@ int main() try {
         // Chromium places the summary text 0.66em + 0.4em after the marker's edge.
         const auto text = element(summary)->GetBox().GetPosition(Rml::BoxArea::Content);
         require(std::abs(text.x - 12.72f) < 1e-3f, "summary text inset");
+        require(element(stretched)->GetBox().GetSize(Rml::BoxArea::Border).x == 217.f,
+                "a select stretches across its grid area");
+        require(element(canvas)->GetBox().GetSize(Rml::BoxArea::Border).x == 20.f,
+                "replaced content starts in its grid area");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();
