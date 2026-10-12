@@ -3,6 +3,7 @@ import { pinnedHeader } from "./pinned-header.js";
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { renderTaskMeshRefreshCpp } from "./render-task-mesh-refresh.js";
+import { assertGeometryTaskSync } from "./geometry-task-sync.js";
 import { recordAt } from "../compiler/record-access.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 
@@ -15,6 +16,7 @@ export class GeometryOutputLowerer {
         const actionsModule = "src/frame-graph/frame-graph-actions.ts";
         const renderModule = "src/frame-graph/render-task.ts";
         const geometryFile = this.context.sourceFile(geometryModule);
+        assertGeometryTaskSync(this.context);
         const { declaration: createGeometryTask } =
             this.context.functionDeclaration(
                 geometryModule,

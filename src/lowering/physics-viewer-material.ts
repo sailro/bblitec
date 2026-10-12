@@ -7,6 +7,7 @@ import {
 } from "../shader-ir.js";
 import { emitWgslModule } from "../shader-wgsl-emitter.js";
 import { type LoweringContext } from "./context.js";
+import { assertDrawRangesUnreached } from "./mesh-draw-range.js";
 
 export const physicsViewerMaterialModule =
     "src/physics/physics-debug-line-material.ts";
@@ -162,7 +163,7 @@ export function physicsViewerMaterialProgram(
                     pass.setVertexBuffer(0, gpu.positionBuffer);
                     pass.setIndexBuffer(gpu.indexBuffer, gpu.indexFormat);
                     pass.setBindGroup(1, bindGroup);
-                    pass.drawIndexed(gpu.indexCount);
+                    pass.drawIndexed(gpu.indexCount, 1, gpu._firstIndex ?? 0, gpu._baseVertex);
                     return 1;
                 },
             }; },
@@ -172,6 +173,9 @@ export function physicsViewerMaterialProgram(
     `,
         "Physics debug material uploads, draw order and live world matrix",
     );
+    // The viewer's own line meshes share no slab, and only setMeshDrawRange
+    // selects a first index: the restated draw is the whole index list.
+    assertDrawRangesUnreached(context);
     const text = context.stringValue(
         context.variableInitializer(file, "LINE_WGSL"),
         file,

@@ -1255,8 +1255,17 @@ struct DawnState : DawnDevice {
                 continue;
             render_targets[index] = {};
         }
-        for (DawnGeometryTask& task : geometry_tasks)
-            task = {};
+        // A task's own history (velocity, previous view-projection) outlives
+        // its attachments, as the pin's task outlives a `record()`.
+        for (DawnGeometryTask& task : geometry_tasks) {
+            task.colors.clear();
+            task.color_views.clear();
+            task.sampled_colors.clear();
+            task.sampled_views.clear();
+            task.depth = {};
+            task.depth_view = {};
+            task.pinned_geometry_params = {};
+        }
 #if BBLITE_HAS_POST_PROCESS
         // The pass's pipeline and bind group name the attachments the graph
         // just released, so they are rebuilt with them; the pin discards the

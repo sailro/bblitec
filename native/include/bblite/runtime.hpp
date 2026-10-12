@@ -3022,6 +3022,10 @@ struct MaterialRecord {
     const std::vector<float>& (*shader_uniform_snapshot)(const MaterialRecord&) = nullptr;
     double (*shader_alpha_cutoff)(const MaterialRecord&) = nullptr;
     void (*shader_packet_initialize)(const Scene&, const MaterialRecord&) = nullptr;
+    /** Each declared system uniform's dependency bits, in layout order, and their union:
+     *  what a packet's system writer reads and what its publication gate keys. */
+    std::vector<std::uint32_t> shader_system_dependencies;
+    std::uint32_t shader_system_dependency_mask = 0;
     /** Storage slots in the shader's declared order. */
     std::vector<StorageBufferHandle> shader_storage_buffers;
     /** `externalTextures` slots, keyed by the sampler slot they bind at. */
@@ -4350,6 +4354,8 @@ struct Engine {
     // culling-enabled thin-instance pool crossing zero active rows. Matrix or
     // count changes within one membership state touch no draw-list storage.
     std::uint64_t draw_list_epoch = 0;
+    /** The last `SourceMaterialDraw::identity` this engine published. */
+    std::uint64_t source_output_identity = 0;
     std::vector<MaterialRecord> materials;
     struct StorageBufferRecord {
         std::vector<std::uint8_t> bytes;
@@ -4365,6 +4371,8 @@ struct Engine {
     };
     std::vector<StorageBufferRecord> storage_buffers;
     std::function<void(Engine&)> dispose_storage_buffers;
+    /** The pin's `_getStorageBufferHandle` checks of one record; installed with the first allocation. */
+    void (*assert_storage_buffer_handle)(const Engine&, std::uint32_t) = nullptr;
     /** Creation-ordered handles retained for source values that escape scope. */
     std::vector<MaterialHandle> scene_material_slots;
     std::vector<LightRecord> lights;
@@ -5404,6 +5412,9 @@ struct SourceMaterialDraw {
     SourceMaterialDrawGuard guard = nullptr;
     mutable ShaderPacketSystemOwner shader_packet{};
     mutable ThinMaterialBindingOwner thin_binding{};
+    /** This forward renderable's identity, unique per engine: a rebuild of the mesh's
+     *  renderable publishes a new output, as the pin's scene publishes a new Renderable. */
+    std::uint64_t identity = 0;
 };
 using SourceMaterialOutput = std::shared_ptr<SourceMaterialDraw>;
 using SourceMaterialOutputs = std::vector<SourceMaterialOutput>;

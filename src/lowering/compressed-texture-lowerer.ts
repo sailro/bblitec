@@ -113,8 +113,14 @@ export class CompressedTextureLowerer {
             );
         }
         const rows: CompressedFormatRow[] = [];
+        // The KTX table's own `add`; the copy-footprint table beside it
+        // declares another.
+        const table = this.context.functionDeclaration(
+            FORMATS_MODULE,
+            "getTable",
+        ).declaration;
         for (const call of this.context.findNodes(
-            file,
+            table,
             (node): node is ts.CallExpression =>
                 ts.isCallExpression(node) &&
                 ts.isIdentifier(node.expression) &&

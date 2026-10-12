@@ -73,8 +73,10 @@ failure cannot select a substitute shader. Assertions around a transcription do 
 Vertex buffers carry each geometry's source lanes, a glTF primitive without NORMAL carrying the smooth
 normals the pin generates for it; every family's mesh block carries `mesh.worldMatrix` (eye-relative
 under floating origin), with fixed PAL bindings and a 64-matrix palette. A Standard geometry task keeps
-each renderable's previous world and writes velocity disabled on its first frame, as the pin does; a
-skinned Standard mesh in a LINEAR_VELOCITY task refuses, having no previous bone texture.
+each renderable's previous world and writes velocity disabled on its first frame, as the pin does. A
+re-sync (a frame-graph build or resize, a scene mutation) carries that history while the mesh draws
+through the same forward renderable on the same device and camera; a skinned Standard mesh in a
+LINEAR_VELOCITY task refuses, having no previous bone texture.
 SDL single-sample image processing samples texel centers. Single-sample transmission replaces
 MSAA averaging with mip-zero loads while retaining the source bilinear filter.
 Linux Vulkan surfaces and canvas-emulation resolve targets request storage-capable allocations when

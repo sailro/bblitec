@@ -25,10 +25,7 @@ test("thin material bindings retain source captures across overrides, refresh an
         gpuInstancing: true,
     });
     assert.match(renderer.header, /ThinMaterialBindingOwner thin_binding/);
-    assert.match(
-        renderer.source,
-        /result\.items\.back\(\)\.thin_binding = output->thin_binding/,
-    );
+    assert.match(renderer.source, /item\.thin_binding = output->thin_binding/);
     assert.match(
         renderer.source,
         /overridden\.thin_binding = packet_owners\[entry_index\]\.thin_binding/,

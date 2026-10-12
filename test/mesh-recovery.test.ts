@@ -254,7 +254,8 @@ int main() {
     assert(engine.geometries.at(old).owners == 1);
     engine.device_recovery->registrations.clear();
     const auto uncaptured = create_retained_mesh_from_data(engine, "uncaptured", positions, normals, indices, uvs, uvs2, tangents, colors);
-    assert(!handle_at(engine.meshes, uncaptured).cpu_streams->uvs2 && !handle_at(engine.meshes, uncaptured).cpu_streams->colors);
+    // createMeshFromData retains its optional streams itself, captured or not.
+    assert(handle_at(engine.meshes, uncaptured).cpu_streams->uvs2 && handle_at(engine.meshes, uncaptured).cpu_streams->colors);
     update_mesh_positions(engine, mesh, {8,8,8}, 0, 1, 0);
     recover_retained_meshes(engine);
     verifyMetadata(engine.geometries.at(handle_at(engine.meshes, mesh).geometry), oldVersion + 3);

@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 
 /** Native handles use an engine-local map; weak owners follow SceneState lifetime. */
@@ -12,6 +12,18 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
         context.variableInitializer(source, "_meshScenes"),
         "null",
         "Initial mesh owner registry",
+    );
+    // Only `_installMeshMaterialValidator` writes the validator, and only
+    // setMeshIndexedIndirect, which no program reaches, installs it.
+    context.assertExpressionShape(
+        context.variableInitializer(source, "_materialValidator"),
+        "null",
+        "Initial borrowed-consumer material validator",
+    );
+    context.assertWrittenOnlyBy(
+        "_materialValidator",
+        module,
+        "_installMeshMaterialValidator",
     );
     const install = context.functionDeclaration(
         module,
@@ -44,6 +56,7 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
             "scene._meshMaterialChange",
             { cpp: "nullptr", type: "opaque", staticallyAbsent: true },
         ],
+        ["_materialValidator", absentBinding("null")],
         ["v", { cpp: "material.value", type: "scalar" }],
         [
             "_mat",

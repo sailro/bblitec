@@ -2257,32 +2257,34 @@ ShaderPassMatrices shader_packet_system_matrices(const ShaderPacketSystemOwner& 
     if (!*owner)
         *owner = std::make_shared<ShaderPacketSystemState>();
     auto& state = **owner;
+    const CameraRecord* camera = current.camera;
     upstream::update_shader_packet_system(
-        state, current.camera, mesh, current.target_width, current.target_height,
-        material.shader_alpha_cutoff(material), [&] {
-            const auto copy = [](auto& destination, const auto* source) {
-                if (source)
-                    std::copy_n(source, destination.size(), destination.begin());
-                else
-                    destination.fill(0.0f);
-            };
-            upstream::read_shader_packet_camera_matrices(current.camera, current.target_width,
-                                                         current.target_height, state.view,
-                                                         state.projection, state.view_projection);
-            state.world = mesh_block_world(scene, engine, mesh);
-            upstream::write_shader_packet_products(
-                current.camera,
+        state, material.shader_system_dependency_mask, camera, mesh, current.target_width,
+        current.target_height, [&] { return material.shader_alpha_cutoff(material); },
+        [&] {
+            upstream::write_shader_packet_system(
+                camera, material.shader_system_dependencies, current.target_width,
+                current.target_height,
                 [&] {
-                    state.world_view.fill(0.0f);
-                    state.world_view_projection.fill(0.0f);
+                    for (auto* matrix :
+                         {&state.view_projection, &state.view, &state.projection, &state.world,
+                          &state.world_view, &state.world_view_projection})
+                        matrix->fill(0.0f);
+                    state.camera_position.fill(0.0f);
                 },
-                [&] { state.world_view = upstream::matrix_product(state.view, state.world); },
+                [&] { return mesh_block_world(scene, engine, mesh); },
+                [&](std::uint32_t dependency, const std::array<float, 16>& matrix) {
+                    upstream::shader_system_matrix(state, dependency) = matrix;
+                },
+                [&](std::uint32_t dependency, const std::array<float, 16>& matrix,
+                    const std::array<float, 16>& world) {
+                    upstream::shader_system_matrix(state, dependency) =
+                        upstream::matrix_product(matrix, world);
+                },
                 [&] {
-                    state.world_view_projection =
-                        upstream::matrix_product(state.view_projection, state.world);
+                    if (current.camera_position)
+                        state.camera_position = *current.camera_position;
                 });
-            copy(state.camera_position,
-                 current.camera_position ? current.camera_position->data() : nullptr);
         });
     return shader_packet_published_matrices(owner, current);
 }

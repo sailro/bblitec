@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.33.0",
+  "version": "1.34.0",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "1d1a2c0de2fc845d57096b7abe0256c10e648ff3",
+  "sourceVersion": "22bd82496ecbb38f7bbd4107ef5eca40c2897bd0",
   "scenes": [
     {
       "id": "scene1",
@@ -1849,6 +1849,51 @@
       "upstreamPath": "LICENSE",
       "source": "corpus/babylon-lite/LICENSE",
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "upstreamPath": "lab/lite/demo-trogir-streaming.html",
+      "source": "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
+      "sha256": "ebdebd8b62bf8630aed160404298c5cd741eae8c386ab3bb4e0ba1bc8aeaadbd"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/trogir-assets.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-assets.ts",
+      "sha256": "89c40ef904ab7ce11d761da5f3d0ae42671feded358b44362a3218d2da8e078d"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/trogir-camera-pose.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-camera-pose.ts",
+      "sha256": "ed4e6897516de01412d72f5aa06a8aa5fafe2e38deced3b0ca84c8eace9faa8a"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/trogir-camera.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-camera.ts",
+      "sha256": "5133242674d693323be72041f1be5cf561615b26ad0ad42af98c73d106fd8b8f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/trogir-collision.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-collision.ts",
+      "sha256": "a477d43439a8152891a76ee6d13118c7c1b11dfc077f884cc86b506e41130b91"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/trogir-quality.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-quality.ts",
+      "sha256": "4392affda13e2db3f8809950c1c15b141e28abebc7fc65c4c9d5d54d49fba502"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/trogir-streaming-lifecycle.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming-lifecycle.ts",
+      "sha256": "cd2730f0929ce6778bbe655f5fc402c04838fd7ab642236b9977eb89373758a4"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/trogir-streaming-placement.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming-placement.ts",
+      "sha256": "073f2a9f69ef4369a7b993d87188702ecabea6ae39a7d14f0121eafe53ce2a9c"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/trogir-streaming.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
+      "sha256": "e5023c409383bcdc11010c32b7bfe90702714fd3b1c815cb8b57b706ecf7656e"
     }
   ],
   "tooling": [
@@ -3677,7 +3722,7 @@
         "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "b32f8263871c63ec4fe2fd921f7a1cca52591f80cfc2bc53257fa942bfb45d01"
+          "sha256": "87063885c4e7a560a23cacddcfe32a5d746272e99c70b4b3dba846f2381a1ea6"
         }
       },
       "files": [
@@ -4568,7 +4613,7 @@
         "sha256": "b31b197769657f9283fd072b20e62afaf35b80ac810c7ca536b96babadd2aa45",
         "provenance": {
           "source": "reference/playroom/provenance.json",
-          "sha256": "58974d911fb8c41a46e15105c22a54038017b2490bf7681cd3ddc34b82c47b33"
+          "sha256": "0e6973541784d9e062bf50c03b4863cc9510bcc40111f97d6ceb1925dd8d9bfa"
         }
       },
       "files": [

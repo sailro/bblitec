@@ -10,6 +10,81 @@ import { assertMappedBufferAdapter } from "./gpu-buffer-adapters.js";
 
 const path = "src/resource/storage-buffer.ts";
 
+/** The pin's registry membership tests, each the native record's flag. */
+const registryHas = [
+    "engine._storageBuffers?.has",
+    "buffer._engine._storageBuffers?.has",
+    "buffer._engine?._storageBuffers?.has",
+] as const;
+
+function registryMembership(
+    context: LoweringContext,
+    node: ts.Expression,
+): string | undefined {
+    if (
+        !ts.isCallExpression(node) ||
+        context.matchingExpressionShape(node.expression, registryHas) ===
+            undefined
+    )
+        return undefined;
+    context.assertExpressionShape(
+        node.arguments[0]!,
+        "buffer",
+        "Storage registry member",
+    );
+    return "record.registered";
+}
+
+/**
+ * `_getStorageBufferHandle`'s checks over one native record: every update,
+ * binding and readback of an allocation goes through them, so a buffer a
+ * device loss left without its GPU-role allocation refuses as the pin's does.
+ */
+function lowerStorageHandleCheck(context: LoweringContext): string {
+    const { file, declaration } = context.functionDeclaration(
+        path,
+        "_getStorageBufferHandle",
+    );
+    const statements = declaration.body!.statements;
+    context.assertStatementShapes(
+        declaration,
+        statements.slice(-1),
+        "return buffer._buffer;",
+        "Storage handle result",
+    );
+    const body = lowerPinnedBody(file, statements.slice(0, -1), {
+        bindings: new Map<string, PinnedBinding>([
+            ["buffer._destroyed", { cpp: "record.disposed", type: "bool" }],
+            [
+                "buffer._buffer",
+                {
+                    cpp: "allocation",
+                    type: "opaque",
+                    absentCpp: "!allocation",
+                },
+            ],
+            [
+                "buffer._engine",
+                {
+                    cpp: "(record.gpu ? record.gpu->engine.lock().get() : nullptr)",
+                    type: "opaque",
+                },
+            ],
+            ["engine", { cpp: "&owner", type: "opaque" }],
+        ]),
+        calls: new Map(),
+        callShapes: new Map(registryHas.map((shape) => [shape, "bool"])),
+        expression: (node) => registryMembership(context, node),
+    });
+    return `// ${context.provenance(path, "_getStorageBufferHandle")}
+static void assert_storage_buffer_handle(const Engine& owner, std::uint32_t slot) {
+    const auto& record = owner.storage_buffers.at(slot);
+    const auto allocation = record.gpu ? record.gpu->allocation : nullptr;
+${body}
+}
+`;
+}
+
 function ownerMethod(
     context: LoweringContext,
     name: "updateStorageBuffer" | "disposeStorageBuffer",
@@ -51,8 +126,7 @@ function ownerMethod(
 
         callShapes: new Map([
             ["Number.isInteger", "bool"],
-            ["engine._storageBuffers?.has", "bool"],
-            ["buffer._engine._storageBuffers?.has", "bool"],
+            ...registryHas.map((shape) => [shape, "bool"] as const),
         ]),
         expression(node) {
             if (
@@ -76,21 +150,9 @@ function ownerMethod(
                 )
             )
                 return "owner.resource_epoch";
-            if (!ts.isCallExpression(node)) return undefined;
-            const callee = context.matchingExpressionShape(node.expression, [
-                "engine._storageBuffers?.has",
-                "buffer._engine._storageBuffers?.has",
-            ]);
-            if (
-                callee === "engine._storageBuffers?.has" ||
-                callee === "buffer._engine._storageBuffers?.has"
-            ) {
-                context.assertExpressionShape(
-                    node.arguments[0]!,
-                    "buffer",
-                    "Storage registry member",
-                );
-                return "record.registered";
+            const membership = registryMembership(context, node);
+            if (membership !== undefined) {
+                return membership;
             }
             return undefined;
         },
@@ -123,6 +185,14 @@ function ownerMethod(
             }
             if (!ts.isExpressionStatement(node)) return undefined;
             const expression = unwrapExpression(node.expression);
+            if (
+                update &&
+                context.expressionMatchesShape(
+                    expression,
+                    "_getStorageBufferHandle(engine, buffer)",
+                )
+            )
+                return [`${indent}assert_storage_buffer_handle(owner, slot);`];
             if (ts.isCallExpression(expression)) {
                 const callee = context.matchingExpressionShape(
                     expression.expression,
@@ -544,6 +614,7 @@ function factory(context: LoweringContext): string {
                 );
                 return [
                     `${indent}if (!engine->dispose_storage_buffers) engine->dispose_storage_buffers = dispose_gpu_storage_buffers;`,
+                    `${indent}engine->assert_storage_buffer_handle = assert_storage_buffer_handle;`,
                 ];
             }
             return undefined;
@@ -616,6 +687,7 @@ static std::vector<StorageBufferHandle> storage_buffer_registry_snapshot(const E
         if (engine.storage_buffers[slot].registered) result.push_back(StorageBufferHandle{slot});
     return result;
 }
+${lowerStorageHandleCheck(context)}
 struct SourceStorageBuffer final : pal::StorageBufferOwner {
 ${ownerMethod(context, "updateStorageBuffer", readback)}
 ${ownerMethod(context, "disposeStorageBuffer", readback)}

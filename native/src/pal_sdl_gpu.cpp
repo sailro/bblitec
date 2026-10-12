@@ -2642,7 +2642,7 @@ public:
                                         "shader material vertex stage",
                                         state.storage_binding_scratch,
                                         [&](const std::string& name, std::size_t) {
-                                            return shader_storage_buffer(state, *material,
+                                            return shader_storage_buffer(state, engine, *material,
                                                                          shader_info, name);
                                         });
                                     bind_stage_storage(
@@ -2651,7 +2651,7 @@ public:
                                         "shader material fragment stage",
                                         state.storage_binding_scratch,
                                         [&](const std::string& name, std::size_t) {
-                                            return shader_storage_buffer(state, *material,
+                                            return shader_storage_buffer(state, engine, *material,
                                                                          shader_info, name);
                                         });
                                     bind_shader_material_textures(state, task_pass, draw_context,
@@ -3330,7 +3330,8 @@ public:
                                 geometry_pass.camera);
 #if BBLITE_STANDARD_VARIANTS > 0
                             update_pinned_velocity_frame(geometry.velocity, graph_scene, engine,
-                                                         graph_plan.scene_items());
+                                                         graph_plan.scene_items(),
+                                                         geometry_pass.camera);
 #endif
                             draw_scene(graph_scene, graph_meshes, task_pass, {}, {},
                                        geometry_matrix, geometry_pass.camera, geometry_pass.pass(),
@@ -3998,18 +3999,20 @@ public:
                             };
                         push_stage_block(shader_info.vertex, false);
                         push_stage_block(shader_info.fragment, true);
-                        bind_stage_storage(
-                            pass, state.shader_vertex_slots[item.shader_variant], false,
-                            "shader material vertex stage", state.storage_binding_scratch,
-                            [&](const std::string& name, std::size_t) {
-                                return shader_storage_buffer(state, *material, shader_info, name);
-                            });
-                        bind_stage_storage(
-                            pass, state.shader_fragment_slots[item.shader_variant], true,
-                            "shader material fragment stage", state.storage_binding_scratch,
-                            [&](const std::string& name, std::size_t) {
-                                return shader_storage_buffer(state, *material, shader_info, name);
-                            });
+                        bind_stage_storage(pass, state.shader_vertex_slots[item.shader_variant],
+                                           false, "shader material vertex stage",
+                                           state.storage_binding_scratch,
+                                           [&](const std::string& name, std::size_t) {
+                                               return shader_storage_buffer(
+                                                   state, engine, *material, shader_info, name);
+                                           });
+                        bind_stage_storage(pass, state.shader_fragment_slots[item.shader_variant],
+                                           true, "shader material fragment stage",
+                                           state.storage_binding_scratch,
+                                           [&](const std::string& name, std::size_t) {
+                                               return shader_storage_buffer(
+                                                   state, engine, *material, shader_info, name);
+                                           });
                         bind_shader_material_textures(state, pass, *pass_scene, engine, *material,
                                                       item.shader_variant, mesh);
                         if (shader_info.vertex.present) {

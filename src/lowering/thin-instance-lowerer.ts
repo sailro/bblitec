@@ -11,6 +11,7 @@ import {
     pinnedRecordSchema,
 } from "./pinned-record-literal.js";
 import { webgpuFlagNamespaces } from "../webgpu-flags.js";
+import { absentDrawRangeBinding } from "./mesh-draw-range.js";
 import { recordAt } from "../compiler/record-access.js";
 
 const cpuModule = "src/mesh/thin-instance.ts";
@@ -175,6 +176,7 @@ function thinScope(
         type: "scalar",
         nullish: "!geometry.base_vertex.has_value()",
     });
+    bindings.set("gpu._firstIndex", absentDrawRangeBinding(context));
     for (const name of [
         "count",
         "index",

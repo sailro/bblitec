@@ -225,6 +225,11 @@ void sync_shader_storage_buffers(GpuState& state, const Engine& engine,
             if (!source.gpu || source.disposed)
                 return {};
 #if BBLITE_COMPUTE_BUFFERS
+            if (!source.gpu->allocation) {
+                GpuState::StorageBuffer lost;
+                lost.lost = true;
+                return lost;
+            }
             const auto allocation =
                 std::dynamic_pointer_cast<SdlStorageBuffer>(source.gpu->allocation);
             if (!allocation || !allocation->buffer)
@@ -237,7 +242,8 @@ void sync_shader_storage_buffers(GpuState& state, const Engine& engine,
         });
 }
 
-SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const MaterialRecord& material,
+SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
+                                     const MaterialRecord& material,
                                      const upstream::ShaderVariantInfo& info,
                                      const std::string& name) {
     const auto declared = std::find_if(
@@ -249,6 +255,9 @@ SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const MaterialRecord& mate
     if (slot >= material.shader_storage_buffers.size())
         return nullptr;
     const StorageBufferHandle handle = material.shader_storage_buffers[slot];
+    if (handle.value < state.storage_buffers.size() &&
+        handle_at(state.storage_buffers, handle).lost && engine.assert_storage_buffer_handle)
+        engine.assert_storage_buffer_handle(engine, handle.value);
     return handle.value < state.storage_buffers.size()
                ? handle_at(state.storage_buffers, handle).buffer
                : nullptr;

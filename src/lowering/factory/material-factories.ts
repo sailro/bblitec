@@ -441,6 +441,9 @@ MaterialHandle create_shader_material(
     material.shader_uniform_snapshot = shader_uniform_render_values;
     material.shader_alpha_cutoff = shader_material_alpha_cutoff;
     material.shader_packet_initialize = initialize_shader_packet_camera_cache;
+    material.shader_system_dependencies = info.system_dependencies;
+    // shaderSystemDependencies: the packet's union of its slots' bits.
+    for (const auto bits : info.system_dependencies) material.shader_system_dependency_mask |= bits;
     for (const auto& slot : info.uniform_slots) {
         auto values = slot.defaults;
         if (values.empty()) values = default_shader_uniform_values(slot.name, slot.count);

@@ -130,7 +130,8 @@ int main() {
     const auto withEmpty = create_retained_mesh_from_data(engine, "empty", empty, empty, js::U32Array{}, empty, empty, empty, empty);
     assert(get_mesh_geometry(engine, without) && !get_mesh_geometry(engine, without)->uvs);
     const auto optional = get_mesh_geometry(engine, withEmpty);
-    assert(optional && optional->uvs && optional->uvs->empty() && !optional->uvs2 && !optional->tangents && !optional->colors);
+    // createMeshFromData retains every given stream; only tangents need a length to be read back.
+    assert(optional && optional->uvs && optional->uvs->empty() && optional->uvs2 && optional->uvs2->empty() && !optional->tangents && optional->colors && optional->colors->empty());
 }
 `,
         { flags: ["/Gy"], timeoutMs: 10000 },

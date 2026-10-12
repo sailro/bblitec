@@ -238,25 +238,10 @@ export class PhysicsLowerer {
      * the pin renumbers has to renumber here too.
      */
     private enumMembers(name: string): Map<string, number> {
-        const file = this.context.sourceFile(havokModule);
-        const literal = this.context.objectInitializer(file, name);
-        const members = new Map<string, number>();
-        for (const member of literal.properties) {
-            if (
-                !ts.isPropertyAssignment(member) ||
-                !ts.isIdentifier(member.name)
-            ) {
-                this.context.contractError(
-                    member,
-                    `Expected ${name} members to be named numeric properties.`,
-                );
-            }
-            members.set(
-                member.name.text,
-                this.context.numericValue(member.initializer, file),
-            );
-        }
-        return members;
+        return this.context.numericObject(
+            this.context.sourceFile(havokModule),
+            name,
+        );
     }
 
     /**

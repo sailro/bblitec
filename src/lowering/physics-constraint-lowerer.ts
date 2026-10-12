@@ -124,23 +124,9 @@ export function lowerPhysicsConstraints(context: LoweringContext): {
     `,
         "hinge locked and free axes",
     );
-    const enumMembers = (name: string) =>
-        context
-            .objectInitializer(factory.file, name)
-            .properties.map((property) => {
-                if (
-                    !ts.isPropertyAssignment(property) ||
-                    !ts.isIdentifier(property.name)
-                )
-                    context.contractError(
-                        property,
-                        "Constraint enumerators must be named numeric properties.",
-                    );
-                return [
-                    property.name.text,
-                    context.numericValue(property.initializer, factory.file),
-                ] as const;
-            });
+    const enumMembers = (name: string) => [
+        ...context.numericObject(factory.file, name),
+    ];
     const typeMembers = enumMembers("PhysicsConstraintType");
     const axisMembers = enumMembers("PhysicsConstraintAxis");
     const axisNames = [

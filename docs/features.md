@@ -325,7 +325,8 @@ other than 1/4 refuse. `enableSurfaceResizeObserver` admits engines and auxiliar
 own extent refresh. `resizeEngine` is a native no-op;
 `invalidateRenderBundles` moves the visibility epoch and each scene's renderable version.
 
-Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
+Ordinary device recovery retains CPU owners and rebuilds GPU resources; a GPU-role storage buffer (no CPU
+shadow) loses its allocation, so its later updates, bindings and readbacks refuse as the pin's do. Setup must be unconditional
 before startup and observations require one scene. Failure callbacks expose `Error.message`. As
 upstream, a failed recovery does not re-arm; a later loss then refuses rather than continuing. Only the
 scene strategy registers, so a loss with an active sprite, text, effect or frame-graph context refuses with

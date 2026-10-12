@@ -65,6 +65,11 @@ void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
             if (!source.gpu || source.disposed)
                 return {};
 #if BBLITE_COMPUTE_BUFFERS
+            if (!source.gpu->allocation) {
+                DawnState::ShaderStorageBuffer lost;
+                lost.lost = true;
+                return lost;
+            }
             const auto allocation =
                 std::dynamic_pointer_cast<DawnStorageBuffer>(source.gpu->allocation);
             if (!allocation || !allocation->buffer)
@@ -190,6 +195,10 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
                            .c_str());
         }
         const StorageBufferHandle handle = material.shader_storage_buffers[declared_slot];
+        if (handle.value < state.shader_storage_buffers.size() &&
+            handle_at(state.shader_storage_buffers, handle).lost &&
+            engine.assert_storage_buffer_handle)
+            engine.assert_storage_buffer_handle(engine, handle.value);
         if (handle.value >= state.shader_storage_buffers.size() ||
             !handle_at(state.shader_storage_buffers, handle).buffer) {
             dawn_error((std::string("Shader material storage buffer '") +

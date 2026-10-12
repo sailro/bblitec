@@ -4777,7 +4777,8 @@ export class PinnedNumericLowerer {
                         ts.SyntaxKind.QuestionQuestionToken
                 ) {
                     const head = this.binding(unwrapExpression(spine.left));
-                    if (head?.nullish !== undefined) break;
+                    if (head?.nullish !== undefined || head?.staticallyAbsent)
+                        break;
                     if (head) return head.cpp;
                     spine = unwrapExpression(spine.left);
                 }
@@ -4796,6 +4797,9 @@ export class PinnedNumericLowerer {
                         `${resolved.cpp})`
                     );
                 }
+                // A value the caller proved absent always takes the default.
+                if (resolved?.staticallyAbsent)
+                    return this.expression(node.right);
                 if (resolved) return resolved.cpp;
                 if (!ts.isPropertyAccessExpression(left)) {
                     return this.fail(node, "'??' over a non-optional read");

@@ -52,7 +52,7 @@ function firstPath(points:{x:number;y:number;z:number}[]):number {
 }
 if(firstPath([{x:0,y:0,z:0},{x:2,y:0,z:2}])<2)throw new Error('runtime path');
 disposeNavigationPlugin(alias);disposeNavigationPlugin(plugin);
-let rejected=false;try{navRayBlockedFast(plugin,{x:0,y:0,z:0},{x:0,y:0,z:0});}catch(error){rejected=error.message==='#583';}
+let rejected=false;try{navRayBlockedFast(plugin,{x:0,y:0,z:0},{x:0,y:0,z:0});}catch(error){rejected=error.message==='#611';}
 if(!rejected)throw new Error('disposed query');
 createNavMeshFromSources(alias,sources,{doNotReverseIndices:true});
 if(!findClosestPointWithinInto(plugin,{x:0,y:1,z:0},{x:1,y:2,z:1},result))throw new Error('rebuild');
@@ -134,7 +134,7 @@ int main(){
     const auto changed=changed::merge_nav_meshes(engine,meshes);
     assert(changed.positions[0]==14);
     mesh.cpu_streams->indices.reset();bool rejected=false;
-    try{bbl::upstream::merge_nav_meshes(engine,meshes);}catch(const std::runtime_error& error){rejected=std::string(error.what())=="#581";}
+    try{bbl::upstream::merge_nav_meshes(engine,meshes);}catch(const std::runtime_error& error){rejected=std::string(error.what())=="#609";}
     assert(rejected);
     mesh.cpu_streams.reset();geometry.vertices.resize(3);geometry.indices={0,2,1};geometry.source_indices_reversed=true;
     const auto fallback=bbl::upstream::merge_nav_meshes(engine,{{0}});

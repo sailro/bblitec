@@ -4,29 +4,219 @@ import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
+    type PinnedCallSpelling,
 } from "./pinned-numeric-lowerer.js";
+import { isShaderSystemMatrix, shaderSystemMatrixTable } from "../shader-ir.js";
+
+const rendererModule = "src/material/shader/shader-renderable.ts";
+const dependencyModule = "src/material/shader/shader-system-dependencies.ts";
+
+/**
+ * A scene reaching shader materials refuses floating origin at generation
+ * (`floatingOriginUnwired`, generation-refusal.ts), so every camera a packet
+ * reads is off the mode.
+ */
+const offFloatingOrigin: PinnedBinding = { cpp: "false", type: "bool" };
+
+/** The pin's dependency bits, each a generated constant of its own name. */
+const dependencyConstants = [
+    ["WORLD", "shader_system_world"],
+    ["VIEW", "shader_system_view"],
+    ["PROJECTION", "shader_system_projection"],
+    ["VIEW_PROJECTION", "shader_system_view_projection"],
+    ["CAMERA_POSITION", "shader_system_camera_position"],
+    ["SCREEN_SIZE", "shader_system_screen_size"],
+    ["ALPHA_CUTOFF", "shader_system_alpha_cutoff"],
+    ["CAMERA", "shader_system_camera"],
+] as const;
+
+function dependencyBindings(): [string, PinnedBinding][] {
+    return dependencyConstants.map(([pinned, cpp]) => [
+        pinned,
+        { cpp, type: "scalar" },
+    ]);
+}
+
+const dependencyTables = new WeakMap<
+    LoweringContext,
+    ReadonlyMap<string, number>
+>();
+
+/**
+ * The dependency bits the pin's `shaderSystemDependency` gives each system
+ * uniform name, read from its own table: a declared name outside it is not
+ * a system uniform (`_isShaderSystemUniform` is that test). Read once per
+ * context: the layouts and the matrix routing both key on it.
+ */
+function pinnedDependencyTable(
+    context: LoweringContext,
+): ReadonlyMap<string, number> {
+    const cached = dependencyTables.get(context);
+    if (cached) return cached;
+    const lookup = context.functionDeclaration(
+        dependencyModule,
+        "shaderSystemDependency",
+    ).declaration;
+    context.assertStatementShapes(
+        lookup,
+        lookup.body!.statements,
+        "return DEPENDENCIES[name] ?? 0;",
+        "Shader system dependency lookup",
+    );
+    const isSystem = context.functionDeclaration(
+        "src/material/shader/shader-material.ts",
+        "_isShaderSystemUniform",
+    ).declaration;
+    context.assertStatementShapes(
+        isSystem,
+        isSystem.body!.statements,
+        "return shaderSystemDependency(name) !== 0;",
+        "Shader system uniform test",
+    );
+    const table = context.numericObject(
+        context.sourceFile(dependencyModule),
+        "DEPENDENCIES",
+    );
+    dependencyTables.set(context, table);
+    return table;
+}
+
+/**
+ * The reached shader materials' system layouts as their packets read them:
+ * the dependency bits of each declared system uniform, in the layout's
+ * order (the pipeline's computeUboLayout lays system fields in declaration
+ * order). The material record folds them as the asserted
+ * `shaderSystemDependencies` does. A declared uniform is a system one when
+ * it names a system matrix; a typed `name:type` declaration is custom.
+ */
+export function shaderSystemLayouts(
+    context: LoweringContext,
+): (uniforms: readonly string[]) => readonly number[] {
+    const table = pinnedDependencyTable(context);
+    const fold = context.functionDeclaration(
+        dependencyModule,
+        "shaderSystemDependencies",
+    ).declaration;
+    context.assertStatementShapes(
+        fold,
+        fold.body!.statements,
+        `
+        let dependencies = 0;
+        for (const name of spec._offsets.keys()) { dependencies |= shaderSystemDependency(name); }
+        return dependencies;`,
+        "Shader system dependency fold",
+    );
+    return (uniforms) =>
+        uniforms.filter(isShaderSystemMatrix).map((name) => {
+            const bits = table.get(name);
+            if (bits === undefined)
+                return context.contractError(
+                    context.sourceFile(dependencyModule),
+                    `Expected the pinned dependencies of system uniform '${name}'.`,
+                );
+            return bits;
+        });
+}
+
+/**
+ * The packet matrix each system matrix's dependency bits store into: the
+ * pin's table, keyed by the name the compiler's system-matrix table gives
+ * the packet state's field.
+ */
+export function lowerShaderSystemMatrixRouting(
+    context: LoweringContext,
+): string {
+    const table = pinnedDependencyTable(context);
+    const routed = new Set<number>();
+    const routes = shaderSystemMatrixTable
+        .filter(({ type }) => type === "mat4x4<f32>")
+        .map(({ name, enumerator }) => {
+            const bits = table.get(name);
+            // A store finds its matrix by its bits alone.
+            if (!bits || routed.has(bits))
+                return context.contractError(
+                    context.sourceFile(dependencyModule),
+                    `Expected distinct nonzero pinned dependencies for system matrix '${name}'.`,
+                );
+            routed.add(bits);
+            return `    if (dependency == ${bits}u) return state.${enumerator};`;
+        });
+    return `// ${context.provenance(dependencyModule, "DEPENDENCIES", "system matrix routing")}
+template<class State>
+std::array<float, 16>& shader_system_matrix(State& state, std::uint32_t dependency) {
+${routes.join("\n")}
+    throw std::runtime_error("A shader system store names no packet matrix.");
+}
+`;
+}
+
+/** The pin's dependency bits as named generated constants. */
+export function lowerShaderSystemDependencyConstants(
+    context: LoweringContext,
+): string {
+    return `// ${context.provenance(dependencyModule, dependencyConstants.map(([name]) => name).join(", "))}
+${dependencyConstants
+    .map(
+        ([pinned, cpp]) =>
+            `inline constexpr double ${cpp} = ${context.doubleLiteral(context.pinnedNumber(dependencyModule, pinned))};`,
+    )
+    .join("\n")}
+`;
+}
 
 /** The shader packet's system upload gate, separate from custom material slots. */
 export function lowerShaderSystemCache(context: LoweringContext): string {
-    const module = "src/material/shader/shader-renderable.ts";
     const { file, declaration } = context.functionDeclaration(
-        module,
+        rendererModule,
         "updatePacket",
     );
     const statements = declaration.body!.statements;
-    const gate = statements.find(
+    const publication = statements.find(
         (statement): statement is ts.IfStatement =>
             ts.isIfStatement(statement) &&
-            statement.expression.getText(file).includes("packet._lastCamera"),
+            context.expressionMatchesShape(
+                statement.expression,
+                "dependencies",
+            ),
     );
-    if (!gate || !ts.isBlock(gate.thenStatement) || gate.elseStatement)
+    const gate =
+        publication && ts.isBlock(publication.thenStatement)
+            ? publication.thenStatement.statements.find(
+                  (statement): statement is ts.IfStatement =>
+                      ts.isIfStatement(statement) &&
+                      statement.expression
+                          .getText(file)
+                          .includes("packet._lastCamera"),
+              )
+            : undefined;
+    if (
+        !publication ||
+        publication.elseStatement ||
+        !gate ||
+        !ts.isBlock(gate.thenStatement) ||
+        gate.elseStatement
+    )
         context.contractError(
             declaration,
             "Expected the shader packet system publication gate.",
         );
+    // The visible-packet policy and the indexed-indirect resolver are each
+    // installed by one opt-in enabler (enableShaderMaterialVisiblePacketUpdates,
+    // setMeshIndexedIndirect) that no reached program lowers.
+    context.assertWrittenOnlyBy(
+        "_deferPacketUpdate",
+        "src/material/shader/enable-shader-material-visible-packet-updates.ts",
+        "enableShaderMaterialVisiblePacketUpdates",
+    );
+    context.assertWrittenOnlyBy(
+        "_indexedDrawResolver",
+        rendererModule,
+        "_installShaderIndexedDrawResolver",
+    );
     const fields = [
         ["_lastCamera", "camera", "opaque"],
         ["_lastCameraVersion", "camera_version", "scalar"],
+        ["_lastFloatingOrigin", "floating_origin", "bool"],
         ["_lastMeshWmVersion", "mesh_version", "scalar"],
         ["_lastTargetWidth", "target_width", "scalar"],
         ["_lastTargetHeight", "target_height", "scalar"],
@@ -34,7 +224,7 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
         ["_lastAlphaCutoff", "alpha_cutoff", "scalar"],
     ] as const;
     const factory = context.functionDeclaration(
-        module,
+        rendererModule,
         "createPacket",
     ).declaration;
     const packet = context.objectInitializer(factory, "packet");
@@ -50,9 +240,22 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
             );
     const bindings = new Map<string, PinnedBinding>([
         [
+            "packet._systemDependencies",
+            { cpp: "static_cast<double>(system_dependencies)", type: "scalar" },
+        ],
+        [
             "camera",
             { cpp: "camera", type: "opaque", absentCpp: "camera == nullptr" },
         ],
+        [
+            "cameraIdentity",
+            {
+                cpp: "cameraIdentity",
+                type: "opaque",
+                absentCpp: "cameraIdentity == nullptr",
+            },
+        ],
+        ["camera?._useFloatingOrigin", offFloatingOrigin],
         [
             "packet.mesh.worldMatrixVersion",
             {
@@ -62,20 +265,26 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
         ],
         ["context.targetWidth", { cpp: "target_width", type: "scalar" }],
         ["context.targetHeight", { cpp: "target_height", type: "scalar" }],
+        // Read only where the layout declares it, as the pin's gate reads it.
         [
             'material._uniformValues.get("alphaCutoff")?.value[0] ?? 0.4',
-            { cpp: "alpha_cutoff", type: "scalar" },
+            { cpp: "alpha_cutoff()", type: "scalar" },
         ],
+        ...dependencyBindings(),
         ...fields.map(([source, native, type]): [string, PinnedBinding] => [
             `packet.${source}`,
             { cpp: `cache.${native}`, type },
         ]),
     ]);
-    const prefix = statements.slice(0, statements.indexOf(gate) + 1);
+    const prefix = statements.slice(0, statements.indexOf(publication) + 1);
     const body = lowerPinnedBody(file, prefix, {
         bindings,
         calls: new Map([
-            ["_cameraChangeKey", () => "scene_camera_change_key(*camera)"],
+            [
+                "_cameraChangeKey",
+                (args: readonly string[]) =>
+                    `scene_camera_change_key(*${args[0]!})`,
+            ],
             [
                 "getEffectiveAspectRatio",
                 () =>
@@ -87,19 +296,45 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
             if (
                 context.expressionMatchesShape(
                     expression,
-                    "packet._lastCamera !== camera",
+                    "packet._lastCamera !== cameraIdentity",
                 )
             )
-                return "(cache.camera != camera)";
+                return "(cache.camera != cameraIdentity)";
+            if (expression.kind === ts.SyntaxKind.NullKeyword)
+                return "static_cast<const CameraRecord*>(nullptr)";
             return undefined;
         },
-        statement(statement) {
+        statement(statement, lowerer, indent) {
+            // Both hooks are absent in every reached program (asserted above).
+            if (
+                ts.isIfStatement(statement) &&
+                context.expressionMatchesShape(
+                    statement.expression,
+                    "material._deferPacketUpdate?.(packet.mesh)",
+                )
+            ) {
+                context.assertStatementShapes(
+                    statement,
+                    [statement],
+                    "if (material._deferPacketUpdate?.(packet.mesh)) { return; }",
+                    "Shader packet visibility deferral",
+                );
+                return [];
+            }
+            if (
+                ts.isExpressionStatement(statement) &&
+                context.expressionMatchesShape(
+                    statement.expression,
+                    "_indexedDrawResolver?.update(engine, packet.mesh)",
+                )
+            )
+                return [];
             if (ts.isVariableStatement(statement)) {
                 const local = statement.declarationList.declarations[0];
                 if (local && ts.isIdentifier(local.name)) {
                     const elided = new Map([
                         ["engine", "scene.surface.engine"],
-                        ["state", "material as ShaderMaterialState"],
+                        ["state", "material as ShaderMaterialRenderState"],
                         ["camera", "context._camera ?? scene.camera"],
                     ]).get(local.name.text);
                     if (elided && local.initializer) {
@@ -110,6 +345,13 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
                         );
                         return [];
                     }
+                    if (
+                        local.name.text === "cameraIdentity" &&
+                        local.initializer
+                    )
+                        return [
+                            `${indent}const CameraRecord* const cameraIdentity = ${lowerer.expression(local.initializer)};`,
+                        ];
                 }
             }
             if (
@@ -140,117 +382,82 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
                     "systemUniformWriter(packet.systemData, state._shaderBindings!.systemSpec, material, packet.mesh, camera, context.targetWidth, context.targetHeight)",
                     "Shader packet system writer boundary",
                 );
-                return ["        write_system();"];
+                return [`${indent}write_system();`];
             }
             return undefined;
         },
     });
-    return `// ${context.provenance(module, "updatePacket", "system packet publication")}
-template<class Cache, class WriteSystem>
-void update_shader_packet_system(Cache& cache, const CameraRecord* camera, const MeshRecord& mesh,
-    double target_width, double target_height, double alpha_cutoff, WriteSystem&& write_system) {
+    return `// ${context.provenance(rendererModule, "updatePacket", "system packet publication")}
+template<class Cache, class AlphaCutoff, class WriteSystem>
+void update_shader_packet_system(Cache& cache, std::uint32_t system_dependencies, const CameraRecord* camera,
+    const MeshRecord& mesh, double target_width, double target_height, AlphaCutoff&& alpha_cutoff,
+    WriteSystem&& write_system) {
 ${body}
 }
 `;
 }
 
-/** Preserve the source's zero-fill and absent-camera product guards. */
-export function lowerShaderSystemProducts(context: LoweringContext): string {
-    const module = "src/material/shader/shader-renderable.ts";
+/**
+ * The source's system block writer over a packet's declared layout: it
+ * zero-fills the block, then reads only the camera matrices and the world a
+ * declared uniform names, each at most once, in layout order -- so which
+ * public camera caches a write refreshes is the declaration's.
+ */
+export function lowerShaderSystemWriter(context: LoweringContext): string {
     const { file, declaration } = context.functionDeclaration(
-        module,
+        rendererModule,
         "writeSystemUniforms",
     );
-    const clear = declaration.body!.statements[0]!;
-    context.assertStatementShapes(
-        clear,
-        [clear],
-        "data.fill(0);",
-        "Shader system block zero initialization",
-    );
-    const products = ["worldView", "worldViewProjection"] as const;
-    const conditions = products.map((name) => {
-        const clause = context.findNodes(
-            declaration,
-            (node): node is ts.CaseClause =>
-                ts.isCaseClause(node) &&
-                ts.isStringLiteral(node.expression) &&
-                node.expression.text === name,
-        )[0];
-        const guard = clause?.statements[0];
-        if (!guard || !ts.isIfStatement(guard))
-            return context.contractError(
-                declaration,
-                `Expected the '${name}' camera guard.`,
-            );
-        return guard;
-    });
-    const body = lowerPinnedBody(file, [clear, ...conditions], {
-        bindings: new Map<string, PinnedBinding>([
-            [
-                "view",
-                {
-                    cpp: "camera",
-                    type: "opaque",
-                    absentCpp: "camera == nullptr",
-                },
-            ],
-            [
-                "viewProjection",
-                {
-                    cpp: "camera",
-                    type: "opaque",
-                    absentCpp: "camera == nullptr",
-                },
-            ],
-        ]),
-        calls: new Map([["data.fill", () => "clear_products()"]]),
-        statement(node, _lowerer, indent) {
-            if (!ts.isExpressionStatement(node)) return undefined;
-            for (const [matrix, writer] of [
-                ["view", "write_view"],
-                ["viewProjection", "write_view_projection"],
-            ]) {
-                if (
-                    context.expressionMatchesShape(
-                        node.expression,
-                        `multiplyMat4IntoBuffer(data, f, ${matrix}, 0, world, 0)`,
-                    )
-                )
-                    return [`${indent}${writer}();`];
-            }
-            return undefined;
-        },
-    });
-    return `// ${context.provenance(module, "writeSystemUniforms", "world-view product guards")}
-template<class Clear, class WriteView, class WriteViewProjection>
-void write_shader_packet_products(const CameraRecord* camera, Clear&& clear_products,
-    WriteView&& write_view, WriteViewProjection&& write_view_projection) {
-${body}
-}
-`;
-}
-
-/** Camera reads stay inside the source writer call, after its publication gate. */
-export function lowerShaderPacketCameraReads(context: LoweringContext): string {
-    const module = "src/material/shader/shader-renderable.ts";
-    const { file, declaration } = context.functionDeclaration(
-        module,
-        "writeSystemUniforms",
-    );
-    const reads = declaration.body!.statements.slice(2, 6);
+    const statements = declaration.body!.statements;
     context.assertStatementShapes(
         declaration,
-        reads,
+        statements.slice(0, 4),
         `
-        const aspect = camera ? getEffectiveAspectRatio(camera, targetWidth, targetHeight) : 1;
-        const view = camera ? (getViewMatrix(camera) as unknown as Float32Array) : null;
-        const projection = camera ? (getProjectionMatrix(camera, aspect) as unknown as Float32Array) : null;
-        const viewProjection = camera ? (getViewProjectionMatrix(camera, aspect) as unknown as Float32Array) : null;`,
-        "Shader packet camera initialization reads",
+        data.fill(0);
+        let world: Float32Array | undefined;
+        let view: Float32Array | undefined;
+        let viewProjection: Float32Array | undefined;`,
+        "Shader system block initialization",
     );
-    const body = lowerPinnedBody(file, reads, {
-        bindings: new Map([
+    const loop = statements[4];
+    if (
+        statements.length !== 5 ||
+        !loop ||
+        !ts.isForOfStatement(loop) ||
+        !ts.isBlock(loop.statement)
+    )
+        return context.contractError(
+            declaration,
+            "Expected one loop over the declared system layout.",
+        );
+    context.assertExpressionShape(
+        loop.expression,
+        "spec._offsets",
+        "Declared system layout",
+    );
+    const entry = ts.isVariableDeclarationList(loop.initializer)
+        ? loop.initializer.declarations[0]?.name
+        : undefined;
+    if (!entry || entry.getText(file) !== "[name, offset]")
+        return context.contractError(
+            loop,
+            "Expected the declared layout's name and offset.",
+        );
+    const [offset, dependency, ...rest] = loop.statement.statements;
+    if (!offset || !dependency || rest.length !== 1)
+        return context.contractError(
+            loop,
+            "Expected the declared slot's offset, dependency and branches.",
+        );
+    context.assertStatementShapes(
+        loop,
+        [offset, dependency],
+        "const f = offset / 4; const dependency = shaderSystemDependency(name);",
+        "Declared slot dependency",
+    );
+    const memos = new Set(["view", "viewProjection", "world"]);
+    const body = lowerPinnedBody(file, rest, {
+        bindings: new Map<string, PinnedBinding>([
             [
                 "camera",
                 {
@@ -259,59 +466,155 @@ export function lowerShaderPacketCameraReads(context: LoweringContext): string {
                     absentCpp: "camera == nullptr",
                 },
             ],
+            ["mesh", { cpp: "mesh", type: "opaque" }],
             ["targetWidth", { cpp: "target_width", type: "scalar" }],
             ["targetHeight", { cpp: "target_height", type: "scalar" }],
+            [
+                "dependency",
+                { cpp: "static_cast<double>(dependency)", type: "scalar" },
+            ],
+            ...dependencyBindings(),
+            ["camera._useFloatingOrigin", offFloatingOrigin],
         ]),
-        calls: new Map([
+        calls: new Map<string, PinnedCallSpelling>([
+            ["getViewMatrix", () => "build_camera_view_matrix(*camera)"],
+            [
+                "getProjectionMatrix",
+                (args) => `build_scene_projection(*camera, ${args[1]})`,
+            ],
+            [
+                "getViewProjectionMatrix",
+                (args) => `build_view_projection(*camera, ${args[1]})`,
+            ],
             [
                 "getEffectiveAspectRatio",
                 () =>
                     "effective_aspect_ratio(*camera, target_width, target_height)",
             ],
-            ["getViewMatrix", () => "build_camera_view_matrix(*camera)"],
-            [
-                "getProjectionMatrix",
-                () => "build_scene_projection(*camera, aspect)",
-            ],
-            [
-                "getViewProjectionMatrix",
-                () => "build_view_projection(*camera, aspect)",
-            ],
+            ["_shaderWorldMatrix", () => "read_world()"],
         ]),
-        expression(node) {
-            return node.kind === ts.SyntaxKind.NullKeyword
-                ? "std::array<float, 16>{}"
-                : undefined;
+        // Each memoized matrix (`view ??= getViewMatrix(camera)`) is read once.
+        expression(node, lowerer) {
+            if (
+                !ts.isBinaryExpression(node) ||
+                node.operatorToken.kind !==
+                    ts.SyntaxKind.QuestionQuestionEqualsToken
+            )
+                return undefined;
+            const name = node.left.getText(file);
+            if (!memos.has(name))
+                return context.contractError(
+                    node,
+                    "Expected a declared system matrix memo.",
+                );
+            return `(${name} ? *${name} : *(${name} = ${lowerer.expression(node.right)}))`;
         },
         statement(node, lowerer, indent) {
             if (ts.isVariableStatement(node)) {
                 const local = node.declarationList.declarations[0];
-                if (
-                    local?.initializer &&
-                    ts.isIdentifier(local.name) &&
-                    local.name.text !== "aspect"
-                )
-                    return [
-                        `${indent}${local.name.text === "viewProjection" ? "view_projection" : local.name.text} = ${lowerer.expression(local.initializer)};`,
-                    ];
+                if (local?.initializer && ts.isIdentifier(local.name)) {
+                    if (local.name.text === "matrix")
+                        return [
+                            `${indent}const std::array<float, 16> matrix = ${lowerer.expression(local.initializer)};`,
+                        ];
+                    if (local.name.text === "wm") {
+                        context.assertExpressionShape(
+                            local.initializer,
+                            "camera.worldMatrix as unknown as ArrayLike<number>",
+                            "Shader camera position source",
+                        );
+                        return [];
+                    }
+                }
             }
+            if (!ts.isExpressionStatement(node)) return undefined;
+            const write = node.expression;
+            // The eye's three lanes are one store of the pass's camera position.
+            if (context.expressionMatchesShape(write, "data[f] = wm[12]!"))
+                return [`${indent}store_camera_position();`];
+            if (
+                context.expressionMatchesShape(
+                    write,
+                    "data[f + 1] = wm[13]!",
+                ) ||
+                context.expressionMatchesShape(write, "data[f + 2] = wm[14]!")
+            )
+                return [];
+            if (context.expressionMatchesShape(write, "data.set(matrix, f)"))
+                return [`${indent}store(dependency, matrix);`];
+            if (
+                ts.isCallExpression(write) &&
+                context.expressionMatchesShape(write.expression, "data.set") &&
+                write.arguments.length === 2 &&
+                context.expressionMatchesShape(write.arguments[1]!, "f")
+            )
+                return [
+                    `${indent}store(dependency, ${lowerer.expression(write.arguments[0]!)});`,
+                ];
+            if (
+                ts.isCallExpression(write) &&
+                context.expressionMatchesShape(
+                    write.expression,
+                    "multiplyMat4IntoBuffer",
+                )
+            ) {
+                context.assertExpressionShape(
+                    write,
+                    "multiplyMat4IntoBuffer(data, f, matrix, 0, (world ??= _shaderWorldMatrix(mesh, camera)), 0)",
+                    "Declared world product write",
+                );
+                return [
+                    `${indent}store_product(dependency, matrix, ${lowerer.expression(write.arguments[4]!)});`,
+                ];
+            }
+            // screenSize and alphaCutoff: the compiler refuses both names on
+            // a scene's shader material (shader-material.ts), so no reached
+            // layout declares them. Each refuses at its first store.
+            if (
+                context.expressionMatchesShape(
+                    write,
+                    "data[f + 1] = targetHeight",
+                )
+            )
+                return [];
+            if (
+                context.expressionMatchesShape(
+                    write,
+                    "data[f] = targetWidth",
+                ) ||
+                context.expressionMatchesShape(
+                    write,
+                    'data[f] = material._uniformValues.get("alphaCutoff")?.value[0] ?? 0.4',
+                )
+            )
+                return [
+                    `${indent}throw std::runtime_error("A shader material's screenSize and alphaCutoff system uniforms are not supported.");`,
+                ];
             return undefined;
         },
     });
-    return `// ${context.provenance(module, "writeSystemUniforms", "camera reads")}
-void read_shader_packet_camera_matrices(const CameraRecord* camera, double target_width, double target_height,
-    std::array<float, 16>& view, std::array<float, 16>& projection, std::array<float, 16>& view_projection) {
-${body}
-}`;
+    return `// ${context.provenance(rendererModule, "writeSystemUniforms", "declared system layout")}
+template<class Clear, class ReadWorld, class Store, class StoreProduct, class StoreCameraPosition>
+void write_shader_packet_system(const CameraRecord* camera, std::span<const std::uint32_t> layout,
+    double target_width, double target_height, Clear&& clear, ReadWorld&& read_world, Store&& store,
+    StoreProduct&& store_product, StoreCameraPosition&& store_camera_position) {
+    clear();
+    std::optional<std::array<float, 16>> world;
+    std::optional<std::array<float, 16>> view;
+    std::optional<std::array<float, 16>> viewProjection;
+    for (const std::uint32_t dependency : layout) {
+${body.replace(/^/gm, "    ")}
+    }
+}
+`;
 }
 
 /** createPacket performs its first camera reads before any per-pass update. */
 export function lowerShaderPacketCameraInitialization(
     context: LoweringContext,
 ): string {
-    const module = "src/material/shader/shader-renderable.ts";
     const { file, declaration: factory } = context.functionDeclaration(
-        module,
+        rendererModule,
         "createPacket",
     );
     const write = context.findNodes(
@@ -328,6 +631,11 @@ export function lowerShaderPacketCameraInitialization(
             factory,
             "Expected eager shader system writer initialization.",
         );
+    context.assertExpressionShape(
+        write.arguments[4]!,
+        "scene.camera",
+        "Eager shader system camera",
+    );
     const dimensions = new PinnedNumericLowerer(file, {
         bindings: new Map([
             [
@@ -347,13 +655,18 @@ export function lowerShaderPacketCameraInitialization(
         ]),
         calls: new Map(),
     });
-    return `// ${context.provenance(module, "createPacket", "eager camera cache reads")}
-void initialize_shader_packet_camera_cache(const Scene& scene, const MaterialRecord&) {
+    // Only the reads persist: the gate's first update rewrites every declared
+    // value before the packet's first draw, so the stores are discarded here.
+    return `// ${context.provenance(rendererModule, "createPacket", "eager camera cache reads")}
+void initialize_shader_packet_camera_cache(const Scene& scene, const MaterialRecord& material) {
     if (!scene.engine) throw std::runtime_error("Shader packet requires its source scene engine.");
     const auto* camera = handle_find(scene.engine->cameras, scene.camera);
     const double target_width = ${dimensions.expression(write.arguments[5]!)};
     const double target_height = ${dimensions.expression(write.arguments[6]!)};
-    std::array<float, 16> view{}, projection{}, view_projection{};
-    upstream::read_shader_packet_camera_matrices(camera, target_width, target_height, view, projection, view_projection);
+    upstream::write_shader_packet_system(
+        camera, material.shader_system_dependencies, target_width, target_height, [] {},
+        [] { return std::array<float, 16>{}; },
+        [](std::uint32_t, const std::array<float, 16>&) {},
+        [](std::uint32_t, const std::array<float, 16>&, const std::array<float, 16>&) {}, [] {});
 }`;
 }

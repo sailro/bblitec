@@ -7,6 +7,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { bufferAlignmentCpp } from "./gpu-buffer-adapters.js";
 import { meshCpuStreamFields } from "./mesh-cpu-streams.js";
+import { assertDrawRangesUnreached } from "./mesh-draw-range.js";
 
 /** The source's separate GPU allocations, retained beside native interleaved lanes. */
 export function lowerMeshAttributeCapacities(
@@ -83,7 +84,31 @@ export function lowerMeshAttributeCapacities(
         }
     for (const [buffer, field] of attributes)
         bindings.set(buffer, { cpp: `buffers.${field}`, type: "scalar" });
-    const body = lowerPinnedBody(file, declaration.body!.statements, {
+    const statements = declaration.body!.statements;
+    // Recovery opens with the draw-range arm, which restores what only
+    // setMeshDrawRange selects (mesh-draw-range.ts): no reached mesh takes it.
+    const drawRangeArm = recovery ? 3 : 0;
+    if (recovery) {
+        context.assertStatementShapes(
+            declaration,
+            statements.slice(0, 2),
+            "const old = mesh._gpu; const source = old._drawRangeSource;",
+            "Recovered draw-range source",
+        );
+        const arm = statements[2];
+        if (
+            !arm ||
+            !ts.isIfStatement(arm) ||
+            !context.expressionMatchesShape(arm.expression, "source") ||
+            arm.elseStatement
+        )
+            context.contractError(
+                declaration,
+                "Expected the recovered draw-range arm.",
+            );
+        assertDrawRangesUnreached(context);
+    }
+    const body = lowerPinnedBody(file, statements.slice(drawRangeArm), {
         bindings,
         calls: new Map(),
         foldConditions: false,

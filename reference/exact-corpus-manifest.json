@@ -1,5 +1,5 @@
 {
-    "sourceVersion": "1d1a2c0de2fc845d57096b7abe0256c10e648ff3",
+    "sourceVersion": "22bd82496ecbb38f7bbd4107ef5eca40c2897bd0",
     "capturedAt": "2026-08-31",
     "scenes": [
         {
@@ -7,7 +7,7 @@
             "sourceSha256": "18de4543d6a9875a472bd9d8cf56273ddaf43c463676e658ab691f18473f1074",
             "reference": "reference/scene1/babylon-lite-golden.png",
             "referenceSha256": "d735347e66bb24ef2cd002504dc83fa4fbc8aca91d7792971139536cfdf38c25",
-            "moduleSha256": "3482fa4d72b514f670e4a8675daf9b5c219c6f6e6fd285bbc3bc423bce61d149"
+            "moduleSha256": "6ee973f4a95cbe6f1a3f384b87cac06be0c09c4139071c05f5cada5ad51db2c7"
         },
         {
             "id": "scene2",
@@ -35,14 +35,14 @@
             "sourceSha256": "6e86215139a230991c528ca64af5a723b1ee512d1b638029f28f3d5cf37a6f58",
             "reference": "reference/scene6/babylon-lite-golden.png",
             "referenceSha256": "b4ded2071743da039fc80740fa90b6b59a262c825164c09b4fc422b20096ce5e",
-            "moduleSha256": "138172162a6c7a05c4b1edb3f7ab64412207e0b99fe7429d34a37afe2b501b4e"
+            "moduleSha256": "5d600c9382304f1bbbdf6a62b2ad15a81e1cf48ee863ed6e63778462668872ad"
         },
         {
             "id": "scene7",
             "sourceSha256": "6db2247ceb5e5c1560b68389a4ea54b6d5fef192206567018b62b47a182143bb",
             "reference": "reference/scene7/babylon-lite-golden.png",
             "referenceSha256": "0d32622868cc228a2090a8b3dca89d2015017e5da42c8753e123335a26dd2c42",
-            "moduleSha256": "7443667f92959e5a77866f606be85a036d80122a906e99d0de0bc4379d8fdeb3"
+            "moduleSha256": "b9a11fe4403912755efdd47d9bc24ead53e47859a38512a6a4c54852d96b79ce"
         },
         {
             "id": "scene8",
@@ -63,7 +63,7 @@
             "sourceSha256": "f89fc4487feb858763ff4363ee1fe35cc4ce297f242f62f52c2a00adaf86f6ee",
             "reference": "reference/scene12/babylon-lite-golden.png",
             "referenceSha256": "ed9920e2ae208d8e0cb52764113d4397176781bc4f9fa8db38e45a198305dec6",
-            "moduleSha256": "cbd4eabf7c15cba933f694555d998929a163f31f7f1eeeb139cfc4044d9e41c7",
+            "moduleSha256": "282afc7f703d183f1ab65b83831a38e7fbc3d8f9ed822698b2c048787b6fbf17",
             "referenceSearch": "?seekTime=0.5"
         },
         {
@@ -71,14 +71,14 @@
             "sourceSha256": "50d55f3bfc5359c9dfceec8fef17a25059f54bd3440e09dab095f416e90435ff",
             "reference": "reference/scene13/babylon-lite-golden.png",
             "referenceSha256": "8804b056fbfc5b373302a9e8c350329a398c19de8296f6ca04d29dbac32b0e48",
-            "moduleSha256": "802130233956ace2f9ab9e7ee2faf8064427677403dbf2550781ce2a41cc47c7"
+            "moduleSha256": "ef277ef8450ba86cc7d88bf634c1ba0d43de70a85a8f54004d40adc4ac4ba3aa"
         },
         {
             "id": "scene14",
             "sourceSha256": "1287337f523819f3363143b3609ca3fff21f342e4da63ba90f65eb1766c418a4",
             "reference": "reference/scene14/babylon-lite-golden.png",
             "referenceSha256": "5254e38231c08fb2b340f88564425fc2908d2026bea08a69d96a6fe73c659af9",
-            "moduleSha256": "86f9e6ce0765f412f9e575c564400ae8fc7b0f7bc04cccdc839b6534fde15558"
+            "moduleSha256": "b1d400b59fddd4bedb2d72b4f3cd936b52fbdea245ecf88ff6789ba727544fb8"
         },
         {
             "id": "scene24",
@@ -92,42 +92,42 @@
             "sourceSha256": "d464bfd0e477a27ea5cbd17da212a5e9243094998238605545baf387fee10b26",
             "reference": "reference/scene28/babylon-lite-golden.png",
             "referenceSha256": "64dcfe55d7b6156b0a4ec38c4606ce202ac9bb5724889c6f6f6c553c027a598d",
-            "moduleSha256": "fe3570b9569a5675c5a6c4265b34bf0efe9aa284e9d0a02196743de01e75db82"
+            "moduleSha256": "67614f358c3d37062fd02609d843e191b83374c2a91e7d456b1a379cae17086e"
         },
         {
             "id": "scene29",
             "sourceSha256": "2d2d27430150306533d0128b73c10b37e6587d446ba714a48fb512e58f19b13d",
             "reference": "reference/scene29/babylon-lite-golden.png",
             "referenceSha256": "9bccf765496a94a44890a9539fbb3e7df43955a5b2f52450eb6fcd177e31ac10",
-            "moduleSha256": "00f8340b9b8591707792229b3899729d909f5183a06993d435e1da717ee0cede"
+            "moduleSha256": "3d5a06e677f7f421cbacd1023f2ce6e9508a807f4eeb55330a20d2c72cde7daf"
         },
         {
             "id": "scene31",
             "sourceSha256": "7b759680ff5cfafe690322a5537f7213e9f7ae41629a3bc16d2596d40eb4e1bb",
             "reference": "reference/scene31/babylon-lite-golden.png",
             "referenceSha256": "6c5d3261b10434f58ac17b98b0f5ee133b2381ae67abb568054bc05d7e7310b4",
-            "moduleSha256": "d53036c25d1366d039d8f19200307b7b26f783062f89448f64658c76fed3e5d3"
+            "moduleSha256": "aeb30b51182654554f6df7d120bbd00f6c05f1eec2ae6c475f5ac39bf01e15d0"
         },
         {
             "id": "scene32",
             "sourceSha256": "12b6b6e593780b5c389965a61350dc929787c1fbb107c4cd342662b1f07ce4f9",
             "reference": "reference/scene32/babylon-lite-golden.png",
             "referenceSha256": "00087b55281ff9068f7a1cde17eaa0e777430499d08b9ea6d1c49f19781c3132",
-            "moduleSha256": "4dd876f32a9599b77f4f68cb041cf0ce07be3afa4c952e647628983bc71cd3d0"
+            "moduleSha256": "2c12ac7b45aa27fea76929c1cd34a82bfd30d8de7ee352bb8e9ac6c39e839cda"
         },
         {
             "id": "scene33",
             "sourceSha256": "25f0cfc1dfd9d87a9adbf2629bb890fdf915f64279c24243d2b19aa83ab835c3",
             "reference": "reference/scene33/babylon-lite-golden.png",
             "referenceSha256": "62222b7c2f38d35b488356b34a63fc713f40e4de612ea2d0eaad20133014cebf",
-            "moduleSha256": "95087ab53609a71892cc4365869249e002f68106a6b717162df90b2636101678"
+            "moduleSha256": "e65428dc65727cf356f4d05af38820e047bc636b3c80b2c1a501f6e91f430a64"
         },
         {
             "id": "scene35",
             "sourceSha256": "a1f7c456e5b89ea608b0f54ba1ea916a1d418b674b25cb321b9525763e4fd1e2",
             "reference": "reference/scene35/babylon-lite-golden.png",
             "referenceSha256": "9947530e69c3773cf14f72e18eec1fd9d8761948f815e23b0b0fbfd8fda42005",
-            "moduleSha256": "be0b67d606851c0e559a1f9c956d7361a64d4837272d9331f21f5f000e601277"
+            "moduleSha256": "f9cdf73cdc466d639ba82e216ca8fc6c29dc7ef5e83a7b815cf5812e4fc7cf4c"
         },
         {
             "id": "scene40",
@@ -296,7 +296,7 @@
             "sourceSha256": "a4bdcc4e89890db61e21e5db3ad5dd1537d375bd4b99eb2d46783d9dc7bd3b46",
             "reference": "reference/scene146/babylon-lite-golden.png",
             "referenceSha256": "f89fae8f39083a0bfc6ce95177d7f7e4de8fc4ec4f66c2d56a886372e9d8895a",
-            "moduleSha256": "5b6eef3aba09bb53dd07440a3bcddcf4615cfec060b014324dfcdfd704f689eb"
+            "moduleSha256": "0f17a806f73138643849c004fa328e0ed3bc4a99aa01c08b7b44c2cc778ab61e"
         },
         {
             "id": "scene150",
@@ -403,7 +403,7 @@
             "sourceSha256": "0183a33e978006dc856d8670fde71bbafb41807dd0ea8bc677506e420aa9d74f",
             "reference": "reference/scene164/babylon-lite-golden.png",
             "referenceSha256": "91366f755268d8bab90fd4ec8593d123c97945993cd0ad6685207a306ab375b3",
-            "moduleSha256": "b8f2e8757daf143363c95375e9bcc89089b84918a6689e727ef9ca04e8d32c9d",
+            "moduleSha256": "2ed8342803186e719790f4c065ebc28c9d9270b693e093fe3d6aa3dcda168fee",
             "capturedAt": "2026-09-08"
         },
         {
@@ -411,7 +411,7 @@
             "sourceSha256": "7372aba28eb4a7c5b54eee79c8be034503503f7e8022322f67d15454871563d8",
             "reference": "reference/scene168/babylon-lite-golden.png",
             "referenceSha256": "80baeff8730b36d54b9895349472c0b40b53ec4e972cdf1a8d19d0b11afe4637",
-            "moduleSha256": "61c6c89af2c5854653766281d5e56c0d36b86925e733a58d6ed140f8765dca68"
+            "moduleSha256": "3915998bef9bfa8c1f1933b90befb3098f79e5a09d81680f0479a9399e92e315"
         },
         {
             "id": "scene170",
@@ -464,14 +464,14 @@
             "sourceSha256": "1882839a79cec1353c4c7d2d618d94f6f346057a1fd0f61748950957bd61feea",
             "reference": "reference/scene176/babylon-lite-golden.png",
             "referenceSha256": "50932e59920c578ffc02e9cca41b4cb6a900ae0025a8f421ba53fc8bf540a805",
-            "moduleSha256": "68576758f07252c20a10ef59c9b0847cbcbb295ec08126a8b1c988922ae30612"
+            "moduleSha256": "375093356aea50441171ce53e3fdbd8523f285d9198bfb085f520512f0ddd922"
         },
         {
             "id": "scene178",
             "sourceSha256": "c19079e05a2dcfca015ad1b01ac01dd47509456e3929b65deece6484560bb155",
             "reference": "reference/scene178/babylon-lite-golden.png",
             "referenceSha256": "ad1b42bb6ccfc4dc7d5326d728dfb9a13e5d078c7ea8a6ba03a5504c582e5291",
-            "moduleSha256": "0478d6cda16952b857d58312df43a0051981133e3326fa618e9bff81d8325646"
+            "moduleSha256": "80ddd5aad362c2c78d41b58236e3ed9140d499d60f10a962affca399b58e1dcf"
         },
         {
             "id": "scene210",
@@ -493,7 +493,7 @@
             "sourceSha256": "913e802b63191520df2a2d5df09e758fbc55e5730f0c3fbe8003d9480b8a30f3",
             "reference": "reference/scene212/babylon-lite-golden.png",
             "referenceSha256": "3aad34b9fd7f6f8cc8ecfbb62cda6e48ef4b1b1a0dd58c3f3a2e0676324f9392",
-            "moduleSha256": "efc1076e4dc13fdfe56cfd4efb27948573d86edc11fd25719537079d5e1610ea"
+            "moduleSha256": "36a10219bf143782a51abf2990ceb5dd516914596c339c4db8e21b354f86d356"
         },
         {
             "id": "scene213",
@@ -514,14 +514,14 @@
             "sourceSha256": "aeed37ccdc5e37d29d6c50535792dbf06ad4208d573b7ec63114bcfe022d9204",
             "reference": "reference/scene240/babylon-lite-golden.png",
             "referenceSha256": "d88e557e8ae7686a23373857c883dcdef169ccea75f0595814640eeb2260edf4",
-            "moduleSha256": "f0eca62ecf3c99989d304cb51ef0fecf4b7377bdb9481a089aa04fcff94dd0c0"
+            "moduleSha256": "9b9546bb57f4c52556507b58a335031ac53bf15fcd6597f72644df79e926b5f9"
         },
         {
             "id": "scene250",
             "sourceSha256": "e586d3fa824b0dc570395c98ed288e77e75cf3193d9975653ca317dd4f065cf5",
             "reference": "reference/scene250/babylon-lite-golden.png",
             "referenceSha256": "0fefa9976efcb25af737b9ebf38b832d39b26a7e0e011d3f32a2b2110ec480d3",
-            "moduleSha256": "d25e6bb1e93c7c1468dfa415550a20cec1ff22a132236c2f1327d823e74fa8ff",
+            "moduleSha256": "73d681b31fad9a96e387514b5f5a16a84422d44ae040ee5b4c516a0935c7761c",
             "referenceSearch": "?seekTime=5"
         },
         {
@@ -529,42 +529,42 @@
             "sourceSha256": "0816b2afabfcb841ca2dd727d681b26aefcf92b7ebbcad42096acfedad95cbe4",
             "reference": "reference/scene243/babylon-lite-golden.png",
             "referenceSha256": "23de8b264a7166fe4cd47fe734b3263bd8ac1100ec84efeb51daa05e28e824cd",
-            "moduleSha256": "5671de37a3dceab88daf777de3c1b502f2f814352ca74883b247b9bacfa5a411"
+            "moduleSha256": "2ca350a9dac78cc0d358a33f002b0861610e0e7294353cef6cb2229117a6b887"
         },
         {
             "id": "scene245",
             "sourceSha256": "44448bcaf26b06b47ae7628628bdb1b0d52c736f37730578fa1e87191e17d44a",
             "reference": "reference/scene245/babylon-lite-golden.png",
             "referenceSha256": "4e22ca642615e343a3910d91f7a5fa910b88c3d003fa360ff8ee9df14f096b85",
-            "moduleSha256": "30b6f75e69c33d79e36aae88a0daf1d15ad8140e7f2122bca5c57bb7f5faa813"
+            "moduleSha256": "6dd35d7e475642e3f080ff6f7632f21aac3819f4bf766895413d09cd99e45c45"
         },
         {
             "id": "scene246",
             "sourceSha256": "77ab4d0060d9bcc8574e50c970dd161f32c7cffaa8f20049e6abb7500c8ee3ee",
             "reference": "reference/scene246/babylon-lite-golden.png",
             "referenceSha256": "c287ef2d25ef68e283eb1f864083e118b7e5aba7670477229235c5e5e0fd5445",
-            "moduleSha256": "aa3601f618fcc13f975814a77d6223d41b3c1ee723d5a439a1d6638f0cc5fc03"
+            "moduleSha256": "f918a0fd939b466aa28f62d6b3d892f6e58ceacd2cb41290e5e2cb95440be9b4"
         },
         {
             "id": "scene247",
             "sourceSha256": "5fbb9c109cf98ad1db3134ae0bb557b59d431ed4372fbfc6d9f01630d9306486",
             "reference": "reference/scene247/babylon-lite-golden.png",
             "referenceSha256": "fa12992194fd11f2978f570940a2537c02ebd4334a706ba3d29bfff4cd5e5cf7",
-            "moduleSha256": "b7f945d9c51aba8483f5de34094381b7bf70233c15f215a3cfcb2595269b7dcf"
+            "moduleSha256": "8f15ab8020675f1d10c18a1051bc7d60625a0f4cf8a8c46731e65f3389891902"
         },
         {
             "id": "scene248",
             "sourceSha256": "141ceec4f0d05c0103856442678bb6bdca5bfb6ed53c0bfa186cd230c8339dd3",
             "reference": "reference/scene248/babylon-lite-golden.png",
             "referenceSha256": "378ad7b34fcd1c7a459776de47ccac7d2aaf2535f957a3d2da5b6346c9b88d89",
-            "moduleSha256": "be2e6b4ea7cf2cb3be27fcf198960d9dbf1062f48035df3fa061e4ef90168d4f"
+            "moduleSha256": "0474fd7180a34a3e0c1a6ee9533ba3de3d37ae37b5a6c6e5782786ccb90b9e1f"
         },
         {
             "id": "scene249",
             "sourceSha256": "bb63a9e62545cf3ad57ad6939d8071339f004d3b6035c7356f428aca838d62ee",
             "reference": "reference/scene249/babylon-lite-golden.png",
             "referenceSha256": "d5cf930916f2ce27a85438c0617efb91b735bb019f3e2f8435baa5a1a517cb44",
-            "moduleSha256": "8e5bb28deaa5fec4c9859aad6ea766f8c3eb81a7e17dfaefb4ded475676a4a93"
+            "moduleSha256": "5e8597a9dfa94aa0345dcb2b49c8f8d99b4a45d01703b2f4a04224c1b217873d"
         },
         {
             "id": "scene252",
@@ -578,35 +578,35 @@
             "sourceSha256": "3ea1e37820f803badf5bddbfc01862d07237f4783d27109b60a5b58367327aac",
             "reference": "reference/scene254/babylon-lite-golden.png",
             "referenceSha256": "0b7685b87f73f5e8a51499f168cd1e404a06798cc4fe9fe93d3fd7a34526f737",
-            "moduleSha256": "96557aa90d44440da875f999b2163f011fa874f4403455a8592359534c2634ab"
+            "moduleSha256": "884cc5a7421f2b7cc55aa39b0df957d5c4ae9679c098b1694a4b98b265374f26"
         },
         {
             "id": "scene255",
             "sourceSha256": "47365fcd4d77a1c53ac1c28db91a26881e922d61c38e183a4450c8c2927c68b9",
             "reference": "reference/scene255/babylon-lite-golden.png",
             "referenceSha256": "fc1c2588879ee4c3ad763762fc47da0cb4f1ddab6fcfe10d80f07306115896d2",
-            "moduleSha256": "f13ec3d8511c4697a6d90924a3ada8b0393d41290b6dd1b8cbd406a2769ddb4f"
+            "moduleSha256": "03c8f0f93e0b8163769bc30699244fe37c195002ee3e03dc09801ac26fbc32cd"
         },
         {
             "id": "scene257",
             "sourceSha256": "9ea03ba6d784fc66b800af4b3a3c79a7db9c9019770d9fb580bd7809d51b3cbe",
             "reference": "reference/scene257/babylon-lite-golden.png",
             "referenceSha256": "e64fa6244439735b2ff1af1a85c62f4a0c5355d5b80278923d62e5204af292d1",
-            "moduleSha256": "5dcdfb9bf0867f218bb09075b04fab0d086f4e59b1262f3586b4fa701aaf282c"
+            "moduleSha256": "923f57f126530d0640fe460c8365608a3c70a24803e93d703546c57d85c7fb2f"
         },
         {
             "id": "scene258",
             "sourceSha256": "3972bccf1797cda90a7c38df8e852178a73a6b05ade923f6c810bc51c62e6499",
             "reference": "reference/scene258/babylon-lite-golden.png",
             "referenceSha256": "0df1454763b1caf8f7acb89cb87a5a891563dbe188dd7975876d6663897f35f5",
-            "moduleSha256": "35f8c56c36e6a09f3c33108c6389fe64d2503fd0d021ffa2b16c66a8a8c4e69e"
+            "moduleSha256": "2d8f1b909d422f03ad9a597849e947ac15b634c137402b39eab2f476cff90e57"
         },
         {
             "id": "scene259",
             "sourceSha256": "0361a24fa3c1b5db1ba6e5dd948da984267bf733b379f11df89879ba156c73be",
             "reference": "reference/scene259/babylon-lite-golden.png",
             "referenceSha256": "7f17477feba8ae877e469f853a285711c5ece622c1798356c2a8edc07d3f7d6a",
-            "moduleSha256": "83765f15b47c2e5e8cd1502accec59e2f03ef38eb27e8de9569dc1f50527522c"
+            "moduleSha256": "51f83a870db5462667dd1245d94e70d7f9a92eb226af42cec002dec29c5c5bcd"
         },
         {
             "id": "scene265",
@@ -620,14 +620,14 @@
             "sourceSha256": "e63f467b9bcdaad44bed9527a5a5abd4bb2012896b4b13ba00d6245d433a583d",
             "reference": "reference/scene266/babylon-lite-golden.png",
             "referenceSha256": "df083ea4bdb15a30a1f50d6a5adb1354a95aeaca021c127b094f47bf4a2f81e6",
-            "moduleSha256": "f25cfde140fe67712666ef1c14fba346d732e1453000379c9f058fb8719a5148"
+            "moduleSha256": "0772e7b5b59321a32e302404c483720c16a6a9b342a16168c057b08582d2b0bf"
         },
         {
             "id": "scene23",
             "sourceSha256": "9a9963cb75c6e5f12c10396ea57817acc2847bae4999541e31076aaa794320b5",
             "reference": "reference/scene23/babylon-lite-golden.png",
             "referenceSha256": "1368b4eb6816eb21c9e0da0d143e05ec29f340fed28b80a0b6b0a699a3728beb",
-            "moduleSha256": "f4e2f01ed765962421de307295f9173c621afee2e639eaf5a57dada2e85a4055",
+            "moduleSha256": "06c0aec96ef29cba72c88caa3ecb5b2210ae588aeebe65ddbc11fa8d1bca3aed",
             "referenceSearch": "?seekTime=0"
         },
         {
@@ -663,7 +663,7 @@
             "sourceSha256": "433312a7bcec3b634f8b70edbe4a4c2c20709aeb3c5c765e955047f2d4b7d59b",
             "reference": "reference/scene269/babylon-lite-golden.png",
             "referenceSha256": "ecd88dd6377e8f00de8a21a464a879a5491b5ade4894e1a7b38845ba7abeb0f9",
-            "moduleSha256": "a552869f27c1239c9d3f3401133a727745440da5837bac72ba17d7f969542879"
+            "moduleSha256": "e3a5637cb5e20cf12360c3e5d8da2e8d3fc879974d3c5a14b98add80c3997212"
         },
         {
             "id": "scene270",
@@ -677,28 +677,28 @@
             "sourceSha256": "f75bd3ec8e95de1e6b2eb327b0c5085aba56f1fc5bc0ea129527c7f1c70ab041",
             "reference": "reference/scene256/babylon-lite-golden.png",
             "referenceSha256": "3aa2c4c752b1daa40a1a102169da843ecb9bab23979cd797e95cfcae95ab377d",
-            "moduleSha256": "c44a38ebffd94fab5ecdf9697306ce98209f829eadc08129376db8fd83d5d1c3"
+            "moduleSha256": "6f4cfb674cbba91851ce302bc2bbdcaaeceff4e01ca8154448c36edb0afb9ef7"
         },
         {
             "id": "scene30",
             "sourceSha256": "3544c8582295d228c2363203819eabaa4485a4cf24bb7261d81a4ea27ddf4246",
             "reference": "reference/scene30/babylon-lite-golden.png",
             "referenceSha256": "bb1a90accae4cc459a967c9a6d181594094537a8777d04acfca38a5e4f07b767",
-            "moduleSha256": "1601981986725665836ed5e61f50d5faf40d1288aaf58f609370930d100bbe56"
+            "moduleSha256": "9f12fff529bc605f47839a36d8c33d525ce6ed7b767725bc2a4c9a6c0904ad7e"
         },
         {
             "id": "scene260",
             "sourceSha256": "4ec873fff1e28817539de02cd10480463e2df8e7294b7c42f49bfdbbb0e44d30",
             "reference": "reference/scene260/babylon-lite-golden.png",
             "referenceSha256": "34ef4d1934941c456b0db867904336db3f55922929838b307b02b93f522b8ebf",
-            "moduleSha256": "7c944f48b4cbe4ef4a43aefce80187f8057acaebffa4ef08df319b940121699f"
+            "moduleSha256": "d68dde4acca742e2cdde0243280b41098cc09474f87bcb102cea6cd9fd73a9b0"
         },
         {
             "id": "scene34",
             "sourceSha256": "65aeacfdb1d7bc143e09a5c41f1a6a11ad03892651bc333a6c6c4da692c3ddcd",
             "reference": "reference/scene34/babylon-lite-golden.png",
             "referenceSha256": "78c55b3974c30f8144014f762ac09327e5d0348ec425c97407c177089d7bc58d",
-            "moduleSha256": "f5f2fa99bee84d94d4598e03ea1694a509d9478b3373bb63f9bf5bd348de664b"
+            "moduleSha256": "5acf3f0a7d38be3590ec7ae0a8c17defa1ec6febb0e195602159549e552f2691"
         },
         {
             "id": "scene9",
@@ -712,28 +712,28 @@
             "sourceSha256": "4e9e4530deb9d661492995207ef48831c9fab51e0260ceec381bcce38981d8d8",
             "reference": "reference/scene242/babylon-lite-golden.png",
             "referenceSha256": "4c59c80ab25e87942749dc9e21f8bc2828c31f410aace9387f21c6e6b8604304",
-            "moduleSha256": "f8493ef268437854ebc98887fb12ec2f029e05d4430ae9a91666ed300de1a3dd"
+            "moduleSha256": "478d7954160f8ac2c5ee41df6cbe876852f6ded5fa5cf0ee25f04a1b6da5f579"
         },
         {
             "id": "scene244",
             "sourceSha256": "dfc09ec652968a68d2b37e2abab996768cc46f11ba17f302943b7763fe46082e",
             "reference": "reference/scene244/babylon-lite-golden.png",
             "referenceSha256": "26ac44545c6c16f60c59f0db731e700c52f46938cf1f7b2ef16bceb3ec3a304f",
-            "moduleSha256": "63db797e4b307cc6f7f6722feeb83781709a82303546f563d724e458e62f2950"
+            "moduleSha256": "3d94fa7b607aa2a062604131f2b38bb678fa397bf420d03f51376d733198d1cd"
         },
         {
             "id": "scene37",
             "sourceSha256": "e987cdb2ded509581cf07c852adf602f0609dd4f3ecd39eb756057a6d0eca6ae",
             "reference": "reference/scene37/babylon-lite-golden.png",
             "referenceSha256": "39827efe95fc925cddc6bd98186ce903e78dc22c73b0e4ae1074df9d97e1c432",
-            "moduleSha256": "4034ca824a7359e2e5e1a2ebe46341197e198fb3c1a8b62778bcef3bfd2dd78b"
+            "moduleSha256": "7565e469c20aba53742df2d3c691f9818dde02c6c21ef5f1f3bc4ab8f6ba47ab"
         },
         {
             "id": "scene253",
             "sourceSha256": "e5c6f3cf2a9b1f64b0033d060693664927c58d9579b77fa87190053906f5d97b",
             "reference": "reference/scene253/babylon-lite-golden.png",
             "referenceSha256": "1d223d3385e74f4d791d88eb633b9c43af74cd6b2342f338bfbc22af04c8dfbd",
-            "moduleSha256": "48b1755214d4447b6b3ed7d4b19c48c445d2e0a47f7bf7b51bfd9aa234ce6fb8"
+            "moduleSha256": "3abce93fce18d9544bee1f0d0afb3618c174ca67addd95da3aa99afb738d609d"
         },
         {
             "id": "scene15",
@@ -747,21 +747,21 @@
             "sourceSha256": "abe174081df73cd39e46e70458c512766caa5ced8e7d421d35228cd961e53241",
             "reference": "reference/scene19/babylon-lite-golden.png",
             "referenceSha256": "27410405b7f78bfd9921b8c00c9196dfbc9a4e3b18317893d2f9ead4550e1f1a",
-            "moduleSha256": "8a5795c3cc32d2cc89d8374ad8d1db6527be662377099ff7810dcc65811836d9"
+            "moduleSha256": "bc442215561669c25fdf6f8daf6d78f4943c78e7166fc43efda456a9917790d4"
         },
         {
             "id": "scene21",
             "sourceSha256": "964f95c19b04cff283befea2a44238f65f76888899f65cddac2a0ab055d37155",
             "reference": "reference/scene21/babylon-lite-golden.png",
             "referenceSha256": "e0ed4c718eccba273c05210ffc994929a89323d9ebf233aac1cfa33d602240b1",
-            "moduleSha256": "0ef930dce0023a3fa8dfeed91178a1d825e1737b5ad402d95ff3e0b70a21bc7f"
+            "moduleSha256": "6ca04de806c7a669f13479b1dcc116d6c6179dbefd83b823e8c0b82a599d90e7"
         },
         {
             "id": "scene39",
             "sourceSha256": "df324ec0ef102a09f3e062bcc6257039b80f71f972053cce87e4585508705834",
             "reference": "reference/scene39/babylon-lite-golden.png",
             "referenceSha256": "c692d6b394fa8b6959d1f8cb8c597fe5058edf968e275f2be494ab6d89030452",
-            "moduleSha256": "a045297ef15dec0b45d2803b1e2d82b57cb304c545f128934bce5539927ceb4c"
+            "moduleSha256": "eb0e653984e1225527aefc5c417763d9fbfe051c9f55bf15b2244b9b6ccdbde6"
         },
         {
             "id": "scene50",
@@ -796,14 +796,14 @@
             "sourceSha256": "919bfd110f870acdd99294b35a83dd54778a3c98ccef7e586a80437dc7b53211",
             "reference": "reference/scene177/babylon-lite-golden.png",
             "referenceSha256": "d674b8a15ffd0534fa16b1f66f913e51226ff07d52c70afbab4add00b95412c7",
-            "moduleSha256": "f1793861efbbb917a2aaa0df524da3f6efe7d04fe82635a0f113225d6b20572e"
+            "moduleSha256": "4496dea461b4b40b4922a3a6c362fedaea1a76dada672409aeb5a35d81ac17dc"
         },
         {
             "id": "scene26",
             "sourceSha256": "1a92e7b43bef087a7bef92063000017791040766c2376136d5c424266bb3ea14",
             "reference": "reference/scene26/babylon-lite-golden.png",
             "referenceSha256": "2dcf9160dcecc466bf412d1e14394d97d6dc5187604d0adc60a18cd902abe201",
-            "moduleSha256": "a5527964ec2157c06fd22eebc8677aca21c87fb56170f6c31a15f4e6f0103e8d",
+            "moduleSha256": "6fb06e40be742fddd49cb4241962909f15aea1c028c60c8fb93bc002de3a933d",
             "referenceSearch": "?seekTime=3"
         },
         {
@@ -1056,35 +1056,35 @@
             "sourceSha256": "9cd84da07f8686d016455c2ef8b2622e6420fcb8e33103f0ed4ef78e80e996a1",
             "reference": "reference/scene67/babylon-lite-golden.png",
             "referenceSha256": "5c0ca4ee512d9afedc2a4c04025f5dc569bb69826c280068d50ab9a3bfe5697f",
-            "moduleSha256": "0b39c2a58e7c64824f45c85c004cb423105114c85b89455409347991ced6bd9a"
+            "moduleSha256": "95b2e111222d401bd25dbf9593b831af1cb00e2018c4ae38f213b07596d7f97f"
         },
         {
             "id": "scene68",
             "sourceSha256": "64ee4c3c197cb2e3b9bde5f6a1a8857d5d2f7748abc6c3bab5dc5c82de902acc",
             "reference": "reference/scene68/babylon-lite-golden.png",
             "referenceSha256": "fe52fd4eb3e4edcc32d612a74422726d30f3c5ed7f4eabe4be95b8941a838685",
-            "moduleSha256": "31a7686ebdada211c56ea6ccfee6537d0151dcb26f446e722520970ae4d0e5a6"
+            "moduleSha256": "d8efd26591242147ef01d4788d28e01364e5f511704df00680a036bcf0b3d4bc"
         },
         {
             "id": "scene69",
             "sourceSha256": "0ae9c3ad3e0fdedf10d962855eafdb30f89b2d6ca627fbccac44d28ebb96a3ed",
             "reference": "reference/scene69/babylon-lite-golden.png",
             "referenceSha256": "404203ac411d88a19d10aa8aa572be33b336e08693ba68ff4293e5eafb28ee38",
-            "moduleSha256": "91108ca15266f3d492434383e711d88fe650f487ec563ff9be2a8935ffc2df9c"
+            "moduleSha256": "c2f2fa14f6f5509cc7e93a49a2bbbd6a65810245098938fab860cc6ced7554bd"
         },
         {
             "id": "scene70",
             "sourceSha256": "17e01205a6b9cfb74993dc1a20e041792f8c1118468d12ee111e75bf284f04e1",
             "reference": "reference/scene70/babylon-lite-golden.png",
             "referenceSha256": "8da727d4cd3a0e51972b230d944aa6333d3431bae7249ffaca0032fba1c8b132",
-            "moduleSha256": "236e54cf6d21995e3db57829207178555f37fb1bf0916483a87c3a2f75b3315b"
+            "moduleSha256": "e9c4a7cc7e7dbd5a9982117bc0e3bc666a16465c0fc7d2887d88241c01a0e87b"
         },
         {
             "id": "scene71",
             "sourceSha256": "ae272989a2e40b85915b21b96f8efead9b493ce1bf20eef7b9c71f2214742423",
             "reference": "reference/scene71/babylon-lite-golden.png",
             "referenceSha256": "74e29253f4a991b35698b4fa0a4c8a1e85cae61e58b933a8cb2ffabc4cced769",
-            "moduleSha256": "5d626f6767bf1a894e6d6d6205d435fe0755b88821202921490e230422858cd2"
+            "moduleSha256": "d74e2c6a573aceacb5cbbca2c46595020a59aed174c8b848f4d9feb144355be9"
         },
         {
             "id": "scene84",
@@ -1134,7 +1134,7 @@
             "sourceSha256": "9b3f70a660580019a8579c8cab094446655a85c9140ada3c007846a02dad04a0",
             "reference": "reference/scene87/babylon-lite-golden.png",
             "referenceSha256": "e96350d4e695fb8760acecb13d26a68f4d31ada30d4cb88de413883d4672bc98",
-            "moduleSha256": "c114a54ecbedf9af8ce80012c06a1a0dbc56ad8b834413e0c556e2b05e6b8003"
+            "moduleSha256": "7f809954f9877e1c71b3e333d43d60fa395ad89ff6a31d23e9e34696109af242"
         },
         {
             "id": "scene262",
@@ -1232,7 +1232,7 @@
             "sourceSha256": "af8cf834c816bde7ffb671047aaa74c359ae33daf85a255f2430819f40261d94",
             "reference": "reference/scene220/babylon-lite-golden.png",
             "referenceSha256": "00840b1f00511a062ed9f320a97314524f27e4bd02011b0196961b9f40b6cb4c",
-            "moduleSha256": "5b63a9a24c277f2233f82b2a7fa7202f3a95e5b7af4bdbd74e2609ce6d76c24b"
+            "moduleSha256": "f4b693c49c9576efb642a91ae76810b382ebc0717e523018c8ea78d3d5a4c2e2"
         },
         {
             "id": "scene229",
@@ -1380,7 +1380,7 @@
             "sourceSha256": "5c0f39f20928427230a5c81848f7265c09fd837e0fe1442cb24e5fac08a72073",
             "reference": "reference/scene144/babylon-lite-golden.png",
             "referenceSha256": "dcf248a99366d7e329a3db34be8c42a0bd0cc33dd7238a475cf825d8a377d457",
-            "moduleSha256": "639089fcbb352e268259e83c6cf38e4408001d28e9fb2a6fc86e0e5f0d33f974"
+            "moduleSha256": "7714105b9e0ce45153d08266b87a691bbe1d2b1819577cd7123812d7b25944a0"
         },
         {
             "id": "scene217",
@@ -1394,14 +1394,14 @@
             "sourceSha256": "9790c0aab9cb0b61e23b1daa9be1d14d159391d3eaa394ce9f7775a39c959ef0",
             "reference": "reference/scene17/babylon-lite-golden.png",
             "referenceSha256": "0307d130913cd994b2d9ada00adf1aa7509138170817025a6ff953f572c49192",
-            "moduleSha256": "63a6d4989ba90c16d86e49f55b8809dca20bcc043d1bfcda77dafc425dfd0f70"
+            "moduleSha256": "1543a340db54e953fc41490a02920f20eca3c04ca3a7165e911da7eb3234d9c6"
         },
         {
             "id": "scene20",
             "sourceSha256": "47a1165f8eca3317b56708d3a847d97a4a5f68b5fcf6883e722bb54c0fe9622d",
             "reference": "reference/scene20/babylon-lite-golden.png",
             "referenceSha256": "70c4dc3d08622967e5df697a01ff45e9483a82e01abc0911ecb44de5edb94cf9",
-            "moduleSha256": "0a120d71383edcc4b84036b1ba3da3804837f8a7153d0d5282fbd11c5f4df0a3",
+            "moduleSha256": "70d6ef454875b3a4516fe97f55e3601cbbf87a07a921479ff262635658d7c631",
             "referenceSearch": "?seekTime=0"
         },
         {
@@ -1418,7 +1418,7 @@
             "sourceSha256": "216529825783acd170f67a62da0850c09a09e299d47a882683ac0b3b769bfa51",
             "reference": "reference/scene72/babylon-lite-golden.png",
             "referenceSha256": "7571114f5154772a7cb864372fce0e8135d206c4dcfefa8c7e0029892f8c4a3a",
-            "moduleSha256": "f9f276f0e78d17bbc79015d6cc171bdb31797e736edd61193822dd8dfa1cc91f"
+            "moduleSha256": "cbe9c6a640672557b483a34ea15191e0ce5f87f99991ddd0bece6db042414fc5"
         },
         {
             "id": "scene271",
@@ -1567,7 +1567,7 @@
             "sourceSha256": "234373e22bbed4f2b4ffa5620d643f3e927ef2449337938300d81498fa645346",
             "reference": "reference/scene112/babylon-lite-golden.png",
             "referenceSha256": "7a4f70bc1ce8e827b62ef64f9851079c01f7f07a0f2e37f18b3bfd7a7c6b290f",
-            "moduleSha256": "0f677ce41b231e39f9a5b180f14c49f41e50c6756570b1793d370fcbada216f8"
+            "moduleSha256": "fb8d411cda5b7df6d25572958a1f667d530407785210b506c3fdde230133db6a"
         },
         {
             "id": "scene221",
@@ -1602,7 +1602,7 @@
             "sourceSha256": "cd697444db8da41e9353be82f9dafdcfd7f494ad22e8847bfb05f3b6fdd91c3c",
             "reference": "reference/scene73/babylon-lite-golden.png",
             "referenceSha256": "7554a85da07902342ed890d25fad49e8a74c33e1b54e78765863fe990524944f",
-            "moduleSha256": "5b6ccd1d61be9cca3820d969149cef457d2c300a91ce466ab7fb90f7c2d72232"
+            "moduleSha256": "f501a60b8c88e2172c6d7d2c6dabf191ac1662a623758931c4498c7f479445ed"
         },
         {
             "id": "scene187",
@@ -1623,7 +1623,7 @@
             "sourceSha256": "c5e727d1e15968ef6ff1f786f7dc7672c9ecc3d68e5fc4847e0dcdc5d49df2d7",
             "reference": "reference/scene304/babylon-lite-golden.png",
             "referenceSha256": "b28323ef07f022aef7b8b16f9acb56c1b7b7f76fe0a74d37e8f5e4643273875e",
-            "moduleSha256": "d1c207b87d61a426aa45d8c4b6f5ddc07cdd9382b2f5019084ffc0541e2092e6"
+            "moduleSha256": "7ea5b8b99d39678c9273141af00b55cb05400fcac98c4b1132b2d5b6298074c8"
         },
         {
             "id": "scene102",
@@ -1732,7 +1732,7 @@
             "sourceSha256": "3279afdd02eec8f88205b5f22b98bf4c0a35e24832beeae90e58687c473f8764",
             "reference": "reference/scene241/babylon-lite-golden.png",
             "referenceSha256": "8e5bf47a6af29db6e96d7d3152915b04067f936f6363d43b5a5264587b9fa370",
-            "moduleSha256": "9aa625ffd593aae225714a4d1db6437a01163a86306671bcfe5a5ccefd42c77b",
+            "moduleSha256": "a5a53c0be5e901d82f239dc625f140b1cd1e9fb46d73eff9f6ab108ba0f48005",
             "referenceSearch": "?seekTime=2"
         },
         {
@@ -1784,7 +1784,7 @@
             "sourceSha256": "1bc6cc845a2fdb423a0f5c380862bbdcc53148bd1ebbe7bbb71a972999035459",
             "reference": "reference/scene186/babylon-lite-golden.png",
             "referenceSha256": "b6f3de61fac92bceae293fe5dd8c302386a2fb2646b0187bd598fa0dfef76146",
-            "moduleSha256": "4fee20f97e7a46444ff2fa08af2a80806c22f14749bff7598ce4c3dba722be48",
+            "moduleSha256": "1ac5f45e5614f7194930023d905bffcb852c20c2a66e1b350486b6d2c1ae9903",
             "capturedAt": "2026-09-07T20:30:36.326Z"
         },
         {

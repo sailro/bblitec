@@ -138,13 +138,29 @@ export function lowerThinInstanceBindingUpdate(
             cpp: `${context.pinnedNumber("src/material/mesh-features.ts", name)}.0`,
             type: "scalar",
         });
-    const expression = (path: string, name: string) => {
-        const file = context.sourceFile(path);
-        return new PinnedNumericLowerer(file, {
+    const lowerExpression = (file: ts.SourceFile, node: ts.Expression) =>
+        new PinnedNumericLowerer(file, {
             bindings,
             calls: new Map(),
-        }).expression(context.variableInitializer(file, name));
+        }).expression(node);
+    const expression = (path: string, name: string) => {
+        const file = context.sourceFile(path);
+        return lowerExpression(file, context.variableInitializer(file, name));
     };
+    // The shader update and draw share one inactive-packet closure over the
+    // renderable's packet, material and override captures.
+    const shaderSource = context.sourceFile(shaderPath);
+    const inactive = context.variableInitializer(shaderSource, "isInactive");
+    if (
+        !ts.isArrowFunction(inactive) ||
+        inactive.parameters.length !== 0 ||
+        ts.isBlock(inactive.body)
+    )
+        return context.contractError(
+            inactive,
+            "Expected the shader thin-instance inactive-packet closure.",
+        );
+    const inactiveCpp = lowerExpression(shaderSource, inactive.body);
     const lower = (file: ts.SourceFile, statements: readonly ts.Statement[]) =>
         lowerPinnedBody(
             file,
@@ -154,6 +170,8 @@ export function lowerThinInstanceBindingUpdate(
                 calls: new Map(),
                 foldConditions: false,
                 expression(node) {
+                    if (context.expressionMatchesShape(node, "isInactive()"))
+                        return inactiveCpp;
                     return node.kind === ts.SyntaxKind.NullKeyword
                         ? "false"
                         : undefined;
@@ -163,9 +181,9 @@ export function lowerThinInstanceBindingUpdate(
                     const value = statement.expression;
                     if (ts.isCallExpression(value)) {
                         const target = value.expression.getText(file);
-                        if (target === "h.updateCustomUbo")
+                        if (target === "updateCustomUbo")
                             return [`${indent}update_custom();`];
-                        if (target === "h.updatePacket")
+                        if (target === "updatePacket")
                             return [`${indent}update_system();`];
                     }
                     if (
@@ -216,15 +234,14 @@ export function lowerThinInstanceBindingUpdate(
         `if (hasTI) { thinDrawArgs = syncThinInstanceForDraw!(engine, mesh.thinInstances!, hasTIColor, mesh._gpu); }`,
         "PBR thin-instance update tail",
     );
-    const shaderHead = shader.body.statements.slice(0, 5);
+    const shaderHead = shader.body.statements.slice(0, 4);
     context.assertStatementShapes(
         shader.body,
         shaderHead,
         `
-        if (packet._disposed) { return; }
-        if (!isOverride && mesh.material !== material) { return; }
-        h.updateCustomUbo(scene.surface.engine, material, uniformBatch);
-        h.updatePacket(scene, material, packet, context, uniformBatch);
+        if (isInactive()) { return; }
+        updateCustomUbo(scene.surface.engine, material, uniformBatch);
+        updatePacket(scene, material, packet, context, uniformBatch);
         drawArgs = syncThinInstanceForDraw(scene.surface.engine, ti, hasColor, mesh._gpu);`,
         "Shader thin-instance update order",
     );

@@ -78,7 +78,7 @@ function variants(): LoweringContext[] {
         ),
         doctoredContext(
             vatModule,
-            "ThrowLiteError(840, target.mesh.name, group.name)",
+            "ThrowLiteError(895, target.mesh.name, group.name)",
             "ThrowLiteError(9999, target.mesh.name, group.name)",
         ),
     ];
