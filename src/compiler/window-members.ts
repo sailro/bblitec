@@ -64,11 +64,14 @@ const WINDOW_SERVICE_CALLS = new Set([
     "cancelIdleCallback",
     "requestFullscreen",
     "exitFullscreen",
+    "isTypeSupported",
+    "captureStream",
 ]);
 
 /**
  * A call of a DOM-declared Window service lowered natively (message boxes,
- * idle callbacks, fullscreen): never a browser-only effect to erase.
+ * idle callbacks, fullscreen, media capture): never a browser-only effect to
+ * erase.
  */
 export function isWindowServiceCall(
     context: Pick<LoweringServices, "checker" | "unwrap">,

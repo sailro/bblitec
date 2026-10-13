@@ -464,7 +464,7 @@ export const scalarsSinks: DataSinkOperations<
     | "blob"
     | "file-list"
     | "event-target"
-    | "deferred-platform-object"
+    | "uninhabited-object"
     | "search-params"
     | "http-response"
     | "http-headers"
@@ -622,7 +622,7 @@ export const scalarsSinks: DataSinkOperations<
     file: opaqueSink,
     blob: opaqueSink,
     "file-list": opaqueSink,
-    "deferred-platform-object": opaqueSink,
+    "uninhabited-object": opaqueSink,
     "gpu-adapter-info": opaqueSink,
     "idle-deadline": opaqueSink,
     error: {

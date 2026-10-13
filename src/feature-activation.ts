@@ -1338,6 +1338,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "ramped parameters, signals and fetch they reach, lowered whole",
         consumers: CMAKE,
     },
+    "audio:media-stream": {
+        provenance:
+            "the reached Web Audio graph calls AudioContext.createMediaStreamDestination() or createMediaStreamSource()",
+        consumers: CMAKE,
+    },
     "audio:stereo-panner": {
         provenance:
             "the reached Web Audio graph calls AudioContext.createStereoPanner()",
@@ -1586,6 +1591,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "the Compression Streams CompressionStream and DecompressionStream transforms through zlib",
         consumers: CMAKE,
+    },
+    "platform:media-stream": {
+        provenance:
+            "MediaStream and MediaStreamTrack objects, canvas capture streams and the encoder-less MediaRecorder",
+        consumers: INVENTORY,
     },
     "platform:idle-callbacks": {
         provenance:

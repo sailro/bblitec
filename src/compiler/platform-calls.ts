@@ -36,6 +36,7 @@ import {
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { requireApplicationWindow } from "./window-members.js";
 import { compileFullscreenCall } from "./fullscreen.js";
+import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
 import { isPinnedType } from "./data-types.js";
@@ -1820,6 +1821,10 @@ export class PlatformCalls {
                     };
             }
         }
+        const captured =
+            element &&
+            compileCanvasCaptureStream(this.context.dataLowerer, call, element);
+        if (captured) return captured;
         if (element && callee.name.text === "decode") {
             if (!this.context.options.workers)
                 this.context.fail(
