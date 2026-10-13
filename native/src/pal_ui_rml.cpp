@@ -260,15 +260,29 @@ bool css_property_name_equals(std::string_view left, std::string_view right) {
     return right.starts_with("--") ? left == right : ascii_iequals(left, right);
 }
 
+/**
+ * Each declaration of a declaration list as `callback(declaration)`, or `callback(declaration,
+ * end)` with the offset of its terminator in `source`. Quotes, escapes, comments and nested
+ * brackets do not end a declaration. With `rule_blocks`, `source` is a sheet: a rule block's `}`
+ * also ends one, and the selectors and at-rule preludes before a `{` are not declarations.
+ */
 template <typename Callback>
-void for_each_css_declaration(std::string_view source, Callback&& callback) {
+void for_each_css_declaration(std::string_view source, Callback&& callback,
+                              bool rule_blocks = false) {
     std::size_t start = 0;
     std::string closing_brackets;
     char quote = 0;
     for (std::size_t index = 0; index <= source.size(); ++index) {
         const char token = index < source.size() ? source[index] : ';';
-        if (index == source.size() || (!quote && closing_brackets.empty() && token == ';')) {
-            callback(source.substr(start, index - start));
+        const bool top = !quote && closing_brackets.empty();
+        if (index == source.size() || (top && (token == ';' || (rule_blocks && token == '}')))) {
+            const auto declaration = source.substr(start, index - start);
+            if constexpr (std::is_invocable_v<Callback&, std::string_view, std::size_t>)
+                callback(declaration, index);
+            else
+                callback(declaration);
+            start = index + 1;
+        } else if (top && rule_blocks && token == '{') {
             start = index + 1;
         } else if (token == '\\') {
             if (index + 1 < source.size())
@@ -3075,55 +3089,28 @@ void replace_css_identifier(std::string& text, std::string_view identifier,
  */
 std::string rml_css_delay_resets(std::string_view source) {
     std::string result;
-    std::size_t copied = 0, name_start = 0, value_start = 0;
-    std::string_view reset;
-    char quote = 0;
-    int depth = 0;
-    const auto end_declaration = [&](std::size_t at) {
-        if (reset.empty())
-            return;
-        result.append(source.substr(copied, at - copied));
-        result += ';';
-        result += reset;
-        result += ":auto";
-        if (split_css_important(source.substr(value_start, at - value_start)).second)
-            result += " !important";
-        copied = at;
-        reset = {};
-    };
-    for (std::size_t index = 0; index < source.size(); ++index) {
-        const char token = source[index];
-        if (token == '\\') {
-            ++index;
-        } else if (quote) {
-            if (token == quote)
-                quote = 0;
-        } else if (token == '/' && index + 1 < source.size() && source[index + 1] == '*') {
-            const auto close = source.find("*/", index + 2);
-            index = close == std::string_view::npos ? source.size() : close + 1;
-        } else if (token == '\'' || token == '"') {
-            quote = token;
-        } else if (token == '(' || token == '[') {
-            ++depth;
-        } else if ((token == ')' || token == ']') && depth > 0) {
-            --depth;
-        } else if (depth == 0 && token == ':' && name_start != std::string_view::npos) {
-            const auto name = trim_css_token(source.substr(name_start, index - name_start));
-            reset = ascii_iequals(name, "transition")  ? "transition-delay"
-                    : ascii_iequals(name, "animation") ? "animation-delay"
-                                                       : "";
-            name_start = std::string_view::npos;
-            value_start = index + 1;
-        } else if (depth == 0 && (token == ';' || token == '}')) {
-            end_declaration(index);
-            name_start = index + 1;
-        } else if (depth == 0 && token == '{') {
-            // A selector or at-rule prelude, not a declaration.
-            reset = {};
-            name_start = index + 1;
-        }
-    }
-    end_declaration(source.size());
+    std::size_t copied = 0;
+    for_each_css_declaration(
+        source,
+        [&](std::string_view declaration, std::size_t end) {
+            const std::size_t colon = declaration.find(':');
+            if (colon == std::string_view::npos)
+                return;
+            const auto name = trim_css_token(declaration.substr(0, colon));
+            const std::string_view reset = ascii_iequals(name, "transition")  ? "transition-delay"
+                                           : ascii_iequals(name, "animation") ? "animation-delay"
+                                                                              : "";
+            if (reset.empty())
+                return;
+            result.append(source.substr(copied, end - copied));
+            result += ';';
+            result += reset;
+            result += ":auto";
+            if (split_css_important(declaration.substr(colon + 1)).second)
+                result += " !important";
+            copied = end;
+        },
+        true);
     result.append(source.substr(copied));
     return result;
 }
@@ -3231,12 +3218,7 @@ std::string rml_css_variable_colors(std::string value) {
             position += 3;
             continue;
         }
-        std::size_t end = open;
-        for (int depth = 0; end < value.size(); ++end) {
-            depth += value[end] == '(' ? 1 : value[end] == ')' ? -1 : 0;
-            if (depth == 0)
-                break;
-        }
+        const std::size_t end = pal::detail::css_function_end(value, open);
         if (std::string_view(value).substr(open, end - open).find("var(") == std::string::npos) {
             position = end;
             continue;
