@@ -12,16 +12,16 @@ import {
 const deferredCapabilities = "runtime-throw" as const;
 
 test("deferred calls retain all source sites and later compiler diagnostics", () => {
-    const source = `try { atob("first"); btoa("second"); } catch { }`;
+    const source = `try { prompt("first"); prompt("second"); } catch { }`;
     const result = compileSource(source, { deferredCapabilities });
     const sites = result.manifest.deferredCapabilities!;
     assert.deepEqual(
         sites.map((site) => site.id),
-        ["dom:atob", "dom:btoa"],
+        ["dom:prompt", "dom:prompt"],
     );
     for (const site of sites) {
         assert.equal(site.kind, "CallExpression");
-        assert.match(source.slice(site.start, site.end), /^(atob|btoa)\(/);
+        assert.match(source.slice(site.start, site.end), /^prompt\(/);
         assert.equal(
             site.sourceSha256,
             createHash("sha256").update(source).digest("hex"),
@@ -34,7 +34,7 @@ test("deferred calls retain all source sites and later compiler diagnostics", ()
     assert.throws(
         () =>
             compileSource(
-                `atob("first"); new FinalizationRegistry(() => {});`,
+                `prompt("first"); new FinalizationRegistry(() => {});`,
                 {
                     deferredCapabilities,
                 },
@@ -49,6 +49,50 @@ test("deferred calls retain all source sites and later compiler diagnostics", ()
     );
 });
 
+test("admitted base64, structured clone and session storage stay authoritative", () => {
+    const source = `
+        function dataUrlToBytes(url: string): Uint8Array | null {
+            const comma = url.indexOf(",");
+            if (comma < 0) return null;
+            const bin = atob(url.slice(comma + 1));
+            const out = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+            return out;
+        }
+        function bytesToDataUrl(bytes: Uint8Array, mime: string): string {
+            let bin = "";
+            const chunk = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+            return \`data:\${mime};base64,\${btoa(bin)}\`;
+        }
+        interface Placement { readonly host?: { readonly id: number }; readonly key: string; readonly tint?: readonly [number, number, number] }
+        const placement: Placement = { key: "house:7", tint: [1, 0.5, 0.25], host: { id: 3 } };
+        const { tint: _tint, ...bake } = placement;
+        const copy = structuredClone(bake);
+        const bytes = dataUrlToBytes(bytesToDataUrl(new Uint8Array([0, 255, 128]), "application/zip"))!;
+        if (bytes.length !== 3 || bytes[1] !== 255 || bytes[2] !== 128) throw new Error("base64");
+        if (window.atob(window.btoa("ab")) !== "ab" || globalThis.structuredClone([1])[0] !== 1) throw new Error("global members");
+        if (copy.key !== "house:7" || copy.host === bake.host || copy.host!.id !== 3 || "tint" in copy) throw new Error("clone");
+        if (typeof sessionStorage === "undefined") throw new Error("session availability");
+        window.sessionStorage.setItem("pending", "1");
+        if (sessionStorage.getItem("pending") !== "1") throw new Error("session");
+        globalThis.close();
+    `;
+    const result = compileSource(source, { deferredCapabilities });
+    assert.equal(result.manifest.deferredCapabilities, undefined);
+    assert.match(result.cpp, /bbl::js::string_from_base64\(/);
+    assert.match(result.cpp, /bbl::js::string_to_base64\(/);
+    assert.match(result.cpp, /bbl::js::structured_clone\(/);
+    assert.match(result.cpp, /bbl::js::session_storage_object\(\)/);
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools, "Native fixture compiler is required.");
+    runGeneratedProgram(tools, "deferred-capabilities/admitted", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        expectedOutput: "",
+        timeoutMs: 10000,
+    });
+});
+
 test("deferred scalar calls throw clearly after arguments and preserve recovery", () => {
     const source = `
         let order=""; let catches=0;
@@ -58,11 +102,11 @@ test("deferred scalar calls throw clearly after arguments and preserve recovery"
             ++catches;
         }
         if(order!=="ab")throw new Error("argument order");
-        try{atob(argument("c"));}catch{++catches;}
-        try{btoa(argument("d"));}catch{++catches;}
+        try{prompt(argument("c"));}catch{++catches;}
+        try{prompt(argument("d"));}catch{++catches;}
         try{confirm(argument("e"));}catch{++catches;}
         try{alert(argument("f"));}catch{++catches;}
-        try{structuredClone({value:argument("g")});}catch{++catches;}
+        try{prompt(argument("g"));}catch{++catches;}
         if(order!=="abcdefg"||catches!==6)throw new Error("trap recovery");
     `;
     const result = compileSource(source, { deferredCapabilities });
@@ -79,11 +123,11 @@ test("deferred scalar calls throw clearly after arguments and preserve recovery"
 
 test("authored same-name and library-typed functions are not deferred", () => {
     for (const declaration of [
-        `function atob(value:string):string{return value;}`,
-        `const atob=(value:string):string=>value;`,
-        `const local:typeof globalThis.atob=(value:string):string=>value;`,
+        `function prompt(value?:string):string|null{return value??null;}`,
+        `const prompt=(value?:string):string|null=>value??null;`,
+        `const local:typeof globalThis.prompt=(value?:string):string|null=>value??null;`,
     ]) {
-        const name = declaration.includes("const local") ? "local" : "atob";
+        const name = declaration.includes("const local") ? "local" : "prompt";
         const result = compileSource(
             `${declaration}if(${name}("authored")!=="authored")throw new Error("authored");`,
             { deferredCapabilities },
@@ -124,7 +168,7 @@ test("deferred calls inside authored callbacks retain lazy activation", () => {
     const result = compileSource(
         `
         let enabled=false; let calls=0; let caught=0;
-        function later():void { ++calls; if(enabled)atob("deferred"); }
+        function later():void { ++calls; if(enabled)prompt("deferred"); }
         const callback=()=>later();
         if(calls!==0)throw new Error("eager callback");
         callback();
@@ -303,10 +347,10 @@ test("deferred result templates never construct successful payloads", () => {
     const result = compileSource(
         `
         let caught=0;
-        try{const result=structuredClone(new Float32Array([1,2]));if(result[0]===1)throw new Error("fabricated array");}
-        catch(error){if(!error.message.includes("dom:structuredClone"))throw error;++caught;}
-        try{const result=structuredClone({value:3,label:"payload"});if(result.value===3)throw new Error("fabricated record");}
-        catch(error){if(!error.message.includes("dom:structuredClone"))throw error;++caught;}
+        try{const result=prompt("first");throw new Error("fabricated "+String(result));}
+        catch(error){if(!error.message.includes("dom:prompt"))throw error;++caught;}
+        try{const result=prompt("second","default");if(result===null||result.length>=0)throw new Error("fabricated result");}
+        catch(error){if(!error.message.includes("dom:prompt"))throw error;++caught;}
         if(caught!==2)throw new Error("typed failures");
     `,
         { deferredCapabilities },
@@ -352,7 +396,7 @@ test("worker application manifests join all deferred realm sites", () => {
     mkdirSync(directory, { recursive: true });
     writeFileSync(
         resolve(directory, "worker.ts"),
-        `let caught=0;try{btoa("worker");}catch{++caught;}self.postMessage(caught);self.close();`,
+        `let caught=0;try{prompt("worker");}catch{++caught;}self.postMessage(caught);self.close();`,
     );
     const result = compileSource(
         `
@@ -361,7 +405,7 @@ test("worker application manifests join all deferred realm sites", () => {
             if(event.data!==1)throw new Error("worker trap did not execute");
             globalThis.close();
         });
-        try{atob("window");}catch{}
+        try{prompt("window");}catch{}
     `,
         { fileName: resolve(directory, "entry.ts"), deferredCapabilities },
     );
@@ -370,8 +414,8 @@ test("worker application manifests join all deferred realm sites", () => {
             ?.map((site) => [site.id, site.realm])
             .sort(),
         [
-            ["dom:atob", "window"],
-            ["dom:btoa", "worker"],
+            ["dom:prompt", "window"],
+            ["dom:prompt", "worker"],
         ],
     );
     assert.equal(

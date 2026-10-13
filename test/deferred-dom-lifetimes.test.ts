@@ -61,13 +61,14 @@ test("listener signals keep a throwing boundary over native AbortSignals and lea
         signal.throwIfAborted();
         if(signal.aborted)throw new Error("state");
         try {
-            window.addEventListener("blur",()=>{atob("lazy");},{signal});
+            window.addEventListener("blur",()=>{++caught;},{signal});
         } catch(error) {
             if(!error.message.includes("dom:EventTarget.addEventListener.signal"))throw new Error("capability");
             ++caught;
         }
+        try{prompt("later");}catch{++caught;}
         controller.abort();
-        if(caught!==1||!signal.aborted)throw new Error("listener signal completion");
+        if(caught!==2||!signal.aborted)throw new Error("listener signal completion");
     `;
     assert.throws(
         () => compileSource(source),
@@ -76,13 +77,13 @@ test("listener signals keep a throwing boundary over native AbortSignals and lea
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["dom:atob", "dom:EventTarget.addEventListener.signal"],
+        ["dom:EventTarget.addEventListener.signal", "dom:prompt"],
     );
     assert.throws(
         () =>
             compileSource(
                 source.replace(
-                    'atob("lazy")',
+                    'prompt("later")',
                     "new FinalizationRegistry(() => {})",
                 ),
                 {

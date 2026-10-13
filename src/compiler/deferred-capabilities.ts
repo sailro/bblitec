@@ -47,30 +47,21 @@ interface Descriptor {
     timing: DeferredCapabilitySite["timing"];
 }
 
-/** Explicit missing public operations; existing admitted adapters remain authoritative. */
+/** Explicit missing public operations only: `compile` runs before admitted lowering, so a registered API shadows it. */
 const deferredCapabilityDescriptors: readonly Descriptor[] = [
     ...[
-        "atob",
-        "btoa",
         "alert",
         "confirm",
         "prompt",
-        "structuredClone",
         "requestIdleCallback",
         "cancelIdleCallback",
         "Window.requestIdleCallback",
         "Window.cancelIdleCallback",
         "IdleDeadline.didTimeout",
         "IdleDeadline.timeRemaining",
-        "Window.atob",
-        "Window.btoa",
         "Window.alert",
         "Window.confirm",
         "Window.prompt",
-        "Window.structuredClone",
-        "WindowOrWorkerGlobalScope.atob",
-        "WindowOrWorkerGlobalScope.btoa",
-        "WindowOrWorkerGlobalScope.structuredClone",
         "Element.scrollIntoView",
         "Element.insertAdjacentElement",
         "Element.getAttributeNames",
