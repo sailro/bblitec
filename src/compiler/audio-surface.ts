@@ -14,8 +14,8 @@ import {
     declaresListenerSignal,
     listenerAddition,
     listenerOptions,
-    pinListener,
 } from "./dom-listeners.js";
+import { pinCpp } from "./evaluation-order.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { packagedUrlAssets, type StaticFetchContext } from "./static-fetch.js";
 import { deploymentUrl } from "./deployment.js";
@@ -449,36 +449,18 @@ function emitAudioNode(context: AudioCallContext, initializer: string): Value {
     return { kind: "audio-node", cpp: node };
 }
 
-/** An audio call's operand, evaluated into a temporary in source order. */
-function pinnedAudioOperand(
-    context: AudioCallContext,
-    value: Value,
-    label: string,
-): string {
-    const name = context.allocateTemporaryCppName(label);
-    context.emit({
-        kind: "declaration",
-        type: "const auto",
-        name,
-        initializer: value.cpp,
-    });
-    return name;
-}
-
 /** A numeric operand, evaluated into a temporary in source order. */
 function numberOperand(
     context: AudioCallContext,
     argument: ts.Expression,
     label: string,
 ): string {
-    const name = context.allocateTemporaryCppName(label);
-    context.emit({
-        kind: "declaration",
-        type: "const double",
-        name,
-        initializer: context.compileNumber(argument, "double"),
-    });
-    return name;
+    return pinCpp(
+        context,
+        context.compileNumber(argument, "double"),
+        label,
+        "const double",
+    );
 }
 
 export function compileAudioMethodCall(
@@ -623,7 +605,7 @@ function compileAudioListener(
         !removing &&
         declaresListenerSignal(context.checker, call.arguments[2])
     )
-        listener = pinListener(context, listener);
+        listener = pinCpp(context, listener, "event_listener");
     const options = listenerOptions(context, call.arguments[2], removing);
     if (absent) return { kind: "void", cpp: "" };
     if (removing)
@@ -639,7 +621,7 @@ function compileAudioListener(
                 target.cpp,
                 type,
                 identity,
-                `${listener}, ${options.capture}, ${options.once}${lease ? `, ${lease}` : ""}`,
+                `${listener}, ${options.capture}, ${options.once}${lease}`,
             ),
         ),
     };
@@ -779,9 +761,9 @@ function compileAudioReceiverMethod(
         method === "createMediaElementSource"
     ) {
         context.expectArgumentCount(call, 1, 1);
-        const audioContext = pinnedAudioOperand(
+        const audioContext = pinCpp(
             context,
-            receiver,
+            receiver.cpp,
             "media_element_context",
         );
         const element = context.compileValue(argumentAt(call, 0));
@@ -846,11 +828,7 @@ function compileAudioReceiverMethod(
             context.reachFeature("audio:media-stream", call);
             context.reachFeature("platform:media-stream", call);
             context.reachJsData();
-            const owner = pinnedAudioOperand(
-                context,
-                receiver,
-                "audio_stream_context",
-            );
+            const owner = pinCpp(context, receiver.cpp, "audio_stream_context");
             const stream = source
                 ? `, ${context.dataLowerer.compileForSink(argumentAt(call, 0), {
                       kind: "handle",
@@ -1002,9 +980,9 @@ function compileAudioReceiverMethod(
                 // `disconnect(destination[, output[, input]])`: the
                 // operands in order, then the edge.
                 context.expectArgumentCount(call, 1, 3);
-                const node = pinnedAudioOperand(
+                const node = pinCpp(
                     context,
-                    receiver,
+                    receiver.cpp,
                     "audio_disconnect_source",
                 );
                 const destination = context.compileValue(argumentAt(call, 0));
@@ -1015,9 +993,9 @@ function compileAudioReceiverMethod(
                             ? "disconnect(AudioParam) is not lowered; disconnect a node destination."
                             : "disconnect expects an audio node destination.",
                     );
-                const target = pinnedAudioOperand(
+                const target = pinCpp(
                     context,
-                    destination,
+                    destination.cpp,
                     "audio_disconnect_destination",
                 );
                 const indices = call.arguments
@@ -1085,22 +1063,14 @@ function compileAudioReceiverMethod(
         }
         if (method === "setValueCurveAtTime") {
             context.expectArgumentCount(call, 3, 3);
-            const param = pinnedAudioOperand(
-                context,
-                receiver,
-                "audio_curve_param",
-            );
+            const param = pinCpp(context, receiver.cpp, "audio_curve_param");
             const values = context.compileValue(argumentAt(call, 0));
             if (values.dataType?.kind !== "f32array")
                 context.fail(
                     argumentAt(call, 0),
                     "setValueCurveAtTime requires a Float32Array.",
                 );
-            const curve = pinnedAudioOperand(
-                context,
-                values,
-                "audio_curve_values",
-            );
+            const curve = pinCpp(context, values.cpp, "audio_curve_values");
             const start = numberOperand(
                 context,
                 argumentAt(call, 1),

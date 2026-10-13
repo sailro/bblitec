@@ -4,7 +4,10 @@ import type { Value } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { requireWindowHost } from "./window-events.js";
 import { pinOperand } from "./evaluation-order.js";
-import { compileBooleanOptions } from "./option-helpers.js";
+import {
+    compileBooleanOptions,
+    optionalOptionMember,
+} from "./option-helpers.js";
 
 /** Metadata for the host's selected device, exposed without admitting raw device operations. */
 export function compileGpuAdapterCall(
@@ -98,27 +101,15 @@ function compileRequest(lowerer: DataLowerer, call: ts.CallExpression): Value {
     if (options) {
         let powerPreference = "bbl::js::Nullable<std::string>{}";
         let featureLevel = powerPreference;
-        const text = (value: Value, present?: string): string => {
-            const type = {
-                kind: "optional",
-                inner: { kind: "string" },
-            } as const;
-            const converted = lowerer.compileKnownValueForSink(
+        const text = (value: Value, present?: string): string =>
+            optionalOptionMember(
+                lowerer,
                 value,
-                type,
+                present,
+                { kind: "string" },
+                "gpu_option",
                 options,
             );
-            const stored = context.allocateTemporaryCppName("gpu_option");
-            context.emit({
-                kind: "declaration",
-                type: "const bbl::js::Nullable<std::string>",
-                name: stored,
-                initializer: present
-                    ? `${present} ? ${converted} : bbl::js::Nullable<std::string>{}`
-                    : converted,
-            });
-            return stored;
-        };
         const flags = compileBooleanOptions(
             context,
             lowerer,

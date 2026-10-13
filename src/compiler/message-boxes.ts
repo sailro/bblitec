@@ -4,6 +4,7 @@ import { MESSAGE_BOX_FUNCTIONS } from "./dom-lowerings.js";
 import { stringConcatPart } from "./expressions.js";
 import { isUndefinedDataType } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
+import { pinCpp } from "./evaluation-order.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 import { requireWindowHost } from "./window-events.js";
 import { compileWindowMemberCall } from "./window-members.js";
@@ -43,13 +44,7 @@ function messageText(
     }
     const optional = value.dataType?.kind === "optional";
     if (!optional && !isJsonValue(value)) return text(value);
-    const held = context.allocateTemporaryCppName("message");
-    context.emit({
-        kind: "declaration",
-        type: "const auto",
-        name: held,
-        initializer: value.cpp,
-    });
+    const held = pinCpp(context, value.cpp, "message");
     if (optional && value.dataType?.kind === "optional")
         return `(${optionalPresentCpp(held)} ? ${text(lowerer.leafValue(`(*${held})`, value.dataType.inner))} : std::string())`;
     return `(${held}.is_undefined() ? std::string() : ${held}.to_string())`;

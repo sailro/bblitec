@@ -28,10 +28,8 @@ import {
     declaresListenerSignal,
     emitDomEventListener,
     listenerAddition,
-    listenerOptions,
     pinDetached,
-    pinListener,
-    type ListenerOptions,
+    signalListener,
 } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { compileFullscreenCall } from "./fullscreen.js";
@@ -39,7 +37,11 @@ import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
 import { isPinnedType } from "./data-types.js";
-import { compileBooleanOptions } from "./option-helpers.js";
+import {
+    compileBooleanOptions,
+    optionalOptionMember,
+    optionalOptionValue,
+} from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
 import { compilePointerCapture } from "./pointer-capture.js";
 import { compileDateParse, compileDateUtc } from "./dates.js";
@@ -268,29 +270,17 @@ export class PlatformCalls {
         const consume =
             (name: keyof typeof defaults) =>
             (value: Value, present?: string): void => {
-                const fallback = this.context.cppString(defaults[name]);
-                const kind = value.dataType?.kind;
-                const text =
-                    kind === "undefined"
-                        ? fallback
-                        : kind === "optional"
-                          ? `${this.context.dataLowerer.compileKnownValueForSink(value, { kind: "optional", inner: { kind: "string" } }, argument)}.value_or(${fallback})`
-                          : this.context.dataLowerer.compileKnownValueForSink(
-                                value,
-                                { kind: "string" },
-                                argument,
-                            );
-                const cpp =
-                    this.context.allocateTemporaryCppName("scroll_option");
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const std::string",
-                    name: cpp,
-                    initializer: present
-                        ? `(${present} ? std::string(${text}) : std::string(${fallback}))`
-                        : text,
-                });
-                members[name] = cpp;
+                members[name] = optionalOptionValue(
+                    optionalOptionMember(
+                        this.context.dataLowerer,
+                        value,
+                        present,
+                        { kind: "string" },
+                        "scroll_option",
+                        argument,
+                    ),
+                    `std::string(${this.context.cppString(defaults[name])})`,
+                );
             };
         compileBooleanOptions(
             this.context,
@@ -1086,16 +1076,20 @@ export class PlatformCalls {
                     { cppType: "bbl::pal::ApplicationErrorEvent&", name },
                     [windowErrorEventValue(this.context, name, rejection)],
                 );
-                const options = signalOptions
-                    ? this.signalListenerOptions(call, listener.cpp)
+                const added = signalOptions
+                    ? signalListener(
+                          this.context,
+                          call.arguments[2],
+                          listener.cpp,
+                      )
                     : undefined;
                 this.context.emit({
                     kind: "expression",
                     code: `${listenerAddition(
-                        options?.signal,
+                        added?.options.signal,
                         (lease) =>
                             `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ` +
-                            `${options?.listener ?? listener.cpp}, ${options?.once ?? once}${lease ? `, ${lease}` : ""})`,
+                            `${added?.listener ?? listener.cpp}, ${added?.options.once ?? once}${lease})`,
                     )};`,
                 });
             }
@@ -1119,16 +1113,16 @@ export class PlatformCalls {
                 undefined,
                 [],
             );
-            const options = signalOptions
-                ? this.signalListenerOptions(call, listener.cpp)
+            const added = signalOptions
+                ? signalListener(this.context, call.arguments[2], listener.cpp)
                 : undefined;
             this.context.emit({
                 kind: "expression",
                 code: `${listenerAddition(
-                    options?.signal,
+                    added?.options.signal,
                     (lease) =>
                         `bbl::pal::window_on_fullscreen_change(${listener.identity}, ` +
-                        `${options?.listener ?? listener.cpp}, ${options?.once ?? once}${lease ? `, ${lease}` : ""})`,
+                        `${added?.listener ?? listener.cpp}, ${added?.options.once ?? once}${lease})`,
                 )};`,
             });
             return true;
@@ -1193,33 +1187,21 @@ export class PlatformCalls {
             values,
             documentHiddenCpp,
         );
-        const options = signalOptions
-            ? this.signalListenerOptions(call, listener.cpp)
+        const added = signalOptions
+            ? signalListener(this.context, call.arguments[2], listener.cpp)
             : undefined;
         this.context.emit({
             kind: "expression",
             // A leased listener joins its channel's registry directly.
-            code: `${listenerAddition(options?.signal, (lease) =>
-                lease && options
-                    ? `${engine}.${descriptor.channel}_callbacks.add(${listener.identity}, ${options.listener}, ${options.once}, ${lease})`
+            code: `${listenerAddition(added?.options.signal, (lease) =>
+                lease && added
+                    ? `${engine}.${descriptor.channel}_callbacks.add(${listener.identity}, ${added.listener}, ${added.options.once}${lease})`
                     : `bbl::on_${descriptor.channel}(` +
-                      `${engine}, ${listener.identity}, ${options?.listener ?? listener.cpp}` +
-                      `${options ? `, ${options.once}` : once ? ", true" : ""})`,
+                      `${engine}, ${listener.identity}, ${added?.listener ?? listener.cpp}` +
+                      `${added ? `, ${added.options.once}` : once ? ", true" : ""})`,
             )};`,
         });
         return true;
-    }
-
-    /** A service listener's dictionary options, after its pinned listener. */
-    private signalListenerOptions(
-        call: ts.CallExpression,
-        listener: string,
-    ): ListenerOptions & { listener: string } {
-        const pinned = pinListener(this.context, listener);
-        return {
-            ...listenerOptions(this.context, call.arguments[2], false),
-            listener: pinned,
-        };
     }
 
     private platformEventDescriptor(
