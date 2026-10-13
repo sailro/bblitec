@@ -2945,24 +2945,91 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         "A pinned closure captures a defaulted parameter beside a closure default.",
                     );
             }
-        const lines = closureDefault
-            ? [...prolog(), ...this.parameterDefaults("    ")]
-            : [...this.parameterDefaults("    "), ...prolog()];
         if (
             ts.isClassDeclaration(declaration) ||
             ts.isConstructorDeclaration(declaration)
         )
-            return this.constructorBody(lines);
-        const body = [
-            ...lines,
-            ...this.statements(
-                this.hoisted(declaration.body!.statements),
-                "    ",
-            ),
-        ];
+            return this.constructorBody(
+                closureDefault
+                    ? [...prolog(), ...this.parameterDefaults("    ")]
+                    : [...this.parameterDefaults("    "), ...prolog()],
+            );
+        const statements = this.hoisted(declaration.body!.statements);
+        let lines: string[];
+        let rest = statements;
+        if (closureDefault)
+            lines = [...prolog(), ...this.parameterDefaults("    ")];
+        else {
+            lines = this.parameterDefaults("    ");
+            const guards = this.leadingGuards(declaration, statements);
+            lines.push(...this.statements(guards, "    "), ...prolog());
+            rest = statements.slice(guards.length);
+        }
+        const body = [...lines, ...this.statements(rest, "    ")];
         return (
             this.frame.async ? this.coroutine(declaration, body, "    ") : body
         ).join("\n");
+    }
+
+    /**
+     * A body's leading guards: `if (...) return ...;` (or a throw) with no
+     * else, creating no closure and reading no binding the body declares
+     * besides its parameters, and not always taken. They run before the
+     * frame's environment exists -- a frame that returns at once allocates
+     * nothing -- reading captured parameters where they arrived.
+     */
+    private leadingGuards(
+        owner: ts.Node,
+        statements: readonly ts.Statement[],
+    ): readonly ts.Statement[] {
+        const guards: ts.Statement[] = [];
+        for (const statement of statements) {
+            if (
+                !ts.isIfStatement(statement) ||
+                statement.elseStatement ||
+                this.terminates(statement)
+            )
+                break;
+            const then = statement.thenStatement;
+            const exit =
+                ts.isBlock(then) && then.statements.length === 1
+                    ? then.statements[0]!
+                    : then;
+            if (
+                !ts.isReturnStatement(exit) &&
+                !ts.isThrowStatement(exit) &&
+                !(
+                    ts.isExpressionStatement(exit) &&
+                    ts.isCallExpression(exit.expression) &&
+                    isPinnedErrorCall(this.source, exit.expression)
+                )
+            )
+                break;
+            let clean = true;
+            const visit = (node: ts.Node): void => {
+                if (!clean) return;
+                if (isFunctionLike(node) || ts.isClassExpression(node)) {
+                    clean = false;
+                    return;
+                }
+                if (ts.isIdentifier(node)) {
+                    const symbol = declaredSymbol(this.checker, node);
+                    const declaration =
+                        symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+                    if (
+                        declaration &&
+                        !ts.isParameter(declaration) &&
+                        this.within(owner, declaration)
+                    )
+                        clean = false;
+                }
+                ts.forEachChild(node, visit);
+            };
+            visit(statement);
+            if (!clean) break;
+            guards.push(statement);
+        }
+        return guards;
     }
 
     /** The environment structs this function's frames declared. */
@@ -4063,10 +4130,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const body = node.body;
         if (!body) return this.refuse(node, "Pinned closure has no body.");
         const statements = ts.isBlock(body) ? body.statements : [];
-        const lines = [...this.frameProlog(node.parameters, statements, inner)];
+        const executed = this.hoisted(statements);
+        // Leading guards run before the environment is allocated.
+        const guards = this.leadingGuards(node, executed);
+        const lines = [
+            ...this.statements(guards, inner),
+            ...this.frameProlog(node.parameters, statements, inner),
+        ];
         if (ts.isBlock(body))
             lines.push(
-                ...this.statements(this.hoisted(body.statements), inner),
+                ...this.statements(executed.slice(guards.length), inner),
             );
         else if (this.frame.async)
             lines.push(

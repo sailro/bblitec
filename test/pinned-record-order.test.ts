@@ -47,6 +47,13 @@ function join3(a: number, b: number, c: number): string {
     return \`\${a},\${b},\${c}\`;
 }
 
+function guarded(log: string[], limit: number): number {
+    if (limit < 0) return -1;
+    const twice = (): number => limit * 2;
+    log.push(\`guarded \${limit}\`);
+    return twice();
+}
+
 export async function run(): Promise<string> {
     const log: string[] = [];
     let n = 0;
@@ -60,6 +67,7 @@ export async function run(): Promise<string> {
         holder.label = \`h\${n}\`;
         return holder.label;
     };
+    log.push(\`guard \${guarded(log, -1)} \${guarded(log, 3)}\`);
     log.push(\`template \${next()}|\${n}|\${next()}|\${n}\`);
     log.push(\`call \${join3(next(), n, next())}\`);
     log.push(\`slice \${"abcdefghijklmnopqrstuvwxyz".slice(next(), next())}\`);
@@ -140,6 +148,11 @@ test("the record model evaluates every multi-operand form left to right, awaited
     // awaited one is declared ahead and assigned in order.
     assert.match(header, /\[&\] \{ auto ordered_\d+ = /);
     assert.match(header, /static_cast<void>\(ordered_\d+ = \(co_await /);
+    // A leading guard returns before the frame allocates its environment.
+    assert.match(
+        header,
+        /inline double guarded\([^)]*\) \{\s*if \([^\n]*\) \{\s*return \(-1\.0\);\s*\}\s*auto environment_\d+ = bbl::js::make_gc_shared/,
+    );
     const javascript = ts.transpileModule(SOURCE, {
         compilerOptions: {
             target: ts.ScriptTarget.ES2022,
