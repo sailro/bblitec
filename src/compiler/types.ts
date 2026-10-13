@@ -2920,6 +2920,7 @@ export type Feature =
     | "platform:http"
     | "platform:packaged-fetch"
     | "platform:compression"
+    | "platform:idle-callbacks"
     | "image:runtime-decode"
     | "text:data"
     | "text:layout"

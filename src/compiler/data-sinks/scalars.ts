@@ -479,6 +479,7 @@ export const scalarsSinks: DataSinkOperations<
     | "gpu-adapter"
     | "gpu"
     | "gpu-adapter-info"
+    | "idle-deadline"
     | "promise"
     | "storage"
     | "date"
@@ -623,6 +624,7 @@ export const scalarsSinks: DataSinkOperations<
     "file-list": opaqueSink,
     "deferred-platform-object": opaqueSink,
     "gpu-adapter-info": opaqueSink,
+    "idle-deadline": opaqueSink,
     error: {
         expression: (type, lowerer, expression) =>
             lowerer.compileKnownValueForSink(

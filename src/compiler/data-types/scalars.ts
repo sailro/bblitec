@@ -64,6 +64,7 @@ export const scalarKinds: DataKindOperations<
     | "gpu"
     | "gpu-adapter"
     | "gpu-adapter-info"
+    | "idle-deadline"
     | "storage"
     | "date"
     | "regexp"
@@ -151,6 +152,10 @@ export const scalarKinds: DataKindOperations<
     "gpu-adapter-info": opaqueLeaf(
         "bbl::pal::GpuAdapterInfoHandle",
         "gpu-adapter-info",
+    ),
+    "idle-deadline": opaqueLeaf(
+        "bbl::pal::IdleDeadlineHandle",
+        "idle-deadline",
     ),
     "search-params": opaqueLeaf("bbl::js::SearchParams", "search-params"),
     storage: opaqueLeaf("bbl::js::Storage", "storage"),

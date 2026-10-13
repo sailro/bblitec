@@ -116,6 +116,11 @@ import { compileSearchParams } from "./search-params.js";
 import { compileWebPlatformNew } from "./web-platform.js";
 import { compileHttpFunction, compileHttpCall } from "./http.js";
 import { compileWindowServiceCall } from "./window-events.js";
+import {
+    compileIdleCallbackCall,
+    idleFunctionValue,
+} from "./idle-callbacks.js";
+import { compileMessageBoxCall } from "./message-boxes.js";
 import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
 import {
@@ -672,9 +677,8 @@ export class ExpressionLowerer {
         }
         const storage = compileWebStorageValue(this.context, unwrapped);
         if (storage) return storage;
-        const deferredFunction =
-            this.context.deferredCapabilities.functionValue(unwrapped);
-        if (deferredFunction) return deferredFunction;
+        const idleFunction = idleFunctionValue(this.context, unwrapped);
+        if (idleFunction) return idleFunction;
         const ratio = devicePixelRatioValue(this.context, unwrapped);
         if (ratio) {
             if (ratio.staticNumber === undefined)
@@ -3449,6 +3453,10 @@ export class ExpressionLowerer {
             hostFunction,
         );
         if (windowService) return windowService;
+        const windowServiceCall =
+            compileMessageBoxCall(this.context.dataLowerer, call) ??
+            compileIdleCallbackCall(this.context.dataLowerer, call);
+        if (windowServiceCall) return windowServiceCall;
         const gpuAdapter = compileGpuAdapterCall(
             this.context.dataLowerer,
             call,

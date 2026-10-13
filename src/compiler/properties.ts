@@ -54,6 +54,7 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { webPlatformProperty } from "./web-platform.js";
+import { fullscreenElementValue } from "./fullscreen.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
@@ -2451,6 +2452,11 @@ export class PropertyAccessLowerer {
                 dataType: { kind: "handle", handle: "ui-element" },
             };
         }
+        const fullscreen = fullscreenElementValue(
+            this.context.dataLowerer,
+            expression,
+        );
+        if (fullscreen) return fullscreen;
         if (
             expression.questionDotToken &&
             expression.name.text === "direction" &&

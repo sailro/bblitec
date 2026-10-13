@@ -19,6 +19,10 @@ import {
     compileImageBitmapMethod,
     imageBitmapProperty,
 } from "./image-bitmaps.js";
+import {
+    compileIdleDeadlineMethod,
+    idleDeadlineProperty,
+} from "./idle-callbacks.js";
 import type { Value } from "./types.js";
 import {
     compileUrlAssignment,
@@ -47,6 +51,7 @@ const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["byte-stream-reader", compileBodyStreamMethod],
     ["url", compileUrlMethod],
     ["image-bitmap", compileImageBitmapMethod],
+    ["idle-deadline", compileIdleDeadlineMethod],
     // Blob reads and its stream; other Blob members keep the browser file bridge.
     [
         "blob",
@@ -87,6 +92,7 @@ export function webPlatformProperty(
         abortProperty(lowerer, owner, property) ??
         urlProperty(lowerer, owner, property) ??
         imageBitmapProperty(lowerer, owner, property) ??
+        idleDeadlineProperty(lowerer, owner, property) ??
         bodyStreamProperty(lowerer, owner, property, access)
     );
 }

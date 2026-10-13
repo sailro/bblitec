@@ -594,6 +594,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
         | "abort-signal"
         | "url"
         | "image-bitmap"
+        | "idle-deadline"
         | "search-params"
         | "date"
         | "regexp"
@@ -620,6 +621,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["AbortSignal", "dom", "abort-signal"],
     ["URL", "dom", "url"],
     ["ImageBitmap", "dom", "image-bitmap"],
+    ["IdleDeadline", "dom", "idle-deadline"],
     ["URLSearchParams", "dom", "search-params"],
     ["Date", "default", "date"],
     ["RegExp", "default", "regexp"],
@@ -667,6 +669,7 @@ const WEB_PLATFORM_HEADERS: readonly (readonly [
     [["abort-controller", "abort-signal"], "js_abort"],
     [["url"], "js_url"],
     [["image-bitmap"], "pal_image_bitmap"],
+    [["idle-deadline"], "pal_idle_callbacks"],
 ];
 
 /** A default-library binary class `instanceof` decides: ArrayBuffer, DataView, a view or typed array. */

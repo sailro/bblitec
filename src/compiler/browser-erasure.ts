@@ -1,8 +1,9 @@
 import {
     deferredCapabilityDescriptor,
     deferredPropertyDescriptor,
-    deferredWindowFunctionSymbol,
 } from "./deferred-capabilities.js";
+import { idleWindowFunctionSymbol } from "./idle-callbacks.js";
+import { isWindowServiceCall } from "./window-members.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { gpuValue } from "./gpu-value.js";
 import {
@@ -1008,8 +1009,12 @@ export class BrowserErasure {
                 : unwrapped;
         if (ts.isCallExpression(candidate)) {
             if (
-                this.context.options.deferredCapabilities &&
-                deferredCapabilityDescriptor(this.context.checker, candidate)
+                (this.context.options.deferredCapabilities &&
+                    deferredCapabilityDescriptor(
+                        this.context.checker,
+                        candidate,
+                    )) ||
+                isWindowServiceCall(this.context, candidate)
             )
                 return false;
             const callee = this.context.unwrap(candidate.expression);
@@ -1209,13 +1214,14 @@ export class BrowserErasure {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
         if (
+            idleWindowFunctionSymbol(this.context.checker, unwrapped) ||
+            isWindowServiceCall(this.context, unwrapped)
+        )
+            return false;
+        if (
             this.context.options.deferredCapabilities &&
-            (deferredWindowFunctionSymbol(this.context.checker, unwrapped) ||
-                (ts.isPropertyAccessExpression(unwrapped) &&
-                    deferredPropertyDescriptor(
-                        this.context.checker,
-                        unwrapped,
-                    )))
+            ts.isPropertyAccessExpression(unwrapped) &&
+            deferredPropertyDescriptor(this.context.checker, unwrapped)
         )
             return false;
         if (devicePixelRatioValue(this.context, unwrapped)) return false;

@@ -1573,6 +1573,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the Compression Streams CompressionStream and DecompressionStream transforms through zlib",
         consumers: CMAKE,
     },
+    "platform:idle-callbacks": {
+        provenance:
+            "the HTML requestIdleCallback idle periods and IdleDeadline over the realm event loop",
+        consumers: INVENTORY,
+    },
     "image:runtime-decode": {
         provenance:
             "the HTML createImageBitmap decode of run-time image bytes; generation adds the WebP codec it links (image-codecs.ts)",

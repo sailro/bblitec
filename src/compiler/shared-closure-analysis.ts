@@ -267,6 +267,7 @@ export class SharedClosureAnalysis {
             (global === "setTimeout" ||
                 global === "setInterval" ||
                 global === "queueMicrotask" ||
+                global === "requestIdleCallback" ||
                 (includeFrameRegistrations &&
                     global === "requestAnimationFrame")) &&
             index === 0 &&

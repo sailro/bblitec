@@ -77,6 +77,8 @@ const serviceNames = new Set([
     "rejectionhandled",
     "visibilitychange",
     "pointerlockchange",
+    "fullscreenchange",
+    "fullscreenerror",
     "load",
     "DOMContentLoaded",
     "gamepadconnected",
