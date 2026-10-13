@@ -217,6 +217,13 @@ export interface RecordSchema {
      */
     readonly instanceOf?: ReadonlyMap<string, (error: string) => string>;
     /**
+     * Platform classes the native platform provides, keyed by the library
+     * global (`AudioBuffer`), with the shape their instances lower to:
+     * `typeof AudioBuffer` is `"function"`, and `value instanceof
+     * AudioBuffer` tests whether a union holds that shape.
+     */
+    readonly platformClasses?: ReadonlyMap<string, RecordShape>;
+    /**
      * Platform globals read as values (`globalThis.fetch` stored as a
      * function), keyed by the global's name.
      */
@@ -5352,6 +5359,22 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             );
             if (member) return `${this.cpp(to)}(${value})`;
         }
+        // A union narrowed to fewer of its members (`typeof source ===
+        // "object"`), or widened to more: the held member, kept.
+        if (from.kind === "variant" && to.kind === "variant") {
+            const within = (
+                members: readonly RecordShape[],
+                union: readonly RecordShape[],
+            ): boolean =>
+                members.every((member) =>
+                    union.some((candidate) => this.same(candidate, member)),
+                );
+            if (
+                within(to.members, from.members) ||
+                within(from.members, to.members)
+            )
+                return `bbl::pinned::variant_cast<${this.cpp(to)}>(${value})`;
+        }
         // A function passed where callers pass more arguments ignores the
         // rest, as JavaScript's does (`then(resolve)` of a void promise).
         // The function receives each argument as its own parameter type (a
@@ -5872,6 +5895,66 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return undefined;
     }
 
+    /**
+     * A member of a module constant frozen by `as const` (`SoundState.Stopped`
+     * over `const SoundState = { Stopped: 1, ... } as const`) whose value is
+     * a literal: that literal, read without building the object.
+     */
+    private frozenMember(
+        node: ts.PropertyAccessExpression,
+    ): ts.Expression | undefined {
+        const owner = this.skipParentheses(node.expression);
+        if (!ts.isIdentifier(owner)) return undefined;
+        const declaration = this.model.declarationOf(owner);
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !(declaration.parent.flags & ts.NodeFlags.Const) ||
+            !ts.isSourceFile(declaration.parent.parent.parent) ||
+            declaration.getSourceFile().isDeclarationFile ||
+            !declaration.initializer
+        )
+            return undefined;
+        let initializer = this.skipParentheses(declaration.initializer);
+        if (
+            !ts.isAsExpression(initializer) ||
+            !ts.isConstTypeReference(initializer.type)
+        )
+            return undefined;
+        initializer = this.skipParentheses(initializer.expression);
+        if (!ts.isObjectLiteralExpression(initializer)) return undefined;
+        const property = [...initializer.properties]
+            .reverse()
+            .find(
+                (candidate) =>
+                    ts.isPropertyAssignment(candidate) &&
+                    (ts.isIdentifier(candidate.name) ||
+                        ts.isStringLiteral(candidate.name)) &&
+                    candidate.name.text === node.name.text,
+            );
+        if (!property || !ts.isPropertyAssignment(property)) return undefined;
+        const value = this.skipParentheses(property.initializer);
+        const literal = (expression: ts.Expression): boolean =>
+            ts.isNumericLiteral(expression) ||
+            ts.isStringLiteral(expression) ||
+            ts.isNoSubstitutionTemplateLiteral(expression) ||
+            expression.kind === ts.SyntaxKind.TrueKeyword ||
+            expression.kind === ts.SyntaxKind.FalseKeyword ||
+            (ts.isPrefixUnaryExpression(expression) &&
+                expression.operator === ts.SyntaxKind.MinusToken &&
+                ts.isNumericLiteral(expression.operand));
+        // A spread after the member could replace it.
+        const index = initializer.properties.indexOf(property);
+        if (
+            !literal(value) ||
+            initializer.properties
+                .slice(index + 1)
+                .some((later) => !ts.isPropertyAssignment(later))
+        )
+            return undefined;
+        return value;
+    }
+
     /** The C++ spelling of a pinned local or parameter an adapter names. */
     private localNamed(name: string, site: ts.Node): string {
         const found = [...this.locals].filter(
@@ -6155,6 +6238,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     /**
+     * The shape instances of a class global lower to: the language's
+     * `ArrayBuffer`, or a class the schema's platform provides.
+     */
+    private classShape(library: string): RecordShape | undefined {
+        if (library === "ArrayBuffer") return { kind: "buffer" };
+        return this.model.schema.platformClasses?.get(library);
+    }
+
+    /**
      * `value instanceof C` over a thrown value: the library's Error
      * classes by their name, an authored `class extends Error` by its
      * native record, a platform class (`DOMException`) by its schema test.
@@ -6191,6 +6283,19 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return "false";
         };
         const library = this.libraryName(target);
+        const instances =
+            library !== undefined ? this.classShape(library) : undefined;
+        if (instances !== undefined) {
+            if (shape.kind === "variant") {
+                const held = shape.members.filter((member) =>
+                    this.same(member, instances),
+                );
+                return held.length === 0
+                    ? "false"
+                    : `(${held.map((member) => `std::holds_alternative<${this.cpp(member)}>(${value})`).join(" || ")})`;
+            }
+            return this.same(shape, instances) ? "true" : "false";
+        }
         const platform =
             library !== undefined
                 ? this.model.schema.instanceOf?.get(library)
@@ -6267,6 +6372,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     private typeofTest(operand: ts.Expression, expected: string): string {
+        // Feature detection of a class the platform provides (`typeof
+        // AudioBuffer !== "undefined"`), or of the language's own buffer.
+        const library = this.libraryName(operand);
+        if (library !== undefined && this.classShape(library) !== undefined)
+            return expected === "function" ? "true" : "false";
         const shape = this.shapeAt(operand);
         if (shape.kind === "json") {
             this.model.include("bblite/pinned_json.hpp");
@@ -6350,6 +6460,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (typeof member === "number") return doubleCpp(member);
         if (typeof member === "string")
             return `std::string(${stringLiteral(member)})`;
+        const frozen = this.frozenMember(node);
+        if (frozen !== undefined)
+            return this.convert(frozen, this.shapeAt(node));
         const numericConstant = numberConstant(node, (expression) =>
             libraryGlobal(this.checker, expression),
         );
@@ -7763,6 +7876,19 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     if (shape.kind === "json") {
                         this.model.include("bblite/pinned_json.hpp");
                         return `${this.value(first)}.is_array()`;
+                    }
+                    // A union holding an array is one while it holds it.
+                    if (shape.kind === "variant") {
+                        const arrays = shape.members.filter(
+                            (member) =>
+                                member.kind === "array" ||
+                                member.kind === "tuple",
+                        );
+                        const tests = arrays.map(
+                            (member) =>
+                                `std::holds_alternative<${this.cpp(member)}>(held)`,
+                        );
+                        return `[](const auto& held) { return ${tests.length ? tests.join(" || ") : "static_cast<void>(held), false"}; }(${this.value(first)})`;
                     }
                     const isArray =
                         shape.kind === "array" || shape.kind === "tuple";

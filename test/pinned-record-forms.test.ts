@@ -19,7 +19,10 @@ const MODULE = "src/fixture/record-forms.ts";
  * snapshotted with `Array.from`, a structural `"member" in value` over a
  * union of records and over one record, a remainder assignment, a loop
  * with two incrementors, module state starting from `false`, `0` and an
- * empty string, and a record whose member is an anonymous type literal.
+ * empty string, a record whose member is an anonymous type literal, and a
+ * union narrowed to fewer of its members (`typeof`, `in`, `Array.isArray`,
+ * `instanceof` the language's or a platform class),
+ * and members of an `as const` object read as their literals.
  * `run` prints what it computed.
  */
 const SOURCE = `export interface Bus {
@@ -31,6 +34,33 @@ export interface MainBus {
 }
 
 export type PrimaryBus = Bus | MainBus;
+
+export interface Holder {
+    readonly _held: number;
+}
+
+export type Source = string | string[] | Holder | ArrayBuffer | Uint8Array;
+
+function describe(source: Source): string {
+    if (typeof source === "object" && source !== null && "_held" in source) {
+        return "held " + source._held;
+    }
+    if (typeof source === "string") {
+        return "url " + source;
+    }
+    if (source instanceof ArrayBuffer) {
+        return "bytes " + source.byteLength;
+    }
+    if (typeof Uint8Array !== "undefined" && source instanceof Uint8Array) {
+        return "view " + source.length;
+    }
+    if (Array.isArray(source)) {
+        return "list " + source.length;
+    }
+    return "other";
+}
+
+export const Mode = { Idle: 0, Busy: 3, Label: "busy" } as const;
 
 let warned = false;
 let warnings = 0;
@@ -62,10 +92,19 @@ export function run(): string {
     const main: MainBus = { _in: 4 };
     const bus: Bus = { _graph: { gain: 0.5 } };
     const plain = "_in" in main;
+    const list: string[] = ["b.ogg", "c.mp3"];
+    const holder: Holder = { _held: 3 };
+    const bytes = new ArrayBuffer(4);
+    const view = new Uint8Array(2);
+    const sources: Source[] = ["a.wav", list, holder, bytes, view];
+    const described = sources.map((source) => describe(source)).join(",");
+    let mode: number = Mode.Idle;
+    if (sounds.size > 1) mode = Mode.Busy;
+    const modeName = mode === Mode.Busy ? Mode.Label : "idle";
     warnOnce("first");
     warnOnce("second");
     const flags = (plain ? "in " : "out ") + (warned ? "warned" : "quiet");
-    return \`\${snapshot.join(",")} \${sounds.size} \${offset} \${tail} \${mirrored.join(",")} \${input(main)} \${input(bus)} \${flags} \${warnings} \${lastWarning}\`;
+    return \`\${snapshot.join(",")} \${sounds.size} \${offset} \${tail} \${mirrored.join(",")} \${input(main)} \${input(bus)} \${flags} \${warnings} \${lastWarning} \${described} \${mode} \${modeName}\`;
 }
 `;
 
@@ -96,9 +135,13 @@ function lowered(source: string): string {
             records: [
                 { pinned: ["Bus"], cpp: "Bus", reference: true },
                 { pinned: ["MainBus"], cpp: "MainBus", reference: true },
+                { pinned: ["Holder"], cpp: "Holder", reference: true },
             ],
             values: new Map(),
             adapters: new Map(),
+            platformClasses: new Map([
+                ["Uint8Array", { kind: "typed", element: "u8" }],
+            ]),
             exported: new Set([`${MODULE}#run`]),
         },
     );
@@ -109,7 +152,7 @@ function lowered(source: string): string {
 #include <bblite/pinned_records.hpp>
 ${[...model.includes].map((header) => `#include <${header}>`).join("\n")}
 namespace bbl {
-${model.structs(["Bus", "MainBus", ...model.literalRecords()])}
+${model.structs(["Bus", "MainBus", "Holder", ...model.literalRecords()])}
 ${declarations}
 ${definitions}
 } // namespace bbl
@@ -120,6 +163,8 @@ test("the record model lowers set snapshots, structural tests, remainders, comma
     const header = lowered(SOURCE);
     assert.match(header, /std::holds_alternative<std::shared_ptr<bbl::Bus>>/);
     assert.match(header, /std::fmod\(/);
+    // A frozen constant's members are their literals; the object is never built.
+    assert.doesNotMatch(header, /->busy = /);
     const javascript = ts.transpileModule(SOURCE, {
         compilerOptions: {
             target: ts.ScriptTarget.ES2022,
