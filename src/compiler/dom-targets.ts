@@ -228,3 +228,23 @@ export function compileDomInstanceOf(
             return `bbl::dom_target_has_tag(${target}, ${context.cppString(entry.test.tag)})`;
     }
 }
+
+/**
+ * `canvas.tabIndex = 0`: a native canvas's tabIndex reads 0 and keyboard
+ * focus targets the SDL surface, so the write changes nothing observable.
+ */
+export function isInertCanvasFocusWrite(
+    context: Pick<LoweringServices, "unwrap" | "isCanvasElement">,
+    assignment: ts.BinaryExpression,
+): boolean {
+    const left = context.unwrap(assignment.left);
+    const right = context.unwrap(assignment.right);
+    return (
+        assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isPropertyAccessExpression(left) &&
+        left.name.text === "tabIndex" &&
+        context.isCanvasElement(left.expression) &&
+        ts.isNumericLiteral(right) &&
+        Number(right.text) === 0
+    );
+}

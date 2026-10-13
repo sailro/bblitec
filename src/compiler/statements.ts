@@ -180,6 +180,7 @@ interface StatementLoweringContext extends Pick<
     | "isBrowserInstrumentationCall"
     | "emitPlatformEventListener"
     | "eraseBrowserInstrumentation"
+    | "noteErasedElementWrite"
     | "requiresStaticIteration"
     | "requiresStaticDataIteration"
     | "executedModuleConstantElements"
@@ -1770,6 +1771,19 @@ export class StatementLowerer {
             // native observable effect. This covers optional UI setup while
             // leaving mixed browser/native conditions to the established
             // condition lowerer and its pinned static deductions.
+            const noteWrites = (node: ts.Node): void => {
+                if (
+                    ts.isBinaryExpression(node) &&
+                    ASSIGNMENT_OPERATORS.has(node.operatorToken.kind)
+                ) {
+                    const left = context.unwrap(node.left);
+                    if (ts.isPropertyAccessExpression(left))
+                        context.noteErasedElementWrite(left.expression, node);
+                }
+                ts.forEachChild(node, noteWrites);
+            };
+            noteWrites(statement.thenStatement);
+            if (statement.elseStatement) noteWrites(statement.elseStatement);
             return;
         }
         const condition = context.conditions.compileCondition(
@@ -4941,6 +4955,17 @@ export class StatementLowerer {
             ts.isCallExpression(unwrapped) &&
             context.isBrowserInstrumentationCall(unwrapped)
         ) {
+            // Object.assign into a browser object writes through its owner.
+            const target = unwrapped.arguments[0];
+            if (target) {
+                const owner = context.unwrap(target);
+                context.noteErasedElementWrite(
+                    ts.isPropertyAccessExpression(owner)
+                        ? owner.expression
+                        : target,
+                    unwrapped,
+                );
+            }
             context.eraseBrowserInstrumentation(unwrapped.pos);
             return;
         }

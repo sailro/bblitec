@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { PNG } from "pngjs";
 import { compileSource } from "../src/compiler.js";
+import type { NativeHostUi } from "../src/compiler/types.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
 const directory = resolve("artifacts/ui-element-writes");
@@ -28,11 +29,12 @@ const program = (body: string): string => `
     globalThis.close();
 `;
 
-const compile = (body: string) => {
+const compile = (body: string, nativeHostUi?: NativeHostUi) => {
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     return compileSource(program(body), {
         fileName: join(directory, "entry.ts"),
+        ...(nativeHostUi ? { nativeHostUi } : {}),
     });
 };
 
@@ -91,6 +93,24 @@ test("unrepresented retained element writes refuse instead of erasing", () => {
         assert.throws(() => compile(body), pattern, body);
 });
 
+test("with retained UI, writes through unprojected DOM elements refuse instead of erasing", () => {
+    const retained = `document.body.append(document.createElement("div"));`;
+    const page = `const page = document.scrollingElement as HTMLElement;`;
+    for (const write of [
+        "page.scrollTop = 4;",
+        "if (page) page.scrollTop = 4;",
+        "page.dataset.mark = 'x';",
+        "Object.assign(page.style, { color: 'red' });",
+    ])
+        assert.throws(
+            () => compile(`${retained} ${page} ${write}`),
+            /A write through a DOM element that the retained UI does not represent cannot be erased in a program with retained UI/,
+            write,
+        );
+    // Without retained UI the page's browser instrumentation still erases.
+    assert.doesNotMatch(compile(`${page} page.scrollTop = 4;`).cpp, /scroll/i);
+});
+
 test("inert canvas focus order and packaged image sources lower explicitly", () => {
     const canvas = compile(
         `const canvas = document.createElement("canvas"); canvas.tabIndex = 0; document.body.append(canvas);`,
@@ -109,18 +129,51 @@ test("inert canvas focus order and packaged image sources lower explicitly", () 
     assert.ok(
         fixed.manifest.assets.some((asset) => asset.output === "tile.png"),
     );
-    const named = compile(
-        `const image = document.createElement("img");
-        image.dataset.next = "tile.png";
-        image.src = image.dataset.next!;
-        document.body.append(image);`,
-    );
-    assert.doesNotMatch(named.cpp, /"src"/);
-    const adaptation = named.manifest.adaptations?.find(
-        (entry) => entry.id === "substituted-ui-runtime",
-    );
+    // A host image's data attributes name both sources: both are packaged
+    // and the write selects between them at run time.
+    writeFileSync(join(directory, "tall.png"), PNG.sync.write(texture));
+    const host: NativeHostUi = {
+        sourcePath: "ui/art-host.json",
+        elements: [
+            {
+                tag: "img",
+                attributes: {
+                    id: "art",
+                    src: "tile.png",
+                    "data-landscape-src": "tile.png",
+                    "data-portrait-src": "tall.png",
+                },
+            },
+        ],
+    };
+    const select = `const art = document.getElementById("art") as HTMLImageElement;
+        art.src = window.innerWidth < window.innerHeight ? art.dataset.portraitSrc! : art.dataset.landscapeSrc!;`;
+    const selected = compile(select, host);
+    for (const output of ["tile.png", "tall.png"])
+        assert.ok(
+            selected.manifest.assets.some((asset) => asset.output === output),
+            output,
+        );
     assert.match(
-        adaptation?.nativeSemantics ?? "",
-        /the reached img src write\(s\) with a value generation cannot name keep the element's current state/,
+        selected.cpp,
+        /bbl::ui_set_attribute\([^;]*"src", (?!")[^;]*data-portrait-src/,
+    );
+    const refusal = /An img src write requires sources generation can package/;
+    assert.throws(
+        () =>
+            compile(
+                `${select} (document.getElementById("art") as HTMLImageElement).dataset.portraitSrc = "other.png";`,
+                host,
+            ),
+        refusal,
+    );
+    assert.throws(
+        () =>
+            compile(
+                `const image = document.createElement("img");
+                image.dataset.next = "tile.png";
+                image.src = image.dataset.next!;`,
+            ),
+        refusal,
     );
 });

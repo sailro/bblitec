@@ -232,6 +232,7 @@ import {
     symbolPropertyKey,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
+import { isInertCanvasFocusWrite } from "./compiler/dom-targets.js";
 import {
     isNullable,
     presentMembers,
@@ -920,6 +921,8 @@ class Compiler implements LoweringServices {
     private readonly loweringStatements: LoweringStatement[] = [];
     public readonly erasedBrowserExpressions = new EmissionSet<number>();
     public readonly erasedBrowserInstrumentation = new EmissionSet<number>();
+    /** Erased writes through DOM element receivers, refused with retained UI. */
+    private readonly erasedElementWrites = new EmissionMap<number, ts.Node>();
     public readonly unwrappedAwaitExpressions = new EmissionSet<number>();
     public readonly localCubemapState: { maxCandidates?: number } =
         emissionRecord({});
@@ -1106,6 +1109,7 @@ class Compiler implements LoweringServices {
         // loop that presents it (NA-26).
         this.refuseMixedStandaloneTextContexts();
         this.refuseUiWithoutPresentation();
+        this.refuseErasedElementWrites();
         this.ui.validateUiStaticProjection();
 
         if (this.dataTypes.usesJsonStorage()) this.reachJson();
@@ -9188,6 +9192,67 @@ class Compiler implements LoweringServices {
 
     public eraseBrowserInstrumentation(position: number): void {
         this.erasedBrowserInstrumentation.add(position);
+    }
+
+    public noteErasedElementWrite(
+        receiver: ts.Expression,
+        site: ts.Node,
+    ): void {
+        if (ts.isBinaryExpression(site) && isInertCanvasFocusWrite(this, site))
+            return;
+        const isElement = (expression: ts.Expression): boolean => {
+            const type = this.checker.getNonNullableType(
+                this.checker.getTypeAtLocation(expression),
+            );
+            return (type.isUnion() ? type.types : [type]).some((member) => {
+                const symbol = member.getSymbol();
+                return (
+                    declaredInDomLibrary(symbol) &&
+                    /^(?:Element|(?:HTML|SVG|MathML)\w*Element)$/.test(
+                        symbol?.name ?? "",
+                    )
+                );
+            });
+        };
+        // `element.dataset.key` and `element.style.color` write through the
+        // element that owns the receiver.
+        let owner: ts.Expression | undefined = receiver;
+        while (owner) {
+            const value = this.unwrap(owner);
+            // A canvas's dataset carries capture handshakes: written natively
+            // where the program reads it (`primaryCanvasDataset`), and
+            // otherwise unobservable.
+            if (
+                ts.isPropertyAccessExpression(value) &&
+                value.name.text === "dataset" &&
+                this.isCanvasElement(value.expression)
+            )
+                return;
+            if (isElement(owner)) {
+                this.erasedElementWrites.set(site.pos, site);
+                return;
+            }
+            owner =
+                ts.isPropertyAccessExpression(value) ||
+                ts.isElementAccessExpression(value)
+                    ? value.expression
+                    : undefined;
+        }
+    }
+
+    /**
+     * A program with retained UI projects its DOM elements natively, so a write
+     * through an element the projection did not represent would vanish: it must
+     * lower or refuse, never erase as browser instrumentation.
+     */
+    private refuseErasedElementWrites(): void {
+        if (!this.features.has("ui:rml")) return;
+        const [site] = this.erasedElementWrites.values();
+        if (site)
+            this.fail(
+                site,
+                "A write through a DOM element that the retained UI does not represent cannot be erased in a program with retained UI.",
+            );
     }
 
     public expectArgumentCount(

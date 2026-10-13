@@ -84,6 +84,7 @@ import {
 } from "./dom-listeners.js";
 import {
     elementInterfaceTag,
+    isInertCanvasFocusWrite,
     eventTargetCpp,
     isDocumentReceiver,
     isDomReceiver,
@@ -712,6 +713,113 @@ export class UiProjection {
                 elementInterfaceTag(member.getSymbol()?.name ?? "") ?? "",
             ),
         );
+    }
+
+    /**
+     * The values an image source expression can take, when generation knows
+     * them all: string literals, conditionals over them, and dataset reads of
+     * a host companion element whose data attribute the program never writes.
+     */
+    private uiImageSourceCandidates(
+        expression: ts.Expression,
+    ): string[] | undefined {
+        const fixed = this.tryUiStaticString(expression);
+        if (fixed !== undefined) return [fixed];
+        const value = this.context.unwrap(expression);
+        if (ts.isConditionalExpression(value)) {
+            const whenTrue = this.uiImageSourceCandidates(value.whenTrue);
+            const whenFalse = this.uiImageSourceCandidates(value.whenFalse);
+            return whenTrue && whenFalse
+                ? [...whenTrue, ...whenFalse]
+                : undefined;
+        }
+        if (
+            !ts.isPropertyAccessExpression(value) ||
+            !ts.isPropertyAccessExpression(value.expression) ||
+            value.expression.name.text !== "dataset"
+        )
+            return undefined;
+        const owner = this.uiElementValue(value.expression.expression);
+        const id = owner?.uiHostId ?? owner?.uiLookupId;
+        const attribute = `data-${value.name.text.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+        const host =
+            id === undefined
+                ? undefined
+                : [
+                      ...nativeHostUiElements(
+                          this.context.options.nativeHostUi?.elements ?? [],
+                      ),
+                  ].find((element) => element.attributes?.id === id);
+        const source = host?.attributes?.[attribute];
+        return source !== undefined && !this.programWritesUiAttribute(attribute)
+            ? [source]
+            : undefined;
+    }
+
+    /**
+     * Whether any program source may write the named attribute: a dataset
+     * write or delete of its key, an attribute call naming it or a dynamic
+     * name, or an Object.assign into a dataset.
+     */
+    private programWritesUiAttribute(attribute: string): boolean {
+        const key = attribute
+            .slice("data-".length)
+            .replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+        const isDataset = (node: ts.Expression): boolean => {
+            const value = this.context.unwrap(node);
+            return (
+                ts.isPropertyAccessExpression(value) &&
+                value.name.text === "dataset"
+            );
+        };
+        const writesKey = (target: ts.Expression): boolean => {
+            const value = this.context.unwrap(target);
+            if (ts.isPropertyAccessExpression(value))
+                return isDataset(value.expression) && value.name.text === key;
+            if (
+                ts.isElementAccessExpression(value) &&
+                isDataset(value.expression)
+            ) {
+                const name = this.context.unwrap(value.argumentExpression);
+                return !ts.isStringLiteralLike(name) || name.text === key;
+            }
+            return false;
+        };
+        const writes = (node: ts.Node): boolean => {
+            if (
+                (ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+                    writesKey(node.left)) ||
+                (ts.isDeleteExpression(node) && writesKey(node.expression))
+            )
+                return true;
+            if (ts.isCallExpression(node)) {
+                const callee = this.context.unwrap(node.expression);
+                const name = ts.isPropertyAccessExpression(callee)
+                    ? callee.name.text
+                    : undefined;
+                const first = node.arguments[0]
+                    ? this.context.unwrap(node.arguments[0])
+                    : undefined;
+                if (
+                    (name === "setAttribute" ||
+                        name === "removeAttribute" ||
+                        name === "toggleAttribute" ||
+                        name === "setAttributeNS" ||
+                        name === "removeAttributeNS") &&
+                    (!first ||
+                        !ts.isStringLiteralLike(first) ||
+                        first.text.toLowerCase() === attribute)
+                )
+                    return true;
+                if (name === "assign" && first && isDataset(first)) return true;
+            }
+            return ts.forEachChild(node, writes) ?? false;
+        };
+        return this.context
+            .sourceFiles()
+            .some((file) => !file.isDeclarationFile && writes(file));
     }
 
     /** Evaluate helper receivers at admitted operations, not during erasure probes. */
@@ -1709,13 +1817,6 @@ export class UiProjection {
      * this scene's `substituted-ui-runtime` fidelity adaptation.
      */
     public readonly uiDegradedStyleProperties = new EmissionSet<string>();
-
-    /**
-     * Element writes accepted without a native effect (an image source
-     * generation cannot name), recorded in the `substituted-ui-runtime`
-     * adaptation.
-     */
-    public readonly uiDegradedElementWrites = new EmissionSet<string>();
 
     /**
      * Reviewed scoped selectors retained in typed form instead of widened to
@@ -5190,32 +5291,37 @@ export class UiProjection {
                 directElement,
                 expression.left.expression,
             );
-            // A native canvas's tabIndex reads 0 and keyboard focus targets
-            // the SDL surface, so writing 0 changes nothing observable.
-            if (
-                property === "tabIndex" &&
-                tag === "canvas" &&
-                this.context.compileValue(expression.right).staticNumber === 0
-            )
-                return true;
+            if (isInertCanvasFocusWrite(this.context, expression)) return true;
             if (property === "src" && tag === "img") {
-                const source = this.tryUiStaticString(expression.right);
-                if (source !== undefined) {
-                    this.registerImageSource(source);
-                    this.context.emit({
-                        kind: "expression",
-                        code:
-                            `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, "src", ` +
-                            `${this.context.cppString(this.lowerUiAttributeLiteral("src", source, expression.right))});`,
-                    });
-                    return true;
-                }
-                // A source generation cannot name has no packaged asset: the
-                // image keeps its source, recorded for the scene's fidelity.
-                this.context.emitDiscardedValue(
-                    this.context.compileValue(expression.right),
-                );
-                this.uiDegradedElementWrites.add("img src");
+                // Every source the write can select is packaged; the
+                // selection itself runs as written.
+                const sources = this.uiImageSourceCandidates(expression.right);
+                if (!sources)
+                    this.context.fail(
+                        expression.right,
+                        "An img src write requires sources generation can package: string literals, conditionals of them, or host data attributes the program never writes.",
+                    );
+                for (const source of sources) this.registerImageSource(source);
+                const fixed = this.tryUiStaticString(expression.right);
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, "src", ` +
+                        `${
+                            fixed !== undefined
+                                ? this.context.cppString(
+                                      this.lowerUiAttributeLiteral(
+                                          "src",
+                                          fixed,
+                                          expression.right,
+                                      ),
+                                  )
+                                : this.uiStringCpp(
+                                      expression.right,
+                                      "UI img src",
+                                  )
+                        });`,
+                });
                 return true;
             }
             this.context.fail(
