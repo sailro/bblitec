@@ -4873,7 +4873,7 @@ public:
 struct UiRmlRuntime;
 /** The one live runtime, whose viewport and root font complete math after var() substitution. */
 UiRmlRuntime* substitution_runtime = nullptr;
-Rml::String substitute_css(const Rml::String& property, const Rml::String& value);
+void substitute_css(const Rml::String& property, Rml::String& value);
 
 struct UiRmlRuntime {
     UiRmlRuntime(Engine& engine, SDL_Window* window, std::uint32_t width, std::uint32_t height,
@@ -7298,10 +7298,16 @@ struct UiRmlRuntime {
     double canvas_render_ms = 0;
 };
 
-Rml::String substitute_css(const Rml::String& property, const Rml::String& value) {
+void substitute_css(const Rml::String& property, Rml::String& value) {
     if (!substitution_runtime)
         throw std::runtime_error("CSS variable substitution needs the retained UI runtime.");
-    return substitution_runtime->project_substituted_css(value, property);
+    // Substituted values were projected when set: only math and colours over var() remain.
+    constexpr std::string_view pending[] = {"calc(", "min(", "max(", "clamp(", "bbl-css-color("};
+    if (std::none_of(std::begin(pending), std::end(pending), [&](std::string_view token) {
+            return value.find(token) != Rml::String::npos;
+        }))
+        return;
+    value = substitution_runtime->project_substituted_css(std::move(value), property);
 }
 
 // A canvas is a replaced element: its backing size, in CSS pixels, is its
