@@ -64,6 +64,108 @@ function isHostPageDocument(value: unknown): value is HostPageDocument {
     );
 }
 
+export interface HtmlFragmentComment {
+    tag?: undefined;
+    text?: undefined;
+    comment: string;
+}
+
+export interface HtmlFragmentElement {
+    /** The local name, lower case for HTML elements. */
+    tag: string;
+    namespace: string;
+    /** In source order. */
+    attributes?: Record<string, string>;
+    children?: HtmlFragmentNode[];
+}
+
+/** An innerHTML fragment's node, comments included. */
+export type HtmlFragmentNode =
+    HtmlFragmentElement | HostPageText | HtmlFragmentComment;
+
+const fragmentWalker = `(markup) => {
+    const template = document.createElement("template");
+    template.innerHTML = markup;
+    const walk = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) return { text: node.data };
+        if (node.nodeType === Node.COMMENT_NODE) return { comment: node.data };
+        if (node.nodeType !== Node.ELEMENT_NODE) return undefined;
+        const element = { tag: node.localName, namespace: node.namespaceURI ?? "" };
+        if (node.attributes.length > 0)
+            element.attributes = Object.fromEntries(
+                Array.from(node.attributes, (attribute) => [attribute.name, attribute.value]),
+            );
+        const children = Array.from(
+            node.localName === "template" ? node.content.childNodes : node.childNodes,
+            walk,
+        ).filter((child) => child !== undefined);
+        if (children.length > 0) element.children = children;
+        return element;
+    };
+    return JSON.stringify(
+        Array.from(template.content.childNodes, walk).filter((node) => node !== undefined),
+    );
+}`;
+
+const fragments = new Map<string, HtmlFragmentNode[]>();
+
+/**
+ * `markup` parsed as innerHTML is (a template's contents, so an option or a
+ * table part stands alone): the browser's tree, entity decoding, implied
+ * end tags and attribute forms, with comments. Replayed from the bake cache.
+ */
+export function parseHtmlFragment(markup: string): readonly HtmlFragmentNode[] {
+    const known = fragments.get(markup);
+    if (known) return known;
+    const bytes = cachedBakeSync(
+        {
+            kind: "html-fragment",
+            version: "1",
+            module: moduleIdentity(import.meta.url),
+            browser: true,
+            parameters: {},
+            inputs: [Buffer.from(markup, "utf8")],
+        },
+        () =>
+            Buffer.from(
+                evaluateInSharedPage({
+                    label: "Reading static innerHTML",
+                    serverName: "innerHTML parser server",
+                    requirement: "Reading static innerHTML requires Chromium.",
+                    evaluate: fragmentWalker,
+                    input: markup,
+                }),
+                "utf8",
+            ),
+    );
+    const nodes: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
+    if (!Array.isArray(nodes) || !nodes.every(isHtmlFragmentNode))
+        throw new Error("The innerHTML parser returned no node list.");
+    fragments.set(markup, nodes);
+    return nodes;
+}
+
+function isHtmlFragmentNode(value: unknown): value is HtmlFragmentNode {
+    if (typeof value !== "object" || value === null) return false;
+    if ("text" in value) return typeof value.text === "string";
+    if ("comment" in value) return typeof value.comment === "string";
+    return (
+        "tag" in value &&
+        typeof value.tag === "string" &&
+        "namespace" in value &&
+        typeof value.namespace === "string" &&
+        (!("attributes" in value) ||
+            (typeof value.attributes === "object" &&
+                value.attributes !== null &&
+                Object.values(value.attributes).every(
+                    (attribute) => typeof attribute === "string",
+                ))) &&
+        (!("children" in value) ||
+            (Array.isArray(value.children) &&
+                value.children.every(isHtmlFragmentNode)))
+    );
+}
+
 /** Parse `html` with the generation's Chromium, replayed from the bake cache. */
 export function parseHostPageMarkup(html: string): HostPageDocument {
     const bytes = cachedBakeSync(

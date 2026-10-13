@@ -156,7 +156,6 @@ test("unrelated markup and stored child collections continue to refuse", () => {
         '<label onclick="run()">x</label>',
         '<image href="asset.png"/>',
         '<svg><input type="range"/></svg>',
-        "<!-- missing",
     ])
         assert.throws(
             () =>
