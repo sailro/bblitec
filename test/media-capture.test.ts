@@ -248,6 +248,15 @@ test(
         if (destination.stream !== stream) fail("stream identity");
         const track = stream.getAudioTracks()[0];
         if (!track || track.kind !== "audio" || track.readyState !== "live" || !track.enabled) fail("track");
+        interface Mixer { destination: MediaStreamAudioDestinationNode }
+        function cloneMixed(mixer: Mixer | null): MediaStreamTrack | null {
+            return mixer?.destination.stream.getAudioTracks()[0]?.clone() ?? null;
+        }
+        const mixed = cloneMixed({ destination });
+        if (cloneMixed(null) !== null || !mixed || mixed === track || mixed.kind !== "audio") fail("mixed clone");
+        const silent = context.createMediaStreamDestination();
+        silent.stream.removeTrack(silent.stream.getAudioTracks()[0]!);
+        if (cloneMixed({ destination: silent }) !== null) fail("trackless mixer");
         const copy = new MediaStream(stream);
         if (copy === stream || copy.getTracks()[0] !== track || copy.id === stream.id) fail("copy");
         const clone = track!.clone();
