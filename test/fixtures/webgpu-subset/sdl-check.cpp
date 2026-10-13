@@ -1,6 +1,8 @@
-// The splat-stream GPU work on an SDL_GPU device through `SdlWebGpuDevice`, with the
-// pinned WGSL compiled by the offline shader compiler under the names
-// `wgsl_stage_stem` gives them (BBLITE_GPU_SHADER_DIR).
+// The lowered splat-stream library's GPU work on an SDL_GPU device through
+// `SdlWebGpuDevice`, with the pinned WGSL compiled by the offline shader
+// compiler under the names `wgsl_stage_stem` gives them (BBLITE_GPU_SHADER_DIR):
+// a stage the device does not find under the name the library's own module
+// text gives it fails the run.
 
 #include "pal_sdl_gpu_webgpu.hpp"
 #include "stream-render.hpp"
@@ -12,6 +14,7 @@
 #include <atomic>
 #include <fstream>
 #include <iterator>
+#include <thread>
 
 namespace bbl::pal {
 // The PAL file services the shader loaders read through.
@@ -30,19 +33,6 @@ std::string environment_variable(const char* name) {
     return value ? value : "";
 }
 } // namespace bbl::pal
-
-namespace bbl {
-// The lowered GPU retirement (gpu-resource-retirement.ts) a released batch runs through;
-// the fixture's GPU is idle when the protocol releases its renderables.
-void retire_gpu_resources(std::shared_ptr<pal::GpuRetirementState>, pal::GpuRetirement retirement) {
-    retirement();
-}
-void dispose_gpu_resource_retirements(std::shared_ptr<pal::GpuRetirementState>) {}
-void run_gpu_resource_callbacks(pal::GpuRetirementBatch disposers) {
-    for (const auto& dispose : *disposers)
-        dispose();
-}
-} // namespace bbl
 
 namespace {
 
@@ -71,9 +61,6 @@ struct SdlTarget final : stream_check::RenderTarget {
                            ? SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT
                            : SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
         signature = {"rgba8unorm", bbl::pal::sdl_webgpu_format_name(depth_format), {}, 1};
-        // The engine's empty scene group (`bind_engine_scene_group`).
-        scene_layout = device.create_bind_group_layout({});
-        scene_group = device.create_bind_group({{}, scene_layout, {}});
         SDL_GPUTransferBufferCreateInfo info{};
         info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
         info.size = width * height * 4;
@@ -151,48 +138,52 @@ struct SdlTarget final : stream_check::RenderTarget {
     }
 };
 
-bbl::js::Promise<bbl::js::PromiseVoid> run(bbl::pal::SdlWebGpuDevice& device, SDL_GPUDevice* native,
-                                           const stream_check::Shaders& shaders,
+bbl::js::Promise<bbl::js::PromiseVoid> run(std::shared_ptr<bbl::pal::SdlWebGpuDevice> device,
+                                           SDL_GPUDevice* native,
                                            const bbl::GpuSupportedLimits& limits) {
-    std::printf("stem %s\n",
-                bbl::pal::wgsl_stage_stem(shaders.radix, "histogramMain", "comp").c_str());
-    stream_check::check_limits(device, limits);
-    co_await stream_check::check_mapping(device);
-    const auto pipelines = stream_check::create_pipelines(device, shaders);
-    co_await stream_check::check_sort(device, pipelines, 70000, 69123, 0x13579bdfu);
-    co_await stream_check::check_projection(device, pipelines);
-    co_await stream_check::check_gather(device, pipelines);
-    SdlTarget target(native, device);
-    stream_check::check_render(device, pipelines, shaders, target);
+    stream_check::Library library(device);
+    stream_check::check_limits(*device, limits);
+    co_await stream_check::check_mapping(*device);
+    co_await stream_check::check_sort(library, 70000, 69123, 0x13579bdfu);
+    co_await stream_check::check_projection(library);
+    const auto sog = stream_check::sog_images();
+    const auto source = stream_check::upload_source(*device, sog);
+    co_await stream_check::check_gather(library, sog, source);
+    SdlTarget target(native, *device);
+    co_await stream_check::check_render(library, source, target);
     co_return bbl::js::PromiseVoid{};
 }
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main() {
     try {
-        stream_check::require(argc == 2, "usage: sdl-check <shader directory>");
         SDL_SetLogOutputFunction(log_message, nullptr);
         stream_check::require(SDL_Init(SDL_INIT_VIDEO), "SDL_Init");
-        const auto shaders = stream_check::read_shaders(argv[1]);
         const auto limits = bbl::gpu_required_limits(
             {{"maxBufferSize", 256640000}, {"maxStorageBufferBindingSize", 256640000}});
         SDL_GPUDevice* native = bbl::pal::create_compiled_shader_device(true);
         stream_check::require(native != nullptr, "SDL_CreateGPUDevice");
         std::exception_ptr failure;
-        {
-            const bbl::js::RealmScope realm;
-            bbl::pal::EventLoop loop;
-            loop.run([&] {
-                auto device = std::make_shared<bbl::pal::SdlWebGpuDevice>(native, limits);
-                run(*device, native, shaders, limits)
-                    .then([device, &loop](const bbl::js::PromiseVoid&) { loop.close(); },
-                          [device, &loop, &failure](std::exception_ptr error) {
-                              failure = error;
-                              loop.close();
-                          });
-            });
-        }
+        // The realm runs on its own thread: the library's realm state (its
+        // pipeline caches) ends with that thread, before the device does.
+        std::thread([&] {
+            try {
+                const bbl::js::RealmScope realm;
+                bbl::pal::EventLoop loop;
+                loop.run([&] {
+                    auto device = std::make_shared<bbl::pal::SdlWebGpuDevice>(native, limits);
+                    run(device, native, limits)
+                        .then([device, &loop](const bbl::js::PromiseVoid&) { loop.close(); },
+                              [device, &loop, &failure](std::exception_ptr error) {
+                                  failure = error;
+                                  loop.close();
+                              });
+                });
+            } catch (...) {
+                failure = std::current_exception();
+            }
+        }).join();
         SDL_WaitForGPUIdle(native);
         SDL_DestroyGPUDevice(native);
         SDL_Quit();

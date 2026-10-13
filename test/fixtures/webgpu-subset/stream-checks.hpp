@@ -1,15 +1,127 @@
 #pragma once
 
-// The checks: each runs the pin's GPU work through the device under test,
-// compares the result with a CPU evaluation of the pinned WGSL and prints one
-// line the test compares across backends.
+// The checks: each drives the lowered splat-stream library's GPU functions
+// (the generated upstream_splat_stream.hpp: splat-stream-gpu.ts and
+// splat-stream-material.ts) on the device under test, compares the result
+// with a CPU evaluation of the pinned WGSL and prints one line the test
+// compares across backends.
 
-#include "stream-driver.hpp"
+#include "pal_webgpu_usage.hpp"
 
+#include <bblite/upstream_splat_stream.hpp>
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <limits>
-#include <map>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace stream_check {
+
+using bbl::GpuHandle;
+namespace js = bbl::js;
+namespace BU = bbl::pal::webgpu_buffer_usage;
+namespace TU = bbl::pal::webgpu_texture_usage;
+
+inline void require(bool condition, const std::string& message) {
+    if (!condition)
+        throw std::runtime_error("stream check: " + message);
+}
+
+/** The stream's GPU budget: room for every check's canonical and pass state. */
+constexpr double MAX_GPU_BYTES = 64.0 * 1024 * 1024;
+/** One canonical or projected record: 16 floats (splat-stream-gpu.ts RECORD_BYTES). */
+constexpr std::size_t RECORD_FLOATS = 16;
+
+/** Retirements the library queued behind the GPU (gpu-resource-retirement.ts). */
+inline std::vector<bbl::pal::GpuRetirement>& retirements() {
+    static std::vector<bbl::pal::GpuRetirement> queue;
+    return queue;
+}
+/** Runs the queued retirements once a check has waited for the work they follow. */
+inline void run_retirements() {
+    while (!retirements().empty()) {
+        auto queue = std::move(retirements());
+        retirements().clear();
+        for (auto& retirement : queue)
+            retirement();
+    }
+}
+
+/** The engine the library reads `_device` and `_currentEncoder` from. */
+struct Library {
+    bbl::Engine engine;
+    explicit Library(std::shared_ptr<bbl::GpuDevice> device) {
+        engine.webgpu_device = std::move(device);
+    }
+    bbl::GpuDevice& device() { return *engine.webgpu_device; }
+    bbl::StoredEngine stored() { return bbl::StoredEngine(engine); }
+};
+
+inline GpuHandle buffer(bbl::GpuDevice& device, double size, double usage, bool mapped = false) {
+    bbl::GpuBufferDescriptor descriptor;
+    descriptor.size = size;
+    descriptor.usage = usage;
+    descriptor.mapped_at_creation = mapped;
+    return device.create_buffer(descriptor);
+}
+
+/** Copies a range into a MAP_READ buffer, maps it on the realm and returns its bytes. */
+inline js::Promise<js::ArrayBuffer> read_back(bbl::GpuDevice& device, GpuHandle source,
+                                              double offset, double size) {
+    const auto readback = buffer(device, size, BU::copy_dst | BU::map_read);
+    const auto encoder = device.create_command_encoder();
+    encoder->copy_buffer_to_buffer(source, offset, readback, 0, size);
+    device.submit(js::Array<GpuHandle>{encoder->finish()});
+    auto& mapping = bbl::gpu_buffer_mapping(readback);
+    require(mapping.map_state() == "unmapped", "readback starts unmapped");
+    auto mapped = mapping.map_async(bbl::gpu_map_mode_read, {}, {});
+    require(mapping.map_state() == "pending", "mapAsync is pending until the realm settles it");
+    co_await mapped;
+    require(mapping.map_state() == "mapped", "mapAsync settles mapped");
+    const auto range = mapping.get_mapped_range({}, {});
+    std::vector<std::uint8_t> bytes(range.data(), range.data() + range.byte_length());
+    mapping.unmap();
+    require(mapping.map_state() == "unmapped", "unmap");
+    readback->destroy();
+    co_return js::ArrayBuffer(std::move(bytes));
+}
+
+template <class T> std::vector<T> values_of(const js::ArrayBuffer& bytes) {
+    std::vector<T> result(bytes.byte_length() / sizeof(T));
+    std::memcpy(result.data(), bytes.data(), result.size() * sizeof(T));
+    return result;
+}
+
+/** A deterministic sequence, so both backends see the same inputs. */
+struct Random {
+    std::uint32_t state;
+    std::uint32_t next() {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        return state;
+    }
+    float unit() { return static_cast<float>(next() >> 8) / 16777216.0f; }
+};
+
+/** A line of hexadecimal words the test compares across backends. */
+inline std::string hex_words(const std::vector<std::uint32_t>& words) {
+    std::string text;
+    char digits[10];
+    for (const auto word : words) {
+        std::snprintf(digits, sizeof(digits), "%08x", word);
+        text += digits;
+    }
+    return text;
+}
 
 /** Float agreement with a CPU evaluation: GPU transcendental functions round differently. */
 struct Tolerance {
@@ -48,87 +160,67 @@ inline void check_limits(bbl::GpuDevice& device, const bbl::GpuSupportedLimits& 
                 limits.max_compute_workgroups_per_dimension);
 }
 
-/** setupMain's runtime words for `count` visible splats and `levelCount` radix levels. */
-inline std::vector<std::uint32_t> expected_runtime(std::uint32_t count, std::uint32_t levelCount) {
-    std::vector<std::uint32_t> runtime(32, 0);
-    const auto c = [](std::uint32_t z) { return (z + 255u) / 256u; };
-    const auto put = [&](std::uint32_t u, std::uint32_t x, std::uint32_t y) {
-        const std::uint32_t m = 4u + u * 3u;
-        runtime[m] = x;
-        runtime[m + 1] = y;
-        runtime[m + 2] = 1u;
+/** Buffer mapping states and refusals, as WebGPU defines them. */
+inline js::Promise<js::PromiseVoid> check_mapping(bbl::GpuDevice& device) {
+    const auto refuses = [](auto call, const char* what) {
+        bool refused = false;
+        try {
+            call();
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        require(refused, what);
     };
-    runtime[0] = count;
-    std::uint32_t f = c(count);
-    put(0, f, 1);
-    for (std::uint32_t o = 0; o < levelCount; ++o) {
-        put(1 + o, std::max(1u, c(f)), 16);
-        f = c(f);
+    const auto created = buffer(device, 32, BU::copy_src, true);
+    auto& mapping = bbl::gpu_buffer_mapping(created);
+    require(mapping.map_state() == "mapped", "mappedAtCreation is mapped");
+    const auto first = mapping.get_mapped_range(0.0, 16.0);
+    refuses([&] { (void)mapping.get_mapped_range(8.0, 8.0); }, "overlapping ranges refuse");
+    refuses([&] { (void)mapping.get_mapped_range(20.0, 8.0); }, "misaligned offsets refuse");
+    const auto second = mapping.get_mapped_range(16.0, 16.0);
+    js::TypedArray<std::uint32_t>(first).store(0, 0x11223344u);
+    js::TypedArray<std::uint32_t>(second).store(3, 0x55667788u);
+    mapping.unmap();
+    require(mapping.map_state() == "unmapped", "unmapped after unmap");
+    refuses([&] { (void)mapping.get_mapped_range({}, {}); }, "an unmapped buffer has no range");
+    const auto words = values_of<std::uint32_t>(co_await read_back(device, created, 0, 32));
+    require(words[0] == 0x11223344u && words[7] == 0x55667788u && words[1] == 0,
+            "written ranges reach the buffer at unmap");
+    // Bytes no returned range covered keep WebGPU's zero initialization.
+    const auto partial = buffer(device, 32, BU::copy_src, true);
+    js::TypedArray<std::uint32_t>(bbl::gpu_buffer_mapping(partial).get_mapped_range(8.0, 8.0))
+        .store(1, 0xabcdef01u);
+    bbl::gpu_buffer_mapping(partial).unmap();
+    const auto partial_words = values_of<std::uint32_t>(co_await read_back(device, partial, 0, 32));
+    require((partial_words == std::vector<std::uint32_t>{0, 0, 0, 0xabcdef01u, 0, 0, 0, 0}),
+            "an unreturned mapped range stays zero");
+    const auto plain = buffer(device, 16, BU::copy_dst | BU::storage);
+    bool rejected = false;
+    try {
+        co_await bbl::gpu_buffer_mapping(plain).map_async(bbl::gpu_map_mode_read, {}, {});
+    } catch (const std::runtime_error&) {
+        rejected = true;
     }
-    std::uint32_t l = c(count);
-    for (std::uint32_t k = 0; k + 1 < levelCount; ++k) {
-        put(1 + levelCount + k, c(l), 16);
-        l = c(l);
+    require(rejected, "mapAsync without MAP_READ rejects");
+    refuses([&] { device.write_buffer(created, 0, js::ArrayBuffer(std::vector<std::uint8_t>(4))); },
+            "writeBuffer without COPY_DST refuses");
+    // unmap() aborts a pending mapping.
+    const auto pending = buffer(device, 16, BU::copy_dst | BU::map_read);
+    auto aborted = bbl::gpu_buffer_mapping(pending).map_async(bbl::gpu_map_mode_read, {}, {});
+    bbl::gpu_buffer_mapping(pending).unmap();
+    require(bbl::gpu_buffer_mapping(pending).map_state() == "unmapped", "abort unmaps");
+    rejected = false;
+    try {
+        co_await aborted;
+    } catch (const std::runtime_error&) {
+        rejected = true;
     }
-    return runtime;
-}
-
-/** Compaction, its draw and dispatch arguments, and the stable 8-pass radix sort. */
-inline js::Promise<js::PromiseVoid> check_sort(bbl::GpuDevice& device, const Pipelines& p,
-                                               double capacity, double count, std::uint32_t seed) {
-    auto pass = create_pass_gpu(device, capacity, true);
-    Random random{seed};
-    std::vector<std::uint32_t> sparse(static_cast<std::size_t>(capacity) * 2, 0),
-        valid(static_cast<std::size_t>(capacity), 0);
-    std::vector<std::pair<std::uint32_t, std::uint32_t>> expected;
-    for (std::uint32_t index = 0; index < count; ++index) {
-        // Few distinct keys in half the splats: stability decides their order.
-        const std::uint32_t key = (index & 1) ? random.next() : random.next() % 97u;
-        sparse[index * 2] = key;
-        sparse[index * 2 + 1] = index;
-        valid[index] = random.next() % 10u < 7u ? 1u : 0u;
-        if (valid[index])
-            expected.push_back({key, index});
-    }
-    std::stable_sort(expected.begin(), expected.end(),
-                     [](const auto& left, const auto& right) { return left.first < right.first; });
-    device.write_buffer(
-        pass.keys[1], 0,
-        js::ArrayBuffer(std::vector<std::uint8_t>(
-            reinterpret_cast<const std::uint8_t*>(sparse.data()),
-            reinterpret_cast<const std::uint8_t*>(sparse.data()) + sparse.size() * 4)));
-    device.write_buffer(pass.valid, 0, js::TypedArray<std::uint32_t>(valid));
-    const auto encoder = device.create_command_encoder({std::string("frame")});
-    record_projection(device, p, GpuHandle{}, pass, Projection{}, *encoder, false);
-    record_compact_and_sort(device, p, pass, count, *encoder);
-    device.submit(js::Array<GpuHandle>{encoder->finish()});
-    co_await device.on_submitted_work_done();
-
-    const auto n = static_cast<std::uint32_t>(expected.size());
-    const auto runtime = values_of<std::uint32_t>(co_await read_back(device, pass.runtime, 0, 128));
-    const auto indirect =
-        values_of<std::uint32_t>(co_await read_back(device, pass.indirect, 0, 16));
-    const auto sorted = values_of<std::uint32_t>(
-        co_await read_back(device, pass.sorted, 0, std::max(8.0, n * KEY_BYTES)));
-    require(indirect == std::vector<std::uint32_t>({6u, n, 0u, 0u}), "drawArgs (6, n, 0, 0)");
-    const auto levelCount = static_cast<std::uint32_t>(pass.levels.size());
-    const auto runtime_expected = expected_runtime(n, levelCount);
-    const std::size_t used = 4 + 3 * (1 + 2 * levelCount - 1);
-    for (std::size_t word = 0; word < used; ++word)
-        require(runtime[word] == runtime_expected[word],
-                "runtime word " + std::to_string(word) + " " + std::to_string(runtime[word]) +
-                    " expected " + std::to_string(runtime_expected[word]));
-    for (std::uint32_t index = 0; index < n; ++index)
-        require(sorted[index * 2] == expected[index].first &&
-                    sorted[index * 2 + 1] == expected[index].second,
-                "sorted entry " + std::to_string(index));
-    std::printf(
-        "sort capacity=%.0f count=%.0f visible=%u levels=%u runtime=%s keys=%016llx\n", capacity,
-        count, n, levelCount,
-        hex_words(std::vector<std::uint32_t>(runtime.begin(), runtime.begin() + used)).c_str(),
-        static_cast<unsigned long long>(fnv(sorted.data(), n * 8u)));
+    require(rejected, "an aborted mapping rejects");
+    std::printf("mapping ok\n");
     co_return js::PromiseVoid{};
 }
+
+// ── CPU evaluations of the pinned WGSL ───────────────────────────────────
 
 struct V3 {
     float x, y, z;
@@ -167,6 +259,12 @@ inline float dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 /** One canonical record (splat-stream-project.wgsl `L`, splat-stream-gather.wgsl `R`). */
 struct Canonical {
     V4 centerOpacity, covarianceA, covarianceB, color;
+};
+/** A pending projection's inputs (splat-stream-gpu.ts PendingProjection). */
+struct Projection {
+    double count = 0;
+    std::array<float, 16> worldView{}, projection{};
+    double width = 0, height = 0, near = 0;
 };
 struct Projected {
     bool valid = false;
@@ -248,128 +346,6 @@ inline Projected project_cpu(const Canonical& c, const Projection& params) {
     return out;
 }
 
-/** A camera looking down +z (left-handed), with a rotated, translated world. */
-inline Projection test_projection(double count) {
-    Projection projection;
-    projection.count = count;
-    const float angle = 0.3f, cosine = std::cos(angle), sine = std::sin(angle);
-    projection.worldView = {cosine, 0, -sine,  0, 0,     1,     0, 0,
-                            sine,   0, cosine, 0, 0.25f, -0.5f, 4, 1};
-    const float f = 1.0f / std::tan(0.4f), aspect = 1.5f, near = 0.5f, far = 200.0f;
-    projection.projection = {f / aspect,
-                             0,
-                             0,
-                             0,
-                             0,
-                             f,
-                             0,
-                             0,
-                             0,
-                             0,
-                             far / (far - near),
-                             1,
-                             0,
-                             0,
-                             -near * far / (far - near),
-                             0};
-    projection.width = 96;
-    projection.height = 64;
-    projection.near = near;
-    return projection;
-}
-/** Splats spread in depth, with rejected ones: behind the near plane, outside, invisible, NaN. */
-inline std::vector<Canonical> test_splats(std::size_t count, std::uint32_t seed) {
-    Random random{seed};
-    std::vector<Canonical> splats;
-    for (std::size_t index = 0; index < count; ++index) {
-        Canonical c{};
-        const float depth = 1.5f + 0.73f * static_cast<float>(index);
-        c.centerOpacity = {(random.unit() - 0.5f) * depth * 0.6f,
-                           (random.unit() - 0.5f) * depth * 0.4f, depth,
-                           0.2f + 0.8f * random.unit()};
-        const float sx = 0.02f + 0.3f * random.unit(), sy = 0.02f + 0.3f * random.unit(),
-                    sz = 0.02f + 0.3f * random.unit(), xy = 0.01f * (random.unit() - 0.5f);
-        c.covarianceA = {sx, xy, 0.003f, sy};
-        c.covarianceB = {-0.002f, sz, 0, 0};
-        c.color = {random.unit(), random.unit(), random.unit(), 0};
-        splats.push_back(c);
-    }
-    splats[1].centerOpacity.z = -6.0f;                                 // behind the camera
-    splats[3].centerOpacity.x = 400.0f;                                // outside the frustum
-    splats[5].centerOpacity.w = 0.0f;                                  // invisible
-    splats[7].covarianceA.x = std::numeric_limits<float>::quiet_NaN(); // not finite
-    return splats;
-}
-
-inline js::ArrayBuffer canonical_bytes(const std::vector<Canonical>& splats, double capacity) {
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(capacity * RECORD_BYTES), 0);
-    std::memcpy(bytes.data(), splats.data(), splats.size() * sizeof(Canonical));
-    return js::ArrayBuffer(std::move(bytes));
-}
-
-/** Projection of known splats, then their compaction and depth sort. */
-inline js::Promise<js::PromiseVoid> check_projection(bbl::GpuDevice& device, const Pipelines& p) {
-    constexpr double capacity = 300, count = 40;
-    const auto splats = test_splats(static_cast<std::size_t>(count), 0x5eed1234u);
-    const auto canonical =
-        buffer(device, capacity * RECORD_BYTES, BU::STORAGE | BU::COPY_SRC | BU::COPY_DST, false,
-               "splat stream canonical");
-    device.write_buffer(canonical, 0, canonical_bytes(splats, capacity));
-    auto pass = create_pass_gpu(device, capacity);
-    const auto projection = test_projection(count);
-    const auto encoder = device.create_command_encoder({std::string("frame")});
-    record_projection(device, p, canonical, pass, projection, *encoder);
-    record_compact_and_sort(device, p, pass, count, *encoder);
-    device.submit(js::Array<GpuHandle>{encoder->finish()});
-    const auto projected =
-        values_of<float>(co_await read_back(device, pass.projected, 0, count * RECORD_BYTES));
-    const auto valid =
-        values_of<std::uint32_t>(co_await read_back(device, pass.valid, 0, count * 4));
-    const auto indirect =
-        values_of<std::uint32_t>(co_await read_back(device, pass.indirect, 0, 16));
-    const auto sorted =
-        values_of<std::uint32_t>(co_await read_back(device, pass.sorted, 0, count * KEY_BYTES));
-    Tolerance tolerance;
-    std::vector<std::pair<float, std::uint32_t>> order;
-    std::uint32_t visible = 0;
-    for (std::size_t index = 0; index < static_cast<std::size_t>(count); ++index) {
-        const auto cpu = project_cpu(splats[index], projection);
-        require(valid[index] == (cpu.valid ? 1u : 0u),
-                "validity of splat " + std::to_string(index));
-        if (!cpu.valid)
-            continue;
-        ++visible;
-        order.push_back({cpu.viewZ, static_cast<std::uint32_t>(index)});
-        const float* gpu = projected.data() + index * 16;
-        const V4 rows[] = {cpu.clipCenter, cpu.axis0, cpu.axis1, cpu.color};
-        for (int row = 0; row < 4; ++row) {
-            const float values[] = {rows[row].x, rows[row].y, rows[row].z, rows[row].w};
-            for (int lane = 0; lane < 4; ++lane)
-                tolerance.check(gpu[row * 4 + lane], values[lane],
-                                "projected[" + std::to_string(index) + "][" +
-                                    std::to_string(row * 4 + lane) + "]");
-        }
-    }
-    require(visible == count - 4, "four splats are rejected");
-    require(indirect == std::vector<std::uint32_t>({6u, visible, 0u, 0u}), "projection drawArgs");
-    // Keys are ~bitcast<u32>(viewZ): ascending keys draw far splats first.
-    std::stable_sort(order.begin(), order.end(),
-                     [](const auto& left, const auto& right) { return left.first > right.first; });
-    std::vector<std::uint32_t> indices;
-    for (std::uint32_t entry = 0; entry < visible; ++entry) {
-        require(sorted[entry * 2 + 1] == order[entry].second,
-                "depth order " + std::to_string(entry));
-        tolerance.check(std::bit_cast<float>(~sorted[entry * 2]), order[entry].first, "sort key");
-        indices.push_back(sorted[entry * 2 + 1]);
-    }
-    std::printf("projection visible=%u order=%s worst=%.3g\n", visible, hex_words(indices).c_str(),
-                tolerance.worst);
-    std::vector<std::uint32_t> bits(projected.size());
-    std::memcpy(bits.data(), projected.data(), bits.size() * 4);
-    std::printf("projected %s\n", hex_words(bits).c_str());
-    co_return js::PromiseVoid{};
-}
-
 /** An rgba8 byte as the shader's round(textureLoad(...) * 255.0) reads it. */
 inline float byte_of(std::uint8_t value) { return static_cast<float>(value); }
 inline float sog_log(float m) {
@@ -427,72 +403,373 @@ inline Canonical gather_cpu(const std::array<std::vector<std::uint8_t>, 5>& imag
     return {{v.x, v.y, -v.z, da}, {U, H, A, X}, {O, T, 0, 0}, {F.x, F.y, F.z, 0}};
 }
 
-/** Gather of synthetic SOG images through the pin's upload and per-interval dispatches. */
-inline js::Promise<js::PromiseVoid> check_gather(bbl::GpuDevice& device, const Pipelines& p) {
-    constexpr std::uint32_t width = 9, height = 7;
-    constexpr double capacity = 64;
-    Random random{0xa11ce5u};
-    SourceGpu source;
-    source.width = width;
-    source.height = height;
-    source.count = 60;
-    source.meansMin = {-2.5f, -1.0f, -3.0f};
-    source.meansMax = {2.0f, 1.5f, 0.5f};
+// ── Inputs ───────────────────────────────────────────────────────────────
+
+/** The perspective every check projects with: 96x64, near 0.5, looking down +z. */
+inline Projection perspective(double count, const std::array<float, 16>& worldView) {
+    Projection projection;
+    projection.count = count;
+    projection.worldView = worldView;
+    const float f = 1.0f / std::tan(0.4f), aspect = 1.5f, near = 0.5f, far = 200.0f;
+    projection.projection = {f / aspect,
+                             0,
+                             0,
+                             0,
+                             0,
+                             f,
+                             0,
+                             0,
+                             0,
+                             0,
+                             far / (far - near),
+                             1,
+                             0,
+                             0,
+                             -near * far / (far - near),
+                             0};
+    projection.width = 96;
+    projection.height = 64;
+    projection.near = near;
+    return projection;
+}
+/** A camera looking down +z (left-handed), with a rotated, translated world. */
+inline Projection test_projection(double count) {
+    const float angle = 0.3f, cosine = std::cos(angle), sine = std::sin(angle);
+    return perspective(count,
+                       {cosine, 0, -sine, 0, 0, 1, 0, 0, sine, 0, cosine, 0, 0.25f, -0.5f, 4, 1});
+}
+/** Splats spread in depth, with rejected ones: behind the near plane, outside, invisible, NaN. */
+inline std::vector<Canonical> test_splats(std::size_t count, std::uint32_t seed) {
+    Random random{seed};
+    std::vector<Canonical> splats;
+    for (std::size_t index = 0; index < count; ++index) {
+        Canonical c{};
+        const float depth = 1.5f + 0.73f * static_cast<float>(index);
+        c.centerOpacity = {(random.unit() - 0.5f) * depth * 0.6f,
+                           (random.unit() - 0.5f) * depth * 0.4f, depth,
+                           0.2f + 0.8f * random.unit()};
+        const float sx = 0.02f + 0.3f * random.unit(), sy = 0.02f + 0.3f * random.unit(),
+                    sz = 0.02f + 0.3f * random.unit(), xy = 0.01f * (random.unit() - 0.5f);
+        c.covarianceA = {sx, xy, 0.003f, sy};
+        c.covarianceB = {-0.002f, sz, 0, 0};
+        c.color = {random.unit(), random.unit(), random.unit(), 0};
+        splats.push_back(c);
+    }
+    splats[1].centerOpacity.z = -6.0f;                                 // behind the camera
+    splats[3].centerOpacity.x = 400.0f;                                // outside the frustum
+    splats[5].centerOpacity.w = 0.0f;                                  // invisible
+    splats[7].covarianceA.x = std::numeric_limits<float>::quiet_NaN(); // not finite
+    return splats;
+}
+/**
+ * Splats well inside the frustum of an unrotated camera, so validity is the
+ * opacity alone and each view depth is the record's own z, bit for bit: half
+ * take one of 97 depths, so the sort's stability decides their order.
+ */
+inline std::vector<Canonical> sort_splats(std::size_t count, std::uint32_t seed) {
+    Random random{seed};
+    std::vector<Canonical> splats;
+    for (std::size_t index = 0; index < count; ++index) {
+        Canonical c{};
+        const float depth = (index & 1) ? 1.5f + 30.0f * random.unit()
+                                        : 1.5f + 0.25f * static_cast<float>(random.next() % 97u);
+        const float opacity = random.next() % 10u < 7u ? 0.2f + 0.8f * random.unit() : 0.0f;
+        c.centerOpacity = {(random.unit() - 0.5f) * depth * 0.5f,
+                           (random.unit() - 0.5f) * depth * 0.3f, depth, opacity};
+        c.covarianceA = {0.01f, 0, 0, 0.01f};
+        c.covarianceB = {0, 0.01f, 0, 0};
+        c.color = {random.unit(), random.unit(), random.unit(), 0};
+        splats.push_back(c);
+    }
+    return splats;
+}
+
+inline js::ArrayBuffer canonical_bytes(const std::vector<Canonical>& splats, double capacity) {
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(capacity) * sizeof(Canonical), 0);
+    std::memcpy(bytes.data(), splats.data(), splats.size() * sizeof(Canonical));
+    return js::ArrayBuffer(std::move(bytes));
+}
+
+inline js::TypedArray<float> floats(const float* values, std::size_t count) {
+    return js::TypedArray<float>(std::vector<float>(values, values + count));
+}
+
+/** recordProjectionAndSort of `projection` into one submission, then its completion. */
+inline js::Promise<js::PromiseVoid>
+project_and_sort(Library& library, const std::shared_ptr<bbl::SplatStreamGpuState>& state,
+                 const std::shared_ptr<bbl::SplatStreamPassGpu>& pass,
+                 const Projection& projection) {
+    auto pending = js::make_gc_shared<bbl::SplatStreamPendingProjection>();
+    pending->count = projection.count;
+    pending->key = "check";
+    pending->world_view = floats(projection.worldView.data(), 16);
+    pending->projection = floats(projection.projection.data(), 16);
+    pending->width = projection.width;
+    pending->height = projection.height;
+    pending->near = projection.near;
+    auto& device = library.device();
+    const auto encoder = device.create_command_encoder({std::string("frame")});
+    bbl::splat_stream_gpu_detail::record_projection_and_sort(state, pass, pending, encoder);
+    device.submit(js::Array<GpuHandle>{encoder->finish()});
+    co_await device.on_submitted_work_done();
+    run_retirements();
+    co_return js::PromiseVoid{};
+}
+
+/** setupMain's runtime words for `count` visible splats and `levelCount` radix levels. */
+inline std::vector<std::uint32_t> expected_runtime(std::uint32_t count, std::uint32_t levelCount) {
+    std::vector<std::uint32_t> runtime(32, 0);
+    const auto c = [](std::uint32_t z) { return (z + 255u) / 256u; };
+    const auto put = [&](std::uint32_t u, std::uint32_t x, std::uint32_t y) {
+        const std::uint32_t m = 4u + u * 3u;
+        runtime[m] = x;
+        runtime[m + 1] = y;
+        runtime[m + 2] = 1u;
+    };
+    runtime[0] = count;
+    std::uint32_t f = c(count);
+    put(0, f, 1);
+    for (std::uint32_t o = 0; o < levelCount; ++o) {
+        put(1 + o, std::max(1u, c(f)), 16);
+        f = c(f);
+    }
+    std::uint32_t l = c(count);
+    for (std::uint32_t k = 0; k + 1 < levelCount; ++k) {
+        put(1 + levelCount + k, c(l), 16);
+        l = c(l);
+    }
+    return runtime;
+}
+
+// ── Checks ───────────────────────────────────────────────────────────────
+
+/** Projection, compaction, its draw and dispatch arguments, and the stable 8-pass radix sort. */
+inline js::Promise<js::PromiseVoid> check_sort(Library& library, double capacity, double count,
+                                               std::uint32_t seed) {
+    auto& device = library.device();
+    const auto splats = sort_splats(static_cast<std::size_t>(count), seed);
+    const auto state =
+        bbl::create_splat_stream_gpu_state(library.stored(), capacity, MAX_GPU_BYTES);
+    device.write_buffer(state->canonical, 0, canonical_bytes(splats, capacity));
+    const auto pass = bbl::create_splat_stream_pass_gpu(state);
+    const auto projection = perspective(count, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1});
+    co_await project_and_sort(library, state, pass, projection);
+
+    // Keys are ~bitcast<u32>(viewZ): ascending keys draw far splats first.
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> expected;
+    for (std::uint32_t index = 0; index < static_cast<std::uint32_t>(count); ++index) {
+        const auto cpu = project_cpu(splats[index], projection);
+        require(cpu.valid == (splats[index].centerOpacity.w > 0.0f),
+                "an inside splat is valid by its opacity");
+        if (cpu.valid)
+            expected.push_back({~std::bit_cast<std::uint32_t>(cpu.viewZ), index});
+    }
+    std::stable_sort(expected.begin(), expected.end(),
+                     [](const auto& left, const auto& right) { return left.first < right.first; });
+    const auto n = static_cast<std::uint32_t>(expected.size());
+    const auto runtime =
+        values_of<std::uint32_t>(co_await read_back(device, pass->runtime, 0, 128));
+    const auto indirect =
+        values_of<std::uint32_t>(co_await read_back(device, pass->indirect, 0, 16));
+    const auto sorted =
+        values_of<std::uint32_t>(co_await read_back(device, pass->sorted, 0, n * 8.0));
+    require(indirect == std::vector<std::uint32_t>({6u, n, 0u, 0u}), "drawArgs (6, n, 0, 0)");
+    const auto levelCount = static_cast<std::uint32_t>(pass->levels.size());
+    const auto runtime_expected = expected_runtime(n, levelCount);
+    const std::size_t used = 4 + 3 * (1 + 2 * levelCount - 1);
+    for (std::size_t word = 0; word < used; ++word)
+        require(runtime[word] == runtime_expected[word],
+                "runtime word " + std::to_string(word) + " " + std::to_string(runtime[word]) +
+                    " expected " + std::to_string(runtime_expected[word]));
+    for (std::uint32_t index = 0; index < n; ++index)
+        require(sorted[index * 2] == expected[index].first &&
+                    sorted[index * 2 + 1] == expected[index].second,
+                "sorted entry " + std::to_string(index));
+    std::printf(
+        "sort capacity=%.0f count=%.0f visible=%u levels=%u runtime=%s keys=%016llx\n", capacity,
+        count, n, levelCount,
+        hex_words(std::vector<std::uint32_t>(runtime.begin(), runtime.begin() + used)).c_str(),
+        static_cast<unsigned long long>(fnv(sorted.data(), n * 8u)));
+    bbl::retire_splat_stream_gpu_state(state);
+    run_retirements();
+    co_return js::PromiseVoid{};
+}
+
+/** Projection of known splats, then their compaction and depth sort. */
+inline js::Promise<js::PromiseVoid> check_projection(Library& library) {
+    constexpr double capacity = 300, count = 40;
+    auto& device = library.device();
+    const auto splats = test_splats(static_cast<std::size_t>(count), 0x5eed1234u);
+    const auto state =
+        bbl::create_splat_stream_gpu_state(library.stored(), capacity, MAX_GPU_BYTES);
+    device.write_buffer(state->canonical, 0, canonical_bytes(splats, capacity));
+    const auto pass = bbl::create_splat_stream_pass_gpu(state);
+    const auto projection = test_projection(count);
+    co_await project_and_sort(library, state, pass, projection);
+    const auto projected =
+        values_of<float>(co_await read_back(device, pass->projected, 0, count * RECORD_FLOATS * 4));
+    const auto valid =
+        values_of<std::uint32_t>(co_await read_back(device, pass->valid, 0, count * 4));
+    const auto indirect =
+        values_of<std::uint32_t>(co_await read_back(device, pass->indirect, 0, 16));
+    const auto sorted =
+        values_of<std::uint32_t>(co_await read_back(device, pass->sorted, 0, count * 8));
+    Tolerance tolerance;
+    std::vector<std::pair<float, std::uint32_t>> order;
+    std::uint32_t visible = 0;
+    for (std::size_t index = 0; index < static_cast<std::size_t>(count); ++index) {
+        const auto cpu = project_cpu(splats[index], projection);
+        require(valid[index] == (cpu.valid ? 1u : 0u),
+                "validity of splat " + std::to_string(index));
+        if (!cpu.valid)
+            continue;
+        ++visible;
+        order.push_back({cpu.viewZ, static_cast<std::uint32_t>(index)});
+        const float* gpu = projected.data() + index * RECORD_FLOATS;
+        const V4 rows[] = {cpu.clipCenter, cpu.axis0, cpu.axis1, cpu.color};
+        for (int row = 0; row < 4; ++row) {
+            const float values[] = {rows[row].x, rows[row].y, rows[row].z, rows[row].w};
+            for (int lane = 0; lane < 4; ++lane)
+                tolerance.check(gpu[row * 4 + lane], values[lane],
+                                "projected[" + std::to_string(index) + "][" +
+                                    std::to_string(row * 4 + lane) + "]");
+        }
+    }
+    require(visible == count - 4, "four splats are rejected");
+    require(indirect == std::vector<std::uint32_t>({6u, visible, 0u, 0u}), "projection drawArgs");
+    std::stable_sort(order.begin(), order.end(),
+                     [](const auto& left, const auto& right) { return left.first > right.first; });
+    std::vector<std::uint32_t> indices;
+    for (std::uint32_t entry = 0; entry < visible; ++entry) {
+        require(sorted[entry * 2 + 1] == order[entry].second,
+                "depth order " + std::to_string(entry));
+        tolerance.check(std::bit_cast<float>(~sorted[entry * 2]), order[entry].first, "sort key");
+        indices.push_back(sorted[entry * 2 + 1]);
+    }
+    std::printf("projection visible=%u order=%s worst=%.3g\n", visible, hex_words(indices).c_str(),
+                tolerance.worst);
+    std::vector<std::uint32_t> bits(projected.size());
+    std::memcpy(bits.data(), projected.data(), bits.size() * 4);
+    std::printf("projected %s\n", hex_words(bits).c_str());
+    bbl::retire_splat_stream_gpu_state(state);
+    run_retirements();
+    co_return js::PromiseVoid{};
+}
+
+/** A SOG source's images and codebooks, decoded (splat-stream-gather.wgsl's inputs). */
+struct SogImages {
+    static constexpr std::uint32_t width = 9, height = 7;
     std::array<std::vector<std::uint8_t>, 5> images;
-    for (std::size_t image = 0; image < 5; ++image) {
-        images[image].resize(width * height * 4);
-        for (auto& byte : images[image])
+    std::vector<float> codebooks = std::vector<float>(512);
+    std::array<float, 3> meansMin{-2.5f, -1.0f, -3.0f}, meansMax{2.0f, 1.5f, 0.5f};
+    double count = 60;
+};
+inline SogImages sog_images() {
+    SogImages sog;
+    Random random{0xa11ce5u};
+    for (auto& image : sog.images) {
+        image.resize(SogImages::width * SogImages::height * 4);
+        for (auto& byte : image)
             byte = static_cast<std::uint8_t>(random.next());
     }
     // Quaternion modes 252..255 are valid; others leave the splat invisible.
-    for (std::size_t texel = 0; texel < width * height; ++texel)
-        images[3][texel * 4 + 3] =
+    for (std::size_t texel = 0; texel < SogImages::width * SogImages::height; ++texel)
+        sog.images[3][texel * 4 + 3] =
             static_cast<std::uint8_t>(texel % 9 == 4 ? 251 : 252 + texel % 4);
-    std::vector<float> codebooks(512);
     for (std::size_t index = 0; index < 256; ++index) {
-        codebooks[index] = -6.0f + 5.0f * random.unit();
-        codebooks[256 + index] = -2.0f + 4.0f * random.unit();
+        sog.codebooks[index] = -6.0f + 5.0f * random.unit();
+        sog.codebooks[256 + index] = -2.0f + 4.0f * random.unit();
     }
-    for (std::size_t image = 0; image < 5; ++image) {
+    return sog;
+}
+
+/**
+ * The source the request manager prepares from decoded images
+ * (splat-stream-requests.ts): five rgba8unorm textures filled by
+ * copyExternalImageToTexture and the codebook buffer, made the stream's GPU
+ * source by the library's makeGpuSource.
+ */
+inline std::shared_ptr<bbl::SplatStreamSourceGpu> upload_source(bbl::GpuDevice& device,
+                                                                const SogImages& sog) {
+    auto prepared = js::make_gc_shared<bbl::PreparedSplatSource>();
+    prepared->url = "check.sog";
+    prepared->width = SogImages::width;
+    prepared->height = SogImages::height;
+    prepared->count = sog.count;
+    prepared->means_min = floats(sog.meansMin.data(), 3);
+    prepared->means_max = floats(sog.meansMax.data(), 3);
+    for (const auto& image : sog.images) {
         bbl::GpuTextureDescriptor descriptor;
-        descriptor.label = "splat stream SOG source " + std::to_string(image);
-        descriptor.size = {static_cast<double>(width), static_cast<double>(height), 1};
+        descriptor.size = {static_cast<double>(SogImages::width),
+                           static_cast<double>(SogImages::height), 1};
         descriptor.format = "rgba8unorm";
-        descriptor.usage = TU::TEXTURE_BINDING | TU::COPY_DST | TU::RENDER_ATTACHMENT;
-        source.textures[image] = device.create_texture(descriptor);
-        device.write_texture(bbl::GpuTexelCopyTextureInfo{source.textures[image]},
-                             js::TypedArray<std::uint8_t>(images[image]),
-                             {{}, static_cast<double>(width * 4), static_cast<double>(height)},
-                             {static_cast<double>(width), static_cast<double>(height), 1});
-        source.views[image] = source.textures[image]->create_view();
+        descriptor.usage = TU::texture_binding | TU::copy_dst | TU::render_attachment;
+        const auto texture = device.create_texture(descriptor);
+        bbl::pal::DecodedImage decoded;
+        decoded.width = static_cast<int>(SogImages::width);
+        decoded.height = static_cast<int>(SogImages::height);
+        decoded.rgba = image;
+        bbl::web_platform::CopyExternalImageSource source;
+        source.source = bbl::pal::ImageBitmap(std::move(decoded), false);
+        source.flip_y = false;
+        bbl::web_platform::CopyExternalImageDestination destination;
+        destination.texture = texture;
+        destination.premultiplied_alpha = false;
+        bbl::web_platform::copy_external_image_to_texture(
+            device, source, destination,
+            {static_cast<double>(SogImages::width), static_cast<double>(SogImages::height), 1});
+        prepared->textures.push_back(texture);
     }
-    source.codebooks =
-        buffer(device, 2048, BU::STORAGE | BU::COPY_DST, false, "splat stream SOG codebooks");
-    device.write_buffer(source.codebooks, 0, js::TypedArray<float>(codebooks));
-    const auto canonical =
-        buffer(device, capacity * RECORD_BYTES, BU::STORAGE | BU::COPY_SRC | BU::COPY_DST, false,
-               "splat stream canonical");
-    const std::vector<Interval> intervals{
-        {&source, 0, 12, 0}, {&source, 15, 10, 20}, {&source, 40, 20, 34}};
+    prepared->metadata_buffer = buffer(device, 2048, BU::storage | BU::copy_dst);
+    device.write_buffer(prepared->metadata_buffer, 0, js::TypedArray<float>(sog.codebooks));
+    return bbl::load_gaussian_splat_stream_detail::make_gpu_source(prepared);
+}
+
+/** Three intervals of the source, with gaps in the canonical generation. */
+inline js::Array<std::shared_ptr<bbl::SplatStreamGpuInterval>>
+source_intervals(const std::shared_ptr<bbl::SplatStreamSourceGpu>& source) {
+    js::Array<std::shared_ptr<bbl::SplatStreamGpuInterval>> intervals;
+    for (const auto& [from, count, to] :
+         {std::array<double, 3>{0, 12, 0}, std::array<double, 3>{15, 10, 20},
+          std::array<double, 3>{40, 20, 34}}) {
+        auto interval = js::make_gc_shared<bbl::SplatStreamGpuInterval>();
+        interval->source = source;
+        interval->source_offset = from;
+        interval->count = count;
+        interval->destination_offset = to;
+        intervals.push_back(interval);
+    }
+    return intervals;
+}
+
+/** The library's gather of a source's intervals into the canonical generation. */
+inline js::Promise<js::PromiseVoid>
+check_gather(Library& library, const SogImages& sog,
+             std::shared_ptr<bbl::SplatStreamSourceGpu> source) {
+    constexpr double capacity = 64;
+    auto& device = library.device();
+    const auto state =
+        bbl::create_splat_stream_gpu_state(library.stored(), capacity, MAX_GPU_BYTES);
+    const auto intervals = source_intervals(source);
+    bbl::set_splat_stream_gpu_intervals(state, intervals, 1);
     const auto encoder = device.create_command_encoder({std::string("frame")});
-    std::vector<GpuHandle> retired;
-    // maxComputeWorkgroupsPerDimension 1 splits each interval into 256-splat chunks.
-    record_gather(device, p, canonical, intervals, 1, *encoder, retired);
+    require(bbl::splat_stream_gpu_detail::record_gather(state, encoder), "the gather records");
     device.submit(js::Array<GpuHandle>{encoder->finish()});
-    const auto records =
-        values_of<float>(co_await read_back(device, canonical, 0, capacity * RECORD_BYTES));
-    for (const auto& retire : retired)
-        retire->destroy();
+    co_await device.on_submitted_work_done();
+    run_retirements();
+    const auto records = values_of<float>(
+        co_await read_back(device, state->canonical, 0, capacity * RECORD_FLOATS * 4));
     Tolerance tolerance;
     std::vector<bool> written(static_cast<std::size_t>(capacity), false);
     for (const auto& interval : intervals) {
-        for (std::size_t offset = 0; offset < interval.count; ++offset) {
-            const auto destination = static_cast<std::size_t>(interval.destinationOffset) + offset;
+        for (std::size_t offset = 0; offset < static_cast<std::size_t>(interval->count); ++offset) {
+            const auto destination =
+                static_cast<std::size_t>(interval->destination_offset) + offset;
             written[destination] = true;
-            const auto cpu = gather_cpu(images, codebooks,
-                                        static_cast<std::size_t>(interval.sourceOffset) + offset,
-                                        source.meansMin, source.meansMax);
-            const float* gpu = records.data() + destination * 16;
+            const auto cpu = gather_cpu(sog.images, sog.codebooks,
+                                        static_cast<std::size_t>(interval->source_offset) + offset,
+                                        sog.meansMin, sog.meansMax);
+            const float* gpu = records.data() + destination * RECORD_FLOATS;
             const V4 rows[] = {cpu.centerOpacity, cpu.covarianceA, cpu.covarianceB, cpu.color};
             for (int row = 0; row < 4; ++row) {
                 const float values[] = {rows[row].x, rows[row].y, rows[row].z, rows[row].w};
@@ -505,73 +782,30 @@ inline js::Promise<js::PromiseVoid> check_gather(bbl::GpuDevice& device, const P
     }
     for (std::size_t record = 0; record < written.size(); ++record)
         if (!written[record])
-            for (int lane = 0; lane < 16; ++lane)
-                require(records[record * 16 + lane] == 0.0f, "an unwritten record stays zero");
+            for (std::size_t lane = 0; lane < RECORD_FLOATS; ++lane)
+                require(records[record * RECORD_FLOATS + lane] == 0.0f,
+                        "an unwritten record stays zero");
     std::vector<std::uint32_t> bits(records.size());
     std::memcpy(bits.data(), records.data(), bits.size() * 4);
     std::printf("gather worst=%.3g\n", tolerance.worst);
     std::printf("canonical %s\n", hex_words(bits).c_str());
-    co_return js::PromiseVoid{};
-}
-
-/** Buffer mapping states and refusals, as WebGPU defines them. */
-inline js::Promise<js::PromiseVoid> check_mapping(bbl::GpuDevice& device) {
-    const auto refuses = [](auto call, const char* what) {
-        bool refused = false;
-        try {
-            call();
-        } catch (const std::runtime_error&) {
-            refused = true;
-        }
-        require(refused, what);
-    };
-    const auto created = buffer(device, 32, BU::COPY_SRC, true);
-    auto& mapping = bbl::gpu_buffer_mapping(created);
-    require(mapping.map_state() == "mapped", "mappedAtCreation is mapped");
-    const auto first = mapping.get_mapped_range(0.0, 16.0);
-    refuses([&] { (void)mapping.get_mapped_range(8.0, 8.0); }, "overlapping ranges refuse");
-    refuses([&] { (void)mapping.get_mapped_range(20.0, 8.0); }, "misaligned offsets refuse");
-    const auto second = mapping.get_mapped_range(16.0, 16.0);
-    js::TypedArray<std::uint32_t>(first).store(0, 0x11223344u);
-    js::TypedArray<std::uint32_t>(second).store(3, 0x55667788u);
-    mapping.unmap();
-    require(mapping.map_state() == "unmapped", "unmapped after unmap");
-    refuses([&] { (void)mapping.get_mapped_range({}, {}); }, "an unmapped buffer has no range");
-    const auto words = values_of<std::uint32_t>(co_await read_back(device, created, 0, 32));
-    require(words[0] == 0x11223344u && words[7] == 0x55667788u && words[1] == 0,
-            "written ranges reach the buffer at unmap");
-    // Bytes no returned range covered keep WebGPU's zero initialization.
-    const auto partial = buffer(device, 32, BU::COPY_SRC, true);
-    js::TypedArray<std::uint32_t>(bbl::gpu_buffer_mapping(partial).get_mapped_range(8.0, 8.0))
-        .store(1, 0xabcdef01u);
-    bbl::gpu_buffer_mapping(partial).unmap();
-    const auto partial_words = values_of<std::uint32_t>(co_await read_back(device, partial, 0, 32));
-    require((partial_words == std::vector<std::uint32_t>{0, 0, 0, 0xabcdef01u, 0, 0, 0, 0}),
-            "an unreturned mapped range stays zero");
-    const auto plain = buffer(device, 16, BU::COPY_DST | BU::STORAGE);
-    bool rejected = false;
-    try {
-        co_await bbl::gpu_buffer_mapping(plain).map_async(bbl::gpu_map_mode_read, {}, {});
-    } catch (const std::runtime_error&) {
-        rejected = true;
-    }
-    require(rejected, "mapAsync without MAP_READ rejects");
-    refuses([&] { device.write_buffer(created, 0, js::ArrayBuffer(std::vector<std::uint8_t>(4))); },
-            "writeBuffer without COPY_DST refuses");
-    // unmap() aborts a pending mapping.
-    const auto pending = buffer(device, 16, BU::COPY_DST | BU::MAP_READ);
-    auto aborted = bbl::gpu_buffer_mapping(pending).map_async(bbl::gpu_map_mode_read, {}, {});
-    bbl::gpu_buffer_mapping(pending).unmap();
-    require(bbl::gpu_buffer_mapping(pending).map_state() == "unmapped", "abort unmaps");
-    rejected = false;
-    try {
-        co_await aborted;
-    } catch (const std::runtime_error&) {
-        rejected = true;
-    }
-    require(rejected, "an aborted mapping rejects");
-    std::printf("mapping ok\n");
+    bbl::retire_splat_stream_gpu_state(state);
+    run_retirements();
     co_return js::PromiseVoid{};
 }
 
 } // namespace stream_check
+
+namespace bbl {
+// The lowered retirement protocol (gpu-resource-retirement.ts) runs a
+// retirement once the submissions before it drain; the fixture's checks
+// run the queue after waiting for their own work.
+void retire_gpu_resources(std::shared_ptr<pal::GpuRetirementState>, pal::GpuRetirement retirement) {
+    stream_check::retirements().push_back(std::move(retirement));
+}
+void dispose_gpu_resource_retirements(std::shared_ptr<pal::GpuRetirementState>) {}
+void run_gpu_resource_callbacks(pal::GpuRetirementBatch disposers) {
+    for (const auto& dispose : *disposers)
+        dispose();
+}
+} // namespace bbl

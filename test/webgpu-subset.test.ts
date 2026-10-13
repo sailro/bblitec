@@ -7,100 +7,67 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import test from "node:test";
 import { compileOfflineShaders } from "../src/compile-shaders.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import { LoweringContext } from "../src/lowering/context.js";
-import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
-import { readPinnedRawShader } from "../src/pinned-shader-composer.js";
-import { wgslStageStem } from "../src/wgsl-artifacts.js";
+import { sharedPinnedContext } from "../src/lowering/context.js";
+import {
+    pinnedRawShaderImports,
+    runtimeWgslModules,
+    SPLAT_STREAM_SHADER_MODULES,
+} from "../src/lowering/splat-stream-shaders.js";
+import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-/** The pinned splat-stream WGSL modules and the entry points the library creates pipelines for. */
-const streamShaders = [
-    {
-        name: "compact",
-        module: "loader-splat-stream/splat-stream-gpu.js",
-        stages: [
-            ["scanMain", "comp"],
-            ["addMain", "comp"],
-            ["setupMain", "comp"],
-            ["scatterMain", "comp"],
-        ],
-    },
-    {
-        name: "gather",
-        module: "loader-splat-stream/splat-stream-gpu.js",
-        stages: [["main", "comp"]],
-    },
-    {
-        name: "project",
-        module: "loader-splat-stream/splat-stream-gpu.js",
-        stages: [["main", "comp"]],
-    },
-    {
-        name: "radix",
-        module: "loader-splat-stream/splat-stream-gpu.js",
-        stages: [
-            ["histogramMain", "comp"],
-            ["scanMain", "comp"],
-            ["addMain", "comp"],
-            ["basesMain", "comp"],
-            ["scatterMain", "comp"],
-        ],
-    },
-    {
-        name: "render",
-        module: "loader-splat-stream/splat-stream-material.js",
-        stages: [
-            ["vs", "vert"],
-            ["fs", "frag"],
-        ],
-    },
-] as const;
-
-function writeStreamShaders(directory: string): Map<string, string> {
-    mkdirSync(directory, { recursive: true });
-    const sources = new Map<string, string>();
-    for (const { name, module } of streamShaders) {
-        const source = readPinnedRawShader(
-            module,
-            `src/loader-splat-stream/splat-stream-${name}.wgsl`,
-        );
-        writeFileSync(join(directory, `splat-stream-${name}.wgsl`), source);
-        sources.set(name, source);
-    }
-    return sources;
+/**
+ * The lowered splat-stream library (upstream_splat_stream.hpp) and the
+ * generated headers it includes, emitted once for both backends' fixtures.
+ */
+let generatedInclude: string | undefined;
+function streamLibraryInclude(): string {
+    if (generatedInclude) return generatedInclude;
+    const output = resolve("artifacts/test-webgpu-subset/generated");
+    rmSync(output, { recursive: true, force: true });
+    emitUpstreamGenerated(output, [
+        "core",
+        "renderer:scene",
+        "camera:view-projection",
+        "renderer:external-renderables",
+        "engine:webgpu-device",
+        "loader:splat-stream",
+    ]);
+    generatedInclude = join(output, "upstream/include");
+    return generatedInclude;
 }
 
-/** Each entry point compiled under the name its module text gives it (`wgslStageStem`). */
-async function compileStreamShaders(
-    root: string,
-    sources: ReadonlyMap<string, string>,
-): Promise<string> {
+/**
+ * The library's run-time WGSL as SDL_GPU deploys it (`runtimeWgslModules`):
+ * each module's every stage, compiled under the name its text and entry
+ * point give it (`wgslStageStem`).
+ */
+async function compileStreamShaders(root: string): Promise<string> {
     const directory = join(root, "generated/stream/upstream/shaders");
     rmSync(directory, { recursive: true, force: true });
     mkdirSync(directory, { recursive: true });
     mkdirSync(join(root, "upstream"), { recursive: true });
     copyFileSync("upstream/tint.json", join(root, "upstream/tint.json"));
-    const modules = streamShaders.map(({ name, stages }) => {
-        const source = sources.get(name) ?? "";
-        const [[entryPoint, kind], ...rest] = stages;
-        const output = `${wgslStageStem(source, entryPoint, kind)}.native.wgsl`;
-        writeFileSync(join(directory, output), source);
+    const modules = runtimeWgslModules(
+        pinnedRawShaderImports(
+            sharedPinnedContext(),
+            SPLAT_STREAM_SHADER_MODULES,
+        ),
+    ).map(({ output, data, entryPoint, alsoStages }) => {
+        writeFileSync(join(directory, basename(output)), data);
         return {
-            output,
+            output: basename(output),
             entryPoint,
             pinnedBindings: true,
-            alsoStages: rest.map(([entry, stage]) => ({
-                stem: wgslStageStem(source, entry, stage),
-                entryPoint: entry,
-            })),
+            alsoStages,
         };
     });
     writeFileSync(
@@ -135,12 +102,11 @@ function runDawnStream(): Map<string, string> | undefined {
     if (!tools || !existsSync(join(dawnRoot, "lib/webgpu_dawn.lib")))
         return undefined;
     const output = resolve("artifacts/test-webgpu-subset/dawn");
-    const shaders = join(output, "wgsl");
-    writeStreamShaders(shaders);
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
         `/I${resolve("native/src")}`,
         `/I${resolve("test/fixtures/webgpu-subset")}`,
+        `/I${streamLibraryInclude()}`,
         `/external:I${join(dawnRoot, "include")}`,
         `/Fo:${output}/`,
         `/Fe:${executable}`,
@@ -149,7 +115,7 @@ function runDawnStream(): Map<string, string> | undefined {
         join(dawnRoot, "lib/webgpu_dawn.lib"),
     ]);
     dawnResult = resultLines(
-        execFileSync(executable, [shaders], {
+        execFileSync(executable, {
             encoding: "utf8",
             timeout: 120000,
             windowsHide: true,
@@ -169,23 +135,13 @@ async function runSdlStream(): Promise<Map<string, string> | undefined> {
     const shaderTools = discoverDevelopmentTools();
     if (!tools || !shaderTools.bbliteTint || !shaderTools.dxc) return undefined;
     const output = resolve("artifacts/test-webgpu-subset/sdl");
-    const wgsl = join(output, "wgsl");
-    const shaders = await compileStreamShaders(
-        join(output, "root"),
-        writeStreamShaders(wgsl),
-    );
-    const includes = join(output, "include");
-    mkdirSync(join(includes, "bblite/upstream"), { recursive: true });
-    writeFileSync(
-        join(includes, "bblite/upstream/pinned_depth_state.hpp"),
-        pinnedDepthStateHeader(new LoweringContext()),
-    );
+    const shaders = await compileStreamShaders(join(output, "root"));
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
         "/DBBLITE_VISUAL_CAPTURE=0",
         `/I${resolve("native/src")}`,
         `/I${resolve("test/fixtures/webgpu-subset")}`,
-        `/I${includes}`,
+        `/I${streamLibraryInclude()}`,
         `/Fo:${output}/`,
         `/Fe:${executable}`,
         resolve("test/fixtures/webgpu-subset/sdl-check.cpp"),
@@ -194,7 +150,7 @@ async function runSdlStream(): Promise<Map<string, string> | undefined> {
         "SDL3.lib",
     ]);
     sdlResult = resultLines(
-        execFileSync(executable, [wgsl], {
+        execFileSync(executable, {
             encoding: "utf8",
             timeout: 120000,
             windowsHide: true,
@@ -208,7 +164,10 @@ async function runSdlStream(): Promise<Map<string, string> | undefined> {
     return sdlResult;
 }
 
-/** The checks each backend's fixture ran against CPU evaluations of the pinned WGSL. */
+/**
+ * The checks each backend's fixture ran through the lowered library, against
+ * CPU evaluations of the pinned WGSL.
+ */
 function assertStreamChecks(lines: Map<string, string>, backend: string): void {
     assert.equal(lines.get(backend), "ok");
     assert.equal(lines.get("mapping"), "ok");
@@ -218,11 +177,11 @@ function assertStreamChecks(lines: Map<string, string>, backend: string): void {
         /^capacity=70000 count=69123 visible=\d+ levels=2 /,
     );
     assert.match(lines.get("projection") ?? "", /^visible=36 /);
-    // The pinned renderable drawn through the scene pass protocol, twice.
+    // The library's renderable drawn through the scene pass protocol, twice.
     assert.match(lines.get("render") ?? "", /^covered=\d+ covered4=\d+$/);
 }
 
-test("Dawn runs the pinned splat-stream compute through the WebGPU subset device", (t) => {
+test("Dawn runs the lowered splat-stream library's GPU work through the WebGPU subset device", (t) => {
     const lines = runDawnStream();
     if (!lines) {
         t.skip(
@@ -233,7 +192,7 @@ test("Dawn runs the pinned splat-stream compute through the WebGPU subset device
     assertStreamChecks(lines, "dawn");
 });
 
-test("SDL_GPU runs the pinned splat-stream compute through the WebGPU subset device", async (t) => {
+test("SDL_GPU runs the lowered splat-stream library's GPU work through the WebGPU subset device", async (t) => {
     const lines = await runSdlStream();
     if (!lines) {
         t.skip(
@@ -242,15 +201,6 @@ test("SDL_GPU runs the pinned splat-stream compute through the WebGPU subset dev
         return;
     }
     assertStreamChecks(lines, "sdl");
-    // The native device finds the stages generation named by the module text.
-    const radix = readPinnedRawShader(
-        "loader-splat-stream/splat-stream-gpu.js",
-        "src/loader-splat-stream/splat-stream-radix.wgsl",
-    );
-    assert.equal(
-        lines.get("stem"),
-        wgslStageStem(radix, "histogramMain", "comp"),
-    );
 });
 
 /** Words of a float result line, as numbers. */
