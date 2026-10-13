@@ -28,8 +28,7 @@ public:
     using Callback = js::Callback<void(Args...)>;
 
     /** False when a live listener already has `identity`; that one keeps its own lease. */
-    bool add(Key identity, Callback callback, bool once = false,
-             ListenerLeasePtr lease = {}) {
+    bool add(Key identity, Callback callback, bool once = false, ListenerLeasePtr lease = {}) {
         retire_aborted();
         const auto duplicate =
             std::find_if(entries_.begin(), entries_.end(), [identity](const auto& entry) {

@@ -53,9 +53,9 @@ int main() {
 
         // Requests wait for the projection, in call order.
         const auto row2 = ui_get_element_by_id(engine, "row2");
-        const auto requested = std::find_if(
-            engine.ui_scroll_requests.begin(), engine.ui_scroll_requests.end(),
-            [&](const auto& request) { return request.first == row2; });
+        const auto requested =
+            std::find_if(engine.ui_scroll_requests.begin(), engine.ui_scroll_requests.end(),
+                         [&](const auto& request) { return request.first == row2; });
         assert(requested != engine.ui_scroll_requests.end() && !requested->second.smooth);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         pal::update_ui_rml_runtime(runtime, 640, 480);
