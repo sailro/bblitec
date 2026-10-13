@@ -14034,10 +14034,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         )
             return undefined;
         const type = this.dataTypeAt(expression);
+        const scalars = ["boolean", "number", "string", "enum"];
+        // `maybe || fallback` with a present fallback is present: the left
+        // value when truthy (so present), the fallback otherwise. Strings
+        // take compileStringLogicalValue.
+        const leftType = this.dataTypeAt(expression.left);
         if (
-            type?.kind !== "optional" ||
-            !["boolean", "number", "string", "enum"].includes(type.inner.kind)
+            operator === ts.SyntaxKind.BarBarToken &&
+            type !== undefined &&
+            ["boolean", "number", "enum"].includes(type.kind) &&
+            leftType?.kind === "optional" &&
+            leftType.inner.kind === type.kind
         )
+            return this.leafValue(
+                this.compileLogicalSelection(
+                    expression,
+                    type,
+                    "logical_value",
+                    (left, condition) => {
+                        const present =
+                            left.dataType?.kind === "optional"
+                                ? this.leafValue(
+                                      optionalValueCpp(left.cpp),
+                                      left.dataType.inner,
+                                  )
+                                : left;
+                        return `(${condition} ? ${this.compileKnownValueForSink(present, type, expression.left)} : ${this.context.dataTypes.cppType(type)}{})`;
+                    },
+                ),
+                type,
+            );
+        if (type?.kind !== "optional" || !scalars.includes(type.inner.kind))
             return undefined;
         // A truthy present value contributes only its absent state to `&&`;
         // this includes unions of object shapes and nonempty literal types.

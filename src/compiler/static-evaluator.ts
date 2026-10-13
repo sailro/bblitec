@@ -856,6 +856,20 @@ export class StaticEvaluator {
                         `received ${value.kind}.`,
                 );
             }
+            if (
+                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
+                isNullable(this.checker.getTypeAtLocation(unwrapped.left))
+            ) {
+                // `maybe || fallback`: absent falls through too, through the
+                // value dispatch that tests the left's presence.
+                const value = this.resolveValue(unwrapped);
+                if (isNumericValue(value))
+                    return this.castNumber(value, precision);
+                this.fail(
+                    unwrapped.operatorToken,
+                    `'||' in a numeric position must select a number, received ${value.kind}.`,
+                );
+            }
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
                 // Numeric `a || b`: JavaScript falls through on 0 and NaN,
                 // and evaluates the right operand only then.
