@@ -9689,8 +9689,10 @@ export class DataTypeRegistry {
                 ...(structuredClone
                     ? [
                           "",
+                          // A record without fields clones none: its
+                          // parameters stay unnamed.
                           ...["const ", ""].flatMap((qualifier) => [
-                              `    template <typename Visitor> friend void clone_fields(${qualifier}${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, Visitor&& visitor) {`,
+                              `    template <typename Visitor> friend void clone_fields(${qualifier}${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}&${cloneFields.length ? " record" : ""}, Visitor&&${cloneFields.length ? " visitor" : ""}) {`,
                               ...cloneFields.map((field) => {
                                   if (field.presentForTags) {
                                       const condition = this.tagConditionCpp(
