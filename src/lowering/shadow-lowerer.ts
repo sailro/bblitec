@@ -36,6 +36,7 @@ import {
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 import { doubleLiteral, floatLiteral, stringLiteral } from "../cpp-literals.js";
 import { pinnedCsmFunctions } from "./pinned-csm.js";
+import { lowerCsmStaticCacheEnable } from "./csm-static-cache.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import { lowerSkeletonShadowBounds } from "./skeleton-shadow-bounds.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
@@ -2225,76 +2226,6 @@ ${features.includes("shadow:csm") ? "#include <bblite/upstream/csm_shadow.hpp>\n
  * fitted to the CASTERS, which are registered after this returns, so the
  * first fit happens at the task's first frame.
  */
-/**
- * \`enableCsmStaticCache\`: the pin's four rejections in its order, with
- * the messages read from its own \`Promise.reject\` calls, then the cache
- * state. A loaded cache resolves again without taking new options; the
- * native cache loads synchronously, so there is no in-flight promise to
- * return. \`sg._shadowTaskState\` is the caster passes registration builds
- * and \`sg._csmReceiverTexture\` the generator's own record of a
- * \`getCsmReceiverTexture\` call.
- */
-function lowerCsmStaticCacheEnable(context: LoweringContext): string {
-    const enable = context.functionDeclaration(
-        "src/shadow/enable-csm-static-cache.ts",
-        "enableCsmStaticCache",
-    ).declaration;
-    const rejections = context
-        .findNodes(
-            enable,
-            (node): node is ts.NewExpression =>
-                ts.isNewExpression(node) &&
-                ts.isIdentifier(node.expression) &&
-                (node.expression.text === "Error" ||
-                    node.expression.text === "RangeError"),
-        )
-        .map((node) => {
-            const message = node.arguments?.[0];
-            if (!message || !ts.isStringLiteral(message))
-                return context.contractError(
-                    node,
-                    "Expected a literal enableCsmStaticCache rejection.",
-                );
-            return `PromiseRejection{${stringLiteral((node.expression as ts.Identifier).text)}, ${stringLiteral(message.text)}}`;
-        });
-    if (rejections.length !== 4)
-        context.contractError(
-            enable,
-            "Expected the four enableCsmStaticCache rejections.",
-        );
-    for (const shape of [
-        'sg._shadowType !== "csm"',
-        "!Number.isFinite(options.refitAngle) || options.refitAngle <= 0",
-        "options.staticCascadesPerFrame ?? 0",
-        "!Number.isInteger(staticCascadesPerFrame) || staticCascadesPerFrame < 0",
-        "sg._shadowTaskState || sg._csmReceiverTexture || engine.surfaces.some((surface) => surface._renderingContexts.length > 0)",
-        "sg._csmCache?._loaded",
-        "options.refitMaxIntervalMs ?? 0",
-    ])
-        context.expectShapeCount(enable, shape, "enableCsmStaticCache");
-    return `
-// ${context.provenance("src/shadow/enable-csm-static-cache.ts", "enableCsmStaticCache")}
-std::optional<PromiseRejection> enable_csm_static_cache(
-    Engine& engine, ShadowGeneratorHandle handle, double refit_angle,
-    std::optional<double> refit_max_interval_ms,
-    std::optional<double> static_cascades_per_frame) {
-    ShadowGeneratorRecord& generator = ${recordAt("engine.shadow_generators", "handle")};
-    if (generator.filter != ShadowFilter::csm_directional) return ${rejections[0]};
-    if (!std::isfinite(refit_angle) || refit_angle <= 0.0) return ${rejections[1]};
-    const double per_frame = static_cascades_per_frame.value_or(0.0);
-    if (!std::isfinite(per_frame) || per_frame != std::floor(per_frame) || per_frame < 0.0)
-        return ${rejections[2]};
-    if (!generator.caster_tasks.empty() || generator.csm_receiver_texture_read || !engine.rendering_contexts.empty())
-        return ${rejections[3]};
-    if (generator.csm_cache) return std::nullopt;
-    auto cache = std::make_shared<CsmStaticCacheState>();
-    cache->options = {refit_angle, refit_max_interval_ms.value_or(0.0), static_cast<std::uint32_t>(per_frame)};
-    generator.csm_cache = std::move(cache);
-    return std::nullopt;
-}
-`;
-}
-
 function shadowGeneratorFactory(spec: {
     name: string;
     options: string;

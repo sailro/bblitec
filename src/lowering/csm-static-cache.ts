@@ -1,5 +1,9 @@
 import ts from "typescript";
-import type { LoweringContext } from "./context.js";
+import { type LoweringContext, unwrapExpression } from "./context.js";
+import { stringLiteral } from "../cpp-literals.js";
+import { recordAt } from "../compiler/record-access.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { PinnedRecordModel, type RecordSpec } from "./pinned-record-lowerer.js";
 import {
     members,
@@ -434,4 +438,257 @@ inline bool csm_static_cache_frame(Engine& engine, const Scene& scene, ShadowGen
 
 } // namespace bbl::upstream
 `;
+}
+
+/**
+ * `enableCsmStaticCache`, lowered from the pin: its rejections in its order
+ * with the messages its own `Promise.reject` calls carry, then the cache
+ * options it keeps. `sg._shadowTaskState` is the caster passes registration
+ * builds, `sg._csmReceiverTexture` the generator's record of a
+ * `getCsmReceiverTexture` call and a loaded cache `sg._csmCache`. The rest is
+ * the platform's: the native cache loads synchronously (no promise in
+ * flight), its texture is the cache target the task state builds, and its
+ * hooks are the cached frame.
+ */
+export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
+    const { file, declaration } = context.functionDeclaration(
+        enableModule,
+        "enableCsmStaticCache",
+    );
+    const parameters = declaration.parameters.map((parameter) =>
+        parameter.name.getText(file),
+    );
+    if (parameters.join() !== "engine,sg,options")
+        context.contractError(
+            declaration,
+            "Expected enableCsmStaticCache(engine, sg, options).",
+        );
+    const optional = (name: string): PinnedBinding => ({
+        cpp: `(*${name})`,
+        type: "scalar",
+        nullish: `!${name}.has_value()`,
+    });
+    const bindings = new Map<string, PinnedBinding>([
+        ["options.refitAngle", { cpp: "refit_angle", type: "scalar" }],
+        ["options.refitMaxIntervalMs", optional("refit_max_interval_ms")],
+        [
+            "options.staticCascadesPerFrame",
+            optional("static_cascades_per_frame"),
+        ],
+        [
+            "sg._shadowTaskState",
+            { cpp: "!generator.caster_tasks.empty()", type: "bool" },
+        ],
+        [
+            "sg._csmReceiverTexture",
+            { cpp: "generator.csm_receiver_texture_read", type: "bool" },
+        ],
+        [
+            "sg._csmCache._loaded",
+            { cpp: "(generator.csm_cache != nullptr)", type: "bool" },
+        ],
+    ]);
+    // The platform's statements, each asserted at its pinned shape.
+    const platformShapes = new Map([
+        ["active", "const active = enabling?.get(sg);"],
+        ["oldTexture", "const oldTexture = sg._depthTexture;"],
+        ["mapSize", "const mapSize = sg._config._mapSize;"],
+        ["if active", "if (active) { return active; }"],
+        ["destroy", "oldTexture.destroy();"],
+        ["enabling", "(enabling ??= new WeakMap()).set(sg, promise);"],
+    ]);
+    const platformKey = (statement: ts.Statement): string | undefined => {
+        if (ts.isVariableStatement(statement)) {
+            const name =
+                statement.declarationList.declarations[0]?.name.getText(file);
+            return name && (platformShapes.has(name) || name === "promise")
+                ? name
+                : undefined;
+        }
+        if (
+            ts.isIfStatement(statement) &&
+            ts.isIdentifier(statement.expression)
+        )
+            return statement.expression.text === "active"
+                ? "if active"
+                : undefined;
+        if (!ts.isExpressionStatement(statement)) return undefined;
+        const expression = unwrapExpression(statement.expression);
+        if (ts.isVoidExpression(expression)) return "void";
+        if (context.expressionMatchesShape(expression, "oldTexture.destroy()"))
+            return "destroy";
+        if (
+            ts.isCallExpression(expression) &&
+            expression.getText(file).startsWith("(enabling ??=")
+        )
+            return "enabling";
+        return undefined;
+    };
+    const reached = new Set<string>();
+    const rejected: string[] = [];
+    const body = lowerPinnedBody(file, declaration.body!.statements, {
+        bindings,
+        calls: new Map([
+            [
+                "Number.isInteger",
+                (args: readonly string[]) =>
+                    `bbl::js::number_is_integer(static_cast<double>(${args[0]}))`,
+            ],
+        ]),
+        callShapes: new Map([
+            [
+                "engine.surfaces.some((surface) => surface._renderingContexts.length > 0)",
+                "bool",
+            ],
+        ]),
+        expression(node) {
+            if (
+                context.expressionMatchesShape(node, 'sg._shadowType !== "csm"')
+            )
+                return "(generator.filter != ShadowFilter::csm_directional)";
+            if (
+                context.expressionMatchesShape(
+                    node,
+                    "engine.surfaces.some((surface) => surface._renderingContexts.length > 0)",
+                )
+            )
+                return "!engine.rendering_contexts.empty()";
+            return undefined;
+        },
+        statement(statement, lowerer, indent) {
+            const key = platformKey(statement);
+            if (key !== undefined) {
+                const shape = platformShapes.get(key);
+                if (shape)
+                    context.assertStatementShapes(
+                        statement,
+                        [statement],
+                        shape,
+                        "enableCsmStaticCache platform statement",
+                    );
+                reached.add(key);
+                return [];
+            }
+            if (
+                !ts.isExpressionStatement(statement) &&
+                !ts.isVariableStatement(statement)
+            )
+                return undefined;
+            const expression = ts.isExpressionStatement(statement)
+                ? statement.expression
+                : statement.declarationList.declarations[0]?.initializer;
+            if (!expression) return undefined;
+            const assigned =
+                ts.isBinaryExpression(expression) &&
+                expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                    ? context.propertyPath(expression.left)?.join(".")
+                    : undefined;
+            // The swapped texture is the cache target the task state builds.
+            if (assigned === "sg._depthTexture") {
+                reached.add(assigned);
+                return [];
+            }
+            // The options the cache keeps.
+            if (assigned === "sg._csmCache") {
+                const literal = unwrapLiteral(
+                    (expression as ts.BinaryExpression).right,
+                );
+                const members = literal?.properties.map((property) =>
+                    ts.isPropertyAssignment(property)
+                        ? ([
+                              context.propertyName(property.name),
+                              property.initializer,
+                          ] as const)
+                        : undefined,
+                );
+                const names = members?.map((member) => member?.[0]).join();
+                if (
+                    !members ||
+                    names !==
+                        "_refitAngle,_refitMaxIntervalMs,_staticCascadesPerFrame"
+                )
+                    return context.contractError(
+                        expression,
+                        "Expected the cache's three options.",
+                    );
+                const [angle, interval, perFrame] = members.map((member) =>
+                    lowerer.expression(member![1]),
+                );
+                reached.add(assigned);
+                return [
+                    `${indent}auto cache = std::make_shared<CsmStaticCacheState>();`,
+                    `${indent}cache->options = {${angle}, ${interval}, static_cast<std::uint32_t>(${perFrame})};`,
+                    `${indent}generator.csm_cache = std::move(cache);`,
+                ];
+            }
+            return undefined;
+        },
+        returnValue(expression) {
+            const node = expression && unwrapExpression(expression);
+            if (node && ts.isIdentifier(node) && node.text === "promise")
+                return "std::nullopt";
+            if (
+                node &&
+                ts.isCallExpression(node) &&
+                context.expressionMatchesShape(node, "Promise.resolve()")
+            )
+                return "std::nullopt";
+            const error =
+                node && ts.isCallExpression(node) && node.arguments.length === 1
+                    ? unwrapExpression(node.arguments[0]!)
+                    : undefined;
+            if (
+                node &&
+                ts.isCallExpression(node) &&
+                context.propertyPath(node.expression)?.join(".") ===
+                    "Promise.reject" &&
+                error &&
+                ts.isNewExpression(error) &&
+                ts.isIdentifier(error.expression) &&
+                error.arguments?.length === 1 &&
+                ts.isStringLiteral(error.arguments[0]!)
+            ) {
+                rejected.push(error.expression.text);
+                return `PromiseRejection{${stringLiteral(error.expression.text)}, ${stringLiteral(error.arguments[0].text)}}`;
+            }
+            return context.contractError(
+                expression ?? declaration,
+                "Expected enableCsmStaticCache to reject, resolve or return its promise.",
+            );
+        },
+    });
+    for (const shape of [
+        ...platformShapes.keys(),
+        "sg._depthTexture",
+        "sg._csmCache",
+        "promise",
+        "void",
+    ])
+        if (!reached.has(shape))
+            context.contractError(
+                declaration,
+                `enableCsmStaticCache no longer has '${shape}'.`,
+            );
+    if (rejected.join() !== "Error,RangeError,RangeError,Error")
+        context.contractError(
+            declaration,
+            "Expected the four enableCsmStaticCache rejections.",
+        );
+    return `
+// ${context.provenance(enableModule, "enableCsmStaticCache")}
+std::optional<PromiseRejection> enable_csm_static_cache(
+    Engine& engine, ShadowGeneratorHandle handle, double refit_angle,
+    std::optional<double> refit_max_interval_ms,
+    std::optional<double> static_cascades_per_frame) {
+    ShadowGeneratorRecord& generator = ${recordAt("engine.shadow_generators", "handle")};
+${body}
+}
+`;
+}
+
+function unwrapLiteral(
+    expression: ts.Expression,
+): ts.ObjectLiteralExpression | undefined {
+    const node = unwrapExpression(expression);
+    return ts.isObjectLiteralExpression(node) ? node : undefined;
 }
