@@ -5219,6 +5219,22 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Trogir Gaussian Splat Streaming",
         nativeHostUi: "ui/trogir-streaming-host.json",
         parity: {
+            neutralityPartition: {
+                width: 1280,
+                height: 720,
+                // The HUD's live first coarse frame value (#firstFrame, wall
+                // milliseconds), laid out natively at the start of the stats
+                // value column; its label and the other stats stay strict.
+                regions: [
+                    {
+                        name: "First coarse frame",
+                        x: 247,
+                        y: 75,
+                        width: 100,
+                        height: 16,
+                    },
+                ],
+            },
             referenceHostPage:
                 "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
             // The splats stream from the public dataset at run time, so the
