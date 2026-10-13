@@ -6,10 +6,10 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 ## Deferred capabilities
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
-as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: audio graph
-operations, media streams/recording/streamed audio, script elements, idle callbacks, dynamic
-pixel ratio, application-realm device recovery, Blob streams/piping/compression, and the [UI](ui.md)
-items marked deferred. Unregistered APIs still refuse.
+as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
+buffers, buses, spatial/stereo/analyzer and master volume, media streams/recording/streamed audio, script elements,
+idle callbacks, dynamic pixel ratio, application-realm device recovery, Blob streams/piping/compression, and the
+[UI](ui.md) items marked deferred. Unregistered APIs still refuse.
 
 ## Language
 
@@ -171,6 +171,11 @@ listeners, `disconnect(destination[, output[, input]])`. A buffer source loops i
 `loopStart`/`loopEnd` region inside it, or a loop started with a duration, throws at `start`. Event payloads,
 ended-listener `signal`, context options, statechange, output selection, media streams and recording refuse or are
 absent. `createAudioEngineAsync` adopts `audioContext`; its other options refuse.
+
+Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `disposeSound`) run the pin's lowered
+family in an application realm. Sources: a URL selecting packaged audio (a runtime URL needs inferable candidates), an
+`ArrayBuffer` or an `AudioBuffer`; URL lists, sound buffers and `outBus` refuse. A looped sound started while its
+context is not running throws (no statechange).
 
 ## Shadows and navigation
 

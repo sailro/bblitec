@@ -217,6 +217,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     AssetContainer: "asset",
     AudioEngine: "audio-engine",
     AudioInputSource: "audio-source",
+    StaticSound: "static-sound",
     EngineContext: "engine",
     DeviceLostRecoveryHandle: "device-recovery",
     EnvironmentTextures: "gpu-environment",

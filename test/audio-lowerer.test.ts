@@ -59,7 +59,6 @@ test("setMasterVolume refuses, because the pin has no un-ramped form", () => {
 test("the Babylon sound families refuse by name rather than no-op", () => {
     const intrinsic = source("src/compiler/intrinsics/audio.ts");
     for (const name of [
-        "createSoundAsync",
         "createSoundBufferAsync",
         "createStreamingSoundAsync",
         "createAudioBusAsync",

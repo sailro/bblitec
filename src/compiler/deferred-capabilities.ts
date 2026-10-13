@@ -111,7 +111,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
     ].map((api): Descriptor => ({ origin: "dom", api, timing: "reject" })),
     ...[
         "createSoundSourceAsync.options",
-        "createSoundAsync",
         "createSoundBufferAsync",
         "createStreamingSoundAsync",
         "createAudioBusAsync",
@@ -128,20 +127,16 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "setMasterVolume",
         "getMasterVolume",
         "computeDeformedPositionToRef",
-        "disposeSound",
         "enableAsyncShaderPipelineCompilation",
         "enableCsmStaticCache",
         "enableMaterialTracking",
         "enableRenderTaskTransmission",
         "enableShaderUniformRangeUpdates",
-        "playSound",
         "setGpuTimingEnabled",
-        "setSoundVolume",
         "setSpatialListenerPosition",
         "setSpatialPosition",
         "setVatInstanceStorage",
         "setVatTime",
-        "stopSound",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "throw" })),
 ];
 

@@ -261,13 +261,21 @@ double graph_tail(ContextRecord& context, lab::AudioNode* source, lab::ContextRe
     return pending.size() == paths.size() ? maximum : std::numeric_limits<double>::infinity();
 }
 
-void detach_outputs(AudioGraphNode& node, lab::ContextGraphLock& lock) {
+/**
+ * Drop `node`'s rendered edges. A disconnect does so for JavaScript too; the
+ * collector's retirement of a finished source or an unreachable node does
+ * not: the edges stay connected as JavaScript sees them, so a later
+ * `disconnect(destination)` still finds its edge.
+ */
+void detach_outputs(AudioGraphNode& node, lab::ContextGraphLock& lock, bool disconnect = true) {
     for (int index = 0; index < node.node->numberOfOutputs(); ++index) {
         lab::AudioNodeOutput::disconnectAll(lock, node.node->output(index));
     }
     node.outputs.clear();
-    node.node_edges.clear();
-    node.param_edges.clear();
+    if (disconnect) {
+        node.node_edges.clear();
+        node.param_edges.clear();
+    }
 }
 
 void collect_audio_graph(ContextRecord& context) {
@@ -301,7 +309,7 @@ void collect_audio_graph(ContextRecord& context) {
     {
         lab::ContextGraphLock graph(context.context.get(), "bblite completed audio sources");
         for (auto* identity : pending)
-            detach_outputs(context.graph.at(identity), graph);
+            detach_outputs(context.graph.at(identity), graph, false);
     }
     pending.clear();
     for (auto& [identity, entry] : context.graph) {
@@ -325,7 +333,7 @@ void collect_audio_graph(ContextRecord& context) {
         lab::ContextGraphLock graph(context.context.get(), "bblite discarded audio graph");
         for (auto& [identity, entry] : context.graph) {
             if (!entry.reached)
-                detach_outputs(entry, graph);
+                detach_outputs(entry, graph, false);
         }
     }
     context.context->handlePostRenderTasks(render);

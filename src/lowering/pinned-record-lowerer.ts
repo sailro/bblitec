@@ -6456,7 +6456,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     ? "string"
                     : candidate.kind === "function"
                       ? "function"
-                      : "object";
+                      : // A value the checker narrowed to `undefined`.
+                        candidate.kind === "void"
+                        ? "undefined"
+                        : "object";
         if (shape.kind === "variant") {
             const members = shape.members.filter(
                 (member) => name(member) === expected,
@@ -6464,6 +6467,20 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return members.length === 0
                 ? "false"
                 : `(${members.map((member) => `std::holds_alternative<${this.cpp(member)}>(${this.value(operand)})`).join(" || ")})`;
+        }
+        // An optional value is `"undefined"` while absent, its value's type
+        // while present (`typeof options?.duration === "number"`).
+        if (shape.kind === "optional") {
+            if (shape.value.kind === "variant")
+                return this.refuse(
+                    operand,
+                    "Pinned typeof of an optional union.",
+                );
+            const present = name(shape.value) === expected;
+            const absent = expected === "undefined";
+            if (present === absent) return present ? "true" : "false";
+            const test = `bbl::pinned::truthy_object(${this.value(operand)})`;
+            return present ? test : `!${test}`;
         }
         return name(shape) === expected ? "true" : "false";
     }

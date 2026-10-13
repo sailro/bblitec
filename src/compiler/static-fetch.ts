@@ -132,6 +132,83 @@ export function compileDynamicPackagedAsset(
     );
 }
 
+/** One packaged file a URL expression may select. */
+export interface PackagedUrlAsset {
+    /** The URL as the program spells it. */
+    readonly logicalSource: string;
+    /** The packaged output path. */
+    readonly output: string;
+    /** The source file, for a consumer reading its bytes at generation. */
+    readonly file: string;
+}
+
+/** Hands a discovery's packaged assets to its consumer. */
+type CollectAssets = (
+    assets: readonly PackagedUrlAsset[],
+    selected: Value,
+) => Value;
+
+/**
+ * The packaged files a URL expression may select, each registered as `kind`:
+ * the one a generation-known URL names, or the closed candidate set a
+ * runtime URL's inference finds (a candidate table, or a directory under a
+ * known prefix), limited to what `accepts`. `selected` is the compiled URL.
+ */
+export function packagedUrlAssets(
+    context: StaticFetchContext,
+    expression: ts.Expression,
+    kind: CompileAsset["kind"],
+    accepts: (source: string) => boolean,
+): { assets: readonly PackagedUrlAsset[]; selected: Value } | undefined {
+    let found:
+        { assets: readonly PackagedUrlAsset[]; selected: Value } | undefined;
+    const collect: CollectAssets = (assets, selected) => {
+        found = { assets, selected };
+        return selected;
+    };
+    const dynamic =
+        context.probeEmission(() =>
+            compileDynamicDirectoryFetch(
+                context,
+                expression,
+                kind,
+                accepts,
+                false,
+                collect,
+            ),
+        ) ??
+        context.probeEmission(() =>
+            compileDynamicCandidateFetch(
+                context,
+                expression,
+                kind,
+                accepts,
+                false,
+                collect,
+            ),
+        );
+    if (dynamic) return found;
+    const selected = context.compileValue(expression);
+    if (selected.staticString === undefined) return undefined;
+    const source = resolveBundledAsset(
+        selected.staticString,
+        context.options.fileName,
+        context.options,
+    );
+    if (!accepts(source)) return undefined;
+    return {
+        assets: [
+            {
+                logicalSource: selected.staticString,
+                output: context.assetRegistry.registerAsset(source, kind)
+                    .output,
+                file: source,
+            },
+        ],
+        selected,
+    };
+}
+
 /**
  * Packages a finite set of module-relative asset URLs for a runtime selection.
  * Demos commonly put immutable asset URLs in descriptor tables, collect a
@@ -145,6 +222,7 @@ function compileDynamicCandidateFetch(
     kind: CompileAsset["kind"],
     accepts: (source: string) => boolean,
     response = false,
+    collect?: CollectAssets,
 ): Value | undefined {
     const selected = context.compileValue(expression);
     if (selected.staticString !== undefined || !isStringValue(selected)) {
@@ -198,6 +276,16 @@ function compileDynamicCandidateFetch(
         }
     }
     if (candidates.size === 0) return undefined;
+    if (collect)
+        return collect(
+            [...candidates.values()].map(({ logicalSource, source }) => ({
+                logicalSource,
+                output: context.assetRegistry.registerAsset(source, kind)
+                    .output,
+                file: source,
+            })),
+            selected,
+        );
     if (response)
         return ownedPackagedResponse(
             context,
@@ -354,6 +442,7 @@ function compileDynamicDirectoryFetch(
     kind: CompileAsset["kind"],
     accepts: (source: string) => boolean,
     response = false,
+    collect?: CollectAssets,
 ): Value | undefined {
     const unwrapped = context.unwrap(expression);
     let logicalPrefix: string | undefined;
@@ -439,8 +528,15 @@ function compileDynamicDirectoryFetch(
             key,
             logicalSource: `${logicalBase}${key}`,
             output: asset.output,
+            file,
         };
     });
+    // The whole URL: the known prefix, then the selected suffix.
+    if (collect)
+        return collect(assets, {
+            ...suffix,
+            cpp: `(std::string(${context.cppString(logicalPrefix)}) + ${suffix.cpp})`,
+        });
     if (response)
         return ownedPackagedResponse(context, expression, assets, suffix);
     context.reachJsData();

@@ -125,29 +125,31 @@ test("audio engine options adopt a context and refuse other present members once
 test("missing audio graph operations retain declared results and later authored bodies", () => {
     const result = compileSource(
         `
-        import {createAudioEngineAsync,createSoundAsync,createSoundBufferAsync,createStreamingSoundAsync,createAudioBusAsync,createMicrophoneSoundSourceAsync,createAudioEngineMediaStream,enableSpatial,enableStereo,enableAnalyzer,setMasterVolume,getMasterVolume} from "@babylonjs/lite";
+        import {createAudioEngineAsync,createSoundBufferAsync,createStreamingSoundAsync,createAudioBusAsync,createMicrophoneSoundSourceAsync,createAudioEngineMediaStream,enableSpatial,enableStereo,enableAnalyzer,setMasterVolume,getMasterVolume,type StaticSound} from "@babylonjs/lite";
         async function run(){
             try {
                 const engine=await createAudioEngineAsync();
-                const sound=await createSoundAsync(engine,"sound.wav",{volume:0.5});
+                const sounds=new Map<number,StaticSound>();
                 await createSoundBufferAsync(engine,"sound.wav");
                 await createStreamingSoundAsync(engine,"sound.wav");
                 await createAudioBusAsync(engine,"bus");
                 await createMicrophoneSoundSourceAsync(engine);
                 createAudioEngineMediaStream(engine);
-                enableSpatial(sound,{minDistance:2});
-                enableStereo(sound,{pan:0.5});
-                enableAnalyzer(sound);
+                for(const sound of sounds.values()){
+                    enableSpatial(sound,{minDistance:2});
+                    enableStereo(sound,{pan:0.5});
+                    enableAnalyzer(sound);
+                }
                 setMasterVolume(engine,0.5);
                 getMasterVolume(engine);
-            }catch(error){if(!error.message.includes("babylon:createSoundAsync"))throw error;}
+            }catch(error){if(!error.message.includes("babylon:createSoundBufferAsync"))throw error;}
             globalThis.close();
         }
         run();
     `,
         { deferredCapabilities },
     );
-    assert.equal(result.manifest.deferredCapabilities?.length, 11);
+    assert.equal(result.manifest.deferredCapabilities?.length, 10);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(
