@@ -308,8 +308,8 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
 #endif
     // A render target's slot binds the target's current texture, so a rebuilt
     // target is what this draw samples.
-    for (std::size_t packed = 0;
-         !material.shader_render_textures.empty() && packed < names.size(); ++packed) {
+    for (std::size_t packed = 0; !material.shader_render_textures.empty() && packed < names.size();
+         ++packed) {
         const std::size_t slot = declared_slots[packed];
         if (slot >= material.shader_render_textures.size() ||
             !material.shader_render_textures[slot] ||

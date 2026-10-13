@@ -6973,16 +6973,11 @@ ShadowGeneratorHandle create_pcf_directional_shadow_generator(Engine& engine, Li
                                                               PcfDirectionalShadowOptions options);
 ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               CsmDirectionalShadowOptions options);
-/** A rejected promise's error: its constructor name and message. */
-struct PromiseRejection {
-    std::string name;
-    std::string message;
-};
-/** `enableCsmStaticCache`: the rejection its promise carries, or none when it resolves. */
-std::optional<PromiseRejection>
-enable_csm_static_cache(Engine& engine, ShadowGeneratorHandle generator, double refit_angle,
-                        std::optional<double> refit_max_interval_ms,
-                        std::optional<double> static_cascades_per_frame);
+/** `enableCsmStaticCache`: the error its promise rejects with, or none when it resolves. */
+std::optional<js::Error> enable_csm_static_cache(Engine& engine, ShadowGeneratorHandle generator,
+                                                 double refit_angle,
+                                                 std::optional<double> refit_max_interval_ms,
+                                                 std::optional<double> static_cascades_per_frame);
 /** `getCsmReceiverTexture`: the generator's receiver texture, which it keeps (`sg._csmReceiverTexture`). */
 inline ShadowGeneratorHandle get_csm_receiver_texture(Engine& engine,
                                                       ShadowGeneratorHandle generator) {

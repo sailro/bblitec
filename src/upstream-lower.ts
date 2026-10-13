@@ -38,9 +38,7 @@ import {
 } from "./lowering/splat-stream-shaders.js";
 import { splatStreamLibraryHeader } from "./lowering/splat-stream-library.js";
 import {
-    MEDIA_STREAM_ROOTS,
-    SPATIAL_ROOTS,
-    STATIC_SOUND_ROOTS,
+    audioLibraryRoots,
     staticSoundLibraryHeader,
 } from "./lowering/static-sound-library.js";
 import { transparentOrderHeader } from "./lowering/transparent-order-lowerer.js";
@@ -113,7 +111,6 @@ import {
     renderPhysicsDebugCatalog,
 } from "./physics-debug-catalog.js";
 import { characterControllerHeader } from "./lowering/character-controller-runtime.js";
-import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
 import { navigationLibraryHeader } from "./lowering/navigation-library.js";
 import { PickingLowerer } from "./lowering/picking-lowerer.js";
@@ -371,6 +368,8 @@ import { uiDrawWgsl, uiFilterFragmentWgsl } from "./shader-builtins-ui.js";
 export interface UpstreamEmitOptions {
     /** At least one admitted source collector needs its observed glTF order. */
     sourceMeshWalks?: boolean;
+    /** The pinned audio functions the program calls (the manifest's record). */
+    audioLibraryRoots?: readonly string[];
     textPipelines?: readonly ComposedTextPipeline[];
     textData?: readonly CompiledTextData[];
     idDiagnostics: boolean;
@@ -1506,20 +1505,15 @@ ${lowerThinInstanceSync(context)}
                 splatStreamLibraryHeader(context),
             );
         }
-        // The static-sound family, lowered whole over the Web Audio PAL,
-        // with spatial audio when a program reaches it.
-        if (features.includes("audio:static-sound"))
+        // The pin's audio family over the Web Audio PAL: the functions the
+        // program calls, each with what it reaches, in the family's order.
+        if (features.includes("audio:pinned-engine"))
             this.tree.write(
                 "upstream/include/bblite/upstream_static_sound.hpp",
-                staticSoundLibraryHeader(context, [
-                    ...STATIC_SOUND_ROOTS,
-                    ...(features.includes("audio:spatial-sound")
-                        ? SPATIAL_ROOTS
-                        : []),
-                    ...(features.includes("audio:engine-media-stream")
-                        ? MEDIA_STREAM_ROOTS
-                        : []),
-                ]),
+                staticSoundLibraryHeader(
+                    context,
+                    audioLibraryRoots(options.audioLibraryRoots),
+                ),
             );
         // The transparent bucket's comparator and sort distance, wherever a
         // billboard or an external renderable can join a transparent mesh.
@@ -1723,14 +1717,6 @@ ${lowerThinInstanceSync(context)}
                 features.includes("mesh:extrude"),
             ),
         );
-        // The audio engine's output graph is FOLDED at the reaching call
-        // site rather than emitted here, because the shape is three
-        // statements long. This is the other half of that: it emits
-        // nothing and refuses generation the moment one of those
-        // statements moves.
-        if (features.includes("audio:engine")) {
-            new AudioLowerer(context).assertEngineGraphContract();
-        }
         // The shadow family. The pinned math is a header both backends
         // execute; the factories build the same depth-only render task the
         // pin's own `ensurePcfShadowTaskState` builds.

@@ -53,6 +53,20 @@ export function deploymentUrl(options: DeploymentOptions): URL {
     return url;
 }
 
+/**
+ * The absolute URL a fetch of `source` from the deployment requests:
+ * resolved against it, fragment removed (a fetch never sends one). A
+ * packaged response answers as, and is found by, this URL.
+ */
+export function packagedResponseUrl(
+    options: DeploymentOptions,
+    source: string,
+): string {
+    const url = new URL(source, deploymentUrl(options));
+    url.hash = "";
+    return url.href;
+}
+
 /** The public URL as a directory URL; anything but a plain HTTP(S) URL refuses. */
 export function deploymentPublicUrl(publicUrl: string): string {
     const url = URL.canParse(publicUrl) ? new URL(publicUrl) : undefined;

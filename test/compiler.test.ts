@@ -256,7 +256,11 @@ test("connects an audio node to an AudioParam modulation target", () => {
 
     assert.ok(result.manifest.features.includes("audio:engine"));
     assert.ok(result.manifest.features.includes("audio:oscillator"));
-    assert.match(result.cpp, /bbl::pal::audio_connect_param\(/);
+    // `connect(param)` as the Web Audio records spell it.
+    assert.match(
+        result.cpp,
+        /bbl::pal::audio_connect\([^\n]*\(bbl::pal::audio_node_param\(v_output, bbl::pal::AudioParamName::Gain\)\)/,
+    );
 });
 
 test("folds feature detection for supported Web Audio factories", () => {
@@ -278,7 +282,10 @@ test("folds feature detection for supported Web Audio factories", () => {
 
     assert.ok(result.manifest.features.includes("audio:stereo-panner"));
     assert.match(result.cpp, /audio_create_stereo_panner\(/);
-    assert.match(result.cpp, /audio_param_set_value\([^;]*, \(-0\.25f\)\);/);
+    assert.match(
+        result.cpp,
+        /audio_param_set_value\([^;]*, static_cast<float>\(\(-0\.25\)\)\);/,
+    );
     assert.match(result.cpp, /v_tail = v_block\d+_panner;/);
 });
 
@@ -349,7 +356,10 @@ test("runs successful nullable audio constructors and preserves source loops", (
 
     assert.match(result.cpp, /bbl::on_dom_keyboard\([^\n]*"keydown"/);
     assert.match(result.cpp, /bbl::pal::audio_set_loop\([^;]*, true\);/);
-    assert.match(result.cpp, /AudioParamName::PlaybackRate\), 0\.75f\);/);
+    assert.match(
+        result.cpp,
+        /AudioParamName::PlaybackRate\), static_cast<float>\(0\.75\)\);/,
+    );
     assert.match(
         result.cpp,
         /if \(v_fn\d+_ctx\.has_value\(\)\) \{\s+v_bblite_class_field__ctx_\d+ = \*v_fn\d+_ctx;/,
@@ -386,7 +396,10 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
         void graph.start();
     `);
 
-    assert.match(result.cpp, /audio_param_set_value\([^;]*, 0\.6f\);/);
+    assert.match(
+        result.cpp,
+        /audio_param_set_value\([^;]*, static_cast<float>\(0\.6\)\);/,
+    );
     assert.match(
         result.cpp,
         /\(\*v_bblite_class_field_context_\d+\) = v_[^;]*engine\.context;/,
@@ -395,7 +408,10 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
         result.cpp,
         /\(\*v_bblite_class_field_output_\d+\) = v_[^;]*output;/,
     );
-    assert.match(result.cpp, /audio_param_set_value\([^;]*, 0\.4f\);/);
+    assert.match(
+        result.cpp,
+        /audio_param_set_value\([^;]*, static_cast<float>\(0\.4\)\);/,
+    );
 });
 
 test("copies an empty nullable audio resource without dereferencing it", () => {

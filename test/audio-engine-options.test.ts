@@ -5,6 +5,10 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import {
+    audioLibraryInclude,
+    ENGINE_PARAMETER_STUBS,
+} from "./static-sound-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
 
@@ -44,17 +48,18 @@ test(
             void main();
         `);
         assert.equal(result.manifest.deferredCapabilities, undefined);
-        assert.match(
-            result.cpp,
-            /Promise<bbl::pal::AudioContextHandle>::resolved/,
-        );
+        // The adopted context is already open: the pin's function runs at
+        // the call, and no device opens.
+        assert.match(result.cpp, /bbl::create_audio_engine_async\(\w+\)/);
+        assert.doesNotMatch(result.cpp, /audio_create_context_async/);
         runGeneratedProgram(
             tools!,
             "audio-engine-options/adopted",
             `${result.cpp}
             #include <cassert>
-            // One context, the application's; the engine's main out and
-            // main bus are built on it: out -> destination, bus -> out.
+            // One context, the application's; the pin's engine builds its
+            // main out and main bus on it: out -> destination, bus -> out.
+            ${ENGINE_PARAMETER_STUBS}
             namespace { std::uint32_t contexts = 0, nodes = 0, edges = 0; }
             namespace bbl::pal {
                 AudioSession::~AudioSession() = default;
@@ -72,26 +77,42 @@ test(
                 }
             }
         `,
-            { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000 },
+            {
+                flags: [
+                    "/DBBLITE_WORKERS=1",
+                    ...audioLibraryInclude(
+                        "audio-engine-options/adopted",
+                        result.manifest,
+                    ),
+                ],
+                timeoutMs: 10000,
+            },
         );
     },
 );
 
 test("engine options refuse the members the native engine does not honour", () => {
     const imports = 'import {createAudioEngineAsync} from "@babylonjs/lite";';
-    for (const [member, reason] of [
-        ["volume:0.5", /'volume' \(the master volume/],
-        ["parameterRampDuration:0", /'parameterRampDuration'/],
-        ["resumeOnInteraction:false", /'resumeOnInteraction'/],
-        ["resumeOnPause:false", /'resumeOnPause'/],
-        ["resumeOnPauseRetryInterval:10", /'resumeOnPauseRetryInterval'/],
-    ] as const)
+    // The pin's engine reads its volume and ramp duration...
+    const honoured = compileSource(
+        `${imports}void createAudioEngineAsync({audioContext:new AudioContext(),volume:0.5,parameterRampDuration:0});`,
+    );
+    assert.match(honoured.cpp, /\.volume = /);
+    assert.match(honoured.cpp, /\.parameter_ramp_duration = /);
+    // ...and the resume switches only in hooks a native engine never installs.
+    for (const member of [
+        "resumeOnInteraction:false",
+        "resumeOnPause:false",
+        "resumeOnPauseRetryInterval:10",
+    ])
         assert.throws(
             () =>
                 compileSource(
                     `${imports}void createAudioEngineAsync({audioContext:new AudioContext(),${member}});`,
                 ),
-            reason,
+            new RegExp(
+                `Audio engine option '${member.split(":")[0]}' is not lowered: the native engine installs no`,
+            ),
         );
     const absent = compileSource(
         `${imports}void createAudioEngineAsync({audioContext:undefined});`,

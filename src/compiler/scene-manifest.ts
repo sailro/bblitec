@@ -115,6 +115,8 @@ export class SceneManifestRecorder {
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] =
         emissionArray([]);
     private readonly copyTasks: string[] = emissionArray([]);
+    /** The pinned audio functions the program calls (`upstream_static_sound.hpp`). */
+    private readonly audioLibraryRoots = new EmissionSet<string>();
     public readonly postProcessTasks: PostProcessTaskManifest[] = emissionArray(
         [],
     );
@@ -257,6 +259,9 @@ export class SceneManifestRecorder {
                 : {}),
             geometryOutputTasks: this.geometryOutputTasks,
             ...(this.copyTasks.length > 0 ? { copyTasks: this.copyTasks } : {}),
+            ...(this.audioLibraryRoots.size > 0
+                ? { audioLibraryRoots: [...this.audioLibraryRoots] }
+                : {}),
             postProcessTasks: this.postProcessTasks,
             postProcessComposites: this.postProcessComposites,
             screenSpaceTasks: this.screenSpaceTasks,
@@ -1323,6 +1328,10 @@ export class SceneManifestRecorder {
 
     public recordCopyTask(name: string): void {
         this.copyTasks.push(name);
+    }
+
+    public recordAudioLibraryRoot(name: string): void {
+        this.audioLibraryRoots.add(name);
     }
 
     public recordPostProcessTask(manifest: PostProcessTaskManifest): void {

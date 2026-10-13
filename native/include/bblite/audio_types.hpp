@@ -33,16 +33,27 @@ struct AudioEngineListenerSlot {
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(listener); }
 };
 
-/** The engine's context and main bus travel together through native storage. */
+/**
+ * The pin's `AudioEngine` (`audio-engine.ts`), which the lowered
+ * `createAudioEngineAsync` fills (`bblite/upstream_static_sound.hpp`). Copies
+ * share its state: the containers, the volume cell and the bus records.
+ */
 struct AudioEngineHandle {
     pal::AudioContextHandle context;
+    /** `_mainBus._in`: the node sounds and sources feed. */
     pal::AudioNodeHandle main_bus;
     /** `_mainOut._gain`: the master output gain the main bus feeds. */
     pal::AudioNodeHandle main_out;
-    /** `_sounds`: the sounds and sources `disposeAudioEngine` disposes. */
+    /** `_mainOut` / `_mainBus`: the lowered bus records, held type-erased. */
+    std::shared_ptr<void> main_out_record{};
+    std::shared_ptr<void> main_bus_record{};
+    /** `_sounds` / `_buses`: what `disposeAudioEngine` disposes. */
     js::Set<AudioEngineSoundHandle> sources{};
+    js::Set<AudioEngineSoundHandle> buses{};
     /** `_rampDuration`: the default parameter ramp, in seconds. */
-    double ramp_duration = 0.01;
+    double ramp_duration{};
+    /** `_volume`: the master volume `setMasterVolume` last set. */
+    std::shared_ptr<double> volume = std::make_shared<double>();
     /** `_validFormats` / `_invalidFormats`: the format probes' answers, by extension. */
     js::Set<std::string> valid_formats{};
     js::Set<std::string> invalid_formats{};
@@ -51,12 +62,25 @@ struct AudioEngineHandle {
     js::Set<js::Callback<void()>> spatial_updaters{};
     /** `_disposers`: what `disposeAudioEngine` runs last (a media-stream tap's release). */
     js::Array<js::Callback<void()>> disposers{};
+    /** `_mainOut = out`: the record, and the gain its node handle names. */
+    template <typename Out> void set_main_out(const std::shared_ptr<Out>& out) {
+        main_out_record = out;
+        main_out = out ? out->gain : pal::AudioNodeHandle{};
+    }
+    /** `_mainBus = bus`: the record, and the input its node handle names. */
+    template <typename Bus> void set_main_bus(const std::shared_ptr<Bus>& bus) {
+        main_bus_record = bus;
+        main_bus = bus ? bus->in : pal::AudioNodeHandle{};
+    }
     bool operator==(const AudioEngineHandle& other) const { return context == other.context; }
     [[nodiscard]] std::uint32_t identity() const { return context.value; }
     void gc_trace(const js::TraceVisitor& visitor) const {
         visitor(main_bus);
         visitor(sources);
+        visitor(buses);
         visitor(main_out);
+        visitor(main_out_record);
+        visitor(main_bus_record);
         visitor(listener);
         visitor(spatial_updaters);
         visitor(disposers);

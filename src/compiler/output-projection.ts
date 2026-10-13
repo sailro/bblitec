@@ -302,6 +302,8 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:stereo-panner": [],
     "audio:panner": [],
     "audio:media-stream": [],
+    // The pin's audio engine, lowered into the generated library header.
+    "audio:pinned-engine": [],
     // The pin's static-sound family, lowered whole; it fetches its sources
     // through the web platform seam.
     "audio:static-sound": ["src/pal_web_platform.cpp"],
@@ -410,9 +412,10 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         // Its renderable binds and draws in the scene's own pass.
         "renderer:external-renderables",
     ],
-    // A static sound plays decoded buffers through buffer sources, and
-    // fetches its URLs (packaged ones first) over HTTP.
+    // A static sound plays decoded buffers through buffer sources on the
+    // pinned engine, and fetches its URLs (packaged ones first) over HTTP.
     "audio:static-sound": [
+        "audio:pinned-engine",
         "audio:buffer-source",
         "audio:decoded-buffer",
         "platform:http",
@@ -759,9 +762,8 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     const navigationInclude = features.includes("navigation:recast")
         ? "#include <bblite/upstream/navigation.hpp>\n"
         : "";
-    // The audio family: main.cpp reaches the PAL's Web Audio surface
-    // directly for now -- the pinned engine/bus/sub-graph modules are not
-    // lowered yet (TODO), so the intrinsics emit `bbl::pal::audio_*`.
+    // The Web Audio surface: a program's own graph calls `bbl::pal::audio_*`
+    // directly; the pin's engine and sounds are the generated library's.
     const audioInclude = features.includes("audio:engine")
         ? "#include <bblite/pal_audio.hpp>\n" +
           (projection.workers ? "#include <bblite/pal_audio_async.hpp>\n" : "")
@@ -859,8 +861,11 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("audio:media-element")
             ? "#include <bblite/pal_audio_element.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"
             : "") +
+        (features.includes("audio:pinned-engine")
+            ? "#include <bblite/upstream_static_sound.hpp>\n"
+            : "") +
         (features.includes("audio:static-sound")
-            ? "#include <bblite/upstream_static_sound.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"
+            ? "#include <bblite/pal_packaged_responses.hpp>\n"
             : "") +
         (features.includes("platform:http")
             ? "#include <bblite/pal_http.hpp>\n"

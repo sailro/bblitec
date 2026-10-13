@@ -341,11 +341,9 @@ test("the application's media element beds compile strictly and run natively ove
     const registered = new Set(
         [
             ...result.cpp.matchAll(
-                /register_packaged_responses\("http:\/\/localhost\/", \{([^;]+)\}\);/g,
+                /PackagedFetchEntry\{"([^"]+)", "http:\/\/localhost\1"/g,
             ),
-        ].flatMap((match) =>
-            [...match[1]!.matchAll(/\{"([^"]+)"/g)].map((entry) => entry[1]),
-        ),
+        ].map((entry) => entry[1]),
     );
     assert.deepEqual([...registered].sort(), [
         "/assets/beds/first.wav",

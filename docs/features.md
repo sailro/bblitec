@@ -7,7 +7,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
-buffers, streaming sounds, buses, stereo/analyzer and master volume, script elements, `prompt`, application-realm
+buffers, streaming sounds, buses, stereo/analyzer, script elements, `prompt`, application-realm
 device recovery, and the [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
 
 ## Language
@@ -184,7 +184,8 @@ listeners, `disconnect(destination[, output[, input]])`, equal-power `PannerNode
 refuses: no HRTF data is packaged). A buffer source loops its whole buffer only: a `loopStart`/`loopEnd` region inside
 it, or a loop started with a duration, throws at `start`. Event payloads, context options, statechange and output
 selection refuse or are absent; so does any other node, parameter or context property write.
-`createAudioEngineAsync` adopts `audioContext`; its other options refuse.
+`createAudioEngineAsync`, `setMasterVolume` and `getMasterVolume` run the pin's lowered engine (`volume`,
+`parameterRampDuration`, an adopted `audioContext`); the resume options refuse (no click or statechange hook).
 
 Media streams: `MediaStream`/`MediaStreamTrack` objects (track sets, `addTrack`/`removeTrack`, `clone`, `stop`,
 `enabled`, `readyState`), `canvas.captureStream(fps)` (one live video track), `createMediaStreamDestination()` (a sink

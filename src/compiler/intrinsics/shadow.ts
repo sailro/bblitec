@@ -1,6 +1,7 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
+import { rejectedWhenRefused } from "../promises.js";
 import type { Feature, ShadowCasterMeshManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -518,7 +519,11 @@ export function compileShadowIntrinsic(
             if (context.options.workers)
                 return {
                     kind: "promise",
-                    cpp: `(${rejection} ? bbl::js::Promise<bbl::js::PromiseVoid>::rejected(std::make_exception_ptr(bbl::js::NamedError(${rejection}->name, ${rejection}->message))) : bbl::js::Promise<bbl::js::PromiseVoid>::resolved({}))`,
+                    cpp: rejectedWhenRefused(
+                        rejection,
+                        "bbl::js::PromiseVoid",
+                        "bbl::js::Promise<bbl::js::PromiseVoid>::resolved({})",
+                    ),
                     promiseType: "bbl::js::PromiseVoid",
                     promiseResult: { kind: "void", cpp: "" },
                 };
@@ -533,7 +538,7 @@ export function compileShadowIntrinsic(
                 );
             return {
                 kind: "void",
-                cpp: `(${rejection} ? throw bbl::js::NamedError(${rejection}->name, ${rejection}->message) : void())`,
+                cpp: `(${rejection} ? std::rethrow_exception(*${rejection}) : void())`,
             };
         }
 

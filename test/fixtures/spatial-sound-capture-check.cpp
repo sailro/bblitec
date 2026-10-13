@@ -11,6 +11,7 @@
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_packaged_responses.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -43,15 +44,18 @@ std::string render(pal::AudioContextHandle context, int frames, int measured) {
     return line;
 }
 
+/** A fixture packages its files where they are. */
+std::string fixture_path(const std::string& path) { return path; }
+
 js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& lines) {
-    // The engine `createAudioEngineAsync` builds: main out and main bus.
-    const auto context = pal::audio_create_context();
-    const auto out = pal::audio_create_gain(context);
-    pal::audio_connect(out, pal::audio_destination(context));
-    const auto bus = pal::audio_create_gain(context);
-    pal::audio_connect(bus, out);
-    AudioEngineHandle engine{context, bus, out};
-    pal::register_packaged_responses("http://localhost/", {{"/sounds/tone.wav", wav}});
+    // The pin's own engine, on a context the call site opened.
+    AudioEngineOptions engine_options{};
+    engine_options.audio_context = pal::audio_create_context();
+    const auto engine = co_await create_audio_engine_async(engine_options);
+    const auto context = engine.context;
+    const std::array<pal::PackagedFetchEntry, 1> responses{
+        {{"/sounds/tone.wav", "http://localhost/sounds/tone.wav", wav}}};
+    pal::register_packaged_responses("http://localhost/", fixture_path, responses);
     StaticSoundOptions options{};
     options.loop = true;
     const auto sound =
