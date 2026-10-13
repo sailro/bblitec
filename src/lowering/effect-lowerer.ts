@@ -19,6 +19,7 @@ import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerEffectWrapperDisposal } from "./effect-wrapper-disposal.js";
+import { lowerEffectTaskDisposal } from "./frame-graph-task-disposal.js";
 
 const effectModule = "src/effect/effect-renderer.ts";
 const uniformEffectModule = "src/effect/uniform-effect-renderer.ts";
@@ -181,7 +182,11 @@ export class EffectLowerer {
      * wrapper a renderer or task draws, its clear state, and the uniform and
      * texture slots the setters write.
      */
-    public lowerFactory(disposal = false, taskBuild = false): LoweredSource {
+    public lowerFactory(
+        disposal = false,
+        taskBuild = false,
+        taskDisposal = false,
+    ): LoweredSource {
         return {
             modulePath: effectModule,
             symbolName: "createEffectWrapper,createEffectRenderer",
@@ -312,7 +317,7 @@ TaskHandle create_effect_render_task(
     return TaskHandle{
         static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
 }
-${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}
+${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context) : ""}
 } // namespace bbl
 `,
         };

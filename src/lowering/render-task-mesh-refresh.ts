@@ -7,6 +7,7 @@ import type {
 } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
+import { taskDisposedCpp } from "./frame-graph-task-disposal.js";
 
 /**
  * The refreshed execute's rebind guard as `static bool <name>(task)`: a
@@ -170,6 +171,7 @@ ${thinBindings ? "        task.render_meshes.at(index).thin_binding = owners[ind
 function refreshedOverridesCpp(
     context: LoweringContext,
     thinBindings: boolean,
+    taskDisposal: boolean,
 ): string {
     const refreshModule = "src/frame-graph/render-task-mesh-refresh.ts";
     const taskModule = "src/frame-graph/render-task.ts";
@@ -224,7 +226,7 @@ function refreshedOverridesCpp(
             [
                 "this._disposed",
                 {
-                    cpp: "(record.source_scene && record.source_scene->disposed)",
+                    cpp: taskDisposedCpp("record", taskDisposal),
                     type: "bool",
                 },
             ],
@@ -319,6 +321,7 @@ export function renderTaskMeshRefreshCpp(
     context: LoweringContext,
     overrides = false,
     thinBindings = false,
+    taskDisposal = false,
 ): string {
     const path = "src/frame-graph/render-task-mesh-refresh.ts";
     const { file, declaration } = context.functionDeclaration(
@@ -373,7 +376,7 @@ export function renderTaskMeshRefreshCpp(
         [
             "task._disposed",
             {
-                cpp: "(record.source_scene && record.source_scene->disposed)",
+                cpp: taskDisposedCpp("record", taskDisposal),
                 type: "bool",
             },
         ],
@@ -491,7 +494,7 @@ export function renderTaskMeshRefreshCpp(
         scope,
     );
     const body = lowerPinnedBody(file, add.body.statements, scope);
-    return `${overrides ? refreshedOverridesCpp(context, thinBindings) : ""}// ${context.provenance(path, "enableRenderTaskMeshRefresh")}
+    return `${overrides ? refreshedOverridesCpp(context, thinBindings, taskDisposal) : ""}// ${context.provenance(path, "enableRenderTaskMeshRefresh")}
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task) {
     auto& record = task_record(engine, task);
     if (record.kind != FrameTaskKind::render) throw std::runtime_error("Mesh refresh requires a render task.");

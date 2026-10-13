@@ -16,6 +16,7 @@
 #include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadow_skeleton_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
+#include <bblite/features/task_disposal.hpp>
 #include <bblite/features/thin_instances.hpp>
 
 #include "pal_gpu_common.hpp"
@@ -1994,6 +1995,15 @@ void require_live_task_targets(const Engine& engine, TaskHandle handle) {
     const FrameTaskRecord* task = handle_find(engine.frame_tasks, handle);
     if (!task || task->execution_enabled == false)
         return;
+#if BBLITE_TASK_DISPOSAL
+    // An effect task's dispose() cleared the pipeline its execute throws the
+    // pin's #37 without; a render task's destroyed its scene uniform buffer.
+    if (task->disposed && task->kind == FrameTaskKind::effect)
+        throw std::runtime_error("#37");
+    if (task->disposed)
+        throw std::runtime_error("Render task '" + task->render.name +
+                                 "' executes after dispose() destroyed its scene uniform buffer.");
+#endif
     switch (task->kind) {
     case FrameTaskKind::render: {
         const TargetUser user{"Render task", task->render.name};

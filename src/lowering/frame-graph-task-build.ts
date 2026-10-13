@@ -136,7 +136,7 @@ export function lowerFrameGraphTaskBuild(
             if (node === recordCall)
                 return [
                     `${indent}if (task.kind == FrameTaskKind::render) {`,
-                    `${indent}    if (task.source_scene && task.source_scene->disposed)`,
+                    `${indent}    if (task.disposed || (task.source_scene && task.source_scene->disposed))`,
                     `${indent}        throw std::runtime_error("RenderTask has been disposed.");`,
                     // Registration records each queued task once; a
                     // recorded task's next draw-list build re-records it.
@@ -145,6 +145,8 @@ export function lowerFrameGraphTaskBuild(
                         ? [
                               `${indent}} else if (task.kind == FrameTaskKind::effect) {`,
                               `${indent}    require_effect_bind_group(engine, task.effect.effect);`,
+                              // The record restores the pipeline dispose cleared.
+                              `${indent}    task.disposed = false;`,
                           ]
                         : []),
                     `${indent}} else {`,

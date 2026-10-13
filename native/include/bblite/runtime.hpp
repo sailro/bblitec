@@ -1695,6 +1695,11 @@ struct FrameTaskRecord {
     bool render_meshes_dirty = false;
     /** A backend built this task's draw lists once: the recorded generation is drawn. */
     bool render_generation_built = false;
+    /**
+     * `dispose()` ran. A render task stays disposed; an effect task's
+     * `dispose` only clears its pipeline, which its next record restores.
+     */
+    bool disposed = false;
     mutable double shader_packet_scene_version = -1;
     mutable bool shader_packet_rebuild_pending = false;
     GeometryTaskOptions geometry;
@@ -6712,6 +6717,8 @@ std::array<double, 2> resolve_surface_render_target_size(double width, double he
 js::Callback<void()> on_render_target_texture_resize(Engine& engine, RenderTargetTexture result,
                                                      std::function<void()> callback);
 void dispose_render_target_texture(Engine& engine, RenderTargetTexture result);
+/** The pin's `disposeRenderTarget`: releases a target unless it is the swapchain's. */
+void dispose_render_target(Engine& engine, RenderTargetHandle target);
 RenderTargetHandle swapchain_render_target(Engine& engine);
 TaskHandle create_render_task(Engine& engine, Scene& scene, RenderTaskOptions options);
 TaskHandle create_geometry_renderer_task(Engine& engine, Scene& scene, GeometryTaskOptions options);
@@ -6869,6 +6876,10 @@ void enable_skeleton_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void remove_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh);
+/** `RenderTask.dispose()`. */
+void dispose_render_task(Engine& engine, TaskHandle task);
+/** `EffectRenderTask.dispose()`. */
+void dispose_effect_render_task(Engine& engine, TaskHandle task);
 /** A refreshed task's rebind publishes its generation in the pin's renderable order. */
 void order_refreshed_render_task(FrameTaskRecord& task);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);

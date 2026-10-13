@@ -3224,6 +3224,7 @@ export type Feature =
     | "frame-graph:task-mesh-refresh"
     | "frame-graph:task-material-override"
     | "frame-graph:task-build"
+    | "frame-graph:task-disposal"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:wrapper-disposal"

@@ -102,6 +102,11 @@ export const featureMacros: readonly FeatureMacro[] = [
         macro: "BBLITE_RENDER_TARGET_DISPOSAL",
         anyOf: ["frame-graph:target-disposal"],
     },
+    // A disposed task refuses to execute.
+    {
+        macro: "BBLITE_TASK_DISPOSAL",
+        anyOf: ["frame-graph:task-disposal"],
+    },
     // A refreshed task orders the overrides it queues beside its tracked
     // meshes at each rebind.
     {

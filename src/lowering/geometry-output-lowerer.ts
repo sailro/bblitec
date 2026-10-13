@@ -4,6 +4,7 @@ import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { renderTaskMeshRefreshCpp } from "./render-task-mesh-refresh.js";
 import { lowerRenderTaskMeshRemoval } from "./render-task-removal.js";
+import { lowerRenderTaskDisposal } from "./frame-graph-task-disposal.js";
 import { assertGeometryTaskSync } from "./geometry-task-sync.js";
 import { recordAt } from "../compiler/record-access.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
@@ -15,6 +16,7 @@ export class GeometryOutputLowerer {
         thinBindings = false,
         meshRemoval = false,
         refreshedOverrides = false,
+        taskDisposal = false,
     ): LoweredSource {
         const geometryModule = "src/frame-graph/geometry-renderer-task.ts";
         const copyModule = "src/frame-graph/copy-to-texture-task.ts";
@@ -369,7 +371,7 @@ static void initialize_refreshed_render_task_shader_materials(Engine& engine, Fr
     ++engine.draw_list_epoch;
 }
 
-${renderTaskMeshRefreshCpp(this.context, refreshedOverrides, thinBindings)}
+${renderTaskMeshRefreshCpp(this.context, refreshedOverrides, thinBindings, taskDisposal)}
 
 TaskHandle create_render_task(
     Engine& engine,
@@ -494,13 +496,14 @@ void add_render_task_mesh(
     if (record.render_mesh_refresh) {
         add_refreshed_render_task_mesh(engine, record, mesh, material, material_override);
     } else if (material.value != invalid_handle) {
+${taskDisposal ? '        // queueMesh: a disposed task throws.\n        if (record.disposed) throw std::runtime_error("RenderTask has been disposed.");\n' : ""}\
         RenderTaskMesh entry{mesh, material};
         if (record.render_recorded) initialize_render_task_shader_material(engine, record, entry);
         record.render_meshes.push_back(std::move(entry));
         if (record.render_recorded) ++engine.draw_list_epoch;
     }
 }
-${meshRemoval ? lowerRenderTaskMeshRemoval(this.context) : ""}
+${meshRemoval ? lowerRenderTaskMeshRemoval(this.context) : ""}${taskDisposal ? lowerRenderTaskDisposal(this.context) : ""}
 } // namespace bbl
 `,
         };
