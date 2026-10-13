@@ -9,7 +9,7 @@ const refreshModule = "src/frame-graph/render-task-mesh-refresh.ts";
 const transactionModule = "src/frame-graph/render-task-transaction.ts";
 
 /** The refreshed task's `_removeMesh` closure: tracked removal, then a dirty generation. */
-function refreshedRemovalCpp(context: LoweringContext): string {
+export function refreshedRemovalCpp(context: LoweringContext): string {
     const { declaration } = context.functionDeclaration(
         refreshModule,
         "enableRenderTaskMeshRefresh",
