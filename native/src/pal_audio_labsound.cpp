@@ -1139,6 +1139,14 @@ AudioNodeHandle audio_create_buffer_source(AudioContextHandle context) {
 #endif
 }
 
+AudioNodeHandle audio_create_buffer_source(AudioContextHandle context,
+                                           const AudioBufferSourceInit& options) {
+    auto source = audio_create_buffer_source(context);
+    if (options.buffer)
+        audio_set_buffer(source, *options.buffer);
+    return source;
+}
+
 double audio_buffer_property(AudioBufferHandle buffer, AudioBufferProperty property) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     const auto record = require_buffer(buffer);

@@ -228,6 +228,15 @@ bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source)
 /** `ctx.createBufferSource()`. */
 AudioNodeHandle audio_create_buffer_source(AudioContextHandle context);
 
+/** `AudioBufferSourceOptions`: the members a lowered library passes. */
+struct AudioBufferSourceInit {
+    bbl::js::Nullable<AudioBufferHandle> buffer;
+};
+
+/** `new AudioBufferSourceNode(ctx, { buffer })`. */
+AudioNodeHandle audio_create_buffer_source(AudioContextHandle context,
+                                           const AudioBufferSourceInit& options);
+
 /** `source.buffer = buffer`. */
 void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer);
 

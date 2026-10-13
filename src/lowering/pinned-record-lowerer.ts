@@ -1483,6 +1483,11 @@ export class PinnedRecordModel {
         return key;
     }
 
+    /** Whether a record is a generic declaration, emitted only per instance. */
+    public isGenericRecord(name: string): boolean {
+        return this.genericParameters(this.record(name).spec) !== undefined;
+    }
+
     /** The instantiated generic records the lowered bodies reached, for `structs`. */
     public instantiatedRecords(): string[] {
         return [...this.instances.keys()];

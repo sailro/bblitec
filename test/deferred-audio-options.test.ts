@@ -115,6 +115,7 @@ test("audio engine options adopt a context and refuse other present members once
             AudioNodeHandle audio_create_gain(AudioContextHandle) { return {++nodes,{}}; }
             AudioNodeHandle audio_destination(AudioContextHandle context) { return {1000 + context.value,{}}; }
             void audio_connect(AudioNodeHandle,AudioNodeHandle) {}
+            void audio_disconnect(AudioNodeHandle) {}
         }
     `,
         { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000 },
