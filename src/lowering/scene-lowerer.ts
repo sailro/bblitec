@@ -19,7 +19,10 @@ import { recordAt } from "../compiler/record-access.js";
 import { lowerMeshGeometryAccess } from "./mesh-geometry-access.js";
 import { lowerSceneNodeRemoval } from "./scene-node-removal.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
-import { lowerFrameGraphTaskBuild } from "./frame-graph-task-build.js";
+import {
+    lowerFrameGraphTaskBuild,
+    lowerTaskExecutionCheck,
+} from "./frame-graph-task-build.js";
 import { lowerDeformedVertex } from "./deformed-vertex.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
@@ -123,6 +126,8 @@ interface SceneCoreOptions {
     effectTasks?: boolean;
     /** A task may be added to a registered scene. */
     liveTaskAdd?: boolean;
+    /** A render or effect task may be disposed. */
+    taskDisposal?: boolean;
     /** The program reads a deformed vertex (`computeDeformedPositionToRef`). */
     deformedPosition?: boolean;
     /** A CSM generator keeps a static cache target (`enableCsmStaticCache`). */
@@ -2892,7 +2897,14 @@ ${
         ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false)}
 `
         : ""
-}${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${options.deformedPosition ? `${lowerDeformedVertex(this.context)}\n` : ""}void rebuild_scene_renderables(Scene& scene) {
+}${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${
+            options.liveTaskAdd || options.taskDisposal
+                ? lowerTaskExecutionCheck(this.context, {
+                      disposal: options.taskDisposal ?? false,
+                      pendingBuild: options.liveTaskAdd ?? false,
+                  })
+                : ""
+        }${options.deformedPosition ? `${lowerDeformedVertex(this.context)}\n` : ""}void rebuild_scene_renderables(Scene& scene) {
     require_scene_engine(scene);
 ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
 #if BBLITE_HAS_SHADOWS

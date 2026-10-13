@@ -1341,6 +1341,7 @@ ${lowerThinInstanceSync(context)}
                 taskBuild: features.includes("frame-graph:task-build"),
                 effectTasks: features.includes("effect:task"),
                 liveTaskAdd: features.includes("frame-graph:live-task-add"),
+                taskDisposal: features.includes("frame-graph:task-disposal"),
                 deformedPosition: features.includes("mesh:deformed-position"),
                 csmStaticCache: features.includes("shadow:csm-static-cache"),
             }),

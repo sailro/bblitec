@@ -6944,6 +6944,8 @@ void add_task_after(Scene& scene, TaskHandle task, TaskHandle after);
 void build_frame_graph_task(Scene& scene, TaskHandle task);
 /** `addTask`/`addTaskAtStart` where the scene may already be registered. */
 void add_live_task(Scene& scene, TaskHandle task, bool at_start);
+/** Refuses an executed task that is disposed or waits for its build, as the pin fails. */
+void require_executable_task(const FrameTaskRecord& task);
 void add_task(FrameGraphContext& context, TaskHandle task);
 void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 void add_task_after(FrameGraphContext& context, TaskHandle task, TaskHandle after);

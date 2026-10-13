@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { lowerTaskExecutionCheck } from "../src/lowering/frame-graph-task-build.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { lowerGpuRetirement } from "../src/lowering/gpu-retirement-lowerer.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
@@ -19,7 +20,6 @@ import {
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
-    cppSection,
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
@@ -918,17 +918,15 @@ test("both backends' shared target code skips disposed targets and refuses sched
         t.skip("Native compiler unavailable");
         return;
     }
-    const shared = readFileSync("native/src/pal_gpu_shared.cpp", "utf8");
     runGeneratedProgram(
         tools,
         "engine-resource-lifetimes/shared-targets",
         `
-#include <bblite/runtime.hpp>
 #include <cassert>
 #include <string>
-#include <string_view>
-namespace bbl::pal {
-${cppSection(shared, "void synchronize_render_target_lifecycles(", "TextureFormatClass geometry_format_class(")}
+#include "pal_gpu_target_lifetimes.hpp"
+namespace bbl {
+${lowerTaskExecutionCheck(new LoweringContext(), { disposal: true, pendingBuild: true })}
 }
 using namespace bbl;
 struct CountingLifecycle final : RenderTargetLifecycle {
@@ -952,6 +950,7 @@ int main() {
     engine.render_targets[1].retired = true;
     pal::synchronize_render_target_lifecycles(engine);
     assert(live->synchronized == 1 && disposed->synchronized == 0);
+    const auto require = [&] { return refusal([&] { pal::require_executable_frame_tasks(engine); }); };
     // A disposed target nothing schedules is no frame's concern.
     Scene scene;
     scene.engine = &engine;
@@ -972,22 +971,49 @@ int main() {
     post.post_process.passes.emplace_back().source.target = {1};
     engine.frame_tasks.push_back(post);
     scene.tasks = {{0}, {1}};
-    pal::require_live_render_targets(engine);
+    assert(require().empty());
     // An executed task naming it refuses, whether it renders into or samples it.
     engine.frame_tasks[1].execution_enabled = true;
-    assert(refusal([&] { pal::require_live_render_targets(engine); }) ==
+    assert(require() ==
            "Effect task 'outline' uses a render-target texture that disposeRenderTargetTexture released.");
     engine.frame_tasks[1].execution_enabled = false;
     scene.tasks.push_back({2});
-    assert(refusal([&] { pal::require_live_render_targets(engine); }).starts_with("Post-process task 'blur'"));
+    assert(require().starts_with("Post-process task 'blur'"));
     scene.tasks.pop_back();
     FrameGraphContext graph;
     graph.engine = &engine;
     graph.tasks = {{2}};
     engine.rendering_contexts.push_back("frame-graph", &graph);
-    assert(refusal([&] { pal::require_live_render_targets(engine); }).starts_with("Post-process task 'blur'"));
+    assert(require().starts_with("Post-process task 'blur'"));
+    graph.tasks.clear();
+    // The pin's execute failures, before any target: an effect task without
+    // its pipeline, a disposed render task, any other task waiting for its build.
+    engine.render_targets[1].retired = false;
+    engine.frame_tasks[1].execution_enabled = true;
+    engine.frame_tasks[1].disposed = true;
+    assert(require() == "#37");
+    engine.frame_tasks[1].disposed = false;
+    engine.frame_tasks[1].record_state = FrameTaskRecordState::pending_build;
+    assert(require() == "#37");
+    engine.frame_tasks[1].execution_enabled = false;
+    engine.frame_tasks[0].record_state = FrameTaskRecordState::pending_build;
+    assert(require() == "A task added to a live scene executes before buildFrameGraphTask recorded it.");
+    engine.frame_tasks[0].record_state = FrameTaskRecordState::recorded;
+    engine.frame_tasks[0].disposed = true;
+    assert(require() == "Render task 'pass' executes after dispose() destroyed its scene uniform buffer.");
+    engine.frame_tasks[0].execution_enabled = false;
+    assert(require().empty());
 }
 `,
-        { flags: ["/DBBLITE_RENDER_TARGET_DISPOSAL=1"], timeoutMs: 10000 },
+        {
+            flags: [
+                "/DBBLITE_RENDER_TARGET_DISPOSAL=1",
+                "/DBBLITE_TASK_DISPOSAL=1",
+                "/DBBLITE_LIVE_TASK_ADD=1",
+                "/I",
+                resolve("native/src"),
+            ],
+            timeoutMs: 10000,
+        },
     );
 });

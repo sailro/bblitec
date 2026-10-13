@@ -2,6 +2,7 @@ import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { taskDisposedCpp } from "./frame-graph-task-disposal.js";
+import { pinnedErrorCode } from "./pinned-error.js";
 
 const graphModule = "src/frame-graph/frame-graph.ts";
 const baseModule = "src/frame-graph/render-task-base.ts";
@@ -160,5 +161,59 @@ void build_frame_graph_task(Scene& scene, TaskHandle handle) {
     FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "handle")};
 ${body}
 }
+`;
+}
+
+/**
+ * Why an executed task cannot run, as the pin fails. An effect task's
+ * execute throws the pin's code without the pipeline its record builds:
+ * `dispose()` clears it (`disposal`), and a task added to a built graph has
+ * none until `buildFrameGraphTask` (`pendingBuild`). A disposed render task
+ * destroyed its scene uniform buffer; any other task added to a built graph
+ * has not recorded its pass.
+ */
+export function lowerTaskExecutionCheck(
+    context: LoweringContext,
+    { disposal, pendingBuild }: { disposal: boolean; pendingBuild: boolean },
+): string {
+    const execute = context.propertyFunction(
+        effectModule,
+        "createEffectRenderTask",
+        "execute",
+        { unique: true },
+    ).declaration;
+    context.assertExpressionShape(
+        context.variableInitializer(execute, "pipeline"),
+        "task._pipeline",
+        "Effect task execute pipeline",
+    );
+    context.expectShapeCount(execute, "!pipeline", "effect execute guard");
+    const code = pinnedErrorCode(context, execute);
+    const pending = "task.record_state == FrameTaskRecordState::pending_build";
+    const unbuilt = [
+        ...(disposal ? ["task.disposed"] : []),
+        ...(pendingBuild ? [pending] : []),
+    ];
+    if (unbuilt.length === 0)
+        throw new Error(
+            "A task execution check needs disposal or a pending build.",
+        );
+    return `// ${context.provenance(effectModule, "createEffectRenderTask execute", `${graphModule}#buildFrameGraphTask`)}
+void require_executable_task(const FrameTaskRecord& task) {
+    if (task.kind == FrameTaskKind::effect && (${unbuilt.join(" || ")}))
+        throw std::runtime_error("#${code}");
+${
+    disposal
+        ? `    if (task.disposed)
+        throw std::runtime_error("Render task '" + task.render.name + "' executes after dispose() destroyed its scene uniform buffer.");
+`
+        : ""
+}${
+        pendingBuild
+            ? `    if (${pending})
+        throw std::runtime_error("A task added to a live scene executes before buildFrameGraphTask recorded it.");
+`
+            : ""
+    }}
 `;
 }

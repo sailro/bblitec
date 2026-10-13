@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
-import { lowerFrameGraphTaskBuild } from "../src/lowering/frame-graph-task-build.js";
+import {
+    lowerFrameGraphTaskBuild,
+    lowerTaskExecutionCheck,
+} from "../src/lowering/frame-graph-task-build.js";
 import { lowerEffectTaskDisposal } from "../src/lowering/frame-graph-task-disposal.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
@@ -391,9 +394,10 @@ test("an effect task's dispose clears its pipeline until the next record, as the
     const native = lowerEffectTaskDisposal(new LoweringContext());
     assert.match(native, new RegExp(`execute throws ${message}`));
     assert.ok(
-        readFileSync("native/src/pal_gpu_shared.cpp", "utf8").includes(
-            `throw std::runtime_error(${JSON.stringify(message)});`,
-        ),
+        lowerTaskExecutionCheck(new LoweringContext(), {
+            disposal: true,
+            pendingBuild: false,
+        }).includes(`throw std::runtime_error(${JSON.stringify(message)});`),
     );
     assert.match(
         lowerFrameGraphTaskBuild(new LoweringContext(), "", true),
@@ -436,9 +440,10 @@ test("a task added to a live scene waits for its record, as the pin's unrecorded
         message = (error as Error).message;
     }
     assert.ok(
-        readFileSync("native/src/pal_gpu_shared.cpp", "utf8").includes(
-            `throw std::runtime_error(${JSON.stringify(message)});`,
-        ),
+        lowerTaskExecutionCheck(new LoweringContext(), {
+            disposal: false,
+            pendingBuild: true,
+        }).includes(`throw std::runtime_error(${JSON.stringify(message)});`),
         message,
     );
     const live = compileSource(
