@@ -1913,6 +1913,21 @@ export class PlatformCalls {
             }
             return this.elementBoolean(presenceFlagCpp(element), call, result);
         }
+        if (element && callee.name.text === "getAttributeNames") {
+            this.context.expectArgumentCount(call, 0, 0);
+            if (ts.isOptionalChain(call))
+                this.context.fail(
+                    call,
+                    "An optional getAttributeNames call on an absent element is not lowered.",
+                );
+            this.context.reachJsData();
+            return {
+                kind: "data",
+                cpp: `bbl::ui_attribute_names(${this.context.requireEngine(element, call)}, ${element.cpp})`,
+                dataType: { kind: "vector", element: { kind: "string" } },
+                freshData: true,
+            };
+        }
         if (element && callee.name.text === "click") {
             this.context.expectArgumentCount(call, 0, 0);
             if (element.uiTag === "input") {

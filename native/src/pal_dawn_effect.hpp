@@ -253,7 +253,8 @@ inline void bind_dawn_effect_render_textures(WGPUDevice device, const Engine& en
     for (const auto& [entry, binding] : pass.render_textures) {
         const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding);
         if (!slot.render_texture)
-            throw std::runtime_error("An effect binding changed texture kind after its first draw.");
+            throw std::runtime_error(
+                "An effect binding changed texture kind after its first draw.");
         const WGPUTextureView view = source(*slot.render_texture);
         changed = changed || pass.group_entries[entry].textureView != view;
         pass.group_entries[entry].textureView = view;
@@ -264,8 +265,8 @@ inline void bind_dawn_effect_render_textures(WGPUDevice device, const Engine& en
     descriptor.layout = pass.group_layout;
     descriptor.entryCount = pass.group_entries.size();
     descriptor.entries = pass.group_entries.data();
-    pass.group = require_dawn_resource(wgpuDeviceCreateBindGroup(device, &descriptor),
-                                       "effect bind group");
+    pass.group =
+        require_dawn_resource(wgpuDeviceCreateBindGroup(device, &descriptor), "effect bind group");
 }
 
 /** `_record`: the pin's own three-vertex draw, into an already-open pass. */

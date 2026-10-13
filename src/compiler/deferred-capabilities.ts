@@ -45,7 +45,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
     ...[
         "prompt",
         "Window.prompt",
-        "Element.getAttributeNames",
         "Element.innerHTML.svg-image",
         "HTMLScriptElement.src",
         "HTMLScriptElement.async",

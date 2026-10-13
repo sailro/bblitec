@@ -1,6 +1,8 @@
 import {
     deformPickingHeader,
     type DeformPickingShader,
+    vatPickingHeader,
+    type VatPickingShader,
 } from "./pinned-picking-shaders.js";
 import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 import { renderLoweredSourceUnits } from "./compiler/lowered-source-units.js";
@@ -412,6 +414,8 @@ export interface UpstreamEmitOptions {
         detailed?: string;
         /** Per-mesh projection arms, each composed for basic and reached detailed picks. */
         deform?: readonly DeformPickingShader[];
+        /** VAT projection arms: regular, then thin over a texture or storage. */
+        vat?: readonly VatPickingShader[];
         cloud?: string;
         billboard?: { facing: string; axisLocked?: string };
     };
@@ -1962,6 +1966,8 @@ ${lowerThinInstanceSync(context)}
 #define BBLITE_GPU_MORPH_STORAGE ${gpuMorphStorage ? 1 : 0}
 // Storage lifetime is compiled only when a deployed projection reads morphs.
 #define BBLITE_DEFORM_PICKING_MORPH ${options.pickingShaders?.deform?.some((variant) => variant.morph) ? 1 : 0}
+// A baked mesh picks through its VAT pose where a GPU pick reaches one.
+#define BBLITE_VAT_PICKING ${options.pickingShaders?.vat?.length ? 1 : 0}
 #define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
 #define BBLITE_GPU_INSTANCE_COLORS ${options.gpuInstanceColors ? 1 : 0}
 // Baked vertex animation. Reached at bakeVat, which is the pin's own
@@ -3610,6 +3616,27 @@ ${shadow.blurFragmentWgsl}`,
                             "src/picking/deform-picking-projection.ts",
                             "getDeformPickingProjection",
                         )}\n${wgsl}`,
+                        family: "picking",
+                    });
+                }
+            }
+            // Each VAT arm is a whole advanced module: its vertex stage
+            // projects through the bake, its fragment is the advanced one.
+            const vatVariants = options.pickingShaders?.vat ?? [];
+            if (vatVariants.length > 0) {
+                this.tree.write(
+                    "upstream/include/bblite/upstream/picking_vat_projection.hpp",
+                    vatPickingHeader(vatVariants),
+                );
+            }
+            for (const [index, variant] of vatVariants.entries()) {
+                for (const stage of ["vert", "frag"] as const) {
+                    composedShaders.push({
+                        output: `upstream/shaders/picking-vat-${index}.${stage}.native.wgsl`,
+                        data: `// ${context.provenance(
+                            "src/picking/vat-picking-pipeline.ts",
+                            "getVatPickingProjection",
+                        )}\n${variant.module}`,
                         family: "picking",
                     });
                 }

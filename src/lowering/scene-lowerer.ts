@@ -21,6 +21,7 @@ import { lowerSceneNodeRemoval } from "./scene-node-removal.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 import { lowerFrameGraphTaskBuild } from "./frame-graph-task-build.js";
 import { lowerDeformedVertex } from "./deformed-vertex.js";
+import { refreshedRemovalCpp } from "./render-task-removal.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -746,6 +747,41 @@ export class SceneLowerer {
             "scene.meshes.indexOf(mesh)",
             "Pinned mesh-removal index",
         );
+        // The task share: every task's \`_removeMesh\`, then every render
+        // task's built-entry removal. Neither drops a queued request.
+        this.context.expectShapeCount(
+            meshRemoval,
+            "task._removeMesh?.(mesh)",
+            "scene task mesh-removal hooks",
+        );
+        this.context.expectShapeCount(
+            meshRemoval,
+            "_removeMeshFromRenderTask(task, mesh)",
+            "scene render-task built-entry removal",
+        );
+        const { declaration: taskRemoval } = this.context.functionDeclaration(
+            "src/frame-graph/render-task-base.ts",
+            "_removeMeshFromRenderTask",
+        );
+        this.context.expectShapeCount(
+            taskRemoval,
+            "task._lastVersion = -1",
+            "removed-generation version reset",
+        );
+        for (const root of [meshRemoval, taskRemoval]) {
+            if (
+                this.context.hasNode(
+                    root,
+                    (node) =>
+                        ts.isPropertyAccessExpression(node) &&
+                        node.name.text === "_pendingMeshes",
+                )
+            )
+                this.context.contractError(
+                    root,
+                    "Scene mesh removal now drops queued task requests.",
+                );
+        }
         // A manager created with this engine owns animation time for the
         // groups attached to it, and a scene it drives has no other way to
         // reach them: the measured seek walks the scene's seekers, so a
@@ -2054,33 +2090,64 @@ void clear_mesh_parent(Engine& engine, MeshHandle mesh) {
 // ${this.context.provenance("src/scene/scene-remove.ts", "removeFromScene")}
 //
 // removeMeshFromScene in the pin's order, then the mesh's own children.
-// Every scene render task drops the mesh's entries (\`task._removeMesh\` and
-// \`_removeMeshFromRenderTask\`: native \`render_meshes\` holds both the
-// tracked and the bound entries), the scene list and its renderables drop
-// it, every material group and the material swap queue drop it, and its
-// parent link clears. Leaving its last scene -- or none, for a mesh never
-// added -- disposes it (\`disposeMeshGpu\`), which \`retire_mesh_record\`
-// stands for: the geometry goes with the last claim and the record's slot
-// is offered to the next mesh. Tables the pin leaves naming the mesh (a
+// Every scene render task runs \`_removeMeshFromRenderTask\`: a refreshed
+// task drops the mesh from its tracked list and goes dirty
+// (\`task._removeMesh\`), and a recorded task drops its built entries.
+// Queued requests (\`_pendingMeshes\`) stay: only removeMeshFromTask drops
+// them. A recorded explicit task already took the pin's \`autoMirror\`
+// write, so emptying it draws nothing rather than the scene. A shadow
+// generator's caster passes and the non-render tasks drop every entry of
+// the mesh. The scene list and its renderables drop it, every material
+// group and the material swap queue drop it, and its parent link clears.
+// Leaving its last scene -- or none, for a mesh never added -- disposes it
+// (\`disposeMeshGpu\`), which \`retire_mesh_record\` stands for: the
+// geometry goes with the last claim and the record's slot is offered to
+// the next mesh. Tables the pin leaves naming the mesh (a
 // physics body, an animation target, a light's include list, a shadow
 // caster array, a parent's traversal list) keep its handle, whose
 // generation tells it apart from the slot's next occupant. The
 // material-family mask stays monotonic: it gates which pipelines the
 // backend created, and a removal never invalidates one.
+namespace {
+/** Every scene task's share of removeMeshFromScene; whether an entry went. */
+bool remove_mesh_from_scene_tasks(Engine& engine, Scene& scene, MeshHandle mesh) {
+    bool task_mesh_removed = false;
+    for (const TaskHandle task_handle : scene.tasks) {
+        FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "task_handle")};
+        if (task.kind != FrameTaskKind::render || task.render.shadow_generator.value != invalid_handle) {
+            task_mesh_removed |= std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {
+                return entry.mesh == mesh;
+            }) != 0;
+            continue;
+        }
+        if (task.render_recorded && !task.render_meshes.empty()) task.render.auto_mirror = false;
+        // \`task._removeMesh\`: a refreshed task's tracked entries, queued or built.
+${refreshedRemovalCpp(this.context).replace(/^ {4}/gm, "        ")}
+        if (task.render_mesh_refresh && !task.render_recorded) {
+            task_mesh_removed |= std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {
+                return entry.mesh == mesh && entry.follows_material;
+            }) != 0;
+        }
+        // The built entries; queued requests stay.
+        if (task.render_recorded && std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {
+                return entry.mesh == mesh;
+            }) != 0) {
+            task_mesh_removed = true;
+            task.shader_packet_scene_version = -1;
+        }
+    }
+    return task_mesh_removed;
+}
+} // namespace
+
 void remove_from_scene(Scene& scene, MeshHandle mesh) {
     require_scene_engine(scene);
     Engine& engine = *scene.engine;
     // A disposed mesh whose slot another mesh took: removing it again
     // changes nothing upstream.
     if (!mesh_handle_current(engine, mesh)) return;
-    bool task_mesh_removed = false;
-    for (const TaskHandle task : scene.tasks) {
-        task_mesh_removed |= std::erase_if(
-            ${recordAt("engine.frame_tasks", "task")}.render_meshes,
-            [mesh](const RenderTaskMesh& entry) { return entry.mesh == mesh; }) != 0;
-    }
     // Native rows also own explicit task meshes that were never scene members.
-    if (task_mesh_removed) ++engine.draw_list_epoch;
+    if (remove_mesh_from_scene_tasks(engine, scene, mesh)) ++engine.draw_list_epoch;
     const auto listed = std::find(scene.meshes.begin(), scene.meshes.end(), mesh);
     if (listed != scene.meshes.end()) {
         scene.meshes.erase(listed);

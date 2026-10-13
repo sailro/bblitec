@@ -461,7 +461,8 @@ public:
                     state.device, engine, pass, task.effect.effect,
                     [&](const RenderTextureRef& source) -> WGPUTextureView {
                         if (handle_at(engine.render_targets, source.target).swapchain)
-                            throw std::runtime_error("An effect cannot sample the swapchain target.");
+                            throw std::runtime_error(
+                                "An effect cannot sample the swapchain target.");
                         return state.targets.at(source.target.value).sampled_view;
                     });
                 WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;

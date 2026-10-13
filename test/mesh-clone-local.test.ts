@@ -146,6 +146,7 @@ test(
             "void mark_mesh_dirty(",
             "void erase_first_mesh(",
             "void clear_mesh_parent(",
+            "bool remove_mesh_from_scene_tasks(",
             "void remove_from_scene(Scene& scene, MeshHandle",
         ]
             .map((signature) => cppFunction(lowerer, signature))

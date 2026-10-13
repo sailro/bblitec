@@ -864,6 +864,16 @@ struct DawnState : DawnDevice {
     WGPUBindGroupLayout pick_deform_empty_layout = nullptr;
     WGPUBindGroup pick_deform_empty_group = nullptr;
 #endif
+#if BBLITE_VAT_PICKING
+    /** One advanced module per VAT arm: its empty group 2 and its bake group 3. */
+    struct PickVatProgram {
+        WGPURenderPipeline pipeline = nullptr;
+        WGPUBindGroupLayout empty_layout = nullptr;
+        WGPUBindGroup empty_group = nullptr;
+        WGPUBindGroupLayout layout = nullptr;
+    };
+    std::array<PickVatProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
+#endif
     WGPUBindGroupLayout pick_scene_layout = nullptr;
     WGPUBindGroupLayout pick_mesh_layout = nullptr;
     WGPUBuffer pick_scene_buffer = nullptr;
@@ -1616,6 +1626,18 @@ struct DawnState : DawnDevice {
         }
         if (pick_deform_empty_layout) {
             wgpuBindGroupLayoutRelease(pick_deform_empty_layout);
+        }
+#endif
+#if BBLITE_VAT_PICKING
+        for (auto& program : pick_vat_programs) {
+            if (program.pipeline)
+                wgpuRenderPipelineRelease(program.pipeline);
+            if (program.empty_group)
+                wgpuBindGroupRelease(program.empty_group);
+            if (program.empty_layout)
+                wgpuBindGroupLayoutRelease(program.empty_layout);
+            if (program.layout)
+                wgpuBindGroupLayoutRelease(program.layout);
         }
 #endif
         if (pick_scene_layout)

@@ -4051,6 +4051,8 @@ struct UiElementRecord {
     /** Static markup assigned through the reached element.innerHTML surface. */
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
+    /** The element's attribute list order: first added first, a removal drops its name. */
+    std::vector<std::string> attribute_order;
     /** Current input state after a property write or user activation. */
     std::optional<bool> checked;
     /** Current option selection, independent of its default selected attribute. */
@@ -7063,11 +7065,11 @@ struct PromiseRejection {
  * `enableCsmStaticCache`: the rejection its promise carries, or none when it
  * resolves. `receiver_texture_read` is a prior `getCsmReceiverTexture`.
  */
-std::optional<PromiseRejection> enable_csm_static_cache(Engine& engine, ShadowGeneratorHandle generator,
-                                                        double refit_angle,
-                                                        std::optional<double> refit_max_interval_ms,
-                                                        std::optional<double> static_cascades_per_frame,
-                                                        bool receiver_texture_read);
+std::optional<PromiseRejection>
+enable_csm_static_cache(Engine& engine, ShadowGeneratorHandle generator, double refit_angle,
+                        std::optional<double> refit_max_interval_ms,
+                        std::optional<double> static_cascades_per_frame,
+                        bool receiver_texture_read);
 /** A cached CSM generator's caster passes, refilled from the refit gate's split. */
 void refresh_csm_cache_casters(Engine& engine, ShadowGeneratorHandle generator);
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,

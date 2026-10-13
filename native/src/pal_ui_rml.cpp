@@ -333,6 +333,13 @@ UiElementRecord& ui_element(Engine& engine, UiElementHandle handle) {
     return handle_at(engine.ui_elements, handle);
 }
 
+/** An attribute joins the element's attribute list at its end the first time it is set. */
+void note_attribute_order(UiElementRecord& record, const std::string& name) {
+    if (std::find(record.attribute_order.begin(), record.attribute_order.end(), name) ==
+        record.attribute_order.end())
+        record.attribute_order.push_back(name);
+}
+
 void mark_ui_changed(Engine& engine) { ++engine.ui_revision; }
 
 void mark_ui_changed(Engine& engine, const UiElementRecord& record) {
@@ -1111,6 +1118,9 @@ UiElementRecord ui_markup_record(Engine& engine, UiElementHandle owner, std::uin
             }
         }
         if (!name.empty()) {
+            // The node marker is the compiler's, not an attribute of the page's markup.
+            if (name != "data-bbl-node")
+                note_attribute_order(record, name);
             record.attributes.insert_or_assign(std::move(name), std::move(value));
         }
     }
@@ -1390,6 +1400,7 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     const bool opens_details =
         record.tag == "details" && name == "open" && existing == record.attributes.end();
     const auto updated = record.attributes.insert_or_assign(std::move(name), std::move(value));
+    note_attribute_order(record, updated.first->first);
     if (engine.ui_attribute_changed)
         engine.ui_attribute_changed(element, updated.first->first);
     if (opens_details)
@@ -1399,6 +1410,14 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
         static_cast<void>(image_request(engine, element));
 #endif
     mark_ui_changed(engine);
+}
+
+js::Array<std::string> ui_attribute_names(Engine& engine, UiElementHandle element) {
+    const auto& record = ui_element(engine, element);
+    js::Array<std::string> names;
+    for (const std::string& name : record.attribute_order)
+        names.push_back(name);
+    return names;
 }
 
 bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
@@ -1416,6 +1435,8 @@ void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_vi
         throw std::runtime_error("Removing the type of a native file input is not represented.");
 #endif
     bool changed = record.attributes.erase(normalized) != 0;
+    // A CSSOM-only `style` attribute leaves the list with the others.
+    std::erase(record.attribute_order, normalized);
     if (changed && engine.ui_attribute_changed)
         engine.ui_attribute_changed(element, normalized);
     if (changed && normalized == "open" && record.tag == "details")
@@ -1476,6 +1497,8 @@ void ui_set_style_property(Engine& engine, UiElementHandle element, std::string 
     std::erase(record.style_property_order, name);
     record.style_property_order.push_back(name);
     record.style_properties.insert_or_assign(std::move(name), std::move(value));
+    // A CSSOM write creates the element's `style` attribute.
+    note_attribute_order(record, "style");
     mark_ui_changed(engine);
 }
 
@@ -1539,6 +1562,7 @@ bool toggle_ui_class(Engine& engine, UiElementHandle element, std::string name,
         joined += token;
     }
     record.attributes.insert_or_assign("class", std::move(joined));
+    note_attribute_order(record, "class");
     mark_ui_changed(engine);
     return enabled;
 }
@@ -2230,7 +2254,8 @@ void ui_set_file_input(Engine& engine, UiElementHandle element) {
         throw std::runtime_error("Native file input type may be assigned only to an <input>.");
     }
     record.file_input = true;
-    record.attributes["type"] = "file";
+    record.attributes.insert_or_assign("type", "file");
+    note_attribute_order(record, "type");
     // Listeners stay on the element: its change listeners become the picker's.
     if (const auto change = record.event_callbacks.find("change");
         change != record.event_callbacks.end()) {
@@ -2246,7 +2271,8 @@ void ui_set_file_accept(Engine& engine, UiElementHandle element, std::string acc
         throw std::runtime_error("Native file accept requires an <input type=\"file\">.");
     }
     record.file_accept = std::move(accept);
-    record.attributes["accept"] = record.file_accept;
+    record.attributes.insert_or_assign("accept", record.file_accept);
+    note_attribute_order(record, "accept");
     mark_ui_changed(engine);
 }
 

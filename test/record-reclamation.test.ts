@@ -121,6 +121,7 @@ test(
             "void mark_mesh_dirty(",
             "void erase_first_mesh(",
             "void clear_mesh_parent(",
+            "bool remove_mesh_from_scene_tasks(",
             "void remove_from_scene(Scene& scene, MeshHandle",
         ];
         runCheck(
@@ -152,6 +153,8 @@ int main() {
     for (const auto mesh : {parent, child, follower}) bbl::add_to_scene(scene, mesh);
     engine.frame_tasks.emplace_back();
     engine.frame_tasks[0].render_meshes = {bbl::RenderTaskMesh{parent, {}}, bbl::RenderTaskMesh{follower, {}}};
+    // A recorded task: removal drops built entries, never queued ones.
+    engine.frame_tasks[0].render_recorded = true;
     scene.tasks.push_back(bbl::TaskHandle{0});
     auto group = std::make_shared<bbl::SourceMaterialGroupState>();
     group->meshes = {parent, child, follower};

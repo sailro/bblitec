@@ -250,6 +250,36 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
             }
         }
 #endif
+#if BBLITE_VAT_PICKING
+        // The advanced module per VAT arm, over the same scene and mesh
+        // groups the affine arms bind; the skin quads ride the vertex.
+        for (std::size_t index = 0; index < upstream::pick_vat_variants.size(); ++index) {
+            const auto& variant = upstream::pick_vat_variants[index];
+            auto& program = state.pick_vat_programs[index];
+            const std::array<DawnLayoutStage, 2> stages{{
+                {variant.vertex, WGPUShaderStage_Vertex},
+                {variant.fragment, WGPUShaderStage_Fragment},
+            }};
+            program.empty_layout = create_dawn_reflected_layout(state.device, stages, 2);
+            WGPUBindGroupDescriptor empty_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            empty_group.layout = program.empty_layout;
+            program.empty_group = wgpuDeviceCreateBindGroup(state.device, &empty_group);
+            if (!program.empty_group)
+                dawn_error("VAT pick empty bind group");
+            program.layout = create_dawn_reflected_layout(state.device, stages, 3);
+            WGPUBindGroupLayout mesh_layout = state.pick_mesh_layout;
+            if (variant.thin) {
+#if BBLITE_GPU_INSTANCING
+                mesh_layout = state.pick_thin_layout;
+#else
+                dawn_error("a thin VAT pick arm without thin-instance picking");
+#endif
+            }
+            program.pipeline = create_dawn_pick_mesh_pipeline(
+                state.device, state.pick_scene_layout, mesh_layout, variant.vertex,
+                variant.fragment, 2u, program.empty_layout, program.layout, true);
+        }
+#endif
         WGPUBufferDescriptor scene_buffer = WGPU_BUFFER_DESCRIPTOR_INIT;
         scene_buffer.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
         scene_buffer.size = sizeof(PickSceneUniforms);
@@ -304,6 +334,15 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         if (record.skinned)
             write_pinned_bone_texture(state, gpu, record);
 #endif
+    }
+#endif
+#if BBLITE_VAT_PICKING
+    for (const auto& candidate : candidates) {
+        if (candidate.vat < 0)
+            continue;
+        write_pinned_vat_texture(
+            state, pick_meshes[candidate.item_index],
+            handle_at(engine.meshes, render_plan.items[candidate.item_index].mesh), engine);
     }
 #endif
     blocks.reserve(candidates.size());
@@ -516,10 +555,97 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
 #endif
                  0u;
 #endif
+#if BBLITE_VAT_PICKING
+    // `bindVatPickingProjection`'s group, per VAT candidate, released with the pass.
+    std::vector<WGPUBindGroup> vat_groups(blocks.size(), nullptr);
+    bool vat_program_bound = false;
+#endif
     for (std::size_t index = 0; index < blocks.size(); ++index) {
         const DawnMesh& mesh = pick_meshes[candidates[index].item_index];
         const std::uint32_t offset =
             static_cast<std::uint32_t>(index * sizeof(DawnPickMeshUniforms));
+#if BBLITE_VAT_PICKING
+        if (candidates[index].vat >= 0) {
+            const auto vat_index = static_cast<std::size_t>(candidates[index].vat);
+            const auto& variant = upstream::pick_vat_variants[vat_index];
+            const auto& program = state.pick_vat_programs[vat_index];
+            const MeshRecord& record =
+                handle_at(engine.meshes, render_plan.items[candidates[index].item_index].mesh);
+            const std::array<DawnLayoutStage, 2> stages{{
+                {variant.vertex, WGPUShaderStage_Vertex},
+                {variant.fragment, WGPUShaderStage_Fragment},
+            }};
+            vat_groups[index] = create_dawn_reflected_group(
+                state.device, program.layout, stages, 3,
+                [&](std::string_view name, WGPUBindGroupEntry& entry) {
+                    if (name == "vatSampler") {
+                        entry.textureView = mesh.pinned_vat_view;
+                        return entry.textureView != nullptr;
+                    }
+                    if (name == "vat") {
+                        entry.buffer = mesh.pinned_vat_settings;
+                        entry.size = sizeof(float) * 8;
+                        return entry.buffer != nullptr;
+                    }
+#if BBLITE_VAT_INSTANCES
+                    if (name == "vatInstanceTex") {
+                        entry.textureView = mesh.pinned_vat_instance_view;
+                        return entry.textureView != nullptr;
+                    }
+#endif
+                    if (name == "vatInstanceStorage" && record.vat.instance_storage) {
+                        const StorageBufferHandle handle = *record.vat.instance_storage;
+                        if (handle.value >= state.shader_storage_buffers.size())
+                            return false;
+                        if (handle_at(state.shader_storage_buffers, handle).lost &&
+                            engine.assert_storage_buffer_handle)
+                            engine.assert_storage_buffer_handle(engine, handle.value);
+                        entry.buffer = handle_at(state.shader_storage_buffers, handle).buffer;
+                        entry.size = WGPU_WHOLE_SIZE;
+                        return entry.buffer != nullptr;
+                    }
+                    return false;
+                });
+            wgpuRenderPassEncoderSetPipeline(pass, program.pipeline);
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, state.pick_scene_group, 0, nullptr);
+#if BBLITE_GPU_INSTANCING
+            if (variant.thin)
+                wgpuRenderPassEncoderSetBindGroup(pass, 1, mesh.thin_pick_group, 1, &offset);
+            else
+#endif
+                wgpuRenderPassEncoderSetBindGroup(pass, 1, state.pick_mesh_group, 1, &offset);
+            wgpuRenderPassEncoderSetBindGroup(pass, 2, program.empty_group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(pass, 3, vat_groups[index], 0, nullptr);
+            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
+                                                WGPU_WHOLE_SIZE);
+            const std::uint32_t instances =
+#if BBLITE_GPU_INSTANCING
+                candidates[index].thin ? candidates[index].instance_count :
+#endif
+                                       1u;
+            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count, instances, 0,
+                           0, 0);
+            vat_program_bound = true;
+            continue;
+        }
+        if (vat_program_bound) {
+            // Back to the affine program and the scene group it reads.
+            wgpuRenderPassEncoderSetPipeline(pass,
+#if BBLITE_HAS_DETAILED_PICKING
+                                             detailed ? state.pick_detailed_pipeline :
+#endif
+                                                      state.pick_mesh_pipeline);
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, state.pick_scene_group, 0, nullptr);
+            vat_program_bound = false;
+#if BBLITE_GPU_INSTANCING
+            regular_pick_pipeline_bound = true;
+#endif
+#if BBLITE_DEFORM_PICKING
+            deform_bound = -1;
+#endif
+        }
+#endif
 #if BBLITE_GPU_INSTANCING
         if (candidates[index].thin) {
             wgpuRenderPassEncoderSetPipeline(pass, state.pick_thin_pipeline);
@@ -644,6 +770,12 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     pass.reset();
 #if BBLITE_DEFORM_PICKING
     for (WGPUBindGroup group : deform_groups) {
+        if (group)
+            wgpuBindGroupRelease(group);
+    }
+#endif
+#if BBLITE_VAT_PICKING
+    for (WGPUBindGroup group : vat_groups) {
         if (group)
             wgpuBindGroupRelease(group);
     }

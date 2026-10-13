@@ -1031,6 +1031,15 @@ struct GpuState : SdlGpuDevice {
     std::array<std::array<PickDeformProgram, 2>, upstream::pick_deform_variants.size()>
         pick_deform_programs{};
 #endif
+#if BBLITE_VAT_PICKING
+    /** One advanced module per VAT arm, both stages read by name. */
+    struct PickVatProgram {
+        SDL_GPUGraphicsPipeline* pipeline = nullptr;
+        PinnedStageSlots vertex_slots{};
+        PinnedStageSlots fragment_slots{};
+    };
+    std::array<PickVatProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
+#endif
 #if BBLITE_HAS_SPLATS
     SDL_GPUGraphicsPipeline* pick_cloud_pipeline = nullptr;
     int pick_cloud_scene_slot = -1;

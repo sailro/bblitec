@@ -3124,8 +3124,9 @@ public:
                                 // `renderCsmShadowMapCached`: the copied cache layers
                                 // reach the map before any dynamic pass draws over it.
                                 if (const auto* copies = pal::csm_cache_copies(engine, task)) {
-                                    const auto& cache_target = handle_at(
-                                        state.render_targets, due_generator.csm_cache->cache_target);
+                                    const auto& cache_target =
+                                        handle_at(state.render_targets,
+                                                  due_generator.csm_cache->cache_target);
                                     for (const std::uint32_t layer : *copies) {
                                         WGPUTexelCopyTextureInfo copy_source{};
                                         copy_source.texture = cache_target.depth;
@@ -3136,13 +3137,14 @@ public:
                                         copy_destination.origin = {0, 0, layer};
                                         copy_destination.aspect = WGPUTextureAspect_All;
                                         const WGPUExtent3D extent{target.width, target.height, 1u};
-                                        wgpuCommandEncoderCopyTextureToTexture(encoder, &copy_source,
-                                                                               &copy_destination, &extent);
+                                        wgpuCommandEncoderCopyTextureToTexture(
+                                            encoder, &copy_source, &copy_destination, &extent);
                                     }
                                 }
                                 if (due_generator.csm_cache
                                         ? !pal::csm_cache_task_due(due_generator, task)
-                                        : !state.shadow_refresh.gates[task.render.shadow_generator.value]
+                                        : !state.shadow_refresh
+                                               .gates[task.render.shadow_generator.value]
                                                .due) {
                                     continue;
                                 }
