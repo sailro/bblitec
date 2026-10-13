@@ -5,6 +5,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { sharedPinnedContext } from "../src/lowering/context.js";
 import {
+    MEDIA_STREAM_ROOTS,
     SPATIAL_ROOTS,
     STATIC_SOUND_ROOTS,
     staticSoundLibraryHeader,
@@ -16,11 +17,12 @@ import {
     wave,
 } from "./static-sound-fixture.js";
 
-/** The static-sound header a spatial program's build carries. */
+/** The static-sound header a spatial, tapped program's build carries. */
 const spatialHeader = (): string =>
     staticSoundLibraryHeader(sharedPinnedContext(), [
         ...STATIC_SOUND_ROOTS,
         ...SPATIAL_ROOTS,
+        ...MEDIA_STREAM_ROOTS,
     ]);
 
 /**
@@ -31,19 +33,29 @@ const spatialHeader = (): string =>
  */
 const APPLICATION = `
 import {
-    createAudioEngineAsync, createSoundAsync, disposeSound, enableSpatial, playSound,
-    setSpatialListenerPosition, setSpatialPosition, stopSound,
+    createAudioEngineAsync, createAudioEngineMediaStream, createSoundAsync, disposeSound, enableSpatial,
+    playSound, setSpatialListenerPosition, setSpatialPosition, stopSound,
     type AudioEngine, type StaticSound,
 } from "@babylonjs/lite";
 
 const BASE = import.meta.env.BASE_URL;
 const appUrl = (path: string): string => BASE + path.replace(/^\\/+/, "");
 
+// The game's capture pipeline keeps the engine's master mix as a stream.
+let captureStream: MediaStream | null = null;
+function registerGameAudioCaptureStream(stream: MediaStream): void {
+    captureStream = stream;
+}
+
 let enginePromise: Promise<AudioEngine> | null = null;
 function sharedEngine(): Promise<AudioEngine> {
     if (!enginePromise) {
         const context = new AudioContext();
-        enginePromise = createAudioEngineAsync({ audioContext: context }).then((engine) => engine);
+        enginePromise = createAudioEngineAsync({ audioContext: context }).then((engine) => {
+            const output = createAudioEngineMediaStream(engine);
+            registerGameAudioCaptureStream(output.stream);
+            return engine;
+        });
     }
     return enginePromise;
 }
@@ -164,6 +176,7 @@ async function main(): Promise<void> {
     loop.update(null, 0, 0, 1, 2, 5);
     sfx.dispose();
     loop.dispose();
+    if (!captureStream || captureStream.getAudioTracks().length !== 1) throw new Error("no master-mix stream");
     globalThis.close();
 }
 void main();
@@ -184,6 +197,7 @@ test("the application's spatial sounds compile strictly and run natively", (t) =
         "audio:spatial-sound",
         "audio:static-sound",
         "audio:panner",
+        "audio:engine-media-stream",
     ])
         assert.ok(result.manifest.features.includes(feature), feature);
     // The loop's records are read where it places, not folded from their
@@ -217,7 +231,12 @@ ${FIXTURE_APPLICATION}`,
         runAudioProgram(
             output,
             join(output, "check.cpp"),
-            ["/DBBLITE_HAS_AUDIO_PANNER=1", "/I", join(output, "include")],
+            [
+                "/DBBLITE_HAS_AUDIO_PANNER=1",
+                "/DBBLITE_HAS_AUDIO_MEDIA_STREAM=1",
+                "/I",
+                join(output, "include"),
+            ],
             [],
         ),
         "",
@@ -264,7 +283,10 @@ test("a spatial sound pans and attenuates with its place around the listener in 
     assert.ok(near(leftL, 0.5) && near(leftR, 0), lines.join(" | "));
     const centred = 0.5 * Math.SQRT1_2;
     const [frontL, frontR] = at("front");
-    assert.ok(near(frontL, centred) && near(frontR, centred), lines.join(" | "));
+    assert.ok(
+        near(frontL, centred) && near(frontR, centred),
+        lines.join(" | "),
+    );
     // Linear roll-off from 6 to 42: half the gain at 24, none from 42.
     const [halfL, halfR] = at("half");
     assert.ok(
@@ -296,4 +318,37 @@ void main();
         () => compileSource(program(`{ position: { x: 1, y: 0, z: 0 } }`)),
         /Spatial option 'position' is not lowered: place the sound with setSpatialPosition/,
     );
+});
+
+test("the engine media-stream tap carries the master mix to another context", (t) => {
+    if (!native) {
+        t.skip("The native compiler and pinned LabSound library are required.");
+        return;
+    }
+    const output = resolve("artifacts/engine-media-stream-capture");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "library.hpp"), spatialHeader());
+    const wav = join(output, "tone.wav");
+    writeFileSync(wav, wave(0.5, 1));
+    const lines = runAudioProgram(
+        output,
+        "test/fixtures/engine-media-stream-check.cpp",
+        [
+            "/DBBLITE_AUDIO_CAPTURE=1",
+            "/DBBLITE_HAS_AUDIO_PANNER=1",
+            "/DBBLITE_HAS_AUDIO_MEDIA_STREAM=1",
+        ],
+        [wav],
+    )
+        .replaceAll("\r\n", "\n")
+        .trimEnd()
+        .split("\n");
+    // One audio track, its release registered with the engine; the tap is
+    // post-master (0.5 at half volume) and the stream carries the same mix.
+    assert.deepEqual(lines, [
+        "tracks 1 disposers 1",
+        "engine 0.250",
+        "stream 0.250",
+        "disposed 0 ended",
+    ]);
 });

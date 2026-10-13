@@ -1367,6 +1367,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the reached Web Audio graph calls AudioContext.createStereoPanner()",
         consumers: CMAKE,
     },
+    "audio:engine-media-stream": {
+        provenance:
+            "src/audio/media-stream-output.ts createAudioEngineMediaStream, " +
+            "lowered with the static-sound family over the engine's main output",
+        consumers: CMAKE,
+    },
     "audio:spatial-sound": {
         provenance:
             "src/audio/spatial.ts enableSpatial/setSpatialPosition/" +

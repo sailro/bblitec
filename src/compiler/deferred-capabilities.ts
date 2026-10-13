@@ -64,7 +64,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "enableAnalyzer",
         "createUnmuteUI",
         "createAudioVisualizer",
-        "createAudioEngineMediaStream",
         "setMasterVolume",
         "getMasterVolume",
         "enableCsmStaticCache",

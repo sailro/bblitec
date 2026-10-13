@@ -37,6 +37,8 @@ struct AudioEngineListenerSlot {
 struct AudioEngineHandle {
     pal::AudioContextHandle context;
     pal::AudioNodeHandle main_bus;
+    /** `_mainOut._gain`: the master output gain the main bus feeds. */
+    pal::AudioNodeHandle main_out;
     /** `_sounds`: the sounds and sources `disposeAudioEngine` disposes. */
     js::Set<AudioEngineSoundHandle> sources{};
     /** `_rampDuration`: the default parameter ramp, in seconds. */
@@ -47,13 +49,17 @@ struct AudioEngineHandle {
     std::shared_ptr<AudioEngineListenerSlot> listener = std::make_shared<AudioEngineListenerSlot>();
     /** `_spatialUpdaters`: the attached spatial nodes' per-frame updates. */
     js::Set<js::Callback<void()>> spatial_updaters{};
+    /** `_disposers`: what `disposeAudioEngine` runs last (a media-stream tap's release). */
+    js::Array<js::Callback<void()>> disposers{};
     bool operator==(const AudioEngineHandle& other) const { return context == other.context; }
     [[nodiscard]] std::uint32_t identity() const { return context.value; }
     void gc_trace(const js::TraceVisitor& visitor) const {
         visitor(main_bus);
         visitor(sources);
+        visitor(main_out);
         visitor(listener);
         visitor(spatial_updaters);
+        visitor(disposers);
     }
 };
 

@@ -553,6 +553,7 @@ export const webAudioRecords: readonly RecordSpec[] = [
             "AudioBufferSourceNode",
             "AudioScheduledSourceNode",
             "PannerNode",
+            "MediaStreamAudioDestinationNode",
         ],
         cpp: "pal::AudioNodeHandle",
         reference: false,
@@ -575,6 +576,14 @@ export const webAudioRecords: readonly RecordSpec[] = [
             ["coneOuterGain", pannerProperty("ConeOuterGain")],
             ["panningModel", pannerModel("Panning")],
             ["distanceModel", pannerModel("Distance")],
+            // A stream destination's stream, one per destination.
+            [
+                "stream",
+                reads(
+                    record("MediaStream"),
+                    (owner) => `${AUDIO}::audio_destination_stream(${owner})`,
+                ),
+            ],
             ["loop", sourceProperty(boolean, "loop")],
             ["loopStart", sourceProperty(number, "loop_start")],
             ["loopEnd", sourceProperty(number, "loop_end")],
@@ -702,6 +711,14 @@ export const webAudioRecords: readonly RecordSpec[] = [
             // The context's one listener, seen through the context.
             ["listener", reads(record("AudioListener"), (owner) => owner)],
             [
+                "createMediaStreamDestination",
+                spelled(
+                    fn([], record("MediaStreamAudioDestinationNode")),
+                    (owner) =>
+                        `${AUDIO}::audio_create_media_stream_destination(${owner})`,
+                ),
+            ],
+            [
                 "decodeAudioData",
                 spelled(
                     fn([{ kind: "buffer" }], promise(record("AudioBuffer"))),
@@ -771,7 +788,10 @@ export const webAudioRecords: readonly RecordSpec[] = [
                         ),
                     ] as const,
             ),
-            ["setPosition", listenerSetter(["positionX", "positionY", "positionZ"])],
+            [
+                "setPosition",
+                listenerSetter(["positionX", "positionY", "positionZ"]),
+            ],
             [
                 "setOrientation",
                 listenerSetter([
@@ -782,6 +802,38 @@ export const webAudioRecords: readonly RecordSpec[] = [
                     "upY",
                     "upZ",
                 ]),
+            ],
+        ]),
+    },
+    {
+        // `bblite/pal_media_stream.hpp`: a stream and its tracks, as the
+        // application's media streams hold them.
+        pinned: ["MediaStream"],
+        cpp: "pal::MediaStreamHandle",
+        reference: false,
+        native: true,
+        members: members([
+            [
+                "getTracks",
+                spelled(
+                    fn([], array(record("MediaStreamTrack"))),
+                    (owner) => `${AUDIO}::media_stream_tracks(${owner})`,
+                ),
+            ],
+        ]),
+    },
+    {
+        pinned: ["MediaStreamTrack"],
+        cpp: "pal::MediaStreamTrackHandle",
+        reference: false,
+        native: true,
+        members: members([
+            [
+                "stop",
+                spelled(
+                    fn([], none),
+                    (owner) => `${AUDIO}::media_stream_track_stop(${owner})`,
+                ),
             ],
         ]),
     },

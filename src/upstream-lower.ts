@@ -36,6 +36,7 @@ import {
 } from "./lowering/splat-stream-shaders.js";
 import { splatStreamLibraryHeader } from "./lowering/splat-stream-library.js";
 import {
+    MEDIA_STREAM_ROOTS,
     SPATIAL_ROOTS,
     STATIC_SOUND_ROOTS,
     staticSoundLibraryHeader,
@@ -1488,6 +1489,9 @@ ${lowerThinInstanceSync(context)}
                     ...STATIC_SOUND_ROOTS,
                     ...(features.includes("audio:spatial-sound")
                         ? SPATIAL_ROOTS
+                        : []),
+                    ...(features.includes("audio:engine-media-stream")
+                        ? MEDIA_STREAM_ROOTS
                         : []),
                 ]),
             );

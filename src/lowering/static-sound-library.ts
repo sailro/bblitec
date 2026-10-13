@@ -115,7 +115,9 @@ const engineSpatialMembers: readonly (readonly [string, MemberSpec])[] = [
 ];
 
 /** The engine record and the views of it the pin's bodies take. */
-const engineRecords = (spatial: boolean): readonly RecordSpec[] => [
+const engineRecords = (
+    parts: readonly (readonly [string, MemberSpec])[],
+): readonly RecordSpec[] => [
     {
         // `RampClock` is the engine seen as a clock (`createRampParam`).
         pinned: ["AudioEngine", "RampClock"],
@@ -157,7 +159,25 @@ const engineRecords = (spatial: boolean): readonly RecordSpec[] => [
                 "onStateChanged",
                 reads(record("AudioEngineStateSignal"), (owner) => owner),
             ],
-            ...(spatial ? engineSpatialMembers : []),
+            // `_mainOut._gain` is the master output gain; a native engine
+            // backs a real-time context, so it is never offline.
+            ["_mainOut", reads(record("MainOut"), (owner) => owner)],
+            ["_isOffline", reads(recordScalars.boolean, () => "false")],
+            [
+                "_disposers",
+                field({ kind: "array", element: fn([], none) }, "disposers"),
+            ],
+            ...parts,
+        ]),
+    },
+    {
+        // `createMainOut`'s output: the engine's master gain.
+        pinned: ["MainOut"],
+        cpp: "AudioEngineHandle",
+        reference: false,
+        native: true,
+        members: members([
+            ["_gain", reads(node, (owner) => `${owner}.main_out`)],
         ]),
     },
     {
@@ -329,51 +349,87 @@ const spatialRecords: readonly RecordSpec[] = [
     },
 ];
 
-/** Whether `roots` reach spatial audio. */
-function reachesSpatial(roots: readonly string[]): boolean {
-    return roots.some((root) =>
-        (SPATIAL_ROOTS as readonly string[]).includes(root),
+/** The media-stream tap a program calls. */
+export const MEDIA_STREAM_ROOTS = ["createAudioEngineMediaStream"] as const;
+
+/** An optional part of the family, lowered when a program reaches one of its roots. */
+interface FamilyPart {
+    readonly roots: readonly string[];
+    readonly modules: readonly string[];
+    readonly records: readonly RecordSpec[];
+    readonly engineMembers?: readonly (readonly [string, MemberSpec])[];
+    readonly values?: readonly (readonly [string, RecordShape])[];
+}
+
+const FAMILY_PARTS: readonly FamilyPart[] = [
+    {
+        roots: SPATIAL_ROOTS,
+        modules: SPATIAL_MODULES,
+        records: spatialRecords,
+        engineMembers: engineSpatialMembers,
+        // A world matrix is single precision, as the engine keeps it.
+        values: [["Mat4", typedF32]],
+    },
+    {
+        roots: MEDIA_STREAM_ROOTS,
+        modules: ["src/audio/media-stream-output.ts"],
+        records: [
+            {
+                pinned: ["AudioEngineMediaStream"],
+                cpp: "AudioEngineMediaStream",
+                reference: true,
+            },
+        ],
+    },
+];
+
+/** The parts `roots` reach. */
+function partsOf(roots: readonly string[]): readonly FamilyPart[] {
+    return FAMILY_PARTS.filter((part) =>
+        part.roots.some((root) => roots.includes(root)),
     );
 }
 
-/** The family's modules: spatial audio's when it is reached. */
-function familyModules(spatial: boolean): readonly string[] {
-    return [...STATIC_SOUND_MODULES, ...(spatial ? SPATIAL_MODULES : [])];
+/** The family's modules, with the reached parts'. */
+function familyModules(parts: readonly FamilyPart[]): readonly string[] {
+    return [...STATIC_SOUND_MODULES, ...parts.flatMap((part) => part.modules)];
 }
 
 /** The records the library header declares, generic instances aside. */
-function familyRecords(spatial: boolean): string[] {
-    return [...soundRecords, ...(spatial ? spatialRecords : [])].map(
+function familyRecords(parts: readonly FamilyPart[]): string[] {
+    return [...soundRecords, ...parts.flatMap((part) => part.records)].map(
         (spec) => spec.pinned[0]!,
     );
 }
 
-/** The records the static-sound header declares without spatial audio. */
-export const STATIC_SOUND_RECORDS = familyRecords(false);
+/** The records the static-sound header declares with no optional part. */
+export const STATIC_SOUND_RECORDS = familyRecords([]);
 
 /**
- * The static-sound record model over the pinned audio modules, with
- * spatial audio's when `spatial`.
+ * The static-sound record model over the pinned audio modules, with the
+ * modules and records of the parts `roots` reach.
  */
 export function staticSoundLibraryModel(
     context: LoweringContext,
-    spatial = false,
+    roots: readonly string[] = STATIC_SOUND_ROOTS,
 ): PinnedRecordModel {
+    const parts = partsOf(roots);
     return new PinnedRecordModel(
         context,
-        context.store.program.modules([...familyModules(spatial)]),
+        context.store.program.modules([...familyModules(parts)]),
         {
             records: [
                 ...webPlatformRecords,
                 ...webAudioRecords,
-                ...engineRecords(spatial),
+                ...engineRecords(
+                    parts.flatMap((part) => part.engineMembers ?? []),
+                ),
                 ...soundRecords,
-                ...(spatial ? spatialRecords : []),
+                ...parts.flatMap((part) => part.records),
             ],
-            // A world matrix is single precision, as the engine keeps it.
             values: new Map([
                 ...webPlatformValues,
-                ...(spatial ? ([["Mat4", typedF32]] as const) : []),
+                ...parts.flatMap((part) => part.values ?? []),
             ]),
             adapters: new Map(),
             constructors: new Map([
@@ -396,7 +452,7 @@ export function staticSoundRoots(
     model: PinnedRecordModel,
     roots: readonly string[] = STATIC_SOUND_ROOTS,
 ): PinnedCallable[] {
-    const modules = familyModules(reachesSpatial(roots));
+    const modules = familyModules(partsOf(roots));
     return roots.map((name) => {
         const module = modules.find((candidate) =>
             model.typed
@@ -422,12 +478,11 @@ export function staticSoundLibraryHeader(
     context: LoweringContext,
     roots: readonly string[] = STATIC_SOUND_ROOTS,
 ): string {
-    const spatial = reachesSpatial(roots);
-    const model = staticSoundLibraryModel(context, spatial);
+    const model = staticSoundLibraryModel(context, roots);
     const { declarations, definitions } = model.lower(
         staticSoundRoots(model, roots),
     );
-    const records = familyRecords(spatial);
+    const records = familyRecords(partsOf(roots));
     // Every struct's members, so the generic instances they name exist.
     for (const name of records)
         if (!model.isGenericRecord(name)) model.record(name).members();
@@ -447,6 +502,7 @@ export function staticSoundLibraryHeader(
         "bblite/pal_audio.hpp",
         "bblite/pal_audio_async.hpp",
         "bblite/pal_audio_element.hpp",
+        "bblite/pal_media_stream.hpp",
         "bblite/web_platform.hpp",
         ...model.includes,
     ];

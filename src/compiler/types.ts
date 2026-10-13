@@ -3115,6 +3115,7 @@ export type Feature =
     | "audio:media-stream"
     | "audio:static-sound"
     | "audio:spatial-sound"
+    | "audio:engine-media-stream"
     | "audio:media-element"
     | "physics:world"
     | "physics:aggregate"

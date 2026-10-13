@@ -30,6 +30,7 @@ import type { StaticFetchContext } from "../static-fetch.js";
 import { AUDIO_CODECS } from "../../audio-codecs.js";
 import { cppIdentifier, snakeCase } from "../../cpp-literals.js";
 import { ApplicationRealmRequired } from "../worker-modules.js";
+import { mediaStreamValue } from "../media-streams.js";
 
 export interface AudioIntrinsicContext
     extends
@@ -95,7 +96,6 @@ const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
         "runtime does not have",
     createUnmuteUI: "the unmute UI is a DOM button",
     createAudioVisualizer: "the visualizer draws through canvas2D",
-    createAudioEngineMediaStream: "the media-stream tap is a browser pipeline",
     setMasterVolume:
         "the pin has no un-ramped form of it. `setMainOutVolume` goes " +
         'through `setRampTarget`, whose shape defaults to `"linear"` and ' +
@@ -665,6 +665,30 @@ function compileStaticSound(
                 cpp: `bbl::set_spatial_position(${sound}, ${spatialVector(context, argumentAt(call, 1))})`,
             };
         }
+        case "createAudioEngineMediaStream": {
+            // The pin's tap over the engine's main output: a stream
+            // destination whose stream the program reads as `stream`.
+            context.expectArgumentCount(call, 1, 1);
+            context.reachFeature("audio:engine-media-stream", call);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "audio-engine", argumentAt(call, 0));
+            const output = context.allocateTemporaryCppName(
+                "engine_media_stream",
+            );
+            context.emit({
+                kind: "declaration",
+                type: "const std::shared_ptr<bbl::AudioEngineMediaStream>",
+                name: output,
+                initializer: `bbl::create_audio_engine_media_stream(${engine.cpp})`,
+            });
+            return {
+                kind: "record",
+                cpp: output,
+                recordProperties: {
+                    stream: mediaStreamValue(`${output}->stream`),
+                },
+            };
+        }
         case "setSpatialListenerPosition": {
             context.expectArgumentCount(call, 2, 2);
             context.reachFeature("audio:spatial-sound", call);
@@ -736,7 +760,7 @@ export function compileAudioIntrinsic(
                 const built =
                     `${contextPromise}.then([](const bbl::pal::AudioContextHandle& ${engine}_ctx) { ` +
                     `${graph.map(nativeStatementCode).join(" ")} ` +
-                    `return bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}; })`;
+                    `return bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus, ${engine}_main_out}; })`;
                 return {
                     kind: "promise",
                     cpp: refused
@@ -770,7 +794,7 @@ export function compileAudioIntrinsic(
             context.registerNativeTemporary(`${engine}_main_bus`);
             return {
                 kind: "audio-engine",
-                cpp: `bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}`,
+                cpp: `bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus, ${engine}_main_out}`,
                 dataType: audioEngineType,
             };
         }

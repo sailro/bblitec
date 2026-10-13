@@ -67,7 +67,6 @@ test("the Babylon sound families refuse by name rather than no-op", () => {
         "createMicrophoneSoundSourceAsync",
         "createUnmuteUI",
         "createAudioVisualizer",
-        "createAudioEngineMediaStream",
     ]) {
         assert.match(
             intrinsic,
