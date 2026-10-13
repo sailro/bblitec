@@ -1293,7 +1293,7 @@ export class PlatformCalls {
             const element = retainedStyle?.uiStyle
                 ? retainedStyle
                 : ts.isPropertyAccessExpression(style)
-                  ? this.ui.uiElementValue(style.expression)
+                  ? this.ui.compileUiElementReceiver(style.expression)
                   : undefined;
             if (element) {
                 const setting = callee.name.text === "setProperty";

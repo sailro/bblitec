@@ -1601,6 +1601,14 @@ export class BrowserErasure {
             ) {
                 return owner(unwrapped.expression);
             }
+            // A call producing retained UI (a helper or createElement) owns
+            // the members read and called on its result.
+            if (
+                ts.isCallExpression(unwrapped) &&
+                this.context.isNativeUiValueExpression(unwrapped)
+            ) {
+                return { kind: "ui-element", cpp: "" };
+            }
             if (
                 ts.isCallExpression(unwrapped) &&
                 ts.isPropertyAccessExpression(unwrapped.expression)
