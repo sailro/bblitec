@@ -282,6 +282,7 @@ void MemoryProfile::print(long frame, const bbl::Engine& engine, std::size_t sce
          << engine.transform_nodes.size() - engine.free_transform_node_slots.size()
          << " gc_nodes=" << bbl::js::managed_node_count()
          << " gc_allocations=" << bbl::js::gc::registry.total_allocations
+         << " gc_collections=" << bbl::js::gc::registry.collections
          << " geometry_records=" << engine.geometries.size() - engine.free_geometry_slots.size()
          << " live_geometries=" << live_geometries << " geometry_mb=" << geometry_bytes / mb
          << " gpu_meshes=" << gpu_meshes << " shared_geometries=" << shared_geometries

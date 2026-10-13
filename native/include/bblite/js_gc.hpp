@@ -31,8 +31,11 @@ namespace gc {
 struct Node;
 struct Registry {
     std::vector<Node*> nodes;
-    std::size_t allocations = 0;
+    /** Registered nodes when the last collection finished; the cadence counts net growth past
+     * it, so values reference counting already freed do not bring the next collection forward. */
+    std::size_t nodes_after_collection = 0;
     std::size_t total_allocations = 0;
+    std::size_t collections = 0;
     unsigned frames_since_collection = 0;
     bool collecting = false;
     std::size_t weak_maps = 0; // Nonempty maps that require ephemeron tracing.
@@ -54,7 +57,6 @@ struct Node {
         registry.nodes.push_back(this);
         registry_index = index;
         linked = true;
-        ++registry.allocations;
         ++registry.total_allocations;
     }
     void detach() noexcept {
@@ -87,6 +89,7 @@ inline Node* find_shared_node(const SharedNodes& shared, const std::weak_ptr<con
     return found != shared.end() && !less(owner, found->first) ? found->second : nullptr;
 }
 inline std::size_t collect_ephemerons();
+inline std::size_t collect_strong_cycles();
 } // namespace gc
 
 /** Enumerates owning edges; traversing a reference never traverses its payload. */
@@ -481,8 +484,18 @@ inline std::size_t collect_cycles() {
     auto& registry = gc::registry;
     if (registry.collecting || registry.nodes.empty())
         return 0;
-    if (registry.weak_maps != 0)
-        return gc::collect_ephemerons();
+    const auto collected =
+        registry.weak_maps != 0 ? gc::collect_ephemerons() : gc::collect_strong_cycles();
+    // Unreachable nodes left the registry as the collection released its pins.
+    registry.nodes_after_collection = registry.nodes.size();
+    registry.frames_since_collection = 0;
+    ++registry.collections;
+    return collected;
+}
+
+namespace gc {
+/** The strong-reference pass of `collect_cycles`, with no weak map to trace. */
+inline std::size_t collect_strong_cycles() {
     const auto nodes = registry.nodes;
     gc::SharedNodes shared;
     for (auto* node : nodes) {
@@ -547,21 +560,24 @@ inline std::size_t collect_cycles() {
         node->clear();
         ++collected;
     }
-    registry.allocations = 0;
-    registry.frames_since_collection = 0;
     return collected;
 }
+} // namespace gc
 
 inline std::size_t managed_node_count() noexcept { return gc::registry.nodes.size(); }
 
-/** Bounded cadence also handles dropping the last root without allocating. */
+/**
+ * Every 60 frames, or after 8 once the registry has grown by 1024 nodes since the last
+ * collection; the bounded cadence also handles dropping the last root without allocating.
+ */
 inline void collect_at_frame_boundary() {
     auto& registry = gc::registry;
     if (registry.nodes.empty())
         return;
     ++registry.frames_since_collection;
     if (registry.frames_since_collection >= 60 ||
-        (registry.frames_since_collection >= 8 && registry.allocations >= 1024)) {
+        (registry.frames_since_collection >= 8 &&
+         registry.nodes.size() >= registry.nodes_after_collection + 1024)) {
         collect_cycles();
     }
 }
