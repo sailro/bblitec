@@ -446,4 +446,36 @@ private:
 };
 using GpuDeviceHandle = std::shared_ptr<GpuDevice>;
 
+/** `queue.writeBuffer(buffer, offset, data)` with an ArrayBuffer or typed-array source. */
+template <typename... Sources>
+void gpu_queue_write_buffer(GpuDevice& device, const GpuHandle& buffer, double offset,
+                            const std::variant<Sources...>& data) {
+    std::visit([&](const auto& source) { device.write_buffer(buffer, offset, source); }, data);
+}
+
+/**
+ * `queue.writeBuffer(buffer, offset, data, dataOffset, size)`: a range of the
+ * source, in bytes for an ArrayBuffer and in elements for a typed array,
+ * counted from the view's start, as WebGPU defines it.
+ */
+template <typename... Sources>
+void gpu_queue_write_buffer(GpuDevice& device, const GpuHandle& buffer, double offset,
+                            const std::variant<Sources...>& data, double data_offset, double size) {
+    std::visit(
+        [&](const auto& source) {
+            using Source = std::remove_cvref_t<decltype(source)>;
+            if constexpr (std::is_same_v<Source, js::ArrayBuffer>) {
+                device.write_buffer(buffer, offset, source, data_offset, size);
+            } else {
+                constexpr double element = sizeof(typename Source::value_type);
+                const auto bytes = source.buffer();
+                device.write_buffer(
+                    buffer, offset,
+                    gpu_bytes({bytes.data() + source.byte_offset(), source.byte_length()},
+                              data_offset * element, size * element));
+            }
+        },
+        data);
+}
+
 } // namespace bbl

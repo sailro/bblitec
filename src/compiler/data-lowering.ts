@@ -1,3 +1,4 @@
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     isPresentValue,
     isStringValue,
@@ -12823,12 +12824,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ts.isArrayLiteralExpression(right) ||
                 right.kind === ts.SyntaxKind.NullKeyword ||
                 identifierText(right) === "undefined");
+        // A record a function builds and returns at every return is a new
+        // object no alias names, so its copy is the object itself.
+        const freshRecord =
+            target.dataType.kind === "struct" &&
+            ts.isCallExpression(right) &&
+            this.returnsFreshRecord(right);
         if (
             kind !== "function" &&
             !reseatsOnAssignment(target.dataType, (name) =>
                 this.context.dataTypes.isReferenceStruct(name),
             ) &&
-            !freshOptional
+            !freshOptional &&
+            !freshRecord
         ) {
             this.requireNumericSlot(
                 this.context.probeEmission(
@@ -14668,6 +14676,41 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * side compiles into the store; an assignment used as a value has it
      * bound where the store first consumes it (`compileAssignmentValue`).
      */
+    /**
+     * Whether a call's callee is a source function whose every return
+     * builds a new object literal (`return { x: ..., y: ... }`).
+     */
+    private returnsFreshRecord(call: ts.CallExpression): boolean {
+        const callee = this.context.unwrap(call.expression);
+        if (!ts.isIdentifier(callee)) return false;
+        const declaration = tryResolveFunctionDeclaration(
+            this.context.checker,
+            callee,
+        );
+        const body =
+            declaration && "body" in declaration ? declaration.body : undefined;
+        if (!body || !ts.isBlock(body)) return false;
+        let returns = 0;
+        let fresh = true;
+        const visit = (node: ts.Node): void => {
+            if (!fresh || ts.isFunctionLike(node)) return;
+            if (ts.isReturnStatement(node)) {
+                returns++;
+                if (
+                    !node.expression ||
+                    !ts.isObjectLiteralExpression(
+                        this.context.unwrap(node.expression),
+                    )
+                )
+                    fresh = false;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        ts.forEachChild(body, visit);
+        return fresh && returns > 0;
+    }
+
     public emitAssignment(expression: ts.BinaryExpression): boolean {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);

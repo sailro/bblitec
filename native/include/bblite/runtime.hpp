@@ -4537,6 +4537,12 @@ public:
         return *pointer_;
     }
     [[nodiscard]] const std::shared_ptr<Engine>& owner() const { return owner_; }
+    /** A realm engine slot holds its owner: the stored engine's, which must exist. */
+    operator std::shared_ptr<Engine>() const {
+        if (!owner_)
+            throw std::runtime_error("A stored engine without a realm owner fills an owned slot.");
+        return owner_;
+    }
     [[nodiscard]] Engine* identity() const noexcept { return pointer_; }
     [[nodiscard]] bool operator==(const StoredEngine& other) const noexcept {
         return pointer_ == other.pointer_;

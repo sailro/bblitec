@@ -87,6 +87,7 @@ import { withLiteralSelfBinding } from "./home-object-methods.js";
 import {
     inferPromiseRejectStorage,
     inferUninitializedHandle,
+    inferUninitializedRecord,
 } from "./uninitialized-handle.js";
 import {
     aliasedMutationScan,
@@ -707,6 +708,11 @@ export class DeclarationLowerer {
             if (dataType)
                 dataType = this.reboundBindingStorage(dataType, declaredType);
             dataType ??= inferUninitializedHandle(
+                declaration,
+                this.context.checker,
+                this.context.dataTypes,
+            );
+            dataType ??= inferUninitializedRecord(
                 declaration,
                 this.context.checker,
                 this.context.dataTypes,

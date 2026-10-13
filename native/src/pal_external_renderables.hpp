@@ -1,7 +1,5 @@
 #pragma once
 
-#include <bblite/features/gpu_retirement.hpp>
-
 #include <bblite/gpu_renderable.hpp>
 #include <bblite/pal_gpu_retirement.hpp>
 #include <bblite/pal_source_gpu.hpp>

@@ -599,6 +599,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/loader-splat/load-spz.ts#loadSPZ",
         consumers: INVENTORY,
     },
+    "loader:splat-stream": {
+        provenance:
+            "src/loader-splat-stream/load-gaussian-splat-stream.ts" +
+            "#loadGaussianSplatStream + #attachGaussianSplatStream + " +
+            "src/loader-splat-stream/splat-stream-gpu.ts + " +
+            "src/loader-splat-stream/splat-stream-material.ts + " +
+            "src/collision/splat-voxel-collision.ts",
+        consumers: ["features.cmake", "feature macros", "deployed shaders"],
+    },
     "loader:splat-sh": {
         provenance:
             "src/loader-splat/splat-ply-compressed.ts" +

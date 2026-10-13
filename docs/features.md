@@ -285,6 +285,18 @@ Multiple fragment sets and broader buffer-view methods remain limited.
 Shader fragment descriptors require known keys/strings and source-proven stable ownership;
 mutable or escaping descriptors and lists without complete evaluated metadata refuse.
 
+### Streamed Gaussian splats
+
+`loadGaussianSplatStream(engine, url, options)` (application realm) runs the pinned streaming library lowered from
+the pin: manifest and source fetches with streamed bodies, WebP decode, GPU upload, run-time LOD selection and the
+gather/project/compact/radix-sort/drawIndirect compute on the engine's WebGPU-subset device (SDL_GPU and Dawn).
+Options are the pin's numeric budgets and `signal`. `attachGaussianSplatStream`/`disposeGaussianSplatStream(scene,
+stream)` draw it in, and remove it from, the scene pass. Reads: `stats` (`phase`, `firstFrameMs`, the leaf, splat,
+file, request and byte counters, `error`), `firstFrameReady`, `maxSplats`, `screenError`; writes: `maxSplats`,
+`screenError`, `rotation.x|y|z`. `loadSplatVoxelCollision(url, signal)` and `moveSplatVoxelCamera` run the pinned
+voxel sweep. Other stream members, compound writes, flipped or premultiplication-converting image copies and
+non-UTF-8 TextDecoder labels refuse.
+
 ### Environment compilation
 
 HDR uses pinned GGX prefiltering; DDS preserves specular mips; `.env` uploads decoded cubes. The BRDF LUT

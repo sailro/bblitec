@@ -12,6 +12,9 @@ const handleCppTypes: Record<HandleKind, string> = {
     "gpu-environment": "bbl::EnvironmentIdentity",
     "procedural-sky-environment":
         "std::shared_ptr<bbl::ProceduralSkyEnvironment>",
+    "gaussian-splat-stream": "std::shared_ptr<bbl::GaussianSplatStream>",
+    "splat-stream-stats": "std::shared_ptr<bbl::GaussianSplatStreamStats>",
+    "splat-voxel-collision": "std::shared_ptr<bbl::SplatVoxelCollision>",
     "node-input": "bbl::NodeInputHandle",
     "text-data": "std::shared_ptr<bbl::TextDataState>",
     "text-renderable": "std::shared_ptr<bbl::TextRenderableState>",

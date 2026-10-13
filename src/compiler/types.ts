@@ -1460,6 +1460,9 @@ export type ValueKind =
     | "device-recovery"
     | "gpu-environment"
     | "procedural-sky-environment"
+    | "gaussian-splat-stream"
+    | "splat-stream-stats"
+    | "splat-voxel-collision"
     | "static-fetch-response"
     | "json-null"
     | "light"
@@ -2214,6 +2217,10 @@ export interface ValueFields {
     uiCanvasContext?: true;
     /** A retained input whose source assigned the static type "file". */
     uiFileInput?: true;
+    /** A retained anchor whose source assigned a document URL `href` (a link, not a download). */
+    uiLinkHref?: true;
+    /** A retained anchor whose source assigned a `download` name. */
+    uiDownload?: true;
     /** The FileReader bound here has started a read. */
     fileReaderStarted?: true;
     /**
@@ -2991,6 +2998,7 @@ export type Feature =
     | "loader:splat-sh"
     | "loader:splat-sog"
     | "loader:splat-spz"
+    | "loader:splat-stream"
     | "material:pbr"
     | "material:source-texture-read"
     | "material:clearcoat"

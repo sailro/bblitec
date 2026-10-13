@@ -70,6 +70,7 @@ import { recordAt } from "./record-access.js";
 import { staticFetchProperty } from "./static-fetch.js";
 import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
+import { readSplatStreamProperty } from "./splat-stream-surface.js";
 import {
     contextCanvas,
     optionalPresentCpp,
@@ -3497,6 +3498,13 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (textProperty) return textProperty;
+        const streamProperty = readSplatStreamProperty(
+            this.context,
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (streamProperty) return streamProperty;
         const inputProperty = readNodeInputProperty(
             this.context,
             owner,

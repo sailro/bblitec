@@ -273,6 +273,10 @@ void perform_http_transfer(const std::string& url, HttpRequest request, HttpExch
     const ConnectHandle connection{WinHttpConnect(winhttp_session(), host.c_str(), parts.nPort, 0)};
     if (!connection.value)
         transport_failure(GetLastError());
+    // A pending WinHttpReadData writes into `chunk` until its completion or the handle's
+    // HANDLE_CLOSING; declared before `state`, it outlives the close that a cancel or a
+    // failure performs in ~AsyncRequest.
+    std::vector<std::uint8_t> chunk;
     AsyncRequest state;
     exchange.set_wake([event = state.canceled] { SetEvent(event->value); });
     // A cancellation before the wake was installed still stops the transfer here.
@@ -325,7 +329,7 @@ void perform_http_transfer(const std::string& url, HttpRequest request, HttpExch
     head.headers = raw_headers(state.handle);
     exchange.deliver_head(std::move(head));
     for (;;) {
-        std::vector<std::uint8_t> chunk(read_size);
+        chunk = std::vector<std::uint8_t>(read_size);
         require(
             WinHttpReadData(state.handle, chunk.data(), static_cast<DWORD>(chunk.size()), nullptr));
         if (!state.wait(WINHTTP_CALLBACK_STATUS_READ_COMPLETE))

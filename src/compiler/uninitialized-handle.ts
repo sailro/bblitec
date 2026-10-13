@@ -120,3 +120,65 @@ export function inferUninitializedHandle(
     );
     return compatible && writes > 0 && reads > 0 ? inferred : undefined;
 }
+
+/**
+ * `let pose; try { pose = format(world); } catch { ... } use(pose.x)`: an
+ * evolving-any declaration every write and read of which TypeScript types as
+ * one record holds that record, assigned where the source assigns it.
+ */
+export function inferUninitializedRecord(
+    declaration: ts.VariableDeclaration,
+    checker: ts.TypeChecker,
+    dataTypes: DataTypeRegistry,
+): DataType | undefined {
+    if (
+        declaration.type ||
+        declaration.initializer ||
+        !ts.isIdentifier(declaration.name)
+    )
+        return undefined;
+    const symbol = declaredSymbol(checker, declaration.name);
+    if (!symbol) return undefined;
+    let inferred: (DataType & { kind: "struct" }) | undefined;
+    let writes = 0;
+    let reads = 0;
+    let compatible = true;
+    const visit = (node: ts.Node): void => {
+        if (!compatible) return;
+        if (
+            ts.isIdentifier(node) &&
+            node !== declaration.name &&
+            declaredSymbol(checker, node) === symbol
+        ) {
+            const assignment =
+                ts.isBinaryExpression(node.parent) &&
+                node.parent.left === node &&
+                node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                    ? node.parent
+                    : undefined;
+            const expression = assignment?.right ?? node;
+            const type = dataTypes.fromTsType(
+                checker.getTypeAtLocation(expression),
+                expression,
+            );
+            if (
+                type?.kind !== "struct" ||
+                (inferred && inferred.name !== type.name)
+            ) {
+                compatible = false;
+                return;
+            }
+            inferred = type;
+            if (assignment) writes++;
+            else reads++;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(
+        ts.findAncestor(
+            declaration,
+            (node) => ts.isFunctionLike(node) || ts.isSourceFile(node),
+        )!,
+    );
+    return compatible && writes > 0 && reads > 0 ? inferred : undefined;
+}

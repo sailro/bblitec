@@ -142,7 +142,9 @@ test("lowers object URLs and retained anchor downloads without navigation", () =
             `),
         (error: unknown) =>
             error instanceof CompileError &&
-            /Expected object-url, received string/.test(error.message),
+            /A native download anchor's href requires an object URL/.test(
+                error.message,
+            ),
     );
 });
 

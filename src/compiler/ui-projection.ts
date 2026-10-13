@@ -4678,12 +4678,38 @@ export class UiProjection {
         if (element.uiTag !== "a") return undefined;
         if (name === "href") {
             const url = this.context.compileValue(value);
+            // A document URL is the link's `href` attribute: the native UI
+            // draws the link and does not navigate when it is activated
+            // (docs/ui.md); a download and a programmatic click refuse it.
+            if (
+                url.kind === "string" ||
+                (url.kind === "data" && url.dataType?.kind === "string")
+            ) {
+                if (element.uiDownload)
+                    this.context.fail(
+                        site,
+                        "A native download anchor's href requires an object URL.",
+                    );
+                writable(element).uiLinkHref = true;
+                return `bbl::ui_set_attribute(${engine}, ${element.cpp}, "href", ${url.cpp})`;
+            }
+            if (element.uiLinkHref)
+                this.context.fail(
+                    site,
+                    "A native link anchor's href cannot become an object URL.",
+                );
             this.context.expectKind(url, "object-url", value);
             this.context.expectSameEngine(element, url, site);
             this.context.reachFeature("browser:file", site);
             return `bbl::ui_set_download_url(${engine}, ${element.cpp}, ${url.cpp})`;
         }
         if (name === "download") {
+            if (element.uiLinkHref)
+                this.context.fail(
+                    site,
+                    "A native download anchor's href requires an object URL.",
+                );
+            writable(element).uiDownload = true;
             this.context.reachFeature("browser:file", site);
             return (
                 `bbl::ui_set_download_name(${engine}, ${element.cpp}, ` +

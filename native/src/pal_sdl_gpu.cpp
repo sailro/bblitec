@@ -29,6 +29,7 @@
 #include <bblite/features/has_picking.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/has_splat_stream.hpp>
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
@@ -42,7 +43,7 @@
 #if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
 #include "pal_sdl_gpu_source_device.hpp"
 #endif
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
 #include "pal_sdl_gpu_webgpu.hpp"
 #endif
 #include "pal_billboard_order.hpp"
@@ -2102,7 +2103,7 @@ public:
         }
 #endif
         current_frame().graph = !scene.tasks.empty();
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
         if (current_frame().graph && !scene.state->external_renderables.empty())
             throw std::runtime_error("External renderables draw in the scene's own pass; a scene "
                                      "with render tasks refuses them.");
@@ -3764,7 +3765,7 @@ public:
             }
             depth_info.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
             depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
             // External renderables bind to this pass's target, update, and encode
             // their batches' compute into the frame's command buffer before the pass.
             GpuHandle external_group;
@@ -4170,7 +4171,7 @@ public:
                                           static_cast<double>(width), static_cast<double>(height));
                     }
 #endif
-#if BBLITE_GPU_RETIREMENT
+#if BBLITE_HAS_SPLAT_STREAM
                     if (external_group) {
                         state.external_pass.draw(SdlWebGpuDevice::borrow_render_pass(command, pass),
                                                  external_group);
