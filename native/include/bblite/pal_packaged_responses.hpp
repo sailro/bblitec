@@ -63,9 +63,14 @@ inline void register_packaged_responses(
         table.outputs.insert_or_assign(packaged_response_key(url, base), std::string(path));
 }
 
-/** The packaged response for `url`, or nothing when the program packaged none. */
-[[nodiscard]] inline std::optional<js::Promise<HttpResponse>>
-fetch_registered_packaged(const std::string& url) {
+/** A packaged response: the absolute URL it answers as, and the file it reads. */
+struct PackagedResponse {
+    std::string url;
+    std::string path;
+};
+
+/** What the program packaged for `url`; nothing when it packaged none or `url` does not parse. */
+[[nodiscard]] inline std::optional<PackagedResponse> packaged_response(const std::string& url) {
     const auto& table = packaged_responses();
     if (table.outputs.empty())
         return std::nullopt;
@@ -73,13 +78,22 @@ fetch_registered_packaged(const std::string& url) {
     try {
         key = packaged_response_key(url, table.base);
     } catch (const js::NamedError&) {
-        // A URL that does not parse is HTTP's to reject.
+        // A URL that does not parse selects nothing; a fetch leaves it to HTTP to reject.
         return std::nullopt;
     }
     const auto found = table.outputs.find(key);
     if (found == table.outputs.end())
         return std::nullopt;
-    return fetch_packaged(key, found->second);
+    return PackagedResponse{std::move(key), found->second};
+}
+
+/** The packaged response for `url`, or nothing when the program packaged none. */
+[[nodiscard]] inline std::optional<js::Promise<HttpResponse>>
+fetch_registered_packaged(const std::string& url) {
+    auto packaged = packaged_response(url);
+    if (!packaged)
+        return std::nullopt;
+    return fetch_packaged(std::move(packaged->url), std::move(packaged->path));
 }
 
 } // namespace bbl::pal

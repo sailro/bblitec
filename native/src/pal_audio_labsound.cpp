@@ -2254,16 +2254,8 @@ void begin_element_load(const AudioElement& element) {
     auto& playback = *element->playback;
     playback.loading = true;
     const auto generation = playback.generation;
-    std::string path;
-    try {
-        const auto& table = packaged_responses();
-        const auto found = table.outputs.find(packaged_response_key(*playback.source, table.base));
-        if (found != table.outputs.end())
-            path = found->second;
-    } catch (const js::NamedError&) {
-        // A URL that does not parse selects nothing.
-    }
-    if (path.empty()) {
+    auto packaged = packaged_response(*playback.source);
+    if (!packaged) {
         EventLoop::current().post([element, generation] {
             if (generation == element->playback->generation)
                 fail_element_source(*element->playback);
@@ -2271,14 +2263,15 @@ void begin_element_load(const AudioElement& element) {
         return;
     }
     using Decoded = std::shared_ptr<const DecodedAudio>;
-    auto& loop = EventLoop::current();
-    auto job = std::make_shared<NativeWork<Decoded>>();
     std::weak_ptr<AudioElementState> target = element;
-    const auto id =
-        loop.register_ordered_completion([job, target, generation](std::unique_ptr<ExternalEvent>) {
+    start_native_job(
+        [path = std::move(packaged->path), rate = audio_sample_rate(playback.context)] {
+            return audio_decode_samples(read_binary_file(path), rate);
+        },
+        [target, generation](NativeWork<Decoded>& job) {
             Decoded decoded;
             try {
-                decoded = job->get();
+                decoded = job.get();
             } catch (const WorkerTerminated&) {
                 throw;
             } catch (...) {
@@ -2287,16 +2280,6 @@ void begin_element_load(const AudioElement& element) {
             if (const auto owner = target.lock())
                 finish_element_load(owner, generation, std::move(decoded));
         });
-    try {
-        *job = start_native_work(
-            [path = std::move(path), rate = audio_sample_rate(playback.context)] {
-                return audio_decode_samples(read_binary_file(path), rate);
-            },
-            [inbox = loop.inbox(), id] { inbox->post(std::make_unique<CompletionEvent>(id)); });
-    } catch (...) {
-        loop.cancel_completion(id);
-        throw;
-    }
 }
 
 /** The resource selection an element with a source and an output runs when it may load. */
