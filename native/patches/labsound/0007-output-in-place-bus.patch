@@ -1,0 +1,32 @@
+AudioNodeOutput::pull set the sample rate of bus() before choosing this quantum's
+bus, so it wrote through the previous quantum's in-place bus: a raw pointer into a
+consumer that may since have reallocated its summing bus or been released (a
+recorder whose inputs were all disconnected, a graph rebuilt between quanta). The
+write corrupted freed memory. The sample rate is now set once the bus is chosen.
+
+diff --git a/src/core/AudioNodeOutput.cpp b/src/core/AudioNodeOutput.cpp
+index 2167cdc..76d0049 100644
+--- a/src/core/AudioNodeOutput.cpp
++++ b/src/core/AudioNodeOutput.cpp
+@@ -99,9 +99,6 @@ AudioBus * AudioNodeOutput::pull(ContextRenderLock & r, AudioBus * inPlaceBus, i
+     ASSERT(r.context());
+     ASSERT(m_renderingFanOutCount > 0 || m_renderingParamFanOutCount > 0);
+ 
+-    m_internalBus->setSampleRate(r.context()->sampleRate());
+-    bus(r)->setSampleRate(r.context()->sampleRate());
+-
+     // Causes our AudioNode to process if it hasn't already for this render quantum.
+     // We try to do in-place processing (using inPlaceBus) if at all possible,
+     // but we can't process in-place if we're connected to more than one input (fan-out > 1).
+@@ -115,6 +112,11 @@ AudioBus * AudioNodeOutput::pull(ContextRenderLock & r, AudioBus * inPlaceBus, i
+     // Setup the actual destination bus for processing when our node's process() method gets called in processIfNecessary() below.
+     m_inPlaceBus = useInPlaceBus ? inPlaceBus : 0;
+ 
++    // Only now does bus() name this quantum's bus: before, it is the previous quantum's in-place
++    // bus, which belongs to a consumer that may since have reallocated or released it.
++    m_internalBus->setSampleRate(r.context()->sampleRate());
++    bus(r)->setSampleRate(r.context()->sampleRate());
++
+     auto n = sourceNode();
+     if (!n)
+         return bus(r);

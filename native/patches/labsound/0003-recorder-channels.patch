@@ -3,11 +3,12 @@ channel, so a capture of a stereo graph reported its left channel twice: a sourc
 panned right recorded as silence. Each channel now takes its own recording and a
 mono recording fills every channel, as speakers up-mix it. A channel that appears
 or disappears mid-recording stays frame-aligned with the first (lazy growth
-appended a full set of channels again and left later ones short), and mixing to
-mono averages the channels recorded rather than reading past them.
+appended a full set of channels again and left later ones short), mixing to mono
+averages the channels recorded rather than reading past them, and a recorder that
+never had an input returns no bus instead of reading a channel it never made.
 
 diff --git a/src/extended/RecorderNode.cpp b/src/extended/RecorderNode.cpp
-index 89ba188..0c8e244 100644
+index 89ba188..cbee0f5 100644
 --- a/src/extended/RecorderNode.cpp
 +++ b/src/extended/RecorderNode.cpp
 @@ -93,22 +93,25 @@ void RecorderNode::process(ContextRenderLock & r, int bufferSize)
@@ -45,7 +46,17 @@ index 89ba188..0c8e244 100644
          }
      }
  
-@@ -203,24 +206,31 @@ std::unique_ptr<AudioBus> RecorderNode::createBusFromRecording(bool mixToMono)
+@@ -194,6 +197,9 @@ std::unique_ptr<AudioBus> RecorderNode::createBusFromRecording(bool mixToMono)
+ {
+     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+ 
++    // a recorder that never had an input recorded nothing
++    if (m_data.empty()) return {};
++
+     int numSamples = static_cast<int>(m_data[0].size());
+     if (!numSamples) return {};
+ 
+@@ -203,24 +209,31 @@ std::unique_ptr<AudioBus> RecorderNode::createBusFromRecording(bool mixToMono)
      std::unique_ptr<lab::AudioBus> result_audioBus(new lab::AudioBus(result_channel_count, numSamples));
      result_audioBus->setSampleRate(m_sampleRate);
  

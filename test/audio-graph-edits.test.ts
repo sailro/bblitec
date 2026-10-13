@@ -216,3 +216,26 @@ test("application panners lower their parameters, attributes and models onto the
         /panningModel "HRTF" is not lowered: it needs an HRTF database/,
     );
 });
+
+test(
+    "a capture recorder survives an idle context and inputs that all disconnect",
+    { skip: !native },
+    () => {
+        const output = resolve("artifacts/audio-capture-idle-check");
+        mkdirSync(output, { recursive: true });
+        // The stale-bus write is intermittent: repeated runs catch it.
+        for (let run = 0; run < 3; run++)
+            assert.match(
+                runLabSoundFixture(
+                    output,
+                    "test/fixtures/audio-capture-idle-check.cpp",
+                    [
+                        "/DBBLITE_AUDIO_CAPTURE=1",
+                        "/DBBLITE_HAS_AUDIO_STEREO_PANNER=1",
+                    ],
+                    {},
+                ),
+                /audio-capture-idle-check: ok/,
+            );
+    },
+);
