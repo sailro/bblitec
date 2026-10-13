@@ -55,8 +55,10 @@ import {
     declaredSymbol,
     enumMemberConstant,
     isAbsentTypeofIdentifier,
+    resolvedDomApi,
     resolvedSymbol,
 } from "./symbols.js";
+import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
 import {
     compileNumberPredicate,
     numberConstant,
@@ -1098,9 +1100,6 @@ export class ExpressionLowerer {
         if (ts.isNewExpression(unwrapped)) {
             const proxy = this.context.recordProxies.construct(unwrapped);
             if (proxy) return proxy;
-            const deferred =
-                this.context.deferredCapabilities.compileConstructor(unwrapped);
-            if (deferred) return deferred;
             const query = this.context.browserErasure.evaluateBrowserValue(
                 unwrapped,
             )
@@ -2209,6 +2208,18 @@ export class ExpressionLowerer {
     private compileBrowserValue(expression: ts.Expression): Value {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isCallExpression(unwrapped)) {
+            // A method call erases only on a receiver positively browser
+            // state; an unclassified one would drop its effect silently.
+            const callee = this.context.unwrap(unwrapped.expression);
+            if (
+                (ts.isPropertyAccessExpression(callee) ||
+                    ts.isElementAccessExpression(callee)) &&
+                !this.context.browserErasure.isBrowserOwner(callee.expression)
+            )
+                this.context.fail(
+                    unwrapped,
+                    `'${callee.getText()}' would erase on a receiver that is not browser state; lower or remove the call.`,
+                );
             for (const argument of unwrapped.arguments) {
                 if (
                     !containsEvaluatedCall(argument) &&
@@ -3408,11 +3419,9 @@ export class ExpressionLowerer {
     }
 
     private isNavigatorGetGamepadsCall(call: ts.CallExpression): boolean {
-        const callee = this.context.unwrap(call.expression);
         return (
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "getGamepads" &&
-            this.context.libraryGlobal(callee.expression) === "navigator"
+            resolvedDomApi(this.context.checker, call) ===
+            NAVIGATOR_GET_GAMEPADS
         );
     }
 
@@ -3526,6 +3535,15 @@ export class ExpressionLowerer {
         const worker = this.context.compileWorkerValue(call);
         if (worker) return worker;
         if (this.isNavigatorGetGamepadsCall(call)) {
+            const callee = this.context.unwrap(call.expression);
+            if (
+                !ts.isPropertyAccessExpression(callee) ||
+                this.context.libraryGlobal(callee.expression) !== "navigator"
+            )
+                return this.context.fail(
+                    call,
+                    "getGamepads is lowered on the navigator global.",
+                );
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireDefaultEngine(call);
             this.context.reachFeature("input:gamepad", call);

@@ -5,12 +5,16 @@ import { SourceSiteRegistry } from "./source-coverage.js";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declarationOrigin, resolvedSymbol } from "./symbols.js";
+import {
+    declarationApi,
+    declarationOrigin,
+    resolvedSymbol,
+} from "./symbols.js";
 import { presenceCpp, type Value } from "./types.js";
 import { isNullable } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinDetached } from "./dom-listeners.js";
-import { isDomReceiver } from "./dom-targets.js";
+import { isWindowReceiver } from "./window-members.js";
 
 export interface DeferredCapabilitySite {
     id: string;
@@ -35,7 +39,7 @@ export type DeferredCapabilityEmission = Pick<
 >;
 
 interface Descriptor {
-    origin: "dom" | "babylon" | "default-lib";
+    origin: "dom" | "babylon";
     api: string;
     timing: DeferredCapabilitySite["timing"];
 }
@@ -45,7 +49,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
     ...[
         "prompt",
         "Window.prompt",
-        "Element.innerHTML.svg-image",
         "HTMLScriptElement.src",
         "HTMLScriptElement.async",
         "HTMLScriptElement.addEventListener",
@@ -71,31 +74,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
 const descriptors = new Map(
     deferredCapabilityDescriptors.map((d) => [`${d.origin}:${d.api}`, d]),
 );
-
-function declarationApi(
-    declaration: ts.SignatureDeclaration,
-): string | undefined {
-    const name = declaration.name;
-    if (!name || !ts.isIdentifier(name)) return undefined;
-    const parent = declaration.parent;
-    if (
-        ts.isTypeLiteralNode(parent) &&
-        ts.isVariableDeclaration(parent.parent) &&
-        ts.isIdentifier(parent.parent.name)
-    )
-        return `${parent.parent.name.text}.${name.text}`;
-    if (ts.isInterfaceDeclaration(parent) || ts.isClassLike(parent)) {
-        const namespace = parent.parent;
-        const prefix =
-            ts.isModuleBlock(namespace) &&
-            ts.isIdentifier(namespace.parent.name) &&
-            namespace.parent.name.text === "Intl"
-                ? "Intl."
-                : "";
-        return `${prefix}${parent.name?.text}.${name.text}`;
-    }
-    return name.text;
-}
 
 export function deferredCapabilityDescriptor(
     checker: ts.TypeChecker,
@@ -150,58 +128,6 @@ export class DeferredCapabilities {
     constructor(private readonly context: Context) {}
     get sites(): readonly DeferredCapabilitySite[] {
         return [...this.reached.values()];
-    }
-
-    compileConstructor(node: ts.NewExpression): Value | undefined {
-        const context = this.context;
-        if (!context.options.deferredCapabilities) return undefined;
-        const callee = context.unwrap(node.expression);
-        const intl =
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Intl";
-        const name = intl
-            ? `Intl.${callee.name.text}`
-            : context.libraryGlobal(callee);
-        const origin = intl ? "default-lib" : "dom";
-        if (!name || !descriptors.has(`${origin}:${name}.constructor`))
-            return undefined;
-        const signature = context.checker.getResolvedSignature(node);
-        if (
-            !signature?.declaration ||
-            declarationOrigin(signature.declaration) !== origin
-        )
-            return undefined;
-        const type = context.dataTypes.fromTsType(
-            context.checker.getTypeAtLocation(node),
-            node,
-        );
-        if (!type)
-            return context.fail(
-                node,
-                `Deferred constructor '${name}' requires an owned result.`,
-            );
-        if (
-            type.kind === "handle" &&
-            type.handle === "ui-element" &&
-            !context.options.workers
-        )
-            throw new ApplicationRealmRequired();
-        this.arguments(node, signature, `${name}.constructor`);
-        return this.emitKnown(
-            node,
-            {
-                id: `${origin}:${name}.constructor`,
-                origin,
-                operation: "construct",
-                timing: "throw",
-                signature: context.checker.signatureToString(
-                    signature,
-                    node,
-                    ts.TypeFormatFlags.NoTruncation,
-                ),
-            },
-            type,
-        );
     }
 
     property(
@@ -276,33 +202,17 @@ export class DeferredCapabilities {
         );
     }
 
-    private windowReceiver(value: Value, node: ts.Expression): boolean {
-        const context = this.context;
-        const receiver = context.unwrap(node);
-        const global = context.libraryGlobal(receiver);
-        return (
-            value.domEventTargetCpp === "bbl::DomEventTarget::window()" ||
-            global === "window" ||
-            global === "globalThis" ||
-            isDomReceiver(context, receiver, "Window")
-        );
-    }
-
     private receiverMatches(
         api: string,
         value: Value,
         node: ts.Expression,
     ): boolean {
-        const owner = api.startsWith("Intl.")
-            ? api.split(".")[1]!
-            : api.split(".")[0];
-        if (owner === "Window") return this.windowReceiver(value, node);
-        const type = value.dataType;
-        const handle = type?.kind === "handle" ? type.handle : value.kind;
-        if (owner === "SurfaceContext") return value.kind === "engine";
-        if (owner === "AudioContext") return handle === "audio-context";
-        if (owner === "AudioNode") return handle === "audio-node";
-        return value.kind === "ui-element" || type?.kind === "event-target";
+        if (api.split(".")[0] === "Window")
+            return isWindowReceiver(this.context, value, node);
+        return (
+            value.kind === "ui-element" ||
+            value.dataType?.kind === "event-target"
+        );
     }
 
     /** Opaque capabilities retain arguments without projecting object properties. */

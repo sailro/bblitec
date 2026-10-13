@@ -3,7 +3,6 @@ import type { DataLowerer } from "./data-lowering.js";
 import { isDomReceiver } from "./dom-targets.js";
 import { pinDetached } from "./dom-listeners.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declarationOrigin } from "./symbols.js";
 import type { Value } from "./types.js";
 import { requireWindowHost } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -48,6 +47,25 @@ export function compileWindowMemberCall(
         : run(lowerer.narrowOptional(owner, callee.expression));
 }
 
+/**
+ * Whether a receiver is the Window: the Window identity value, the
+ * `window`/`globalThis` globals, or a receiver the checker types as Window.
+ */
+export function isWindowReceiver(
+    context: Pick<LoweringServices, "checker" | "libraryGlobal" | "unwrap">,
+    value: Value,
+    node: ts.Expression,
+): boolean {
+    const receiver = context.unwrap(node);
+    const global = context.libraryGlobal(receiver);
+    return (
+        value.domEventTargetCpp === "bbl::DomEventTarget::window()" ||
+        global === "window" ||
+        global === "globalThis" ||
+        isDomReceiver(context, receiver, "Window")
+    );
+}
+
 /** A Window service of the application realm: its Window host, and the realm itself. */
 export function requireApplicationWindow(
     context: Pick<LoweringServices, "options" | "reachFeature" | "fail">,
@@ -55,40 +73,4 @@ export function requireApplicationWindow(
 ): void {
     if (!context.options.workers) throw new ApplicationRealmRequired();
     requireWindowHost(context, node);
-}
-
-const WINDOW_SERVICE_CALLS = new Set([
-    "alert",
-    "confirm",
-    "requestIdleCallback",
-    "cancelIdleCallback",
-    "requestFullscreen",
-    "exitFullscreen",
-    "isTypeSupported",
-    "captureStream",
-]);
-
-/**
- * A call of a DOM-declared Window service lowered natively (message boxes,
- * idle callbacks, fullscreen, media capture): never a browser-only effect to
- * erase.
- */
-export function isWindowServiceCall(
-    context: Pick<LoweringServices, "checker" | "unwrap">,
-    node: ts.Expression,
-): boolean {
-    if (!ts.isCallExpression(node)) return false;
-    const callee = context.unwrap(node.expression);
-    const name = ts.isIdentifier(callee)
-        ? callee.text
-        : ts.isPropertyAccessExpression(callee)
-          ? callee.name.text
-          : undefined;
-    if (!name || !WINDOW_SERVICE_CALLS.has(name)) return false;
-    const declaration = context.checker.getResolvedSignature(node)?.declaration;
-    return (
-        declaration !== undefined &&
-        !ts.isJSDocSignature(declaration) &&
-        declarationOrigin(declaration) === "dom"
-    );
 }

@@ -13717,6 +13717,29 @@ test("refuses to erase an optional numeric mesh expando that is read", () => {
     );
 });
 
+test("refuses to erase a DOM call on a receiver erasure cannot classify", () => {
+    for (const call of [
+        `active().style.setProperty("color", "red")`,
+        `active().classList.add("busy")`,
+    ])
+        assert.throws(
+            () =>
+                compileSource(`
+                    import { createEngine, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
+                    function active(): HTMLElement { return document.activeElement as HTMLElement; }
+                    async function main() {
+                        const engine = await createEngine({});
+                        const scene = createSceneContext(engine);
+                        ${call};
+                        await registerScene(scene);
+                        await startEngine(engine);
+                    }
+                    void main();
+                `),
+            /would erase on a receiver that is not browser state/,
+        );
+});
+
 test("lowers setMeshVisible through the pinned subtree visibility helper", () => {
     const result = compileSource(`
         import { createBox, createEngine, setMeshVisible } from "@babylonjs/lite";

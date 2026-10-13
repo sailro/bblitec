@@ -122,12 +122,14 @@ type ElementInterfaceTest =
 
 type WindowInterface =
     | { readonly kind: "observer" }
-    | { readonly kind: "element"; readonly test: ElementInterfaceTest };
+    | { readonly kind: "element"; readonly test: ElementInterfaceTest }
+    | { readonly kind: "platform"; readonly typeOf: "function" | "object" };
 
 /**
- * The Window interfaces native represents: node and element interfaces
- * `instanceof` answers by target kind, tag or namespace, and observers an
- * application realm builds.
+ * The Window interfaces and objects native represents: node and element
+ * interfaces `instanceof` answers by target kind, tag or namespace,
+ * observers an application realm builds, and platform objects any non-worker
+ * realm has (`media-streams.ts`, `web-storage.ts`).
  */
 const WINDOW_INTERFACES: ReadonlyMap<string, WindowInterface> = new Map<
     string,
@@ -153,6 +155,9 @@ const WINDOW_INTERFACES: ReadonlyMap<string, WindowInterface> = new Map<
     ]),
     ["MutationObserver", { kind: "observer" }],
     ["ResizeObserver", { kind: "observer" }],
+    ["MediaRecorder", { kind: "platform", typeOf: "function" }],
+    ["MediaStream", { kind: "platform", typeOf: "function" }],
+    ["sessionStorage", { kind: "platform", typeOf: "object" }],
 ]);
 
 export function isWindowObserver(name: string | undefined): boolean {
@@ -160,17 +165,18 @@ export function isWindowObserver(name: string | undefined): boolean {
 }
 
 /**
- * `typeof` of a represented Window interface: function where the Window is,
- * undefined in a dedicated worker. Outside an application realm an observer
- * is undecided, since only that realm builds one.
+ * `typeof` of a represented Window interface or object: undefined in a
+ * dedicated worker, else function (object for a platform object). Outside an
+ * application realm an observer is undecided, since only that realm builds one.
  */
 export function windowInterfaceTypeof(
     name: string | undefined,
     workers: { readonly namespace: string | undefined } | undefined,
-): "function" | "undefined" | undefined {
+): "function" | "object" | "undefined" | undefined {
     const entry = WINDOW_INTERFACES.get(name ?? "");
     if (!entry) return undefined;
     if (workers?.namespace) return "undefined";
+    if (entry.kind === "platform") return entry.typeOf;
     return entry.kind === "observer" && !workers ? undefined : "function";
 }
 

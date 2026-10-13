@@ -1,5 +1,6 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
+import { MESSAGE_BOX_FUNCTIONS } from "./dom-lowerings.js";
 import { stringConcatPart } from "./expressions.js";
 import { isUndefinedDataType } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
@@ -64,7 +65,7 @@ export function compileMessageBoxCall(
     return compileWindowMemberCall(
         lowerer,
         call,
-        ["alert", "confirm"],
+        MESSAGE_BOX_FUNCTIONS,
         (name) => {
             requireApplicationWindow(context, call);
             context.expectArgumentCount(call, 0, 1);

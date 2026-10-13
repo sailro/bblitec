@@ -1,9 +1,17 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
+import {
+    CANVAS_CAPTURE_STREAM,
+    MEDIA_RECORDER_TYPE_SUPPORTED,
+} from "./dom-lowerings.js";
 import { domAudioHandleKind, type DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { compileBooleanOptions } from "./option-helpers.js";
-import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDomLibrary,
+    resolvedDomApi,
+    resolvedSymbol,
+} from "./symbols.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 
 /**
@@ -285,12 +293,7 @@ export function compileMediaRecorderStaticCall(
     call: ts.CallExpression,
 ): Value | undefined {
     const context = lowerer.context;
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "isTypeSupported" ||
-        context.libraryGlobal(callee.expression) !== "MediaRecorder"
-    )
+    if (resolvedDomApi(context.checker, call) !== MEDIA_RECORDER_TYPE_SUPPORTED)
         return undefined;
     context.expectArgumentCount(call, 1, 1);
     reachMediaStreams(context, call);
@@ -338,14 +341,8 @@ export function compileCanvasCaptureStream(
     element: Value,
 ): Value | undefined {
     const context = lowerer.context;
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "captureStream"
-    )
+    if (resolvedDomApi(context.checker, call) !== CANVAS_CAPTURE_STREAM)
         return undefined;
-    const symbol = resolvedSymbol(context.checker, callee);
-    if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
     context.expectArgumentCount(call, 0, 1);
     reachMediaStreams(context, call);
     const canvas = pinned(context, element.cpp, "captured_canvas");

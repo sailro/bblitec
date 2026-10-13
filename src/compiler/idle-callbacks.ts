@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
-import { isDomReceiver } from "./dom-targets.js";
+import { IDLE_FUNCTIONS } from "./dom-lowerings.js";
 import { pinDetached } from "./dom-listeners.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { nativeFunctionValue } from "./native-function-values.js";
@@ -10,6 +10,7 @@ import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 import {
     compileWindowMemberCall,
+    isWindowReceiver,
     requireApplicationWindow,
 } from "./window-members.js";
 import { nativeWindowMember } from "./window-properties.js";
@@ -22,7 +23,6 @@ import { timerCancellation } from "./workers.js";
  * `didTimeout`.
  */
 
-const IDLE_FUNCTIONS = ["requestIdleCallback", "cancelIdleCallback"] as const;
 type IdleFunction = (typeof IDLE_FUNCTIONS)[number];
 
 const IDLE_CALLBACK: DataType = {
@@ -268,14 +268,7 @@ export function idleFunctionValue(
                 : undefined;
         });
         if (!owner) return undefined;
-        const receiver = context.unwrap(property.expression);
-        if (
-            owner.domEventTargetCpp !== "bbl::DomEventTarget::window()" &&
-            !["window", "globalThis"].includes(
-                context.libraryGlobal(receiver) ?? "",
-            ) &&
-            !isDomReceiver(context, receiver, "Window")
-        )
+        if (!isWindowReceiver(context, owner, property.expression))
             return context.fail(
                 property.expression,
                 `Window member '${name}' requires a proven Window receiver.`,
