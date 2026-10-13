@@ -522,6 +522,7 @@ export function isNeverResized(
 
 interface DataLoweringContext extends Pick<
     LoweringServices,
+    | "symbols"
     | "moduleNamespaces"
     | "recordProxies"
     | "options"

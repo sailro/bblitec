@@ -133,9 +133,8 @@ import { firstReturn } from "./loop-control.js";
 import {
     regexpCaptureCount,
     regexpCapturesMayBeUnmatched,
-    regexpCaptureFacts,
-    regexpGroupsType,
-} from "./string-replacement.js";
+} from "./regexp-grammar.js";
+import { regexpCaptureFacts, regexpGroupsType } from "./string-replacement.js";
 import { compileAtomicsCall } from "./atomics.js";
 import { compileEnumElementAccess, enumObjectSymbol } from "./enum-objects.js";
 import {
@@ -1169,19 +1168,21 @@ export class ExpressionLowerer {
                 return {
                     kind: "data",
                     dataType: { kind: "regexp" },
-                    regexpUnicode: false,
-                    regexpGlobal: flags.includes("g"),
-                    ...(patternValue.staticString !== undefined
-                        ? {
-                              regexpCaptureCount: regexpCaptureCount(
-                                  patternValue.staticString,
-                              ),
-                              regexpOptionalCaptures:
-                                  regexpCapturesMayBeUnmatched(
+                    regexpLayout: {
+                        unicode: false,
+                        global: flags.includes("g"),
+                        ...(patternValue.staticString !== undefined
+                            ? {
+                                  captureCount: regexpCaptureCount(
                                       patternValue.staticString,
                                   ),
-                          }
-                        : {}),
+                                  optionalCaptures:
+                                      regexpCapturesMayBeUnmatched(
+                                          patternValue.staticString,
+                                      ),
+                              }
+                            : {}),
+                    },
                     cpp:
                         `bbl::js::RegExp(${pattern}, ` +
                         `${flags.includes("g") ? "true" : "false"}, ` +
@@ -6649,10 +6650,12 @@ export class ExpressionLowerer {
         return {
             kind: "data",
             dataType: { kind: "regexp" },
-            regexpCaptureCount: regexpCaptureCount(translated.pattern),
-            regexpUnicode: unicode,
-            regexpGlobal: flags.includes("g"),
-            regexpOptionalCaptures: regexpCapturesMayBeUnmatched(pattern),
+            regexpLayout: {
+                captureCount: regexpCaptureCount(translated.pattern),
+                unicode,
+                global: flags.includes("g"),
+                optionalCaptures: regexpCapturesMayBeUnmatched(pattern),
+            },
             cpp:
                 `bbl::js::RegExp(${this.context.cppString(translated.pattern)}, ` +
                 `${flags.includes("g") ? "true" : "false"}, ` +
@@ -7141,11 +7144,8 @@ export class ExpressionLowerer {
             }
             // An unmatched capture is undefined wherever the pattern allows one.
             const groups = regexpGroupsType(
-                regexpCaptureFacts(
-                    this.context.checker,
-                    regexpOwner,
-                    callee.expression,
-                ),
+                regexpCaptureFacts(this.context, regexpOwner, callee.expression)
+                    .regexpLayout,
                 (type) => this.context.dataTypes.cppType(type),
             );
             return {

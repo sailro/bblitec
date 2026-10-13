@@ -3898,7 +3898,7 @@ function compileStringDataMethod(
             );
         }
         const pattern = regexpCaptureFacts(
-            lowerer.context.checker,
+            lowerer.context,
             lowerer.context.compileValue(argumentAt(call, 0)),
             argumentAt(call, 0),
         );
@@ -3910,10 +3910,11 @@ function compileStringDataMethod(
         }
         // A global match lists whole matches; other lists hold captures,
         // an unmatched one undefined wherever the pattern allows it.
+        const layout = pattern.regexpLayout;
         const groups = regexpGroupsType(
-            method === "match" && pattern.regexpGlobal
-                ? { ...pattern, regexpOptionalCaptures: false }
-                : pattern,
+            method === "match" && layout?.global
+                ? { ...layout, optionalCaptures: false }
+                : layout,
             (type) => lowerer.context.dataTypes.cppType(type),
         );
         const matches: DataType = {
@@ -4031,15 +4032,13 @@ function compileStringDataMethod(
             lowerer.context.fail(call, "String.split expects one separator.");
         }
         const separatorValue = regexpCaptureFacts(
-            lowerer.context.checker,
+            lowerer.context,
             lowerer.context.compileValue(argumentAt(call, 0)),
             argumentAt(call, 0),
         );
         if (separatorValue.dataType?.kind === "regexp") {
-            if (
-                separatorValue.regexpCaptureCount === undefined &&
-                separatorValue.regexpUnicode !== false
-            )
+            const layout = separatorValue.regexpLayout;
+            if (layout?.captureCount === undefined && layout?.unicode !== false)
                 lowerer.context.fail(
                     argumentAt(call, 0),
                     "String.split by a stored RegExp requires a known capture layout.",
@@ -4047,9 +4046,9 @@ function compileStringDataMethod(
             // Split pushes each capture after its piece, an unmatched one
             // undefined wherever the pattern allows it.
             const groups = regexpGroupsType(
-                separatorValue.regexpCaptureCount === 0
-                    ? { ...separatorValue, regexpOptionalCaptures: false }
-                    : separatorValue,
+                layout?.captureCount === 0
+                    ? { ...layout, optionalCaptures: false }
+                    : layout,
                 (type) => lowerer.context.dataTypes.cppType(type),
             );
             return {

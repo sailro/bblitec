@@ -47,6 +47,7 @@ import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
 import type { NativeHostUiStyleSource } from "../ui-style-rule.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
+import type { RegExpLayout } from "./regexp-grammar.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import type { CompiledTextData } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
@@ -2322,14 +2323,8 @@ export interface ValueFields {
     nativeGpu?: true;
     /** Reading this host capability requires realm-owned native service state. */
     requiresApplicationRealm?: true;
-    /** Known RegExp grammar determines the positional replacement callback arguments. */
-    regexpCaptureCount?: number;
-    /** Known `u` flag; absent when storage erased the pattern's grammar. */
-    regexpUnicode?: boolean;
-    /** Known `g` flag; absent when storage erased the pattern's grammar. */
-    regexpGlobal?: boolean;
-    /** Whether a match can leave a capture undefined; absent when unknown. */
-    regexpOptionalCaptures?: boolean;
+    /** A RegExp's known flags and captures; absent when storage erased its grammar. */
+    regexpLayout?: RegExpLayout;
     callbackDeclaration?:
         | ts.Identifier
         | ts.FunctionDeclaration

@@ -975,10 +975,7 @@ export class BindingScopes {
             // closure or loop; the initializer's captures and flags no
             // longer describe this binding's runtime value.
             value = { ...value };
-            delete writable(value).regexpCaptureCount;
-            delete writable(value).regexpUnicode;
-            delete writable(value).regexpGlobal;
-            delete writable(value).regexpOptionalCaptures;
+            delete writable(value).regexpLayout;
         }
         if (
             value.engineOwnerIdentity &&
