@@ -216,6 +216,8 @@ export const valueMetadataFields = {
     data: [
         "regexpCaptureCount",
         "regexpUnicode",
+        "regexpGlobal",
+        "regexpOptionalCaptures",
         ...new Set(Object.values(resourceMetadataFields).flat()),
         "fetchedBytes",
     ],

@@ -118,7 +118,12 @@ import { compileHttpFunction, compileHttpCall } from "./http.js";
 import { compileWindowServiceCall } from "./window-events.js";
 import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
-import { regexpCaptureCount } from "./string-replacement.js";
+import {
+    regexpCaptureCount,
+    regexpCapturesMayBeUnmatched,
+    regexpCaptureFacts,
+    regexpGroupsType,
+} from "./string-replacement.js";
 import { compileAtomicsCall } from "./atomics.js";
 import { compileEnumElementAccess, enumObjectSymbol } from "./enum-objects.js";
 import {
@@ -1155,11 +1160,16 @@ export class ExpressionLowerer {
                     kind: "data",
                     dataType: { kind: "regexp" },
                     regexpUnicode: false,
+                    regexpGlobal: flags.includes("g"),
                     ...(patternValue.staticString !== undefined
                         ? {
                               regexpCaptureCount: regexpCaptureCount(
                                   patternValue.staticString,
                               ),
+                              regexpOptionalCaptures:
+                                  regexpCapturesMayBeUnmatched(
+                                      patternValue.staticString,
+                                  ),
                           }
                         : {}),
                     cpp:
@@ -6564,6 +6574,8 @@ export class ExpressionLowerer {
             dataType: { kind: "regexp" },
             regexpCaptureCount: regexpCaptureCount(translated.pattern),
             regexpUnicode: unicode,
+            regexpGlobal: flags.includes("g"),
+            regexpOptionalCaptures: regexpCapturesMayBeUnmatched(pattern),
             cpp:
                 `bbl::js::RegExp(${this.context.cppString(translated.pattern)}, ` +
                 `${flags.includes("g") ? "true" : "false"}, ` +
@@ -7050,15 +7062,21 @@ export class ExpressionLowerer {
                     cpp: `${owner.cpp}.test(${input})`,
                 };
             }
+            // An unmatched capture is undefined wherever the pattern allows one.
+            const groups = regexpGroupsType(
+                regexpCaptureFacts(
+                    this.context.checker,
+                    regexpOwner,
+                    callee.expression,
+                ),
+                (type) => this.context.dataTypes.cppType(type),
+            );
             return {
                 kind: "data",
-                cpp: `${owner.cpp}.exec(${input})`,
+                cpp: `${owner.cpp}.exec${groups.template}(${input})`,
                 dataType: {
                     kind: "optional",
-                    inner: {
-                        kind: "vector",
-                        element: { kind: "string" },
-                    },
+                    inner: { kind: "vector", element: groups.element },
                 },
             };
         }
