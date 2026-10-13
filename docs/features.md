@@ -8,8 +8,8 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: audio graph
 operations, media streams/recording/streamed audio, script elements, session storage, idle callbacks, dynamic
-pixel ratio, application-realm device recovery, Blob streams/piping/compression, `{ signal }` listeners, and the
-[UI](ui.md) items marked deferred. Unregistered APIs still refuse.
+pixel ratio, application-realm device recovery, Blob streams/piping/compression, and the [UI](ui.md)
+items marked deferred. Unregistered APIs still refuse.
 
 ## Language
 
@@ -164,7 +164,8 @@ Heightfields need square ground grids. Contract: [physics](fidelity.md#physics-c
 ## Audio
 
 LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling, decoding, ended listeners. Event payloads,
-context options, statechange, output selection, media streams and recording refuse or are absent.
+ended-listener `signal`, context options, statechange, output selection, media streams and recording refuse or are
+absent.
 
 ## Shadows and navigation
 

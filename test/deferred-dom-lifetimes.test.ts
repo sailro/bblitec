@@ -51,60 +51,6 @@ test("empty Abort storage needs no capability site", () => {
     );
 });
 
-test("listener signals keep a throwing boundary over native AbortSignals and leave later sites reachable", () => {
-    const source =
-        realm +
-        `
-        let caught=0;
-        const controller=new AbortController();
-        const signal=controller.signal;
-        signal.throwIfAborted();
-        if(signal.aborted)throw new Error("state");
-        try {
-            window.addEventListener("blur",()=>{atob("lazy");},{signal});
-        } catch(error) {
-            if(!error.message.includes("dom:EventTarget.addEventListener.signal"))throw new Error("capability");
-            ++caught;
-        }
-        controller.abort();
-        if(caught!==1||!signal.aborted)throw new Error("listener signal completion");
-    `;
-    assert.throws(
-        () => compileSource(source),
-        /AbortSignal listener lifetime is not represented yet/,
-    );
-    const result = compileSource(source, { deferredCapabilities });
-    assert.deepEqual(
-        result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["dom:atob", "dom:EventTarget.addEventListener.signal"],
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                source.replace(
-                    'atob("lazy")',
-                    "new FinalizationRegistry(() => {})",
-                ),
-                {
-                    deferredCapabilities,
-                },
-            ),
-        /Unsupported constructor/,
-    );
-    const tools = optionalNativeFixtureTools(false);
-    assert.ok(tools, "Native fixture compiler required");
-    runGeneratedProgram(
-        tools,
-        "deferred-dom-lifetimes/abort",
-        result.cpp + runtime,
-        {
-            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
-            expectedOutput: "",
-            timeoutMs: 10000,
-        },
-    );
-});
-
 test("signal dictionaries preserve optional receivers, eager options and lazy ordinary listeners", () => {
     const result = compileSource(
         realm +

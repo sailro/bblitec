@@ -660,6 +660,12 @@ function compileAudioReceiverMethod(
                     call.arguments[2],
                     removing,
                 );
+                // An observed source retains its completion until a listener removal releases it.
+                if (options.signal)
+                    context.fail(
+                        call.arguments[2]!,
+                        "Audio ended listeners with an AbortSignal are not lowered.",
+                    );
                 return {
                     kind: "void",
                     cpp: absent

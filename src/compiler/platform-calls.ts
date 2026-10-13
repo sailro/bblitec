@@ -25,10 +25,13 @@ import {
     windowErrorEventValue,
 } from "./window-events.js";
 import {
+    declaresListenerSignal,
     emitDomEventListener,
-    hasDeferredListenerSignal,
-    compileDeferredListenerOptions,
+    listenerAddition,
+    listenerOptions,
     pinDetached,
+    pinListener,
+    type ListenerOptions,
 } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { timerCancellation } from "./workers.js";
@@ -919,8 +922,11 @@ export class PlatformCalls {
         const callback = argumentAt(call, 1);
         this.context.callbacks.hoistForwardCallbackBindings(callback);
         let once = false;
-        const deferredSignal = hasDeferredListenerSignal(this.context, call);
-        if (!removing && call.arguments[2] && !deferredSignal) {
+        // Options that may carry a signal lower as a dictionary; others stay static.
+        const signalOptions =
+            !removing &&
+            declaresListenerSignal(this.context.checker, call.arguments[2]);
+        if (!removing && call.arguments[2] && !signalOptions) {
             const options = this.context.unwrap(call.arguments[2]);
             if (!ts.isObjectLiteralExpression(options)) {
                 this.context.fail(
@@ -965,16 +971,17 @@ export class PlatformCalls {
                     { cppType: "bbl::pal::ApplicationErrorEvent&", name },
                     [windowErrorEventValue(this.context, name, rejection)],
                 );
-                const deferredOptions = deferredSignal
-                    ? compileDeferredListenerOptions(
-                          this.context,
-                          call,
-                          listener.cpp,
-                      )
+                const options = signalOptions
+                    ? this.signalListenerOptions(call, listener.cpp)
                     : undefined;
                 this.context.emit({
                     kind: "expression",
-                    code: `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${deferredOptions?.listener ?? listener.cpp}, ${deferredOptions?.once ?? once});`,
+                    code: `${listenerAddition(
+                        options?.signal,
+                        (lease) =>
+                            `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ` +
+                            `${options?.listener ?? listener.cpp}, ${options?.once ?? once}${lease ? `, ${lease}` : ""})`,
+                    )};`,
                 });
             }
             return true;
@@ -1039,17 +1046,33 @@ export class PlatformCalls {
             values,
             documentHiddenCpp,
         );
-        const deferredOptions = deferredSignal
-            ? compileDeferredListenerOptions(this.context, call, listener.cpp)
+        const options = signalOptions
+            ? this.signalListenerOptions(call, listener.cpp)
             : undefined;
         this.context.emit({
             kind: "expression",
-            code:
-                `bbl::on_${descriptor.channel}(` +
-                `${engine}, ${listener.identity}, ${deferredOptions?.listener ?? listener.cpp}` +
-                `${deferredOptions ? `, ${deferredOptions.once}` : once ? ", true" : ""});`,
+            // A leased listener joins its channel's registry directly.
+            code: `${listenerAddition(options?.signal, (lease) =>
+                lease && options
+                    ? `${engine}.${descriptor.channel}_callbacks.add(${listener.identity}, ${options.listener}, ${options.once}, ${lease})`
+                    : `bbl::on_${descriptor.channel}(` +
+                      `${engine}, ${listener.identity}, ${options?.listener ?? listener.cpp}` +
+                      `${options ? `, ${options.once}` : once ? ", true" : ""})`,
+            )};`,
         });
         return true;
+    }
+
+    /** A service listener's dictionary options, after its pinned listener. */
+    private signalListenerOptions(
+        call: ts.CallExpression,
+        listener: string,
+    ): ListenerOptions & { listener: string } {
+        const pinned = pinListener(this.context, listener);
+        return {
+            ...listenerOptions(this.context, call.arguments[2], false),
+            listener: pinned,
+        };
     }
 
     private platformEventDescriptor(
