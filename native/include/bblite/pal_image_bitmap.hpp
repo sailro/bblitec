@@ -45,19 +45,16 @@ struct ImageBitmapOptions {
 [[nodiscard]] inline DecodedImage decode_bitmap_bytes(std::span<const std::uint8_t> bytes) {
     if (webp_signature(bytes)) {
 #if BBLITE_HAS_WEBP_DECODER
-        int width = 0, height = 0;
-        std::uint8_t* pixels = WebPDecodeRGBA(bytes.data(), bytes.size(), &width, &height);
-        if (!pixels || width <= 0 || height <= 0) {
-            if (pixels)
-                WebPFree(pixels);
-            throw std::runtime_error("The WebP image could not be decoded.");
-        }
+        // The header gives the size; libwebp then decodes straight into the image's pixels.
         DecodedImage image;
-        image.width = width;
-        image.height = height;
-        const auto size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4;
-        image.rgba.assign(pixels, pixels + size);
-        WebPFree(pixels);
+        if (!WebPGetInfo(bytes.data(), bytes.size(), &image.width, &image.height) ||
+            image.width <= 0 || image.height <= 0)
+            throw std::runtime_error("The WebP image could not be decoded.");
+        const auto stride = static_cast<std::size_t>(image.width) * 4;
+        image.rgba.resize(stride * static_cast<std::size_t>(image.height));
+        if (!WebPDecodeRGBAInto(bytes.data(), bytes.size(), image.rgba.data(), image.rgba.size(),
+                                static_cast<int>(stride)))
+            throw std::runtime_error("The WebP image could not be decoded.");
         return image;
 #else
         throw std::runtime_error("This program does not link the WebP codec.");
