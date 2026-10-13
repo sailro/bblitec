@@ -61,16 +61,17 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   throws SyntaxError; the delimiting quote, a backslash, tab or NUL throw NotSupportedError.
 - `:hover`/`:active` read the UI's last update, so a listener of the pointer event that changes them sees the earlier
   state; focus states, `:checked` and `:disabled` read the document.
-- Listener options: `capture`, `once`, `passive`, `signal`; abort removes the listener its add created.
+- Listener options: `capture`, `once`, `passive`, `signal` ([abort](fidelity.md#semantic-contract)).
 - Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
   events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
   mouse beyond the window.
 - UI handles input before cameras; `preventDefault` suppresses camera propagation. Only the primary touch emits mouse events.
 - `tabIndex` reflects `tabindex`: 0 joins Tab navigation in tree order, negative leaves it; positive values throw
-  NotSupportedError. Canvas `tabIndex` reads 0 (keyboard focus targets the SDL surface); other canvas writes refuse.
+  NotSupportedError. Canvas `tabIndex` reads 0 (keyboard focus targets the SDL surface); writing 0 is erased, other
+  values refuse.
 - `scrollIntoView` (boolean or block/inline/behavior) applies at the next layout; smooth scrolls only the nearest
   scroll container, outer ones jump.
-- Erased writes: canvas `tabIndex = 0`, engine-canvas `width`/`height` (the window owns size), dataset members nothing reads.
+- Erased writes: engine-canvas `width`/`height` (the window owns size), dataset members nothing reads.
 - Color inputs use an RGB/hex popup (preview emits input, Apply emits change). Select keyboard navigation needs the menu open.
 - Canvas backing size is drawable pixels; client sizes and rects are CSS pixels; rect/size reads flush layout.
 

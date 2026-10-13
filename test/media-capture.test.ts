@@ -4,54 +4,20 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureLabSoundPresent,
-    nativeFixtureLabSoundRoot,
-    nativeFixtureVcpkgRoot,
+    nativeFixtureLibrary,
     optionalNativeFixtureTools,
-    runFixtureExecutable,
-    runNativeFixtureCompiler,
+    runLabSoundFixture,
 } from "./native-fixture.js";
 
-const tools = optionalNativeFixtureTools();
-const labsound = nativeFixtureLabSoundRoot;
-const native = Boolean(tools && nativeFixtureLabSoundPresent());
+const native = Boolean(
+    optionalNativeFixtureTools() && nativeFixtureLibrary("labsound"),
+);
 
-/** Compile one LabSound fixture translation unit with stream nodes and run it. */
-function runLabSoundFixture(
-    output: string,
-    source: string,
-    flags: readonly string[],
-): string {
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools!, [
-        "/O2",
-        "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
-        "/DBBLITE_HAS_AUDIO_MEDIA_STREAM=1",
-        ...flags,
-        `/Fo:${output}\\`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/src",
-        `/external:I${join(labsound, "include")}`,
-        source,
-        "/link",
-        `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
-        `/LIBPATH:${join(labsound, "lib")}`,
-        "LabSound.lib",
-        "libnyquist.lib",
-        "SDL3.lib",
-    ]);
-    return runFixtureExecutable(executable, {
-        cwd: output,
-        timeoutMs: 30000,
-        env: {
-            ...tools!.environment,
-            BBLITE_AUDIO_CAPTURE: "",
-            SDL_AUDIODRIVER: "dummy",
-            PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools!.environment.PATH ?? ""}`,
-        },
-    });
-}
+/** The stream nodes' surface, beside the buffer source. */
+const streamFlags = [
+    "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
+    "/DBBLITE_HAS_AUDIO_MEDIA_STREAM=1",
+];
 
 /** The application's shapes: a capture mixer over stream destinations, and an MP4 recording boundary. */
 const applicationShapes = `
@@ -213,11 +179,11 @@ test(
         const output = resolve("artifacts/media-stream-audio-check");
         mkdirSync(output, { recursive: true });
         assert.match(
-            runLabSoundFixture(
+            runLabSoundFixture({
                 output,
-                "test/fixtures/media-stream-audio-check.cpp",
-                ["/DBBLITE_AUDIO_CAPTURE=1"],
-            ),
+                source: "test/fixtures/media-stream-audio-check.cpp",
+                flags: [...streamFlags, "/DBBLITE_AUDIO_CAPTURE=1"],
+            }),
             /media-stream-audio-check: ok/,
         );
     },
@@ -296,23 +262,17 @@ test(
 #define main generated_main
 #include "program.hpp"
 #undef main
-#include <cstdlib>
-#include <string>
-namespace bbl::pal {
-std::string environment_variable(const char* name) {
-    char* value = nullptr;
-    std::size_t length = 0;
-    _dupenv_s(&value, &length, name);
-    const std::string result = value ? value : "";
-    std::free(value);
-    return result;
-}
-} // namespace bbl::pal
+#define LABSOUND_FIXTURE_ENVIRONMENT
+#include "../../test/fixtures/labsound-fixture.hpp"
 int main() { return generated_main(); }
 `,
         );
         assert.equal(
-            runLabSoundFixture(output, join(output, "check.cpp"), []),
+            runLabSoundFixture({
+                output,
+                source: join(output, "check.cpp"),
+                flags: streamFlags,
+            }),
             "",
         );
     },

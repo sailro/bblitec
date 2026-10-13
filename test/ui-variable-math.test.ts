@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { runRmlUiFixture } from "./native-fixture.js";
-
-const directory = resolve("artifacts/ui-variable-math");
+import { runApplicationRmlUiFixture } from "./rmlui-application-fixture.js";
 
 // calc()/min() over var(): lengths from inline and inherited custom
 // properties (themselves math over var()), numbers, colour alpha and times.
@@ -38,19 +34,7 @@ const program = `
 `;
 
 test("math over var() resolves natively after substitution", (t) => {
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "worker.ts"), "self.close();");
-    const result = compileSource(
-        `
-        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
-        worker.terminate();
-        ${program}`,
-        { fileName: join(directory, "entry.ts") },
-    );
-    writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "ui-variable-math", {
-        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
-    });
+    runApplicationRmlUiFixture(t, "ui-variable-math", program);
 });
 
 test("math over var() with unresolvable units refuses at generation", () => {

@@ -45,11 +45,15 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
         );
         if (backend === "Sdl") {
             const meshStart = encode.indexOf("draw_list(draw_lists.opaque);");
+            // Through the transparent list's unsplit arm and its brace.
             const meshEnd =
                 encode.indexOf(
-                    "draw_list(draw_lists.transparent);",
-                    meshStart,
-                ) + "draw_list(draw_lists.transparent);".length;
+                    "}",
+                    encode.indexOf(
+                        "draw_list(draw_lists.transparent);",
+                        meshStart,
+                    ),
+                ) + 1;
             const skybox = encode.indexOf(
                 "draw_task_background(",
                 encode.indexOf("SdlRenderPass task_pass"),
@@ -67,7 +71,7 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
             );
             writeFileSync(
                 join(output, `${backend}GraphStages.hpp`),
-                `void graph_mesh_stages(bool draw_scene_billboard_stages) {
+                `void graph_mesh_stages(bool draw_scene_billboard_stages, FixturePassBreaks* pass_breaks, std::optional<std::function<int()>> resume_pass) {
                 ${encode.slice(meshStart, meshEnd)}
             } void graph() { ${encode.slice(graphStart, graphEnd)} }`,
             );
@@ -75,9 +79,13 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
             const graphStart = encode.search(
                 /draw_list_into\(\s*task_pass,\s*render_task\.draw_lists\.opaque,/,
             );
+            // The pass ends after the transparent list's split hook.
             const graphEnd = encode.indexOf(
                 "wgpuRenderPassEncoderEnd(task_pass);",
-                graphStart,
+                encode.indexOf(
+                    "});",
+                    encode.indexOf("pal::draw_split_list(", graphStart),
+                ),
             );
             assert.ok(graphStart >= 0 && graphEnd > graphStart);
             writeFileSync(

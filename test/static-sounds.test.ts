@@ -14,8 +14,8 @@ import {
     FIXTURE_APPLICATION,
     native,
     runAudioProgram,
-    wave,
 } from "./static-sound-fixture.js";
+import { wave } from "./native-fixture.js";
 
 /**
  * The application's shapes: one lazily shared engine on its own context;
@@ -124,7 +124,7 @@ test("the application's static sounds compile strictly and run natively over pac
     const sounds = join(output, "public/assets/sfx");
     mkdirSync(sounds, { recursive: true });
     writeFileSync(join(sounds, "tone.wav"), wave(0.5, 0.5));
-    writeFileSync(join(sounds, "hum.wav"), wave(0.25, 0.5));
+    writeFileSync(join(sounds, "hum.wav"), wave(0.5, 0.25));
     const result = compileSource(APPLICATION, {
         fileName: join(output, "entry.ts"),
         publicDir: join(output, "public"),
@@ -197,7 +197,7 @@ test("a packaged static sound plays, ramps, stops and disposes in a LabSound cap
         ]),
     );
     const wav = join(output, "tone.wav");
-    writeFileSync(wav, wave(0.5, 1));
+    writeFileSync(wav, wave(1, 0.5));
     const lines = runAudioProgram(
         output,
         "test/fixtures/static-sound-capture-check.cpp",

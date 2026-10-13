@@ -5,6 +5,7 @@
 // line per placement: the left and right channel peaks once settled.
 
 #include "pal_audio_labsound.cpp"
+#include "labsound-fixture.hpp"
 
 #include "../../artifacts/spatial-sound-capture/library.hpp"
 
@@ -27,19 +28,12 @@ namespace {
 
 /** Render `frames` more frames offline; the peak of each channel over the last `measured`. */
 std::string render(pal::AudioContextHandle context, int frames, int measured) {
-    auto& record = pal::require_context(context.value);
-    auto scratch = std::make_shared<lab::AudioBus>(2, lab::AudioNode::ProcessingSizeInFrames);
-    record.destination->offlineRender(scratch.get(), frames);
-    const auto pcm = record.recorder->createBusFromRecording(false);
+    const auto pcm = labsound_fixture::render(context, frames);
     std::string line;
     for (int channel = 0; channel < 2; ++channel) {
-        const auto* samples = pcm->channel(channel)->data();
-        float peak = 0.0f;
-        for (int index = pcm->length() - measured; index < pcm->length(); ++index)
-            peak = std::max(peak, std::abs(samples[index]));
-        char text[32];
-        std::snprintf(text, sizeof text, " %.3f", static_cast<double>(peak));
-        line += text;
+        const auto recorded = labsound_fixture::samples(*pcm, channel);
+        line += " " + labsound_fixture::fixed(labsound_fixture::peak(
+                          recorded, recorded.size() - measured, recorded.size()));
     }
     return line;
 }

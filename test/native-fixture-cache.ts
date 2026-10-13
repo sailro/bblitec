@@ -68,8 +68,9 @@ export interface FixtureCompilePlan {
 /**
  * The inputs and outputs of `arguments_`, resolved against `cwd`, or
  * undefined when the command reads or writes files the plan cannot name.
- * A linking command's objects are intermediates; only its executable is an
- * output. A compile-only command's objects are what later steps link.
+ * A linking command's objects are intermediates; its executable and the
+ * files the linker options name (`/MAP:`, `/PDB:`, `/IMPLIB:`) are its
+ * outputs. A compile-only command's objects are what later steps link.
  */
 export function fixtureCompilePlan(
     arguments_: readonly string[],
@@ -80,6 +81,7 @@ export function fixtureCompilePlan(
     const sources: string[] = [];
     const libraryFolders: string[] = [];
     const libraries: string[] = [];
+    const linkerOutputs: string[] = [];
     let executable: string | undefined;
     let objectOutput: string | undefined;
     let compileOnly = false;
@@ -87,6 +89,20 @@ export function fixtureCompilePlan(
     for (const argument of arguments_) {
         if (argument.startsWith("@")) return undefined;
         if (linking) {
+            // A linker output the option does not name (`/MAP` beside the
+            // executable, `/OUT:` replacing it, a manifest or metadata file).
+            if (
+                /^[/-](?:MAP$|OUT:|MANIFESTFILE:|WINMDFILE:|PGD:)/i.test(
+                    argument,
+                )
+            )
+                return undefined;
+            const named = /^[/-](MAP|PDB|IMPLIB):(.+)$/i.exec(argument);
+            if (named) {
+                linkerOutputs.push(resolve(cwd, named[2]!));
+                normalized.push(`/${named[1]!.toUpperCase()}:<output>`);
+                continue;
+            }
             normalized.push(argument);
             const folder = /^[/-]LIBPATH:(.+)$/i.exec(argument);
             if (folder) libraryFolders.push(resolve(cwd, folder[1]!));
@@ -111,7 +127,14 @@ export function fixtureCompilePlan(
             normalized.push("/Fo:<objects>");
             continue;
         }
-        if (/^[/-](?:T[pc].|Yc|Yu|Fp|P$|E$|EP$)/.test(argument))
+        // Sources the plan cannot classify, precompiled headers, and the
+        // compiler's own side outputs (map, program database, listings,
+        // browse and documentation files, dependency reports).
+        if (
+            /^[/-](?:T[pc].|Yc|Yu|Fp|Fm|Fd|Fa|FA|FR|Fr|doc|sourceDependencies|P$|E$|EP$)/.test(
+                argument,
+            )
+        )
             return undefined;
         if (/^[/-]c$/.test(argument)) compileOnly = true;
         const forced = /^[/-]FI(.+)$/.exec(argument);
@@ -137,7 +160,12 @@ export function fixtureCompilePlan(
     }
     if (!compileOnly)
         return executable
-            ? { sources, inputs, outputs: [executable], normalized }
+            ? {
+                  sources,
+                  inputs,
+                  outputs: [executable, ...linkerOutputs],
+                  normalized,
+              }
             : undefined;
     if (sources.length === 0 || objectOutput === undefined) return undefined;
     const folder = /[\\/]$/.test(objectOutput);

@@ -1,59 +1,23 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureLabSoundPresent,
-    nativeFixtureLabSoundRoot,
-    nativeFixtureVcpkgRoot,
+    nativeFixtureLibrary,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runLabSoundFixture,
 } from "./native-fixture.js";
 
-const tools = optionalNativeFixtureTools();
-const labsound = nativeFixtureLabSoundRoot;
-const native = Boolean(tools && nativeFixtureLabSoundPresent());
+const native = Boolean(
+    optionalNativeFixtureTools() && nativeFixtureLibrary("labsound"),
+);
 
-/** Compile one LabSound fixture translation unit and run it. */
-function runLabSoundFixture(
-    output: string,
-    source: string,
-    flags: readonly string[],
-    environment: Record<string, string>,
-): string {
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools!, [
-        "/O2",
-        "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
-        "/DBBLITE_HAS_AUDIO_OSCILLATOR=1",
-        ...flags,
-        `/Fo:${output}\\`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/src",
-        `/external:I${join(labsound, "include")}`,
-        source,
-        "/link",
-        `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
-        `/LIBPATH:${join(labsound, "lib")}`,
-        "LabSound.lib",
-        "libnyquist.lib",
-        "SDL3.lib",
-    ]);
-    return execFileSync(executable, {
-        cwd: output,
-        encoding: "utf8",
-        timeout: 30000,
-        env: {
-            ...tools!.environment,
-            ...environment,
-            SDL_AUDIODRIVER: "dummy",
-            PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools!.environment.PATH ?? ""}`,
-        },
-    });
-}
+/** The scheduled sources' surface. */
+const sourceFlags = [
+    "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
+    "/DBBLITE_HAS_AUDIO_OSCILLATOR=1",
+];
 
 test(
     "targeted disconnects, value curves, loop points and optional durations reach LabSound",
@@ -62,12 +26,11 @@ test(
         const output = resolve("artifacts/audio-graph-edits-check");
         mkdirSync(output, { recursive: true });
         assert.match(
-            runLabSoundFixture(
+            runLabSoundFixture({
                 output,
-                "test/fixtures/audio-graph-edits-check.cpp",
-                ["/DBBLITE_AUDIO_CAPTURE=1"],
-                {},
-            ),
+                source: "test/fixtures/audio-graph-edits-check.cpp",
+                flags: [...sourceFlags, "/DBBLITE_AUDIO_CAPTURE=1"],
+            }),
             /audio-graph-edits-check: ok/,
         );
     },
@@ -139,24 +102,16 @@ test("application Web Audio lowers targeted disconnects, value curves and loop p
 #define main generated_main
 #include "program.hpp"
 #undef main
-#include <cstdlib>
-#include <string>
-namespace bbl::pal {
-std::string environment_variable(const char* name) {
-    char* value = nullptr;
-    std::size_t length = 0;
-    _dupenv_s(&value, &length, name);
-    const std::string result = value ? value : "";
-    std::free(value);
-    return result;
-}
-} // namespace bbl::pal
+#define LABSOUND_FIXTURE_ENVIRONMENT
+#include "../../test/fixtures/labsound-fixture.hpp"
 int main() { return generated_main(); }
 `,
     );
     assert.equal(
-        runLabSoundFixture(output, join(output, "check.cpp"), [], {
-            BBLITE_AUDIO_CAPTURE: "",
+        runLabSoundFixture({
+            output,
+            source: join(output, "check.cpp"),
+            flags: sourceFlags,
         }),
         "",
     );
@@ -227,15 +182,15 @@ test(
         // The stale-bus write is intermittent: repeated runs catch it.
         for (let run = 0; run < 3; run++)
             assert.match(
-                runLabSoundFixture(
+                runLabSoundFixture({
                     output,
-                    "test/fixtures/audio-capture-idle-check.cpp",
-                    [
+                    source: "test/fixtures/audio-capture-idle-check.cpp",
+                    flags: [
+                        ...sourceFlags,
                         "/DBBLITE_AUDIO_CAPTURE=1",
                         "/DBBLITE_HAS_AUDIO_STEREO_PANNER=1",
                     ],
-                    {},
-                ),
+                }),
                 /audio-capture-idle-check: ok/,
             );
     },

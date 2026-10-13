@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
+    nativeFixtureLibrary,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
-const rml = resolve(process.env.BBLITE_RMLUI_DIR ?? "artifacts/tools/rmlui");
+const rml = tools && nativeFixtureLibrary("rmlui");
 
 test("an explicit RmlUi root replaces a previously cached package location", () => {
     assert.match(
@@ -21,7 +22,7 @@ test("an explicit RmlUi root replaces a previously cached package location", () 
 test(
     "RmlUi preserves fractional spacing and browser heading layout defaults",
     {
-        skip: !tools || !existsSync(join(rml, "lib/rmlui.lib")),
+        skip: !rml,
     },
     () => {
         const output = resolve("artifacts/ui-font-spacing-check");
@@ -33,11 +34,11 @@ test(
             "/I",
             "native/src",
             "/I",
-            join(rml, "include"),
+            join(rml!, "include"),
             "/DRMLUI_STATIC_LIB",
             "test/fixtures/ui-font-spacing-check.cpp",
             "native/src/pal_system_fonts.cpp",
-            join(rml, "lib/rmlui.lib"),
+            join(rml!, "lib/rmlui.lib"),
             join(nativeFixtureVcpkgRoot, "lib/freetype.lib"),
             join(nativeFixtureVcpkgRoot, "lib/lunasvg.lib"),
             "dwrite.lib",
@@ -58,7 +59,7 @@ test(
 
 test(
     "system font transport caches requested and resolved named weights",
-    { skip: !tools || !existsSync(join(rml, "lib/rmlui.lib")) },
+    { skip: !rml },
     () => {
         const output = resolve("artifacts/ui-system-font-check");
         mkdirSync(output, { recursive: true });
@@ -69,10 +70,10 @@ test(
             "/I",
             "native/src",
             "/I",
-            join(rml, "include"),
+            join(rml!, "include"),
             "/DRMLUI_STATIC_LIB",
             "test/fixtures/ui-system-font-check.cpp",
-            join(rml, "lib/rmlui.lib"),
+            join(rml!, "lib/rmlui.lib"),
             join(nativeFixtureVcpkgRoot, "lib/freetype.lib"),
             join(nativeFixtureVcpkgRoot, "lib/lunasvg.lib"),
             "user32.lib",
