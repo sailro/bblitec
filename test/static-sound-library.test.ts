@@ -13,13 +13,8 @@ import {
     serveHttpFixture,
 } from "./native-fixture.js";
 
-test("the pinned sound playback functions lower over the Web Audio records and the engine views", (t) => {
-    const header = staticSoundLibraryHeader(sharedPinnedContext(), [
-        "playSound",
-        "stopSound",
-        "setSoundVolume",
-        "disposeSound",
-    ]);
+test("the pinned static-sound functions lower whole over the Web Audio records and the engine views", (t) => {
+    const header = staticSoundLibraryHeader(sharedPinnedContext());
     // A sound is an engine sound; signals are monomorphized per element.
     assert.match(header, /struct StaticSound : bbl::AudioEngineSound \{/);
     assert.match(header, /struct AudioSignalOfStaticSound\b/);
@@ -44,7 +39,12 @@ test("the pinned sound playback functions lower over the Web Audio records and t
     writeFileSync(
         join(output, "check.cpp"),
         `#include "static_sound.hpp"
-// The lowered playback functions, compiled against the runtime and PAL headers.
+// The lowered sound functions, compiled against the runtime and PAL headers.
+bbl::js::Promise<std::shared_ptr<bbl::StaticSound>> create(bbl::AudioEngineHandle engine) {
+    bbl::StaticSoundOptions options{};
+    options.max_instances = 4.0;
+    return bbl::create_sound_async(engine, std::string("sounds/a.ogg"), options);
+}
 void use(std::shared_ptr<bbl::StaticSound> sound) {
     bbl::play_sound(sound, bbl::StaticSoundPlayOptions{});
     bbl::set_sound_volume(sound, 0.5);
