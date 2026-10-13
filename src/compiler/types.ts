@@ -2130,6 +2130,8 @@ export interface NullableResourceType {
     kind: ValueKind;
     cppType: string;
     dataType?: DataType<"handle">;
+    /** Facts the declared type proves for every value the name holds. */
+    implied?: Pick<Value, "renderTask">;
 }
 
 /** Storage, capture and expression facts shared by value kinds. */
@@ -3209,6 +3211,8 @@ export type Feature =
     | "frame-graph:surface-target"
     | "frame-graph:target-disposal"
     | "frame-graph:task-mesh-removal"
+    | "frame-graph:task-mesh-refresh"
+    | "frame-graph:task-material-override"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:wrapper-disposal"

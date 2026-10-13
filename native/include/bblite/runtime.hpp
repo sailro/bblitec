@@ -1693,6 +1693,8 @@ struct FrameTaskRecord {
     bool render_mesh_refresh = false;
     bool render_recorded = false;
     bool render_meshes_dirty = false;
+    /** A backend built this task's draw lists once: the recorded generation is drawn. */
+    bool render_generation_built = false;
     mutable double shader_packet_scene_version = -1;
     mutable bool shader_packet_rebuild_pending = false;
     GeometryTaskOptions geometry;
@@ -6865,6 +6867,8 @@ void enable_skeleton_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void remove_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh);
+/** A refreshed task's rebind publishes its generation in the pin's renderable order. */
+void order_refreshed_render_task(FrameTaskRecord& task);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);
 
 void add_to_scene(Scene& scene, MeshHandle mesh);

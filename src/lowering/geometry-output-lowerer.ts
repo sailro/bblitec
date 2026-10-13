@@ -14,6 +14,7 @@ export class GeometryOutputLowerer {
     public lowerTaskRecords(
         thinBindings = false,
         meshRemoval = false,
+        refreshedOverrides = false,
     ): LoweredSource {
         const geometryModule = "src/frame-graph/geometry-renderer-task.ts";
         const copyModule = "src/frame-graph/copy-to-texture-task.ts";
@@ -368,7 +369,7 @@ static void initialize_refreshed_render_task_shader_materials(Engine& engine, Fr
     ++engine.draw_list_epoch;
 }
 
-${renderTaskMeshRefreshCpp(this.context)}
+${renderTaskMeshRefreshCpp(this.context, refreshedOverrides, thinBindings)}
 
 TaskHandle create_render_task(
     Engine& engine,

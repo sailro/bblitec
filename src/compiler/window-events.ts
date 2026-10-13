@@ -159,8 +159,9 @@ export function requireWindowHost(
 
 /**
  * The engine a nullable resource binding records: DOM handles belong to the
- * Window document in an application realm (a worker has none), pointer drags
- * and synchronous scenes' handles to the default engine. Reaches nothing.
+ * Window document in an application realm (a worker has none), pointer drags,
+ * render tasks and synchronous scenes' handles to the default engine (one per
+ * entry point). Reaches nothing.
  */
 export function nullableResourceEngine(
     kind: string,
@@ -172,7 +173,9 @@ export function nullableResourceEngine(
             ? workers.namespace
                 ? undefined
                 : "bbl::pal::window_document_engine()"
-            : kind === "ui-element" || kind === "pointer-drag"
+            : kind === "ui-element" ||
+                kind === "pointer-drag" ||
+                kind === "task"
               ? defaultEngineCpp
               : undefined;
     return engineCpp ? { engineCpp } : {};
