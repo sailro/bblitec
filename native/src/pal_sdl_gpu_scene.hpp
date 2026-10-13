@@ -762,6 +762,8 @@ struct GpuState : SdlGpuDevice {
     // generation derived from it -- is the authority on its registers.
     std::vector<PinnedStageSlots> shader_vertex_slots;
     std::vector<PinnedStageSlots> shader_fragment_slots;
+    /** Each fragment stage's packed textures as declared sampler slots (npos: undeclared). */
+    std::vector<std::vector<std::size_t>> shader_fragment_texture_slots;
     using StorageBuffer = VersionedGpuBuffer<SDL_GPUBuffer*>;
     std::vector<StorageBuffer> storage_buffers;
     // The mesh buffers a released mesh leaves for the next one's upload;

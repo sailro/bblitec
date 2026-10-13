@@ -904,6 +904,9 @@ struct DawnState : DawnDevice {
     // loads its texels and binds none.
     WGPUSampler transmission_grab_sampler = nullptr;
     WGPURenderPipeline transmission_grab_pipeline = nullptr;
+    /** A shader draw's render-slot views and samplers, resolved in place at each draw. */
+    std::vector<WGPUTextureView> shader_render_views;
+    std::vector<WGPUSampler> shader_render_samplers;
 #if BBLITE_RENDER_TASK_TRANSMISSION
     /** Each render task's own grab (`enableRenderTaskTransmission`), by task handle. */
     struct TaskTransmission {

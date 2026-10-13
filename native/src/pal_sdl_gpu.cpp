@@ -877,6 +877,7 @@ public:
             shader_fragment_shaders.resize(shader_variant_total);
             state.shader_vertex_slots.resize(shader_variant_total);
             state.shader_fragment_slots.resize(shader_variant_total);
+            state.shader_fragment_texture_slots.resize(shader_variant_total);
             for (std::uint32_t variant = 0; variant < shader_variant_total; ++variant) {
                 const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
                 const std::string vertex_name = std::string(info.name) + ".vert";
@@ -898,6 +899,17 @@ public:
                 shader_fragment_shaders[variant] = std::move(fragment_stage.shader);
                 state.shader_vertex_slots[variant] = std::move(vertex_stage.slots);
                 state.shader_fragment_slots[variant] = std::move(fragment_stage.slots);
+                std::vector<std::size_t>& declared_slots =
+                    state.shader_fragment_texture_slots[variant];
+                for (const std::string& name : state.shader_fragment_slots[variant].textures) {
+                    const auto declared =
+                        std::find_if(info.samplers.begin(), info.samplers.end(),
+                                     [&](const char* candidate) { return name == candidate; });
+                    declared_slots.push_back(
+                        declared == info.samplers.end()
+                            ? std::numeric_limits<std::size_t>::max()
+                            : static_cast<std::size_t>(declared - info.samplers.begin()));
+                }
             }
         }
         auto id_fragment_shader =
