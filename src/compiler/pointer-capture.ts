@@ -74,21 +74,25 @@ function captureTarget(
     call: ts.CallExpression,
     prepared?: Value,
 ): string | undefined {
-    const value =
-        prepared ??
-        ui.compileUiElementReceiver(receiver) ??
-        (context.isCanvasElement(receiver)
+    // A stored event target keeps its identity (the engine canvas is no
+    // retained element) rather than taking the element view of a narrowing.
+    const compiled = (
+        accept: (candidate: Value) => boolean,
+    ): Value | undefined =>
+        context.isCanvasElement(receiver)
             ? undefined
             : context.probeEmission(() => {
                   const candidate = context.dataLowerer.narrowOptional(
                       context.compileValue(receiver),
                       receiver,
                   );
-                  return candidate.kind === "ui-element" ||
-                      candidate.dataType?.kind === "event-target"
-                      ? candidate
-                      : undefined;
-              }));
+                  return accept(candidate) ? candidate : undefined;
+              });
+    const value =
+        prepared ??
+        compiled((candidate) => candidate.dataType?.kind === "event-target") ??
+        ui.compileUiElementReceiver(receiver) ??
+        compiled((candidate) => candidate.kind === "ui-element");
     if (!value) {
         if (!context.isCanvasElement(receiver) || !ts.isIdentifier(receiver))
             return undefined;

@@ -63,6 +63,10 @@ async function main(): Promise<void> {
     const cvs = document.createElement("canvas");
     document.body.append(cvs);
     cvs.onpointerdown = (e) => { cvs.setPointerCapture(e.pointerId); };
+    const stored: EventTarget = cvs;
+    window.addEventListener("pointerdown", (e) => {
+        if (stored instanceof HTMLElement) stored.setPointerCapture(e.pointerId);
+    });
 }
 void main();
 `;
