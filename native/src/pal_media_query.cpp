@@ -94,8 +94,7 @@ void MediaQueryList::deliver() {
     if (matches_ == next)
         return;
     matches_ = next;
-    listeners_.dispatch_with(
-        [](const auto& callback) { EventLoop::current().dispatch_callback(callback); });
+    dispatch_platform_event(EventLoop::current(), listeners_);
 }
 
 } // namespace bbl::pal

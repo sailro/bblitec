@@ -933,9 +933,7 @@ namespace {
 /** Fires `fullscreenchange` at the document's listeners in its own task. */
 void queue_fullscreen_change() {
     EventLoop::current().post([] {
-        auto& loop = EventLoop::current();
-        current_document().fullscreen_listeners.dispatch_with(
-            [&](auto& listener) { loop.dispatch_callback([callback = listener] { callback(); }); });
+        dispatch_platform_event(EventLoop::current(), current_document().fullscreen_listeners);
     });
 }
 /** The display ended page fullscreen: the document fully exits it. */

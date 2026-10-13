@@ -964,4 +964,10 @@ void dispatch_platform_event(EventLoop& loop, Listeners& listeners, Event& event
         event);
 }
 
+/** `dispatch_platform_event` for listeners that take no event. */
+template <typename Listeners> void dispatch_platform_event(EventLoop& loop, Listeners& listeners) {
+    listeners.dispatch_with(
+        [&](auto& listener) { loop.dispatch_callback([callback = listener] { callback(); }); });
+}
+
 } // namespace bbl::pal
