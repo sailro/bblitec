@@ -235,21 +235,23 @@ test("image decode and Blob forms without a native representation refuse", () =>
         `async function run(): Promise<void> { const chunks: Uint8Array[] = []; chunks.push(new Uint8Array(4)); const blob = new Blob(chunks, { type: "image/webp" }); ${body} } run();`;
     for (const [body, message] of [
         [
-            `await createImageBitmap(blob, { premultiplyAlpha: "default", colorSpaceConversion: "none" });`,
-            /createImageBitmap premultiplyAlpha lowers "none" or "premultiply"/,
-        ],
-        [
-            `await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "default" });`,
-            /createImageBitmap colorSpaceConversion lowers "none"/,
-        ],
-        [
             `await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "none", resizeWidth: 4 });`,
             /createImageBitmap option 'resizeWidth' is not lowered/,
         ],
         [
-            `await createImageBitmap(blob, { premultiplyAlpha: "none" });`,
-            /requires an explicit colorSpaceConversion/,
+            `const alpha = String(chunks.length); await createImageBitmap(blob, { premultiplyAlpha: alpha, colorSpaceConversion: "none" });`,
+            /createImageBitmap premultiplyAlpha requires a static string/,
         ],
     ] as const)
         assert.throws(() => compileSource(realm(body)), message);
+    // The values pass through the one decode policy (pal::image_bitmap_options,
+    // run in test/web-platform.test.ts), which rejects what it does not decode.
+    assert.match(
+        compileSource(
+            realm(
+                `await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "default" });`,
+            ),
+        ).cpp,
+        /bbl::pal::image_bitmap_options\(bbl::pal::ImageBitmapOptionsInit\{std::string\("none"\), std::string\("default"\), std::nullopt\}\)/,
+    );
 });

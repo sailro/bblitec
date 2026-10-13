@@ -10,11 +10,15 @@ import type { Value } from "./types.js";
  * `text()`, `arrayBuffer()` and `bytes()`.
  */
 
-/** The option values a native decode honours: no color conversion or reorientation. */
-const ACCEPTED_OPTIONS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-    ["premultiplyAlpha", new Set(["none", "premultiply"])],
-    ["colorSpaceConversion", new Set(["none"])],
-    ["imageOrientation", new Set(["none", "from-image"])],
+/**
+ * The `ImageBitmapOptions` members, by native field: their values are
+ * `bbl::pal::image_bitmap_options`'s to accept (pal_image_bitmap.hpp), the
+ * one decode policy every lowering passes them through.
+ */
+const OPTION_FIELDS: ReadonlyMap<string, number> = new Map([
+    ["premultiplyAlpha", 0],
+    ["colorSpaceConversion", 1],
+    ["imageOrientation", 2],
 ]);
 
 function isCreateImageBitmap(
@@ -64,8 +68,7 @@ export function compileImageBitmapCall(
             options,
             "createImageBitmap options require an object literal of static strings.",
         );
-    let premultiply = false;
-    const seen = new Set<string>();
+    const values: string[] = ["std::nullopt", "std::nullopt", "std::nullopt"];
     for (const property of options.properties) {
         const name =
             ts.isPropertyAssignment(property) &&
@@ -73,34 +76,25 @@ export function compileImageBitmapCall(
                 ts.isStringLiteral(property.name))
                 ? property.name.text
                 : undefined;
-        const accepted = name ? ACCEPTED_OPTIONS.get(name) : undefined;
-        if (!name || !accepted || !ts.isPropertyAssignment(property))
+        const index = name ? OPTION_FIELDS.get(name) : undefined;
+        if (!name || index === undefined || !ts.isPropertyAssignment(property))
             return context.fail(
                 property,
                 `createImageBitmap option '${name || property.getText()}' is not lowered.`,
             );
-        const text = ts.isStringLiteralLike(property.initializer)
-            ? property.initializer.text
-            : undefined;
-        if (text === undefined || !accepted.has(text))
+        if (!ts.isStringLiteralLike(property.initializer))
             return context.fail(
                 property.initializer,
-                `createImageBitmap ${name} lowers ${[...accepted].map((value) => `"${value}"`).join(" or ")}.`,
+                `createImageBitmap ${name} requires a static string.`,
             );
-        seen.add(name);
-        if (name === "premultiplyAlpha") premultiply = text === "premultiply";
+        values[index] =
+            `std::string(${context.cppString(property.initializer.text)})`;
     }
-    for (const required of ["premultiplyAlpha", "colorSpaceConversion"])
-        if (!seen.has(required))
-            return context.fail(
-                options,
-                `createImageBitmap requires an explicit ${required}: the native decode applies no defaults.`,
-            );
     context.reachFeature("image:runtime-decode", call);
     context.reachJsData();
     return {
         ...context.dataLowerer.leafValue(
-            `bbl::pal::create_image_bitmap(${held.cpp}, bbl::pal::ImageBitmapOptions{${premultiply}})`,
+            `bbl::pal::create_image_bitmap(${held.cpp}, bbl::pal::image_bitmap_options(bbl::pal::ImageBitmapOptionsInit{${values.join(", ")}}))`,
             { kind: "promise", result: { kind: "image-bitmap" } },
         ),
         impure: true,

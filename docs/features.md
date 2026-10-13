@@ -259,11 +259,13 @@ A folded packaged response's `headers`/`body` keep deferred throwing boundaries.
 ### Runtime image decoding
 
 `createImageBitmap(blob, options)` (application realm) decodes a run-time Blob to RGBA8 on the native workers and
-settles when that decode finishes; `premultiplyAlpha` is `"none"` or `"premultiply"`, `colorSpaceConversion` is
-`"none"` and `imageOrientation` is `"none"` or `"from-image"`. `width`/`height` read 0 after `close()`; undecodable
-bytes reject with an InvalidStateError DOMException. WebP decodes through libwebp, concurrently, and a run-time decode
-links it; another format decodes when the program's assets link its codec. Other sources, resize/crop options, default
-options and color conversion refuse; orientation metadata is not applied.
+settles when that decode finishes. Its options are static strings and pass through one native policy
+(`pal::image_bitmap_options`), for programs and lowered libraries alike: `premultiplyAlpha` `"none"` or
+`"premultiply"` and `colorSpaceConversion` `"none"`, both explicit, and `imageOrientation` `"none"` or `"from-image"`;
+another value throws a NotSupportedError DOMException. `width`/`height` read 0 after `close()`; undecodable bytes
+reject with an InvalidStateError DOMException. WebP decodes through libwebp, concurrently, and a run-time decode links
+it; another format decodes when the program's assets link its codec. Other sources and resize/crop options refuse;
+orientation metadata is not applied.
 
 ### Compressed geometry
 
