@@ -129,7 +129,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "HTMLMediaElement.play",
     ].map((api): Descriptor => ({ origin: "dom", api, timing: "reject" })),
     ...[
-        "createAudioEngineAsync.options",
         "createSoundSourceAsync.options",
         "createSoundAsync",
         "createSoundBufferAsync",

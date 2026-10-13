@@ -165,7 +165,7 @@ Heightfields need square ground grids. Contract: [physics](fidelity.md#physics-c
 
 LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling, decoding, ended listeners. Event payloads,
 ended-listener `signal`, context options, statechange, output selection, media streams and recording refuse or are
-absent.
+absent. `createAudioEngineAsync` adopts `audioContext`; its other options refuse.
 
 ## Shadows and navigation
 

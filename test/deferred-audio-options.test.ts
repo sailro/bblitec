@@ -28,7 +28,17 @@ test("audio option capabilities retain strict refusals and supported defaults", 
     assert.throws(
         () =>
             compileSource(
-                `${imports}createAudioEngineAsync({volume:1}).then(()=>{new FinalizationRegistry(() => {});});`,
+                `${imports}void createAudioEngineAsync({volume:0.5});`,
+                {
+                    deferredCapabilities,
+                },
+            ),
+        /options are not lowered: 'volume'/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `${imports}createAudioEngineAsync({audioContext:new AudioContext()}).then(()=>{new FinalizationRegistry(() => {});});`,
                 { deferredCapabilities },
             ),
         /Unsupported constructor/,
@@ -40,28 +50,27 @@ test("audio option capabilities retain strict refusals and supported defaults", 
     assert.equal(authored.manifest.deferredCapabilities, undefined);
 });
 
-test("audio options evaluate once and only present options reject asynchronously", () => {
+test("audio engine options adopt a context and refuse other present members once", () => {
     const result = compileSource(
         `
         import {createAudioEngineAsync,createSoundSourceAsync,type AudioEngineOptions,type SoundSourceOptions} from "@babylonjs/lite";
         async function run():Promise<void>{
-            let argumentsRun=0;let getterRuns=0;let accepted=0;let rejected=0;let synchronous=true;
+            let argumentsRun=0;let accepted=0;let rejected=0;let synchronous=true;
             function options():AudioEngineOptions {++argumentsRun;return {volume:0.5};}
             const pending=createAudioEngineAsync(options()).then(()=>{}).catch(error=>{
-                if(synchronous||!error.message.includes("babylon:createAudioEngineAsync.options"))throw new Error("timing or identity");
+                if(synchronous||!error.message.includes("options are not lowered: 'volume'"))throw new Error("timing or identity");
                 ++rejected;
             });
             synchronous=false;
             await pending;
-            const accessorOptions={get volume():number {++getterRuns;return 0.5;}};
-            try{await createAudioEngineAsync(accessorOptions);}catch(error){
-                if(!error.message.includes("babylon:createAudioEngineAsync.options"))throw error;
-                ++rejected;
-            }
-            const choices:Array<AudioEngineOptions|undefined>=[undefined,{volume:0.5}];
+            const context=new AudioContext();
+            const adopted=await createAudioEngineAsync({audioContext:context});
+            if(adopted.audioContext!==context)throw new Error("adopted context");
+            const choices:Array<AudioEngineOptions|undefined>=[undefined,{audioContext:context},{audioContext:context,resumeOnPause:false}];
             for(let i=0;i<choices.length;i++) {
                 try {
                     const engine=await createAudioEngineAsync(choices[i]);
+                    if((i===1)!==(engine.audioContext===context))throw new Error("selected context");
                     ++accepted;
                     const sourceOptions:Array<SoundSourceOptions|undefined>=[undefined,{volume:0.5}];
                     for(let j=0;j<sourceOptions.length;j++) {
@@ -74,11 +83,11 @@ test("audio options evaluate once and only present options reject asynchronously
                         }
                     }
                 } catch(error) {
-                    if(!error.message.includes("babylon:createAudioEngineAsync.options"))throw error;
+                    if(!error.message.includes("options are not lowered: 'resumeOnPause'"))throw error;
                     ++rejected;
                 }
             }
-            if(argumentsRun!==1||getterRuns!==0||accepted!==2||rejected!==4)throw new Error("option branches");
+            if(argumentsRun!==1||accepted!==4||rejected!==4)throw new Error("option branches");
             globalThis.close();
         }
         run();
@@ -87,18 +96,62 @@ test("audio options evaluate once and only present options reject asynchronously
     );
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        [
-            "babylon:createAudioEngineAsync.options",
-            "babylon:createAudioEngineAsync.options",
-            "babylon:createAudioEngineAsync.options",
-            "babylon:createSoundSourceAsync.options",
-        ],
+        ["babylon:createSoundSourceAsync.options"],
     );
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(
         tools,
         "deferred-audio-options/branches",
+        result.cpp +
+            `
+        namespace bbl::pal {
+            AudioSession::~AudioSession() = default;
+            bool audio_begin_context() { return true; }
+            std::shared_ptr<AudioPlaybackDevice> audio_open_device(bool) { return {}; }
+            static std::uint32_t contexts = 0, nodes = 0;
+            AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&,std::shared_ptr<AudioPlaybackDevice>) { return {++contexts}; }
+            AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&) { return {++contexts}; }
+            AudioNodeHandle audio_create_gain(AudioContextHandle) { return {++nodes,{}}; }
+            AudioNodeHandle audio_destination(AudioContextHandle context) { return {1000 + context.value,{}}; }
+            void audio_connect(AudioNodeHandle,AudioNodeHandle) {}
+        }
+    `,
+        { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000 },
+    );
+});
+
+test("missing audio graph operations retain declared results and later authored bodies", () => {
+    const result = compileSource(
+        `
+        import {createAudioEngineAsync,createSoundAsync,createSoundBufferAsync,createStreamingSoundAsync,createAudioBusAsync,createMicrophoneSoundSourceAsync,createAudioEngineMediaStream,enableSpatial,enableStereo,enableAnalyzer,setMasterVolume,getMasterVolume} from "@babylonjs/lite";
+        async function run(){
+            try {
+                const engine=await createAudioEngineAsync();
+                const sound=await createSoundAsync(engine,"sound.wav",{volume:0.5});
+                await createSoundBufferAsync(engine,"sound.wav");
+                await createStreamingSoundAsync(engine,"sound.wav");
+                await createAudioBusAsync(engine,"bus");
+                await createMicrophoneSoundSourceAsync(engine);
+                createAudioEngineMediaStream(engine);
+                enableSpatial(sound,{minDistance:2});
+                enableStereo(sound,{pan:0.5});
+                enableAnalyzer(sound);
+                setMasterVolume(engine,0.5);
+                getMasterVolume(engine);
+            }catch(error){if(!error.message.includes("babylon:createSoundAsync"))throw error;}
+            globalThis.close();
+        }
+        run();
+    `,
+        { deferredCapabilities },
+    );
+    assert.equal(result.manifest.deferredCapabilities?.length, 11);
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools);
+    runGeneratedProgram(
+        tools,
+        "deferred-audio-options/family",
         result.cpp +
             `
         namespace bbl::pal {
@@ -113,38 +166,4 @@ test("audio options evaluate once and only present options reject asynchronously
     `,
         { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000 },
     );
-});
-
-test("missing audio graph operations retain declared results and later authored bodies", () => {
-    const result = compileSource(
-        `
-        import {createAudioEngineAsync,createSoundAsync,createSoundBufferAsync,createStreamingSoundAsync,createAudioBusAsync,createMicrophoneSoundSourceAsync,createAudioEngineMediaStream,enableSpatial,enableStereo,enableAnalyzer,setMasterVolume,getMasterVolume} from "@babylonjs/lite";
-        async function run(){
-            try {
-                const engine=await createAudioEngineAsync({volume:0.5});
-                const sound=await createSoundAsync(engine,"sound.wav",{volume:0.5});
-                await createSoundBufferAsync(engine,"sound.wav");
-                await createStreamingSoundAsync(engine,"sound.wav");
-                await createAudioBusAsync(engine,"bus");
-                await createMicrophoneSoundSourceAsync(engine);
-                createAudioEngineMediaStream(engine);
-                enableSpatial(sound,{minDistance:2});
-                enableStereo(sound,{pan:0.5});
-                enableAnalyzer(sound);
-                setMasterVolume(engine,0.5);
-                getMasterVolume(engine);
-            }catch(error){if(!error.message.includes("babylon:createAudioEngineAsync.options"))throw error;}
-            globalThis.close();
-        }
-        run();
-    `,
-        { deferredCapabilities },
-    );
-    assert.equal(result.manifest.deferredCapabilities?.length, 12);
-    const tools = optionalNativeFixtureTools(false);
-    assert.ok(tools);
-    runGeneratedProgram(tools, "deferred-audio-options/family", result.cpp, {
-        flags: ["/DBBLITE_WORKERS=1"],
-        timeoutMs: 10000,
-    });
 });
