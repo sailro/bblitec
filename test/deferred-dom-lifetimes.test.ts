@@ -21,8 +21,8 @@ void on_visibility_change(Engine& engine, std::size_t identity, js::Callback<voi
 namespace bbl::pal {
 ApplicationErrors* errors = nullptr;
 Engine& window_document_engine() { static Engine engine; return engine; }
-void window_on_application_error(bool rejection, std::uint64_t identity, ApplicationErrors::Callback callback, bool once) {
-    errors->add(rejection, identity, std::move(callback), once);
+bool window_on_application_error(bool rejection, std::uint64_t identity, ApplicationErrors::Callback callback, bool once, ListenerLeasePtr lease) {
+    return errors->add(rejection, identity, std::move(callback), once, std::move(lease));
 }
 int run_window_application(WorkerEntry initialize, EngineOptions) {
     const js::RealmScope scope;

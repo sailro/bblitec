@@ -7,6 +7,7 @@
 #include <bblite/thin_instance.hpp>
 
 #include <bblite/js_callback.hpp>
+#include <bblite/listener_lease.hpp>
 #include <bblite/snapshot_list.hpp>
 #include <bblite/rendering_contexts.hpp>
 #include <bblite/dom_event_state.hpp>
@@ -303,6 +304,7 @@ struct PlatformMouseEvent {
  * dispatch records the next sequence number and ignores later additions;
  * removals tombstone entries until the outermost dispatch finishes. A
  * one-shot listener is tombstoned before invocation, matching DOM reentrancy.
+ * A listener added with a lease is also removed once its AbortSignal aborts.
  */
 template <typename Signature> class PlatformEventListeners;
 
@@ -310,24 +312,26 @@ template <typename... Args> class PlatformEventListeners<void(Args...)> {
 public:
     using Callback = js::Callback<void(Args...)>;
 
-    void add(std::size_t identity, Callback callback, bool once = false) {
+    /** False when a live listener already has `identity`; that one keeps its own lease. */
+    bool add(std::size_t identity, Callback callback, bool once = false,
+             ListenerLeasePtr lease = {}) {
+        retire_aborted();
         const auto duplicate =
             std::find_if(entries_.begin(), entries_.end(), [identity](const auto& entry) {
-                return entry.active && !entry.handler && entry.identity == identity;
+                return live(entry) && !entry.handler && entry.identity == identity;
             });
         if (duplicate != entries_.end())
-            return;
-        entries_.push_back(
-            Entry{identity, next_sequence_++, std::move(callback), true, once, false});
+            return false;
+        entries_.push_back(Entry{identity, next_sequence_++, std::move(callback), true, once, false,
+                                 std::move(lease)});
+        return true;
     }
 
     void remove(std::size_t identity) {
-        for (Entry& entry : entries_) {
-            if (!entry.handler && entry.identity == identity && entry.active) {
-                entry.active = false;
-                needs_compaction_ = true;
-            }
-        }
+        retire_aborted();
+        for (Entry& entry : entries_)
+            if (!entry.handler && entry.identity == identity && entry.active)
+                deactivate(entry);
         compact_if_idle();
     }
 
@@ -346,24 +350,22 @@ public:
             return;
         }
         if (callback)
-            entries_.push_back(Entry{0, next_sequence_++, std::move(callback), true, false, true});
+            entries_.push_back(
+                Entry{0, next_sequence_++, std::move(callback), true, false, true, {}});
     }
 
     void clear() {
-        for (Entry& entry : entries_) {
-            if (!entry.active)
-                continue;
-            entry.active = false;
-            needs_compaction_ = true;
-        }
+        for (Entry& entry : entries_)
+            if (entry.active)
+                deactivate(entry);
         compact_if_idle();
     }
 
     [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
 
-    void add(Callback callback, bool once = false) {
+    bool add(Callback callback, bool once = false) {
         const auto identity = callback.identity();
-        add(identity, std::move(callback), once);
+        return add(identity, std::move(callback), once);
     }
 
     void gc_trace(const js::TraceVisitor& visitor) const {
@@ -391,12 +393,15 @@ public:
                     break;
                 if (!entry.active)
                     continue;
+                // An earlier listener of this dispatch may have aborted this one's signal.
+                if (!live(entry)) {
+                    deactivate(entry);
+                    continue;
+                }
                 if (!proceed())
                     break;
-                if (entry.once) {
-                    entry.active = false;
-                    needs_compaction_ = true;
-                }
+                if (entry.once)
+                    deactivate(entry);
                 invoke(entry.callback, args...);
             }
         } catch (...) {
@@ -416,7 +421,25 @@ private:
         bool active = true;
         bool once = false;
         bool handler = false;
+        ListenerLeasePtr lease;
     };
+    [[nodiscard]] static bool live(const Entry& entry) noexcept {
+        return entry.active && !(entry.lease && entry.lease->removed);
+    }
+    /** Removal by the registry ends the lease, dropping its signal's abort algorithm. */
+    void deactivate(Entry& entry) {
+        entry.active = false;
+        needs_compaction_ = true;
+        if (entry.lease)
+            entry.lease->end();
+    }
+    /** Aborted listeners leave the list at its next mutation or dispatch. */
+    void retire_aborted() {
+        for (Entry& entry : entries_)
+            if (entry.active && !live(entry))
+                deactivate(entry);
+        compact_if_idle();
+    }
     void compact_if_idle() {
         if (dispatch_depth_ != 0 || !needs_compaction_)
             return;
