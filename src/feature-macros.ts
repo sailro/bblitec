@@ -102,6 +102,11 @@ export const featureMacros: readonly FeatureMacro[] = [
         macro: "BBLITE_RENDER_TARGET_DISPOSAL",
         anyOf: ["frame-graph:target-disposal"],
     },
+    // A task added to a live scene refuses to execute until it is recorded.
+    {
+        macro: "BBLITE_LIVE_TASK_ADD",
+        anyOf: ["frame-graph:live-task-add"],
+    },
     // A disposed task refuses to execute.
     {
         macro: "BBLITE_TASK_DISPOSAL",

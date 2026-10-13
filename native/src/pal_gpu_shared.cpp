@@ -12,6 +12,7 @@
 #include <bblite/features/has_sprites.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadow_skeleton_bounds.hpp>
@@ -2054,6 +2055,26 @@ void require_live_render_targets(const Engine& engine) {
         if (graph)
             for (const TaskHandle task : graph->tasks)
                 require_live_task_targets(engine, task);
+}
+#endif
+
+#if BBLITE_LIVE_TASK_ADD
+void require_recorded_tasks(const Engine& engine) {
+    for (const auto& scene : engine.scenes()) {
+        if (!scene)
+            continue;
+        for (const TaskHandle handle : scene->tasks) {
+            const FrameTaskRecord* task = handle_find(engine.frame_tasks, handle);
+            if (!task || !task->pending_record || task->execution_enabled == false)
+                continue;
+            // The pin's effect execute throws #37 without the pipeline its
+            // record builds; any other unrecorded task fails in its pass.
+            if (task->kind == FrameTaskKind::effect)
+                throw std::runtime_error("#37");
+            throw std::runtime_error(
+                "A task added to a live scene executes before buildFrameGraphTask recorded it.");
+        }
+    }
 }
 #endif
 

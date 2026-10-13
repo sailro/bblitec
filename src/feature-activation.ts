@@ -1464,6 +1464,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/frame-graph/frame-graph.ts buildFrameGraphTask",
         consumers: CMAKE,
     },
+    "frame-graph:live-task-add": {
+        provenance:
+            "src/frame-graph/frame-graph-actions.ts addTask on a built graph " +
+            "(src/frame-graph/frame-graph.ts buildFrameGraphTask)",
+        consumers: CMAKE,
+    },
     "frame-graph:task-disposal": {
         provenance:
             "src/frame-graph/render-task-base.ts RenderTask.dispose + " +

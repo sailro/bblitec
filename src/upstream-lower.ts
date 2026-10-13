@@ -1310,6 +1310,7 @@ ${lowerThinInstanceSync(context)}
                 meshGpuDisposal: features.includes("mesh:dispose-gpu"),
                 taskBuild: features.includes("frame-graph:task-build"),
                 effectTasks: features.includes("effect:task"),
+                liveTaskAdd: features.includes("frame-graph:live-task-add"),
             }),
         );
         this.emitTextData(features, context, options, generated);

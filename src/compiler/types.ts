@@ -3226,6 +3226,7 @@ export type Feature =
     | "frame-graph:task-material-override"
     | "frame-graph:task-build"
     | "frame-graph:task-disposal"
+    | "frame-graph:live-task-add"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:wrapper-disposal"

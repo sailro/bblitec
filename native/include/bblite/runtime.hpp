@@ -1702,6 +1702,12 @@ struct FrameTaskRecord {
     bool disposed = false;
     mutable double shader_packet_scene_version = -1;
     mutable bool shader_packet_rebuild_pending = false;
+    /**
+     * Added to a scene's live graph: the pin records it only through
+     * `buildFrameGraphTask` or the next registration's build, and its
+     * execute fails until then.
+     */
+    bool pending_record = false;
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
     /**
@@ -6741,6 +6747,8 @@ void add_task_at_start(Scene& scene, TaskHandle task);
 void add_task_after(Scene& scene, TaskHandle task, TaskHandle after);
 /** `buildFrameGraphTask(getFrameGraph(scene), task)`: record a task added to a live scene. */
 void build_frame_graph_task(Scene& scene, TaskHandle task);
+/** `addTask`/`addTaskAtStart` where the scene may already be registered. */
+void add_live_task(Scene& scene, TaskHandle task, bool at_start);
 void add_task(FrameGraphContext& context, TaskHandle task);
 void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 void add_task_after(FrameGraphContext& context, TaskHandle task, TaskHandle after);
