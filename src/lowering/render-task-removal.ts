@@ -9,7 +9,7 @@ const refreshModule = "src/frame-graph/render-task-mesh-refresh.ts";
 const transactionModule = "src/frame-graph/render-task-transaction.ts";
 
 /** The refreshed task's `_removeMesh` closure: tracked removal, then a dirty generation. */
-export function refreshedRemovalCpp(context: LoweringContext): string {
+function refreshedRemovalCpp(context: LoweringContext, indent: string): string {
     const { declaration } = context.functionDeclaration(
         refreshModule,
         "enableRenderTaskMeshRefresh",
@@ -59,52 +59,40 @@ export function refreshedRemovalCpp(context: LoweringContext): string {
     `,
         "Refreshed task mesh removal",
     );
-    // Tracked meshes are the `follows_material` entries of `render_meshes`,
-    // which the shared erase below drops with the explicit ones; `dirty`
-    // rebinds the task at its next execute, which a recorded native task
-    // reaches through its next draw-list rebuild.
-    return `    if (task.render_mesh_refresh) {
-        task.render_meshes_dirty = true;
-        if (task.render_recorded) ++engine.draw_list_epoch;
-    }`;
+    // Tracked meshes are the `follows_material` entries of `render_meshes`:
+    // a task not recorded yet drops them here, and a recorded task's built
+    // erase below drops them with the explicit ones. `dirty` rebinds the
+    // task at its next execute, which a recorded native task reaches
+    // through its next draw-list rebuild.
+    return [
+        "if (task.render_mesh_refresh) {",
+        "    if (!task.render_recorded)",
+        "        std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {",
+        "            return entry.mesh == mesh && entry.follows_material;",
+        "        });",
+        "    task.render_meshes_dirty = true;",
+        "    if (task.render_recorded) ++engine.draw_list_epoch;",
+        "}",
+    ]
+        .map((line) => indent + line)
+        .join("\n");
 }
 
 /**
- * `removeMeshFromTask` over the native task record.
+ * `_removeMeshFromRenderTask`, emitted once as an inline header both
+ * callers include: removeMeshFromTask and every scene render task's share
+ * of removeMeshFromScene, as the pin calls it from both.
  *
- * The pin keeps a task's queued requests (`_pendingMeshes`), its refreshed
- * meshes (`tracked`), its built renderables and their bucketed bindings in
- * four lists. Native `render_meshes` holds every entry, built once the task
- * is recorded (`render_recorded`), and each backend rebuilds its draw lists
- * from it when the draw-list epoch moves. So the queued and the built
- * removals erase the same list, the source's `removed` is that erase on a
- * recorded task, and the bindings follow at the next rebuild.
+ * Native `render_meshes` holds a task's queued requests, its tracked
+ * entries and, once recorded (`render_recorded`), its built entries; each
+ * backend rebuilds its bucketed draw lists from it when the draw-list epoch
+ * moves. So the built-renderable and binding removals are one erase on a
+ * recorded task, the source's `removed` is that erase, and the bindings
+ * follow at the next rebuild. Explicit population turned mirroring off when
+ * it published, which a recorded task listing entries has taken. Queued
+ * requests stay: only removeMeshFromTask drops them.
  */
-export function lowerRenderTaskMeshRemoval(context: LoweringContext): string {
-    const remove = context.functionDeclaration(
-        taskModule,
-        "removeMeshFromTask",
-    ).declaration;
-    context.assertStatementShapes(
-        remove.body!,
-        remove.body!.statements,
-        `
-        const pending = task._pendingMeshes;
-        if (pending) {
-            for (let index = pending.length - 1; index >= 0; index--) {
-                if (pending[index]!.mesh === mesh) {
-                    pending.splice(index, 1);
-                }
-            }
-        }
-        _removeMeshFromRenderTask(task, mesh);
-    `,
-        "Render-task mesh removal",
-    );
-    // Explicit population turns mirroring off at the transaction that
-    // publishes it. Native population publishes at registration or at a
-    // later add, so a recorded task that lists entries has taken that write
-    // and an emptied explicit task draws nothing rather than the scene.
+export function renderTaskRemovalHeader(context: LoweringContext): string {
     const transaction = context.functionDeclaration(
         transactionModule,
         "transactRenderTask",
@@ -203,20 +191,18 @@ export function lowerRenderTaskMeshRemoval(context: LoweringContext): string {
     const body = lowerPinnedBody(file, statements, {
         bindings: new Map<string, PinnedBinding>([
             [
-                "task._renderables",
-                {
-                    cpp: "(task.kind == FrameTaskKind::render)",
-                    type: "bool",
-                },
-            ],
-            [
                 "task._lastVersion",
                 { cpp: "task.shader_packet_scene_version", type: "scalar" },
             ],
         ]),
         calls: new Map(),
         statement(node, _lowerer, indent) {
-            if (node === hook) return [refreshedRemovalCpp(context)];
+            if (node === guard)
+                return [
+                    `${indent}if (task.kind != FrameTaskKind::render) return;`,
+                    `${indent}if (task.render_recorded && !task.render_meshes.empty()) task.render.auto_mirror = false;`,
+                ];
+            if (node === hook) return [refreshedRemovalCpp(context, indent)];
             // A built renderable's lifetime owners (`shader_packet`,
             // `thin_binding`) are shared with the backend draw list that
             // still names them; that list is replaced at the next frame's
@@ -246,14 +232,53 @@ export function lowerRenderTaskMeshRemoval(context: LoweringContext): string {
             return undefined;
         },
     });
-    return `// ${context.provenance(taskModule, "removeMeshFromTask", `${baseModule}#_removeMeshFromRenderTask and ${refreshModule}#enableRenderTaskMeshRefresh`)}
+    return `#pragma once
+// ${context.provenance(baseModule, "_removeMeshFromRenderTask", `${refreshModule}#enableRenderTaskMeshRefresh and ${transactionModule}#transactRenderTask`)}
+#include <bblite/runtime.hpp>
+#include <algorithm>
+
+namespace bbl {
+/** \`_removeMeshFromRenderTask\`; a recorded task's removal moves the draw-list epoch. */
+inline void remove_mesh_from_render_task(Engine& engine, FrameTaskRecord& task, MeshHandle mesh) {
+${body}
+}
+} // namespace bbl
+`;
+}
+
+/**
+ * `removeMeshFromTask` over the native task record: the queued requests a
+ * task has not recorded yet (`_pendingMeshes`), then the shared
+ * `_removeMeshFromRenderTask` (`render_task_removal.hpp`).
+ */
+export function lowerRenderTaskMeshRemoval(context: LoweringContext): string {
+    const remove = context.functionDeclaration(
+        taskModule,
+        "removeMeshFromTask",
+    ).declaration;
+    context.assertStatementShapes(
+        remove.body!,
+        remove.body!.statements,
+        `
+        const pending = task._pendingMeshes;
+        if (pending) {
+            for (let index = pending.length - 1; index >= 0; index--) {
+                if (pending[index]!.mesh === mesh) {
+                    pending.splice(index, 1);
+                }
+            }
+        }
+        _removeMeshFromRenderTask(task, mesh);
+    `,
+        "Render-task mesh removal",
+    );
+    return `// ${context.provenance(taskModule, "removeMeshFromTask")}
 void remove_render_task_mesh(Engine& engine, TaskHandle handle, MeshHandle mesh) {
     FrameTaskRecord& task = task_record(engine, handle);
-    if (task.render_recorded && !task.render_meshes.empty()) task.render.auto_mirror = false;
     // The queued requests a task has not recorded yet.
     if (task.kind == FrameTaskKind::render && !task.render_recorded)
         std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) { return entry.mesh == mesh; });
-${body}
+    remove_mesh_from_render_task(engine, task, mesh);
 }
 `;
 }

@@ -301,7 +301,7 @@ PixelViewport resolve_copy_viewport(
                 `${renderModule}#createRenderTask,RenderTask.addMesh, ${copyModule}#createCopyToTextureTask, and ${actionsModule}#addTask,addTaskAtStart,addTaskAfter`,
             )}
 #include <bblite/upstream/frame_graph_geometry.hpp>
-#include <bblite/js_data.hpp>
+${meshRemoval ? "#include <bblite/upstream/render_task_removal.hpp>\n" : ""}#include <bblite/js_data.hpp>
 
 #include <algorithm>
 #include <cmath>

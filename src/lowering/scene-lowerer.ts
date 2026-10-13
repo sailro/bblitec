@@ -21,7 +21,6 @@ import { lowerSceneNodeRemoval } from "./scene-node-removal.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 import { lowerFrameGraphTaskBuild } from "./frame-graph-task-build.js";
 import { lowerDeformedVertex } from "./deformed-vertex.js";
-import { refreshedRemovalCpp } from "./render-task-removal.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -810,6 +809,7 @@ ${options.geometryAccess ? "#include <bblite/mesh_cpu_streams.hpp>" : ""}
 #include <bblite/features/has_sprites.hpp>
 ${options.text ? "#include <bblite/upstream_text_records.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
+#include <bblite/upstream/render_task_removal.hpp>
 #include <bblite/upstream/thin_instance_sync.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
@@ -2109,7 +2109,7 @@ void clear_mesh_parent(Engine& engine, MeshHandle mesh) {
 // material-family mask stays monotonic: it gates which pipelines the
 // backend created, and a removal never invalidates one.
 namespace {
-/** Every scene task's share of removeMeshFromScene; whether an entry went. */
+/** Every scene task's share of removeMeshFromScene; whether a non-render entry went. */
 bool remove_mesh_from_scene_tasks(Engine& engine, Scene& scene, MeshHandle mesh) {
     bool task_mesh_removed = false;
     for (const TaskHandle task_handle : scene.tasks) {
@@ -2120,21 +2120,7 @@ bool remove_mesh_from_scene_tasks(Engine& engine, Scene& scene, MeshHandle mesh)
             }) != 0;
             continue;
         }
-        if (task.render_recorded && !task.render_meshes.empty()) task.render.auto_mirror = false;
-        // \`task._removeMesh\`: a refreshed task's tracked entries, queued or built.
-${refreshedRemovalCpp(this.context).replace(/^ {4}/gm, "        ")}
-        if (task.render_mesh_refresh && !task.render_recorded) {
-            task_mesh_removed |= std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {
-                return entry.mesh == mesh && entry.follows_material;
-            }) != 0;
-        }
-        // The built entries; queued requests stay.
-        if (task.render_recorded && std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {
-                return entry.mesh == mesh;
-            }) != 0) {
-            task_mesh_removed = true;
-            task.shader_packet_scene_version = -1;
-        }
+        remove_mesh_from_render_task(engine, task, mesh);
     }
     return task_mesh_removed;
 }

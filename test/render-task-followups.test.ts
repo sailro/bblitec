@@ -5,6 +5,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
@@ -37,6 +38,10 @@ function taskRecordsFixture(
         include = join(directory, "include/bblite/upstream");
     mkdirSync(include, { recursive: true });
     writeFileSync(join(include, "frame_graph_geometry.hpp"), lowered.header);
+    writeFileSync(
+        join(include, "render_task_removal.hpp"),
+        renderTaskRemovalHeader(new LoweringContext()),
+    );
     writeFileSync(
         join(include, "pinned_depth_state.hpp"),
         pinnedDepthStateHeader(new LoweringContext()),

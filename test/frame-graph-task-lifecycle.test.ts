@@ -7,6 +7,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { lowerFrameGraphTaskBuild } from "../src/lowering/frame-graph-task-build.js";
 import { lowerEffectTaskDisposal } from "../src/lowering/frame-graph-task-disposal.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
@@ -271,6 +272,10 @@ test("RenderTask.dispose releases owned targets once and later adds and records 
         include = join(directory, "include/bblite/upstream");
     mkdirSync(include, { recursive: true });
     writeFileSync(join(include, "frame_graph_geometry.hpp"), records.header);
+    writeFileSync(
+        join(include, "render_task_removal.hpp"),
+        renderTaskRemovalHeader(context),
+    );
     writeFileSync(
         join(include, "pinned_depth_state.hpp"),
         pinnedDepthStateHeader(context),

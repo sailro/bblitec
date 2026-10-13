@@ -10,7 +10,7 @@ import { lowerGpuRetirement } from "../src/lowering/gpu-retirement-lowerer.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { EffectLowerer } from "../src/lowering/effect-lowerer.js";
 import { pinnedEffectVariantsHeader } from "../src/pinned-effect-cpp.js";
-import { lowerRenderTaskMeshRemoval } from "../src/lowering/render-task-removal.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { lowerMeshGpuDisposal } from "../src/lowering/mesh-gpu-disposal.js";
 import {
     lowerThinInstanceDisposal,
@@ -178,7 +178,7 @@ test("each disposal lowering is emitted only where its API is reached", () => {
     );
     assert.throws(
         () =>
-            lowerRenderTaskMeshRemoval(
+            renderTaskRemovalHeader(
                 doctoredContext(
                     "src/frame-graph/render-task-base.ts",
                     "        task._ob.length = 0;",
@@ -189,7 +189,7 @@ test("each disposal lowering is emitted only where its API is reached", () => {
     );
     assert.throws(
         () =>
-            lowerRenderTaskMeshRemoval(
+            renderTaskRemovalHeader(
                 doctoredContext(
                     "src/frame-graph/render-task-transaction.ts",
                     "task._config.autoMirror = false;",
@@ -329,6 +329,10 @@ test("render-task mesh removal matches the pin's queued, built and refreshed rem
         include = join(directory, "include/bblite/upstream");
     mkdirSync(include, { recursive: true });
     writeFileSync(join(include, "frame_graph_geometry.hpp"), lowered.header);
+    writeFileSync(
+        join(include, "render_task_removal.hpp"),
+        renderTaskRemovalHeader(context),
+    );
     writeFileSync(
         join(include, "pinned_depth_state.hpp"),
         pinnedDepthStateHeader(context),

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import {
     cppFunction,
@@ -131,6 +132,7 @@ test(
 #include <cassert>
 #include <cstdio>
 namespace bbl { ${lowerMeshMaterialSetter(new LoweringContext())}
+${cppFunction(renderTaskRemovalHeader(new LoweringContext()), "inline void remove_mesh_from_render_task(")}
 ${functions.map((signature) => cppFunction(core, signature)).join("\n")} }
 int main() {
     bbl::Engine engine;

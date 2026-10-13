@@ -165,6 +165,7 @@ import {
     GeometryOutputLowerer,
     type TaskRecordOptions,
 } from "./lowering/geometry-output-lowerer.js";
+import { renderTaskRemovalHeader } from "./lowering/render-task-removal.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import {
@@ -1307,6 +1308,12 @@ ${lowerThinInstanceSync(context)}
         );
         emitReached("upstream/src/engine_dispose.cpp", () =>
             lowerEngineDisposal(context),
+        );
+        // `_removeMeshFromRenderTask`: scene removal (always reached) and
+        // removeMeshFromTask both call it.
+        this.tree.write(
+            "upstream/include/bblite/upstream/render_task_removal.hpp",
+            renderTaskRemovalHeader(context),
         );
         emitReached("upstream/src/scene_core.cpp", () =>
             new SceneLowerer(context).lowerCore({
