@@ -2249,7 +2249,29 @@ void finish_element_load(const AudioElement& element, std::uint64_t generation,
     }
 }
 
-/** Read and decode the packaged source on a native job, settling on the realm. */
+} // namespace
+
+/** A session's shared media element decodes (`AudioSession::decoded_`). */
+struct AudioSessionDecodes {
+    using Key = std::pair<std::string, double>;
+    static std::shared_ptr<const DecodedAudio> find(AudioSession& session, const Key& key) {
+        const auto found = session.decoded_.find(key);
+        return found == session.decoded_.end() ? nullptr : found->second.lock();
+    }
+    /** Record `decoded`, dropping the entries no element holds any more. */
+    static void keep(AudioSession& session, Key key,
+                     const std::shared_ptr<const DecodedAudio>& decoded) {
+        std::erase_if(session.decoded_, [](const auto& entry) { return entry.second.expired(); });
+        session.decoded_.insert_or_assign(std::move(key), decoded);
+    }
+};
+
+namespace {
+
+/**
+ * Read and decode the packaged source on a native job, settling on the realm;
+ * a source another element of the session holds decoded settles with that.
+ */
 void begin_element_load(const AudioElement& element) {
     auto& playback = *element->playback;
     playback.loading = true;
@@ -2263,23 +2285,34 @@ void begin_element_load(const AudioElement& element) {
         return;
     }
     using Decoded = std::shared_ptr<const DecodedAudio>;
-    std::weak_ptr<AudioElementState> target = element;
-    start_native_job(
-        [path = std::move(packaged->path), rate = audio_sample_rate(playback.context)] {
-            return audio_decode_samples(read_binary_file(path), rate);
-        },
-        [target, generation](NativeWork<Decoded>& job) {
-            Decoded decoded;
-            try {
-                decoded = job.get();
-            } catch (const WorkerTerminated&) {
-                throw;
-            } catch (...) {
-                // An unreadable file fails the source like an undecodable one.
-            }
-            if (const auto owner = target.lock())
-                finish_element_load(owner, generation, std::move(decoded));
+    AudioSessionDecodes::Key key{std::move(packaged->path), audio_sample_rate(playback.context)};
+    if (auto shared = AudioSessionDecodes::find(*playback.session, key)) {
+        EventLoop::current().post([element, generation, shared = std::move(shared)] {
+            finish_element_load(element, generation, shared);
         });
+        return;
+    }
+    std::weak_ptr<AudioElementState> target = element;
+    std::weak_ptr<AudioSession> session = playback.session;
+    // The work's own copy, taken before the call moves `key` into the completion.
+    auto work = [path = key.first, rate = key.second] {
+        return audio_decode_samples(read_binary_file(path), rate);
+    };
+    start_native_job(std::move(work), [target, session, generation,
+                                       key = std::move(key)](NativeWork<Decoded>& job) mutable {
+        Decoded decoded;
+        try {
+            decoded = job.get();
+        } catch (const WorkerTerminated&) {
+            throw;
+        } catch (...) {
+            // An unreadable file fails the source like an undecodable one.
+        }
+        if (const auto owner = session.lock(); owner && decoded)
+            AudioSessionDecodes::keep(*owner, std::move(key), decoded);
+        if (const auto owner = target.lock())
+            finish_element_load(owner, generation, std::move(decoded));
+    });
 }
 
 /** The resource selection an element with a source and an output runs when it may load. */

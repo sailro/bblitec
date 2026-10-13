@@ -169,6 +169,11 @@ js::Promise<js::PromiseVoid> run(std::vector<std::string> files, std::vector<std
     lines.push_back("crossfade " + fixed(alone.back()) + " " + fixed(fading.front()) + " " +
                     fixed(fading[fading.size() / 2]) + " " + fixed(after.back()));
 
+    // The direct element still holds high.wav: the session decoded it once.
+    lines.push_back("shared " +
+                    std::to_string(high->playback->decoded &&
+                                   high->playback->decoded == direct->playback->decoded));
+
     // Releasing the outgoing element: pause, drop the source, load.
     pal::audio_element_pause(high);
     pal::audio_element_remove_source(high);
