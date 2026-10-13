@@ -177,3 +177,43 @@ test("inert canvas focus order and packaged image sources lower explicitly", () 
         refusal,
     );
 });
+
+test("host data attribute image sources select at run time natively", (t) => {
+    const imageDirectory = resolve("artifacts/ui-image-source");
+    mkdirSync(imageDirectory, { recursive: true });
+    writeFileSync(join(imageDirectory, "worker.ts"), "self.close();");
+    const texture = new PNG({ width: 2, height: 2 });
+    texture.data.fill(255);
+    for (const name of ["tile.png", "tall.png"])
+        writeFileSync(join(imageDirectory, name), PNG.sync.write(texture));
+    const image = (id: string) => ({
+        tag: "img",
+        attributes: {
+            id,
+            src: "tile.png",
+            "data-landscape-src": "tile.png",
+            "data-portrait-src": "tall.png",
+        },
+    });
+    const result = compileSource(
+        program(`
+        const art = document.getElementById("art") as HTMLImageElement;
+        const other = document.getElementById("other") as HTMLImageElement;
+        const portrait = window.innerWidth < window.innerHeight;
+        art.src = portrait ? art.dataset.portraitSrc! : art.dataset.landscapeSrc!;
+        other.src = portrait ? other.dataset.landscapeSrc! : other.dataset.portraitSrc!;
+    `),
+        {
+            fileName: join(imageDirectory, "entry.ts"),
+            nativeHostUi: {
+                sourcePath: "ui/image-host.json",
+                elements: [image("art"), image("other")],
+            },
+        },
+    );
+    writeFileSync(join(imageDirectory, "program.hpp"), result.cpp);
+    runRmlUiFixture(t, "ui-image-source", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+        imageDecoder: true,
+    });
+});
