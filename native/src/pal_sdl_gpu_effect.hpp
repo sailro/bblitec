@@ -201,7 +201,8 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
                     "An effect renderer samples render-target textures only in a frame graph.");
             const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding);
             if (!slot.render_texture)
-                throw std::runtime_error("An effect binding changed texture kind after its first draw.");
+                throw std::runtime_error(
+                    "An effect binding changed texture kind after its first draw.");
             textures[index].texture = render_texture(*slot.render_texture);
         }
         SDL_BindGPUFragmentSamplers(render_pass, 0, textures.data(),

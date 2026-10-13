@@ -2914,8 +2914,9 @@ public:
                                 // `renderCsmShadowMapCached`: the copied cache layers
                                 // reach the map before any dynamic pass draws over it.
                                 if (const auto* copies = pal::csm_cache_copies(engine, task)) {
-                                    GpuRenderTarget& cache_target = handle_at(
-                                        state.render_targets, due_generator.csm_cache->cache_target);
+                                    GpuRenderTarget& cache_target =
+                                        handle_at(state.render_targets,
+                                                  due_generator.csm_cache->cache_target);
                                     SDL_GPUCopyPass* layer_copy = SDL_BeginGPUCopyPass(command);
                                     for (const std::uint32_t layer : *copies) {
                                         SDL_GPUTextureLocation copy_source{};
@@ -2932,7 +2933,8 @@ public:
                                 }
                                 if (due_generator.csm_cache
                                         ? !pal::csm_cache_task_due(due_generator, task)
-                                        : !state.shadow_refresh.gates[task.render.shadow_generator.value]
+                                        : !state.shadow_refresh
+                                               .gates[task.render.shadow_generator.value]
                                                .due) {
                                     continue;
                                 }

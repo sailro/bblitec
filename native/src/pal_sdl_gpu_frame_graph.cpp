@@ -474,7 +474,8 @@ public:
                     command, render_pass, engine, pass, task.effect.effect,
                     [&](const RenderTextureRef& source) -> SDL_GPUTexture* {
                         if (handle_at(engine.render_targets, source.target).swapchain)
-                            throw std::runtime_error("An effect cannot sample the swapchain target.");
+                            throw std::runtime_error(
+                                "An effect cannot sample the swapchain target.");
                         return target_texture(state, engine, source.target, swapchain, true);
                     });
                 render_pass.end();
