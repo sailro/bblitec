@@ -189,19 +189,22 @@ selection refuse or are absent; so does any other node, parameter or context pro
 Media streams: `MediaStream`/`MediaStreamTrack` objects (track sets, `addTrack`/`removeTrack`, `clone`, `stop`,
 `enabled`, `readyState`), `canvas.captureStream(fps)` (one live video track), `createMediaStreamDestination()` (a sink
 rendering its input into its stream's audio track every quantum) and `createMediaStreamSource(stream)` (the first
-audio track by id, from any context at the same sample rate; InvalidStateError without one). No recording encoder
-exists: `MediaRecorder.isTypeSupported` is false and `new MediaRecorder` throws NotSupportedError.
+audio track by id, from any context at the same sample rate; InvalidStateError without one).
+`MediaRecorder.isTypeSupported` is false and `new MediaRecorder` throws NotSupportedError
+([no encoders](fidelity.md#semantic-contract)).
+
+An audio URL (a static sound or media element source) selects packaged audio; a runtime URL needs inferable candidates.
 
 Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `disposeSound`) run the pin's lowered
-family in an application realm. Sources: a URL selecting packaged audio (a runtime URL needs inferable candidates), an
-`ArrayBuffer` or an `AudioBuffer`; URL lists, sound buffers and `outBus` refuse. A looped sound started while its
-context is not running throws (no statechange). `enableSpatial`, `setSpatialPosition` and `setSpatialListenerPosition`
-add the pin's panner sub-node and listener; the `position`, orientation and attachment options refuse.
+family in an application realm. Sources: an audio URL, an `ArrayBuffer` or an `AudioBuffer`; URL lists, sound buffers
+and `outBus` refuse. A looped sound started while its context is not running throws (no statechange). `enableSpatial`,
+`setSpatialPosition` and `setSpatialListenerPosition` add the pin's panner sub-node and listener; the `position`,
+orientation and attachment options refuse.
 `createAudioEngineMediaStream` taps the engine's master output into a stream destination's stream.
 
-Media elements (application realm): `new Audio(url)` with a URL selecting packaged audio (a runtime URL needs
-inferable candidates), `play`/`pause`/`load`, `removeAttribute("src")`, `loop`, `preload`, `currentTime` (seek),
-`duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause` listeners without payloads.
+Media elements (application realm): `new Audio(url)` with an audio URL, `play`/`pause`/`load`, `removeAttribute("src")`,
+`loop`, `preload`, `currentTime` (seek), `duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause`
+listeners without payloads.
 An unrouted element plays to the default output; `createMediaElementSource` routes it once (again:
 InvalidStateError), moving its playback into the graph. Other members and attributes refuse.
 
