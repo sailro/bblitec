@@ -94,6 +94,7 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 | Borders/backgrounds | Solid borders, radii, gradients, one packaged image, raster border-image slices | Elliptical radius syntax, multiple image layers, sized repetition |
 | Shadows/filters | Box shadows, filters, drop-shadow chains, backdrop blur | Non-pixel shadow lengths, other backdrop functions (may degrade) |
 | Transforms | Uniform nonnegative scale | Nonuniform scale, nonempty clip rectangles |
+| Motion | `transition`/`animation` shorthands (s/ms), `transition-delay`/`animation-delay` lists (negative delays start part-way) | Other transition/animation longhands |
 | Selectors | Tags/IDs/classes, attribute presence/equality, combinators, state pseudo-classes, An+B, `not/is/where/has`, `::before/::after` | Nested `:has`, wider attribute operators, counters |
 | Other | Custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` | Runtime-generated stylesheet text, list markers, translucent accents |
 

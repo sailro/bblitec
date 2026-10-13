@@ -2971,6 +2971,63 @@ std::string rml_css_animation_easing(std::string value) {
     return value;
 }
 
+/**
+ * RmlUi's transition-delay and animation-delay replace the delays their shorthand lists, and a CSS
+ * shorthand declaration resets its longhands: follow each transition/animation declaration of a
+ * declaration list or sheet with its delay longhand's 'auto', which keeps the shorthand's delays.
+ */
+std::string rml_css_delay_resets(std::string_view source) {
+    std::string result;
+    std::size_t copied = 0, name_start = 0;
+    std::string_view reset;
+    char quote = 0;
+    int depth = 0;
+    const auto end_declaration = [&](std::size_t at) {
+        if (reset.empty())
+            return;
+        result.append(source.substr(copied, at - copied));
+        result += ';';
+        result += reset;
+        result += ":auto";
+        copied = at;
+        reset = {};
+    };
+    for (std::size_t index = 0; index < source.size(); ++index) {
+        const char token = source[index];
+        if (token == '\\') {
+            ++index;
+        } else if (quote) {
+            if (token == quote)
+                quote = 0;
+        } else if (token == '/' && index + 1 < source.size() && source[index + 1] == '*') {
+            const auto close = source.find("*/", index + 2);
+            index = close == std::string_view::npos ? source.size() : close + 1;
+        } else if (token == '\'' || token == '"') {
+            quote = token;
+        } else if (token == '(' || token == '[') {
+            ++depth;
+        } else if ((token == ')' || token == ']') && depth > 0) {
+            --depth;
+        } else if (depth == 0 && token == ':' && name_start != std::string_view::npos) {
+            const auto name = trim_css_token(source.substr(name_start, index - name_start));
+            reset = ascii_iequals(name, "transition")  ? "transition-delay"
+                    : ascii_iequals(name, "animation") ? "animation-delay"
+                                                       : "";
+            name_start = std::string_view::npos;
+        } else if (depth == 0 && (token == ';' || token == '}')) {
+            end_declaration(index);
+            name_start = index + 1;
+        } else if (depth == 0 && token == '{') {
+            // A selector or at-rule prelude, not a declaration.
+            reset = {};
+            name_start = index + 1;
+        }
+    }
+    end_declaration(source.size());
+    result.append(source.substr(copied));
+    return result;
+}
+
 std::string rml_css_filter_arguments(std::string value) {
     // RmlUi's drop-shadow shorthand is ordered: its color precedes lengths.
     // Browser CSS also permits a trailing color, including in live style writes.
@@ -4957,9 +5014,9 @@ struct UiRmlRuntime {
         if (property == "filter")
             return value;
         if (property.empty())
-            return project_css_outside_filters(value, [this](std::string part) {
-                return project_css_fragment(std::move(part), {});
-            });
+            return project_css_outside_filters(
+                rml_css_delay_resets(value),
+                [this](std::string part) { return project_css_fragment(std::move(part), {}); });
         return project_css_fragment(std::move(value), property);
     }
 
@@ -4980,6 +5037,13 @@ struct UiRmlRuntime {
 
     void set_projected_property(Rml::Element& element, const std::string& name,
                                 const std::string& value) const {
+        if (name == "transition" || name == "animation") {
+            // The shorthand resets its delay longhand; 'auto' keeps the shorthand's own delays.
+            if (value.empty())
+                element.RemoveProperty(name + "-delay");
+            else
+                element.SetProperty(name + "-delay", "auto");
+        }
         if (value.empty()) {
             element.RemoveProperty(name);
             if (name == "display")

@@ -13,7 +13,7 @@ test("CSS deferral inventories independent features without hiding language gaps
     const source =
         prefix +
         `
-        panel.style.cssText="aspect-ratio:2;clip-path:inset(1px);animation-delay:1s";
+        panel.style.cssText="aspect-ratio:2;clip-path:inset(1px);animation-direction:reverse";
         panel.style.gridTemplateColumns="[start] 1fr [end]";
         panel.style.setProperty("columns", "2");
         const sheet=document.createElement("style");
@@ -26,7 +26,7 @@ test("CSS deferral inventories independent features without hiding language gaps
         [
             "css:property:aspect-ratio",
             "css:property:clip-path",
-            "css:property:animation-delay",
+            "css:property:animation-direction",
             "css:grid-tracks:grid-template-columns",
             "css:property:columns",
             "css:property:mask",
