@@ -292,6 +292,9 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:oscillator": [],
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],
+    // The pin's static-sound family, lowered whole; it fetches its sources
+    // through the web platform seam.
+    "audio:static-sound": ["src/pal_web_platform.cpp"],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
     "sprite:billboard-custom-shader": [],
@@ -386,6 +389,13 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "camera:view-projection",
         // Its renderable binds and draws in the scene's own pass.
         "renderer:external-renderables",
+    ],
+    // A static sound plays decoded buffers through buffer sources, and
+    // fetches its URLs (packaged ones first) over HTTP.
+    "audio:static-sound": [
+        "audio:buffer-source",
+        "audio:decoded-buffer",
+        "platform:http",
     ],
     // Bindings build pipelines on the engine's WebGPU device; replaced
     // update batches retire behind the GPU.
@@ -791,6 +801,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("loader:splat-stream")
             ? "#include <bblite/upstream_splat_stream.hpp>\n"
+            : "") +
+        (features.includes("audio:static-sound")
+            ? "#include <bblite/upstream_static_sound.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"
             : "") +
         (features.includes("platform:http")
             ? "#include <bblite/pal_http.hpp>\n"

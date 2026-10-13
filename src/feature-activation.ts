@@ -1327,6 +1327,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the reached Web Audio graph calls AudioContext.createBiquadFilter()",
         consumers: CMAKE,
     },
+    "audio:static-sound": {
+        provenance:
+            "src/audio/static-sound.ts createSoundAsync/playSound/stopSound/" +
+            "setSoundVolume/disposeSound with the sound buffer, sub-graph, " +
+            "ramped parameters, signals and fetch they reach, lowered whole",
+        consumers: CMAKE,
+    },
     "audio:stereo-panner": {
         provenance:
             "the reached Web Audio graph calls AudioContext.createStereoPanner()",

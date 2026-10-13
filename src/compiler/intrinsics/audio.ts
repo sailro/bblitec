@@ -21,11 +21,22 @@ import {
 } from "../native-statements.js";
 import { lowerAudioSourceDisposal } from "../../lowering/audio-source-lowerer.js";
 import { isNullable } from "../type-facts.js";
-import { retainedOptions } from "./retained-options.js";
+import {
+    emitPresentOption,
+    emitScalarOption,
+    retainedOptions,
+} from "./retained-options.js";
+import { packagedUrlAssets, type StaticFetchContext } from "../static-fetch.js";
+import { deploymentUrl } from "../deployment.js";
+import { AUDIO_CODECS, audioCodecForBytes } from "../../audio-codecs.js";
+import { readAssetBytesSync } from "../asset-bytes-sync.js";
+import { cppIdentifier, snakeCase } from "../../cpp-literals.js";
+import { ApplicationRealmRequired } from "../worker-modules.js";
 
 export interface AudioIntrinsicContext
     extends
         IntrinsicCallContext,
+        StaticFetchContext,
         Pick<
             LoweringServices,
             | "fail"
@@ -43,6 +54,7 @@ export interface AudioIntrinsicContext
             | "cppString"
             | "dataTypes"
             | "emitDiscardedValue"
+            | "compileNumber"
         > {}
 
 const sourceDisposers = new EmissionWeakMap<object, string>();
@@ -61,18 +73,13 @@ function sourceDisposer(context: AudioIntrinsicContext): string {
 }
 
 /**
- * The Lite engine functions a reached scene calls. Everything else the
- * barrel exports -- the whole static/streaming sound family, buses,
- * spatial, stereo, the analyzer, the unmute UI, the visualizer and the
- * media-stream tap -- refuses by name, because none of it is lowered and
- * a silent no-op would be a scene that renders without sounding.
+ * The Lite audio functions that are not lowered: sound buffers, streaming
+ * sounds, buses, spatial, stereo, the analyzer, the unmute UI, the
+ * visualizer and the media-stream tap refuse by name, because a silent
+ * no-op would be a scene that renders without sounding. Static sounds
+ * (`compileStaticSound`) run the pin's lowered family.
  */
 const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
-    createSoundAsync:
-        "the StaticSound family is not lowered: its buffer, instance " +
-        "lifecycle and sub-graph are Babylon behaviour with no generated " +
-        "form yet. The reached slice is the engine plus a caller-built " +
-        "Web Audio graph",
     createSoundBufferAsync:
         "decoding an audio file is an asset question, and no audio asset " +
         "is materialized at generation yet",
@@ -266,6 +273,335 @@ function requireAbsentOptions(
     );
 }
 
+// -- static sounds -------------------------------------------------------
+
+/** The static-sound handle a sound function receives. */
+const staticSoundType: DataType = { kind: "handle", handle: "static-sound" };
+
+/** The value kind each option member of a sound function's options takes. */
+type OptionKinds = Readonly<Record<string, "number" | "boolean" | "string">>;
+
+const PLAY_OPTIONS: OptionKinds = {
+    duration: "number",
+    loop: "boolean",
+    loopEnd: "number",
+    loopStart: "number",
+    pitch: "number",
+    playbackRate: "number",
+    startOffset: "number",
+    volume: "number",
+    waitTime: "number",
+};
+
+const SOUND_OPTIONS: OptionKinds = {
+    autoplay: "boolean",
+    duration: "number",
+    loop: "boolean",
+    loopEnd: "number",
+    loopStart: "number",
+    maxInstances: "number",
+    pitch: "number",
+    playbackRate: "number",
+    startOffset: "number",
+    volume: "number",
+    skipCodecCheck: "boolean",
+};
+
+/** Options members that refuse, with the reason. */
+const SOUND_OPTION_REFUSALS: Readonly<Record<string, string>> = {
+    outBus: "audio buses are not lowered, so no bus can be passed",
+};
+
+/**
+ * A sound function's options record as the library's value struct, each
+ * present member written in source order; an absent argument is the
+ * struct's defaults. Returns the struct's native name.
+ */
+function soundOptions(
+    context: AudioIntrinsicContext,
+    argument: ts.Expression | undefined,
+    cppType: string,
+    kinds: OptionKinds,
+    refused?: string,
+): string {
+    const target = context.allocateTemporaryCppName("sound_options");
+    context.emit({
+        kind: "declaration",
+        type: cppType,
+        name: target,
+        initializer: "{}",
+    });
+    if (!argument) return target;
+    const value = context.compileValue(argument);
+    if (value.kind === "json-null" || value.dataType?.kind === "undefined") {
+        context.emitDiscardedValue(value);
+        return target;
+    }
+    const owner = context.bindings.pinValueToTemporary(
+        value,
+        "sound_options_owner",
+        argument,
+    );
+    const nullable = isNullable(context.checker.getTypeAtLocation(argument));
+    const present = nullable ? presenceCpp(owner) : undefined;
+    if (nullable && !present)
+        context.fail(
+            argument,
+            "Sound options that may be absent need represented presence.",
+        );
+    if (present) context.emit({ kind: "open", code: `if (${present}) {` });
+    for (const member of retainedOptions(context, owner, argument)) {
+        if (
+            member.value?.kind === "json-null" ||
+            member.type?.kind === "undefined"
+        )
+            continue;
+        const refusal = SOUND_OPTION_REFUSALS[member.name];
+        if (refusal) {
+            // Present at generation, it fails there; a typed record's
+            // member present at run time rejects the call (`refused`).
+            const message = `Static sound option '${member.name}' is not lowered: ${refusal}.`;
+            const memberPresent =
+                member.present ??
+                (member.type?.kind === "optional"
+                    ? optionalPresentCpp(member.cpp)
+                    : undefined);
+            if (!memberPresent || !refused) context.fail(argument, message);
+            context.emit(
+                `if (${memberPresent}) ${refused} = ${context.cppString(message)};`,
+            );
+            continue;
+        }
+        const kind = kinds[member.name];
+        if (!kind)
+            context.fail(
+                argument,
+                `'${member.name}' is not a static sound option.`,
+            );
+        emitPresentOption(context, member, (selected) =>
+            emitScalarOption(
+                context,
+                selected,
+                kind,
+                `${target}.${cppIdentifier(snakeCase(member.name))}`,
+                argument,
+            ),
+        );
+    }
+    if (present) context.emit({ kind: "close", code: "}" });
+    return target;
+}
+
+/** A sound function's sound, evaluated into a temporary in source order. */
+function soundArgument(
+    context: AudioIntrinsicContext,
+    call: ts.CallExpression,
+): string {
+    const sound = context.compileValue(argumentAt(call, 0));
+    context.expectKind(sound, "static-sound", argumentAt(call, 0));
+    return context.bindings.pinValueToTemporary(
+        sound,
+        "static_sound",
+        argumentAt(call, 0),
+    ).cpp;
+}
+
+/** `cleanAudioUrl` (audio-fetch.ts): the URL as the library requests it. */
+function cleanAudioUrl(url: string): string {
+    return url.replaceAll("#", "%23");
+}
+
+/**
+ * `createSoundAsync`'s source: a URL selecting packaged audio (each file it
+ * may select packaged, registered as the library requests it, its decoder
+ * linked), an `ArrayBuffer` or an `AudioBuffer`.
+ */
+function soundSource(
+    context: AudioIntrinsicContext,
+    call: ts.CallExpression,
+): string {
+    const argument = argumentAt(call, 1);
+    const type = context.checker.getTypeAtLocation(argument);
+    if (type.flags & ts.TypeFlags.StringLike) {
+        const decodable = (source: string): boolean => {
+            try {
+                return (
+                    audioCodecForBytes(
+                        readAssetBytesSync(source, context.options.fileName),
+                    ) !== undefined
+                );
+            } catch {
+                return false;
+            }
+        };
+        const packaged = packagedUrlAssets(
+            context,
+            argument,
+            "binary",
+            decodable,
+        );
+        if (!packaged || packaged.assets.length === 0)
+            context.fail(
+                argument,
+                "A createSoundAsync URL must select packaged audio a linked decoder reads: a literal, or a runtime string whose candidates generation can find.",
+            );
+        for (const asset of packaged.assets) {
+            const codec = audioCodecForBytes(
+                readAssetBytesSync(asset.file, context.options.fileName),
+            )!;
+            context.reachFeature(`audio:decode-${codec}`, call);
+        }
+        const base = deploymentUrl(context.options).href;
+        const entries = packaged.assets.map(
+            (asset) =>
+                `{${context.cppString(cleanAudioUrl(asset.logicalSource))}, bbl::asset_path(${context.cppString(asset.output)})}`,
+        );
+        const url = context.bindings.pinValueToTemporary(
+            {
+                kind: "string",
+                cpp: context.dataLowerer.compileKnownValueForSink(
+                    packaged.selected,
+                    { kind: "string" },
+                    argument,
+                ),
+            },
+            "sound_url",
+            argument,
+        );
+        context.emit(
+            `bbl::pal::register_packaged_responses(${context.cppString(base)}, {${entries.join(", ")}});`,
+        );
+        return `std::string(${url.cpp})`;
+    }
+    const value = context.compileValue(argument);
+    if (value.kind === "audio-buffer")
+        return context.bindings.pinValueToTemporary(
+            value,
+            "sound_buffer",
+            argument,
+        ).cpp;
+    if (value.kind === "data" && value.dataType?.kind === "arraybuffer") {
+        for (const codec of AUDIO_CODECS)
+            context.reachFeature(`audio:decode-${codec}`, call);
+        return context.bindings.pinValueToTemporary(
+            value,
+            "sound_bytes",
+            argument,
+        ).cpp;
+    }
+    return context.fail(
+        argument,
+        "createSoundAsync takes a packaged URL, an ArrayBuffer or an AudioBuffer; URL lists and SoundBuffers are not lowered.",
+    );
+}
+
+function compileStaticSound(
+    context: AudioIntrinsicContext,
+    importedName: string,
+    call: ts.CallExpression,
+): Value | undefined {
+    switch (importedName) {
+        case "createSoundAsync": {
+            // The library listens for its sources' `ended` and decodes on
+            // native jobs: both are an application realm's.
+            if (!context.options.workers) throw new ApplicationRealmRequired();
+            context.expectArgumentCount(call, 2, 3);
+            context.reachFeature("audio:static-sound", call);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "audio-engine", argumentAt(call, 0));
+            const owner = context.bindings.pinValueToTemporary(
+                engine,
+                "sound_engine",
+                argumentAt(call, 0),
+            );
+            const source = soundSource(context, call);
+            const refused = context.allocateTemporaryCppName("sound_refused");
+            context.emit({
+                kind: "declaration",
+                type: "const char*",
+                name: refused,
+                initializer: "nullptr",
+            });
+            const options = soundOptions(
+                context,
+                call.arguments[2],
+                "bbl::StaticSoundOptions",
+                SOUND_OPTIONS,
+                refused,
+            );
+            return {
+                kind: "promise",
+                cpp: `(${refused} ? bbl::js::Promise<std::shared_ptr<bbl::StaticSound>>::rejected(std::make_exception_ptr(std::runtime_error(${refused}))) : bbl::create_sound_async(${owner.cpp}, ${source}, ${options}))`,
+                promiseType: "std::shared_ptr<bbl::StaticSound>",
+                promiseResult: {
+                    kind: "static-sound",
+                    cpp: "",
+                    dataType: staticSoundType,
+                },
+            };
+        }
+        case "playSound":
+        case "stopSound": {
+            context.expectArgumentCount(call, 1, 2);
+            context.reachFeature("audio:static-sound", call);
+            const sound = soundArgument(context, call);
+            const options =
+                importedName === "playSound"
+                    ? soundOptions(
+                          context,
+                          call.arguments[1],
+                          "bbl::StaticSoundPlayOptions",
+                          PLAY_OPTIONS,
+                      )
+                    : soundOptions(
+                          context,
+                          call.arguments[1],
+                          "bbl::StaticSoundStopOptions",
+                          { waitTime: "number" },
+                      );
+            return {
+                kind: "void",
+                cpp: `bbl::${importedName === "playSound" ? "play_sound" : "stop_sound"}(${sound}, ${options})`,
+            };
+        }
+        case "setSoundVolume": {
+            context.expectArgumentCount(call, 2, 3);
+            context.reachFeature("audio:static-sound", call);
+            const sound = soundArgument(context, call);
+            const volume = context.allocateTemporaryCppName("sound_volume");
+            context.emit({
+                kind: "declaration",
+                type: "const double",
+                name: volume,
+                initializer: context.compileNumber(
+                    argumentAt(call, 1),
+                    "double",
+                ),
+            });
+            const ramp = call.arguments[2]
+                ? soundOptions(context, call.arguments[2], "bbl::RampOptions", {
+                      duration: "number",
+                      shape: "string",
+                  })
+                : undefined;
+            return {
+                kind: "void",
+                cpp: `bbl::set_sound_volume(${sound}, ${volume}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp})` : ""})`,
+            };
+        }
+        case "disposeSound": {
+            context.expectArgumentCount(call, 1, 1);
+            context.reachFeature("audio:static-sound", call);
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_sound(${soundArgument(context, call)})`,
+            };
+        }
+        default:
+            return undefined;
+    }
+}
+
 export function compileAudioIntrinsic(
     context: AudioIntrinsicContext,
     importedName: string,
@@ -278,6 +614,8 @@ export function compileAudioIntrinsic(
         call,
         "Babylon Lite audio",
     );
+    const sound = compileStaticSound(context, importedName, call);
+    if (sound) return sound;
 
     switch (importedName) {
         case "createAudioEngineAsync": {

@@ -1579,6 +1579,7 @@ export type ValueKind =
     // back, which every reached demo builds its own graph on.
     | "audio-engine"
     | "audio-source"
+    | "static-sound"
     | "audio-buffer"
     | "audio-context"
     | "audio-node"
@@ -3092,6 +3093,7 @@ export type Feature =
     | "audio:oscillator"
     | "audio:biquad-filter"
     | "audio:stereo-panner"
+    | "audio:static-sound"
     | "physics:world"
     | "physics:aggregate"
     | "physics:queries"
