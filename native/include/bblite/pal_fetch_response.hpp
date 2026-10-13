@@ -15,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -25,14 +26,9 @@ struct HttpHeaderList {
     std::vector<std::pair<std::string, std::string>> entries;
 };
 
-/** ASCII lowercase, the header-name case fold. */
+/** The header-name case fold (ASCII lowercase). */
 [[nodiscard]] inline std::string http_header_name(std::string_view name) {
-    std::string lowered(name);
-    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char character) {
-        return static_cast<char>(character >= 'A' && character <= 'Z' ? character - 'A' + 'a'
-                                                                      : character);
-    });
-    return lowered;
+    return js::string_lower(std::string(name));
 }
 
 /**
@@ -87,10 +83,11 @@ struct HttpResponseHead {
 
 /**
  * The thread-safe exchange between one transfer's transport thread and its realm. The transport
- * delivers the head, then body chunks, then the end or a failure; the realm polls and, when it
- * needs more, registers one completion the transport posts at its next delivery. A chunk queue
- * above `high_water` bytes blocks the transport until the realm reads (backpressure).
- * `cancel` (either side, any thread) discards queued bytes and wakes a blocked transport.
+ * delivers the head, then body chunks, then the end or a failure; the realm polls, taking every
+ * queued chunk as one, and, when it needs more, registers one completion the transport posts at
+ * its next delivery. A queue holding `high_water` bytes of chunk storage blocks the transport
+ * until the realm reads (backpressure). `cancel` (either side, any thread) discards queued bytes
+ * and wakes a blocked transport.
  */
 class HttpExchange {
 public:
@@ -119,7 +116,7 @@ public:
         space_.wait(lock, [&] { return canceled_ || queued_ < high_water; });
         if (canceled_)
             return false;
-        queued_ += chunk.size();
+        queued_ += chunk.capacity();
         chunks_.push_back(std::move(chunk));
         post_locked(std::exchange(waiting_, 0));
         return true;
@@ -154,9 +151,20 @@ public:
     Poll poll(std::vector<std::uint8_t>& chunk, std::string& failure) {
         std::lock_guard lock(mutex_);
         if (!chunks_.empty()) {
-            chunk = std::move(chunks_.front());
-            chunks_.pop_front();
-            queued_ -= chunk.size();
+            // The queued chunks arrived in order: one read delivers them together.
+            if (chunks_.size() == 1) {
+                chunk = std::move(chunks_.front());
+            } else {
+                std::size_t size = 0;
+                for (const auto& queued : chunks_)
+                    size += queued.size();
+                chunk.clear();
+                chunk.reserve(size);
+                for (const auto& queued : chunks_)
+                    chunk.insert(chunk.end(), queued.begin(), queued.end());
+            }
+            chunks_.clear();
+            queued_ = 0;
             space_.notify_all();
             return Poll::chunk;
         }
@@ -210,7 +218,56 @@ private:
     std::function<void()> wake_;
 };
 
-/** A transfer's transport thread; destroying it cancels the exchange and joins. */
+/**
+ * Joins finished or canceled transport threads off the realm thread: a cancellation never waits
+ * for a transfer to notice it. Process exit joins the threads still queued.
+ */
+class HttpTransportReaper {
+public:
+    static HttpTransportReaper& instance() {
+        static HttpTransportReaper reaper;
+        return reaper;
+    }
+    void reap(JoiningThread thread) {
+        {
+            std::lock_guard lock(mutex_);
+            pending_.push_back(std::move(thread));
+        }
+        wake_.notify_one();
+    }
+    ~HttpTransportReaper() {
+        {
+            std::lock_guard lock(mutex_);
+            stopping_ = true;
+        }
+        wake_.notify_one();
+        run_teardown("HTTP transport reaper join", [&] { worker_.join(); });
+    }
+
+private:
+    HttpTransportReaper() : worker_([this] { run(); }) {}
+    void run() {
+        std::unique_lock lock(mutex_);
+        for (;;) {
+            wake_.wait(lock, [&] { return stopping_ || !pending_.empty(); });
+            if (pending_.empty())
+                return;
+            auto thread = std::move(pending_.front());
+            pending_.pop_front();
+            lock.unlock();
+            thread = JoiningThread();
+            lock.lock();
+        }
+    }
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<JoiningThread> pending_;
+    bool stopping_ = false;
+    std::thread worker_;
+};
+
+/** A transfer's transport thread; destroying it cancels the exchange and hands the thread to the
+ * reaper, so no realm thread waits for a transfer to stop. */
 struct HttpTransport {
     std::shared_ptr<HttpExchange> exchange;
     JoiningThread thread;
@@ -220,6 +277,7 @@ struct HttpTransport {
     ~HttpTransport() {
         if (exchange)
             exchange->cancel();
+        HttpTransportReaper::instance().reap(std::move(thread));
     }
 };
 

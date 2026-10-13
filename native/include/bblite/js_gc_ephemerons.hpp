@@ -205,10 +205,7 @@ inline std::size_t collect_ephemerons() {
     } reset;
     EphemeronGraph graph;
     graph.discover(registry.nodes);
-    const auto collected = graph.collect();
-    registry.allocations = 0;
-    registry.frames_since_collection = 0;
-    return collected;
+    return graph.collect();
 }
 
 } // namespace bbl::js::gc

@@ -24,7 +24,7 @@ namespace bbl::js {
 
 /** The DOMException `AbortSignal.abort()` and `controller.abort()` use without a reason. */
 [[nodiscard]] inline Error abort_error(std::string message = "signal is aborted without reason") {
-    return std::make_exception_ptr(make_dom_exception(std::move(message), "AbortError"));
+    return dom_exception_error(std::move(message), "AbortError");
 }
 
 /**

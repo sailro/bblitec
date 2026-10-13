@@ -3777,12 +3777,16 @@ relative_slice_bounds(std::size_t length, double begin_value, double end_value) 
     return value;
 }
 
+/** ASCII lowercase of one byte; other bytes, UTF-8 included, are unchanged. */
+[[nodiscard]] constexpr char ascii_lower(char character) {
+    return character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a')
+                                                : character;
+}
+
+/** ASCII lowercase, the one case fold of header names, URL schemes and hosts and MIME types. */
 [[nodiscard]] inline std::string string_lower(std::string value) {
-    for (char& character : value) {
-        if (character >= 'A' && character <= 'Z') {
-            character = static_cast<char>(character - 'A' + 'a');
-        }
-    }
+    for (char& character : value)
+        character = ascii_lower(character);
     return value;
 }
 

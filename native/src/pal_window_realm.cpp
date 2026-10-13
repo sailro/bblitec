@@ -267,8 +267,9 @@ struct WindowServices final : CanvasProvider {
     const std::uint64_t capture_frame_count;
     std::shared_ptr<std::atomic<bool>> capture_ready =
         std::make_shared<std::atomic<bool>>(!capture_settle());
-    /** When `capture_ready` last became true, for a settle capture. */
+    /** When `capture_ready` last became true, and how long the active settles hold it. */
     std::atomic<double> capture_ready_since = 0;
+    std::atomic<double> capture_settle_milliseconds = 0;
     std::shared_ptr<AnimationFrameSource> animation_frames =
         std::make_shared<AnimationFrameSource>();
     std::shared_ptr<EventLoop::Inbox> inbox = std::make_shared<EventLoop::Inbox>();
@@ -315,27 +316,41 @@ struct WindowDocument {
     }
     std::shared_ptr<WindowServices> host;
     bool wait_for_canvas_ready = false;
+    /**
+     * The capture's canvas settles, as the browser harness waits on them: the data-ready gate
+     * (`data-ready="true"`, at once) and the registered settle. Each holds when any canvas
+     * (GPU or retained Canvas2D) carries one of its values; the capture waits until all hold for
+     * the longest settle time, and any canvas's nonempty `data-error` fails a bounded run.
+     */
     void update_capture_ready() {
-        const auto& settle = capture_settle();
-        if (!wait_for_canvas_ready && !settle)
+        static const CaptureSettle canvas_ready{"data-ready", {"true"}, 0};
+        std::vector<const CaptureSettle*> settles;
+        if (wait_for_canvas_ready)
+            settles.push_back(&canvas_ready);
+        if (const auto& settle = capture_settle())
+            settles.push_back(&*settle);
+        if (settles.empty())
             return;
-        // GPU canvases and retained Canvas2D canvases both render the page.
-        bool ready = !wait_for_canvas_ready, settled = !settle;
+        std::vector<bool> held(settles.size(), false);
+        double milliseconds = 0;
         std::string failure;
         for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index) {
             if (handle_at(engine.ui_elements, UiElementHandle{index}).tag != "canvas")
                 continue;
-            ready =
-                ready || ui_get_attribute(engine, UiElementHandle{index}, "data-ready") == "true";
-            if (!settled)
-                settled =
-                    std::ranges::find(settle->values,
-                                      ui_get_attribute(engine, UiElementHandle{index},
-                                                       settle->attribute)) != settle->values.end();
+            for (std::size_t row = 0; row < settles.size(); ++row)
+                held[row] =
+                    held[row] || std::ranges::find(settles[row]->values,
+                                                   ui_get_attribute(engine, UiElementHandle{index},
+                                                                    settles[row]->attribute)) !=
+                                     settles[row]->values.end();
             if (failure.empty())
                 failure = ui_get_attribute(engine, UiElementHandle{index}, "data-error");
         }
-        if (!host->capture_ready->exchange(ready && settled) && ready && settled)
+        for (const auto* settle : settles)
+            milliseconds = std::max(milliseconds, settle->milliseconds);
+        const bool ready = std::ranges::all_of(held, [](bool value) { return value; });
+        host->capture_settle_milliseconds.store(milliseconds);
+        if (!host->capture_ready->exchange(ready) && ready)
             host->capture_ready_since.store(monotonic_milliseconds());
         std::lock_guard lock(host->mutex);
         host->capture_failure = std::move(failure);
@@ -1460,9 +1475,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 services->wake.notify_all();
                 const bool source_ready =
                     services->capture_ready->load() &&
-                    (!capture_settle() ||
-                     monotonic_milliseconds() - services->capture_ready_since.load() >=
-                         capture_settle()->milliseconds) &&
+                    monotonic_milliseconds() - services->capture_ready_since.load() >=
+                        services->capture_settle_milliseconds.load() &&
                     std::all_of(frames.begin(), frames.end(),
                                 [](const auto& canvas) { return canvas.frame.capture_ready; });
                 // Engine frames every canvas has rendered, or presented
