@@ -178,22 +178,28 @@ struct DocumentSnapshot {
     /** The realm's pointer capture state, which the display targets input by. */
     std::shared_ptr<DomPointerCaptures> pointer_captures;
 };
+
+/** One element as the display's last update laid it out and styled it. */
+struct LayoutElement {
+    UiClientRect rectangle;
+    UiContentBox content_box;
+    /** Computed style, for an element the realm requested it of. */
+    UiComputedStyle style;
+    /** `UiElementRecord::pointer_states` the update styled it with. */
+    std::uint8_t pointer_states = 0;
+    [[nodiscard]] bool operator==(const LayoutElement&) const = default;
+};
+
 struct LayoutSnapshot {
-    std::vector<UiClientRect> rectangles;
-    std::vector<UiContentBox> content_boxes;
-    /** Computed styles of the elements the realm requested, by element. */
-    std::vector<UiComputedStyle> styles;
-    /** `UiElementRecord::pointer_states` the display's last update styled with, by element. */
-    std::vector<std::uint8_t> pointer_states;
+    /** By element handle. */
+    std::vector<LayoutElement> elements;
     std::uint32_t width = 0, height = 0;
     double pixel_ratio = 1;
     ScreenMetrics screen;
     InputCapabilities input;
     bool equals(const LayoutSnapshot& other) const {
         return width == other.width && height == other.height && pixel_ratio == other.pixel_ratio &&
-               screen == other.screen && input == other.input && rectangles == other.rectangles &&
-               content_boxes == other.content_boxes && styles == other.styles &&
-               pointer_states == other.pointer_states;
+               screen == other.screen && input == other.input && elements == other.elements;
     }
 };
 
@@ -1121,16 +1127,18 @@ void update_window_document(bool wait) {
     if (doc.layout != layout && layout) {
         doc.layout = layout;
         for (std::size_t index = 0;
-             index < layout->rectangles.size() && index < doc.engine.ui_elements.size(); ++index) {
-            doc.engine.ui_elements[index].client_rect = layout->rectangles[index];
-            doc.engine.ui_elements[index].content_box = layout->content_boxes[index];
-            doc.engine.ui_elements[index].computed_style = layout->styles[index];
-            doc.engine.ui_elements[index].pointer_states = layout->pointer_states[index];
+             index < layout->elements.size() && index < doc.engine.ui_elements.size(); ++index) {
+            const auto& laid = layout->elements[index];
+            auto& record = doc.engine.ui_elements[index];
+            record.client_rect = laid.rectangle;
+            record.content_box = laid.content_box;
+            record.computed_style = laid.style;
+            record.pointer_states = laid.pointer_states;
         }
         for (const auto& [index, canvas] : doc.canvases) {
-            if (index >= layout->rectangles.size())
+            if (index >= layout->elements.size())
                 continue;
-            const auto& box = layout->rectangles[index];
+            const auto& box = layout->elements[index].rectangle;
             if (box.width > 0 && box.height > 0)
                 canvas->resize_layout(static_cast<std::uint32_t>(std::round(box.width)),
                                       static_cast<std::uint32_t>(std::round(box.height)));
@@ -1202,17 +1210,17 @@ void adopt_window_pointer_states() {
     // Only pointer states: rectangles and styles still adopt with their
     // published document in update_window_document.
     for (std::size_t index = 0;
-         layout && index < layout->pointer_states.size() && index < doc.engine.ui_elements.size();
+         layout && index < layout->elements.size() && index < doc.engine.ui_elements.size();
          ++index)
-        doc.engine.ui_elements[index].pointer_states = layout->pointer_states[index];
+        doc.engine.ui_elements[index].pointer_states = layout->elements[index].pointer_states;
 }
 } // namespace
 UiClientRect window_element_size(UiElementHandle element) {
     update_window_document();
     const auto& layout = current_document().layout;
-    if (!layout || element.value >= layout->rectangles.size())
+    if (!layout || element.value >= layout->elements.size())
         throw std::out_of_range("Window element has no layout box.");
-    auto box = handle_at(layout->rectangles, element);
+    auto box = handle_at(layout->elements, element).rectangle;
     box.left /= layout->pixel_ratio;
     box.top /= layout->pixel_ratio;
     box.width /= layout->pixel_ratio;
@@ -1544,9 +1552,9 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             std::shared_ptr<const LayoutSnapshot> layout;
             const auto canvas_at = [&](double x, double y) -> UiElementHandle {
                 for (std::size_t index = 0;
-                     index < display.ui_elements.size() && index < layout->rectangles.size();
+                     index < display.ui_elements.size() && index < layout->elements.size();
                      ++index) {
-                    const auto& box = layout->rectangles[index];
+                    const auto& box = layout->elements[index].rectangle;
                     if (display.ui_elements[index].external_gpu_canvas && x >= box.left &&
                         y >= box.top && x < box.left + box.width && y < box.top + box.height)
                         return {static_cast<std::uint32_t>(index)};
@@ -1618,16 +1626,11 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         static_cast<double>(std::popcount(red) + std::popcount(green) +
                                             std::popcount(blue))};
                 }
-                next_layout.rectangles.resize(display.ui_elements.size());
-                next_layout.content_boxes.resize(display.ui_elements.size());
-                next_layout.styles.resize(display.ui_elements.size());
-                next_layout.pointer_states.resize(display.ui_elements.size());
-                for (std::size_t index = 0; index < display.ui_elements.size(); ++index) {
-                    next_layout.rectangles[index] = display.ui_elements[index].client_rect;
-                    next_layout.content_boxes[index] = display.ui_elements[index].content_box;
-                    next_layout.styles[index] = display.ui_elements[index].computed_style;
-                    next_layout.pointer_states[index] = display.ui_elements[index].pointer_states;
-                }
+                next_layout.elements.clear();
+                next_layout.elements.reserve(display.ui_elements.size());
+                for (const auto& record : display.ui_elements)
+                    next_layout.elements.push_back({record.client_rect, record.content_box,
+                                                    record.computed_style, record.pointer_states});
                 if (!layout || !layout->equals(next_layout))
                     layout = std::make_shared<LayoutSnapshot>(next_layout);
                 {
@@ -1763,9 +1766,9 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         if (event.type == SDL_EVENT_FINGER_UP ||
                             event.type == SDL_EVENT_FINGER_CANCELED)
                             touch_captures.erase(found);
-                        if (target.value >= layout->rectangles.size())
+                        if (target.value >= layout->elements.size())
                             continue;
-                        const auto& box = layout->rectangles[target.value];
+                        const auto& box = layout->elements[target.value].rectangle;
                         if (box.width <= 0 || box.height <= 0)
                             continue;
                         auto packet = std::make_unique<WindowPointerEvent>();
@@ -1820,7 +1823,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     auto target = pointer_capture;
                     if (target.value == invalid_handle)
                         target = canvas_at(x * layout->pixel_ratio, y * layout->pixel_ratio);
-                    if (target.value == invalid_handle || target.value >= layout->rectangles.size())
+                    if (target.value == invalid_handle || target.value >= layout->elements.size())
                         continue;
                     if (down) {
                         pointer_capture = target;
@@ -1833,7 +1836,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         if (!pointer_buttons)
                             pointer_capture = {};
                     }
-                    const auto& box = handle_at(layout->rectangles, target);
+                    const auto& box = handle_at(layout->elements, target).rectangle;
                     auto packet = std::make_unique<WindowPointerEvent>();
                     packet->element = target;
                     packet->pointer = event;
@@ -1889,7 +1892,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         if (auto frame = canvas->surface->take_frame())
                             latest.insert_or_assign(index, std::move(*frame));
                         if (const auto found = latest.find(index);
-                            found != latest.end() && index < layout->rectangles.size()) {
+                            found != latest.end() && index < layout->elements.size()) {
                             frames.push_back({UiElementHandle{index}, found->second});
                         }
                     }
