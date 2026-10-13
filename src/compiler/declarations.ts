@@ -86,8 +86,7 @@ import type { UiProjection } from "./ui-projection.js";
 import { withLiteralSelfBinding } from "./home-object-methods.js";
 import {
     inferPromiseRejectStorage,
-    inferUninitializedHandle,
-    inferUninitializedRecord,
+    inferUninitializedStorage,
 } from "./uninitialized-handle.js";
 import {
     aliasedMutationScan,
@@ -707,12 +706,7 @@ export class DeclarationLowerer {
             // Only an assignment gives this binding a value.
             if (dataType)
                 dataType = this.reboundBindingStorage(dataType, declaredType);
-            dataType ??= inferUninitializedHandle(
-                declaration,
-                this.context.checker,
-                this.context.dataTypes,
-            );
-            dataType ??= inferUninitializedRecord(
+            dataType ??= inferUninitializedStorage(
                 declaration,
                 this.context.checker,
                 this.context.dataTypes,

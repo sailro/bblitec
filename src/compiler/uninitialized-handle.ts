@@ -1,5 +1,9 @@
 import ts from "typescript";
-import type { DataType, DataTypeRegistry } from "./data-types.js";
+import {
+    dataTypesEqual,
+    type DataType,
+    type DataTypeRegistry,
+} from "./data-types.js";
 import { declaredSymbol, libraryGlobal, resolvedSymbol } from "./symbols.js";
 
 /** An escaped Promise reject callback accepts the runtime's represented Error reason. */
@@ -63,70 +67,13 @@ export function inferPromiseRejectStorage(
         : undefined;
 }
 
-/** TypeScript's evolving-any declarations acquire storage only when all uses agree. */
-export function inferUninitializedHandle(
-    declaration: ts.VariableDeclaration,
-    checker: ts.TypeChecker,
-    dataTypes: DataTypeRegistry,
-): DataType | undefined {
-    if (
-        declaration.type ||
-        declaration.initializer ||
-        !ts.isIdentifier(declaration.name)
-    )
-        return undefined;
-    const symbol = declaredSymbol(checker, declaration.name);
-    if (!symbol) return undefined;
-    let inferred: (DataType & { kind: "handle" }) | undefined;
-    let writes = 0;
-    let reads = 0;
-    let compatible = true;
-    const visit = (node: ts.Node): void => {
-        if (!compatible) return;
-        if (
-            ts.isIdentifier(node) &&
-            node !== declaration.name &&
-            declaredSymbol(checker, node) === symbol
-        ) {
-            const assignment =
-                ts.isBinaryExpression(node.parent) &&
-                node.parent.left === node &&
-                node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
-                    ? node.parent
-                    : undefined;
-            const expression = assignment?.right ?? node;
-            const type = dataTypes.fromTsType(
-                checker.getTypeAtLocation(expression),
-                expression,
-            );
-            if (
-                type?.kind !== "handle" ||
-                (inferred && inferred.handle !== type.handle)
-            ) {
-                compatible = false;
-                return;
-            }
-            inferred = type;
-            if (assignment) writes++;
-            else reads++;
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(
-        ts.findAncestor(
-            declaration,
-            (node) => ts.isFunctionLike(node) || ts.isSourceFile(node),
-        )!,
-    );
-    return compatible && writes > 0 && reads > 0 ? inferred : undefined;
-}
-
 /**
- * `let pose; try { pose = format(world); } catch { ... } use(pose.x)`: an
- * evolving-any declaration every write and read of which TypeScript types as
- * one record holds that record, assigned where the source assigns it.
+ * TypeScript's evolving-any declarations (`let pose;`) acquire storage only
+ * when every write and read of them TypeScript types as the same native
+ * handle or the same record (`let pose; try { pose = format(world); } catch
+ * { ... } use(pose.x)`), assigned where the source assigns it.
  */
-export function inferUninitializedRecord(
+export function inferUninitializedStorage(
     declaration: ts.VariableDeclaration,
     checker: ts.TypeChecker,
     dataTypes: DataTypeRegistry,
@@ -139,7 +86,7 @@ export function inferUninitializedRecord(
         return undefined;
     const symbol = declaredSymbol(checker, declaration.name);
     if (!symbol) return undefined;
-    let inferred: (DataType & { kind: "struct" }) | undefined;
+    let inferred: DataType | undefined;
     let writes = 0;
     let reads = 0;
     let compatible = true;
@@ -162,8 +109,8 @@ export function inferUninitializedRecord(
                 expression,
             );
             if (
-                type?.kind !== "struct" ||
-                (inferred && inferred.name !== type.name)
+                (type?.kind !== "handle" && type?.kind !== "struct") ||
+                (inferred && !dataTypesEqual(inferred, type))
             ) {
                 compatible = false;
                 return;
