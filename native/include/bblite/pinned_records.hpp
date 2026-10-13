@@ -117,6 +117,11 @@ template <class T> js::TypedArray<T>& typed_fill(js::TypedArray<T>& values, doub
         js::typed_array_write(values, static_cast<double>(index), value);
     return values;
 }
+/** `new Float64Array(n).fill(value)`: the fresh array, filled. */
+template <class T> js::TypedArray<T> typed_fill(js::TypedArray<T>&& values, double value) {
+    typed_fill(values, value);
+    return values;
+}
 
 /** A tuple read; past the end reads NaN. */
 template <std::size_t N> [[nodiscard]] double tuple_at(const js::Tuple<N>& values, double index) {
