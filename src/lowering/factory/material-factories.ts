@@ -11,6 +11,7 @@ import { materialGroupIdentity } from "../material-group-identity.js";
 import { recordAt } from "../../compiler/record-access.js";
 import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
 import { lowerNodeInputScalarSetter } from "../node-input-uniform-lowerer.js";
+import { lowerPixelsTextureWrites } from "../pixels-texture-writes.js";
 import {
     lowerShaderUniformApi,
     lowerShaderUniformSnapshot,
@@ -657,8 +658,9 @@ void set_alpha_to_coverage(
      * caller may override and whose defaults are read off the pin's own
      * `?? "…"` rather than restated. A call naming none of them emits the
      * same text it always did, because the defaults ride the signature.
+     * `writes` adds the lowered `updateTexture2DFromPixels`.
      */
-    public lowerPixelsTextureFactory(): LoweredSource {
+    public lowerPixelsTextureFactory(writes = false): LoweredSource {
         const module = "src/texture/pixels-texture.ts";
         const { declaration } = this.context.functionDeclaration(
             module,
@@ -731,12 +733,13 @@ void set_alpha_to_coverage(
             header: "",
             source: `// ${this.context.provenance(module, "createTexture2DFromPixels")}
 #include <bblite/runtime.hpp>
-#include <bblite/features/has_sprites.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
-
+${writes ? "#include <bblite/pal_pixels_texture.hpp>" : ""}
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <variant>
 
 namespace bbl {
 
@@ -803,6 +806,7 @@ PixelsTexture create_texture_2d_from_pixels(
         engine, pixels.to_vector(), width, height, options);
 }
 
+// A whole-texture queue write: every copy and binding shares the texels.
 void update_pixels_texture(
     [[maybe_unused]] Engine& engine,
     PixelsTexture& texture,
@@ -815,18 +819,14 @@ void update_pixels_texture(
             "update pixels texture: data too short");
     }
     texture.rgba = pixels.to_vector();
-    ++texture.version;
-#if BBLITE_HAS_SPRITES
-    for (Sprite2DLayerRecord& layer : engine.sprite_layers) {
-        for (PixelsTexture& bound : layer.custom_textures) {
-            if (bound.identity != texture.identity) continue;
-            bound.rgba = texture.rgba;
-            bound.version = texture.version;
-        }
-    }
-#endif
 }
-
+${
+    writes
+        ? `
+${lowerPixelsTextureWrites(this.context)}
+`
+        : ""
+}
 } // namespace bbl
 `,
         };

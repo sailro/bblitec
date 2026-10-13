@@ -36,6 +36,7 @@
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/features/texture_pixel_writes.hpp>
 #include <bblite/features/workers.hpp>
 
 #include "pal_dawn_scene.hpp"
@@ -1815,6 +1816,29 @@ public:
         MeshRowWrites& mesh_rows() { return rows; }
 
         void publish_storage() { sync_shader_storage_buffers(rows.state, rows.engine); }
+
+#if BBLITE_TEXTURE_PIXEL_WRITES
+        // Queue writes, which land before the frame's submit.
+        void upload_pixels_texture_writes() {
+            rows.state.shared_material_images.upload_pixels_writes(
+                [&](DawnTexture& image, const std::uint8_t* texels, std::uint32_t width,
+                    PixelsTexels::Region region) {
+                    const std::size_t stride = static_cast<std::size_t>(width) * 4u;
+                    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+                    destination.texture = image.get();
+                    destination.origin = {region.x, region.y, 0};
+                    WGPUTexelCopyBufferLayout layout{};
+                    layout.bytesPerRow = static_cast<std::uint32_t>(stride);
+                    layout.rowsPerImage = region.height;
+                    const WGPUExtent3D size{region.width, region.height, 1};
+                    DawnGpuDevice{rows.state.queue}.write_texture(
+                        &destination,
+                        texels + region.y * stride + static_cast<std::size_t>(region.x) * 4u,
+                        (region.height - 1u) * stride + static_cast<std::size_t>(region.width) * 4u,
+                        &layout, &size);
+                });
+        }
+#endif
 
         // Queue writes land with the next submit; there is no batch to close.
         void submit_uploads() {}

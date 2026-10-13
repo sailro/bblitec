@@ -11,6 +11,7 @@
 // The layout, quad, UBO and sort all come from `billboard_system.hpp`, which
 // the billboard lowerer generates from the pinned pipeline module.
 
+#include <bblite/features/texture_pixel_writes.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/billboard_system.hpp>
 // The fx block a custom-shader system binds is the shared custom-shader
@@ -416,6 +417,12 @@ inline void upload_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, const
         wgpuBufferRelease(pass.instances);
         pass.instances = grown;
     });
+#if BBLITE_TEXTURE_PIXEL_WRITES
+    // A custom texture a pixels write reached since its upload.
+    for (std::size_t index = 0; index < system.custom_textures.size(); ++index)
+        if (pass.extras.at(index).uploaded_version != system.custom_textures[index].rgba.version())
+            update_dawn_extra_texture(queue, pass.extras[index], system.custom_textures[index]);
+#endif
 
     // The pass's scene block, which the program binds at group 0.
     DawnGpuDevice{queue}.write_buffer(pass.frame_scene.uniforms, 0, &scene_block,

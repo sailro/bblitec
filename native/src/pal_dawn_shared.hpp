@@ -1433,7 +1433,7 @@ inline DawnSampledTexture upload_dawn_extra_texture(WGPUDevice device, WGPUQueue
                                                extra.width, extra.height, 1, extra.srgb);
     texture.view = create_dawn_texture_view(texture.texture, nullptr);
     texture.sampler = create_texture_sampler(device, extra.sampler);
-    texture.uploaded_version = extra.version;
+    texture.uploaded_version = extra.rgba.version();
     return texture;
 }
 
@@ -1448,7 +1448,7 @@ inline void update_dawn_extra_texture(WGPUQueue queue, DawnSampledTexture& uploa
     const WGPUExtent3D size{extra.width, extra.height, 1};
     DawnGpuDevice{queue}.write_texture(&destination, extra.rgba.data(), extra.rgba.size(), &layout,
                                        &size);
-    uploaded.uploaded_version = extra.version;
+    uploaded.uploaded_version = extra.rgba.version();
 }
 
 /** Releases what {@link upload_dawn_extra_texture} built. */

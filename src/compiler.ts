@@ -3415,6 +3415,7 @@ class Compiler implements LoweringServices {
             );
         }
         this.reachFeature("texture:pixels", call);
+        this.reachFeature("texture:pixels-writes", call);
         this.admissions.noteNodeInputAdmissionFailure(
             call,
             "Node input bindings do not represent later GPU writes to a texture producer.",
@@ -6323,6 +6324,10 @@ class Compiler implements LoweringServices {
             ["true", "false", "nullptr"].includes(storage)
         )
             return;
+        // A texture held in typed storage (a shared call's result) keeps its
+        // producer's storage fact, but its C++ is the storage's type.
+        const producerTexture =
+            value.kind === "texture" && value.dataType?.kind !== "handle";
         const cppType =
             counter !== undefined && storage === counter
                 ? "std::int64_t"
@@ -6330,13 +6335,11 @@ class Compiler implements LoweringServices {
                   ? value.ownedEngineCpp
                       ? "std::shared_ptr<bbl::Engine>"
                       : "bbl::Engine"
-                  : value.kind === "texture" && value.textureStorage === "solid"
+                  : producerTexture && value.textureStorage === "solid"
                     ? "bbl::SolidTexture"
-                    : value.kind === "texture" &&
-                        value.textureStorage === "file"
+                    : producerTexture && value.textureStorage === "file"
                       ? "bbl::FileTexture"
-                      : value.kind === "texture" &&
-                          value.textureStorage === "pixels"
+                      : producerTexture && value.textureStorage === "pixels"
                         ? "bbl::PixelsTexture"
                         : value.absenceTagType
                           ? this.dataTypes.cppType(value.absenceTagType)

@@ -11,6 +11,7 @@
 #include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/shader_external_textures.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
+#include <bblite/features/texture_pixel_writes.hpp>
 #include <bblite/features/workers.hpp>
 
 #include <bblite/runtime.hpp>
@@ -494,6 +495,7 @@ struct SceneSyncOutcome {
  * `reject_unbuilt_family_growth(families)`, `shared_shader_geometry_count()`,
  * `shared_shader_material_count()`, `rebuild_task_draw_lists()`,
  * `mesh_rows()` (the `sync_plan_mesh_rows` writes), `publish_storage()`,
+ * `upload_pixels_texture_writes()` (pixels-texture writes builds only),
  * `submit_uploads()`, `mark_uploaded()`, `settle_pass(outcome)` (the
  * frame's own copy of the pass, which the later steps and the encode read),
  * `stream_bone_palettes()`, `mark_capture(topology_updated)`,
@@ -574,6 +576,10 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     // RAF callbacks write ShaderMaterial storage: publish it with the
     // frame's other uploads, before anything binds it.
     backend.publish_storage();
+#if BBLITE_TEXTURE_PIXEL_WRITES
+    // Their pixels-texture writes, likewise ahead of every draw that samples one.
+    backend.upload_pixels_texture_writes();
+#endif
     backend.submit_uploads();
     backend.mark_uploaded();
     // Control hooks ran in the source scene callback list.

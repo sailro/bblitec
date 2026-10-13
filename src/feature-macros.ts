@@ -61,6 +61,10 @@ export const featureMacros: readonly FeatureMacro[] = [
         macro: "BBLITE_MESH_GEOMETRY_UPDATE",
         anyOf: ["mesh:update-geometry"],
     },
+    {
+        macro: "BBLITE_TEXTURE_PIXEL_WRITES",
+        anyOf: ["texture:pixels-writes"],
+    },
     { macro: "BBLITE_HAS_IMAGE_DECODER", imageDecoder: true },
     { macro: "BBLITE_HAS_WEBP_DECODER", imageCodec: "webp" },
     { macro: "BBLITE_HAS_GAMEPAD", anyOf: ["input:gamepad"] },
