@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
     existsSync,
@@ -452,6 +452,41 @@ export function runNativeFixtureCompiler(
 }
 
 /**
+ * Runs a fixture executable and returns its stdout. A nonzero exit, a
+ * signal or a timeout throws with the exit code (NTSTATUS in hex: a crash
+ * prints nothing itself), stderr and stdout, so a failure is diagnosable.
+ */
+export function runFixtureExecutable(
+    executable: string,
+    options: {
+        cwd?: string;
+        env?: NodeJS.ProcessEnv;
+        timeoutMs?: number;
+    } = {},
+): string {
+    const result = spawnSync(executable, {
+        cwd: options.cwd,
+        env: options.env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: options.timeoutMs ?? 0,
+        maxBuffer: 64 * 1024 * 1024,
+    });
+    if (result.error === undefined && result.status === 0) return result.stdout;
+    const status =
+        result.status === null
+            ? `signal ${result.signal ?? "none"}`
+            : `exit ${result.status} (0x${(result.status >>> 0).toString(16).toUpperCase()})`;
+    throw new Error(
+        [
+            `${executable} failed: ${status}${result.error ? `, ${result.error.message}` : ""}`,
+            `stderr:\n${result.stderr || "(empty)"}`,
+            `stdout:\n${result.stdout || "(empty)"}`,
+        ].join("\n"),
+    );
+}
+
+/**
  * Compiles one generated translation unit in `artifacts/<name>` with the
  * fixture's own `flags` and runs it: a failed assertion or an uncaught throw
  * in the program fails the caller. Returns what the program printed.
@@ -477,14 +512,12 @@ export function runGeneratedProgram(
         `/Fe:${executable}`,
         source,
     ]);
-    const output = execFileSync(executable, {
-        stdio: "pipe",
-        windowsHide: true,
-        timeout: options.timeoutMs ?? 0,
+    const output = runFixtureExecutable(executable, {
+        timeoutMs: options.timeoutMs ?? 0,
     });
     if (options.expectedOutput !== undefined)
-        assert.equal(output.toString("utf8"), options.expectedOutput);
-    return output.toString("utf8");
+        assert.equal(output, options.expectedOutput);
+    return output;
 }
 
 /** Preserve object paths when distinct source folders contain equal basenames. */
