@@ -170,8 +170,10 @@ ${thinBindings ? "        task.render_meshes.at(index).thin_binding = owners[ind
  */
 function refreshedOverridesCpp(
     context: LoweringContext,
-    thinBindings: boolean,
-    taskDisposal: boolean,
+    {
+        thinBindings,
+        taskDisposal,
+    }: { thinBindings: boolean; taskDisposal: boolean },
 ): string {
     const refreshModule = "src/frame-graph/render-task-mesh-refresh.ts";
     const taskModule = "src/frame-graph/render-task.ts";
@@ -319,9 +321,15 @@ void order_refreshed_render_task(FrameTaskRecord& task) {
 /** Source tracking decisions; native scene generations own binding replacement/retirement. */
 export function renderTaskMeshRefreshCpp(
     context: LoweringContext,
-    overrides = false,
-    thinBindings = false,
-    taskDisposal = false,
+    {
+        overrides = false,
+        thinBindings = false,
+        taskDisposal = false,
+    }: {
+        overrides?: boolean;
+        thinBindings?: boolean;
+        taskDisposal?: boolean;
+    } = {},
 ): string {
     const path = "src/frame-graph/render-task-mesh-refresh.ts";
     const { file, declaration } = context.functionDeclaration(
@@ -494,7 +502,7 @@ export function renderTaskMeshRefreshCpp(
         scope,
     );
     const body = lowerPinnedBody(file, add.body.statements, scope);
-    return `${overrides ? refreshedOverridesCpp(context, thinBindings, taskDisposal) : ""}// ${context.provenance(path, "enableRenderTaskMeshRefresh")}
+    return `${overrides ? refreshedOverridesCpp(context, { thinBindings, taskDisposal }) : ""}// ${context.provenance(path, "enableRenderTaskMeshRefresh")}
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task) {
     auto& record = task_record(engine, task);
     if (record.kind != FrameTaskKind::render) throw std::runtime_error("Mesh refresh requires a render task.");

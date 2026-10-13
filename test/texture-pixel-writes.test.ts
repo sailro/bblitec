@@ -149,7 +149,7 @@ expectError("GPU texture write exceeds its destination texture.", () => updateTe
 `);
     const factory = new FactoryLowerer(
         new LoweringContext(),
-    ).lowerPixelsTextureFactory(true).source;
+    ).lowerPixelsTextureFactory({ writes: true }).source;
     runGeneratedProgram(
         native,
         "texture-pixel-writes-program",

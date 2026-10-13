@@ -15,11 +15,18 @@ export class RenderTargetLowerer {
     /** The pin's code for a sampled depth facade over a multisampled or absent depth attachment. */
     private readonly sampledDepthError: number;
 
+    private readonly surface: boolean;
+    private readonly disposal: boolean;
+
     public constructor(
         private readonly context: LoweringContext,
-        private readonly surface = false,
-        private readonly disposal = false,
+        {
+            surface = false,
+            disposal = false,
+        }: { surface?: boolean; disposal?: boolean } = {},
     ) {
+        this.surface = surface;
+        this.disposal = disposal;
         this.context.functionDeclaration(
             renderTargetModule,
             "createRenderTarget",

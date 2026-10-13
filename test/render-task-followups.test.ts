@@ -152,7 +152,7 @@ test("refreshed render tasks queue per-task overrides in the pin's renderable or
     }
     const lowered = new GeometryOutputLowerer(
         new LoweringContext(),
-    ).lowerTaskRecords(false, true, true);
+    ).lowerTaskRecords({ meshRemoval: true, refreshedOverrides: true });
     const include = taskRecordsFixture(
         "render-task-followups/refreshed-overrides",
         lowered,
@@ -248,7 +248,7 @@ test("refreshed task overrides lower where refresh and an override are both reac
     const context = new LoweringContext();
     const geometry = new GeometryOutputLowerer(context);
     assert.match(
-        geometry.lowerTaskRecords(false, false, true).source,
+        geometry.lowerTaskRecords({ refreshedOverrides: true }).source,
         /queue_refreshed_render_task_mesh\(engine, record, mesh, material\)/,
     );
     assert.match(

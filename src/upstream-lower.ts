@@ -161,7 +161,10 @@ import {
     pinnedSplatShader,
 } from "./shader-builtins-splat.js";
 import type { PinnedSplatShModule } from "./pinned-splat-fragments.js";
-import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
+import {
+    GeometryOutputLowerer,
+    type TaskRecordOptions,
+} from "./lowering/geometry-output-lowerer.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import {
@@ -193,6 +196,7 @@ import {
 } from "./generation-refusal.js";
 import {
     EffectLowerer,
+    type EffectFactoryOptions,
     UniformEffectLowerer,
     effectStageStems,
 } from "./lowering/effect-lowerer.js";
@@ -1336,11 +1340,10 @@ ${lowerThinInstanceSync(context)}
         );
         this.emitTextData(features, context, options, generated);
         emitReached("upstream/src/frame_graph_resources.cpp", () =>
-            new RenderTargetLowerer(
-                context,
-                features.includes("frame-graph:surface-target"),
-                features.includes("frame-graph:target-disposal"),
-            ).lower(),
+            new RenderTargetLowerer(context, {
+                surface: features.includes("frame-graph:surface-target"),
+                disposal: features.includes("frame-graph:target-disposal"),
+            }).lower(),
         );
         emitReached("upstream/src/frame_graph_context.cpp", () =>
             new FrameGraphContextLowerer(context).lower(),
@@ -1541,15 +1544,11 @@ ${lowerThinInstanceSync(context)}
         // sprite renderer for an atlas the pinned loader gave a chain.
         const deployMipBlit = (): void => deployUtility(pinnedMipBlitModule());
         if (features.includes("compute:texture-mipmaps")) deployMipBlit();
-        this.emitEffectWrapper(
-            context,
-            options,
-            composedShaders,
-            generated,
-            features.includes("effect:wrapper-disposal"),
-            features.includes("frame-graph:task-build"),
-            features.includes("frame-graph:task-disposal"),
-        );
+        this.emitEffectWrapper(context, options, composedShaders, generated, {
+            disposal: features.includes("effect:wrapper-disposal"),
+            taskBuild: features.includes("frame-graph:task-build"),
+            taskDisposal: features.includes("frame-graph:task-disposal"),
+        });
         this.emitLoaderSplat(
             features,
             context,
@@ -1601,15 +1600,14 @@ ${lowerThinInstanceSync(context)}
             deployUtility,
             deployMipBlit,
         );
-        this.emitRendererGeometryOutput(
-            context,
-            generated,
-            options.gpuInstancing,
-            features.includes("frame-graph:task-mesh-removal"),
-            features.includes("frame-graph:task-mesh-refresh") &&
+        this.emitRendererGeometryOutput(context, generated, {
+            thinBindings: options.gpuInstancing,
+            meshRemoval: features.includes("frame-graph:task-mesh-removal"),
+            refreshedOverrides:
+                features.includes("frame-graph:task-mesh-refresh") &&
                 features.includes("frame-graph:task-material-override"),
-            features.includes("frame-graph:task-disposal"),
-        );
+            taskDisposal: features.includes("frame-graph:task-disposal"),
+        });
         this.emitRendererPostProcess(
             features,
             options,
@@ -1631,14 +1629,16 @@ ${lowerThinInstanceSync(context)}
             factories.lowerFileTextureFactory(),
         );
         emitReached("upstream/src/texture_pixels.cpp", () =>
-            factories.lowerPixelsTextureFactory(
-                features.includes("texture:pixels-writes"),
-            ),
+            factories.lowerPixelsTextureFactory({
+                writes: features.includes("texture:pixels-writes"),
+            }),
         );
         emitReached("upstream/src/material_shader.cpp", () =>
-            factories.lowerShaderMaterialFactory(
-                features.includes("material:shader-uniform-ranges"),
-            ),
+            factories.lowerShaderMaterialFactory({
+                rangeUpdates: features.includes(
+                    "material:shader-uniform-ranges",
+                ),
+            }),
         );
         emitReached("upstream/src/material_shader_external.cpp", () =>
             lowerShaderExternalTextures(context),
@@ -2474,9 +2474,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         options: UpstreamEmitOptions,
         composedShaders: ComposedShader[],
         generated: { modulePath: string; symbolName: string }[],
-        disposal: boolean,
-        taskBuild: boolean,
-        taskDisposal: boolean,
+        factory: EffectFactoryOptions,
     ): void {
         if (this.reaches("upstream/src/effect_renderer.cpp")) {
             // One module per descriptor, both entry points in it: the pin
@@ -2523,7 +2521,7 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/effect_renderer.cpp",
-                effects.lowerFactory(disposal, taskBuild, taskDisposal),
+                effects.lowerFactory(factory),
                 generated,
             );
         }
@@ -3117,19 +3115,13 @@ ${wgsl}`,
     private emitRendererGeometryOutput(
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
-        thinBindings: boolean,
-        meshRemoval: boolean,
-        refreshedOverrides: boolean,
-        taskDisposal: boolean,
+        taskRecords: TaskRecordOptions,
     ): void {
         if (this.reaches("upstream/src/frame_graph_geometry.cpp")) {
             this.writeSource(
                 "upstream/src/frame_graph_geometry.cpp",
                 new GeometryOutputLowerer(context).lowerTaskRecords(
-                    thinBindings,
-                    meshRemoval,
-                    refreshedOverrides,
-                    taskDisposal,
+                    taskRecords,
                 ),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_geometry.hpp",

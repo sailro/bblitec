@@ -262,12 +262,11 @@ test("RenderTask.dispose releases owned targets once and later adds and records 
         return;
     }
     const context = new LoweringContext();
-    const records = new GeometryOutputLowerer(context).lowerTaskRecords(
-        false,
-        true,
-        true,
-        true,
-    );
+    const records = new GeometryOutputLowerer(context).lowerTaskRecords({
+        meshRemoval: true,
+        refreshedOverrides: true,
+        taskDisposal: true,
+    });
     const directory = resolve("artifacts/frame-graph-task-lifecycle/dispose"),
         include = join(directory, "include/bblite/upstream");
     mkdirSync(include, { recursive: true });
@@ -281,7 +280,7 @@ test("RenderTask.dispose releases owned targets once and later adds and records 
         tools,
         "frame-graph-task-lifecycle/dispose",
         `${records.source}
-${new RenderTargetLowerer(context, false, true).lower().source}
+${new RenderTargetLowerer(context, { disposal: true }).lower().source}
 #include <iostream>
 using namespace bbl;
 template <class F> std::string refusal(F function) {

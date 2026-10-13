@@ -173,7 +173,7 @@ test("each disposal lowering is emitted only where its API is reached", () => {
         /remove_render_task_mesh/,
     );
     assert.match(
-        geometry.lowerTaskRecords(false, true).source,
+        geometry.lowerTaskRecords({ meshRemoval: true }).source,
         /void remove_render_task_mesh\(/,
     );
     assert.throws(
@@ -322,10 +322,9 @@ test("render-task mesh removal matches the pin's queued, built and refreshed rem
         return;
     }
     const context = new LoweringContext();
-    const lowered = new GeometryOutputLowerer(context).lowerTaskRecords(
-        false,
-        true,
-    );
+    const lowered = new GeometryOutputLowerer(context).lowerTaskRecords({
+        meshRemoval: true,
+    });
     const directory = resolve("artifacts/engine-resource-lifetimes/removal"),
         include = join(directory, "include/bblite/upstream");
     mkdirSync(include, { recursive: true });
@@ -711,7 +710,7 @@ test("effect wrapper disposal empties the pin's slots and the next bind-group bu
         "engine-resource-lifetimes/effect",
         `#include <bblite/upstream/effect_variants.hpp>
 ${variants.definitions}
-${new EffectLowerer(new LoweringContext()).lowerFactory(true).source}
+${new EffectLowerer(new LoweringContext()).lowerFactory({ disposal: true }).source}
 #include <cassert>
 using namespace bbl;
 template <class F> std::string refusal(F function) {
@@ -859,7 +858,10 @@ test("render-target texture disposal releases the attachments once and later bui
         tools,
         "engine-resource-lifetimes/target",
         lowerGpuRetirement(context).source +
-            new RenderTargetLowerer(context, true, true).lower().source +
+            new RenderTargetLowerer(context, {
+                surface: true,
+                disposal: true,
+            }).lower().source +
             `
 #include <bblite/js_realm_state.hpp>
 #include <cassert>

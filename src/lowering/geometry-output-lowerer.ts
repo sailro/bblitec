@@ -9,15 +9,23 @@ import { assertGeometryTaskSync } from "./geometry-task-sync.js";
 import { recordAt } from "../compiler/record-access.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 
+/** The reached task features a scene's task records lower with; each defaults to off. */
+export interface TaskRecordOptions {
+    readonly thinBindings?: boolean;
+    readonly meshRemoval?: boolean;
+    readonly refreshedOverrides?: boolean;
+    readonly taskDisposal?: boolean;
+}
+
 export class GeometryOutputLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerTaskRecords(
+    public lowerTaskRecords({
         thinBindings = false,
         meshRemoval = false,
         refreshedOverrides = false,
         taskDisposal = false,
-    ): LoweredSource {
+    }: TaskRecordOptions = {}): LoweredSource {
         const geometryModule = "src/frame-graph/geometry-renderer-task.ts";
         const copyModule = "src/frame-graph/copy-to-texture-task.ts";
         const actionsModule = "src/frame-graph/frame-graph-actions.ts";
@@ -371,7 +379,7 @@ static void initialize_refreshed_render_task_shader_materials(Engine& engine, Fr
     ++engine.draw_list_epoch;
 }
 
-${renderTaskMeshRefreshCpp(this.context, refreshedOverrides, thinBindings, taskDisposal)}
+${renderTaskMeshRefreshCpp(this.context, { overrides: refreshedOverrides, thinBindings, taskDisposal })}
 
 TaskHandle create_render_task(
     Engine& engine,
