@@ -961,8 +961,7 @@ export class PlatformCalls {
                       ? "mouseup"
                       : event === "pointermove"
                         ? "mousemove"
-                        : event === "pointercancel" ||
-                            event === "lostpointercapture"
+                        : event === "pointercancel"
                           ? "mouseout"
                           : event;
             if (
@@ -973,7 +972,6 @@ export class PlatformCalls {
                 event !== "pointerup" &&
                 event !== "pointermove" &&
                 event !== "pointercancel" &&
-                event !== "lostpointercapture" &&
                 event !== "change" &&
                 event !== "input" &&
                 event !== "contextmenu"
