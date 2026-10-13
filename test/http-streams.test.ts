@@ -198,6 +198,82 @@ test("fetch streams bodies, reads headers, honours abort and reuses connections"
     assert.ok(interrupted >= 3, `${interrupted} interrupted transfers`);
 });
 
+/**
+ * The realm stalls past the transport's 5 s no-progress timeout with a read
+ * pending: the transport queues the first chunk, then fails, before the realm
+ * runs the task that delivers the chunk. A read and an abort in the task that
+ * observes the chunk still see the abort's reason, and an end the realm has
+ * not observed yields to an abort the same way.
+ */
+test("an abort wins over a transfer end or failure the realm has not yet observed", async (t) => {
+    const native = optionalNativeFixtureTools();
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const base = await serveHttpFixture(t, (request, response, hold) => {
+        if (request.url === "/slow") {
+            response.writeHead(200, { "content-length": "1000" });
+            response.write(Buffer.alloc(10, 7));
+            hold(response);
+            return;
+        }
+        response.end("abc");
+    });
+    const source = `
+        function stall(milliseconds: number): void {
+            const until = Date.now() + milliseconds;
+            while (Date.now() < until) {}
+        }
+        function described(error: unknown): string {
+            if (error instanceof RangeError) return "RangeError:" + error.message;
+            if (error instanceof TypeError) return "TypeError:" + error.message;
+            return "other";
+        }
+        async function abortAfter(url: string, milliseconds: number, bytes: number): Promise<void> {
+            const controller = new AbortController();
+            const response = await fetch(url, { signal: controller.signal });
+            const reader = response.body!.getReader();
+            const first = reader.read();
+            stall(milliseconds);
+            const head = await first;
+            if (head.done || head.value.byteLength !== bytes) throw new Error(url + " head");
+            const next = reader.read();
+            controller.abort(new RangeError("stop"));
+            let reason = "fulfilled";
+            try { await next; } catch (error) { reason = described(error); }
+            if (reason !== "RangeError:stop") throw new Error(url + " abort lost to " + reason);
+        }
+        async function run(): Promise<void> {
+            await abortAfter("${base}/slow", 8000, 10);
+            await abortAfter("${base}/short", 500, 3);
+            globalThis.close();
+        }
+        run();
+    `;
+    const directory = resolve("artifacts/http-abort-order");
+    mkdirSync(directory, { recursive: true });
+    const entry = resolve(directory, "entry.ts");
+    writeFileSync(entry, source);
+    const compiled = compileSource(source, { fileName: entry });
+    const cpp = resolve(directory, "main.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(cpp, compiled.cpp);
+    runNativeFixtureCompiler(native, [
+        "/DBBLITE_WORKERS=1",
+        cpp,
+        "native/src/pal_http.cpp",
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
+        "/link",
+        "winhttp.lib",
+    ]);
+    const output = await promisify(execFile)(executable, [], {
+        timeout: 60000,
+    });
+    assert.equal(output.stdout + output.stderr, "");
+});
+
 test("stream and signal forms without a native representation refuse", () => {
     for (const [body, message] of [
         [
