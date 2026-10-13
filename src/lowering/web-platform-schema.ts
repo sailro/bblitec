@@ -907,6 +907,19 @@ export const webAudioRecords: readonly RecordSpec[] = [
     ]),
 ];
 
+/** A Web Audio or media property's native read, as the records above spell it. */
+export function webAudioMemberRead(
+    record: string,
+    member: string,
+): (owner: string) => string {
+    const access = webAudioRecords
+        .find((spec) => spec.pinned.includes(record))
+        ?.members?.get(member)?.access;
+    if (!access)
+        throw new Error(`The Web Audio records spell no ${record}.${member}.`);
+    return access;
+}
+
 /**
  * A Web Audio or media method's native spelling, as the records above spell
  * it for the pinned libraries; application calls on the same objects take

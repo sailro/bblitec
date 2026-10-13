@@ -112,6 +112,7 @@ interface DeclarationContext
         Pick<
             LoweringServices,
             | "absenceTags"
+            | "impureReadCount"
             | "allocateTemporaryCppName"
             | "classLowerer"
             | "callbackIdentity"
@@ -983,7 +984,9 @@ export class DeclarationLowerer {
             cppName,
         );
         const initializerBoundary = this.context.nativeBindingCheckpoint();
+        const impureReads = this.context.impureReadCount;
         let value = this.context.compileValue(declaration.initializer);
+        const readsImpure = this.context.impureReadCount !== impureReads;
         if (
             nullableResource &&
             !this.context.dynamicBindings.has(declaration) &&
@@ -1125,6 +1128,7 @@ export class DeclarationLowerer {
         }
         if (
             value.impure ||
+            readsImpure ||
             this.expressionHasObservableEvaluation(declaration.initializer)
         ) {
             // A `const` bound to a clock is a snapshot of it, so later

@@ -54,6 +54,7 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { webPlatformProperty } from "./web-platform.js";
+import { webAudioMemberRead } from "../lowering/web-platform-schema.js";
 import {
     AUDIO_BUFFER_PROPERTIES,
     AUDIO_ELEMENT_PROPERTIES,
@@ -193,6 +194,8 @@ interface PropertyRead {
      * other helpers take, plus the enumerator that says which parameter.
      */
     helperArgument?: string;
+    /** The read spelled over the owner expression by its record (`webAudioMemberRead`). */
+    access?: (owner: string) => string;
     /**
      * This read is a clock rather than a constant: see `Value.impure`.
      */
@@ -855,11 +858,14 @@ export const propertyRules: readonly PropertyRule[] = [
         impure: true,
     },
     {
+        // A float the automation timeline advances, read once as the
+        // float-rounded double JavaScript sees.
         owner: "audio-param",
         property: "value",
         value: "number",
-        helper: "bbl::pal::audio_param_value",
+        access: webAudioMemberRead("AudioParam", "value"),
         feature: "audio:engine",
+        impure: true,
     },
     // MediaStreamAudioDestinationNode.stream: one stream per node.
     {
@@ -1593,6 +1599,7 @@ export interface PropertyContext extends Pick<
     | "fail"
     | "sceneManifest"
     | "dataValue"
+    | "noteImpureRead"
 > {}
 
 /**
@@ -1712,6 +1719,7 @@ export function readProperty(
         rule.dataType?.kind === "optional" && rule.knownPresent?.(owner)
             ? rule.dataType.inner
             : rule.dataType;
+    if (rule.impure) context.noteImpureRead();
     const read = (cpp: string): Value =>
         dataType?.kind === "promise"
             ? context.dataValue(cpp, dataType)
@@ -1816,6 +1824,7 @@ export function readProperty(
             ),
         );
     }
+    if (rule.access) return read(rule.access(owner.cpp));
     if (rule.helper) {
         const receiver = rule.helperOwnerField
             ? `(${owner.cpp}).${rule.helperOwnerField}`
