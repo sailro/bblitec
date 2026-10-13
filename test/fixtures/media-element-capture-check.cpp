@@ -1,9 +1,10 @@
 // HTMLAudioElement playback over the real LabSound PAL, rendered offline
-// between its calls (test/media-element-audio.test.ts runs it): a packaged
-// ramp (sample value = position in seconds) plays, pauses, resumes, seeks,
-// ends and loops through createMediaElementSource; two constant elements
-// then crossfade through their gains, the application's shape. Prints one
-// line per step.
+// between its calls (test/media-element-audio.test.ts runs it): an unrouted
+// element plays to its session's default output and moves into the graph
+// when routed; a packaged ramp (sample value = position in seconds) plays,
+// pauses, resumes, seeks, ends and loops through createMediaElementSource;
+// two constant elements then crossfade through their gains, the
+// application's shape. Prints one line per step.
 
 #include "pal_audio_labsound.cpp"
 
@@ -64,6 +65,7 @@ js::Promise<js::PromiseVoid> run(std::vector<std::string> files, std::vector<std
     pal::register_packaged_responses(
         "http://localhost/",
         {{"/beds/ramp.wav", files[0]}, {"/beds/high.wav", files[1]}, {"/beds/low.wav", files[2]}});
+    std::shared_ptr<pal::AudioSession> session;
     std::size_t identity = 100;
     const auto count = [&](const pal::AudioElement& element, const std::string& prefix) {
         for (const auto& [type, name] :
@@ -78,8 +80,23 @@ js::Promise<js::PromiseVoid> run(std::vector<std::string> files, std::vector<std
         }
     };
 
+    // An unrouted element plays to its session's default output; routing it
+    // moves playback, from the same position, into the graph.
+    const auto direct = pal::audio_create_element(session, std::string("/beds/high.wav"));
+    co_await pal::audio_element_play(direct);
+    const auto output = direct->playback->context;
+    const auto heard = render(output, rate / 10);
+    pal::audio_connect(pal::audio_create_media_element_source(context, direct), master);
+    const auto left = render(output, rate / 10);
+    const auto moved = render(context, rate / 10);
+    lines.push_back("direct " + fixed(heard.back()) + " " + fixed(peak(left, 0, left.size())) +
+                    " " + fixed(moved.back()) + " " +
+                    fixed(pal::audio_element_current_time(direct)));
+    pal::audio_element_pause(direct);
+    co_await sleep(0.0);
+
     // The ramp: routed through its own gain, as the application routes a bed.
-    const auto ramp = pal::audio_create_element(std::string("/beds/ramp.wav"));
+    const auto ramp = pal::audio_create_element(session, std::string("/beds/ramp.wav"));
     count(ramp, "ramp.");
     const auto ramp_gain = pal::audio_create_gain(context);
     pal::audio_connect(pal::audio_create_media_element_source(context, ramp), ramp_gain);
@@ -128,8 +145,8 @@ js::Promise<js::PromiseVoid> run(std::vector<std::string> files, std::vector<std
     co_await sleep(0.0);
 
     // A crossfade between two elements through their gains.
-    const auto high = pal::audio_create_element(std::string("/beds/high.wav"));
-    const auto low = pal::audio_create_element(std::string("/beds/low.wav"));
+    const auto high = pal::audio_create_element(session, std::string("/beds/high.wav"));
+    const auto low = pal::audio_create_element(session, std::string("/beds/low.wav"));
     const auto high_gain = pal::audio_create_gain(context);
     const auto low_gain = pal::audio_create_gain(context);
     pal::audio_connect(pal::audio_create_media_element_source(context, high), high_gain);

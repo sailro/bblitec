@@ -269,7 +269,8 @@ export function packagedAudioUrl(
 
 /** `new Audio([url])`: an element over a packaged source (`pal_audio_element.hpp`). */
 function compileAudioElementConstructor(
-    context: StaticFetchContext & Pick<LoweringServices, "emit">,
+    context: StaticFetchContext &
+        Pick<LoweringServices, "audioSessionCpp" | "emit">,
     expression: ts.NewExpression,
 ): Value {
     if (!context.options.workers) throw new ApplicationRealmRequired();
@@ -284,10 +285,12 @@ function compileAudioElementConstructor(
               parameters[0],
               "An Audio source URL must select packaged audio a linked decoder reads: a literal, or a runtime string whose candidates generation can find.",
           )
-        : "";
+        : undefined;
+    // An unrouted element plays to its audio session's default output.
+    const session = context.audioSessionCpp();
     return {
         kind: "audio-element",
-        cpp: `bbl::pal::audio_create_element(${url})`,
+        cpp: `bbl::pal::audio_create_element(${url ? `${session}, ${url}` : session})`,
         dataType: { kind: "handle", handle: "audio-element" },
         impure: true,
     };

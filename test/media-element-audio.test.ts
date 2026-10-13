@@ -251,19 +251,7 @@ async function main(): Promise<void> {
     const probe = new Audio(appUrl("/assets/beds/first.wav"));
     if (!Number.isNaN(probe.duration) || !probe.paused || probe.preload !== "auto" || probe.loop)
         throw new Error("initial element state");
-    let unrouted = "";
-    await probe.play().catch((error: Error) => {
-        unrouted = error.name;
-    });
-    if (unrouted !== "NotSupportedError") throw new Error("unrouted play: " + unrouted);
-    ctx.createMediaElementSource(probe).connect(master);
-    let second = "";
-    try {
-        ctx.createMediaElementSource(probe);
-    } catch (error) {
-        second = (error as Error).name;
-    }
-    if (second !== "InvalidStateError") throw new Error("second source: " + second);
+    // A pause before playback starts interrupts the play.
     let interrupted = "";
     const pending = probe.play().catch((error: Error) => {
         interrupted = error.name;
@@ -281,9 +269,18 @@ async function main(): Promise<void> {
     probe.addEventListener("ended", () => {
         events.push("ended");
     });
+    // Unrouted, the element plays to the default output; routing moves it.
     await probe.play();
     if (!(Math.abs(probe.duration - 0.6) < 0.001) || probe.paused)
         throw new Error("playing element: " + probe.duration);
+    ctx.createMediaElementSource(probe).connect(master);
+    let second = "";
+    try {
+        ctx.createMediaElementSource(probe);
+    } catch (error) {
+        second = (error as Error).name;
+    }
+    if (second !== "InvalidStateError") throw new Error("second source: " + second);
     probe.currentTime = 0.5;
     await wait(400);
     if (!probe.ended || !probe.paused || Math.abs(probe.currentTime - 0.6) > 0.001 ||
@@ -422,7 +419,7 @@ test("refused media element forms name their limit", () => {
     );
 });
 
-test("a media element plays, pauses, seeks, ends, loops and crossfades in a LabSound capture", (t) => {
+test("a media element plays, moves, pauses, seeks, ends, loops and crossfades in a LabSound capture", (t) => {
     if (!native) {
         t.skip("The native compiler and pinned LabSound library are required.");
         return;
@@ -454,6 +451,7 @@ test("a media element plays, pauses, seeks, ends, loops and crossfades in a LabS
             `${actual} is not ${expected}`,
         );
     const [
+        direct,
         before,
         played,
         playing,
@@ -466,6 +464,13 @@ test("a media element plays, pauses, seeks, ends, loops and crossfades in a LabS
         released,
         events,
     ] = lines;
+    // The default output, then nothing there and the same source routed.
+    const [heard, left, moved, movedTime] = values(direct, "direct");
+    near(heard!, 0.5, 0.002);
+    assert.equal(left, 0);
+    near(moved!, 0.5, 0.002);
+    // Two renders of whole 128-frame quanta: 0.1013 s each.
+    near(movedTime!, 0.2027, 0.001);
     assert.equal(before, "before nan");
     assert.equal(played, "played 1.000");
     // The ramp's sample is its position: a quarter second in.

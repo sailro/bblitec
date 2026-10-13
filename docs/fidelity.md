@@ -102,4 +102,5 @@ Arbitrary async text builders refuse.
 - Topology agreement does not establish PCM fidelity.
 - A media element decodes its whole source at its context's rate when routed (or at `play()` with `preload="none"`)
   and holds it until `load()` or its release: 4 bytes per sample and channel, about 23 MB per stereo minute at
-  48 kHz. Its clock is that context's; `timeupdate` fires every 250 ms while playing (Chromium's cadence).
+  48 kHz. Its clock is that context's; unrouted elements share one default-output context per audio session.
+  `timeupdate` fires every 250 ms while playing (Chromium's cadence).

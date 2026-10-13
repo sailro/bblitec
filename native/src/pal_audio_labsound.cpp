@@ -1626,8 +1626,12 @@ struct AudioElementPlayback {
     double position = 0.0;
     double duration = std::numeric_limits<double>::quiet_NaN();
     std::shared_ptr<const DecodedAudio> decoded;
+    /** The session whose default output an unrouted element plays to. */
+    std::shared_ptr<AudioSession> session;
     AudioContextHandle context{};
     std::optional<AudioNodeHandle> output;
+    /** `createMediaElementSource` made `output`; otherwise it feeds the default output. */
+    bool routed = false;
     bool playing = false;
     bool segment_loops = false;
     double segment_start = 0.0;
@@ -1785,6 +1789,27 @@ void fail_element_source(AudioElementPlayback& playback) {
                  "Failed to load because no supported source was found.", "NotSupportedError");
 }
 
+/** The output node plays the decoded source, its channels configured before a pull. */
+void bind_decoded_source(const AudioElementPlayback& playback) {
+    const auto node = element_node(playback);
+    auto& context = require_context(context_of(playback.output->value));
+    lab::ContextRenderLock render(context.context.get(), "bblite media element source");
+    node->setBus(decoded_bus(playback));
+    node->output(0)->setNumberOfChannels(render, playback.decoded->bus->numberOfChannels());
+    node->output(0)->updateRenderingState(render);
+}
+
+/** A sampled node in `context` for the element's output, held by the element. */
+AudioNodeHandle create_element_output(AudioContextHandle context) {
+    ContextRecord& record = require_context(context.value);
+    auto value = js::make_gc_shared<AudioNodeRecord>();
+    value->node = std::make_shared<lab::SampledAudioNode>(*record.context);
+    auto entry = record.nodes.insert(std::move(value));
+    AudioNodeHandle handle{pack(context.value, entry.index), std::move(entry.ownership)};
+    register_graph_node(record, handle);
+    return handle;
+}
+
 void finish_element_load(const AudioElement& element, std::uint64_t generation,
                          std::shared_ptr<const DecodedAudio> decoded) {
     auto& playback = *element->playback;
@@ -1797,15 +1822,9 @@ void finish_element_load(const AudioElement& element, std::uint64_t generation,
     }
     playback.loading = false;
     playback.decoded = std::move(decoded);
-    const lab::AudioBus& bus = *playback.decoded->bus;
-    playback.duration = static_cast<double>(bus.length()) / audio_sample_rate(playback.context);
-    {
-        auto& context = require_context(context_of(playback.output->value));
-        lab::ContextRenderLock render(context.context.get(), "bblite media element source");
-        node->setBus(decoded_bus(playback));
-        node->output(0)->setNumberOfChannels(render, bus.numberOfChannels());
-        node->output(0)->updateRenderingState(render);
-    }
+    playback.duration =
+        static_cast<double>(playback.decoded->bus->length()) / audio_sample_rate(playback.context);
+    bind_decoded_source(playback);
     // A position set before the source loaded is its default start position.
     playback.position = std::clamp(playback.position, 0.0, playback.duration);
     if (!playback.paused) {
@@ -1864,7 +1883,7 @@ void begin_element_load(const AudioElement& element) {
     }
 }
 
-/** The resource selection a routed element with a source runs when it may load. */
+/** The resource selection an element with a source and an output runs when it may load. */
 void select_element_resource(const AudioElement& element, bool playing) {
     auto& playback = *element->playback;
     if (playback.source && playback.output && !playback.decoded && !playback.loading &&
@@ -1888,10 +1907,36 @@ void AudioElementState::gc_trace(const js::TraceVisitor& visitor) const {
     visitor(playback->output);
 }
 
-AudioElement audio_create_element(std::string url) {
+AudioElement audio_create_element(std::shared_ptr<AudioSession>& session) {
+    if (!session)
+        session = std::make_shared<AudioSession>();
     auto element = audio_create_element();
+    element->playback->session = session;
+    return element;
+}
+
+AudioElement audio_create_element(std::shared_ptr<AudioSession>& session, std::string url) {
+    auto element = audio_create_element(session);
     element->playback->source = std::move(url);
     return element;
+}
+
+AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session) {
+    if (!session)
+        session = std::make_shared<AudioSession>();
+    if (session->media_output_.value && audio_state(session->media_output_) != "closed")
+        return session->media_output_;
+    const auto output = audio_create_context(session);
+    session->media_output_ = output;
+#if BBLITE_AUDIO_CAPTURE
+    // A capture recorder renders only while something feeds it, and routed
+    // elements leave this output.
+    if (require_context(output.value).recorder) {
+        session->media_output_feed_ = audio_create_gain(output);
+        audio_connect(session->media_output_feed_, audio_destination(output));
+    }
+#endif
+    return output;
 }
 
 js::Promise<js::PromiseVoid> audio_element_play(const AudioElement& element) {
@@ -1899,10 +1944,19 @@ js::Promise<js::PromiseVoid> audio_element_play(const AudioElement& element) {
     if (!playback.source || playback.failed)
         return js::Promise<js::PromiseVoid>::rejected(
             js::dom_exception_error("The element has no supported sources.", "NotSupportedError"));
-    if (!playback.output)
-        return js::Promise<js::PromiseVoid>::rejected(js::dom_exception_error(
-            "A native HTMLAudioElement plays only through createMediaElementSource.",
-            "NotSupportedError"));
+    if (!playback.output) {
+        try {
+            const auto context = audio_media_output(playback.session);
+            const auto output = create_element_output(context);
+            audio_connect(output, audio_destination(context));
+            playback.context = context;
+            playback.output = output;
+        } catch (const WorkerTerminated&) {
+            throw;
+        } catch (...) {
+            return js::Promise<js::PromiseVoid>::rejected(std::current_exception());
+        }
+    }
     js::Promise<js::PromiseVoid> promise;
     playback.pending_plays.push_back(promise);
     select_element_resource(element, true);
@@ -1917,7 +1971,10 @@ js::Promise<js::PromiseVoid> audio_element_play(const AudioElement& element) {
             start_segment(element);
     }
     if (playback.decoded)
-        EventLoop::current().post([element] { resolve_plays(*element->playback); });
+        EventLoop::current().post([plays = std::exchange(playback.pending_plays, {})] {
+            for (const auto& play : plays)
+                play.resolve(js::PromiseVoid{});
+        });
     return promise;
 }
 
@@ -2034,19 +2091,35 @@ void audio_element_remove_listener(const AudioElement& element, AudioElementEven
 AudioNodeHandle audio_create_media_element_source(AudioContextHandle context,
                                                   const AudioElement& element) {
     auto& playback = playback_of(element);
-    if (playback.output)
+    if (playback.routed)
         throw js::make_dom_exception("HTMLMediaElement already connected previously to a different "
                                      "MediaElementSourceNode.",
                                      "InvalidStateError");
-    ContextRecord& record = require_context(context.value);
-    auto value = js::make_gc_shared<AudioNodeRecord>();
-    value->node = std::make_shared<lab::SampledAudioNode>(*record.context);
-    auto entry = record.nodes.insert(std::move(value));
-    AudioNodeHandle handle{pack(context.value, entry.index), std::move(entry.ownership)};
-    register_graph_node(record, handle);
+    const auto handle = create_element_output(context);
+    const bool playing = playback.playing;
+    bool rebind = false;
+    if (playback.output) {
+        // Leave the default output, keeping the position.
+        stop_segment(playback);
+        audio_disconnect(*playback.output);
+        // A source decoded (or decoding) at another rate decodes again.
+        rebind =
+            playback.decoded && audio_sample_rate(playback.context) == audio_sample_rate(context);
+        if (!rebind) {
+            ++playback.generation;
+            playback.loading = false;
+            playback.decoded.reset();
+        }
+    }
     playback.output = handle;
     playback.context = context;
-    select_element_resource(element, false);
+    playback.routed = true;
+    if (rebind) {
+        bind_decoded_source(playback);
+        if (playing)
+            start_segment(element);
+    }
+    select_element_resource(element, !playback.paused);
     return handle;
 }
 #endif

@@ -4,8 +4,9 @@
  * `HTMLAudioElement`. A lowered library asks `canPlayType`, answered from the
  * decoders this build links (`audio:decode-*`). Application playback
  * (`audio:media-element`, `pal_audio_labsound.cpp`) decodes the element's
- * packaged source whole on a native job once `createMediaElementSource`
- * routes it, and plays it through that node on the context's clock.
+ * packaged source whole on a native job and plays it on its context's clock:
+ * through the node `createMediaElementSource` made, or else to the default
+ * output, a context its audio session shares among unrouted elements.
  */
 
 #include <bblite/features/audio_decode_flac.hpp>
@@ -22,6 +23,7 @@
 #if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
 #include <bblite/js_callback.hpp>
 #include <bblite/js_promise.hpp>
+#include <bblite/pal_audio.hpp>
 #endif
 
 #include <algorithm>
@@ -57,14 +59,19 @@ using AudioElement = std::shared_ptr<AudioElementState>;
 }
 
 #if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
-/** `new Audio(url)`: `url` selects a packaged response (`register_packaged_responses`). */
-[[nodiscard]] AudioElement audio_create_element(std::string url);
+/**
+ * `new Audio([url])` in `session`, whose default output it plays to until
+ * routed; `url` selects a packaged response (`register_packaged_responses`).
+ */
+[[nodiscard]] AudioElement audio_create_element(std::shared_ptr<AudioSession>& session);
+[[nodiscard]] AudioElement audio_create_element(std::shared_ptr<AudioSession>& session,
+                                                std::string url);
 
 /**
  * `play()`: settles in a task once playback starts. Rejects with
- * NotSupportedError for an element with no source, a source that is not
- * packaged or not decodable, or one no `createMediaElementSource` routed;
- * with AbortError when `pause()` or `load()` interrupts it.
+ * NotSupportedError for an element with no source or a source that is not
+ * packaged or not decodable, and with AbortError when `pause()` or `load()`
+ * interrupts it.
  */
 [[nodiscard]] js::Promise<js::PromiseVoid> audio_element_play(const AudioElement& element);
 void audio_element_pause(const AudioElement& element);
@@ -95,7 +102,8 @@ void audio_element_remove_listener(const AudioElement& element, AudioElementEven
 
 /**
  * `context.createMediaElementSource(element)`: the element's output, from now
- * on only into the returned node. A second call throws InvalidStateError.
+ * on only into the returned node (playback in progress moves there). A second
+ * call throws InvalidStateError.
  */
 [[nodiscard]] AudioNodeHandle audio_create_media_element_source(AudioContextHandle context,
                                                                 const AudioElement& element);

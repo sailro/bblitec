@@ -188,8 +188,8 @@ context is not running throws (no statechange).
 Media elements (application realm): `new Audio(url)` with a URL selecting packaged audio (a runtime URL needs
 inferable candidates), `play`/`pause`/`load`, `removeAttribute("src")`, `loop`, `preload`, `currentTime` (seek),
 `duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause` listeners without payloads.
-`createMediaElementSource` routes an element once (again: InvalidStateError); an element sounds only through it, so
-`play()` of an unrouted element rejects with NotSupportedError. Other members and attributes refuse.
+An unrouted element plays to the default output; `createMediaElementSource` routes it once (again:
+InvalidStateError), moving its playback into the graph. Other members and attributes refuse.
 
 ## Shadows and navigation
 
