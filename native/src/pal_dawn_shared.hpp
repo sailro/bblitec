@@ -8,6 +8,7 @@
 #include <bblite/features/has_gamepad.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/storage_readback.hpp>
+#include <bblite/pal_image.hpp>
 
 #include "pal_dawn_device.hpp"
 #include "pal_dawn_adapter.hpp"
