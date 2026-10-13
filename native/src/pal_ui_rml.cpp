@@ -358,9 +358,18 @@ bool ui_record_has_class(const UiElementRecord& record, std::string_view class_n
     return false;
 }
 
+/** The form controls a `disabled` attribute disables, matching `:disabled`. */
+bool ui_activation_disabled(const UiElementRecord& record) {
+    return (record.tag == "button" || record.tag == "input" || record.tag == "textarea" ||
+            record.tag == "select" || record.tag == "option") &&
+           record.attributes.contains("disabled");
+}
+
 struct RetainedUiSelectorTree {
     using Node = UiElementHandle;
     Engine& engine;
+    /** The focused element, for a tree that reads interaction states. */
+    std::optional<Node> focused{};
     static constexpr Node document{invalid_handle - 1};
     bool root(Node node) const { return node == engine.ui_document_roots.html; }
     bool valid(Node node) const {
@@ -417,8 +426,42 @@ struct RetainedUiSelectorTree {
         }
         return true;
     }
-    bool state(Node, UiSelectorTestKind) const {
-        throw std::runtime_error("Interaction states require a retained DOM query snapshot.");
+    /** Focus, `:checked` and `:disabled` are the document's own state; hover and active
+     * the UI projection's, as its last update applied them to the styles. */
+    bool state(Node node, UiSelectorTestKind kind) const {
+        if (!focused)
+            throw std::runtime_error("Interaction state selectors on SVG shapes require SVG DOM "
+                                     "projection.");
+        const auto& record = ui_element(engine, node);
+        switch (kind) {
+        case UiSelectorTestKind::Hover:
+            return (record.pointer_states & ui_pointer_hover) != 0;
+        case UiSelectorTestKind::Active:
+            return (record.pointer_states & ui_pointer_active) != 0;
+        case UiSelectorTestKind::Focus:
+            return node == *focused;
+        case UiSelectorTestKind::FocusVisible:
+            return node == *focused && engine.ui_focus_visible;
+        case UiSelectorTestKind::FocusWithin:
+            for (auto cursor = *focused; valid(cursor) && cursor != document;
+                 cursor = parent(cursor))
+                if (cursor == node)
+                    return true;
+            return false;
+        case UiSelectorTestKind::Disabled:
+            return ui_activation_disabled(record);
+        case UiSelectorTestKind::Checked: {
+            if (record.tag == "option")
+                return ui_get_selected(engine, node);
+            const auto type = record.attributes.find("type");
+            return record.tag == "input" && type != record.attributes.end() &&
+                   (ascii_iequals(type->second, "checkbox") ||
+                    ascii_iequals(type->second, "radio")) &&
+                   ui_get_checked(engine, node);
+        }
+        default:
+            throw std::logic_error("A selector test is not an interaction state.");
+        }
     }
 };
 
@@ -430,7 +473,21 @@ ui_query_elements(Engine& engine, UiElementHandle root,
     if (selectors.empty())
         throw std::runtime_error("A DOM query needs a selector.");
     static_cast<void>(ui_document_root(engine, UiDocumentPart::Html));
-    const RetainedUiSelectorTree tree{engine};
+    const auto reads = [&](UiSelectorTestKind kind) {
+        return std::any_of(selectors.begin(), selectors.end(), [&](const auto& sequence) {
+            return pal::ui_selector_uses_test(sequence, kind);
+        });
+    };
+    if (engine.ui_adopt_pointer_states &&
+        (reads(UiSelectorTestKind::Hover) || reads(UiSelectorTestKind::Active)))
+        engine.ui_adopt_pointer_states(engine);
+    // Only a focus state asks for the active element, which drops a focus
+    // that is no longer focusable as `document.activeElement` does.
+    const bool focus = reads(UiSelectorTestKind::Focus) ||
+                       reads(UiSelectorTestKind::FocusVisible) ||
+                       reads(UiSelectorTestKind::FocusWithin);
+    const RetainedUiSelectorTree tree{engine, focus ? ui_active_element(engine)
+                                                    : engine.ui_focused_element};
     const pal::UiSelectorMatcher matcher{tree};
     js::Array<UiElementHandle> result;
     const auto accept = [&](UiElementHandle candidate) {
@@ -472,6 +529,41 @@ ui_query_element(Engine& engine, UiElementHandle root,
 bool ui_matches_element(Engine& engine, UiElementHandle element,
                         const std::vector<std::vector<UiSelectorStep>>& selectors) {
     return !ui_query_elements(engine, element, selectors, UiQueryMode::Matches).empty();
+}
+
+std::string ui_selector_value(std::string value, char quote) {
+    // The first character that can end the quoted string decides; CSS
+    // preprocessing turns CR and FF into line feeds.
+    const char ends[] = {'\n', '\r', '\f', '\\', quote};
+    const auto end = value.find_first_of(std::string_view(ends, sizeof ends));
+    const auto text = "'" + value + "'";
+    if (end != std::string::npos && value[end] != '\\' && value[end] != quote)
+        throw js::make_dom_exception("A selector attribute value " + text +
+                                         " holds a line break, which ends its quoted string: "
+                                         "the selector is not valid.",
+                                     "SyntaxError");
+    if (end != std::string::npos)
+        throw js::make_dom_exception(
+            "A selector attribute value " + text + " holds " +
+                (value[end] == '\\' ? std::string("a CSS escape") : "its own quote") +
+                ", which runtime selector text is not admitted to contain.",
+            "NotSupportedError");
+    if (value.find_first_of(std::string_view("\t\0", 2)) != std::string::npos)
+        throw js::make_dom_exception("A selector attribute value " + text +
+                                         " holds a tab or NUL, which runtime selector text is "
+                                         "not admitted to contain.",
+                                     "NotSupportedError");
+    return value;
+}
+
+std::size_t ui_selector_choice(std::string_view text,
+                               std::initializer_list<std::string_view> candidates) {
+    const auto found = std::find(candidates.begin(), candidates.end(), text);
+    if (found == candidates.end())
+        throw js::make_dom_exception("The selector '" + std::string(text) + "'" +
+                                         " is none of the literal selectors its type declares.",
+                                     "NotSupportedError");
+    return static_cast<std::size_t>(found - candidates.begin());
 }
 
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
@@ -1895,14 +1987,6 @@ void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> 
     ui_element(engine, element).click_callbacks.push_back(std::move(callback));
     mark_ui_changed(engine);
 }
-
-namespace {
-bool ui_activation_disabled(const UiElementRecord& record) {
-    return (record.tag == "button" || record.tag == "input" || record.tag == "textarea" ||
-            record.tag == "select" || record.tag == "option") &&
-           record.attributes.contains("disabled");
-}
-} // namespace
 
 namespace {
 /** A link: an anchor with a string href (a download anchor's object URL is no attribute). */
@@ -6218,20 +6302,26 @@ struct UiRmlRuntime {
     }
 
     bool sync_hover_states() {
+        static_assert(ui_pointer_hover == 1 && ui_pointer_active == 2);
         bool changed = false;
-        for (ProjectedUiElement& projected : projected_elements) {
-            if (!projected.element)
-                continue;
+        const auto count = std::max(engine.ui_elements.size(), projected_elements.size());
+        for (std::size_t index = 0; index < count; ++index) {
+            auto* element =
+                index < projected_elements.size() ? projected_elements[index].element : nullptr;
             std::uint8_t states = 0, bit = 1;
             for (const auto* state : {"hover", "active", "focus", "focus-visible", "disabled",
                                       "checked", "focus-within"}) {
-                if (projected.element->IsPseudoClassSet(state))
+                if (element && element->IsPseudoClassSet(state))
                     states |= bit;
                 bit <<= 1;
             }
-            if (projected.interaction_states == states)
+            // Selectors read the pointer states, the first two bits, this update styles with.
+            if (index < engine.ui_elements.size())
+                engine.ui_elements[index].pointer_states =
+                    static_cast<std::uint8_t>(states & (ui_pointer_hover | ui_pointer_active));
+            if (!element || projected_elements[index].interaction_states == states)
                 continue;
-            projected.interaction_states = states;
+            projected_elements[index].interaction_states = states;
             changed = true;
         }
         return changed;

@@ -49,6 +49,15 @@ ui_query_element(Engine& engine, UiElementHandle root,
                  UiQueryMode mode = UiQueryMode::First);
 bool ui_matches_element(Engine& engine, UiElementHandle element,
                         const std::vector<std::vector<UiSelectorStep>>& selectors);
+/**
+ * A runtime attribute value of a selector template, delimited by `quote`.
+ * A line break makes the selector invalid (SyntaxError); a quote, escape,
+ * tab or NUL is outside the admitted grammar (NotSupportedError).
+ */
+std::string ui_selector_value(std::string value, char quote);
+/** The index of `text` among the literal selectors its type declares, else NotSupportedError. */
+std::size_t ui_selector_choice(std::string_view text,
+                               std::initializer_list<std::string_view> candidates);
 /** Element tree reads over retained parents and children; innerHTML content throws. */
 enum class UiTreeRead {
     Parent,

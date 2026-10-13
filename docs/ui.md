@@ -41,11 +41,15 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Tree | Static tags, text nodes, append/insert/prepend/replaceChildren, remove, `replaceWith`, `insertAdjacentElement`, parent/child/sibling reads | Stored child collections, prepend spreads, tree reads inside innerHTML, `replaceWith` text/spreads, dynamic adjacent positions |
 | Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties, dataset, packaged img `src` choices | Compound text/dataset writes, dynamic dataset keys, other property writes; `title` tooltips not rendered |
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
-| Queries | Literal selectors, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements; dynamic selectors (deferred: throw) |
+| Queries | Literal selectors, runtime text in quoted attribute values, unions of literal selectors, state pseudo-classes, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements, other runtime selector text |
 | Pointer/keyboard | Mouse, multi-touch, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events |
 | Events | transitionend, storage, file drags (first file), CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent, `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
 | Forms | Focus/blur, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
 
+- Selector structure is parsed at generation with the literal grammar. In a runtime attribute value, a line break
+  throws SyntaxError; the delimiting quote, a backslash, tab or NUL throw NotSupportedError.
+- `:hover`/`:active` read the UI's last update, so a listener of the pointer event that changes them sees the earlier
+  state; focus states, `:checked` and `:disabled` read the document.
 - Listener options: `capture`, `once`, `passive`, `signal`; abort removes the listener its add created.
 - Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
   events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured

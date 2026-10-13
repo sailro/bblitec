@@ -106,15 +106,13 @@ test("retained DOM queries observe authored tree changes and return ordered snap
     });
 });
 
-test("retained queries refuse unrepresented selector and interaction forms", () => {
+test("retained queries refuse unrepresented selector forms", () => {
     const preamble = `import {createEngine} from "@babylonjs/lite"; await createEngine({}); const root = document.createElement("div");`;
     for (const selector of [
         "",
         ".entry,",
         ".entry::before",
         ":scope > .entry",
-        ".entry:hover",
-        ":has(:focus)",
     ]) {
         assert.throws(
             () =>

@@ -164,6 +164,8 @@ struct LayoutSnapshot {
     std::vector<UiContentBox> content_boxes;
     /** Computed styles of the elements the realm requested, by element. */
     std::vector<UiComputedStyle> styles;
+    /** `UiElementRecord::pointer_states` the display's last update styled with, by element. */
+    std::vector<std::uint8_t> pointer_states;
     std::uint32_t width = 0, height = 0;
     double pixel_ratio = 1;
     ScreenMetrics screen;
@@ -171,7 +173,8 @@ struct LayoutSnapshot {
     bool equals(const LayoutSnapshot& other) const {
         return width == other.width && height == other.height && pixel_ratio == other.pixel_ratio &&
                screen == other.screen && input == other.input && rectangles == other.rectangles &&
-               content_boxes == other.content_boxes && styles == other.styles;
+               content_boxes == other.content_boxes && styles == other.styles &&
+               pointer_states == other.pointer_states;
     }
 };
 
@@ -295,6 +298,9 @@ struct WindowServices final : CanvasProvider {
     bool stopping = false;
 };
 
+/** The display's latest pointer states on the current realm's document. */
+void adopt_window_pointer_states();
+
 struct WindowDocument {
     explicit WindowDocument(std::shared_ptr<WindowServices> host, EngineOptions options)
         : host(std::move(host)) {
@@ -313,6 +319,11 @@ struct WindowDocument {
             if (&owner != &window_document_engine())
                 throw std::logic_error("A Window layout read requires its owning realm.");
             return window_element_size(element);
+        };
+        engine.ui_adopt_pointer_states = [](Engine& owner) {
+            if (&owner != &window_document_engine())
+                throw std::logic_error("A Window selector state read requires its owning realm.");
+            adopt_window_pointer_states();
         };
         static_cast<void>(ui_document_root(engine, UiDocumentPart::Html));
     }
@@ -797,6 +808,7 @@ void update_window_document(bool wait) {
             doc.engine.ui_elements[index].client_rect = layout->rectangles[index];
             doc.engine.ui_elements[index].content_box = layout->content_boxes[index];
             doc.engine.ui_elements[index].computed_style = layout->styles[index];
+            doc.engine.ui_elements[index].pointer_states = layout->pointer_states[index];
         }
         for (const auto& [index, canvas] : doc.canvases) {
             if (index >= layout->rectangles.size())
@@ -860,6 +872,24 @@ ScreenMetrics window_screen_metrics() {
     return doc.layout->screen;
 }
 const void* window_screen_identity() { return std::addressof(current_document().screen_identity); }
+namespace {
+void adopt_window_pointer_states() {
+    auto& doc = current_document();
+    std::shared_ptr<const LayoutSnapshot> layout;
+    {
+        const std::lock_guard lock(doc.host->mutex);
+        if (doc.host->stopping)
+            throw WorkerTerminated{};
+        layout = doc.host->layout;
+    }
+    // Only pointer states: rectangles and styles still adopt with their
+    // published document in update_window_document.
+    for (std::size_t index = 0;
+         layout && index < layout->pointer_states.size() && index < doc.engine.ui_elements.size();
+         ++index)
+        doc.engine.ui_elements[index].pointer_states = layout->pointer_states[index];
+}
+} // namespace
 UiClientRect window_element_size(UiElementHandle element) {
     update_window_document();
     const auto& layout = current_document().layout;
@@ -1269,10 +1299,12 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 next_layout.rectangles.resize(display.ui_elements.size());
                 next_layout.content_boxes.resize(display.ui_elements.size());
                 next_layout.styles.resize(display.ui_elements.size());
+                next_layout.pointer_states.resize(display.ui_elements.size());
                 for (std::size_t index = 0; index < display.ui_elements.size(); ++index) {
                     next_layout.rectangles[index] = display.ui_elements[index].client_rect;
                     next_layout.content_boxes[index] = display.ui_elements[index].content_box;
                     next_layout.styles[index] = display.ui_elements[index].computed_style;
+                    next_layout.pointer_states[index] = display.ui_elements[index].pointer_states;
                 }
                 if (!layout || !layout->equals(next_layout))
                     layout = std::make_shared<LayoutSnapshot>(next_layout);
