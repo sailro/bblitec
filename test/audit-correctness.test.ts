@@ -1170,10 +1170,10 @@ test(
                 if (++delivered == 4) loop.close();
             });
             loop.run([&] {
-                for (unsigned index : {0u, 1u, 2u, 5u}) {
-                    const auto& callbacks = target.ui_elements[index].event_callbacks.at(index == 5 ? "toggle" : "input");
-                    callbacks->dispatch(PlatformMouseEvent{});
-                }
+                for (unsigned index : {0u, 1u, 2u})
+                    target.ui_elements[index].event_callbacks.at("input")->dispatch(PlatformMouseEvent{});
+                assert(!target.ui_elements[5].event_callbacks.contains("toggle"));
+                target.ui_details_toggled(UiElementHandle{5});
                 target.ui_elements[0].checked = true;
                 target.ui_elements[1].attributes["value"] = "99";
                 target.ui_elements[3].selected = true;

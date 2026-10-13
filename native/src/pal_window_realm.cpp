@@ -595,9 +595,6 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
         for (const auto& [name, callbacks] : native.event_callbacks)
             if (!callbacks->empty())
                 names.events.push_back(name);
-        if (native.tag == "details" &&
-            std::find(names.events.begin(), names.events.end(), "toggle") == names.events.end())
-            names.events.push_back("toggle");
         const auto input_type = native.attributes.find("type");
         if ((native.tag == "input" || native.tag == "textarea" || native.tag == "select") &&
             (input_type == native.attributes.end() || input_type->second != "file") &&
@@ -654,6 +651,15 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
     engine.ui_text_selection_revision = snapshot.text_selection_revision;
     if (snapshot.pointer_captures)
         dom_input(engine).pointer_captures = std::move(snapshot.pointer_captures);
+    // A disclosure the display changed (summary activation) opens or closes the realm's details,
+    // whose change queues its toggle event there.
+    engine.ui_details_toggled = [post_input, &engine](UiElementHandle element) {
+        auto event = std::make_unique<WindowEvent>();
+        event->element = element;
+        event->type = "toggle";
+        event->open = ui_has_attribute(engine, element, "open");
+        post_input(std::move(event));
+    };
     if (!snapshot.dom_event_types.empty()) {
         auto& input = dom_input(engine);
         input.event_types = std::move(snapshot.dom_event_types);
@@ -703,8 +709,6 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
                 event->element = element;
                 event->type = name;
                 event->mouse = pointer;
-                if (name == "toggle")
-                    event->open = ui_has_attribute(engine, element, "open");
                 if (name == "input" || name == "change")
                     event->capture_form_state(engine);
                 post_input(std::move(event));

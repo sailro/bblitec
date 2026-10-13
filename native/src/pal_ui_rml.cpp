@@ -1328,9 +1328,14 @@ namespace {
 /**
  * HTML's details notification steps: a change of a details element's `open` attribute queues a
  * task firing a non-bubbling, non-cancelable `toggle` at it (each change its own task; a
- * synchronous program dispatches at once).
+ * synchronous program dispatches at once). A Window display runs no script: it hands the change
+ * to the realm owning the document.
  */
 void queue_details_toggle(Engine& engine, UiElementHandle element) {
+    if (engine.ui_details_toggled) {
+        engine.ui_details_toggled(element);
+        return;
+    }
     const auto fire = [&engine, element] {
         if (!engine.dom_input || element.value >= engine.ui_elements.size())
             return;
