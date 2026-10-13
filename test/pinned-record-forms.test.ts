@@ -74,6 +74,10 @@ function kindOf(key: string): string {
     return kind === undefined ? "none" : kind;
 }
 
+function optionalKind(value?: number): string {
+    return typeof value === "number" ? "number" : typeof value === "undefined" ? "undefined" : "other";
+}
+
 let extension: RegExp | null = null;
 
 function fileExtension(url: string): string | undefined {
@@ -131,7 +135,7 @@ export function run(): string {
     const flags = (plain ? "in " : "out ") + (warned ? "warned" : "quiet");
     const extensions = ["a.wav", "b.ogg?v=2", "c", "d.webm#t"].map((url) => fileExtension(url) ?? "-").join(",");
     const numbers = digits("a1b22c333") + " " + digits("none");
-    const kinds = ["wav", "mp3", "aac"].map((key) => kindOf(key)).join("|");
+    const kinds = ["wav", "mp3", "aac"].map((key) => kindOf(key)).join("|") + " " + optionalKind(3) + "/" + optionalKind();
     return \`\${snapshot.join(",")} \${sounds.size} \${offset} \${tail} \${mirrored.join(",")} \${input(main)} \${input(bus)} \${flags} \${warnings} \${lastWarning} \${described} \${mode} \${modeName} \${extensions} \${numbers} \${kinds}\`;
 }
 `;
