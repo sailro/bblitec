@@ -1,6 +1,7 @@
 #include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/refreshed_task_overrides.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The Dawn scene renderer's driver: the pass helpers, the pipelines the
 // frame run builds and the frame run itself. The feature families it draws
@@ -3057,6 +3058,11 @@ public:
                             }
 #endif
 #if BBLITE_HAS_TAA
+#if BBLITE_RENDER_TASK_TRANSMISSION
+                            if (task.transmission)
+                                throw std::runtime_error(
+                                    "Render-task transmission with temporal anti-aliasing is not lowered.");
+#endif
                             if (task.source_scene != graph_scene.state ||
                                 task.render.scene_stages ||
                                 task.render.shadow_generator.value != invalid_handle ||
@@ -3507,6 +3513,19 @@ public:
                             set_task_camera_viewport(task_pass, pass_camera, target.width,
                                                      target.height);
                             WGPURenderPipeline bound_pipeline = nullptr;
+#if BBLITE_RENDER_TASK_TRANSMISSION
+                            // The task's grab latch (`_copies`), reset per execution.
+                            std::optional<TaskTransmissionCopies> transmission_copies;
+                            if (const RenderTaskTransmission* settings = task_transmission(
+                                    task, target_sample_count(state, target_record) > 1,
+                                    target_record.swapchain))
+                                transmission_copies.emplace(*settings);
+#if BBLITE_HAS_BILLBOARDS
+                            if (transmission_copies && task.render.scene_stages)
+                                throw std::runtime_error(
+                                    "Render-task transmission with billboard scene stages is not lowered.");
+#endif
+#endif
 #if BBLITE_HAS_BILLBOARDS
                             const auto draw_task_billboards = [&](BillboardDepthMode mode) {
                                 for (const DawnBillboardPass& billboard : state.billboard_passes) {
@@ -3596,6 +3615,40 @@ public:
                                             BorrowedDrawList{render_task.draw_lists.transparent
                                                                  .commands[item.index]});
                                     }
+                                }
+                            } else
+#endif
+#if BBLITE_RENDER_TASK_TRANSMISSION
+                                if (transmission_copies) {
+                                // executePassWithTransmission: the transparent list
+                                // breaks the pass before each transmissive draw the
+                                // copy latch still allows, then resumes with load.
+                                for (const auto& draw :
+                                     render_task.draw_lists.transparent.commands) {
+                                    if (transmissive_draw_material(
+                                            handle_find(engine.materials, draw.item.material)) &&
+                                        transmission_copies->can_update()) {
+                                        wgpuRenderPassEncoderEnd(task_pass);
+                                        task_pass.reset();
+                                        encode_task_transmission_grab(state, engine, encoder,
+                                                                      handle);
+                                        ++transmission_copies->copies;
+                                        color_attachment.loadOp = WGPULoadOp_Load;
+                                        if (pass_descriptor.depthStencilAttachment) {
+                                            depth_attachment.depthLoadOp = WGPULoadOp_Load;
+                                            if (depth_attachment.stencilLoadOp !=
+                                                WGPULoadOp_Undefined)
+                                                depth_attachment.stencilLoadOp = WGPULoadOp_Load;
+                                        }
+                                        // The pass's timestamps stay on its first segment.
+                                        pass_descriptor.timestampWrites = nullptr;
+                                        task_pass = wgpuCommandEncoderBeginRenderPass(
+                                            encoder, &pass_descriptor);
+                                        set_task_camera_viewport(task_pass, pass_camera,
+                                                                 target.width, target.height);
+                                        bound_pipeline = nullptr;
+                                    }
+                                    draw_transparent(BorrowedDrawList{draw});
                                 }
                             } else
 #endif

@@ -4885,6 +4885,17 @@ inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHand
         if (options.grab_depth)
             merged.grab_depth = options.grab_depth;
     }
+    // grabDepth samples the task's depth attachment at the pass break.
+    if (record.transmission->grab_depth.value_or(false) &&
+        record.render.target.value != invalid_handle) {
+        auto& target = handle_at(engine.render_targets, record.render.target);
+        if (target.has_depth && !target.sampled_depth) {
+            if (record.render_recorded)
+                throw std::runtime_error(
+                    "enableRenderTaskTransmission's grabDepth must precede the task's recording.");
+            target.sampled_depth = true;
+        }
+    }
     return TransmissionGrab{task};
 }
 

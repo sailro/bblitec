@@ -1489,6 +1489,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/frame-graph/render-task-mesh-refresh.ts enableRenderTaskMeshRefresh",
         consumers: CMAKE,
     },
+    "frame-graph:render-task-transmission": {
+        provenance:
+            "src/frame-graph/transmission.ts enableRenderTaskTransmission " +
+            "(executePassWithTransmission, transmission-depth-grab.ts)",
+        consumers: CMAKE,
+    },
     "frame-graph:task-material-override": {
         provenance:
             "src/frame-graph/render-task.ts addMeshToTask (opts.material)",

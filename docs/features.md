@@ -222,6 +222,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform
   binding refuses.
 - TAA: one scene, explicit Standard color tasks, engine-format color, depth24plus-stencil8, single-sample inputs.
+- `enableRenderTaskTransmission` with `linear: false` on a single-sample, non-swapchain render task: the pass breaks
+  before transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording);
+  `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm and multisampled targets refuse.
 - Contact shadows, one-bounce GI, EffectWrapper/EffectRenderer with bounded layouts; custom vertices refuse.
 - `setEffectTexture` takes solid or render-target colour textures by binding name or number; render targets bind in
   frame-graph effect tasks only.

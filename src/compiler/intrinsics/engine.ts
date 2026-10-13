@@ -245,6 +245,7 @@ function compileRenderTaskTransmission(
     };
     const engineCpp = context.requireEngine(task, call);
     reachRenderer(context, call);
+    context.reachFeature("frame-graph:render-task-transmission", call);
     return {
         kind: "transmission-grab",
         cpp:

@@ -107,6 +107,11 @@ export const featureMacros: readonly FeatureMacro[] = [
         macro: "BBLITE_LIVE_TASK_ADD",
         anyOf: ["frame-graph:live-task-add"],
     },
+    // A render task's mid-pass scene-colour grab (enableRenderTaskTransmission).
+    {
+        macro: "BBLITE_RENDER_TASK_TRANSMISSION",
+        anyOf: ["frame-graph:render-task-transmission"],
+    },
     // A disposed task refuses to execute.
     {
         macro: "BBLITE_TASK_DISPOSAL",

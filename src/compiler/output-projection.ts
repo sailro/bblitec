@@ -323,6 +323,7 @@ export const featureSources: Record<Feature, string[]> = {
     "frame-graph:target-disposal": [],
     "frame-graph:task-mesh-removal": [],
     "frame-graph:task-mesh-refresh": [],
+    "frame-graph:render-task-transmission": [],
     "frame-graph:task-material-override": [],
     "frame-graph:task-build": [],
     "frame-graph:task-disposal": [],

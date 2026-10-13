@@ -20,11 +20,18 @@ async function main(){
 main();`;
 
 test("render-task transmission stores the pin's raw-mode options on the task", () => {
-    const cpp = compileSource(
+    const compiled = compileSource(
         program(
             `,{linear:false,copyCount:0,generateMipmaps:true,mipLevelCount:3,grabDepth:true}`,
         ),
-    ).cpp;
+    );
+    // The backends' pass break and its grab modules compile only when reached.
+    assert.ok(
+        compiled.manifest.features.includes(
+            "frame-graph:render-task-transmission",
+        ),
+    );
+    const cpp = compiled.cpp;
     assert.match(
         cpp,
         /bbl::enable_render_task_transmission\(v_engine, v_task, bbl::RenderTaskTransmission\{\d+u, 0\.0, true, 3\.0, true\}\)/,

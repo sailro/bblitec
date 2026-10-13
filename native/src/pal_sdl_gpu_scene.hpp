@@ -19,6 +19,7 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/workers.hpp>
@@ -795,6 +796,24 @@ struct GpuState : SdlGpuDevice {
     std::uint32_t transmission_width = 0;
     std::uint32_t transmission_height = 0;
 #endif
+#if BBLITE_RENDER_TASK_TRANSMISSION
+    /** Each render task's own grab (`enableRenderTaskTransmission`), by task handle. */
+    struct TaskTransmission {
+        SDL_GPUTexture* color = nullptr;
+        std::uint32_t mip_count = 0;
+        /** The `grabDepth` snapshot, sized to the target it was taken from. */
+        SDL_GPUTexture* depth = nullptr;
+        std::uint32_t depth_width = 0;
+        std::uint32_t depth_height = 0;
+    };
+    std::vector<TaskTransmission> task_transmissions;
+    /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
+    SDL_GPUGraphicsPipeline* task_grab_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* task_depth_grab_pipeline = nullptr;
+    /** The grab texture's `getTrilinearAnisotropicSampler`, and the depth grab's nearest one. */
+    SDL_GPUSampler* task_grab_sampler = nullptr;
+    SDL_GPUSampler* task_depth_grab_sampler = nullptr;
+#endif
     std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_pipelines{};
     std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_double_sided_pipelines{};
     SDL_GPUSampler* sampler = nullptr;
@@ -1098,6 +1117,23 @@ struct GpuState : SdlGpuDevice {
     }
 #endif
 };
+
+#if BBLITE_RENDER_TASK_TRANSMISSION
+/** Create or resize a render task's grab textures for its target, before its pass or a bind. */
+GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Engine& engine,
+                                                      TaskHandle task);
+/**
+ * `updateTransmissionTexture` at a pass break: blit the target's colour into
+ * the grab's top level, build its mip chain when it has one, and snapshot the
+ * depth attachment when `grabDepth` asked for it.
+ */
+void encode_task_transmission_grab(GpuState& state, const Engine& engine,
+                                   SDL_GPUCommandBuffer* command, TaskHandle task);
+/** A material slot's binding of a task grab's colour or depth. */
+SDL_GPUTextureSamplerBinding task_transmission_binding(GpuState& state, const Engine& engine,
+                                                       const RenderTextureRef& reference);
+void release_task_transmissions(GpuState& state);
+#endif
 
 /** A render target's sampled colour, as a material slot reads it. */
 inline SDL_GPUTexture* sdl_render_texture_color(const GpuState& state, const Engine& engine,

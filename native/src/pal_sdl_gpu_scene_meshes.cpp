@@ -13,6 +13,7 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
@@ -322,9 +323,17 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
             !material.shader_render_textures[slot] ||
             packed >= state.shader_texture_binding_scratch.size())
             continue;
+        const RenderTextureRef& reference = *material.shader_render_textures[slot];
+#if BBLITE_RENDER_TASK_TRANSMISSION
+        if (reference.source == RenderTextureSource::transmission_color ||
+            reference.source == RenderTextureSource::transmission_depth) {
+            state.shader_texture_binding_scratch[packed] =
+                task_transmission_binding(state, engine, reference);
+            continue;
+        }
+#endif
         state.shader_texture_binding_scratch[packed] = {
-            sdl_render_texture_color(state, engine, *material.shader_render_textures[slot]),
-            state.ground_sampler};
+            sdl_render_texture_color(state, engine, reference), state.ground_sampler};
     }
     if (state.shader_texture_binding_scratch.size() != names.size()) {
         gpu_error((std::string("Shader material texture binding count is stale for '") + info.name +

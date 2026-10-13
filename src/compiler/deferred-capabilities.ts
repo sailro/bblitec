@@ -68,7 +68,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "createAudioEngineMediaStream",
         "setMasterVolume",
         "getMasterVolume",
-        "enableRenderTaskTransmission",
         "setSpatialListenerPosition",
         "setSpatialPosition",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "throw" })),
