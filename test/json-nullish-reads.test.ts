@@ -19,7 +19,7 @@ test("document member reads reject nullish values without changing dictionary lo
 
         int main() {
             using bbl::js::JsonValue;
-            for (const auto value : {JsonValue{}, JsonValue::null_value()}) {
+            for (const auto& value : {JsonValue{}, JsonValue::null_value()}) {
                 int failures = 0;
                 try { static_cast<void>(value.read_property("missing")); }
                 catch (const bbl::js::NamedError& error) {

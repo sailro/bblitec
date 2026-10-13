@@ -71,6 +71,7 @@ import {
     dataUnionEquality,
     pinSlotFound,
     sameAbsenceCpp,
+    selfIdentity,
 } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
 import { compileTextCodecNew } from "./text-codecs.js";
@@ -116,6 +117,8 @@ import {
     doubleCpp,
     isCppPath,
 } from "../cpp-literals.js";
+import { cppIdentifiers } from "./cpp-identifiers.js";
+import { renderNativeEmission } from "./native-statements.js";
 import { pinOperand } from "./evaluation-order.js";
 import { representedResultType } from "./represented-result.js";
 import { recordCopyObservation } from "./record-observations.js";
@@ -7772,13 +7775,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "expression",
                 code: `${result}.reserve(${count});`,
             });
-        if (increment)
-            context.emit({
-                kind: "declaration",
-                type: "std::size_t",
-                name: index,
-                initializer: "0",
-            });
         const lines = context.captureEmittedStatements(() => {
             context.bindings.pushScope(context.allocateBlockPrefix());
             context.enterRuntimeControlFlow();
@@ -7805,17 +7801,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     kind: "expression",
                     code: `${result}.push_back(${this.compileKnownValueForSink(value, type.element, call)});`,
                 });
-                if (increment)
-                    context.emit({ kind: "expression", code: `++${index};` });
             } finally {
                 context.leaveRuntimeIteration();
                 context.leaveRuntimeControlFlow();
                 context.bindings.popScope();
             }
         });
+        // A range walk counts its index only for a mapper that reads it.
+        const counted =
+            increment &&
+            cppIdentifiers(lines.map(renderNativeEmission).join("\n")).has(
+                index,
+            );
+        if (counted)
+            context.emit({
+                kind: "declaration",
+                type: "std::size_t",
+                name: index,
+                initializer: "0",
+            });
         context.emit({ kind: "open", code: loop, iteration: true });
         context.increaseIndent();
         context.emitCapturedStatements(lines);
+        if (counted) context.emit({ kind: "expression", code: `++${index};` });
         context.decreaseIndent();
         context.emit({ kind: "close", code: "}" });
         if (!typedResult) {
@@ -8861,17 +8869,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                               method === "forEach",
                               resultType ? { resultType } : undefined,
                           );
+                // A callback that never completes normally ends the walk at
+                // its first visit, so no increment is reachable: the walk
+                // tests the first index once, unless a skipped removed
+                // element steps the loop forward itself.
                 if (
                     result.kind === "void" &&
                     result.abruptCompletion &&
                     !reverse
                 ) {
-                    loop.code = `for (std::size_t ${index} = 0; ${index} < ${bound};) {`;
                     if (
                         removedGuard &&
                         receiverWalks.get(method)!.removed === "skip"
-                    )
+                    ) {
+                        loop.code = `for (std::size_t ${index} = 0; ${index} < ${bound};) {`;
                         removedGuard.code = `if (${index} >= ${source}.size()) { ++${index}; continue; }`;
+                    } else
+                        loop.code = `if (const std::size_t ${index} = 0; ${index} < ${bound}) {`;
                 }
                 if (predicateMethod && result.kind !== "boolean")
                     result = {
@@ -12905,10 +12919,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             expression.right,
             target.dataType,
         );
-        this.context.emit({
-            kind: "expression",
-            code: `${target.resourceStorageCpp ?? target.cpp} = ${value.cpp};`,
-        });
+        const storage = target.resourceStorageCpp ?? target.cpp;
+        // Storage assigned its own read keeps the value it holds; C++
+        // diagnoses the self-assignment.
+        if (value.cpp !== storage || !isCppPath(storage))
+            this.context.emit({
+                kind: "expression",
+                code: `${storage} = ${value.cpp};`,
+            });
         const rebound = this.context.recordDataAssignmentMetadata(
             target,
             expression.right,
@@ -18003,15 +18021,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // Two empty functions are identical; their absent values must
             // also be the same one.
             if (leftValue.dataType.kind === "function")
-                return absentAwareIdentity(
-                    sameAbsenceCpp(
-                        this,
-                        { node: left, value: leftValue.read },
-                        { node: right, value: rightValue?.read },
-                    ),
-                    `static_cast<bool>(${leftValue.cpp})`,
-                    (operator) => `${leftValue.cpp} ${operator} ${rightCpp}`,
-                    negated,
+                return (
+                    selfIdentity(leftValue.cpp, rightCpp, negated) ??
+                    absentAwareIdentity(
+                        sameAbsenceCpp(
+                            this,
+                            { node: left, value: leftValue.read },
+                            { node: right, value: rightValue?.read },
+                        ),
+                        `static_cast<bool>(${leftValue.cpp})`,
+                        (operator) =>
+                            `${leftValue.cpp} ${operator} ${rightCpp}`,
+                        negated,
+                    )
                 );
             return compare(leftValue.cpp, rightCpp, leftValue.dataType);
         }
