@@ -291,62 +291,87 @@ std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& st
     return {target.sampled_color, target.sampled_color_view};
 }
 
-void encode_transmission_grab(DawnState& state, WGPUCommandEncoder encoder) {
-    if (!state.transmission_grab_pipeline) {
-        state.transmission_grab_module =
-            load_wgsl_module(state, state.multisampled() ? "transmission-grab.frag"
-                                                         : "transmission-grab-single.frag");
-        if (!state.multisampled())
-            state.transmission_grab_sampler = create_dawn_bilinear_sampler(state.device);
-        WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-        descriptor.vertex.module = state.transmission_grab_module;
-        descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-        WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-        color_target.format = WGPUTextureFormat_RGBA16Float;
-        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-        fragment.module = state.transmission_grab_module;
-        fragment.targetCount = 1;
-        fragment.targets = &color_target;
-        descriptor.fragment = &fragment;
-        state.transmission_grab_pipeline =
-            wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
-        if (!state.transmission_grab_pipeline) {
-            dawn_error("transmission grab pipeline creation failed.");
-        }
-    }
-    DawnBindGroupLayout layout{
-        wgpuRenderPipelineGetBindGroupLayout(state.transmission_grab_pipeline, 0)};
-    std::array<WGPUBindGroupEntry, 2> entries{};
-    entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-    entries[0].binding = 0;
-    entries[0].textureView = state.msaa_color_view;
-    entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-    entries[1].binding = 1;
-    entries[1].sampler = state.transmission_grab_sampler;
-    WGPUBindGroupDescriptor bind_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    bind_descriptor.layout = layout;
-    bind_descriptor.entryCount = state.transmission_grab_sampler ? 2u : 1u;
-    bind_descriptor.entries = entries.data();
-    DawnBindGroup bind_group{wgpuDeviceCreateBindGroup(state.device, &bind_descriptor)};
-    layout.reset();
-    WGPUTextureViewDescriptor level_descriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-    level_descriptor.baseMipLevel = 0;
-    level_descriptor.mipLevelCount = 1;
-    DawnTextureView level_view{
-        create_dawn_texture_view(state.transmission_color, &level_descriptor)};
+namespace {
+/** A pinned utility module's single-sample pipeline: one fullscreen triangle, one target. */
+WGPURenderPipeline fullscreen_grab_pipeline(DawnState& state, const char* stem,
+                                            WGPUTextureFormat format) {
+    DawnShaderModule module{load_wgsl_module(state, stem)};
+    WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.vertex.module = module;
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = format;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = module;
+    fragment.targetCount = 1;
+    fragment.targets = &color_target;
+    descriptor.fragment = &fragment;
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!pipeline)
+        dawn_error("transmission grab pipeline creation failed.");
+    return pipeline;
+}
+
+/** The single-sample grab's bilinear source sampler (`getBilinearSampler`). */
+WGPUSampler grab_bilinear_sampler(DawnState& state) {
+    if (!state.transmission_grab_sampler)
+        state.transmission_grab_sampler = create_dawn_bilinear_sampler(state.device);
+    return state.transmission_grab_sampler;
+}
+
+WGPUBindGroup create_grab_group(DawnState& state, WGPURenderPipeline pipeline,
+                                std::span<const WGPUBindGroupEntry> entries) {
+    DawnBindGroupLayout layout{wgpuRenderPipelineGetBindGroupLayout(pipeline, 0)};
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = layout;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    return wgpuDeviceCreateBindGroup(state.device, &descriptor);
+}
+
+/** One grab pass (`blitToTransmission`, the depth grab's resolve) into a target view. */
+void encode_grab_pass(WGPUCommandEncoder encoder, WGPURenderPipeline pipeline,
+                      WGPUTextureView target, WGPUBindGroup group) {
     WGPURenderPassColorAttachment color_attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    color_attachment.view = level_view;
+    color_attachment.view = target;
     color_attachment.loadOp = WGPULoadOp_Clear;
     color_attachment.storeOp = WGPUStoreOp_Store;
     WGPURenderPassDescriptor pass_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     pass_descriptor.colorAttachmentCount = 1;
     pass_descriptor.colorAttachments = &color_attachment;
     DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
-    wgpuRenderPassEncoderSetPipeline(pass, state.transmission_grab_pipeline);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
+    wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, nullptr);
     count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
-    pass.reset();
+}
+} // namespace
+
+void encode_transmission_grab(DawnState& state, WGPUCommandEncoder encoder) {
+    if (!state.transmission_grab_pipeline)
+        state.transmission_grab_pipeline = fullscreen_grab_pipeline(
+            state,
+            state.multisampled() ? "transmission-grab.frag" : "transmission-grab-single.frag",
+            WGPUTextureFormat_RGBA16Float);
+    std::array<WGPUBindGroupEntry, 2> entries{};
+    entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[0].binding = 0;
+    entries[0].textureView = state.msaa_color_view;
+    entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[1].binding = 1;
+    std::size_t entry_count = 1;
+    if (!state.multisampled()) {
+        entries[1].sampler = grab_bilinear_sampler(state);
+        entry_count = 2;
+    }
+    DawnBindGroup bind_group{
+        create_grab_group(state, state.transmission_grab_pipeline, {entries.data(), entry_count})};
+    WGPUTextureViewDescriptor level_descriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    level_descriptor.baseMipLevel = 0;
+    level_descriptor.mipLevelCount = 1;
+    DawnTextureView level_view{
+        create_dawn_texture_view(state.transmission_color, &level_descriptor)};
+    encode_grab_pass(encoder, state.transmission_grab_pipeline, level_view, bind_group);
     bind_group.reset();
     level_view.reset();
     record_mipmaps(state, encoder, state.transmission_color, WGPUTextureFormat_RGBA16Float,
@@ -754,52 +779,6 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
 #endif
 
 #if BBLITE_RENDER_TASK_TRANSMISSION
-namespace {
-/** One fullscreen triangle of a pinned module into a single-sample target. */
-WGPURenderPipeline task_grab_pipeline(DawnState& state, const char* stem,
-                                      WGPUTextureFormat format) {
-    DawnShaderModule module{load_wgsl_module(state, stem)};
-    WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.vertex.module = module;
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-    color_target.format = format;
-    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = module;
-    fragment.targetCount = 1;
-    fragment.targets = &color_target;
-    descriptor.fragment = &fragment;
-    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
-    if (!pipeline)
-        dawn_error("render-task transmission pipeline creation failed.");
-    return pipeline;
-}
-
-/** A fullscreen pass of the pipeline into `target`, reading the group's entries. */
-void encode_task_grab_pass(DawnState& state, WGPUCommandEncoder encoder,
-                           WGPURenderPipeline pipeline, WGPUTextureView target,
-                           std::span<const WGPUBindGroupEntry> entries) {
-    DawnBindGroupLayout layout{wgpuRenderPipelineGetBindGroupLayout(pipeline, 0)};
-    WGPUBindGroupDescriptor bind_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    bind_descriptor.layout = layout;
-    bind_descriptor.entryCount = entries.size();
-    bind_descriptor.entries = entries.data();
-    DawnBindGroup group{wgpuDeviceCreateBindGroup(state.device, &bind_descriptor)};
-    WGPURenderPassColorAttachment color_attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    color_attachment.view = target;
-    color_attachment.loadOp = WGPULoadOp_Clear;
-    color_attachment.storeOp = WGPUStoreOp_Store;
-    WGPURenderPassDescriptor pass_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-    pass_descriptor.colorAttachmentCount = 1;
-    pass_descriptor.colorAttachments = &color_attachment;
-    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
-    wgpuRenderPassEncoderSetPipeline(pass, pipeline);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, nullptr);
-    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
-    wgpuRenderPassEncoderEnd(pass);
-}
-} // namespace
-
 DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const Engine& engine,
                                                        TaskHandle task) {
     const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
@@ -835,6 +814,7 @@ DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const E
         level.mipLevelCount = 1;
         grab.level_view = create_dawn_texture_view(grab.color, &level);
         grab.mip_count = mips;
+        grab.mips = prepare_mip_chain(state, grab.color, WGPUTextureFormat_RGBA16Float, mips);
     }
     // transmission-depth-grab.ts: the target's own extent, r32float.
     const bool depth = settings.grab_depth.value_or(false) && target_record.has_depth &&
@@ -862,31 +842,37 @@ void encode_task_transmission_grab(DawnState& state, const Engine& engine,
     if (!target.sampled_color_view)
         pal::fail_render_target_has_no_texture();
     if (!state.task_grab_pipeline)
-        state.task_grab_pipeline = task_grab_pipeline(state, "transmission-grab-single.frag",
-                                                      WGPUTextureFormat_RGBA16Float);
-    if (!state.task_blit_sampler)
-        state.task_blit_sampler = create_dawn_bilinear_sampler(state.device);
-    // blitToTransmission through the bilinear sampler the pin binds.
-    std::array<WGPUBindGroupEntry, 2> color_entries{};
-    color_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-    color_entries[0].binding = 0;
-    color_entries[0].textureView = target.sampled_color_view;
-    color_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-    color_entries[1].binding = 1;
-    color_entries[1].sampler = state.task_blit_sampler;
-    encode_task_grab_pass(state, encoder, state.task_grab_pipeline, grab.level_view, color_entries);
-    if (grab.mip_count > 1)
-        record_mipmaps(state, encoder, grab.color, WGPUTextureFormat_RGBA16Float, grab.mip_count);
+        state.task_grab_pipeline = fullscreen_grab_pipeline(state, "transmission-grab-single.frag",
+                                                            WGPUTextureFormat_RGBA16Float);
+    // blitToTransmission through the bilinear sampler the pin binds. The
+    // group is kept until the target's view changes (a rebuilt target).
+    if (grab.color_group_source != target.sampled_color_view.get()) {
+        std::array<WGPUBindGroupEntry, 2> entries{};
+        entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        entries[0].binding = 0;
+        entries[0].textureView = target.sampled_color_view;
+        entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        entries[1].binding = 1;
+        entries[1].sampler = grab_bilinear_sampler(state);
+        grab.color_group = create_grab_group(state, state.task_grab_pipeline, entries);
+        grab.color_group_source = target.sampled_color_view;
+    }
+    encode_grab_pass(encoder, state.task_grab_pipeline, grab.level_view, grab.color_group);
+    encode_mip_chain(encoder, grab.mips);
     if (grab.depth) {
         if (!state.task_depth_grab_pipeline)
-            state.task_depth_grab_pipeline = task_grab_pipeline(
+            state.task_depth_grab_pipeline = fullscreen_grab_pipeline(
                 state, "transmission-depth-grab-single.frag", WGPUTextureFormat_R32Float);
-        std::array<WGPUBindGroupEntry, 1> depth_entries{};
-        depth_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-        depth_entries[0].binding = 0;
-        depth_entries[0].textureView = target.depth_sampled_view;
-        encode_task_grab_pass(state, encoder, state.task_depth_grab_pipeline, grab.depth_view,
-                              depth_entries);
+        if (grab.depth_group_source != target.depth_sampled_view.get()) {
+            std::array<WGPUBindGroupEntry, 1> entries{};
+            entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+            entries[0].binding = 0;
+            entries[0].textureView = target.depth_sampled_view;
+            grab.depth_group = create_grab_group(state, state.task_depth_grab_pipeline, entries);
+            grab.depth_group_source = target.depth_sampled_view;
+        }
+        encode_grab_pass(encoder, state.task_depth_grab_pipeline, grab.depth_view,
+                         grab.depth_group);
     }
 }
 
@@ -901,21 +887,7 @@ task_transmission_binding(DawnState& state, const Engine& engine,
         // transmission-depth-grab.ts: nearest, clamped.
         return {grab.depth_view, state.nearest_sampler};
     }
-    if (!state.task_grab_sampler) {
-        // getTrilinearAnisotropicSampler, as the scene grab's.
-        WGPUSamplerDescriptor descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
-        descriptor.addressModeU = WGPUAddressMode_Repeat;
-        descriptor.addressModeV = WGPUAddressMode_Repeat;
-        descriptor.addressModeW = WGPUAddressMode_Repeat;
-        descriptor.magFilter = WGPUFilterMode_Linear;
-        descriptor.minFilter = WGPUFilterMode_Linear;
-        descriptor.mipmapFilter = WGPUMipmapFilterMode_Linear;
-        descriptor.maxAnisotropy = static_cast<std::uint16_t>(transmission_sampler_max_anisotropy);
-        state.task_grab_sampler = wgpuDeviceCreateSampler(state.device, &descriptor);
-        if (!state.task_grab_sampler)
-            dawn_error("wgpuDeviceCreateSampler render-task transmission");
-    }
-    return {grab.color_view, state.task_grab_sampler};
+    return {grab.color_view, state.transmission_sampler};
 }
 #endif
 

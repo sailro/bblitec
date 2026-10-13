@@ -793,10 +793,13 @@ struct GpuState : SdlGpuDevice {
     bool per_sample_image_processing = false;
     // Where the compaction left the pin's parameter block `p`.
     int image_processing_params_slot = -1;
-    SDL_GPUSampler* transmission_sampler = nullptr;
     SDL_GPUTexture* transmission_color = nullptr;
     std::uint32_t transmission_width = 0;
     std::uint32_t transmission_height = 0;
+#endif
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
+    /** Every scene-colour grab's `getTrilinearAnisotropicSampler`. */
+    SDL_GPUSampler* transmission_sampler = nullptr;
 #endif
 #if BBLITE_RENDER_TASK_TRANSMISSION
     /** Each render task's own grab (`enableRenderTaskTransmission`), by task handle. */
@@ -812,8 +815,7 @@ struct GpuState : SdlGpuDevice {
     /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
     SDL_GPUGraphicsPipeline* task_grab_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* task_depth_grab_pipeline = nullptr;
-    /** The grab texture's `getTrilinearAnisotropicSampler`, and the depth grab's nearest one. */
-    SDL_GPUSampler* task_grab_sampler = nullptr;
+    /** The depth grab's nearest sampler. */
     SDL_GPUSampler* task_depth_grab_sampler = nullptr;
 #endif
     std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_pipelines{};
@@ -1128,6 +1130,22 @@ struct GpuState : SdlGpuDevice {
     }
 #endif
 };
+
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
+/** A single-sample fullscreen triangle into one colour target: the pin's utility passes. */
+SDL_GPUGraphicsPipeline* create_fullscreen_pipeline(SDL_GPUDevice* device,
+                                                    const PinnedStage& vertex,
+                                                    const PinnedStage& fragment,
+                                                    SDL_GPUTextureFormat format, const char* label);
+/**
+ * One grab pass (`blitToTransmission`, the depth grab's resolve): the
+ * pipeline's triangle into the target's top level, reading a sampled source
+ * or, for a multisampled one, a loaded storage texture.
+ */
+void encode_grab_pass(SDL_GPUCommandBuffer* command, SDL_GPUGraphicsPipeline* pipeline,
+                      SDL_GPUTexture* target, const SDL_GPUTextureSamplerBinding* sampled,
+                      SDL_GPUTexture* storage = nullptr);
+#endif
 
 #if BBLITE_RENDER_TASK_TRANSMISSION
 /** Create or resize a render task's grab textures for its target, before its pass or a bind. */

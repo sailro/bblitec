@@ -274,7 +274,7 @@ void release(GpuState& state) {
     release_sized_texture(state, state.depth, state.depth_width, state.depth_height);
     if (state.background_sampler)
         SDL_ReleaseGPUSampler(state.device, state.background_sampler);
-#if BBLITE_RENDERER_TRANSMISSION
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
     if (state.transmission_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.transmission_sampler);
     }
@@ -1053,35 +1053,15 @@ public:
         pipeline_info.target_info.depth_stencil_format = state.depth_format;
         pipeline_info.target_info.has_depth_stencil_target = true;
 #if BBLITE_RENDERER_TRANSMISSION
-        // A single-sample fullscreen triangle into one colour target.
-        const auto fullscreen_pipeline = [&](const PinnedStage& vertex, const PinnedStage& fragment,
-                                             SDL_GPUTextureFormat format, const char* label) {
-            SDL_GPUColorTargetDescription target{};
-            target.format = format;
-            SDL_GPUGraphicsPipelineCreateInfo info{};
-            info.vertex_shader = vertex.shader.get();
-            info.fragment_shader = fragment.shader.get();
-            info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-            info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-            info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-            info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-            info.target_info.color_target_descriptions = &target;
-            info.target_info.num_color_targets = 1;
-            SDL_GPUGraphicsPipeline* pipeline =
-                create_sdl_gpu_graphics_pipeline(state.device, vertex.shader, &info);
-            if (!pipeline)
-                gpu_error(label);
-            return pipeline;
-        };
         if (image_processing_vertex.shader && image_processing_fragment.shader) {
             state.per_sample_image_processing = per_sample_image_processing;
-            state.image_processing_pipeline = fullscreen_pipeline(
-                image_processing_vertex, image_processing_fragment, swapchain_format,
+            state.image_processing_pipeline = create_fullscreen_pipeline(
+                state.device, image_processing_vertex, image_processing_fragment, swapchain_format,
                 "SDL_CreateGPUGraphicsPipeline image processing");
         }
         if (grab_vertex.shader && grab_fragment.shader) {
-            state.transmission_grab_pipeline = fullscreen_pipeline(
-                grab_vertex, grab_fragment, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+            state.transmission_grab_pipeline = create_fullscreen_pipeline(
+                state.device, grab_vertex, grab_fragment, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
                 "SDL_CreateGPUGraphicsPipeline transmission grab");
         }
 #endif
@@ -1333,7 +1313,7 @@ public:
         state.sampler = SDL_CreateGPUSampler(state.device, &sampler_info);
         if (!state.sampler)
             gpu_error("SDL_CreateGPUSampler");
-#if BBLITE_RENDERER_TRANSMISSION
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
         // Scene-color grab sampler mirrors Babylon Lite's
         // trilinear-anisotropic sampler: linear filters, repeat
         // addressing, and the shared anisotropy (inert under
@@ -4022,27 +4002,11 @@ public:
                         // the refraction texture, build its mip chain, and
                         // resume loading what was stored.
                         pass.end();
-                        SDL_GPUColorTargetInfo grab_target{};
-                        grab_target.texture = state.transmission_color;
-                        grab_target.load_op = SDL_GPU_LOADOP_CLEAR;
-                        grab_target.store_op = SDL_GPU_STOREOP_STORE;
-                        {
-                            SdlRenderPass grab_pass{
-                                SDL_BeginGPURenderPass(command, &grab_target, 1, nullptr)};
-                            SDL_BindGPUGraphicsPipeline(grab_pass,
-                                                        state.transmission_grab_pipeline);
-                            if (multisampled) {
-                                // A Texture2DMS is Load()-ed and carries no
-                                // sampler: it binds as a storage texture.
-                                SDL_BindGPUFragmentStorageTextures(grab_pass, 0, &state.msaa_color,
-                                                                   1);
-                            } else {
-                                const SDL_GPUTextureSamplerBinding source{state.color,
-                                                                          state.ground_sampler};
-                                SDL_BindGPUFragmentSamplers(grab_pass, 0, &source, 1);
-                            }
-                            count_gpu_draw(SDL_DrawGPUPrimitives, grab_pass, 3, 1, 0, 0);
-                        }
+                        const SDL_GPUTextureSamplerBinding source{state.color,
+                                                                  state.ground_sampler};
+                        encode_grab_pass(command, state.transmission_grab_pipeline,
+                                         state.transmission_color, &source,
+                                         multisampled ? state.msaa_color : nullptr);
                         generate_texture_mipmaps(state.device, command, state.transmission_color,
                                                  state.transmission_width,
                                                  state.transmission_height,

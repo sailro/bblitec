@@ -899,9 +899,8 @@ struct DawnState : DawnDevice {
     WGPUTexture transmission_color = nullptr;
     WGPUTextureView transmission_color_view = nullptr;
     std::uint32_t transmission_mip_count = 1;
-    WGPUShaderModule transmission_grab_module = nullptr;
-    // The single-sample grab arm's bilinear sampler; the multisampled arm
-    // loads its texels and binds none.
+    // Every single-sample grab's bilinear source sampler; the multisampled
+    // arm loads its texels and binds none.
     WGPUSampler transmission_grab_sampler = nullptr;
     WGPURenderPipeline transmission_grab_pipeline = nullptr;
     /** A shader draw's render-slot views and samplers, resolved in place at each draw. */
@@ -920,14 +919,17 @@ struct DawnState : DawnDevice {
         DawnTextureView depth_view;
         std::uint32_t depth_width = 0;
         std::uint32_t depth_height = 0;
+        /** The grab's chain, and each pass's group over the source view it was built for. */
+        DawnMipChain mips;
+        DawnBindGroup color_group;
+        WGPUTextureView color_group_source = nullptr;
+        DawnBindGroup depth_group;
+        WGPUTextureView depth_group_source = nullptr;
     };
     std::vector<TaskTransmission> task_transmissions;
     /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
     DawnRenderPipeline task_grab_pipeline;
     DawnRenderPipeline task_depth_grab_pipeline;
-    /** The blit's bilinear source sampler and the grab's `getTrilinearAnisotropicSampler`. */
-    DawnSampler task_blit_sampler;
-    DawnSampler task_grab_sampler;
 #endif
     WGPUShaderModule image_processing_module = nullptr;
     WGPURenderPipeline image_processing_pipeline = nullptr;
@@ -1756,9 +1758,6 @@ struct DawnState : DawnDevice {
         if (transmission_grab_sampler) {
             wgpuSamplerRelease(transmission_grab_sampler);
         }
-        if (transmission_grab_module) {
-            wgpuShaderModuleRelease(transmission_grab_module);
-        }
         if (transmission_color_view) {
             wgpuTextureViewRelease(transmission_color_view);
         }
@@ -1988,6 +1987,11 @@ inline void record_mipmaps(DawnState& state, WGPUCommandEncoder encoder, WGPUTex
                            WGPUTextureFormat format, std::uint32_t mip_count,
                            std::int32_t face = -1) {
     record_mipmaps(state.device, state.mips, encoder, texture, format, mip_count, face);
+}
+
+inline DawnMipChain prepare_mip_chain(DawnState& state, WGPUTexture texture,
+                                      WGPUTextureFormat format, std::uint32_t mip_count) {
+    return prepare_mip_chain(state.device, state.mips, texture, format, mip_count);
 }
 
 inline void generate_mipmaps(DawnState& state, WGPUTexture texture, WGPUTextureFormat format,

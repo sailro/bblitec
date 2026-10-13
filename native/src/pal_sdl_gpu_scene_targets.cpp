@@ -573,15 +573,12 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
 }
 #endif
 
-#if BBLITE_RENDER_TASK_TRANSMISSION
-namespace {
-/** One fullscreen triangle of a pinned module into a single-sample target. */
-SDL_GPUGraphicsPipeline* task_grab_pipeline(GpuState& state, const std::string& stem,
-                                            SDL_GPUTextureFormat format, const char* label) {
-    const PinnedStage vertex =
-        load_pinned_stage(state.device, stem + ".vert", SDL_GPU_SHADERSTAGE_VERTEX);
-    const PinnedStage fragment =
-        load_pinned_stage(state.device, stem + ".frag", SDL_GPU_SHADERSTAGE_FRAGMENT);
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
+SDL_GPUGraphicsPipeline* create_fullscreen_pipeline(SDL_GPUDevice* device,
+                                                    const PinnedStage& vertex,
+                                                    const PinnedStage& fragment,
+                                                    SDL_GPUTextureFormat format,
+                                                    const char* label) {
     SDL_GPUColorTargetDescription target{};
     target.format = format;
     SDL_GPUGraphicsPipelineCreateInfo info{};
@@ -593,52 +590,55 @@ SDL_GPUGraphicsPipeline* task_grab_pipeline(GpuState& state, const std::string& 
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
     SDL_GPUGraphicsPipeline* pipeline =
-        create_sdl_gpu_graphics_pipeline(state.device, vertex.shader, &info);
+        create_sdl_gpu_graphics_pipeline(device, vertex.shader, &info);
     if (!pipeline)
         gpu_error(label);
     return pipeline;
 }
 
-SDL_GPUSampler* task_grab_sampler(GpuState& state, bool depth) {
-    SDL_GPUSampler*& sampler = depth ? state.task_depth_grab_sampler : state.task_grab_sampler;
-    if (sampler)
-        return sampler;
-    SDL_GPUSamplerCreateInfo info{};
-    if (depth) {
-        // transmission-depth-grab.ts: nearest, clamped.
-        info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-    } else {
-        // getTrilinearAnisotropicSampler, as the scene grab's.
-        info.min_filter = SDL_GPU_FILTER_LINEAR;
-        info.mag_filter = SDL_GPU_FILTER_LINEAR;
-        info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
-        info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-        info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-        info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-        info.max_lod = 1000.0f;
-        info.enable_anisotropy = true;
-        info.max_anisotropy = static_cast<float>(transmission_sampler_max_anisotropy);
-    }
-    sampler = SDL_CreateGPUSampler(state.device, &info);
-    if (!sampler)
-        gpu_error("SDL_CreateGPUSampler render-task transmission");
-    return sampler;
-}
-
-/** A fullscreen pass of the pipeline into the target's top level, reading the source. */
-void encode_task_grab_pass(SDL_GPUCommandBuffer* command, SDL_GPUGraphicsPipeline* pipeline,
-                           SDL_GPUTexture* target, SDL_GPUTextureSamplerBinding source) {
+void encode_grab_pass(SDL_GPUCommandBuffer* command, SDL_GPUGraphicsPipeline* pipeline,
+                      SDL_GPUTexture* target, const SDL_GPUTextureSamplerBinding* sampled,
+                      SDL_GPUTexture* storage) {
     SDL_GPUColorTargetInfo color{};
     color.texture = target;
-    color.mip_level = 0;
     color.load_op = SDL_GPU_LOADOP_CLEAR;
     color.store_op = SDL_GPU_STOREOP_STORE;
     SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color, 1, nullptr)};
     SDL_BindGPUGraphicsPipeline(pass, pipeline);
-    SDL_BindGPUFragmentSamplers(pass, 0, &source, 1);
+    if (storage) {
+        // A Texture2DMS is Load()-ed and carries no sampler: it binds as a
+        // storage texture.
+        SDL_BindGPUFragmentStorageTextures(pass, 0, &storage, 1);
+    } else {
+        SDL_BindGPUFragmentSamplers(pass, 0, sampled, 1);
+    }
     count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
+}
+#endif
+
+#if BBLITE_RENDER_TASK_TRANSMISSION
+namespace {
+/** A pinned utility module's single-sample pipeline, from its deployed stage pair. */
+SDL_GPUGraphicsPipeline* task_grab_pipeline(GpuState& state, const std::string& stem,
+                                            SDL_GPUTextureFormat format, const char* label) {
+    return create_fullscreen_pipeline(
+        state.device, load_pinned_stage(state.device, stem + ".vert", SDL_GPU_SHADERSTAGE_VERTEX),
+        load_pinned_stage(state.device, stem + ".frag", SDL_GPU_SHADERSTAGE_FRAGMENT), format,
+        label);
+}
+
+/** transmission-depth-grab.ts: the snapshot's nearest, clamped sampler. */
+SDL_GPUSampler* depth_grab_sampler(GpuState& state) {
+    if (state.task_depth_grab_sampler)
+        return state.task_depth_grab_sampler;
+    SDL_GPUSamplerCreateInfo info{};
+    info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    state.task_depth_grab_sampler = SDL_CreateGPUSampler(state.device, &info);
+    if (!state.task_depth_grab_sampler)
+        gpu_error("SDL_CreateGPUSampler render-task depth grab");
+    return state.task_depth_grab_sampler;
 }
 } // namespace
 
@@ -709,8 +709,8 @@ void encode_task_transmission_grab(GpuState& state, const Engine& engine,
             state, "transmission-grab-single", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
             "SDL_CreateGPUGraphicsPipeline render-task transmission grab");
     // blitToTransmission through the bilinear sampler the pin binds.
-    encode_task_grab_pass(command, state.task_grab_pipeline, grab.color,
-                          {target.color, state.ground_sampler});
+    const SDL_GPUTextureSamplerBinding color_source{target.color, state.ground_sampler};
+    encode_grab_pass(command, state.task_grab_pipeline, grab.color, &color_source);
     generate_texture_mipmaps(state.device, command, grab.color, record.transmission->grab_size,
                              record.transmission->grab_size, grab.mip_count);
     if (grab.depth) {
@@ -718,8 +718,8 @@ void encode_task_transmission_grab(GpuState& state, const Engine& engine,
             state.task_depth_grab_pipeline = task_grab_pipeline(
                 state, "transmission-depth-grab-single", SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
                 "SDL_CreateGPUGraphicsPipeline render-task depth grab");
-        encode_task_grab_pass(command, state.task_depth_grab_pipeline, grab.depth,
-                              {target.depth, task_grab_sampler(state, true)});
+        const SDL_GPUTextureSamplerBinding depth_source{target.depth, depth_grab_sampler(state)};
+        encode_grab_pass(command, state.task_depth_grab_pipeline, grab.depth, &depth_source);
     }
 }
 
@@ -730,9 +730,9 @@ SDL_GPUTextureSamplerBinding task_transmission_binding(GpuState& state, const En
     if (reference.source == RenderTextureSource::transmission_depth) {
         if (!grab.depth)
             pal::fail_render_target_has_no_texture();
-        return {grab.depth, task_grab_sampler(state, true)};
+        return {grab.depth, depth_grab_sampler(state)};
     }
-    return {grab.color, task_grab_sampler(state, false)};
+    return {grab.color, state.transmission_sampler};
 }
 
 void release_task_transmissions(GpuState& state) {
@@ -747,12 +747,10 @@ void release_task_transmissions(GpuState& state) {
          {state.task_grab_pipeline, state.task_depth_grab_pipeline})
         if (pipeline)
             SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
-    for (SDL_GPUSampler* sampler : {state.task_grab_sampler, state.task_depth_grab_sampler})
-        if (sampler)
-            SDL_ReleaseGPUSampler(state.device, sampler);
+    if (state.task_depth_grab_sampler)
+        SDL_ReleaseGPUSampler(state.device, state.task_depth_grab_sampler);
     state.task_grab_pipeline = nullptr;
     state.task_depth_grab_pipeline = nullptr;
-    state.task_grab_sampler = nullptr;
     state.task_depth_grab_sampler = nullptr;
 }
 #endif
