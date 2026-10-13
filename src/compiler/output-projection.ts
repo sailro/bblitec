@@ -227,6 +227,7 @@ export const featureSources: Record<Feature, string[]> = {
     "shadow:pcf": [],
     "shadow:pcf-directional": [],
     "shadow:csm": [],
+    "shadow:csm-static-cache": [],
     "shadow:task": [],
     "shadow:morph-bounds": [],
     "shadow:skeleton-bounds": [],

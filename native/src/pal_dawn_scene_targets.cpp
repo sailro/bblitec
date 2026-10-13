@@ -7,6 +7,7 @@
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_targets.hpp"
 #include "pal_gpu_pipeline.hpp"
+#include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
@@ -128,12 +129,19 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
             // `create_render_target` normalises this, so the record's own
             // invariant is that it is at least one.
             const std::uint32_t depth_layers = record.depth_layers;
-            target.depth = create_frame_texture(
-                state, target.depth_format, samples, target.width, target.height,
+            WGPUTextureUsage depth_usage =
                 record.sampled_depth
                     ? WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding
-                    : WGPUTextureUsage_RenderAttachment,
-                depth_layers);
+                    : WGPUTextureUsage_RenderAttachment;
+#if BBLITE_CSM_STATIC_CACHE
+            // The CSM static cache copies its layers into the map.
+            if (record.copy_source)
+                depth_usage |= WGPUTextureUsage_CopySrc;
+            if (record.copy_destination)
+                depth_usage |= WGPUTextureUsage_CopyDst;
+#endif
+            target.depth = create_frame_texture(state, target.depth_format, samples, target.width,
+                                                target.height, depth_usage, depth_layers);
             // One attachment view per layer:
             // `ensureCsmShadowTaskState` builds each cascade's render
             // target over `createView({dimension:"2d", baseArrayLayer:i,
