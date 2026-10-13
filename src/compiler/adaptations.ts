@@ -24,7 +24,9 @@ interface AdaptationContext extends Pick<
 > {
     readonly ui: Pick<
         UiProjection,
-        "uiDegradedStyleProperties" | "uiScopedSheetSelectors"
+        | "uiDegradedStyleProperties"
+        | "uiDegradedElementWrites"
+        | "uiScopedSheetSelectors"
     >;
 }
 
@@ -996,6 +998,7 @@ function appendUiAdaptations(
 ): void {
     if (features.includes("ui:rml")) {
         const degraded = [...context.ui.uiDegradedStyleProperties].sort();
+        const writes = [...context.ui.uiDegradedElementWrites].sort();
         const scoped = [...context.ui.uiScopedSheetSelectors].sort();
         adaptations.push({
             id: "substituted-ui-runtime",
@@ -1039,6 +1042,9 @@ function appendUiAdaptations(
                     ? "; bounded static svg/path/rect markup is rasterized " +
                       "by RmlUi's LunaSVG plugin, with inherited currentColor " +
                       "applied as the generated image tint"
+                    : "") +
+                (writes.length > 0
+                    ? `; the reached ${writes.join(", ")} write(s) with a value generation cannot name keep the element's current state`
                     : "") +
                 (degraded.length > 0
                     ? `; and the reached style ${

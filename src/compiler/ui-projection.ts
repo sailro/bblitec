@@ -249,11 +249,15 @@ interface UiReflectedAttribute {
     readable: boolean;
     tag?: string;
 }
+/** Elements whose `value` property is their form value. */
+const UI_FORM_VALUE_TAGS = ["textarea", "input", "select", "option", "output"];
+
 const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
     new Map<string, UiReflectedAttribute>([
         ["id", { attribute: "id", readable: true }],
         ["className", { attribute: "class", readable: true }],
         ["lang", { attribute: "lang", readable: true }],
+        ["title", { attribute: "title", readable: true }],
         ["type", { attribute: "type", readable: false }],
         ...["min", "max", "step"].map(
             (name): [string, UiReflectedAttribute] => [
@@ -674,6 +678,28 @@ export class UiProjection {
                     this.context.checker.getTypeAtLocation(expression),
                 )
                 .getSymbol()?.name ?? "",
+        );
+    }
+
+    /**
+     * Whether the element is one of `tags`: its own tag, or every member of
+     * its declared (possibly union) HTML interface type when storage did not
+     * carry the tag.
+     */
+    private declaresUiTags(
+        element: Value,
+        expression: ts.Expression,
+        tags: readonly string[],
+    ): boolean {
+        if (element.uiTag !== undefined) return tags.includes(element.uiTag);
+        const type = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(expression),
+        );
+        const members = type.isUnion() ? type.types : [type];
+        return members.every((member) =>
+            tags.includes(
+                elementInterfaceTag(member.getSymbol()?.name ?? "") ?? "",
+            ),
         );
     }
 
@@ -1672,6 +1698,13 @@ export class UiProjection {
      * this scene's `substituted-ui-runtime` fidelity adaptation.
      */
     public readonly uiDegradedStyleProperties = new EmissionSet<string>();
+
+    /**
+     * Element writes accepted without a native effect (an image source
+     * generation cannot name), recorded in the `substituted-ui-runtime`
+     * adaptation.
+     */
+    public readonly uiDegradedElementWrites = new EmissionSet<string>();
 
     /**
      * Reviewed scoped selectors retained in typed form instead of widened to
@@ -4822,6 +4855,14 @@ export class UiProjection {
             expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
             !ts.isPropertyAccessExpression(expression.left)
         ) {
+            if (
+                ts.isPropertyAccessExpression(expression.left) &&
+                this.compileUiElementReceiver(expression.left.expression)
+            )
+                this.context.fail(
+                    expression,
+                    `Compound assignment to retained element property '${expression.left.name.text}' is not lowered natively.`,
+                );
             return false;
         }
         const property = expression.left.name.text;
@@ -4883,11 +4924,10 @@ export class UiProjection {
             }
             if (
                 property === "value" &&
-                ["textarea", "input", "select", "option", "output"].includes(
-                    this.declaredUiTag(
-                        directElement,
-                        expression.left.expression,
-                    ) ?? "",
+                this.declaresUiTags(
+                    directElement,
+                    expression.left.expression,
+                    UI_FORM_VALUE_TAGS,
                 ) &&
                 !directElement.uiFileInput
             ) {
@@ -5136,6 +5176,42 @@ export class UiProjection {
                 });
                 return true;
             }
+            const tag = this.declaredUiTag(
+                directElement,
+                expression.left.expression,
+            );
+            // A native canvas's tabIndex reads 0 and keyboard focus targets
+            // the SDL surface, so writing 0 changes nothing observable.
+            if (
+                property === "tabIndex" &&
+                tag === "canvas" &&
+                this.context.compileValue(expression.right).staticNumber === 0
+            )
+                return true;
+            if (property === "src" && tag === "img") {
+                const source = this.tryUiStaticString(expression.right);
+                if (source !== undefined) {
+                    this.registerImageSource(source);
+                    this.context.emit({
+                        kind: "expression",
+                        code:
+                            `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, "src", ` +
+                            `${this.context.cppString(this.lowerUiAttributeLiteral("src", source, expression.right))});`,
+                    });
+                    return true;
+                }
+                // A source generation cannot name has no packaged asset: the
+                // image keeps its source, recorded for the scene's fidelity.
+                this.context.emitDiscardedValue(
+                    this.context.compileValue(expression.right),
+                );
+                this.uiDegradedElementWrites.add("img src");
+                return true;
+            }
+            this.context.fail(
+                expression.left,
+                `Retained element property '${property}' assignment is not lowered natively.`,
+            );
         }
         const style = this.context.unwrap(expression.left.expression);
         if (
