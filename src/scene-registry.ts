@@ -1242,6 +1242,33 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // updateTexture2DFromPixels regions, full-texture and defaulted
+        // writes on shader, Standard and billboard custom-shader textures;
+        // writes from the frame callback land before that frame's draws.
+        id: "regression-texture-region-writes",
+        name: "Regression - Texture Region Writes",
+        source: "examples/regression-texture-region-writes.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Texture Region Writes",
+        buildDirectory: "native/build-regression-texture-region-writes-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-texture-region-writes/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-texture-region-writes",
+            // The cursor texels move every frame, so both sides capture
+            // one fixed frame's writes.
+            referenceFrame: 12,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "scene168",
         name: "Scene 168 - Mirrored Double-Sided Winding",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene168.ts",

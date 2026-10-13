@@ -94,6 +94,7 @@ test("registers unique generated scene targets", () => {
             "regression-engine-calls",
             "regression-no-camera-floating-origin",
             "regression-compiler-state",
+            "regression-texture-region-writes",
             "scene168",
             "scene176",
             "scene213",
