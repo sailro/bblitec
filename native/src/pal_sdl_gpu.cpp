@@ -2430,6 +2430,11 @@ public:
                                 "A shadow caster pass fills its scene block's camera lanes from "
                                 "the scene's active camera; a scene without one is not reached.");
                         }
+                        // The caller skips a camera-less geometry task, as the pin does.
+                        if (!draw_camera && geometry_task) {
+                            throw std::runtime_error(
+                                "A geometry task without a camera does not execute.");
+                        }
                         // A pass without a camera pushes the block it last
                         // wrote, as the pin's task keeps its scene UBO.
                         upstream::SceneUniforms pass_scene_block =

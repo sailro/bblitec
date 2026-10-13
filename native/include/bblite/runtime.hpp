@@ -4716,7 +4716,11 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
     facade.height = target.height;
     if (reference.source == RenderTextureSource::transmission_color) {
         // createRenderTaskTransmission's square grab, sampled without a Y flip.
-        const auto size = handle_at(engine.frame_tasks, reference.task).transmission->grab_size;
+        const auto& grab = handle_at(engine.frame_tasks, reference.task).transmission;
+        if (!grab)
+            throw std::runtime_error(
+                "A transmission grab texture names a render task without transmission.");
+        const auto size = grab->grab_size;
         facade.width = size;
         facade.height = size;
     }

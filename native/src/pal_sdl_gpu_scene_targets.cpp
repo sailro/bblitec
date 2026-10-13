@@ -710,8 +710,12 @@ void encode_task_transmission_grab(GpuState& state, const Engine& engine,
     // blitToTransmission through the bilinear sampler the pin binds.
     const SDL_GPUTextureSamplerBinding color_source{target.color, state.ground_sampler};
     encode_grab_pass(command, state.task_grab_pipeline, grab.color, &color_source);
-    generate_texture_mipmaps(state.device, command, grab.color, record.transmission->grab_size,
-                             record.transmission->grab_size, grab.mip_count);
+    if (!record.transmission)
+        throw std::runtime_error(
+            "A render-task transmission grab names a task without transmission.");
+    const auto grab_size = record.transmission->grab_size;
+    generate_texture_mipmaps(state.device, command, grab.color, grab_size, grab_size,
+                             grab.mip_count);
     if (grab.depth) {
         if (!state.task_depth_grab_pipeline)
             state.task_depth_grab_pipeline = task_grab_pipeline(
