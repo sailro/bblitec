@@ -1430,6 +1430,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         ~Reset() { document = nullptr; }
                     } reset;
                     WorkerRealm realm(loop, {}, services);
+                    realm.provide_device_pixel_ratio(window_device_pixel_ratio);
                     ApplicationErrors errors(loop);
                     owner.errors = &errors;
                     realm.on_platform_event([services](std::unique_ptr<ExternalEvent> packet) {
