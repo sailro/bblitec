@@ -387,3 +387,18 @@ export function settlesNever(
 export function rejectionOnlyPromiseCpp(cpp: string, cppType: string): string {
     return `bbl::js::Promise<${cppType}>::view(${cpp}, [](const auto&) -> ${cppType} { throw std::logic_error("A Promise<never> fulfilled."); })`;
 }
+
+/**
+ * A call's promise, rejected instead with `refused` (a native
+ * `std::optional<bbl::js::Error>`) when that holds an error; `otherwise`
+ * runs only when it does not.
+ */
+export function rejectedWhenRefused(
+    refused: string | undefined,
+    cppType: string,
+    otherwise: string,
+): string {
+    return refused
+        ? `(${refused} ? bbl::js::Promise<${cppType}>::rejected(*${refused}) : ${otherwise})`
+        : otherwise;
+}

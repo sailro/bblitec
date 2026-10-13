@@ -2255,7 +2255,7 @@ function lowerCsmStaticCacheEnable(context: LoweringContext): string {
                     node,
                     "Expected a literal enableCsmStaticCache rejection.",
                 );
-            return `PromiseRejection{${stringLiteral((node.expression as ts.Identifier).text)}, ${stringLiteral(message.text)}}`;
+            return `js::make_error(${stringLiteral((node.expression as ts.Identifier).text)}, ${stringLiteral(message.text)})`;
         });
     if (rejections.length !== 4)
         context.contractError(
@@ -2274,7 +2274,7 @@ function lowerCsmStaticCacheEnable(context: LoweringContext): string {
         context.expectShapeCount(enable, shape, "enableCsmStaticCache");
     return `
 // ${context.provenance("src/shadow/enable-csm-static-cache.ts", "enableCsmStaticCache")}
-std::optional<PromiseRejection> enable_csm_static_cache(
+std::optional<js::Error> enable_csm_static_cache(
     Engine& engine, ShadowGeneratorHandle handle, double refit_angle,
     std::optional<double> refit_max_interval_ms,
     std::optional<double> static_cascades_per_frame, bool receiver_texture_read) {
