@@ -93,6 +93,24 @@ const read = (shape: RecordShape, native: string): MemberSpec => ({
 const members = (
     entries: readonly (readonly [string, MemberSpec])[],
 ): ReadonlyMap<string, MemberSpec> => new Map(entries);
+/**
+ * `scene.<list>.<method>(...)` through the scene-list helpers scene programs
+ * use too (`bbl::scene_list_push` / `_index_of` / `_splice`, runtime.hpp),
+ * over the list's SceneState field.
+ */
+const sceneListMember = (
+    method: "push" | "indexOf" | "splice",
+    field: string,
+    shape: RecordShape,
+): readonly [string, MemberSpec] => [
+    method,
+    {
+        shape,
+        access: (owner) => owner,
+        call: (owner, args) =>
+            `bbl::scene_list_${method === "indexOf" ? "index_of" : method}(${owner}->${field}, ${args.join(", ")})`,
+    },
+];
 /** A scene list the pin pushes to, searches and splices by identity. */
 const list = (native: string): MemberSpec => ({
     shape: { kind: "record", name: native },
@@ -164,50 +182,37 @@ const runtimeRecords: readonly RecordSpec[] = [
             ],
         ]),
     },
+    // The scene's lists, through the scene-list helpers scene programs use
+    // too (`runtime.hpp`), by their SceneState field. A renderable joins
+    // the scene only through a deferred builder, which binds its engine.
     ...(
         [
             [
                 "SplatStreamBeforeRenderList",
                 fn([number], none),
                 "before_render",
+                true,
             ],
-            ["SplatStreamDisposableList", fn([], none), "disposables"],
-            ["SplatStreamRenderableList", record("Renderable"), "renderables"],
+            ["SplatStreamDisposableList", fn([], none), "disposables", true],
+            [
+                "SplatStreamRenderableList",
+                record("Renderable"),
+                "external_renderables",
+                false,
+            ],
         ] as const
-    ).map(([name, element, native]): RecordSpec => ({
+    ).map(([name, element, field, pushed]): RecordSpec => ({
         pinned: [name],
         cpp: "SceneState",
         handle: "SplatStreamScene",
         reference: true,
         native: true,
         members: members([
-            [
-                "push",
-                {
-                    shape: fn([element], number),
-                    access: (owner) => owner,
-                    call: (owner, args) =>
-                        `${RUNTIME}::${native}_push(${owner}, ${args.join(", ")})`,
-                },
-            ],
-            [
-                "indexOf",
-                {
-                    shape: fn([element], number),
-                    access: (owner) => owner,
-                    call: (owner, args) =>
-                        `${RUNTIME}::${native}_index_of(${owner}, ${args.join(", ")})`,
-                },
-            ],
-            [
-                "splice",
-                {
-                    shape: fn([number, number], none),
-                    access: (owner) => owner,
-                    call: (owner, args) =>
-                        `${RUNTIME}::${native}_splice(${owner}, ${args.join(", ")})`,
-                },
-            ],
+            ...(pushed
+                ? [sceneListMember("push", field, fn([element], number))]
+                : []),
+            sceneListMember("indexOf", field, fn([element], number)),
+            sceneListMember("splice", field, fn([number, number], none)),
         ]),
     })),
     {

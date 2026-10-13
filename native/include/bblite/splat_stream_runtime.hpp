@@ -108,49 +108,6 @@ inline void retire_gpu_resources(const StoredEngine& engine, js::Callback<void()
     return StoredEngine(*scene->engine);
 }
 
-template <class List, class Value>
-[[nodiscard]] double list_index_of(const List& list, const Value& value) {
-    for (std::size_t index = 0; index < list.size(); ++index)
-        if (list[index] == value)
-            return static_cast<double>(index);
-    return -1;
-}
-
-/** `list.splice(start, count)` with a start the pin read from `indexOf`. */
-template <class List> void list_splice(List& list, double start, double count) {
-    if (start < 0 || count < 0 || start + count > static_cast<double>(list.size()))
-        throw std::out_of_range("A scene list splice is outside the list.");
-    const auto first = list.begin() + static_cast<std::ptrdiff_t>(start);
-    list.erase(first, first + static_cast<std::ptrdiff_t>(count));
-}
-
-/** `scene._beforeRender.push(callback)`. */
-inline double before_render_push(const SplatStreamScene& scene,
-                                 js::Callback<void(double)> callback) {
-    scene->before_render.push_back(std::move(callback));
-    return static_cast<double>(scene->before_render.size());
-}
-[[nodiscard]] inline double before_render_index_of(const SplatStreamScene& scene,
-                                                   const js::Callback<void(double)>& callback) {
-    return list_index_of(scene->before_render, callback);
-}
-inline void before_render_splice(const SplatStreamScene& scene, double start, double count) {
-    list_splice(scene->before_render, start, count);
-}
-
-/** `scene._disposables.push(callback)`. */
-inline double disposables_push(const SplatStreamScene& scene, js::Callback<void()> callback) {
-    scene->disposables.push_back(std::move(callback));
-    return static_cast<double>(scene->disposables.size());
-}
-[[nodiscard]] inline double disposables_index_of(const SplatStreamScene& scene,
-                                                 const js::Callback<void()>& callback) {
-    return list_index_of(scene->disposables, callback);
-}
-inline void disposables_splice(const SplatStreamScene& scene, double start, double count) {
-    list_splice(scene->disposables, start, count);
-}
-
 // ── Camera ─────────────────────────────────────────────────────────────
 
 /** The camera a scene pass draws with: its record in its engine. */
@@ -331,19 +288,6 @@ inline void add_deferred_scene_renderables(
         if (built.dispose)
             state.disposables.push_back(built.dispose);
     });
-}
-
-/** `scene._renderables.indexOf(renderable)`. */
-[[nodiscard]] inline double renderables_index_of(const SplatStreamScene& scene,
-                                                 const std::shared_ptr<Renderable>& renderable) {
-    const auto& list = scene->external_renderables;
-    for (std::size_t index = 0; index < list.size(); ++index)
-        if (list[index].get() == renderable.get())
-            return static_cast<double>(index);
-    return -1;
-}
-inline void renderables_splice(const SplatStreamScene& scene, double start, double count) {
-    list_splice(scene->external_renderables, start, count);
 }
 
 // ── Scene node ─────────────────────────────────────────────────────────
