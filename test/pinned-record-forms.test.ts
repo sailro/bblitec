@@ -23,7 +23,8 @@ const MODULE = "src/fixture/record-forms.ts";
  * union narrowed to fewer of its members (`typeof`, `in`, `Array.isArray`,
  * `instanceof` the language's or a platform class),
  * members of an `as const` object read as their literals, and a module
- * `RegExp | null` built once and matched (non-global and global).
+ * `RegExp | null` built once and matched (non-global and global), and a
+ * string-keyed dictionary constant whose missing keys read `undefined`.
  * `run` prints what it computed.
  */
 const SOURCE = `export interface Bus {
@@ -62,6 +63,16 @@ function describe(source: Source): string {
 }
 
 export const Mode = { Idle: 0, Busy: 3, Label: "busy" } as const;
+
+const Kinds: { [key: string]: string } = {
+    wav: "audio/wav",
+    mp3: 'audio/mpeg; codecs="mp3"',
+};
+
+function kindOf(key: string): string {
+    const kind = Kinds[key];
+    return kind === undefined ? "none" : kind;
+}
 
 let extension: RegExp | null = null;
 
@@ -120,7 +131,8 @@ export function run(): string {
     const flags = (plain ? "in " : "out ") + (warned ? "warned" : "quiet");
     const extensions = ["a.wav", "b.ogg?v=2", "c", "d.webm#t"].map((url) => fileExtension(url) ?? "-").join(",");
     const numbers = digits("a1b22c333") + " " + digits("none");
-    return \`\${snapshot.join(",")} \${sounds.size} \${offset} \${tail} \${mirrored.join(",")} \${input(main)} \${input(bus)} \${flags} \${warnings} \${lastWarning} \${described} \${mode} \${modeName} \${extensions} \${numbers}\`;
+    const kinds = ["wav", "mp3", "aac"].map((key) => kindOf(key)).join("|");
+    return \`\${snapshot.join(",")} \${sounds.size} \${offset} \${tail} \${mirrored.join(",")} \${input(main)} \${input(bus)} \${flags} \${warnings} \${lastWarning} \${described} \${mode} \${modeName} \${extensions} \${numbers} \${kinds}\`;
 }
 `;
 

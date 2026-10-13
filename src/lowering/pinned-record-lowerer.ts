@@ -1079,6 +1079,20 @@ export class PinnedRecordModel {
                     ),
                 };
             }
+            // A dictionary (`{ [key: string]: string }`): a Map by key, whose
+            // missing keys read `undefined` (noUncheckedIndexedAccess).
+            const indexes = this.checker.getIndexInfosOfType(type);
+            if (
+                type.getProperties().length === 0 &&
+                signatures.length === 0 &&
+                indexes.length === 1 &&
+                indexes[0]!.keyType.flags & ts.TypeFlags.String
+            )
+                return {
+                    kind: "map",
+                    key: { kind: "string" },
+                    value: this.shapeOf(indexes[0]!.type, site),
+                };
             if (type.getProperties().length === 0 && signatures.length === 0)
                 return { kind: "object" };
             // One arm of a discriminated record union (`TextDataUpdate`
@@ -5875,9 +5889,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 // (a scratch matrix) is one object for the realm.
                 if (
                     declaration.initializer &&
-                    ts.isNewExpression(
+                    (ts.isNewExpression(
                         this.skipParentheses(declaration.initializer),
-                    )
+                    ) ||
+                        this.model.declaredShape(
+                            this.checker.getTypeAtLocation(declaration.name),
+                            declaration,
+                        ).kind === "map")
                 ) {
                     const variable = this.model.variable(declaration, (shape) =>
                         this.convert(declaration.initializer!, shape),
@@ -6651,6 +6669,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             }
             case "record":
                 return this.keyedMemberRead(node, shape.name, owner);
+            case "map":
+                // A dictionary's entry, absent for a missing key.
+                if (stripOptional(shape.key).kind !== "string")
+                    return this.refuse(
+                        node,
+                        "Pinned element read of a non-dictionary map.",
+                    );
+                return this.narrowed(
+                    this.collectionResult(
+                        `${owner}.get_owned(${this.convert(node.argumentExpression, shape.key)})`,
+                        shape.value,
+                    ),
+                    optionalOf(shape.value),
+                    node,
+                );
             default:
                 return this.refuse(node, "Pinned element read of a non-array.");
         }
@@ -8759,6 +8792,32 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             : value;
     }
 
+    /** A dictionary literal: its entries set in source order. */
+    private dictionaryLiteral(
+        node: ts.ObjectLiteralExpression,
+        shape: Extract<RecordShape, { kind: "map" }>,
+    ): string {
+        if (stripOptional(shape.key).kind !== "string")
+            return this.refuse(node, "Pinned dictionary keyed by non-strings.");
+        const map = this.temporary("dictionary");
+        const entries = node.properties.map((property) => {
+            if (
+                !ts.isPropertyAssignment(property) ||
+                !(
+                    ts.isIdentifier(property.name) ||
+                    ts.isStringLiteral(property.name) ||
+                    ts.isNumericLiteral(property.name)
+                )
+            )
+                return this.refuse(
+                    property,
+                    "Pinned dictionary literals take named entries only.",
+                );
+            return `${map}.set(std::string(${stringLiteral(property.name.text)}), ${this.convert(property.initializer, shape.value)});`;
+        });
+        return `[&] { ${this.cpp(shape)} ${map}{}; ${entries.join(" ")} return ${map}; }()`;
+    }
+
     private objectLiteral(
         node: ts.ObjectLiteralExpression,
         to: RecordShape,
@@ -8796,6 +8855,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 );
             return "std::make_shared<bbl::pinned::PlainObject>()";
         }
+        if (shape.kind === "map") return this.dictionaryLiteral(node, shape);
         if (shape.kind === "variant") {
             const records = shape.members.filter(
                 (member) => member.kind === "record",
