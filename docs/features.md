@@ -8,8 +8,8 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
 buffers, buses, spatial/stereo/analyzer and master volume, media streams/recording/streamed audio, script elements,
-idle callbacks, dynamic pixel ratio, application-realm device recovery, Blob streams/piping/compression, and the
-[UI](ui.md) items marked deferred. Unregistered APIs still refuse.
+idle callbacks, dynamic pixel ratio, application-realm device recovery, and the [UI](ui.md) items
+marked deferred. Unregistered APIs still refuse.
 
 ## Language
 
@@ -62,7 +62,10 @@ Rules:
   `--public-url` serves unmapped root-relative ones, `--site-url` sets the base (default `http://localhost/`);
   registry scenes use the pinned `lab/public`. Dynamic URLs and percent-encoded bodies refuse.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `signal`; streamed
-  `body` reader. Known asset fetches use packaged responses. Request objects, piping, teeing and Headers iteration refuse.
+  `body` reader. Known asset fetches use packaged responses. Request objects, teeing and Headers iteration refuse.
+- Byte streams (application realm): response bodies and `blob.stream()` pipe through `CompressionStream` or
+  `DecompressionStream` (gzip, deflate, deflate-raw; zlib linked only where constructed); `new Response(stream)` reads
+  them. Pipe options, `pipeTo`, other transforms, writable sides, Response init and non-stream Response bodies refuse.
 - `createImageBitmap(blob, options)`: static options through `pal::image_bitmap_options`; WebP via libwebp. Resize/crop
   refuse; orientation metadata is not applied.
 - `setDracoBaseUrl`/`setKtx2DecoderUrl` must be generation-known and precede compressed loads. KTX1 selects a

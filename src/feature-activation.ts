@@ -1568,6 +1568,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "owned fetch responses from the closed packaged asset manifest, without network transport",
         consumers: INVENTORY,
     },
+    "platform:compression": {
+        provenance:
+            "the Compression Streams CompressionStream and DecompressionStream transforms through zlib",
+        consumers: CMAKE,
+    },
     "image:runtime-decode": {
         provenance:
             "the HTML createImageBitmap decode of run-time image bytes; generation adds the WebP codec it links (image-codecs.ts)",

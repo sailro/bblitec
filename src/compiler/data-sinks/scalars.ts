@@ -471,6 +471,7 @@ export const scalarsSinks: DataSinkOperations<
     | "byte-stream"
     | "byte-stream-reader"
     | "byte-read-result"
+    | "byte-transform-stream"
     | "abort-controller"
     | "abort-signal"
     | "url"
@@ -611,6 +612,7 @@ export const scalarsSinks: DataSinkOperations<
     "byte-stream": opaqueSink,
     "byte-stream-reader": opaqueSink,
     "byte-read-result": opaqueSink,
+    "byte-transform-stream": opaqueSink,
     "abort-controller": opaqueSink,
     "abort-signal": opaqueSink,
     url: opaqueSink,

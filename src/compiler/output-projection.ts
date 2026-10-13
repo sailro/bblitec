@@ -43,6 +43,7 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:workers": [],
     "platform:http": ["src/pal_http.cpp"],
     "platform:packaged-fetch": [],
+    "platform:compression": ["src/pal_compression.cpp"],
     "image:runtime-decode": [],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
@@ -815,6 +816,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
               : "") +
         (features.includes("platform:packaged-fetch")
             ? "#include <bblite/pal_packaged_fetch.hpp>\n"
+            : "") +
+        (features.includes("platform:compression")
+            ? "#include <bblite/pal_compression.hpp>\n"
             : "") +
         (projection.webPlatformHeaders ?? [])
             .map((header) => `#include <bblite/${header}.hpp>\n`)

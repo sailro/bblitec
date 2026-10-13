@@ -20,8 +20,9 @@ anything not listed here must match it.
 | Promises outside a realm | `await` reads the settlement in place; a pending one ends the activation without catch/finally; a later settlement throws |
 | Uncaught callback errors | Reach the entry handler and exit with status 1 (browsers continue) |
 | Files | Atomic replacement; iOS publishes through UIKit/file providers; FileReader loads inside `readAsText` |
-| HTTP | WinHTTP/libcurl, system TLS, no cookies/CORS/HTTP cache; WinHTTP pool 6 per server; 8 MiB queued per transfer; 32 MiB bound on bodies and text/json/arrayBuffer (not streams); `statusText` is empty; a packaged response ignores an abort once its read started |
+| HTTP | WinHTTP/libcurl, system TLS, no cookies/CORS/HTTP cache; WinHTTP pool 6 per server; 8 MiB queued per transfer; 32 MiB bound on fetched bodies and text/json/arrayBuffer (not streams); `statusText` is empty; a packaged response ignores an abort once its read started |
 | HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect, then under 1 byte/s for 5 s. Realm close and abort cancel transfers |
+| Byte streams | Packaged responses have no headers; Blob and packaged bodies stream as one chunk (Chromium: 64 KiB chunks); compression is canonical zlib level 6, so deflate data can differ from Chromium's zlib (gzip header equal, OS byte per platform) and decompresses identically |
 | Packaged URL inference | 256 candidates; uncertain mutations, dynamic queries, traversal and encoded separators refuse |
 | Environment | `onLine=true`, secure context, no client hints or deviceMemory; one `performance.timeOrigin` per process |
 | GPU adapter info | Describes the selected device; SDL leaves architecture empty; Metal reports Apple vendor only for Apple GPUs |

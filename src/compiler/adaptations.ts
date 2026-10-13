@@ -346,6 +346,19 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("platform:compression"))
+        adaptations.push({
+            id: "native-compression-streams",
+            category: "platform",
+            sourceSemantics:
+                "CompressionStream and DecompressionStream run Chromium's zlib fork at level 6 and enqueue 64 KiB output chunks; invalid, truncated or trailing input errors the readable side with a TypeError.",
+            nativeSemantics:
+                "Canonical zlib at level 6 with the same window bits, 64 KiB output chunks and TypeError messages. The gzip header is equal; the deflate data can differ from Chromium's bytes and decompresses identically.",
+            risk: "low",
+            validation: [
+                "native compression-stream fixture: application byte pipelines, standard-tool decompression and Chromium's measured errors",
+            ],
+        });
     if (features.includes("platform:http"))
         adaptations.push({
             id: "native-http-transport",

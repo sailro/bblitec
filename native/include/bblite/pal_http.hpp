@@ -89,7 +89,8 @@ inline js::Promise<HttpResponse> fetch_http(std::string url, HttpRequest request
                 HttpResponseData{received->status, std::move(received->url),
                                  HttpHeaders(std::move(received->headers)),
                                  null_body ? std::optional<BodyStream>()
-                                           : std::optional<BodyStream>(BodyStream(state))});
+                                           : std::optional<BodyStream>(BodyStream(state)),
+                                 false});
             pending->result.resolve(std::move(response));
         },
         [pending] {

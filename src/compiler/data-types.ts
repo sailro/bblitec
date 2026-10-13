@@ -589,6 +589,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
         | "file-list"
         | "http-response"
         | "http-headers"
+        | "byte-transform-stream"
         | "abort-controller"
         | "abort-signal"
         | "url"
@@ -613,6 +614,8 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["FileList", "dom", "file-list"],
     ["Response", "dom", "http-response"],
     ["Headers", "dom", "http-headers"],
+    ["CompressionStream", "dom", "byte-transform-stream"],
+    ["DecompressionStream", "dom", "byte-transform-stream"],
     ["AbortController", "dom", "abort-controller"],
     ["AbortSignal", "dom", "abort-signal"],
     ["URL", "dom", "url"],
@@ -653,6 +656,7 @@ const RESPONSE_KINDS: readonly DataType["kind"][] = [
     "byte-stream",
     "byte-stream-reader",
     "byte-read-result",
+    "byte-transform-stream",
 ];
 
 /** Header-only web platform storage, included where a program stores it. */

@@ -77,15 +77,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "MediaRecorder.state",
         "MediaRecorder.addEventListener",
         "BlobEvent.data",
-        "Response.headers",
-        "Body.body",
-        "Blob.stream",
-        "ReadableStream.pipeThrough",
-        "CompressionStream.constructor",
-        "DecompressionStream.constructor",
-        "CompressionStream.readable",
-        "DecompressionStream.readable",
-        "Response.constructor",
         "HTMLCanvasElement.captureStream",
         "AudioContext.createMediaStreamSource",
         "AudioContext.createMediaStreamDestination",
@@ -349,16 +340,6 @@ export class DeferredCapabilities {
             declarationOrigin(signature.declaration) !== origin
         )
             return undefined;
-        if (name === "Response") {
-            const body = node.arguments?.[0];
-            const bodyType =
-                body &&
-                context.dataTypes.fromTsType(
-                    context.checker.getTypeAtLocation(body),
-                    body,
-                );
-            if (bodyType?.kind !== "byte-stream") return undefined;
-        }
         const type = context.dataTypes.fromTsType(
             context.checker.getTypeAtLocation(node),
             node,
@@ -492,10 +473,6 @@ export class DeferredCapabilities {
             );
         const handle = type?.kind === "handle" ? type.handle : value.kind;
         if (owner === "SurfaceContext") return value.kind === "engine";
-        if (owner === "ReadableStream") return type?.kind === "byte-stream";
-        // A runtime Response's headers and body are native; a folded packaged one has neither.
-        if (owner === "Response" || owner === "Body")
-            return value.kind === "static-fetch-response";
         if (owner === "MediaStream") return handle === "media-stream";
         if (owner === "MediaStreamTrack")
             return handle === "media-stream-track";
@@ -505,10 +482,6 @@ export class DeferredCapabilities {
             owner === "MediaStreamAudioDestinationNode"
         )
             return handle === "audio-node";
-        if (owner === "Blob")
-            return [value.kind, type?.kind].some(
-                (kind) => kind === "blob" || kind === "file",
-            );
         return value.kind === "ui-element" || type?.kind === "event-target";
     }
 

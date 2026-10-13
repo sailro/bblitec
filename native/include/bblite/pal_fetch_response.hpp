@@ -12,8 +12,10 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <utility>
@@ -296,15 +298,47 @@ struct BodyReadResult {
 };
 
 /**
- * A response body's ReadableStream state, owned by the realm. Its source is either the whole
- * body (a packaged response) or a transfer's exchange. The stream is readable, then closed (end,
- * cancel) or errored (transport failure, abort); reads are served in request order.
+ * The byte transformation behind a transform stream (`pal_compression.hpp`): a written chunk and
+ * the end of input append the chunks they produce; invalid input throws the TypeError that
+ * errors the stream.
+ */
+class ByteTransformer {
+public:
+    ByteTransformer() = default;
+    ByteTransformer(const ByteTransformer&) = delete;
+    ByteTransformer& operator=(const ByteTransformer&) = delete;
+    virtual ~ByteTransformer() = default;
+    virtual void transform(std::span<const std::uint8_t> input,
+                           std::deque<std::vector<std::uint8_t>>& output) = 0;
+    virtual void flush(std::deque<std::vector<std::uint8_t>>& output) = 0;
+};
+
+struct HttpBodyState;
+
+/**
+ * A transform stream's readable side: its transformer (absent once flushed), the stream piped
+ * into its writable side (absent until `pipeThrough` and after the pipe ends) and output not yet
+ * read. The pipe reads its source only while a read of this side waits for output.
+ */
+struct ByteTransformSide {
+    std::unique_ptr<ByteTransformer> transformer;
+    std::shared_ptr<HttpBodyState> source;
+    std::deque<std::vector<std::uint8_t>> output;
+    bool pulling = false;
+};
+
+/**
+ * A ReadableStream<Uint8Array>'s state, owned by the realm. Its source is the whole body (a
+ * packaged response, a Blob), a transfer's exchange or a transform's output. The stream is
+ * readable, then closed (end, cancel) or errored (transport failure, abort, invalid transform
+ * input); reads are served in request order.
  */
 struct HttpBodyState {
     enum class Phase { readable, closed, errored };
     Phase phase = Phase::readable;
     std::optional<std::vector<std::uint8_t>> whole;
     std::shared_ptr<HttpTransport> transport;
+    std::optional<ByteTransformSide> transform;
     std::optional<js::Error> error;
     bool disturbed = false;
     bool locked = false;
@@ -316,10 +350,14 @@ struct HttpBodyState {
         visitor(reads);
         visitor(error);
         visitor(signal);
+        if (transform)
+            visitor(transform->source);
     }
 };
 
 namespace http_detail {
+inline void close(HttpBodyState& state);
+inline void pump(const std::shared_ptr<HttpBodyState>& state, bool delivery_task);
 inline void settle_reads(HttpBodyState& state) {
     auto reads = std::move(state.reads);
     state.reads.clear();
@@ -330,7 +368,10 @@ inline void settle_reads(HttpBodyState& state) {
             read.resolve(BodyReadResult{});
     }
 }
-/** End the transfer's realm ties: the abort algorithm and the transport (joined later). */
+/**
+ * End the source's realm ties: the abort algorithm, the transport (joined later) and a transform's
+ * pipe, which cancels the stream piped into it and releases that stream's lock.
+ */
 inline void release_source(HttpBodyState& state) {
     if (state.algorithm) {
         state.signal.remove_algorithm(state.algorithm);
@@ -339,6 +380,15 @@ inline void release_source(HttpBodyState& state) {
     if (state.transport && state.transport->exchange)
         state.transport->exchange->cancel();
     state.whole.reset();
+    if (state.transform) {
+        state.transform->transformer.reset();
+        state.transform->output.clear();
+        if (const auto source = std::exchange(state.transform->source, nullptr)) {
+            source->disturbed = true;
+            close(*source);
+            source->locked = false;
+        }
+    }
 }
 inline void close(HttpBodyState& state) {
     if (state.phase != HttpBodyState::Phase::readable)
@@ -358,13 +408,88 @@ inline void error(HttpBodyState& state, js::Error reason) {
 inline js::Error type_error(std::string message) {
     return std::make_exception_ptr(js::NamedError("TypeError", std::move(message)));
 }
+/** One read of `body`: its next chunk, `{ done: true }` at its end, or its error. */
+inline js::Promise<BodyReadResult> read_body(const std::shared_ptr<HttpBodyState>& body) {
+    body->disturbed = true;
+    if (body->phase == HttpBodyState::Phase::closed)
+        return js::Promise<BodyReadResult>::resolved(BodyReadResult{});
+    if (body->phase == HttpBodyState::Phase::errored)
+        return js::Promise<BodyReadResult>::rejected(*body->error);
+    js::Promise<BodyReadResult> read;
+    body->reads.push_back(read);
+    pump(body, false);
+    return read;
+}
+/**
+ * A transform's source delivered `part`: transform its chunk, or at its end flush the transformer
+ * and release the source (the pipe closes the writable side). A transformer failure errors the
+ * readable side, which cancels the source.
+ */
+inline void transform_part(const std::shared_ptr<HttpBodyState>& state,
+                           const BodyReadResult& part) {
+    if (!state->transform)
+        return;
+    auto& transform = *state->transform;
+    transform.pulling = false;
+    if (state->phase != HttpBodyState::Phase::readable || !transform.transformer)
+        return;
+    try {
+        if (part.done) {
+            const auto transformer = std::move(transform.transformer);
+            transformer->flush(transform.output);
+            if (const auto source = std::exchange(transform.source, nullptr))
+                source->locked = false;
+        } else {
+            transform.transformer->transform(
+                std::span<const std::uint8_t>(part.value.data(), part.value.size()),
+                transform.output);
+        }
+    } catch (...) {
+        error(*state, std::current_exception());
+        return;
+    }
+    pump(state, false);
+}
+/** Read `transform`'s source once; the source's error errors the readable side, `state`. */
+inline void pull_transform_source(const std::shared_ptr<HttpBodyState>& state,
+                                  ByteTransformSide& transform) {
+    transform.pulling = true;
+    read_body(transform.source)
+        .observe(js::make_closure(std::tuple{state},
+                                  [](auto& captured, const BodyReadResult& part) {
+                                      transform_part(std::get<0>(captured), part);
+                                  }),
+                 js::make_closure(std::tuple{state}, [](auto& captured, std::exception_ptr reason) {
+                     const auto& current = std::get<0>(captured);
+                     if (current->transform)
+                         current->transform->pulling = false;
+                     error(*current, reason);
+                 }));
+}
 /**
  * Serve queued reads from the source; wait on the transport when it has nothing yet. Only a
  * `delivery_task` (the task a transport completion runs) ends or errors the stream, and only
- * before it delivers a chunk: the end or failure is its own task after that chunk's.
+ * before it delivers a chunk: the end or failure is its own task after that chunk's. A
+ * transform's readable side serves its output, then pulls its source, then closes once flushed.
  */
 inline void pump(const std::shared_ptr<HttpBodyState>& state, bool delivery_task) {
     while (!state->reads.empty() && state->phase == HttpBodyState::Phase::readable) {
+        if (state->transform) {
+            auto& transform = *state->transform;
+            if (!transform.output.empty()) {
+                auto read = std::move(state->reads.front());
+                state->reads.pop_front();
+                auto chunk = std::move(transform.output.front());
+                transform.output.pop_front();
+                read.resolve(BodyReadResult{false, js::U8Array(js::ArrayBuffer(std::move(chunk)))});
+                continue;
+            }
+            if (!transform.transformer)
+                close(*state);
+            else if (transform.source && !transform.pulling)
+                pull_transform_source(state, transform);
+            return;
+        }
         std::vector<std::uint8_t> chunk;
         std::string failure;
         auto poll = HttpExchange::Poll::done;
@@ -418,6 +543,12 @@ public:
     js::Promise<js::PromiseVoid> cancel() const;
     /** `stream.getReader()`: throws TypeError while another reader holds the lock. */
     [[nodiscard]] class BodyReader get_reader() const;
+    /**
+     * `stream.pipeThrough(transform)`: locks and disturbs this stream, which feeds the transform as
+     * its readable side (the result) is read. A locked stream or writable side throws TypeError; a
+     * transform whose readable side already ended cancels this stream instead.
+     */
+    [[nodiscard]] BodyStream pipe_through(const class ByteTransformStream& transform) const;
 
     [[nodiscard]] const std::shared_ptr<HttpBodyState>& shared_state() const { return state_; }
     [[nodiscard]] const void* get() const noexcept { return state_.get(); }
@@ -446,16 +577,8 @@ public:
     /** `reader.read()`: the next chunk, `{ done: true }` at the end, or the stream's error. */
     [[nodiscard]] js::Promise<BodyReadResult> read() const {
         try {
-            auto& body = stream_state();
-            body.disturbed = true;
-            if (body.phase == HttpBodyState::Phase::closed)
-                return js::Promise<BodyReadResult>::resolved(BodyReadResult{});
-            if (body.phase == HttpBodyState::Phase::errored)
-                return js::Promise<BodyReadResult>::rejected(*body.error);
-            js::Promise<BodyReadResult> read;
-            body.reads.push_back(read);
-            http_detail::pump(state().stream.shared_state(), false);
-            return read;
+            stream_state();
+            return http_detail::read_body(state().stream.shared_state());
         } catch (...) {
             return js::Promise<BodyReadResult>::rejected(std::current_exception());
         }
@@ -537,6 +660,72 @@ inline BodyReader BodyStream::get_reader() const {
     return BodyReader(*this);
 }
 
+/**
+ * A CompressionStream or DecompressionStream (`pal_compression.hpp` makes them): the readable
+ * side its transformer feeds and `pipeThrough` sources. Copies share the stream.
+ */
+class ByteTransformStream {
+public:
+    ByteTransformStream() = default;
+    explicit ByteTransformStream(std::unique_ptr<ByteTransformer> transformer)
+        : readable_(js::make_gc_shared<HttpBodyState>()) {
+        readable_->transform.emplace().transformer = std::move(transformer);
+    }
+
+    /** `transform.readable`: the same stream on every read. */
+    [[nodiscard]] BodyStream readable() const { return BodyStream(state()); }
+
+    [[nodiscard]] const std::shared_ptr<HttpBodyState>& state() const {
+        if (!readable_)
+            throw std::runtime_error("Transform stream receiver is absent.");
+        return readable_;
+    }
+    [[nodiscard]] const void* get() const noexcept { return readable_.get(); }
+    explicit operator bool() const noexcept { return static_cast<bool>(readable_); }
+    [[nodiscard]] friend bool operator==(const ByteTransformStream& left,
+                                         const ByteTransformStream& right) {
+        return left.readable_ == right.readable_;
+    }
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(readable_); }
+
+private:
+    std::shared_ptr<HttpBodyState> readable_;
+};
+
+inline BodyStream BodyStream::pipe_through(const ByteTransformStream& transform) const {
+    auto& source = state();
+    const auto& readable = transform.state();
+    if (!readable->transform)
+        throw std::runtime_error("Transform stream receiver is absent.");
+    if (source.locked)
+        throw js::NamedError("TypeError", "Failed to execute 'pipeThrough' on 'ReadableStream': "
+                                          "Cannot pipe a locked stream");
+    auto& side = *readable->transform;
+    if (side.source)
+        throw js::NamedError("TypeError", "Failed to execute 'pipeThrough' on 'ReadableStream': "
+                                          "parameter 1's 'writable' is locked");
+    source.disturbed = true;
+    if (readable->phase != HttpBodyState::Phase::readable || !side.transformer) {
+        // The pipe finds its destination closed or errored: it cancels the source.
+        http_detail::close(source);
+        return BodyStream(readable);
+    }
+    source.locked = true;
+    side.source = state_;
+    http_detail::pump(readable, false);
+    return BodyStream(readable);
+}
+
+/** A ReadableStream over bytes already in memory (`blob.stream()`): one chunk, then its end. */
+[[nodiscard]] inline BodyStream whole_body_stream(std::vector<std::uint8_t> bytes) {
+    auto state = js::make_gc_shared<HttpBodyState>();
+    state->whole = std::move(bytes);
+    return BodyStream(std::move(state));
+}
+
+/** Buffered reads (text, json, arrayBuffer) of a fetched response keep their native bound. */
+inline constexpr std::size_t maximum_buffered_body = 32u * 1024u * 1024u;
+
 /** A Response. Transport data stays in the exchange; the realm holds the body state. */
 struct HttpResponseData {
     double status = 0;
@@ -544,6 +733,11 @@ struct HttpResponseData {
     HttpHeaders headers;
     /** Absent for a null-body status or a HEAD request. */
     std::optional<BodyStream> body;
+    /**
+     * `new Response(stream)`: a buffered read has no bound beyond memory and, as Chromium's, rejects
+     * a body stream error as TypeError "Failed to fetch".
+     */
+    bool constructed = false;
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(body); }
 };
 using HttpResponse = js::Ref<HttpResponseData>;
@@ -557,12 +751,25 @@ using HttpResponse = js::Ref<HttpResponseData>;
 [[nodiscard]] inline HttpResponse make_buffered_response(double status, std::string url,
                                                          std::vector<std::uint8_t> body,
                                                          HttpHeaders headers = {}) {
-    auto state = js::make_gc_shared<HttpBodyState>();
-    state->whole = std::move(body);
     return js::make_ref<HttpResponseData>(HttpResponseData{
         status, std::move(url),
         headers ? std::move(headers) : HttpHeaders(std::make_shared<HttpHeaderList>()),
-        BodyStream(std::move(state))});
+        whole_body_stream(std::move(body)), false});
+}
+
+/**
+ * `new Response(stream)`: status 200, no headers and `stream` itself as the body. A locked or
+ * disturbed stream throws TypeError.
+ */
+[[nodiscard]] inline HttpResponse make_stream_response(const BodyStream& body) {
+    const auto& state = body.shared_state();
+    if (!state)
+        throw std::runtime_error("ReadableStream receiver is absent.");
+    if (state->locked || state->disturbed)
+        throw js::NamedError("TypeError", "Failed to construct 'Response': Response body object "
+                                          "should not be disturbed or locked");
+    return js::make_ref<HttpResponseData>(HttpResponseData{
+        200, std::string(), HttpHeaders(std::make_shared<HttpHeaderList>()), body, true});
 }
 
 /** WHATWG UTF-8 replacement decoding, including initial BOM removal. */
@@ -587,9 +794,6 @@ inline js::Nullable<BodyStream> http_response_body(const HttpResponse& response)
     return response->body ? js::Nullable<BodyStream>(*response->body) : js::Nullable<BodyStream>();
 }
 
-/** Buffered reads (text, json, arrayBuffer) keep their native bound. */
-inline constexpr std::size_t maximum_buffered_body = 32u * 1024u * 1024u;
-
 /** "Consume body": every chunk, once; an unusable (locked or disturbed) body rejects. */
 inline js::Promise<std::vector<std::uint8_t>> consume_http_body(HttpResponse response) {
     std::vector<std::uint8_t> bytes;
@@ -599,11 +803,22 @@ inline js::Promise<std::vector<std::uint8_t>> consume_http_body(HttpResponse res
     if (stream.shared_state()->disturbed || stream.locked())
         throw js::NamedError("TypeError", "Response body has already been consumed.");
     const auto reader = stream.get_reader();
+    const auto maximum =
+        response->constructed ? (std::numeric_limits<std::size_t>::max)() : maximum_buffered_body;
     for (;;) {
-        const auto part = co_await reader.read();
+        BodyReadResult part;
+        try {
+            part = co_await reader.read();
+        } catch (const WorkerTerminated&) {
+            throw;
+        } catch (...) {
+            if (!response->constructed)
+                throw;
+            throw js::NamedError("TypeError", "Failed to fetch");
+        }
         if (part.done)
             break;
-        if (part.value.size() > maximum_buffered_body - bytes.size()) {
+        if (part.value.size() > maximum - bytes.size()) {
             static_cast<void>(reader.cancel());
             throw js::NamedError("TypeError", "HTTP response body exceeds 32 MiB.");
         }
