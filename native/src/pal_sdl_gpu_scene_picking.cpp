@@ -198,6 +198,34 @@ void ensure_pick_pipelines(GpuState& state) {
         }
     }
 #endif
+#if BBLITE_VAT_PICKING
+    // The pin's VAT projection reads the skin quads at locations 1 and 2,
+    // which the interleaved vertex already carries.
+    std::array<SDL_GPUVertexAttribute, 3> vat_attributes{};
+    vat_attributes[0] = {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0};
+    vat_attributes[1] = {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_UINT4,
+                         static_cast<Uint32>(offsetof(GpuVertex, joint_indices))};
+    vat_attributes[2] = {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+                         static_cast<Uint32>(offsetof(GpuVertex, weights))};
+    for (std::size_t index = 0; index < upstream::pick_vat_variants.size(); ++index) {
+        const auto& variant = upstream::pick_vat_variants[index];
+        auto& program = state.pick_vat_programs[index];
+        program.vertex_slots = read_pinned_stage_slots(variant.vertex);
+        program.fragment_slots = read_pinned_stage_slots(variant.fragment);
+        auto vat_vertex = load_shader(state.device, variant.vertex, SDL_GPU_SHADERSTAGE_VERTEX,
+                                      program.vertex_slots);
+        auto vat_fragment = load_shader(state.device, variant.fragment,
+                                        SDL_GPU_SHADERSTAGE_FRAGMENT, program.fragment_slots);
+        SDL_GPUGraphicsPipelineCreateInfo vat_info = info;
+        vat_info.vertex_shader = vat_vertex.get();
+        vat_info.fragment_shader = vat_fragment.get();
+        vat_info.vertex_input_state.vertex_attributes = vat_attributes.data();
+        vat_info.vertex_input_state.num_vertex_attributes = 3u;
+        program.pipeline = create_sdl_gpu_graphics_pipeline(state.device, vat_vertex, &vat_info);
+        if (!program.pipeline)
+            gpu_error("SDL_CreateGPUGraphicsPipeline VAT pick");
+    }
+#endif
 
 #if BBLITE_HAS_SPLATS
     const PinnedStageSlots cloud_vertex_slots = read_pinned_stage_slots("picking-splat.vert");
@@ -297,6 +325,74 @@ void record_cloud_pick_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pa
 #endif
 
 #if (BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING)
+#if BBLITE_VAT_PICKING
+namespace {
+// `bindVatPickingProjection` over this backend's reflected slots: the bake
+// and its settings block, a thin candidate's instance rows and clip params,
+// and the skin quads the interleaved vertex already carries.
+void record_vat_pick_draw(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pass,
+                          const Engine& engine, const PickMeshCandidate& candidate,
+                          const GpuMesh& gpu, const MeshRecord& record,
+                          const PickSceneUniforms& scene_uniforms) {
+    const auto index = static_cast<std::size_t>(candidate.vat);
+    const auto& variant = upstream::pick_vat_variants[index];
+    const auto& program = state.pick_vat_programs[index];
+    const char* what = "VAT pick";
+    const std::string mesh_block = variant.thin ? "tiMesh" : "mesh";
+    const auto blocks = [&](const std::string& name, std::size_t) -> PinnedStageBlock {
+        if (name == "scene")
+            return {&scene_uniforms, sizeof(scene_uniforms)};
+        if (name == mesh_block)
+            return {&candidate.uniforms, sizeof(candidate.uniforms)};
+        if (name == "vat")
+            return {record.vat.settings.data(), record.vat.settings.size() * sizeof(float)};
+        return {};
+    };
+    SDL_BindGPUGraphicsPipeline(pass, program.pipeline);
+    push_stage_uniforms(command, program.vertex_slots, false, what, blocks);
+    push_stage_uniforms(command, program.fragment_slots, true, what, blocks);
+    bind_stage_textures(pass, program.vertex_slots, false, what,
+                        [&](const std::string& name, std::size_t) -> SDL_GPUTextureSamplerBinding {
+                            if (name == "vatSampler" && gpu.pinned_vat_texture)
+                                return {gpu.pinned_vat_texture, state.pinned_bone_sampler};
+#if BBLITE_VAT_INSTANCES
+                            if (name == "vatInstanceTex" && gpu.pinned_vat_instance_texture)
+                                return {gpu.pinned_vat_instance_texture, state.pinned_bone_sampler};
+#endif
+                            gpu_error(("unbound VAT pick texture: " + name).c_str());
+                        });
+    bind_stage_storage(pass, program.vertex_slots, false, what, state.storage_binding_scratch,
+                       [&](const std::string& name, std::size_t) -> SDL_GPUBuffer* {
+#if BBLITE_GPU_INSTANCING
+                           if (name == "instances")
+                               return gpu.instances;
+#endif
+                           if (name != "vatInstanceStorage" || !record.vat.instance_storage)
+                               return nullptr;
+                           const StorageBufferHandle handle = *record.vat.instance_storage;
+                           if (handle.value >= state.storage_buffers.size())
+                               return nullptr;
+                           if (handle_at(state.storage_buffers, handle).lost &&
+                               engine.assert_storage_buffer_handle)
+                               engine.assert_storage_buffer_handle(engine, handle.value);
+                           return handle_at(state.storage_buffers, handle).buffer;
+                       });
+    SDL_GPUBufferBinding vertex_binding{};
+    vertex_binding.buffer = gpu.vertices;
+    SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+    SDL_GPUBufferBinding index_binding{};
+    index_binding.buffer = gpu.indices;
+    SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+    const std::uint32_t instances =
+#if BBLITE_GPU_INSTANCING
+        candidate.thin ? candidate.instance_count :
+#endif
+                       1u;
+    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, gpu.index_count, instances, 0, 0, 0);
+}
+} // namespace
+#endif
+
 PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                const upstream::RenderPlan& root_plan,
                                const std::vector<upstream::RenderPlan>& overlay_plans,
@@ -384,6 +480,15 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
     // cannot leave a draw bound to the previous weight storage.
     pose_uploads.submit();
 #endif
+#if BBLITE_VAT_PICKING
+    for (const auto& candidate : candidates) {
+        if (candidate.vat < 0)
+            continue;
+        write_pinned_vat_texture(
+            state, pick_meshes[candidate.item_index],
+            handle_at(engine.meshes, render_plan.items[candidate.item_index].mesh), engine);
+    }
+#endif
 
     SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(state.device)};
     if (!command)
@@ -460,8 +565,39 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
 #endif
                  0u;
 #endif
+#if BBLITE_VAT_PICKING
+    bool vat_program_bound = false;
+#endif
     for (const PickMeshCandidate& candidate : candidates) {
         const GpuMesh& gpu = pick_meshes[candidate.item_index];
+#if BBLITE_VAT_PICKING
+        if (candidate.vat >= 0) {
+            record_vat_pick_draw(
+                state, command, pass, engine, candidate, gpu,
+                handle_at(engine.meshes, render_plan.items[candidate.item_index].mesh),
+                scene_uniforms);
+            vat_program_bound = true;
+            continue;
+        }
+        if (vat_program_bound) {
+            // Back to the affine program and the scene block it reads.
+            SDL_BindGPUGraphicsPipeline(pass,
+#if BBLITE_HAS_DETAILED_PICKING
+                                        detailed ? state.pick_detailed_pipeline :
+#endif
+                                                 state.pick_mesh_pipeline);
+            SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(mesh_scene_slot),
+                                                     &scene_uniforms, sizeof(scene_uniforms));
+            push_stage_uniform(command, frag_scene_slot, &scene_uniforms, sizeof(scene_uniforms));
+            vat_program_bound = false;
+#if BBLITE_GPU_INSTANCING
+            regular_pick_pipeline_bound = true;
+#endif
+#if BBLITE_DEFORM_PICKING
+            deform_bound = -1;
+#endif
+        }
+#endif
 #if BBLITE_GPU_INSTANCING
         if (candidate.thin) {
 #if BBLITE_HAS_DETAILED_PICKING

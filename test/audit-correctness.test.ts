@@ -533,6 +533,7 @@ test(
             `
         #define BBLITE_GPU_INSTANCING 1
         #define BBLITE_DEFORM_PICKING 0
+        #define BBLITE_VAT_PICKING 0
         #include <bblite/runtime.hpp>
         #include <cassert>
         namespace bbl::upstream {

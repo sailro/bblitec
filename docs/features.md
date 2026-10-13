@@ -158,14 +158,14 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 - GPU skinning, storage morphs, VAT, thin instances. Direct morphs: one pre-start attachment per mesh.
 - `computeDeformedPositionToRef`: morph then four-joint skinning of one retained CPU vertex, at the pin's float stores.
 - `setVatTime` writes the VAT clock lane until the handle's next `play`/`update`. `setVatInstanceStorage` validates and
-  stores the buffer; only VAT picking reads it, and that is not lowered.
+  stores the buffer the thin VAT pick reads.
 
 ## Sprites, picking, flow graphs, gizmos
 
 - Sprite2D, billboards, atlases, Y-sort. Mixed transparent draws tied in depth/order or without a camera refuse.
   Capacities ≤ 4,294,967,295; buffers 32-bit sized.
 - Picking: `createPickingRay` needs no GPU picker; detailed picks skip thin instances, billboards and splats.
-  Filter/ignore predicates refuse.
+  Filter/ignore predicates refuse. VAT meshes pick through their baked pose; a detailed VAT pick refuses.
 - KHR_interactivity blocks: SceneReadyEvent, OnSelect, Sequence, Get/SetVariable, Get/SetProperty, arithmetic, Abs,
   Floor, LessThan, Clamp, Combine/ExtractVector2. Others refuse.
 - Gizmos: display, bounding boxes, rotation editing; no bounding-box/scale drags.

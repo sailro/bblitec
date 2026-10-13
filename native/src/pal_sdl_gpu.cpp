@@ -182,6 +182,13 @@ void release(GpuState& state) {
         }
     }
 #endif
+#if BBLITE_VAT_PICKING
+    for (auto& program : state.pick_vat_programs) {
+        if (program.pipeline)
+            SDL_ReleaseGPUGraphicsPipeline(state.device, program.pipeline);
+        program.pipeline = nullptr;
+    }
+#endif
 #if BBLITE_HAS_SPLATS
     if (state.pick_cloud_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(state.device, state.pick_cloud_pipeline);

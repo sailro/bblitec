@@ -2072,6 +2072,22 @@ function capabilityRows(
             ["render_capabilities.hpp", "variant table"],
         ),
         checkedRow(
+            "BBLITE_VAT_PICKING",
+            "capability",
+            (emit.pickingShaders?.vat?.length ?? 0) > 0,
+            [
+                [
+                    (emit.pickingShaders?.vat?.length ?? 0) > 0,
+                    "a GPU pick composes at least one VAT projection arm",
+                ],
+            ],
+            "no GPU pick reaches a baked mesh",
+            "src/picking/vat-picking-pipeline.ts: a VAT candidate takes the " +
+                "advanced pipeline with the bake's projection; a thin one reads " +
+                "its clip params from the instance storage or texture.",
+            ["render_capabilities.hpp", "variant table", "deployed shaders"],
+        ),
+        checkedRow(
             "BBLITE_VAT",
             "capability",
             has("mesh:vat"),

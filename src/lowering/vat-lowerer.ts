@@ -466,8 +466,7 @@ void set_vat_time(Engine& engine, MeshHandle mesh, double seconds) {
 
     /**
      * \`setVatInstanceStorage\`: the pin's checks, then the buffer the VAT
-     * picking projection binds for thin instances; native picking does not
-     * lower that projection, so nothing else reads it.
+     * picking projection binds for thin instances.
      */
     private lowerSetInstanceStorage(): string {
         const declaration = this.context.functionDeclaration(

@@ -23,6 +23,9 @@
 #if BBLITE_DEFORM_PICKING
 #include <bblite/upstream/picking_projection.hpp>
 #endif
+#if BBLITE_VAT_PICKING
+#include <bblite/upstream/picking_vat_projection.hpp>
+#endif
 #if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
@@ -316,6 +319,11 @@ private:
 int pick_mesh_projection(const Engine& engine, const MeshRecord& mesh);
 
 #endif
+#if BBLITE_VAT_PICKING
+/** `getVatPickingProjection`: the deployed VAT arm for this candidate, or -1 for none. */
+int pick_vat_projection(const MeshRecord& mesh, bool thin);
+
+#endif
 
 /** One mesh the pick pass will draw: its plan item and its uniform block. */
 struct PickMeshCandidate {
@@ -329,6 +337,10 @@ struct PickMeshCandidate {
 #if BBLITE_DEFORM_PICKING
     /** Index in the generated projection table; -1 is the affine pipeline. */
     int deform = -1;
+#endif
+#if BBLITE_VAT_PICKING
+    /** Index in the generated VAT arm table; -1 draws without the bake. */
+    int vat = -1;
 #endif
 };
 
@@ -397,6 +409,17 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
             throw std::runtime_error("thin-instance deformation picking is not supported");
         }
 #endif
+#endif
+#if BBLITE_VAT_PICKING
+        candidate.vat = pick_vat_projection(pick_mesh,
+#if BBLITE_GPU_INSTANCING
+                                            candidate.thin
+#else
+                                            false
+#endif
+        );
+        if (detailed && candidate.vat >= 0)
+            throw std::runtime_error("Detailed picking of a VAT mesh is not lowered.");
 #endif
         // `gpu-picker.ts` copies `mesh.worldMatrix` as stored, with no
         // floating-origin offset: the projection arms compose the instance

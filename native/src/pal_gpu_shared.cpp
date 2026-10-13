@@ -1803,6 +1803,24 @@ int pick_mesh_projection(const Engine& engine, const MeshRecord& mesh) {
 }
 #endif
 
+#if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING && BBLITE_VAT_PICKING
+int pick_vat_projection(const MeshRecord& mesh, bool thin) {
+    if (!mesh.has_vat)
+        return -1;
+    // A thin candidate reads its clip params from the published storage,
+    // else from the instance texture; with neither the pin draws it affine.
+    const bool instance_storage = mesh.vat.instance_storage.has_value();
+    if (thin && !instance_storage && mesh.vat.instance_texels == 0)
+        return -1;
+    for (std::size_t index = 0; index < upstream::pick_vat_variants.size(); ++index) {
+        const auto& variant = upstream::pick_vat_variants[index];
+        if (variant.thin == thin && (!thin || variant.instance_storage == instance_storage))
+            return static_cast<int>(index);
+    }
+    throw std::runtime_error("pick candidate reached an uncomposed VAT projection");
+}
+#endif
+
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
 std::optional<std::size_t> picker_scene_index(const Engine& engine, GpuPickerHandle picker,
                                               const std::vector<std::shared_ptr<Scene>>& scenes) {

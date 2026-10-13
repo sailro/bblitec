@@ -320,6 +320,7 @@ int main() {
                 `/I${join(directory, "include")}`,
                 "/DBBLITE_GPU_INSTANCING=1",
                 "/DBBLITE_DEFORM_PICKING=0",
+                "/DBBLITE_VAT_PICKING=0",
                 "/DBBLITE_NODE_VARIANTS=0",
                 "/DBBLITE_STANDARD_VARIANTS=0",
             ],
