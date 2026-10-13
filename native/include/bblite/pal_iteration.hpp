@@ -13,6 +13,9 @@ public:
     struct promise_type {
         Result result{};
         std::exception_ptr error;
+        // Not an aggregate: clang initializes an aggregate promise from the
+        // coroutine's arguments.
+        promise_type() = default;
         Iteration get_return_object() {
             return Iteration(std::coroutine_handle<promise_type>::from_promise(*this));
         }

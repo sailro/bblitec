@@ -139,7 +139,7 @@ test(
         struct BufferRecord { std::vector<std::vector<float>> channels; } fixture_buffer;
         ContextRecord& require_context(std::uint32_t) { return fixture_context; }
         AudioBufferHandle allocate_audio_buffer(AudioContextHandle, std::uint32_t channels, std::uint32_t frames, double) {
-            fixture_buffer.channels.assign(channels, std::vector<float>(frames)); return {1};
+            fixture_buffer.channels.assign(channels, std::vector<float>(frames)); return {1, nullptr};
         }
         BufferRecord* require_buffer(AudioBufferHandle) { return &fixture_buffer; }
         ${decode}
@@ -157,7 +157,7 @@ test(
                 assert(bbl::pal::fixture_buffer.channels.size() == static_cast<std::size_t>(reference->numberOfChannels()));
                 for (std::size_t channel = 0; channel < bbl::pal::fixture_buffer.channels.size(); ++channel) {
                     const auto& samples = bbl::pal::fixture_buffer.channels[channel];
-                    assert(samples.size() == reference->length());
+                    assert(samples.size() == static_cast<std::size_t>(reference->length()));
                     assert(std::equal(samples.begin(), samples.end(), reference->channel(static_cast<int>(channel))->data()));
                 }
             }

@@ -91,16 +91,16 @@ int main() try {
         const auto light_select = add(light, "select", {});
         const auto light_option = add(light_select, "option", {{"value", "low"}});
         ui_set_text(engine, light_option, "Lower memory");
-        const auto accent_range = add(light, "input",
-                                      {{"type", "range"},
-                                       {"value", "25"},
-                                       {"style", "display:block;width:201px;height:16px;margin:0;"
-                                                 "accent-color:#58c6ff;"}});
-        const auto light_range =
-            add(light, "input",
-                {{"type", "range"},
-                 {"value", "25"},
-                 {"style", "display:block;width:202px;height:16px;margin:0;"}});
+        // The accent and light ranges are read back by their raster widths.
+        add(light, "input",
+            {{"type", "range"},
+             {"value", "25"},
+             {"style", "display:block;width:201px;height:16px;margin:0;"
+                       "accent-color:#58c6ff;"}});
+        add(light, "input",
+            {{"type", "range"},
+             {"value", "25"},
+             {"style", "display:block;width:202px;height:16px;margin:0;"}});
         const auto link = add(light, "a", {{"href", "#credit"}, {"class", "credit"}});
         ui_set_text(engine, link, "credit");
         ui_add_host_style_rule(engine, UiStyleSelectorKind::Class, "credit", "", "", false, -1,

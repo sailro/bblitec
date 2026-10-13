@@ -634,7 +634,7 @@ test("iOS source setup observes its actual canvas extent before rendering, while
 #define SDL_PLATFORM_IOS 1
 namespace bbl::pal {
 using SDL_WindowFlags = unsigned;
-constexpr unsigned SDL_INIT_VIDEO = 1, SDL_INIT_EVENTS = 2, SDL_WINDOW_RESIZABLE = 4, SDL_WINDOW_NOT_FOCUSABLE = 8;
+inline constexpr unsigned SDL_INIT_VIDEO = 1, SDL_INIT_EVENTS = 2, SDL_WINDOW_RESIZABLE = 4, SDL_WINDOW_NOT_FOCUSABLE = 8;
 struct SDL_Window {};
 SDL_Window fixture_window;
 int scope = 1, windows = 0, failure = 0, stamps = 0;

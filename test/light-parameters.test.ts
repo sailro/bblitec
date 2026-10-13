@@ -21,11 +21,18 @@ test("light parameter setters validate, preserve no-op writes and update the sou
         t.skip("Native fixture compiler unavailable.");
         return;
     }
+    const directory = resolve("artifacts/light-parameters-check");
+    const headers = resolve(directory, "bblite/upstream");
+    mkdirSync(headers, { recursive: true });
+    writeFileSync(
+        resolve(headers, "light_parameters.hpp"),
+        lightParameterHeader(new LoweringContext()),
+    );
     runGeneratedProgram(
         tools,
         "light-parameters-check",
-        lightParameterHeader(new LoweringContext()) +
-            `
+        `
+#include <bblite/upstream/light_parameters.hpp>
 #include <cassert>
 int main(){
  bbl::LightRecord light;int version=0;const auto bump=[&]{++version;};
@@ -43,7 +50,7 @@ int main(){
  }
 }
 `,
-        { timeoutMs: 10000, expectedOutput: "" },
+        { flags: [`/I${directory}`], timeoutMs: 10000, expectedOutput: "" },
     );
     const result = compileSource(
         `import {createEngine,createDirectionalLight,setLightDiffuseColor,setLightIntensity} from '@babylonjs/lite';const engine=await createEngine(document.querySelector('canvas')!);const light=createDirectionalLight([0,-1,0]);setLightIntensity(light,0.5);setLightDiffuseColor(light,[0.25,0.5,0.75]);`,
@@ -121,6 +128,10 @@ test("light setters and source UBO retain doubles until the pinned Float32 store
         resolve(headers, "pinned_matrix.hpp"),
         pinnedMatrixHeader(context),
     );
+    writeFileSync(
+        resolve(headers, "light_parameters.hpp"),
+        lightParameterHeader(context),
+    );
     writeFileSync(resolve(directory, "matrix.cpp"), matrix.source);
     writeFileSync(
         resolve(directory, "factory.cpp"),
@@ -129,8 +140,8 @@ test("light setters and source UBO retain doubles until the pinned Float32 store
     runGeneratedProgram(
         tools,
         "light-parameters-width",
-        lightParameterHeader(context) +
-            `
+        `
+#include <bblite/upstream/light_parameters.hpp>
 #include <bblite/upstream/light_matrix.hpp>
 #include <bit>
 #include <cassert>

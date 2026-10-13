@@ -269,6 +269,9 @@ public:
         std::variant<std::monostate, T, Promise, Adoption> completion;
         pal::EventLoop* loop = &pal::EventLoop::current();
         pal::EventLoop::ContinuationId continuation = 0;
+        // Not an aggregate: clang initializes an aggregate promise from the
+        // coroutine's arguments, which would make an argument its result.
+        promise_type() = default;
         Promise get_return_object() {
             continuation =
                 loop->own_continuation(std::coroutine_handle<promise_type>::from_promise(*this));
