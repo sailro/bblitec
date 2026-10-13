@@ -105,6 +105,13 @@ namespace bbl::pal {
 [[noreturn]] void dawn_error(const std::string& operation) { throw std::runtime_error(operation); }
 double monotonic_milliseconds() { return 123.0; }
 void begin_gpu_task_timing_frame(Engine&) {}
+// Frame timing is off in this fixture: no timestamp is ever written.
+struct FixtureTimestamp {};
+std::optional<FixtureTimestamp> gpu_frame_timer_begin(Engine&) { return std::nullopt; }
+void encode_sdl_gpu_timestamp(SDL_GPUCommandBuffer*, FixtureTimestamp) {
+    throw std::logic_error("The fixture writes no frame timestamps.");
+}
+#include "task-draw-lists.hpp"
 struct TestClock {};
 double advance_frame(Engine&, Scene&, TestClock&, double delta) {
     events.push_back("advance");

@@ -2,6 +2,7 @@
 // section per concern header. They read the
 // scene's generated headers, so this unit compiles once per scene -- once,
 // rather than in every backend unit that includes the headers.
+#include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -1453,6 +1454,35 @@ ShadowCasterMatrices shadow_caster_matrices(const Engine& engine, const FrameTas
     }
 #endif
     return {generator.caster_view_projection, generator.caster_view};
+}
+
+ShadowTaskPass shadow_task_pass(const Engine& engine, const ShadowRefreshState& refresh,
+                                const FrameTaskRecord& task) {
+    ShadowTaskPass pass;
+#if BBLITE_CSM_STATIC_CACHE
+    const ShadowGeneratorRecord& generator =
+        handle_at(engine.shadow_generators, task.render.shadow_generator);
+    // `renderCsmShadowMapCached`: the copied cache layers reach the map before
+    // any dynamic pass draws over it, which then loads them.
+    pass.copy_layers = csm_cache_copies(engine, task);
+    if (pass.copy_layers)
+        pass.copy_source = generator.csm_cache->cache_target;
+    pass.draws = generator.csm_cache ? csm_cache_task_due(generator, task)
+                                     : refresh.gates[task.render.shadow_generator.value].due;
+    pass.load_depth = !task.render.depth_clear;
+#else
+    (void)engine;
+    pass.draws = refresh.gates[task.render.shadow_generator.value].due;
+#endif
+    return pass;
+}
+
+bool take_moved_task_lists([[maybe_unused]] ShadowRefreshState& refresh) {
+#if BBLITE_CSM_STATIC_CACHE
+    return std::exchange(refresh.task_lists_moved, false);
+#else
+    return false;
+#endif
 }
 #endif
 

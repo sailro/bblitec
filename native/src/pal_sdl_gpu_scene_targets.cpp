@@ -653,8 +653,9 @@ GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Eng
     const RenderTargetRecord& target_record =
         handle_at(engine.render_targets, record.render.target);
     const GpuRenderTarget& target = handle_at(state.render_targets, record.render.target);
-    task_transmission(record, target_sample_count(state, target_record) != SDL_GPU_SAMPLECOUNT_1,
-                      target_record.swapchain);
+    (void)task_pass_breaks(
+        record, {.multisampled = target_sample_count(state, target_record) != SDL_GPU_SAMPLECOUNT_1,
+                 .swapchain = target_record.swapchain});
     if (state.task_transmissions.size() <= task.value)
         state.task_transmissions.resize(task.value + 1);
     GpuState::TaskTransmission& grab = state.task_transmissions[task.value];

@@ -6,6 +6,7 @@
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
 #include <bblite/features/live_task_add.hpp>
+#include <bblite/features/effect_wrapper_disposal.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 
@@ -142,39 +143,102 @@ inline std::uint32_t task_transmission_mip_count(const RenderTaskTransmission& s
         settings.grab_size, settings.grab_size, settings.generate_mipmaps,
         settings.mip_level_count));
 }
+#endif
 
-/**
- * `executePassWithTransmission`'s per-execution latch: a task grabs before
- * its first `copyCount` transmissive transparent draws, or before every one
- * when the count normalizes to zero (`canUpdateTransmission`).
- */
-struct TaskTransmissionCopies {
-    std::uint32_t limit = 1;
-    std::uint32_t copies = 0;
-    explicit TaskTransmissionCopies(const RenderTaskTransmission& settings)
-        : limit(static_cast<std::uint32_t>(
-              upstream::task_transmission_copy_count(settings.copy_count))) {}
-    [[nodiscard]] bool can_update() const { return limit == 0 || copies < limit; }
+/** What a render task's colour pass is, as the plan below refuses what it cannot split. */
+struct TaskColorPassShape {
+    bool multisampled = false;
+    bool swapchain = false;
+    /** The temporal source arm, whose pass is encoded outside the task. */
+    bool temporal = false;
+    /** Compiler-owned scene stages, whose billboards interleave the transparent list. */
+    bool billboard_stages = false;
 };
 
 /**
- * The grab settings a render task's colour pass splits for, or null for a
- * task without one. The pin's multisampled arms (the averaging blit and the
- * sample-0 depth resolve) are not lowered, and a swapchain colour cannot be
- * sampled.
+ * A render task's colour-pass plan, the same on both backends
+ * (`executePassWithTransmission`): the transparent list breaks before a
+ * transmissive draw while the copy latch allows (`canUpdateTransmission`:
+ * `copyCount` grabs per execution, or one before every draw when it
+ * normalizes to zero). A task without a grab never breaks.
  */
-inline const RenderTaskTransmission* task_transmission(const FrameTaskRecord& task,
-                                                       bool multisampled, bool swapchain) {
-    if (!task.transmission)
-        return nullptr;
-    if (multisampled)
-        throw std::runtime_error(
-            "Render-task transmission of a multisampled target is not lowered.");
-    if (swapchain)
-        throw std::runtime_error("Render-task transmission cannot grab the swapchain target.");
-    return &*task.transmission;
-}
+class TaskPassBreaks {
+public:
+    TaskPassBreaks() = default;
+    TaskPassBreaks(const FrameTaskRecord& task, TaskColorPassShape shape) {
+#if BBLITE_RENDER_TASK_TRANSMISSION
+        if (!task.transmission)
+            return;
+        // The pin's multisampled arms (the averaging blit and the sample-0
+        // depth resolve) are not lowered, and a swapchain cannot be sampled.
+        if (shape.multisampled)
+            throw std::runtime_error(
+                "Render-task transmission of a multisampled target is not lowered.");
+        if (shape.swapchain)
+            throw std::runtime_error("Render-task transmission cannot grab the swapchain target.");
+        if (shape.temporal)
+            throw std::runtime_error(
+                "Render-task transmission with temporal anti-aliasing is not lowered.");
+        if (shape.billboard_stages)
+            throw std::runtime_error(
+                "Render-task transmission with billboard scene stages is not lowered.");
+        enabled_ = true;
+        limit_ = static_cast<std::uint32_t>(
+            upstream::task_transmission_copy_count(task.transmission->copy_count));
+#else
+        (void)task;
+        (void)shape;
 #endif
+    }
+    [[nodiscard]] bool enabled() const { return enabled_; }
+    /** Whether the pass breaks before this draw; a break counts as one copy. */
+    bool before(const MaterialRecord* material) {
+        if (!enabled_ || !transmissive_draw_material(material) ||
+            (limit_ != 0 && copies_ >= limit_))
+            return false;
+        ++copies_;
+        return true;
+    }
+
+private:
+    bool enabled_ = false;
+    std::uint32_t limit_ = 0;
+    std::uint32_t copies_ = 0;
+};
+
+/** The plan of one execution of a render task's colour pass, refusing what it cannot split. */
+[[nodiscard]] inline TaskPassBreaks task_pass_breaks(const FrameTaskRecord& task,
+                                                     TaskColorPassShape shape) {
+    return TaskPassBreaks(task, shape);
+}
+
+/**
+ * Draws a transparent list through a pass plan: one segment per break, with
+ * `split()` ending the pass, grabbing and resuming it with load before each.
+ */
+template <class DrawList, class Draw, class Split>
+void draw_split_list(const Engine& engine, TaskPassBreaks& breaks, const DrawList& list,
+                     Draw&& draw, Split&& split) {
+    if (!breaks.enabled()) {
+        draw(list);
+        return;
+    }
+    for (const auto& command : list.commands) {
+        if (breaks.before(handle_find(engine.materials, command.item.material)))
+            split();
+        draw(BorrowedDrawList{command});
+    }
+}
+
+/** `EffectRenderTask.execute`'s preamble: a disposed wrapper's dirty bind group is rebuilt. */
+inline void prepare_effect_task(const Engine& engine, const FrameTaskRecord& task) {
+#if BBLITE_EFFECT_WRAPPER_DISPOSAL
+    require_effect_bind_group(engine, task.effect.effect);
+#else
+    (void)engine;
+    (void)task;
+#endif
+}
 
 /**
  * The pixels a target scaled from another occupies, by the pin's own rule:

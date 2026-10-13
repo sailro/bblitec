@@ -32,6 +32,14 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
             .map((signature) => cppFunction(shared, signature))
             .join("\n"),
     );
+    // Both drivers record a task's draw lists through the shared step.
+    writeFileSync(
+        join(directory, "task-draw-lists.hpp"),
+        cppFunction(
+            readFileSync("native/src/pal_scene_synchronize.hpp", "utf8"),
+            "inline upstream::RenderDrawLists record_task_draw_lists(",
+        ),
+    );
     writeFileSync(
         join(directory, "dawn-acquire.hpp"),
         cppFunction(

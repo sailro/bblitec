@@ -1,6 +1,4 @@
-#include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/gpu_retirement.hpp>
-#include <bblite/features/refreshed_task_overrides.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/thin_instances.hpp>
@@ -26,7 +24,6 @@
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
-#include <bblite/features/effect_wrapper_disposal.hpp>
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_geometry_output.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
@@ -527,14 +524,8 @@ class SdlSceneRun {
                 if (handle.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error("Scene frame task handle is invalid.");
                 }
-#if BBLITE_REFRESHED_TASK_OVERRIDES
-                order_refreshed_render_task(handle_at(engine.frame_tasks, handle));
-#endif
-                handle_at(task_draw_lists, handle) = upstream::build_render_task_draw_lists(
+                handle_at(task_draw_lists, handle) = record_task_draw_lists(
                     task_plan, engine, handle_at(engine.frame_tasks, handle));
-                auto& task = handle_at(engine.frame_tasks, handle);
-                task.render_recorded = true;
-                task.render_meshes_dirty = false;
             }
         }
     }
@@ -2180,12 +2171,8 @@ public:
                         graph_extent.width, graph_extent.height);
 #if BBLITE_SHADOW_RECEIVERS
                     update_shadow_generators(state, graph_scene, engine);
-#if BBLITE_CSM_STATIC_CACHE
-                    if (state.shadow_refresh.task_lists_moved) {
+                    if (take_moved_task_lists(state.shadow_refresh))
                         rebuild_task_draw_lists();
-                        state.shadow_refresh.task_lists_moved = false;
-                    }
-#endif
                     // CSM receiver-data callbacks can rewrite a shader storage
                     // buffer; publish that rewrite before any caster or colour
                     // draw in this command buffer reads it.
@@ -2366,21 +2353,13 @@ public:
                                                     {}
 #endif
                                                 ,
-                                                std::optional<ShaderTaskTarget> shader_target = {}
-#if BBLITE_RENDER_TASK_TRANSMISSION
-                                                ,
-                                                // A transmission task's pass break: the
-                                                // resumed pass, or null to keep drawing.
-                                                const std::function<SDL_GPURenderPass*(
-                                                    const MaterialRecord*)>* transmission_split =
-                                                    nullptr
-#endif
-                                            ) {
-#if BBLITE_RENDER_TASK_TRANSMISSION && BBLITE_HAS_BILLBOARDS
-                        if (transmission_split && draw_scene_billboard_stages)
-                            throw std::runtime_error(
-                                "Render-task transmission with billboard scene stages is not lowered.");
-#endif
+                                                std::optional<ShaderTaskTarget> shader_target = {},
+                                                // The task's colour-pass plan and the hook
+                                                // that ends, grabs and resumes its pass.
+                                                pal::TaskPassBreaks* pass_breaks = nullptr,
+                                                std::optional<
+                                                    pal::FunctionRef<SDL_GPURenderPass*()>>
+                                                    resume_pass = {}) {
                         update_material_bindings(draw_context, engine, draw_lists.opaque,
                                                  draw_pass_matrices, draw_meshes,
                                                  bind_thin_buffers);
@@ -2774,23 +2753,15 @@ public:
                             }
                         } else
 #endif
-#if BBLITE_RENDER_TASK_TRANSMISSION
-                            if (transmission_split) {
-                            // executePassWithTransmission: the transparent list
-                            // breaks the pass before each transmissive draw the
-                            // copy latch still allows, then resumes with load.
-                            for (const upstream::RenderDrawCommand& draw :
-                                 draw_lists.transparent.commands) {
-                                if (SDL_GPURenderPass* resumed = (*transmission_split)(
-                                        handle_find(engine.materials, draw.item.material))) {
-                                    task_pass = resumed;
-                                    bound_pipeline = nullptr;
-                                }
-                                draw_list(BorrowedDrawList{draw});
-                            }
-                        } else
-#endif
+                            if (pass_breaks && resume_pass) {
+                            pal::draw_split_list(engine, *pass_breaks, draw_lists.transparent,
+                                                 draw_list, [&] {
+                                                     task_pass = (*resume_pass)();
+                                                     bound_pipeline = nullptr;
+                                                 });
+                        } else {
                             draw_list(draw_lists.transparent);
+                        }
                     };
 
 #if BBLITE_HAS_TAA
@@ -2914,17 +2885,13 @@ public:
                                 // was written onto the gate by
                                 // `refresh_shadow_generators` earlier this
                                 // frame.
-#if BBLITE_CSM_STATIC_CACHE
-                                const ShadowGeneratorRecord& due_generator = handle_at(
-                                    engine.shadow_generators, task.render.shadow_generator);
-                                // `renderCsmShadowMapCached`: the copied cache layers
-                                // reach the map before any dynamic pass draws over it.
-                                if (const auto* copies = pal::csm_cache_copies(engine, task)) {
-                                    GpuRenderTarget& cache_target =
-                                        handle_at(state.render_targets,
-                                                  due_generator.csm_cache->cache_target);
-                                    SDL_GPUCopyPass* layer_copy = SDL_BeginGPUCopyPass(command);
-                                    for (const std::uint32_t layer : *copies) {
+                                const pal::ShadowTaskPass caster_plan =
+                                    pal::shadow_task_pass(engine, state.shadow_refresh, task);
+                                if (caster_plan.copy_layers) {
+                                    const GpuRenderTarget& cache_target =
+                                        handle_at(state.render_targets, caster_plan.copy_source);
+                                    SdlCopyPass layer_copy{SDL_BeginGPUCopyPass(command)};
+                                    for (const std::uint32_t layer : *caster_plan.copy_layers) {
                                         SDL_GPUTextureLocation copy_source{};
                                         copy_source.texture = cache_target.depth;
                                         copy_source.layer = layer;
@@ -2935,21 +2902,9 @@ public:
                                                                     &copy_destination, target.width,
                                                                     target.height, 1, false);
                                     }
-                                    SDL_EndGPUCopyPass(layer_copy);
                                 }
-                                if (due_generator.csm_cache
-                                        ? !pal::csm_cache_task_due(due_generator, task)
-                                        : !state.shadow_refresh
-                                               .gates[task.render.shadow_generator.value]
-                                               .due) {
+                                if (!caster_plan.draws)
                                     continue;
-                                }
-#else
-                                if (!state.shadow_refresh.gates[task.render.shadow_generator.value]
-                                         .due) {
-                                    continue;
-                                }
-#endif
                                 if (!target_record.has_depth || !target.depth) {
                                     throw std::runtime_error(
                                         "Shadow render task has no depth attachment.");
@@ -2974,12 +2929,9 @@ public:
                                 // far value, which standard-Z puts at 1 where
                                 // this port's reverse-Z puts it at 0.
                                 shadow_depth.clear_depth = pass_depth_clear(true);
-                                shadow_depth.load_op = SDL_GPU_LOADOP_CLEAR;
-#if BBLITE_CSM_STATIC_CACHE
-                                // A cached dynamic pass draws over the copied cache.
-                                if (!task.render.depth_clear)
-                                    shadow_depth.load_op = SDL_GPU_LOADOP_LOAD;
-#endif
+                                shadow_depth.load_op = caster_plan.load_depth
+                                                           ? SDL_GPU_LOADOP_LOAD
+                                                           : SDL_GPU_LOADOP_CLEAR;
                                 shadow_depth.store_op = SDL_GPU_STOREOP_STORE;
                                 shadow_depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
                                 shadow_depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
@@ -3197,11 +3149,7 @@ public:
 #if BBLITE_HAS_TAA
                             // The temporal source's pass is encoded after its
                             // post-process writes, outside this task.
-#if BBLITE_RENDER_TASK_TRANSMISSION
-                            if (task.transmission)
-                                throw std::runtime_error(
-                                    "Render-task transmission with temporal anti-aliasing is not lowered.");
-#endif
+                            (void)pal::task_pass_breaks(task, {.temporal = true});
                             timing_sequence.refuse("temporal anti-aliasing sources");
                             PreparedSdlScenePass prepared;
                             prepared.target = target_info;
@@ -3238,25 +3186,20 @@ public:
                                                                            task_depth_pointer)};
                             set_task_camera_viewport(task_pass, task_camera, target.width,
                                                      target.height);
-#if BBLITE_RENDER_TASK_TRANSMISSION
-                            // The task's grab latch (`_copies`), reset per execution.
-                            std::optional<TaskTransmissionCopies> transmission_copies;
-                            if (const RenderTaskTransmission* settings =
-                                    task_transmission(task,
-                                                      target_sample_count(state, target_record) !=
-                                                          SDL_GPU_SAMPLECOUNT_1,
-                                                      target_record.swapchain))
-                                transmission_copies.emplace(*settings);
-                            const std::function<SDL_GPURenderPass*(const MaterialRecord*)>
-                                transmission_split =
-                                    [&](const MaterialRecord* material) -> SDL_GPURenderPass* {
-                                if (!transmissive_draw_material(material) ||
-                                    !transmission_copies->can_update())
-                                    return nullptr;
+                            // The task's colour-pass plan (`_copies` reset per
+                            // execution) and its break: end the pass, grab, and
+                            // resume loading what the first segment stored.
+                            pal::TaskPassBreaks pass_breaks = pal::task_pass_breaks(
+                                task, {.multisampled = target_sample_count(state, target_record) !=
+                                                       SDL_GPU_SAMPLECOUNT_1,
+                                       .swapchain = target_record.swapchain,
+                                       .billboard_stages =
+                                           BBLITE_HAS_BILLBOARDS && task.render.scene_stages});
+                            const auto resume_pass = [&]() -> SDL_GPURenderPass* {
                                 task_pass.end();
+#if BBLITE_RENDER_TASK_TRANSMISSION
                                 encode_task_transmission_grab(state, engine, command, handle);
-                                ++transmission_copies->copies;
-                                // The resumed segment loads what the first stored.
+#endif
                                 target_info.load_op = SDL_GPU_LOADOP_LOAD;
                                 if (task_depth_pointer) {
                                     task_depth.load_op = SDL_GPU_LOADOP_LOAD;
@@ -3268,7 +3211,6 @@ public:
                                                          target.height);
                                 return task_pass;
                             };
-#endif
                             upstream::sort_transparent_draws(
                                 handle_at(task_draw_lists, handle).transparent, engine,
                                 task_camera);
@@ -3305,12 +3247,8 @@ public:
                                                             ? state.depth_format
                                                             : target.depth_format)
                                                      : SDL_GPU_TEXTUREFORMAT_INVALID,
-                                                 target_sample_count(state, target_record)}
-#if BBLITE_RENDER_TASK_TRANSMISSION
-                                ,
-                                transmission_copies ? &transmission_split : nullptr
-#endif
-                            );
+                                                 target_sample_count(state, target_record)},
+                                &pass_breaks, resume_pass);
                             if (task.render.scene_stages) {
 #if BBLITE_HAS_TEXT
                                 // The scene's text, bound for this pass's
@@ -3501,10 +3439,7 @@ public:
 
 #if BBLITE_HAS_EFFECT_TASK
                         if (task.kind == FrameTaskKind::effect) {
-#if BBLITE_EFFECT_WRAPPER_DISPOSAL
-                            // `execute` rebuilds the wrapper's dirty bind group before drawing.
-                            require_effect_bind_group(engine, task.effect.effect);
-#endif
+                            pal::prepare_effect_task(engine, task);
                             // The same two halves the swapchain renderer draws
                             // through, recorded into the frame graph's command
                             // buffer instead: the pin ships two entry points

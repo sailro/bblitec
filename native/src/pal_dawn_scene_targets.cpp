@@ -790,8 +790,8 @@ DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const E
     const RenderTargetRecord& target_record =
         handle_at(engine.render_targets, record.render.target);
     const DawnRenderTarget& target = handle_at(state.render_targets, record.render.target);
-    task_transmission(record, target_sample_count(state, target_record) > 1,
-                      target_record.swapchain);
+    (void)task_pass_breaks(record, {.multisampled = target_sample_count(state, target_record) > 1,
+                                    .swapchain = target_record.swapchain});
     if (state.task_transmissions.size() <= task.value)
         state.task_transmissions.resize(task.value + 1);
     DawnState::TaskTransmission& grab = state.task_transmissions[task.value];

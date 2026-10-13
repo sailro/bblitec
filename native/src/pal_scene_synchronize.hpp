@@ -9,6 +9,7 @@
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
+#include <bblite/features/refreshed_task_overrides.hpp>
 #include <bblite/features/shader_external_textures.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/texture_pixel_writes.hpp>
@@ -44,6 +45,23 @@
 #endif
 
 namespace bbl::pal {
+
+/**
+ * A scene task's draw lists, recorded as both backends record them: a
+ * refreshed task orders its rebind's renderables first, and the record
+ * marks the task built.
+ */
+inline upstream::RenderDrawLists record_task_draw_lists(const upstream::RenderPlan& plan,
+                                                        const Engine& engine,
+                                                        FrameTaskRecord& task) {
+#if BBLITE_REFRESHED_TASK_OVERRIDES
+    order_refreshed_render_task(task);
+#endif
+    upstream::RenderDrawLists lists = upstream::build_render_task_draw_lists(plan, engine, task);
+    task.render_recorded = true;
+    task.render_meshes_dirty = false;
+    return lists;
+}
 
 /**
  * Jobs contain native GPU data only; their owner outlives this preparation.
