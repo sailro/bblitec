@@ -154,7 +154,10 @@ export function lowerFrameGraphTaskBuild(
                     `${indent}}`,
                 ];
             if (node === initialize)
-                return [`${indent}++engine.draw_list_epoch;`];
+                return [
+                    `${indent}task.pending_record = false;`,
+                    `${indent}++engine.draw_list_epoch;`,
+                ];
             return undefined;
         },
     });

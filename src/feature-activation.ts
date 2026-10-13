@@ -934,6 +934,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/vat/vat-baker.ts (setInstances)",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "mesh:deformed-position": {
+        provenance:
+            "src/picking/deformed-vertex.ts computeDeformedPositionToRef",
+        consumers: CMAKE,
+    },
+    "mesh:vat-time": {
+        provenance: "src/vat/vat-baker.ts setVatTime",
+        consumers: CMAKE,
+    },
+    "mesh:vat-instance-storage": {
+        provenance: "src/vat/vat-baker.ts setVatInstanceStorage",
+        consumers: CMAKE,
+    },
     "mesh:skeleton": {
         provenance:
             "src/skeleton/create-skeleton.ts and " +
@@ -1344,6 +1357,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "ramped parameters, signals and fetch they reach, lowered whole",
         consumers: CMAKE,
     },
+    "audio:media-stream": {
+        provenance:
+            "the reached Web Audio graph calls AudioContext.createMediaStreamDestination() or createMediaStreamSource()",
+        consumers: CMAKE,
+    },
     "audio:stereo-panner": {
         provenance:
             "the reached Web Audio graph calls AudioContext.createStereoPanner()",
@@ -1474,6 +1492,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/frame-graph/frame-graph.ts buildFrameGraphTask",
         consumers: CMAKE,
     },
+    "frame-graph:live-task-add": {
+        provenance:
+            "src/frame-graph/frame-graph-actions.ts addTask on a built graph " +
+            "(src/frame-graph/frame-graph.ts buildFrameGraphTask)",
+        consumers: CMAKE,
+    },
     "frame-graph:task-disposal": {
         provenance:
             "src/frame-graph/render-task-base.ts RenderTask.dispose + " +
@@ -1592,6 +1616,16 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "the Compression Streams CompressionStream and DecompressionStream transforms through zlib",
         consumers: CMAKE,
+    },
+    "platform:media-stream": {
+        provenance:
+            "MediaStream and MediaStreamTrack objects, canvas capture streams and the encoder-less MediaRecorder",
+        consumers: INVENTORY,
+    },
+    "platform:idle-callbacks": {
+        provenance:
+            "the HTML requestIdleCallback idle periods and IdleDeadline over the realm event loop",
+        consumers: INVENTORY,
     },
     "image:runtime-decode": {
         provenance:

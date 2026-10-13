@@ -132,6 +132,25 @@ struct ClipboardWrite final : CompletionEvent {
     ClipboardWrite(std::uint64_t id, std::string value)
         : CompletionEvent(id), text(std::move(value)) {}
 };
+/**
+ * The window state a page fullscreen request or exit asks for (none keeps it, ordered after
+ * earlier requests), and the platform's failure.
+ */
+struct FullscreenRequest final : CompletionEvent {
+    std::optional<bool> fullscreen;
+    std::string error;
+    FullscreenRequest(std::uint64_t id, std::optional<bool> value)
+        : CompletionEvent(id), fullscreen(value) {}
+};
+/** The display ended page fullscreen itself: Escape, or the system left window fullscreen. */
+struct WindowFullscreenExit final : ExternalEvent {};
+/** An alert or confirmation the realm waits on while the Window thread shows it. */
+struct MessageBoxRequest {
+    bool confirm = false;
+    std::string message;
+    std::optional<bool> answer;
+    std::string error;
+};
 struct DocumentSnapshot {
     struct TextUpdate {
         UiElementHandle element;
@@ -283,6 +302,9 @@ struct WindowServices final : CanvasProvider {
     std::condition_variable wake;
     std::unique_ptr<DocumentSnapshot> pending;
     std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
+    std::vector<std::unique_ptr<FullscreenRequest>> fullscreen_requests;
+    /** The realm's pending message box, answered in place; guarded by `mutex`. */
+    std::shared_ptr<MessageBoxRequest> message_box;
     std::uint64_t requested = 0, completed = 0;
     /** Document input posted and handled, guarded by `mutex`. Except for mouse
      * motion, each transaction and its native default's events (click, input,
@@ -297,6 +319,148 @@ struct WindowServices final : CanvasProvider {
     std::vector<std::weak_ptr<OffscreenSurface>> endpoints;
     bool stopping = false;
 };
+
+/**
+ * `BBLITE_MESSAGE_BOX_RESPONSE`: `accept` or `dismiss` answers every message box without
+ * showing it, for noninteractive runs.
+ */
+std::optional<bool> message_box_response() {
+    const auto text = environment_variable("BBLITE_MESSAGE_BOX_RESPONSE");
+    if (text.empty())
+        return std::nullopt;
+    if (text != "accept" && text != "dismiss")
+        throw std::runtime_error("BBLITE_MESSAGE_BOX_RESPONSE must be accept or dismiss.");
+    return text == "accept";
+}
+
+/** A modal SDL message box on this, the Window's thread: true when a confirmation is accepted. */
+bool show_message_box(SDL_Window* window, const MessageBoxRequest& request) {
+    const SDL_MessageBoxButtonData confirm_buttons[] = {
+        {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "OK"},
+        {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
+    };
+    const SDL_MessageBoxButtonData alert_button{
+        SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 1, "OK"};
+    const char* title = window ? SDL_GetWindowTitle(window) : "";
+    const SDL_MessageBoxData data{
+        SDL_MESSAGEBOX_INFORMATION | SDL_MESSAGEBOX_BUTTONS_LEFT_TO_RIGHT,
+        window,
+        title,
+        request.message.c_str(),
+        request.confirm ? 2 : 1,
+        request.confirm ? confirm_buttons : &alert_button,
+        nullptr,
+    };
+    int button = -1;
+    if (!SDL_ShowMessageBox(&data, &button))
+        throw std::runtime_error("SDL message box failed: " + std::string(SDL_GetError()));
+    return request.confirm && button == 1;
+}
+
+/** Answers the realm's pending message box, if any; a platform failure throws in the realm. */
+void serve_message_box(WindowServices& services, SDL_Window* window) {
+    std::shared_ptr<MessageBoxRequest> request;
+    {
+        std::lock_guard lock(services.mutex);
+        request = std::exchange(services.message_box, nullptr);
+    }
+    if (!request)
+        return;
+    std::optional<bool> answer;
+    std::string error;
+    if (const auto response = message_box_response())
+        answer = request->confirm && *response;
+    else
+        try {
+            answer = show_message_box(window, *request);
+        } catch (const std::exception& failure) {
+            error = failure.what();
+        }
+    {
+        std::lock_guard lock(services.mutex);
+        request->answer = answer;
+        request->error = std::move(error);
+    }
+    services.wake.notify_all();
+}
+
+/**
+ * The Window thread's page fullscreen: whether the page holds it, and whether entering it
+ * made a windowed window fullscreen, so leaving restores the window rather than leaving a
+ * fullscreen the window already had (mobile windows, a window the user made fullscreen).
+ */
+struct PageFullscreen {
+    bool active = false;
+    bool restore_windowed = false;
+
+    static bool window_fullscreen(SDL_Window* window) {
+        return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+    }
+    /** Applies `fullscreen` to the window: empty, or SDL's failure. */
+    static std::string set_window(SDL_Window* window, bool fullscreen) {
+        if (!SDL_SetWindowFullscreen(window, fullscreen))
+            return SDL_GetError();
+        // Asynchronous window systems apply the state later; wait for it, bounded by SDL.
+        static_cast<void>(SDL_SyncWindow(window));
+        return {};
+    }
+    std::string enter(SDL_Window* window) {
+        if (active)
+            return {};
+        const bool windowed = !window_fullscreen(window);
+        auto error = windowed ? set_window(window, true) : std::string();
+        if (error.empty()) {
+            active = true;
+            restore_windowed = windowed;
+        }
+        return error;
+    }
+    std::string leave(SDL_Window* window) {
+        active = false;
+        return std::exchange(restore_windowed, false) ? set_window(window, false) : std::string();
+    }
+};
+
+/** Applies the realm's fullscreen requests in order and posts each one's completion. */
+void serve_fullscreen_requests(WindowServices& services, SDL_Window* window,
+                               PageFullscreen& fullscreen) {
+    std::vector<std::unique_ptr<FullscreenRequest>> requests;
+    {
+        std::lock_guard lock(services.mutex);
+        requests.swap(services.fullscreen_requests);
+    }
+    for (auto& request : requests) {
+        if (request->fullscreen)
+            request->error =
+                *request->fullscreen ? fullscreen.enter(window) : fullscreen.leave(window);
+        services.inbox->post(std::move(request));
+    }
+}
+
+/**
+ * The display ending page fullscreen itself, as browsers do: an Escape press (consumed) or the
+ * window leaving fullscreen. True when `event` was consumed.
+ */
+bool end_page_fullscreen(WindowServices& services, SDL_Window* window, PageFullscreen& fullscreen,
+                         const SDL_Event& event) {
+    if (!fullscreen.active)
+        return false;
+    const bool escape =
+        event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !event.key.repeat;
+    // A leave event left behind by an earlier exit arrives after a later enter; the window's
+    // present state tells them apart.
+    const bool left = event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN &&
+                      !PageFullscreen::window_fullscreen(window);
+    if (!escape && !left)
+        return false;
+    if (escape) {
+        if (const auto error = fullscreen.leave(window); !error.empty())
+            throw std::runtime_error("Leaving page fullscreen failed: " + error);
+    } else
+        fullscreen = {};
+    services.inbox->post(std::make_unique<WindowFullscreenExit>());
+    return escape;
+}
 
 /** The display's latest pointer states on the current realm's document. */
 void adopt_window_pointer_states();
@@ -390,6 +554,11 @@ struct WindowDocument {
     std::vector<std::shared_ptr<ResizeObserver>> observers;
     std::vector<std::shared_ptr<MutationObserver>> mutation_observers;
     std::vector<std::shared_ptr<MediaQueryList>> media;
+    /** The first canvas an engine was created on. */
+    std::optional<std::uint32_t> primary_canvas;
+    /** Fullscreen elements, the document's fullscreen element last. */
+    std::vector<UiElementHandle> fullscreen;
+    PlatformEventListeners<void()> fullscreen_listeners;
     ApplicationErrors* errors = nullptr;
     const bool screen_identity = true;
 };
@@ -665,6 +834,8 @@ void bind_canvas_engine(const std::shared_ptr<CanvasElement>& canvas,
                                     [&](const auto& value) { return value.second == canvas; });
     if (entry == doc.canvases.end())
         throw InvalidCanvasState("Engine canvas is not attached to this Window.");
+    if (!doc.primary_canvas)
+        doc.primary_canvas = entry->first;
     doc.input_targets.insert_or_assign(entry->first, WindowDocument::InputTarget(engine));
     const auto box = window_element_size({entry->first});
     const auto width = static_cast<std::uint32_t>(
@@ -733,6 +904,147 @@ js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
         result.reject(std::current_exception());
     }
     return result;
+}
+bool window_message_box(bool confirm, std::string message) {
+    auto& host = *current_document().host;
+    auto request = std::make_shared<MessageBoxRequest>();
+    request->confirm = confirm;
+    request->message = std::move(message);
+    std::unique_lock lock(host.mutex);
+    if (host.stopping)
+        throw WorkerTerminated{};
+    host.message_box = request;
+    host.wake.notify_all();
+    host.wake.wait(lock, [&] {
+        return host.stopping || request->answer.has_value() || !request->error.empty();
+    });
+    if (!request->error.empty())
+        throw std::runtime_error(request->error);
+    if (!request->answer)
+        throw WorkerTerminated{};
+    return *request->answer;
+}
+namespace {
+/** Fires `fullscreenchange` at the document's listeners in its own task. */
+void queue_fullscreen_change() {
+    EventLoop::current().post([] {
+        auto& loop = EventLoop::current();
+        current_document().fullscreen_listeners.dispatch_with(
+            [&](auto& listener) { loop.dispatch_callback([callback = listener] { callback(); }); });
+    });
+}
+/** The display ended page fullscreen: the document fully exits it. */
+void exit_page_fullscreen() {
+    auto& stack = current_document().fullscreen;
+    if (stack.empty())
+        return;
+    stack.clear();
+    queue_fullscreen_change();
+}
+/**
+ * Asks the Window thread for a window state (none keeps it) after earlier requests; `settle`
+ * runs on this realm with the platform's failure, empty on success.
+ */
+void request_window_fullscreen(std::optional<bool> fullscreen,
+                               std::function<void(const std::string&)> settle) {
+    auto& host = *current_document().host;
+    auto& loop = EventLoop::current();
+    const auto id = loop.register_completion(
+        [settle = std::move(settle)](std::unique_ptr<ExternalEvent> event) {
+            const auto* completion = dynamic_cast<const FullscreenRequest*>(event.get());
+            if (!completion)
+                throw std::logic_error("Incorrect fullscreen completion payload.");
+            settle(completion->error);
+        });
+    try {
+        auto request = std::make_unique<FullscreenRequest>(id, fullscreen);
+        std::lock_guard lock(host.mutex);
+        if (host.stopping)
+            throw WorkerTerminated{};
+        host.fullscreen_requests.push_back(std::move(request));
+    } catch (...) {
+        loop.cancel_completion(id);
+        throw;
+    }
+}
+} // namespace
+js::Promise<js::PromiseVoid> window_request_fullscreen(UiElementHandle element) {
+    auto& doc = current_document();
+    js::Promise<js::PromiseVoid> result;
+    try {
+        if (element != ui_document_root(doc.engine, UiDocumentPart::Html) &&
+            !(doc.primary_canvas && element.value == *doc.primary_canvas))
+            throw js::make_dom_exception(
+                "Native fullscreen admits the document element and the primary canvas.",
+                "NotSupportedError");
+        if (!ui_is_connected(doc.engine, element))
+            std::rethrow_exception(
+                js::make_error("TypeError", "Fullscreen requires a connected element."));
+        request_window_fullscreen(true, [element, result](const std::string& error) {
+            if (!error.empty()) {
+                result.reject(js::make_error("TypeError", "Fullscreen request failed: " + error));
+                return;
+            }
+            auto& stack = current_document().fullscreen;
+            const bool current = !stack.empty() && stack.back() == element;
+            if (!current) {
+                std::erase(stack, element);
+                stack.push_back(element);
+            }
+            result.resolve(js::PromiseVoid{});
+            if (!current)
+                queue_fullscreen_change();
+        });
+    } catch (const WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        result.reject(std::current_exception());
+    }
+    return result;
+}
+js::Promise<js::PromiseVoid> window_exit_fullscreen() {
+    auto& doc = current_document();
+    js::Promise<js::PromiseVoid> result;
+    try {
+        if (doc.fullscreen.empty())
+            std::rethrow_exception(js::make_error("TypeError", "Document not active"));
+        // Below the top element the window stays fullscreen.
+        const bool nested = doc.fullscreen.size() > 1;
+        request_window_fullscreen(nested ? std::nullopt : std::optional(false),
+                                  [nested, result](const std::string& error) {
+                                      auto& stack = current_document().fullscreen;
+                                      const bool changed = !stack.empty();
+                                      if (nested && changed)
+                                          stack.pop_back();
+                                      else
+                                          stack.clear();
+                                      if (error.empty())
+                                          result.resolve(js::PromiseVoid{});
+                                      else
+                                          result.reject(js::make_error(
+                                              "TypeError", "Leaving fullscreen failed: " + error));
+                                      if (changed)
+                                          queue_fullscreen_change();
+                                  });
+    } catch (const WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        result.reject(std::current_exception());
+    }
+    return result;
+}
+js::Nullable<UiElementHandle> window_fullscreen_element() {
+    const auto& stack = current_document().fullscreen;
+    return stack.empty() ? js::Nullable<UiElementHandle>()
+                         : js::Nullable<UiElementHandle>(stack.back());
+}
+bool window_on_fullscreen_change(std::uint64_t identity, js::Callback<void()> callback, bool once,
+                                 ListenerLeasePtr lease) {
+    return current_document().fullscreen_listeners.add(identity, std::move(callback), once,
+                                                       std::move(lease));
+}
+void window_off_fullscreen_change(std::uint64_t identity) {
+    current_document().fullscreen_listeners.remove(identity);
 }
 bool window_on_application_error(bool rejection, std::uint64_t identity,
                                  ApplicationErrors::Callback callback, bool once,
@@ -1118,6 +1430,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             });
                             return;
                         }
+                        if (dynamic_cast<WindowFullscreenExit*>(packet.get())) {
+                            exit_page_fullscreen();
+                            return;
+                        }
                         // Acknowledge document input however its dispatch ends,
                         // so the display can finish any pending input wait.
                         const auto handled = js::finally([&] {
@@ -1218,6 +1534,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             audio_initialize_subsystem();
 #endif
             std::unordered_map<std::uint32_t, OffscreenFrame> latest;
+            PageFullscreen page_fullscreen;
             PlatformInputReplay input_replay;
             LayoutSnapshot next_layout;
             std::shared_ptr<const LayoutSnapshot> layout;
@@ -1321,17 +1638,21 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             // posted so far. Source callbacks can synchronously request layout:
             // serve those requests while waiting, without spending a
             // presentation or repaint tick on the acknowledgement.
+            // A listener's alert or confirm waits on this thread too.
             const auto await_input = [&] {
                 for (;;) {
                     std::unique_lock lock(services->mutex);
                     services->wake.wait(lock, [&] {
                         return services->input_handled == services->input_posted || finished ||
-                               services->pending;
+                               services->pending || services->message_box;
                     });
                     if (services->input_handled == services->input_posted || finished)
                         return;
+                    const bool message_box = services->message_box != nullptr;
                     lock.unlock();
-                    if (!update_layout())
+                    if (message_box)
+                        serve_message_box(*services, window.get());
+                    else if (!update_layout())
                         SDL_Delay(1);
                 }
             };
@@ -1359,6 +1680,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     }
                     services->inbox->post(std::move(request));
                 }
+                serve_message_box(*services, window.get());
+                serve_fullscreen_requests(*services, window.get(), page_fullscreen);
                 SDL_Event event;
                 for (;;) {
                     if (!poll_sdl_event(&event))
@@ -1370,6 +1693,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         running = false;
                     if (frame_options.test_pass && is_platform_input_event(event) &&
                         !is_replayed_ui_event(event))
+                        continue;
+                    if (end_page_fullscreen(*services, window.get(), page_fullscreen, event))
                         continue;
                     end_press_mouse_capture(event);
                     // Mouse motion has no cancelable native default. Keep its
@@ -1689,6 +2014,9 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 std::rethrow_exception(application_error);
             if (!services->reload_requested)
                 co_return 0;
+            // The reloaded document starts outside fullscreen.
+            if (const auto error = page_fullscreen.leave(window.get()); !error.empty())
+                throw std::runtime_error("Leaving page fullscreen failed: " + error);
             location->commit_reload();
         }
     } catch (...) {

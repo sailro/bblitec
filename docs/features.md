@@ -7,8 +7,8 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
-buffers, streaming sounds, buses, spatial/stereo/analyzer and master volume, media streams/recording, script elements,
-idle callbacks, application-realm device recovery, and the [UI](ui.md) items
+buffers, streaming sounds, buses, spatial/stereo/analyzer and master volume, the engine media-stream tap,
+script elements, `prompt`, application-realm device recovery, and the [UI](ui.md) items
 marked deferred. Unregistered APIs still refuse.
 
 ## Language
@@ -82,10 +82,12 @@ Rules:
 
 - One engine per entry setup. Rebinding an engine alias refuses.
 - `msaaSamples`: 1 for numeric 1, else 4; other constants refuse.
-- Native loops own extent refresh; `resizeEngine` only applies `maxDevicePixelRatio` writes.
+- Native loops own extent refresh; `resizeEngine` only applies `maxDevicePixelRatio`.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
-- `maxDevicePixelRatio` writes (application realm) size a DOM canvas backing store at `resizeEngine` and the next frame
-  head; the window composites it scaled. The `createEngine` option keeps the platform rules below.
+- `maxDevicePixelRatio` (`createEngine` option or write) sizes an application realm's DOM canvas backing store at
+  `createEngine`, `resizeEngine` and each frame head, on every platform; windows keep native density and composite it
+  scaled. Without a realm the window is the only surface: a static cap of 1 or more applies as below (desktop keeps
+  devicePixelRatio 1); any other cap selects a realm.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
@@ -107,9 +109,9 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 [iOS](development.md#ios).
 
 - Android: ARM64/x86_64 APKs, API 28+ (retained UI 29+), landscape immersive fullscreen, Back exits. Multiple native
-  windows unsupported. `maxDevicePixelRatio` caps the render buffer.
-- iOS: 16+, SDL UIKit. Landscape fullscreen at native density or `maxDevicePixelRatio=1`; other caps refuse. Device
-  bundles are unsigned and unqualified; no signing or App Store flow.
+  windows unsupported. Without a realm, a static `maxDevicePixelRatio` caps the render buffer.
+- iOS: 16+, SDL UIKit. Landscape fullscreen at native density or, without a realm, `maxDevicePixelRatio=1`; other
+  caps refuse. Device bundles are unsigned and unqualified; no signing or App Store flow.
 
 ## Loading
 
@@ -154,6 +156,9 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 - Property tracks: numeric leaves, linear/step; easing callbacks refuse. Autonomous managers cannot share a program with
   a persistent application RAF loop.
 - GPU skinning, storage morphs, VAT, thin instances. Direct morphs: one pre-start attachment per mesh.
+- `computeDeformedPositionToRef`: morph then four-joint skinning of one retained CPU vertex, at the pin's float stores.
+- `setVatTime` writes the VAT clock lane until the handle's next `play`/`update`. `setVatInstanceStorage` validates and
+  stores the buffer; only VAT picking reads it, and that is not lowered.
 
 ## Sprites, picking, flow graphs, gizmos
 
@@ -177,8 +182,14 @@ Heightfields need square ground grids. Contract: [physics](fidelity.md#physics-c
 LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling (value curves included), decoding, ended
 listeners, `disconnect(destination[, output[, input]])`. A buffer source loops its whole buffer only: a
 `loopStart`/`loopEnd` region inside it, or a loop started with a duration, throws at `start`. Event payloads,
-ended-listener `signal`, context options, statechange, output selection, media streams and recording refuse or are
-absent. `createAudioEngineAsync` adopts `audioContext`; its other options refuse.
+ended-listener `signal`, context options, statechange and output selection refuse or are absent.
+`createAudioEngineAsync` adopts `audioContext`; its other options refuse.
+
+Media streams: `MediaStream`/`MediaStreamTrack` objects (track sets, `addTrack`/`removeTrack`, `clone`, `stop`,
+`enabled`, `readyState`), `canvas.captureStream(fps)` (one live video track), `createMediaStreamDestination()` (a sink
+rendering its input into its stream's audio track every quantum) and `createMediaStreamSource(stream)` (the first
+audio track by id, from any context at the same sample rate; InvalidStateError without one). No recording encoder
+exists: `MediaRecorder.isTypeSupported` is false and `new MediaRecorder` throws NotSupportedError.
 
 Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `disposeSound`) run the pin's lowered
 family in an application realm. Sources: a URL selecting packaged audio (a runtime URL needs inferable candidates), an
@@ -200,8 +211,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 ## Frame graph and post-process
 
 - Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup; `removeMeshFromTask`.
-- `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene; the
-  private `FrameGraph._tasks` list refuses (its native indices differ), so a live task cannot be removed.
+- `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which
+  refuses to execute until then; the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task
+  cannot be removed.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
 - `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
   keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform

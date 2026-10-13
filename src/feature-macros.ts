@@ -102,6 +102,11 @@ export const featureMacros: readonly FeatureMacro[] = [
         macro: "BBLITE_RENDER_TARGET_DISPOSAL",
         anyOf: ["frame-graph:target-disposal"],
     },
+    // A task added to a live scene refuses to execute until it is recorded.
+    {
+        macro: "BBLITE_LIVE_TASK_ADD",
+        anyOf: ["frame-graph:live-task-add"],
+    },
     // A disposed task refuses to execute.
     {
         macro: "BBLITE_TASK_DISPOSAL",
@@ -183,6 +188,7 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_AUDIO_OSCILLATOR", anyOf: ["audio:oscillator"] },
     { macro: "BBLITE_HAS_AUDIO_BIQUAD_FILTER", anyOf: ["audio:biquad-filter"] },
     { macro: "BBLITE_HAS_AUDIO_STEREO_PANNER", anyOf: ["audio:stereo-panner"] },
+    { macro: "BBLITE_HAS_AUDIO_MEDIA_STREAM", anyOf: ["audio:media-stream"] },
     {
         macro: "BBLITE_HAS_AUDIO_MEDIA_ELEMENT",
         anyOf: ["audio:media-element"],

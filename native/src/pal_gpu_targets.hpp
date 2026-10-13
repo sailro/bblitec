@@ -5,6 +5,7 @@
 #include "pal_gpu_surface.hpp"
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 
 #include <bblite/runtime.hpp>
@@ -86,6 +87,11 @@ inline std::uint32_t render_target_requested_samples(const RenderTargetRecord& r
 
 /** Every registered scene's and frame-graph context's executed tasks name only live targets. */
 void require_live_render_targets(const Engine& engine);
+#endif
+
+#if BBLITE_LIVE_TASK_ADD
+/** A registered scene executes no task added to its live graph and never recorded. */
+void require_recorded_tasks(const Engine& engine);
 #endif
 
 /**

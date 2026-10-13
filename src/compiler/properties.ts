@@ -54,6 +54,7 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { webPlatformProperty } from "./web-platform.js";
+import { fullscreenElementValue } from "./fullscreen.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
@@ -873,6 +874,54 @@ export const propertyRules: readonly PropertyRule[] = [
         helper: "bbl::pal::audio_param_value",
         feature: "audio:engine",
     },
+    // MediaStreamAudioDestinationNode.stream: one stream per node.
+    {
+        owner: "audio-node",
+        property: "stream",
+        value: "media-stream",
+        helper: "bbl::pal::audio_destination_stream",
+        feature: "audio:media-stream",
+    },
+    // MediaStream and MediaStreamTrack (`bblite/pal_media_stream.hpp`).
+    {
+        owner: "media-stream",
+        property: "id",
+        value: "string",
+        helper: "bbl::pal::media_stream_id",
+        feature: "platform:media-stream",
+    },
+    {
+        owner: "media-stream",
+        property: "active",
+        value: "boolean",
+        helper: "bbl::pal::media_stream_active",
+        feature: "platform:media-stream",
+        impure: true,
+    },
+    ...(["kind", "id", "label"] as const).map((property): PropertyRead => ({
+        owner: "media-stream-track",
+        property,
+        value: "string",
+        helper: `bbl::pal::media_stream_track_${property}`,
+        feature: "platform:media-stream",
+    })),
+    {
+        owner: "media-stream-track",
+        property: "readyState",
+        value: "string",
+        helper: "bbl::pal::media_stream_track_ready_state",
+        feature: "platform:media-stream",
+        impure: true,
+    },
+    {
+        owner: "media-stream-track",
+        property: "enabled",
+        value: "boolean",
+        helper: "bbl::pal::media_stream_track_enabled",
+        feature: "platform:media-stream",
+        impure: true,
+    },
+
     {
         // Device generation is observable by recovery. Queue uploads still
         // use their structurally checked transport instead of exposing a GPU API.
@@ -2479,6 +2528,11 @@ export class PropertyAccessLowerer {
                 dataType: { kind: "handle", handle: "ui-element" },
             };
         }
+        const fullscreen = fullscreenElementValue(
+            this.context.dataLowerer,
+            expression,
+        );
+        if (fullscreen) return fullscreen;
         if (
             expression.questionDotToken &&
             expression.name.text === "direction" &&

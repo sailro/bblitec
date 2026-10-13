@@ -202,6 +202,19 @@ AudioNodeHandle audio_create_gain(AudioContextHandle context);
 AudioNodeHandle audio_create_oscillator(AudioContextHandle context);
 AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context);
 AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context);
+/**
+ * `ctx.createMediaStreamDestination()`: a sink the context renders every
+ * quantum into its `stream`'s one audio track (`bblite/pal_media_stream.hpp`).
+ */
+AudioNodeHandle audio_create_media_stream_destination(AudioContextHandle context);
+std::shared_ptr<MediaStream> audio_destination_stream(AudioNodeHandle node);
+/**
+ * `ctx.createMediaStreamSource(stream)`: the stream's first audio track by id,
+ * the destination audio it carries from any context at the same sample rate.
+ * InvalidStateError without an audio track.
+ */
+AudioNodeHandle audio_create_media_stream_source(AudioContextHandle context,
+                                                 const std::shared_ptr<MediaStream>& stream);
 
 /** `ctx.createBuffer(channels, frames, sampleRate)`. */
 AudioBufferHandle audio_create_buffer(AudioContextHandle context, std::uint32_t channels,

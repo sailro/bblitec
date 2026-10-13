@@ -2925,6 +2925,8 @@ export type Feature =
     | "platform:http"
     | "platform:packaged-fetch"
     | "platform:compression"
+    | "platform:idle-callbacks"
+    | "platform:media-stream"
     | "image:runtime-decode"
     | "text:data"
     | "text:layout"
@@ -3084,6 +3086,9 @@ export type Feature =
     // that also thin-instances the baked mesh allocates one.
     | "mesh:vat"
     | "mesh:vat-instances"
+    | "mesh:vat-time"
+    | "mesh:deformed-position"
+    | "mesh:vat-instance-storage"
     // A skeleton a scene authored in code rather than one the glTF loader
     // built from a skin. `createSkeleton` is the pin's own resource factory
     // and `mesh.skeleton = ...` is what puts the mesh on the skinned arm.
@@ -3106,6 +3111,7 @@ export type Feature =
     | "audio:oscillator"
     | "audio:biquad-filter"
     | "audio:stereo-panner"
+    | "audio:media-stream"
     | "audio:static-sound"
     | "audio:media-element"
     | "physics:world"
@@ -3229,6 +3235,7 @@ export type Feature =
     | "frame-graph:task-material-override"
     | "frame-graph:task-build"
     | "frame-graph:task-disposal"
+    | "frame-graph:live-task-add"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:wrapper-disposal"

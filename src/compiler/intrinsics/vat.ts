@@ -132,6 +132,54 @@ export function compileVatIntrinsic(
             };
         }
 
+        case "setVatTime": {
+            context.expectArgumentCount(call, 3, 3);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const mesh = context.compileValue(argumentAt(call, 1));
+            context.expectKind(mesh, "mesh", argumentAt(call, 1));
+            context.expectSameEngine(engine, mesh, call);
+            const seconds = context.compileNumber(
+                argumentAt(call, 2),
+                "double",
+            );
+            context.reachFeature("mesh:vat", call);
+            context.reachFeature("mesh:vat-time", call);
+            return {
+                kind: "void",
+                cpp: `bbl::set_vat_time(${engine.cpp}, ${mesh.cpp}, ${seconds})`,
+            };
+        }
+
+        case "setVatInstanceStorage": {
+            context.expectArgumentCount(call, 3, 3);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const mesh = context.compileValue(argumentAt(call, 1));
+            context.expectKind(mesh, "mesh", argumentAt(call, 1));
+            context.expectSameEngine(engine, mesh, call);
+            const bufferExpression = context.unwrap(argumentAt(call, 2));
+            let buffer = "std::nullopt";
+            if (bufferExpression.kind !== ts.SyntaxKind.NullKeyword) {
+                const value = context.compileValue(bufferExpression);
+                context.expectKind(value, "storage-buffer", bufferExpression);
+                context.expectSameEngine(engine, value, call);
+                const present = presenceFlagCpp(value);
+                buffer =
+                    value.optionalStorageCpp !== undefined
+                        ? value.optionalStorageCpp
+                        : present !== undefined
+                          ? `(${present} ? std::optional<bbl::StorageBufferHandle>{${value.cpp}} : std::nullopt)`
+                          : `std::optional<bbl::StorageBufferHandle>{${value.cpp}}`;
+            }
+            context.reachFeature("mesh:vat", call);
+            context.reachFeature("mesh:vat-instance-storage", call);
+            return {
+                kind: "void",
+                cpp: `bbl::set_vat_instance_storage(${engine.cpp}, ${mesh.cpp}, ${buffer})`,
+            };
+        }
+
         default:
             return undefined;
     }

@@ -1310,6 +1310,8 @@ ${lowerThinInstanceSync(context)}
                 meshGpuDisposal: features.includes("mesh:dispose-gpu"),
                 taskBuild: features.includes("frame-graph:task-build"),
                 effectTasks: features.includes("effect:task"),
+                liveTaskAdd: features.includes("frame-graph:live-task-add"),
+                deformedPosition: features.includes("mesh:deformed-position"),
             }),
         );
         this.emitTextData(features, context, options, generated);
@@ -1360,6 +1362,8 @@ ${lowerThinInstanceSync(context)}
         emitReached("upstream/src/vat.cpp", () =>
             new VatLowerer(context).lower({
                 instances: features.includes("mesh:vat-instances"),
+                time: features.includes("mesh:vat-time"),
+                instanceStorage: features.includes("mesh:vat-instance-storage"),
             }),
         );
         emitReached("upstream/src/skeleton.cpp", () =>
@@ -2290,6 +2294,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     vat: features.includes("mesh:vat"),
                     deformPicking:
                         (options.pickingShaders?.deform?.length ?? 0) > 0,
+                    deformedPosition: features.includes(
+                        "mesh:deformed-position",
+                    ),
                     pinnedSkeletonPalette:
                         options.pinnedSkeletonPalette ?? false,
                     nodeTransforms: features.includes("scene:node-transforms"),

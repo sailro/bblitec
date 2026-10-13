@@ -464,7 +464,7 @@ export const scalarsSinks: DataSinkOperations<
     | "blob"
     | "file-list"
     | "event-target"
-    | "deferred-platform-object"
+    | "uninhabited-object"
     | "search-params"
     | "http-response"
     | "http-headers"
@@ -479,6 +479,7 @@ export const scalarsSinks: DataSinkOperations<
     | "gpu-adapter"
     | "gpu"
     | "gpu-adapter-info"
+    | "idle-deadline"
     | "promise"
     | "storage"
     | "date"
@@ -621,8 +622,9 @@ export const scalarsSinks: DataSinkOperations<
     file: opaqueSink,
     blob: opaqueSink,
     "file-list": opaqueSink,
-    "deferred-platform-object": opaqueSink,
+    "uninhabited-object": opaqueSink,
     "gpu-adapter-info": opaqueSink,
+    "idle-deadline": opaqueSink,
     error: {
         expression: (type, lowerer, expression) =>
             lowerer.compileKnownValueForSink(

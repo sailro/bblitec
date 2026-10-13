@@ -806,6 +806,8 @@ struct VatData {
     std::vector<float> instance_params;
     std::uint32_t instance_texels = 0;
     std::uint64_t instance_version = 0;
+    /** `setVatInstanceStorage`: the published dual-clip params buffer, or none. */
+    std::optional<StorageBufferHandle> instance_storage;
 };
 
 struct BillboardSpriteHandle {
@@ -1702,6 +1704,12 @@ struct FrameTaskRecord {
     bool disposed = false;
     mutable double shader_packet_scene_version = -1;
     mutable bool shader_packet_rebuild_pending = false;
+    /**
+     * Added to a scene's live graph: the pin records it only through
+     * `buildFrameGraphTask` or the next registration's build, and its
+     * execute fails until then.
+     */
+    bool pending_record = false;
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
     /**
@@ -5403,6 +5411,13 @@ inline void set_surface_max_device_pixel_ratio(Engine& engine, double cap,
         engine.resize_surface = resize_surface;
 }
 
+/** createEngine's cap option: the same resize, which the pin's createEngine runs once. */
+inline void install_surface_resize(Engine& engine, void (*resize_surface)(Engine&)) {
+    if (!engine.resize_surface)
+        engine.resize_surface = resize_surface;
+    engine.resize_surface(engine);
+}
+
 /** `resizeEngine`: native frame heads refresh extents; an installed resize runs here too. */
 inline void resize_engine(Engine& engine) {
     if (engine.resize_surface)
@@ -6786,6 +6801,8 @@ void add_task_at_start(Scene& scene, TaskHandle task);
 void add_task_after(Scene& scene, TaskHandle task, TaskHandle after);
 /** `buildFrameGraphTask(getFrameGraph(scene), task)`: record a task added to a live scene. */
 void build_frame_graph_task(Scene& scene, TaskHandle task);
+/** `addTask`/`addTaskAtStart` where the scene may already be registered. */
+void add_live_task(Scene& scene, TaskHandle task, bool at_start);
 void add_task(FrameGraphContext& context, TaskHandle task);
 void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 void add_task_after(FrameGraphContext& context, TaskHandle task, TaskHandle after);
@@ -6921,6 +6938,18 @@ void enable_skeleton_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void remove_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh);
+/** `computeDeformedPositionToRef`: whether the vertex resolved, and `out` as the pin leaves it. */
+struct DeformedPosition {
+    bool found = false;
+    Vec3d position{};
+};
+DeformedPosition compute_deformed_position(const Engine& engine, MeshHandle mesh,
+                                           double vertex_index, Vec3d out);
+/** `setVatTime`: the settings block's clock lane, apart from the handle's own clock. */
+void set_vat_time(Engine& engine, MeshHandle mesh, double seconds);
+/** `setVatInstanceStorage`. */
+void set_vat_instance_storage(Engine& engine, MeshHandle mesh,
+                              std::optional<StorageBufferHandle> buffer);
 /** `RenderTask.dispose()`. */
 void dispose_render_task(Engine& engine, TaskHandle task);
 /** `EffectRenderTask.dispose()`. */

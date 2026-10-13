@@ -392,10 +392,17 @@ test("refused media element forms name their limit", () => {
             fileName: join(output, "entry.ts"),
             publicDir: join(output, "public"),
         });
-    assert.throws(
-        () => compile("new Audio(String(Math.random()));"),
-        /An Audio source URL must select packaged audio/,
+    for (const url of ["String(Math.random())", '"/missing.wav"'])
+        assert.throws(
+            () => compile(`new Audio(${url});`),
+            /An Audio source URL must select packaged audio/,
+        );
+    // An absent optional receiver skips the call and its arguments.
+    const optional = compile(
+        'let skipped = 0; const missing: Array<HTMLAudioElement | undefined> = [undefined]; missing[0]?.addEventListener("ended", () => { skipped++; }); missing[0]?.pause(); if (skipped !== 0) throw new Error("optional");',
     );
+    assert.equal(optional.manifest.deferredCapabilities, undefined);
+    assert.ok(optional.manifest.features.includes("audio:media-element"));
     assert.throws(
         () =>
             compile(
