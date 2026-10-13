@@ -4269,6 +4269,48 @@ checkInRealm(
 `,
 );
 
+checkInRealm(
+    "structured-clone-rest-records-options-and-errors",
+    `
+    interface Pose { readonly x: number; readonly yaw: number }
+    interface Placement {
+        readonly host?: { readonly handle: { readonly id: number }; readonly bake: Readonly<Pose>; readonly localY?: number };
+        readonly key: string;
+        readonly child: "house" | "tower";
+        readonly cx: number;
+        readonly halfW?: number;
+        readonly materialId?: string;
+        readonly tint?: readonly [number, number, number];
+        readonly parent?: { readonly x: number; readonly minY: number };
+    }
+    const placements: Placement[] = [
+        { key: "house:7", child: "house", cx: 2, materialId: "m", tint: [1, 0.5, 0.25], host: { handle: { id: 3 }, bake: { x: 1, yaw: 0.5 } }, parent: { x: 4, minY: 1 } },
+        { key: "tower:3", child: "tower", cx: 5, halfW: 2 },
+    ];
+    const copies = placements.map((placement) => {
+        const { materialId: _material, tint: _tint, ...bake } = placement;
+        return { key: placement.key, bake: structuredClone(bake) };
+    });
+    const house = copies[0]!.bake;
+    const tower = copies[1]!.bake;
+    if (house.key !== "house:7" || house.child !== "house" || house.host!.bake.yaw !== 0.5 || house.host === placements[0]!.host || house.parent!.minY !== 1) throw new Error("house");
+    if (tower.host !== undefined || "host" in tower || "materialId" in tower || tower.halfW !== 2) throw new Error("tower");
+    const options = structuredClone({ n: 1 }, { transfer: [] });
+    const absent = structuredClone([1, 2], undefined);
+    if (options.n !== 1 || absent[1] !== 2) throw new Error("options");
+    interface Holder { f?: () => number; n: number }
+    const holder: Holder = { n: 1, f: () => 2 };
+    let failed = "";
+    try { structuredClone(holder); failed += "no-throw;"; } catch (error) { if (!(error instanceof DOMException) || error.name !== "DataCloneError") failed += "kind;"; }
+    let reads = 0;
+    const getter = { get value(): number { ++reads; return 4; } };
+    const copied = structuredClone(getter);
+    if (copied.value !== 4 || copied.value !== 4 || reads !== 1) failed += "getter;";
+    if (failed) throw new Error(failed);
+    globalThis.close();
+`,
+);
+
 test("structuredClone refuses shapes without a clone codec", () => {
     assert.throws(
         () =>
@@ -4277,6 +4319,30 @@ test("structuredClone refuses shapes without a clone codec", () => {
             ),
         /structuredClone 'value' is an instance of class K/,
     );
+    // A class's prototype getter is no own property to serialize.
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Flag { readonly on: boolean; }
+            class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
+            const flags: Flag[] = [{ on: false }, new Switch().view()];
+            const copies = flags.map((flag) => structuredClone(flag));
+            if (copies.length !== 2) throw new Error("copies");
+            `),
+        /Property 'on' is an accessor/,
+    );
+    for (const options of [
+        "{ transfer: [bytes.buffer] }",
+        "selected",
+        "{ ...selected }",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `const bytes = new Uint8Array(2); const selected: StructuredSerializeOptions = {}; const copy = structuredClone(bytes, ${options}); if (copy.length !== 2) throw new Error("copy");`,
+                ),
+            /structuredClone options admit only an empty literal transfer list/,
+        );
 });
 
 check(
@@ -8490,6 +8556,7 @@ function checkInRealm(name: string, source: string): void {
                 clearTimeout,
                 queueMicrotask,
                 structuredClone,
+                DOMException,
             },
         );
         // A realm may close from a timer callback as well as a reaction.

@@ -23,7 +23,7 @@ pixel ratio, application-realm device recovery, Blob streams/piping/compression,
 | Data | Records, tagged/structural unions, arrays, tuples, dictionaries, Map/Set, JSON documents, record accessors, `{}` identity tokens, phantom brands | Record conversions no single layout can hold; mutation through erased native views; identity comparison of unnamed literals |
 | Async | Promises, async functions, `all`/`allSettled`/`race`/`any` over tuples and sync iterables | Custom thenables, async iterables in combinators, MessageChannel, runtime-sized resource construction |
 | Generators | Sync/async, `for...of`, `for await`, `yield*` over generators/iterators/arrays | `next(value)`, `throw`, return payloads, yield in finally, `yield*` from async generators |
-| Workers | Module workers, structured clone (records, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer | Classic scripts; messages with class instances, Errors, functions, promises, platform objects; listener options except `once` |
+| Workers | Module workers, structured clone and `structuredClone` (records incl. own accessors, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer | Classic scripts; clones of class instances, prototype accessors, Errors, promises, platform objects; functions in messages (`structuredClone` throws DataCloneError); `structuredClone` transfer lists; listener options except `once` |
 
 Rules:
 
