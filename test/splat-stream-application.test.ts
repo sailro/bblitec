@@ -158,7 +158,7 @@ test("stream members without a native form refuse", () => {
     refuses(
         "await stream.firstFrameReady;",
         "await stream.firstFrameReady;\n    canvas.dataset.children = String(stream.children.length);",
-        /GaussianSplatStream\.children is not a public stream member read natively/,
+        /GaussianSplatStream\.children is not a public member the native stream reads/,
     );
 });
 
