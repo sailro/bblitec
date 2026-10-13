@@ -232,15 +232,14 @@ export class PlatformCalls {
      */
     private compileScrollIntoView(
         call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
         element: Value,
     ): Value {
         const target = pinDetached(
             this.context,
             element,
             "scroll_target",
-            ts.isPropertyAccessExpression(call.expression)
-                ? call.expression.expression
-                : undefined,
+            callee.expression,
         );
         const engine = this.context.requireEngine(target, call);
         const argument = call.arguments[0];
@@ -266,13 +265,11 @@ export class PlatformCalls {
             (name: keyof typeof defaults) =>
             (value: Value, present?: string): void => {
                 const fallback = this.context.cppString(defaults[name]);
-                const optional =
-                    value.dataType?.kind === "optional" ||
-                    value.dataType?.kind === "undefined";
+                const kind = value.dataType?.kind;
                 const text =
-                    value.dataType?.kind === "undefined"
+                    kind === "undefined"
                         ? fallback
-                        : optional
+                        : kind === "optional"
                           ? `${this.context.dataLowerer.compileKnownValueForSink(value, { kind: "optional", inner: { kind: "string" } }, argument)}.value_or(${fallback})`
                           : this.context.dataLowerer.compileKnownValueForSink(
                                 value,
@@ -2296,7 +2293,7 @@ export class PlatformCalls {
         }
         if (element && callee.name.text === "scrollIntoView") {
             this.context.expectArgumentCount(call, 0, 1);
-            return this.compileScrollIntoView(call, element);
+            return this.compileScrollIntoView(call, callee, element);
         }
         if (element && callee.name.text === "appendChild") {
             this.context.expectArgumentCount(call, 1, 1);

@@ -35,8 +35,8 @@ int main() {
         auto& engine = pal::window_document_engine();
         assert(generated_main() == 0);
         const auto log = ui_get_element_by_id(engine, "log");
-        // Each insertion, refusal, tabIndex and scroll-option outcome, in program order.
-        assert(ui_element(engine, log).text == "RANSHDWQOT");
+        // Each insertion, refusal, tabIndex, scroll-option and event-path outcome, in order.
+        assert(ui_element(engine, log).text == "RANSHDWQOTCM");
         std::string order;
         for (const auto child : ui_element(engine, ui_get_element_by_id(engine, "list")).children)
             order += ui_get_attribute(engine, child, "id") + ";";
@@ -48,6 +48,8 @@ int main() {
         assert(ui_get_attribute(engine, panel, "tabindex") == "0");
         assert(ui_tab_index(engine, skipped) == -1 && ui_tab_index(engine, first) == 0);
         assert(ui_active_element(engine) == first);
+        // Outside dispatch an event has no path.
+        assert(dom_event_composed_path(create_custom_event("idle")).empty());
 
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         pal::update_ui_rml_runtime(runtime, 640, 480);
@@ -105,7 +107,7 @@ int main() {
         assert(ui_active_element(engine) == last);
         tab();
         assert(ui_active_element(engine) == first);
-        assert(ui_element(engine, log).text == "RANSHDWQOTpPp");
+        assert(ui_element(engine, log).text == "RANSHDWQOTCMpPp");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

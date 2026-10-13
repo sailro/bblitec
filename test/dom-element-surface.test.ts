@@ -389,6 +389,10 @@ test("tab order, sibling insertion, replacement, scroll requests and event paths
         log.scrollIntoView(false);
         function bad(): ScrollLogicalPosition { return (steps.length > 0 ? "middle" : "start") as ScrollLogicalPosition; }
         try { rows[0]!.scrollIntoView({ inline: bad() }); } catch { record("T"); }
+        document.addEventListener("ping", (event) => record(event.composedPath().length === 2 ? "C" : "c"));
+        document.dispatchEvent(new CustomEvent("ping"));
+        first.addEventListener("click", (event) => record(event.composedPath().includes(first) ? "M" : "m"));
+        first.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         globalThis.close();
     `,
         { fileName: join(output, "entry.ts") },

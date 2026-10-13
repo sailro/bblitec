@@ -5209,7 +5209,7 @@ export class UiProjection {
                     );
                 this.context.emit({
                     kind: "expression",
-                    code: `bbl::ui_set_tab_index(${engine}, ${receiver.cpp}, ${this.context.dataLowerer.compileKnownValueForSink(order, { kind: "number" }, expression.right)});`,
+                    code: `bbl::ui_set_tab_index(${this.context.requireEngine(receiver, expression.left)}, ${receiver.cpp}, ${this.context.dataLowerer.compileKnownValueForSink(order, { kind: "number" }, expression.right)});`,
                 });
                 return true;
             }
