@@ -3963,6 +3963,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * captureAfterFrames` after `captureAfterFrames !== null` is how
      * every physics scene compares its freeze counter.
      */
+    /**
+     * A member call `run` lowers on its evaluated receiver `owner`: under
+     * the chain's guard when the call is `owner?.m()` or continues a chain
+     * whose absence reached `owner` (`a?.b.stream.getTracks()`), else on
+     * the receiver narrowed present.
+     */
+    public chainReceiverCall(
+        owner: Value,
+        callee: ts.PropertyAccessExpression,
+        call: ts.CallExpression,
+        run: (present: Value) => Value | undefined,
+    ): Value | undefined {
+        return callee.questionDotToken ||
+            (ts.isOptionalChain(callee) && owner.dataType?.kind === "optional")
+            ? this.optionalAccess(owner, call, run)
+            : run(this.narrowOptional(owner, callee.expression));
+    }
+
     public narrowOptional(
         value: Value,
         expression: ts.Expression,

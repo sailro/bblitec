@@ -241,12 +241,7 @@ export function compileMediaStreamMethodCall(
         const receiver = pinned(context, present.cpp, "media_receiver");
         return lower(lowerer, call, receiver, method);
     };
-    // `a?.b.stream.getTracks()` continues the chain `?.` started.
-    const result =
-        callee.questionDotToken ||
-        (ts.isOptionalChain(callee) && owner.dataType?.kind === "optional")
-            ? lowerer.optionalAccess(owner, call, run)
-            : run(lowerer.narrowOptional(owner, callee.expression));
+    const result = lowerer.chainReceiverCall(owner, callee, call, run);
     return (
         result ??
         context.fail(

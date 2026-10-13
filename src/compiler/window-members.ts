@@ -40,9 +40,7 @@ export function compileWindowMemberCall(
         );
         return lower(name);
     };
-    return callee.questionDotToken
-        ? lowerer.optionalAccess(owner, call, run)
-        : run(lowerer.narrowOptional(owner, callee.expression));
+    return lowerer.chainReceiverCall(owner, callee, call, run);
 }
 
 /**

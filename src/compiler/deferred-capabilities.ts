@@ -508,14 +508,12 @@ export class DeferredCapabilities {
                     );
                     return invoke();
                 };
-                return target.questionDotToken
-                    ? context.dataLowerer.optionalAccess(owner, call, run)
-                    : run(
-                          context.dataLowerer.narrowOptional(
-                              owner,
-                              target.expression,
-                          ),
-                      );
+                return context.dataLowerer.chainReceiverCall(
+                    owner,
+                    target,
+                    call,
+                    run,
+                );
             });
         }
         if (!ts.isIdentifier(target) && descriptor.origin === "dom")
