@@ -83,8 +83,8 @@ void wgpuSurfaceConfigure(WGPUSurface, const WGPUSurfaceConfiguration* configura
     surface_configuration = *configuration;
 }
 using SDL_WindowFlags = std::uint64_t;
-constexpr SDL_WindowFlags SDL_WINDOW_FULLSCREEN = 1, SDL_WINDOW_VULKAN = 2,
-                          SDL_WINDOW_RESIZABLE = 4;
+inline constexpr SDL_WindowFlags SDL_WINDOW_FULLSCREEN = 1, SDL_WINDOW_VULKAN = 2,
+                                 SDL_WINDOW_RESIZABLE = 4;
 struct EngineOptions {
     int width = 0, height = 0;
 };
@@ -185,7 +185,7 @@ int main() {
     expect_error([&] { select_dawn_surface_configuration(state, {}); });
     assert(freed == 4);
     usages |= WGPUTextureUsage_CopySrc;
-    for (const auto supported :
+    for (const auto& supported :
          {std::vector<WGPUTextureFormat>{}, {WGPUTextureFormat_RGBA16Float}}) {
         formats = supported;
         expect_error([&] { select_dawn_surface_configuration(state, {}); });

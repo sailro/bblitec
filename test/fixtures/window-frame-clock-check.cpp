@@ -25,8 +25,8 @@ struct HeartbeatLoop {
         std::vector<DWORD> responses;
         std::size_t next = 0;
         WindowFrameClockTicks* consumer = nullptr;
-        std::vector<Clock::time_point> delivered;
-        std::vector<DWORD> rests;
+        std::vector<Clock::time_point> delivered{};
+        std::vector<DWORD> rests{};
         std::size_t next_rest = 0;
         DWORD wait(UINT count, const HANDLE* handles, DWORD timeout) {
             assert(count == 1 && handles == &stop && timeout <= 100);

@@ -611,67 +611,6 @@ inline PinnedStage load_pinned_stage(SDL_GPUDevice* device, const std::string& s
     return {std::move(shader), std::move(slots)};
 }
 
-/**
- * Copy bytes into a texture that already exists.
- *
- * The upload half of `upload_2d_texture` below, split out because a payload
- * that changes per frame -- the clustered light field's three data textures --
- * needs the copy without a second allocation.
- */
-inline void write_sdl_gpu_texture(SDL_GPUDevice* device, SDL_GPUTexture* texture,
-                                  std::span<const std::uint8_t> bytes,
-                                  const GpuTextureWriteLayout& layout, const GpuWriteExtent& extent,
-                                  std::uint32_t mip_levels, SdlTextureTransferCache* cache) {
-    if (!device || !texture)
-        throw std::runtime_error("SDL texture write has no resource.");
-    if (!extent.width || !extent.height || !extent.depth_or_array_layers)
-        return;
-    if (extent.depth_or_array_layers != 1)
-        throw std::runtime_error("This SDL texture destination accepts one image per write.");
-    const auto count = gpu_u32(bytes.size());
-    SDL_GPUTransferBufferCreateInfo info{};
-    info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    info.size = count;
-    OwnedSdlTransfer temporary{nullptr, {device}};
-    SDL_GPUTransferBuffer* transfer = nullptr;
-    if (cache) {
-        if (!cache->transfer || cache->capacity < count) {
-            if (cache->transfer)
-                SDL_ReleaseGPUTransferBuffer(device, std::exchange(cache->transfer, nullptr));
-            cache->capacity = 0;
-            cache->transfer = SDL_CreateGPUTransferBuffer(device, &info);
-            if (!cache->transfer)
-                gpu_error("SDL_CreateGPUTransferBuffer texture write");
-            cache->capacity = count;
-        }
-        transfer = cache->transfer;
-    } else {
-        temporary.reset(SDL_CreateGPUTransferBuffer(device, &info));
-        transfer = temporary.get();
-        if (!transfer)
-            gpu_error("SDL_CreateGPUTransferBuffer texture write");
-    }
-    void* mapped = SDL_MapGPUTransferBuffer(device, transfer, cache != nullptr);
-    if (!mapped)
-        gpu_error("SDL_MapGPUTransferBuffer texture write");
-    std::memcpy(mapped, bytes.data(), bytes.size());
-    SDL_UnmapGPUTransferBuffer(device, transfer);
-    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
-    if (!command)
-        gpu_error("SDL_AcquireGPUCommandBuffer texture write");
-    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    if (!copy)
-        gpu_error("SDL_BeginGPUCopyPass texture write");
-    const SDL_GPUTextureTransferInfo source{transfer, gpu_u32(layout.offset), extent.width,
-                                            layout.rows_per_image.value_or(extent.height)};
-    const SDL_GPUTextureRegion destination{texture, 0, 0, 0, 0, 0, extent.width, extent.height, 1};
-    SDL_UploadToGPUTexture(copy, &source, &destination, cache != nullptr);
-    copy.end();
-    generate_texture_mipmaps(device, command, texture, extent.width, extent.height, mip_levels);
-    if (!command.submit())
-        gpu_error("SDL_SubmitGPUCommandBuffer texture write");
-}
-
 /** A texture write recorded in a caller's copy pass, retaining its transfer through submission. */
 struct SdlCopyTextureDestination final : GpuObject {
     SDL_GPUDevice* device;

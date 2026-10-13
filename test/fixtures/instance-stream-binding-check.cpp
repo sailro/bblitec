@@ -87,7 +87,7 @@ struct SdlMesh {
     SDL_GPUBuffer* indices = nullptr;
     unsigned index_count = 6;
     SDL_GPUBuffer* indirect_args = nullptr;
-    std::shared_ptr<ThinInstancePoolData> thin_pool;
+    std::shared_ptr<ThinInstancePoolData> thin_pool = nullptr;
     unsigned instance_count() const {
         assert(!forbid_count_read);
         return thin_pool ? gpu_u32(gpu_size(thin_pool->count)) : 1;
@@ -97,7 +97,7 @@ struct DawnMesh {
     WGPUBuffer instances;
     WGPUBuffer instance_colors;
     WGPUBuffer indirect_args = nullptr;
-    std::shared_ptr<ThinInstancePoolData> thin_pool;
+    std::shared_ptr<ThinInstancePoolData> thin_pool = nullptr;
     unsigned instance_count() const {
         assert(!forbid_count_read);
         return thin_pool ? gpu_u32(gpu_size(thin_pool->count)) : 1;

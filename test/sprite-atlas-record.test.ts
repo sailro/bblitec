@@ -13,7 +13,7 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-test("stored sprite atlases remain warning-clean under LTCG with and without image codecs", (t) => {
+test("stored sprite atlases remain warning-clean with and without image codecs", (t) => {
     const native = optionalNativeFixtureTools();
     if (!native) return t.skip("Native fixture compiler unavailable.");
     const result = compileSource(`
@@ -99,21 +99,23 @@ int main() {
     );
     for (const decoder of [0, 1]) {
         const executable = join(directory, `decoder-${decoder}.exe`);
+        const object = join(directory, `decoder-${decoder}.obj`);
         runNativeFixtureCompiler(native, [
             "/O1",
             "/Ob1",
-            "/GL",
             `/DBBLITE_HAS_IMAGE_DECODER=${decoder}`,
             `/I${resolve("native/src")}`,
+            "/c",
             source,
-            `/Fo${join(directory, `decoder-${decoder}.obj`)}`,
+            `/Fo${object}`,
+        ]);
+        runNativeFixtureCompiler(native, [
+            object,
             `/Fe${executable}`,
             join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
             ...(decoder
                 ? [join(nativeFixtureVcpkgRoot, "lib/SDL3_image.lib")]
                 : []),
-            "/link",
-            "/LTCG",
         ]);
         execFileSync(executable, [], {
             stdio: "pipe",

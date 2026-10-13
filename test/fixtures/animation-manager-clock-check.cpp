@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace bbl {
@@ -20,7 +21,7 @@ int main() {
     double value = 0;
     std::vector<Observation> observations;
     auto manager = create_animation_manager(
-        engine, {0.0, [&](double step) { observations.push_back({value, step}); }});
+        engine, {0.0, [&](double step) { observations.push_back({value, step}); }, std::nullopt});
     const auto clip = create_property_animation_clip("clock",
                                                      {{PropertyAnimationPath::record_scalar,
                                                        PropertyAnimationComponent::whole_lane,
@@ -71,7 +72,7 @@ int main() {
     value = 0;
     observations.clear();
     auto fixed = create_animation_manager(
-        engine, {100.0, [&](double step) { observations.push_back({value, step}); }});
+        engine, {100.0, [&](double step) { observations.push_back({value, step}); }, std::nullopt});
     create_property_animation_group(
         fixed, engine,
         {{PropertyAnimationTargetKind::callback, {}, 1u, [&](float next) { value = next; }}}, clip,
@@ -87,13 +88,15 @@ int main() {
     int first_calls = 0;
     int second_calls = 0;
     PropertyAnimationManager second;
-    auto first = create_animation_manager(engine, {0.0, [&](double) {
+    auto first = create_animation_manager(engine, {0.0,
+                                                   [&](double) {
                                                        if (++first_calls == 1) {
                                                            stop_animation_manager(second);
                                                            start_animation_manager(second, engine);
                                                        }
-                                                   }});
-    second = create_animation_manager(engine, {0.0, [&](double) { ++second_calls; }});
+                                                   },
+                                                   std::nullopt});
+    second = create_animation_manager(engine, {0.0, [&](double) { ++second_calls; }, std::nullopt});
     start_animation_manager(first, engine);
     start_animation_manager(second, engine);
     frame(3000.0);
@@ -111,7 +114,8 @@ int main() {
     assert(engine.post_render_animation_frame_once_callbacks.empty());
     engine.animation_frame_after_render = false;
     int ordered = 0;
-    auto observing = create_animation_manager(engine, {0.0, [&](double) { assert(ordered == 1); }});
+    auto observing = create_animation_manager(
+        engine, {0.0, [&](double) { assert(ordered == 1); }, std::nullopt});
     request_animation_frame(engine, [&](double) { ordered = 1; });
     start_animation_manager(observing, engine);
     frame(4000);
@@ -120,12 +124,14 @@ int main() {
     int restarted_calls = 0;
     PropertyAnimationManager restarting;
     restarting =
-        create_animation_manager(engine, {0.0, [&](double) {
+        create_animation_manager(engine, {0.0,
+                                          [&](double) {
                                               if (++restarted_calls == 1) {
                                                   stop_animation_manager(restarting);
                                                   start_animation_manager(restarting, engine);
                                               }
-                                          }});
+                                          },
+                                          std::nullopt});
     start_animation_manager(restarting, engine);
     frame(5000);
     assert(restarted_calls == 1 && engine.animation_frame_once_callbacks.size() == 2);
