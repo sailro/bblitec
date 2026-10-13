@@ -26,6 +26,8 @@ const resourceMetadataFields = {
         "uiCanvasId",
         "uiCanvasContext",
         "uiFileInput",
+        "uiLinkHref",
+        "uiDownload",
         "surfaceCanvas",
         "msaaSamples",
     ],

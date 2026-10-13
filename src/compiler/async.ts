@@ -331,7 +331,15 @@ export class AsyncLowerer {
         )
             return this.compileRace(node, callee.name.text);
         if (this.isPromiseMethod(callee)) {
-            const rejection = callee.name.text === "catch";
+            // `promise.then(undefined, onRejected)` is `promise.catch(onRejected)`.
+            const absentFulfillment =
+                callee.name.text === "then" &&
+                node.arguments.length === 2 &&
+                ts.isIdentifier(context.unwrap(argumentAt(node, 0))) &&
+                (context.unwrap(argumentAt(node, 0)) as ts.Identifier).text ===
+                    "undefined";
+            const rejection = callee.name.text === "catch" || absentFulfillment;
+            const reactionIndex = absentFulfillment ? 1 : 0;
             const cleanup = callee.name.text === "finally";
             if (cleanup && node.arguments.length > 1)
                 return context.fail(
@@ -341,7 +349,7 @@ export class AsyncLowerer {
             if (
                 !cleanup &&
                 (node.arguments.length < 1 ||
-                    node.arguments.length > (rejection ? 1 : 2))
+                    node.arguments.length > (rejection ? reactionIndex + 1 : 2))
             ) {
                 return context.fail(
                     node,
@@ -410,7 +418,7 @@ export class AsyncLowerer {
             if (rejection && settlement)
                 settlement = this.retainedSettlement(promise, settlement, node);
             const first = this.compileReaction(
-                argumentAt(node, 0),
+                argumentAt(node, reactionIndex),
                 promise,
                 rejection ? "catch" : "then",
                 node,
@@ -458,7 +466,7 @@ export class AsyncLowerer {
             let output = rejection ? promise.promiseResult! : first.output;
             const cppType = rejection ? promise.promiseType! : first.cppType;
             const reactions = [first.cpp];
-            if (node.arguments.length === 2) {
+            if (node.arguments.length === 2 && !absentFulfillment) {
                 const second = this.compileReaction(
                     argumentAt(node, 1),
                     promise,

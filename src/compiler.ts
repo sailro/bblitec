@@ -98,6 +98,7 @@ import {
     compileTextMutation,
 } from "./compiler/text-surface.js";
 import { promoteLiveTextData } from "./compiler/intrinsics/text.js";
+import { emitSplatStreamAssignment } from "./compiler/splat-stream-surface.js";
 import { retainedOptions } from "./compiler/intrinsics/retained-options.js";
 import { compileNodeInputMutation } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
@@ -1994,6 +1995,8 @@ class Compiler implements LoweringServices {
             case "navigation-obstacle":
             case "storage-buffer":
             case "scene":
+            case "gaussian-splat-stream":
+            case "splat-voxel-collision":
                 return { kind: pinned, cppType: handleCppType(pinned) };
         }
         const audio = domAudioHandleKind(member);
@@ -2249,6 +2252,7 @@ class Compiler implements LoweringServices {
             return;
         }
         if (this.compileCameraMutation(expression)) return;
+        if (emitSplatStreamAssignment(this, expression)) return;
         if (emitCanvasAssignment(this, expression)) return;
         if (this.options.workers && this.emitUiPropertyAssignment(expression))
             return;

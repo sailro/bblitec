@@ -33,7 +33,7 @@ import {
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
-import type { DataType } from "./data-types.js";
+import { isPinnedType, type DataType } from "./data-types.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
 import { compileDateParse, compileDateUtc } from "./dates.js";
@@ -225,8 +225,86 @@ export class PlatformCalls {
         ).focusVisible;
     }
 
+    /**
+     * `scene._beforeRender.push(callback)`, `.indexOf(callback)` and
+     * `.splice(index, count)`: the scene's before-render list
+     * (`SceneState::before_render`), its entries keyed by callback identity.
+     */
+    private compileSceneBeforeRenderList(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        const callee = this.context.unwrap(call.expression);
+        if (
+            !ts.isPropertyAccessExpression(callee) ||
+            !ts.isPropertyAccessExpression(callee.expression) ||
+            callee.expression.name.text !== "_beforeRender" ||
+            !isPinnedType(
+                this.context.checker.getTypeAtLocation(
+                    callee.expression.expression,
+                ),
+                ["SceneContext"],
+            )
+        )
+            return undefined;
+        const sceneNode = callee.expression.expression;
+        const scene = this.context.compileValue(sceneNode);
+        this.context.expectKind(scene, "scene", sceneNode);
+        const list = `${this.context.bindings.pinValueToTemporary(scene, "scene", sceneNode).cpp}.state->before_render`;
+        switch (callee.name.text) {
+            case "push": {
+                this.context.expectArgumentCount(call, 1, 1);
+                const delta =
+                    this.context.allocateTemporaryCppName("frame_delta");
+                const compiled = this.context.callbacks.compilePlatformCallback(
+                    argumentAt(call, 0),
+                    { cppType: "double", name: delta },
+                    [{ kind: "number", cpp: delta }],
+                );
+                return {
+                    kind: "number",
+                    cpp: `[&](auto& list) { list.push_back(bbl::js::Callback<void(double)>(static_cast<std::size_t>(${compiled.identity}), ${compiled.cpp})); return static_cast<double>(list.size()); }(${list})`,
+                    impure: true,
+                };
+            }
+            case "indexOf": {
+                this.context.expectArgumentCount(call, 1, 1);
+                const identity = this.platformEventCallbackIdentity(
+                    this.context.compileValue(argumentAt(call, 0)),
+                    argumentAt(call, 0),
+                );
+                return {
+                    kind: "number",
+                    cpp: `[&](const auto& list, std::size_t identity) { for (std::size_t index = 0; index < list.size(); ++index) if (list[index].identity() == identity) return static_cast<double>(index); return -1.0; }(${list}, static_cast<std::size_t>(${identity}))`,
+                    impure: true,
+                };
+            }
+            case "splice": {
+                this.context.expectArgumentCount(call, 2, 2);
+                const start = this.context.compileNumber(
+                    argumentAt(call, 0),
+                    "double",
+                );
+                const count = this.context.compileNumber(
+                    argumentAt(call, 1),
+                    "double",
+                );
+                return {
+                    kind: "void",
+                    cpp: `[&](auto& list, double start, double count) { if (!(start >= 0 && count >= 0 && start + count <= static_cast<double>(list.size()))) throw std::out_of_range("A before-render splice is outside the list."); const auto first = list.begin() + static_cast<std::ptrdiff_t>(start); list.erase(first, first + static_cast<std::ptrdiff_t>(count)); }(${list}, ${start}, ${count})`,
+                };
+            }
+            default:
+                return this.context.fail(
+                    callee.name,
+                    `scene._beforeRender.${callee.name.text} is not lowered natively.`,
+                );
+        }
+    }
+
     /** Platform-backed browser APIs that remain ordinary expression values. */
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
+        const beforeRender = this.compileSceneBeforeRenderList(call);
+        if (beforeRender) return beforeRender;
         const web = compileWebPlatformCall(this.context, call);
         if (web) return web;
         if (this.emitPlatformEventListener(call))
@@ -1670,6 +1748,11 @@ export class PlatformCalls {
                 }
                 this.context.reachFeature("browser:file", call);
             } else if (element.uiTag === "a") {
+                if (element.uiLinkHref)
+                    this.context.fail(
+                        call,
+                        "Native anchor navigation is unsupported; a programmatic click activates a download anchor.",
+                    );
                 this.context.reachFeature("browser:file", call);
             }
             const engine = this.context.requireEngine(element, call);
