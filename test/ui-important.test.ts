@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { runRmlUiFixture } from "./native-fixture.js";
-
-const directory = resolve("artifacts/ui-important");
+import { runApplicationRmlUiFixture } from "./rmlui-application-fixture.js";
 
 // Important sheet declarations against more specific selectors, later normal
 // declarations, inline styles and CSSOM writes; important inline styles; a
@@ -59,17 +55,5 @@ test("important declarations keep their mark through lowering", () => {
 });
 
 test("important declarations win the native cascade", (t) => {
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "worker.ts"), "self.close();");
-    const result = compileSource(
-        `
-        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
-        worker.terminate();
-        ${program}`,
-        { fileName: join(directory, "entry.ts") },
-    );
-    writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "ui-important", {
-        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
-    });
+    runApplicationRmlUiFixture(t, "ui-important", program);
 });

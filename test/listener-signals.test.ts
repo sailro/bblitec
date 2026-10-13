@@ -4,6 +4,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
+    windowApplicationHost,
 } from "./native-fixture.js";
 
 /** A Window realm whose application errors report to the captured stream. */
@@ -24,23 +25,9 @@ UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle element) {
 }
 }
 namespace bbl::pal {
-ApplicationErrors* errors = nullptr;
 Engine& window_document_engine() { static Engine engine; return engine; }
-bool window_on_application_error(bool rejection, std::uint64_t identity, ApplicationErrors::Callback callback, bool once, ListenerLeasePtr lease) {
-    return errors->add(rejection, identity, std::move(callback), once, std::move(lease));
 }
-int run_window_application(WorkerEntry initialize, EngineOptions) {
-    const js::RealmScope scope;
-    EventLoop loop;
-    WorkerRealm realm(loop);
-    ApplicationErrors handlers(loop);
-    errors = &handlers;
-    loop.set_timeout([&] { std::cerr << "application did not finish"; loop.close(); }, 2000);
-    loop.run([&] { initialize(realm); });
-    errors = nullptr;
-    return 0;
-}
-}
+${windowApplicationHost({ errors: true, timeoutMs: 2000 })}
 int main() {
     std::ostringstream reports;
     auto* original = std::cerr.rdbuf(reports.rdbuf());

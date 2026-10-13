@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureLabSoundPresent,
-    nativeFixtureLabSoundRoot,
-    nativeFixtureVcpkgRoot,
+    nativeFixtureLibrary,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runLabSoundFixture,
 } from "./native-fixture.js";
 
 test("direct audio contexts preserve owned aliases and lifecycle promises", (t) => {
@@ -229,45 +226,22 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", (t) 
         copyFileSync(resolve(output, asset.source), destination);
     }
     writeFileSync(join(output, "program.hpp"), result.cpp);
-    const tools = optionalNativeFixtureTools();
-    const labsound = nativeFixtureLabSoundRoot;
-    if (!tools || !nativeFixtureLabSoundPresent()) {
+    if (!optionalNativeFixtureTools() || !nativeFixtureLibrary("labsound")) {
         t.skip("The native compiler and pinned LabSound library are required.");
         return;
     }
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, [
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
-        "/DBBLITE_HAS_AUDIO_DECODE_FILE=1",
-        "/DBBLITE_AUDIO_DECODE_WAV=1",
-        "/O2",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/src",
-        `/external:I${join(labsound, "include")}`,
-        "test/fixtures/audio-context-check.cpp",
-        "test/fixtures/packaged-fetch-check.cpp",
-        "/link",
-        `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
-        `/LIBPATH:${join(labsound, "lib")}`,
-        "LabSound.lib",
-        "libnyquist.lib",
-        "SDL3.lib",
-    ]);
     assert.equal(
-        execFileSync(executable, {
-            cwd: output,
-            encoding: "utf8",
-            timeout: 30000,
-            env: {
-                ...tools.environment,
-                SDL_AUDIODRIVER: "dummy",
-                BBLITE_AUDIO_CAPTURE: "",
-                PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools.environment.PATH ?? ""}`,
-            },
+        runLabSoundFixture({
+            output,
+            source: "test/fixtures/audio-context-check.cpp",
+            sources: ["test/fixtures/packaged-fetch-check.cpp"],
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
+                "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
+                "/DBBLITE_HAS_AUDIO_DECODE_FILE=1",
+                "/DBBLITE_AUDIO_DECODE_WAV=1",
+            ],
         }),
         "",
     );

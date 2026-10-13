@@ -14,8 +14,8 @@ import {
     FIXTURE_APPLICATION,
     native,
     runAudioProgram,
-    wave,
 } from "./static-sound-fixture.js";
+import { wave } from "./native-fixture.js";
 
 /** The static-sound header a spatial, tapped program's build carries. */
 const spatialHeader = (): string =>
@@ -187,7 +187,7 @@ test("the application's spatial sounds compile strictly and run natively", (t) =
     const sounds = join(output, "public/assets/sfx");
     mkdirSync(sounds, { recursive: true });
     writeFileSync(join(sounds, "splash.wav"), wave(0.5, 0.5));
-    writeFileSync(join(sounds, "brook.wav"), wave(0.25, 0.5));
+    writeFileSync(join(sounds, "brook.wav"), wave(0.5, 0.25));
     const result = compileSource(APPLICATION, {
         fileName: join(output, "entry.ts"),
         publicDir: join(output, "public"),
@@ -252,7 +252,7 @@ test("a spatial sound pans and attenuates with its place around the listener in 
     mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "library.hpp"), spatialHeader());
     const wav = join(output, "tone.wav");
-    writeFileSync(wav, wave(0.5, 1));
+    writeFileSync(wav, wave(1, 0.5));
     const lines = runAudioProgram(
         output,
         "test/fixtures/spatial-sound-capture-check.cpp",
@@ -329,7 +329,7 @@ test("the engine media-stream tap carries the master mix to another context", (t
     mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "library.hpp"), spatialHeader());
     const wav = join(output, "tone.wav");
-    writeFileSync(wav, wave(0.5, 1));
+    writeFileSync(wav, wave(1, 0.5));
     const lines = runAudioProgram(
         output,
         "test/fixtures/engine-media-stream-check.cpp",

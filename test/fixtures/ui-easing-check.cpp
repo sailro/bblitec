@@ -30,15 +30,8 @@ Engine& window_document_engine() {
     static Engine document;
     return document;
 }
-int run_window_application(WorkerEntry initialize, EngineOptions) {
-    const js::RealmScope scope;
-    EventLoop loop;
-    WorkerRealm realm(loop);
-    loop.on_error([](std::exception_ptr error) { std::rethrow_exception(error); });
-    loop.run([&] { initialize(realm); });
-    return 0;
-}
 } // namespace bbl::pal
+#include "realm-application-fixture.hpp"
 
 int main() try {
     using namespace bbl;

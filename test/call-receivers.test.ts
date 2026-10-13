@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
@@ -8,10 +6,8 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
-    runRmlUiFixture,
 } from "./native-fixture.js";
-
-const directory = resolve("artifacts/ui-call-receivers");
+import { runApplicationRmlUiFixture } from "./rmlui-application-fixture.js";
 
 // Member calls and writes on an element a call produces: each call runs
 // once, in order, and keeps its effect.
@@ -116,17 +112,5 @@ test("member calls on a call-produced element keep the call and its effect", () 
 });
 
 test("call-produced element receivers run natively once with their effects", (t) => {
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "worker.ts"), "self.close();");
-    const result = compileSource(
-        `
-        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
-        worker.terminate();
-        ${program}`,
-        { fileName: join(directory, "entry.ts") },
-    );
-    writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "ui-call-receivers", {
-        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
-    });
+    runApplicationRmlUiFixture(t, "ui-call-receivers", program);
 });

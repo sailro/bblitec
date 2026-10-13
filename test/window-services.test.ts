@@ -8,6 +8,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
     runRmlUiFixture,
+    windowApplicationHost,
 } from "./native-fixture.js";
 
 const deferredCapabilities = "runtime-throw" as const;
@@ -16,14 +17,8 @@ const deferredCapabilities = "runtime-throw" as const;
 const realmHost = `
 namespace bbl::pal {
 Engine& window_document_engine() { static Engine engine; return engine; }
-int run_window_application(WorkerEntry initialize, EngineOptions) {
-    const js::RealmScope scope;
-    EventLoop loop;
-    WorkerRealm realm(loop);
-    loop.run([&] { initialize(realm); });
-    return 0;
 }
-}
+${windowApplicationHost()}
 `;
 
 /** The application's shapes: an idle feature probe, a stored alias, confirmations and fullscreen. */
