@@ -3437,6 +3437,17 @@ export class ExpressionLowerer {
         let link: ts.Expression = call;
         for (;;) {
             if (!ts.isOptionalChain(link)) return undefined;
+            // `owner.method?.()` tests a method, which is no value to
+            // compile: the chain stopped only if an earlier link did.
+            if (
+                ts.isCallExpression(link) &&
+                link.questionDotToken &&
+                (ts.isPropertyAccessExpression(link.expression) ||
+                    ts.isElementAccessExpression(link.expression))
+            ) {
+                link = link.expression;
+                continue;
+            }
             if (!ts.isNonNullExpression(link) && link.questionDotToken) break;
             link = link.expression;
         }
