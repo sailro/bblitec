@@ -7,6 +7,7 @@
 #include <bblite/js_error.hpp>
 #include <bblite/js_gc.hpp>
 #include <bblite/listener_lease.hpp>
+#include <bblite/platform_event_listeners.hpp>
 #if BBLITE_WORKERS
 #include <bblite/pal_event_loop.hpp>
 #endif
@@ -72,14 +73,8 @@ public:
                             ListenerLeasePtr lease) const {
         if (!listener)
             return false;
-        auto& current = state();
-        retire_aborted(current);
-        for (const auto& entry : current.listeners)
-            if (entry->identity == identity && entry->capture == capture)
-                return false;
-        current.listeners.push_back(make_gc_shared<Entry>(
-            Entry{identity, std::move(listener), once, capture, false, std::move(lease)}));
-        return true;
+        return state().listeners.add({identity, capture}, std::move(listener), once,
+                                     std::move(lease));
     }
     void add_abort_listener(const Listener& listener, bool once = false,
                             bool capture = false) const {
@@ -87,17 +82,7 @@ public:
     }
     /** `signal.removeEventListener("abort", listener, { capture })`. */
     void remove_abort_listener(std::size_t identity, bool capture = false) const {
-        auto& current = state();
-        retire_aborted(current);
-        const auto found = std::find_if(
-            current.listeners.begin(), current.listeners.end(), [&](const auto& entry) {
-                return entry->identity == identity && entry->capture == capture;
-            });
-        if (found == current.listeners.end())
-            return;
-        const auto entry = *found;
-        current.listeners.erase(found);
-        entry->retire();
+        state().listeners.remove({identity, capture});
     }
     void remove_abort_listener(const Listener& listener, bool capture = false) const {
         remove_abort_listener(listener.identity(), capture);
@@ -138,19 +123,8 @@ public:
             static_cast<void>(id);
             algorithm(settled);
         }
-        // Dispatch walks a snapshot; a listener removed by an earlier one, or by an abort
-        // algorithm above, does not run.
-        retire_aborted(current);
-        const auto listeners = current.listeners;
-        for (const auto& entry : listeners) {
-            if (!entry->live())
-                continue;
-            if (entry->once) {
-                std::erase(current.listeners, entry);
-                entry->retire();
-            }
-            invoke(entry->callback);
-        }
+        // A listener removed by an earlier one, or by an abort algorithm above, does not run.
+        current.listeners.dispatch_with([](Listener& listener) { invoke(listener); });
     }
 
     [[nodiscard]] const void* get() const noexcept { return state_.get(); }
@@ -161,31 +135,21 @@ public:
     void gc_trace(const TraceVisitor& visitor) const { visitor(state_); }
 
 private:
-    struct Entry {
+    /** `addEventListener` keys a listener by its callback and capture flag. */
+    struct ListenerKey {
         std::size_t identity = 0;
-        Listener callback;
-        bool once = false;
         bool capture = false;
-        bool removed = false;
-        ListenerLeasePtr lease;
-        [[nodiscard]] bool live() const noexcept { return !removed && !(lease && lease->removed); }
-        /** Removal by this signal ends the lease, dropping the other signal's algorithm. */
-        void retire() {
-            removed = true;
-            if (lease)
-                lease->end();
-        }
-        void gc_trace(const TraceVisitor& visitor) const { visitor(callback); }
+        [[nodiscard]] bool operator==(const ListenerKey&) const = default;
     };
     struct State {
         bool aborted = false;
         std::optional<Error> reason;
-        std::vector<std::shared_ptr<Entry>> listeners;
+        PlatformEventListeners<void(), ListenerKey> listeners;
         std::vector<std::pair<AlgorithmId, Algorithm>> algorithms;
         AlgorithmId next_algorithm = 1;
         void gc_trace(const TraceVisitor& visitor) const {
             visitor(reason);
-            visitor(listeners);
+            listeners.gc_trace(visitor);
         }
     };
 
@@ -196,15 +160,6 @@ private:
     }
     static void erase_algorithm(State& current, AlgorithmId id) {
         std::erase_if(current.algorithms, [id](const auto& entry) { return entry.first == id; });
-    }
-    /** Listeners another signal's abort removed leave the list. */
-    static void retire_aborted(State& current) {
-        std::erase_if(current.listeners, [](const auto& entry) {
-            if (entry->live())
-                return false;
-            entry->retire();
-            return true;
-        });
     }
     static void invoke(const Listener& listener) {
 #if BBLITE_WORKERS
