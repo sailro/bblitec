@@ -165,6 +165,58 @@ type UiMarkupPart =
           no: UiMarkupPart[];
       };
 
+/** The placeholder a runtime value takes in a markup source, by its order. */
+function uiMarkupHole(index: number): string {
+    return `__BBLITE_UI_MARKUP_${index}__`;
+}
+
+/**
+ * The markup sources `parts` assemble, one per branch path (at most `limit`):
+ * runtime text takes the next hole, stored markup its fixed fragments around
+ * one, as the structured lowering spells them.
+ */
+function uiMarkupSources(
+    parts: readonly UiMarkupPart[],
+    limit: number,
+    prefix = "",
+    holes = 0,
+): string[] {
+    let source = prefix;
+    let next = holes;
+    for (let index = 0; index < parts.length; index++) {
+        const part = parts[index]!;
+        if (typeof part === "string") source += part;
+        else if (part.kind === "text") source += uiMarkupHole(next++);
+        else if (part.kind === "stored") {
+            const hole = part.shape.indexOf(null);
+            source +=
+                hole < 0
+                    ? part.shape.join("")
+                    : part.shape.slice(0, hole).join("") +
+                      uiMarkupHole(next++) +
+                      part.shape.slice(hole + 1).join("");
+        } else {
+            const rest = parts.slice(index + 1);
+            const yes = uiMarkupSources(
+                [...part.yes, ...rest],
+                limit,
+                source,
+                next,
+            );
+            return [
+                ...yes,
+                ...uiMarkupSources(
+                    [...part.no, ...rest],
+                    limit - yes.length,
+                    source,
+                    next,
+                ),
+            ].slice(0, Math.max(limit, 0));
+        }
+    }
+    return limit > 0 ? [source] : [];
+}
+
 /** Compiler state: written in place only through `writable()`; its sets are journaled. */
 interface UiStaticElement {
     readonly tag: string;
@@ -1573,6 +1625,9 @@ export class UiProjection {
      * none of the four sets refuses at generation naming itself, so an
      * unreviewed declaration can never silently drop into the projection.
      */
+    /** Closed markup alternatives one innerHTML write lowers beyond its first. */
+    private static readonly UI_MARKUP_ALTERNATIVES = 32;
+
     private static readonly PROJECTED_UI_STYLE_PROPERTIES =
         new EmissionSet<string>([
             ...uiLogicalSpacingProperties,
@@ -4013,32 +4068,43 @@ export class UiProjection {
     }
 
     /**
-     * Parse, in one browser session per compile, every source text that
-     * may become innerHTML: string literals and templates (their runtime
-     * spans as markup holes) that open a tag or comment. A markup assembled
-     * otherwise still parses on its own.
+     * Parse, in one browser session per compile, every markup source the
+     * program's innerHTML writes can lower (`uiMarkupForm`, each branch of
+     * structured markup), and every string literal that opens a tag, which
+     * a write reaches through a parameter or binding. A write whose form
+     * refuses is left to its own lowering, which reports it.
      */
     private prefetchUiMarkup(): void {
         if (this.uiMarkupPrefetched) return;
         this.uiMarkupPrefetched = true;
-        const opensMarkup = /<[A-Za-z!/]/;
         const candidates: string[] = [];
         const visit = (node: ts.Node): void => {
-            const text =
-                ts.isStringLiteral(node) ||
-                ts.isNoSubstitutionTemplateLiteral(node)
-                    ? node.text
-                    : ts.isTemplateExpression(node)
-                      ? node.head.text +
-                        node.templateSpans
-                            .map(
-                                (span, index) =>
-                                    `__BBLITE_UI_MARKUP_${index}__${span.literal.text}`,
-                            )
-                            .join("")
-                      : undefined;
-            if (text !== undefined && opensMarkup.test(text))
-                candidates.push(text);
+            if (
+                (ts.isStringLiteral(node) ||
+                    ts.isNoSubstitutionTemplateLiteral(node)) &&
+                /<[A-Za-z!/]/.test(node.text)
+            )
+                candidates.push(node.text);
+            else if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isPropertyAccessExpression(node.left) &&
+                node.left.name.text === "innerHTML"
+            ) {
+                try {
+                    const form = this.uiMarkupForm(node.right);
+                    candidates.push(
+                        ...(form.kind === "structured"
+                            ? uiMarkupSources(
+                                  this.uiMarkupParts(node.right),
+                                  UiProjection.UI_MARKUP_ALTERNATIVES + 1,
+                              )
+                            : [form.source]),
+                    );
+                } catch (error) {
+                    if (!(error instanceof CompileError)) throw error;
+                }
+            }
             ts.forEachChild(node, visit);
         };
         for (const source of this.context.sourceFiles()) visit(source);
@@ -4474,21 +4540,24 @@ export class UiProjection {
         return output;
     }
 
-    private compileUiMarkupString(
+    /**
+     * How an innerHTML value lowers: a static string, a flat template or
+     * concatenation whose runtime operands become holes, or structured
+     * markup (choices or stored markup).
+     */
+    private uiMarkupForm(
         expression: ts.Expression,
-        ownerId?: number,
-    ): string {
+    ):
+        | { kind: "static"; source: string }
+        | { kind: "flat"; source: string; substitutions: ts.Expression[] }
+        | { kind: "structured" } {
         const staticValue = this.tryUiStaticString(expression);
-        if (staticValue !== undefined) {
-            return this.context.cppString(
-                this.lowerUiMarkupLiteral(staticValue, expression, ownerId),
-            );
-        }
+        if (staticValue !== undefined)
+            return { kind: "static", source: staticValue };
         const unwrapped = this.context.unwrap(expression);
-        if (ts.isConditionalExpression(unwrapped)) {
-            return this.compileUiStructuredMarkup(expression, ownerId);
-        }
-        const sourceParts = this.collectUiStringParts(unwrapped);
+        const sourceParts = ts.isConditionalExpression(unwrapped)
+            ? undefined
+            : this.collectUiStringParts(unwrapped);
         if (
             !sourceParts ||
             sourceParts.some(
@@ -4498,17 +4567,32 @@ export class UiProjection {
                         this.uiStoredMarkupShape(part)),
             )
         )
-            return this.compileUiStructuredMarkup(expression, ownerId);
+            return { kind: "structured" };
         const substitutions: ts.Expression[] = [];
         let source = "";
         for (const part of sourceParts) {
             if (typeof part === "string") {
                 source += part;
             } else {
-                source += `__BBLITE_UI_MARKUP_${substitutions.length}__`;
+                source += uiMarkupHole(substitutions.length);
                 substitutions.push(part);
             }
         }
+        return { kind: "flat", source, substitutions };
+    }
+
+    private compileUiMarkupString(
+        expression: ts.Expression,
+        ownerId?: number,
+    ): string {
+        const form = this.uiMarkupForm(expression);
+        if (form.kind === "static")
+            return this.context.cppString(
+                this.lowerUiMarkupLiteral(form.source, expression, ownerId),
+            );
+        if (form.kind === "structured")
+            return this.compileUiStructuredMarkup(expression, ownerId);
+        const { source, substitutions } = form;
         const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
         this.context.reachJsData();
         return this.uiMarkupConcat(lowered, (index) =>
@@ -4666,52 +4750,57 @@ export class UiProjection {
             : undefined;
     }
 
+    /** The closed markup parts of an innerHTML source: text, runtime text, stored markup and choices. */
+    private uiMarkupParts(source: ts.Expression): UiMarkupPart[] {
+        const exact = this.tryUiStaticString(source);
+        if (exact !== undefined) return [exact];
+        const node = this.context.unwrap(source);
+        if (ts.isTemplateExpression(node))
+            return [
+                node.head.text,
+                ...node.templateSpans.flatMap((span) => [
+                    ...this.uiMarkupParts(span.expression),
+                    span.literal.text,
+                ]),
+            ];
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            (this.context.checker.getTypeAtLocation(node).flags &
+                ts.TypeFlags.StringLike) !==
+                0
+        )
+            return [
+                ...this.uiMarkupParts(node.left),
+                ...this.uiMarkupParts(node.right),
+            ];
+        if (ts.isConditionalExpression(node))
+            return [
+                {
+                    kind: "choice",
+                    condition: node.condition,
+                    yes: this.uiMarkupParts(node.whenTrue),
+                    no: this.uiMarkupParts(node.whenFalse),
+                },
+            ];
+        const shape = this.uiStoredMarkupShape(node);
+        if (shape) {
+            if (shape.filter((part) => part === null).length > 1)
+                this.context.fail(
+                    source,
+                    "Native UI stored markup requires one runtime text span within fixed authored fragments.",
+                );
+            return [{ kind: "stored", expression: source, shape }];
+        }
+        return [{ kind: "text", expression: source }];
+    }
+
     /** Closed structure is parsed after branches are selected; runtime text remains escaped. */
     private compileUiStructuredMarkup(
         expression: ts.Expression,
         ownerId?: number,
     ): string {
-        const collect = (source: ts.Expression): UiMarkupPart[] => {
-            const exact = this.tryUiStaticString(source);
-            if (exact !== undefined) return [exact];
-            const node = this.context.unwrap(source);
-            if (ts.isTemplateExpression(node))
-                return [
-                    node.head.text,
-                    ...node.templateSpans.flatMap((span) => [
-                        ...collect(span.expression),
-                        span.literal.text,
-                    ]),
-                ];
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-                (this.context.checker.getTypeAtLocation(node).flags &
-                    ts.TypeFlags.StringLike) !==
-                    0
-            )
-                return [...collect(node.left), ...collect(node.right)];
-            if (ts.isConditionalExpression(node))
-                return [
-                    {
-                        kind: "choice",
-                        condition: node.condition,
-                        yes: collect(node.whenTrue),
-                        no: collect(node.whenFalse),
-                    },
-                ];
-            const shape = this.uiStoredMarkupShape(node);
-            if (shape) {
-                if (shape.filter((part) => part === null).length > 1)
-                    this.context.fail(
-                        source,
-                        "Native UI stored markup requires one runtime text span within fixed authored fragments.",
-                    );
-                return [{ kind: "stored", expression: source, shape }];
-            }
-            return [{ kind: "text", expression: source }];
-        };
-        const sourceParts = collect(expression);
+        const sourceParts = this.uiMarkupParts(expression);
         if (
             sourceParts.length === 1 &&
             typeof sourceParts[0] !== "string" &&
@@ -4721,7 +4810,7 @@ export class UiProjection {
                 expression,
                 "Native UI innerHTML requires closed authored markup provenance.",
             );
-        let remaining = 32;
+        let remaining = UiProjection.UI_MARKUP_ALTERNATIVES;
         const hasChoices = (parts: readonly UiMarkupPart[]): boolean =>
             parts.some(
                 (part) => typeof part !== "string" && part.kind === "choice",
@@ -4749,7 +4838,7 @@ export class UiProjection {
             let source = prefix;
             const values = [...substitutions];
             const text = (cpp: string): void => {
-                source += `__BBLITE_UI_MARKUP_${values.length}__`;
+                source += uiMarkupHole(values.length);
                 values.push(cpp);
             };
             for (let index = 0; index < pending.length; index++) {
