@@ -7252,7 +7252,10 @@ export class DataTypeRegistry {
                 node,
                 `Own-property presence of '${field.sourceName}' is not represented: its storage has no absent state.`,
             );
-        if (tags !== undefined) return { ownCpp: `(${tags}) && ${held}` };
+        if (tags !== undefined)
+            return {
+                ownCpp: `${field.presentForTags!.length > 1 ? `(${tags})` : tags} && ${held}`,
+            };
         return {
             ownCpp: held,
             ...(presence === "nullable" && !field.accessorReceiver
@@ -7301,7 +7304,12 @@ export class DataTypeRegistry {
         );
     }
 
-    /** Tag alternatives as C++: any alternative, each a conjunction of tag literals. */
+    /**
+     * Tag alternatives as C++: any alternative, each a conjunction of tag
+     * literals. Comparisons bind more tightly than the logical operators,
+     * so only a conjunction among several alternatives is parenthesized;
+     * the whole never is, as `if ((a == b))` is -Wparentheses-equality.
+     */
     private tagConditionCpp(
         definition: DataStructDefinition,
         alternatives: NonNullable<DataStructField["presentForTags"]>,
@@ -7309,24 +7317,26 @@ export class DataTypeRegistry {
         namespace: string,
     ): string {
         return alternatives
-            .map(
-                (alternative) =>
-                    `(${alternative
-                        .map(({ discriminant, value }) => {
-                            const tag = definition.fields.find(
-                                (candidate) =>
-                                    candidate.sourceName === discriminant,
-                            )!;
-                            const literal =
-                                tag.type.kind === "enum"
-                                    ? `${namespace}${tag.type.name}::${this.enumMemberIdentifier(this.enumsByName.get(tag.type.name)!, value)}`
-                                    : tag.type.kind === "string"
-                                      ? JSON.stringify(value)
-                                      : value;
-                            return `${member(tag)} == ${literal}`;
-                        })
-                        .join(" && ")})`,
-            )
+            .map((alternative) => {
+                const conjunction = alternative
+                    .map(({ discriminant, value }) => {
+                        const tag = definition.fields.find(
+                            (candidate) =>
+                                candidate.sourceName === discriminant,
+                        )!;
+                        const literal =
+                            tag.type.kind === "enum"
+                                ? `${namespace}${tag.type.name}::${this.enumMemberIdentifier(this.enumsByName.get(tag.type.name)!, value)}`
+                                : tag.type.kind === "string"
+                                  ? JSON.stringify(value)
+                                  : value;
+                        return `${member(tag)} == ${literal}`;
+                    })
+                    .join(" && ");
+                return alternatives.length > 1 && alternative.length > 1
+                    ? `(${conjunction})`
+                    : conjunction;
+            })
             .join(" || ");
     }
 

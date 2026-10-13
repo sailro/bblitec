@@ -36,6 +36,9 @@ export function replacementCallback(
     const packet = context.allocateTemporaryCppName("replacement_match");
     let supplied: Value[];
     let parameters: string;
+    // A capture read can be lowered into a function template that reaches
+    // the packet through its environment, where `argument` is a dependent
+    // template name.
     if (pattern) {
         parameters = `[[maybe_unused]] const bbl::js::RegExpReplacement& ${packet}`;
         const captures = pattern.regexpCaptureCount;
@@ -44,7 +47,7 @@ export function replacementCallback(
                 lowerer.leafValue(`*${packet}.groups[0]`, { kind: "string" }),
                 ...Array.from({ length: captures }, (_unused, index) =>
                     lowerer.leafValue(
-                        `${packet}.argument<std::string>(${index + 1})`,
+                        `${packet}.template argument<std::string>(${index + 1})`,
                         { kind: "optional", inner: { kind: "string" } },
                     ),
                 ),
@@ -81,7 +84,7 @@ export function replacementCallback(
                         "A runtime RegExp pattern requires concrete string/number callback parameter types.",
                     );
                 return lowerer.leafValue(
-                    `${packet}.argument<${context.dataTypes.cppType(inner)}>(${index})`,
+                    `${packet}.template argument<${context.dataTypes.cppType(inner)}>(${index})`,
                     { kind: "optional", inner },
                 );
             });
