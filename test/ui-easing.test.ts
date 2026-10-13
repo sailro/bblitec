@@ -47,31 +47,16 @@ test("easing functions run natively with their CSS curves", (t) => {
     });
 });
 
-test("unrepresented easing functions refuse at generation", () => {
+// RmlUi's parser is the easing grammar: these compile, and the native fixture
+// above checks that it refuses them when applied.
+test("easing functions outside the native grammar compile and refuse natively", () => {
     const prefix = `const panel = document.createElement("div");`;
-    for (const [write, diagnostic] of [
-        [
-            `panel.style.transition = "opacity 1s linear(0, 0.5, 1)";`,
-            /linear\(\) easing/,
-        ],
-        [
-            `panel.style.cssText = "transition: opacity 1s cubic-bezier(2, 0, 0, 1)";`,
-            /x1 and x2 in \[0, 1\]/,
-        ],
-        [
-            `panel.style.animation = "spin 1s steps(1, jump-none) infinite";`,
-            /at least 2 for jump-none/,
-        ],
-        [
-            `panel.style.animation = "spin 1s steps(2.5)";`,
-            /positive integer count/,
-        ],
-    ] as const)
-        assert.throws(() => compileSource(prefix + write), diagnostic);
-    assert.doesNotThrow(() =>
-        compileSource(
-            prefix +
-                `panel.style.transition = "opacity 1s steps(3, jump-none), width 1s cubic-bezier(0, -1, 1, 2)";`,
-        ),
-    );
+    for (const write of [
+        `panel.style.transition = "opacity 1s linear(0, 0.5, 1)";`,
+        `panel.style.cssText = "transition: opacity 1s cubic-bezier(2, 0, 0, 1)";`,
+        `panel.style.animation = "spin 1s steps(1, jump-none) infinite";`,
+        `panel.style.animation = "spin 1s steps(2.5)";`,
+        `panel.style.transition = "opacity 1s steps(3, jump-none), width 1s cubic-bezier(0, -1, 1, 2)";`,
+    ])
+        assert.doesNotThrow(() => compileSource(prefix + write));
 });

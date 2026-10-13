@@ -5208,6 +5208,28 @@ struct UiRmlRuntime {
         return rml_css_resolve_variable_colors(rml_css_density_units(std::move(value)));
     }
 
+    /**
+     * RmlUi's parser is the motion grammar: a sheet's transition or animation it rejects refuses
+     * here, as a retained style write does, rather than leaving the sheet.
+     */
+    void require_parsed_motion(std::string_view style) const {
+        for_each_css_declaration(style, [&](std::string_view declaration) {
+            const std::size_t colon = declaration.find(':');
+            if (colon == std::string_view::npos)
+                return;
+            const std::string name =
+                js::string_lower(std::string(trim_css_token(declaration.substr(0, colon))));
+            if (name != "transition" && name != "animation")
+                return;
+            const std::string value(
+                trim_css_token(split_css_important(declaration.substr(colon + 1)).first));
+            Rml::PropertyDictionary properties;
+            if (!Rml::StyleSheetSpecification::ParsePropertyDeclaration(properties, name,
+                                                                        project_css(value, name)))
+                throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
+        });
+    }
+
     void set_projected_property(Rml::Element& element, const std::string& name,
                                 const std::string& value) const {
         if (name == "transition" || name == "animation") {
@@ -5419,6 +5441,7 @@ struct UiRmlRuntime {
                 ui_selector_uses_test(rule.sequence, UiSelectorTestKind::FocusWithin);
             observes_generated_content = observes_generated_content || rule.content.has_value();
             const std::string public_style = filter_private_ui_declarations(rule.style, false);
+            require_parsed_motion(public_style);
             // Empty conditional nodes still register thresholds used by native
             // presentation adaptations and content-only generated parts.
             if (public_style.empty() && rule.container_max_width < 0.0)
