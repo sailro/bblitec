@@ -98,11 +98,7 @@ export type TypedArrayKind =
     | "u32array"
     | "i32array"
     | "u8clampedarray";
-export const DEFERRED_DOM_OBJECTS = [
-    "MediaRecorder",
-    "BlobEvent",
-    "IdleDeadline",
-] as const;
+export const DEFERRED_DOM_OBJECTS = ["MediaRecorder", "BlobEvent"] as const;
 
 interface DataKinds {
     "module-namespace": { kind: "module-namespace"; module: string };
@@ -137,6 +133,8 @@ interface DataKinds {
     gpu: { kind: "gpu" };
     "gpu-adapter": { kind: "gpu-adapter" };
     "gpu-adapter-info": { kind: "gpu-adapter-info" };
+    /** A requestIdleCallback callback's IdleDeadline (`bblite/pal_idle_callbacks.hpp`). */
+    "idle-deadline": { kind: "idle-deadline" };
     "search-params": { kind: "search-params" };
     promise: { kind: "promise"; result?: DataType };
     "weak-ref": { kind: "weak-ref"; target: DataType };

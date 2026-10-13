@@ -130,6 +130,7 @@ Artifact suffix `gpu` means SDL_GPU; CLI values are `sdl_gpu`/`dawn`.
 | `BBLITE_AUDIO_CAPTURE`, `BBLITE_AUDIO_CAPTURE_SECONDS`, `BBLITE_AUDIO_LOG` | WAV capture; LabSound log level |
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated storage |
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialogs |
+| `BBLITE_MESSAGE_BOX_RESPONSE` | `accept` or `dismiss` answers `alert`/`confirm` without a message box |
 | `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Overrides; `BBLITE_NATIVE_EXE` reaches every measuring command |
 | `BBLITE_GPU_DEBUG` | SDL_GPU validation (Dawn always validates); prefer `--gpu-debug`, which also stops SDL assertion prompts |
 | `BBLITE_TEST_PASS` | Harness: nonfocusable, camera controls off |

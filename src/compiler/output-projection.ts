@@ -44,6 +44,7 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:http": ["src/pal_http.cpp"],
     "platform:packaged-fetch": [],
     "platform:compression": ["src/pal_compression.cpp"],
+    "platform:idle-callbacks": [],
     "image:runtime-decode": [],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
@@ -822,6 +823,11 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("platform:compression")
             ? "#include <bblite/pal_compression.hpp>\n"
+            : "") +
+        // IdleDeadline storage also names the header among the web platform ones.
+        (features.includes("platform:idle-callbacks") &&
+        !projection.webPlatformHeaders?.includes("pal_idle_callbacks")
+            ? "#include <bblite/pal_idle_callbacks.hpp>\n"
             : "") +
         (projection.webPlatformHeaders ?? [])
             .map((header) => `#include <bblite/${header}.hpp>\n`)

@@ -104,8 +104,8 @@ test("deferred scalar calls throw clearly after arguments and preserve recovery"
         if(order!=="ab")throw new Error("argument order");
         try{prompt(argument("c"));}catch{++catches;}
         try{prompt(argument("d"));}catch{++catches;}
-        try{confirm(argument("e"));}catch{++catches;}
-        try{alert(argument("f"));}catch{++catches;}
+        try{prompt(argument("e"));}catch{++catches;}
+        try{prompt(argument("f"));}catch{++catches;}
         try{prompt(argument("g"));}catch{++catches;}
         if(order!=="abcdefg"||catches!==6)throw new Error("trap recovery");
     `;
@@ -193,7 +193,7 @@ test("optional Window receivers suppress arguments and deferred failures", () =>
         const targets:Array<Window|null>=[null,window];
         let argumentsRun=0; let caught=0;
         for(let i=0;i<targets.length;i++) {
-            try{targets[i]?.alert(++argumentsRun);}catch{++caught;}
+            try{targets[i]?.prompt(String(++argumentsRun));}catch{++caught;}
         }
         if(argumentsRun!==1||caught!==1)throw new Error("optional receiver");
         globalThis.close();
@@ -230,17 +230,19 @@ test("optional Window receivers suppress arguments and deferred failures", () =>
 test("deferred promise methods reject on the realm reaction queue", () => {
     const result = compileSource(
         `
+        import {createAudioEngineAsync,createAudioBusAsync} from "@babylonjs/lite";
         async function main():Promise<void>{
+            const engine=await createAudioEngineAsync();
             let synchronous=true; let reactions=0;
-            const pending=document.exitFullscreen();
+            const pending=createAudioBusAsync(engine,"bus");
             const handled=pending.catch(error=>{
-                if(synchronous||!error.message.includes("dom:Document.exitFullscreen"))throw new Error("rejection timing");
+                if(synchronous||!error.message.includes("babylon:createAudioBusAsync"))throw new Error("rejection timing");
                 ++reactions;
             });
             synchronous=false;
             try{await pending;}catch{}
             await handled;
-            try{await document.exitFullscreen();}catch{++reactions;}
+            try{await createAudioBusAsync(engine,"second");}catch{++reactions;}
             if(reactions!==2)throw new Error("rejections");
             // Blob reads are native.
             if(await new Blob(["payload"]).text()!=="payload")throw new Error("blob text");
@@ -262,14 +264,13 @@ test("deferred promise methods reject on the realm reaction queue", () => {
         result.cpp +
             `
         namespace bbl::pal {
-        Engine& window_document_engine() { static Engine engine; return engine; }
-        int run_window_application(WorkerEntry initialize, EngineOptions) {
-            const js::RealmScope scope;
-            EventLoop loop;
-            WorkerRealm realm(loop, "");
-            loop.run([&] { initialize(realm); });
-            return 0;
-        }
+            AudioSession::~AudioSession() = default;
+            bool audio_begin_context() { return true; }
+            std::shared_ptr<AudioPlaybackDevice> audio_open_device(bool) { return {}; }
+            AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&,std::shared_ptr<AudioPlaybackDevice>) { return {1}; }
+            AudioNodeHandle audio_create_gain(AudioContextHandle) { return {2,{}}; }
+            AudioNodeHandle audio_destination(AudioContextHandle) { return {3,{}}; }
+            void audio_connect(AudioNodeHandle,AudioNodeHandle) {}
         }
     `,
         { flags: ["/DBBLITE_WORKERS=1"], expectedOutput: "", timeoutMs: 10000 },

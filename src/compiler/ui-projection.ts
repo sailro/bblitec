@@ -1048,7 +1048,8 @@ export class UiProjection {
         const value = this.context.unwrap(expression);
         if (
             ts.isPropertyAccessExpression(value) &&
-            value.name.text === "activeElement" &&
+            (value.name.text === "activeElement" ||
+                value.name.text === "fullscreenElement") &&
             this.context.libraryGlobal(value.expression) === "document"
         )
             return true;

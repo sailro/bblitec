@@ -8,7 +8,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
 buffers, buses, spatial/stereo/analyzer and master volume, media streams/recording/streamed audio, script elements,
-idle callbacks, application-realm device recovery, and the [UI](ui.md) items
+`prompt`, application-realm device recovery, and the [UI](ui.md) items
 marked deferred. Unregistered APIs still refuse.
 
 ## Language

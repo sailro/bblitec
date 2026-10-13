@@ -32,6 +32,17 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - Clipboard: text writes only. `visibilitychange` follows window hide/show.
 - `beforeunload` then `pagehide` (persisted=false, no prompt) run before realm cleanup; worker realms refuse them.
 - Error/unhandledrejection listeners are supported; `rejectionhandled` is not.
+- `requestIdleCallback`/`cancelIdleCallback` (direct, `window.` members, stored aliases): each callback runs in its
+  own task once the task queue is empty, before a 50 ms deadline, the next due timer and, while a repaint is pending,
+  the next frame predicted from the display's tick interval; `timeout` runs it timed out (`timeRemaining()` 0).
+  Worker realms refuse them.
+- `alert`/`confirm` show a modal SDL message box (OK, or OK/Cancel; title = window title) on the Window thread and
+  block the realm. Linux Wayland needs zenity. `prompt` stays [deferred](features.md#deferred-capabilities): SDL has
+  no text-input dialog.
+- Fullscreen: `requestFullscreen()` on the document element or the primary canvas makes the window fullscreen, then
+  resolves, then fires the document's `fullscreenchange`; other elements reject with NotSupportedError, a failed
+  window change with TypeError. `exitFullscreen()` restores a window the page made fullscreen; Escape and the system
+  leaving fullscreen exit it too. `fullscreenerror`, element listeners and `:fullscreen` are not lowered.
 - GPU adapter requests describe the selected device; fallback, low-power, compatibility and XR requests reject.
 
 ## DOM and events

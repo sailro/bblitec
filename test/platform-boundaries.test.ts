@@ -49,68 +49,6 @@ test("URI component encoding preserves coercion, UTF-16 and evaluation order", (
     });
 });
 
-test("idle aliases preserve owned callbacks and throw after argument evaluation", () => {
-    const source = `
-        let effects=0; let callbacks=0; let caught=0;
-        const idle = (window as {requestIdleCallback?: (cb:()=>void, options?:{timeout:number})=>number}).requestIdleCallback;
-        if (idle) {
-            try { idle(()=>{ callbacks++; }, {timeout:++effects}); } catch(error) {
-                if (!error.message.includes('dom:Window.requestIdleCallback')) throw error;
-                caught++;
-            }
-        }
-        const request=window.requestIdleCallback;
-        try { request(deadline=>{callbacks++; if(deadline.didTimeout) deadline.timeRemaining();}); } catch { caught++; }
-        const cancel=window.cancelIdleCallback;
-        try { cancel(++effects); } catch(error) {
-            if (!error.message.includes('dom:Window.cancelIdleCallback')) throw error;
-            caught++;
-        }
-        if(effects!==2 || callbacks!==0 || caught!==3) throw new Error('idle boundary');
-        setTimeout(()=>globalThis.close(),0);
-    `;
-    assert.throws(
-        () => compileSource(source),
-        /Browser-dependent condition cannot be determined/,
-    );
-    const result = compileSource(source, { deferredCapabilities });
-    const ids = result.manifest.deferredCapabilities!.map((site) => site.id);
-    assert.ok(ids.includes("dom:Window.requestIdleCallback"));
-    assert.ok(ids.includes("dom:IdleDeadline.didTimeout"));
-    assert.ok(ids.includes("dom:IdleDeadline.timeRemaining"));
-    assert.throws(
-        () =>
-            compileSource(
-                `
-        const readers: Array<(host: EventTarget & {requestIdleCallback?:()=>number})=>void> = [host=>{const idle=host.requestIdleCallback; if(idle)idle();}];
-        readers[0]!(document);
-        setTimeout(()=>globalThis.close(),0);
-    `,
-                { deferredCapabilities },
-            ),
-        /requires a proven Window receiver/,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                source.replace(
-                    "callbacks++; if",
-                    "new FinalizationRegistry(()=>{}); callbacks++; if",
-                ),
-                { deferredCapabilities },
-            ),
-        /Unsupported constructor/,
-    );
-    const tools = optionalNativeFixtureTools(false);
-    assert.ok(tools);
-    runGeneratedProgram(
-        tools,
-        "platform-boundaries/idle",
-        result.cpp + runtime,
-        { flags: ["/DBBLITE_WORKERS=1"], expectedOutput: "" },
-    );
-});
-
 test("session storage is a native provider in both modes and never reaches the durable store", () => {
     const source = `
         let caught=0; let effects=0;
