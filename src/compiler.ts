@@ -952,6 +952,17 @@ class Compiler implements LoweringServices {
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
     /** @unjournaled `moduleConstantIsWritten` answers, a function of the program. */
     private readonly writtenModuleConstants = new Map<ts.Symbol, boolean>();
+    /**
+     * @unjournaled Only compared before and after one initializer's compile; a
+     * discarded attempt can only over-count, which keeps a `const` a snapshot.
+     */
+    private impureReads = 0;
+    public get impureReadCount(): number {
+        return this.impureReads;
+    }
+    public noteImpureRead(): void {
+        this.impureReads++;
+    }
     /** @unjournaled Results of closed generation runs, a function of their inputs alone. */
     private readonly generationRuns = new Map<
         ExecutedTarget,

@@ -496,6 +496,8 @@ export interface AssignmentContext
         Pick<
             LoweringServices,
             | "options"
+            | "noteImpureRead"
+            | "evaluationOrder"
             | "libraryGlobal"
             | "admissions"
             | "isRuntimeResourceConstruction"

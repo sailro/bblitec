@@ -330,6 +330,10 @@ export interface LoweringServices {
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined;
     sourceFiles(): readonly ts.SourceFile[];
+    /** Count a read whose value can change without a program write (`Value.impure`). */
+    noteImpureRead(): void;
+    /** Reads noted so far: compared around a `const` initializer, which then snapshots. */
+    readonly impureReadCount: number;
     reachThrow(): void;
     emitDataVectorOfStructs(
         node: ts.Node,
