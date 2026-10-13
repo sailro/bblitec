@@ -175,6 +175,9 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:pickable": [],
     "mesh:vat": [],
     "mesh:vat-instances": [],
+    "mesh:vat-time": [],
+    "mesh:deformed-position": [],
+    "mesh:vat-instance-storage": [],
     "mesh:skeleton": [],
     "mesh:transform-node": [],
     "mesh:mirrored": [],
@@ -318,6 +321,7 @@ export const featureSources: Record<Feature, string[]> = {
     "frame-graph:task-material-override": [],
     "frame-graph:task-build": [],
     "frame-graph:task-disposal": [],
+    "frame-graph:live-task-add": [],
     // A standalone FrameGraphContext has its own task-only driver. It does
     // not pull the scene renderer, camera math, mesh upload, or image loader.
     "renderer:frame-graph": ["src/pal_sdl_gpu_frame_graph.cpp"],

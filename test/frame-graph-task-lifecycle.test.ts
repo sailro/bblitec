@@ -396,3 +396,64 @@ test("an effect task's dispose clears its pipeline until the next record, as the
         /require_effect_bind_group\(engine, task\.effect\.effect\);\n\s+task\.disposed = false;/,
     );
 });
+
+test("a task added to a live scene waits for its record, as the pin's unrecorded execute fails", async () => {
+    const { createEffectWrapper, createEffectRenderTask } =
+        await importPinnedModule<{
+            createEffectWrapper(
+                this: void,
+                engine: object,
+                options: object,
+            ): object;
+            createEffectRenderTask(
+                this: void,
+                config: object,
+                engine: object,
+            ): DisposablePinTask;
+        }>("effect/effect-renderer.js");
+    const task = createEffectRenderTask(
+        {
+            name: "late",
+            effect: createEffectWrapper(
+                {},
+                { name: "late", fragmentWGSL: "", bindings: [] },
+            ),
+            target: {
+                _descriptor: { format: "rgba8unorm", samples: 1 },
+                _eager: true,
+            },
+        },
+        {},
+    );
+    let message = "";
+    try {
+        task.execute();
+    } catch (error) {
+        message = (error as Error).message;
+    }
+    assert.ok(
+        readFileSync("native/src/pal_gpu_shared.cpp", "utf8").includes(
+            `throw std::runtime_error(${JSON.stringify(message)});`,
+        ),
+        message,
+    );
+    const live = compileSource(
+        `${prefix}const t=createRenderTargetTexture(engine,{lbl:"l",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
+        const task=createRenderTask({name:"late",rt:t.rt,autoMirror:false},engine,scene);
+        addTaskAtStart(scene,task);
+        buildFrameGraphTask(getFrameGraph(scene),task);`,
+    );
+    assert.ok(live.manifest.features.includes("frame-graph:live-task-add"));
+    assert.match(live.cpp, /bbl::add_live_task\([^;]*, true\);/);
+    // Before registration the build records every task: no live add.
+    const setup = compileSource(
+        prefix.replace(
+            "await registerScene(scene);\n",
+            `const t=createRenderTargetTexture(engine,{lbl:"l",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
+            addTask(scene,createRenderTask({name:"early",rt:t.rt,autoMirror:false},engine,scene));
+            await registerScene(scene);\n`,
+        ),
+    );
+    assert.ok(!setup.manifest.features.includes("frame-graph:live-task-add"));
+    assert.doesNotMatch(setup.cpp, /add_live_task/);
+});

@@ -10,6 +10,7 @@
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 
 #include "pal_dawn_scene.hpp"
@@ -36,6 +37,9 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
                                  std::uint32_t height) {
 #if BBLITE_RENDER_TARGET_DISPOSAL
     require_live_render_targets(engine);
+#endif
+#if BBLITE_LIVE_TASK_ADD
+    require_recorded_tasks(engine);
 #endif
     if (state.render_targets_version == engine.render_targets_version &&
         state.render_targets.size() == engine.render_targets.size() &&

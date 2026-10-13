@@ -279,16 +279,18 @@ test("deferred promise methods reject on the realm reaction queue", () => {
 
 test("pinned public missing calls preserve engine arguments and original strict refusal", () => {
     const source = `
-        import {createEngine,createSphere,setVatTime} from "@babylonjs/lite";
-        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
-        const mesh=createSphere(engine,{diameter:1});
-        try{setVatTime(engine,mesh,1);}catch{}
+        import {createAudioEngineAsync,setMasterVolume} from "@babylonjs/lite";
+        const audio=await createAudioEngineAsync();
+        try{setMasterVolume(audio,0.5);}catch{}
     `;
-    assert.throws(() => compileSource(source), /setVatTime.*not supported/);
+    assert.throws(
+        () => compileSource(source),
+        /audio 'setMasterVolume' is not lowered/,
+    );
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:setVatTime"],
+        ["babylon:setMasterVolume"],
     );
     assert.match(result.cpp, /deferred_capability<void>/);
 });
@@ -298,7 +300,7 @@ test("pinned geometry descriptor batch retains declared result shapes", () => {
         "disposeMeshGpu(mesh)",
         "enableThinInstanceDynamicDrawCount(mesh)",
         "setThinInstanceDrawCount(mesh,2)",
-        "setVatTime(engine,mesh,1)",
+        "getMasterVolume(audio)",
     ];
     const result = compileSource(
         `
@@ -307,14 +309,17 @@ test("pinned geometry descriptor batch retains declared result shapes", () => {
         const mesh=api.createSphere(engine,{diameter:1});
         const camera=api.createFreeCamera([0,0,1],[0,0,0]);
         const bytes=new Float32Array([0,1,2]);
+        const audio=await api.createAudioEngineAsync();
         ${operations.map((operation) => `try{api.${operation};}catch{}`).join("\n")}
     `,
         { deferredCapabilities },
     );
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:setVatTime"],
+        ["babylon:getMasterVolume"],
     );
+    // A number-returning capability keeps its declared result shape.
+    assert.match(result.cpp, /deferred_capability<double>/);
     assert.match(result.cpp, /bbl::dispose_mesh_gpu\(/);
     assert.match(result.cpp, /bbl::enable_thin_instance_dynamic_draw_count\(/);
     assert.match(result.cpp, /bbl::set_thin_instance_draw_count\(/);
@@ -362,12 +367,11 @@ test("deferred result templates never construct successful payloads", () => {
 test("deferred engine arguments retain ordinary checked reads", () => {
     const result = compileSource(
         `
-        import {createEngine,createBox,setVatTime} from "@babylonjs/lite";
-        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
-        const mesh=createBox(engine,1);
-        const engines=[engine];
+        import {createAudioEngineAsync,setMasterVolume} from "@babylonjs/lite";
+        const audio=await createAudioEngineAsync();
+        const engines=[audio];
         let index=0; let caught=0;
-        try{setVatTime(engines[++index]!,mesh,1);}catch(error){
+        try{setMasterVolume(engines[++index]!,0.5);}catch(error){
             if(error.message.includes("Deferred native capability"))throw new Error("argument read was dropped");
             ++caught;
         }
@@ -382,7 +386,13 @@ test("deferred engine arguments retain ordinary checked reads", () => {
         "deferred-capabilities/engine-arguments",
         result.cpp +
             `
-        namespace bbl { Engine create_engine(EngineOptions) { return {}; } MeshHandle create_box(Engine&, BoxOptions) { return {}; } }
+        namespace bbl::pal {
+        AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&) { return {}; }
+        AudioNodeHandle audio_create_gain(AudioContextHandle) { return {}; }
+        AudioNodeHandle audio_destination(AudioContextHandle) { return {}; }
+        void audio_connect(AudioNodeHandle, AudioNodeHandle) {}
+        AudioSession::~AudioSession() = default;
+        }
     `,
         { expectedOutput: "" },
     );

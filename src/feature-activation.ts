@@ -934,6 +934,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/vat/vat-baker.ts (setInstances)",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "mesh:deformed-position": {
+        provenance:
+            "src/picking/deformed-vertex.ts computeDeformedPositionToRef",
+        consumers: CMAKE,
+    },
+    "mesh:vat-time": {
+        provenance: "src/vat/vat-baker.ts setVatTime",
+        consumers: CMAKE,
+    },
+    "mesh:vat-instance-storage": {
+        provenance: "src/vat/vat-baker.ts setVatInstanceStorage",
+        consumers: CMAKE,
+    },
     "mesh:skeleton": {
         provenance:
             "src/skeleton/create-skeleton.ts and " +
@@ -1466,6 +1479,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "frame-graph:task-build": {
         provenance: "src/frame-graph/frame-graph.ts buildFrameGraphTask",
+        consumers: CMAKE,
+    },
+    "frame-graph:live-task-add": {
+        provenance:
+            "src/frame-graph/frame-graph-actions.ts addTask on a built graph " +
+            "(src/frame-graph/frame-graph.ts buildFrameGraphTask)",
         consumers: CMAKE,
     },
     "frame-graph:task-disposal": {

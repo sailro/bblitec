@@ -154,6 +154,9 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 - Property tracks: numeric leaves, linear/step; easing callbacks refuse. Autonomous managers cannot share a program with
   a persistent application RAF loop.
 - GPU skinning, storage morphs, VAT, thin instances. Direct morphs: one pre-start attachment per mesh.
+- `computeDeformedPositionToRef`: morph then four-joint skinning of one retained CPU vertex, at the pin's float stores.
+- `setVatTime` writes the VAT clock lane until the handle's next `play`/`update`. `setVatInstanceStorage` validates and
+  stores the buffer; only VAT picking reads it, and that is not lowered.
 
 ## Sprites, picking, flow graphs, gizmos
 
@@ -194,8 +197,9 @@ context is not running throws (no statechange).
 ## Frame graph and post-process
 
 - Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup; `removeMeshFromTask`.
-- `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene; the
-  private `FrameGraph._tasks` list refuses (its native indices differ), so a live task cannot be removed.
+- `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which
+  refuses to execute until then; the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task
+  cannot be removed.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
 - `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
   keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform

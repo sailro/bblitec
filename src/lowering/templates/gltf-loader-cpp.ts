@@ -214,6 +214,7 @@ export function gltfLoaderCpp(
     const {
         vat = false,
         deformPicking = false,
+        deformedPosition = false,
         pinnedSkeletonPalette = false,
         nodeTransforms = false,
         sourceTextureReads = false,
@@ -801,7 +802,7 @@ ${
                 // pose pass writes this record a joint palette rather than
                 // its own world matrix.
 ${
-    vat || deformPicking
+    vat || deformPicking || deformedPosition
         ? `                ${recordAt("engine.meshes", "mesh_handle")}.skinned =
                     skin_index !=
                     std::numeric_limits<std::size_t>::max();`

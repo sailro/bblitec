@@ -38,6 +38,8 @@ export interface SceneIntrinsicContext
             | "ensureDefaultRenderTask"
             | "compileSceneRegistration"
             | "fail"
+            | "isRuntimeCallback"
+            | "isInNativeFunctionBody"
         > {}
 
 export function compileSceneIntrinsic(
@@ -277,10 +279,23 @@ export function compileSceneIntrinsic(
                     ? context.ensureDefaultRenderTask(scene, call)
                     : undefined;
             const sceneCpp = defaultTask?.sceneCpp ?? scene.cpp;
-            const taskCall =
-                importedName === "addTaskAtStart"
-                    ? `bbl::add_task_at_start(${sceneCpp}, ${task.cpp})`
-                    : `bbl::add_task(${sceneCpp}, ${task.cpp})`;
+            // After a registration in source order, in a callback or a
+            // function body, the scene may be live: the pin records the
+            // task only through buildFrameGraphTask, so its runtime notes
+            // whether the graph was built.
+            const live =
+                scene.kind === "scene" &&
+                task.kind === "task" &&
+                (context.isRuntimeCallback() ||
+                    context.isInNativeFunctionBody() ||
+                    context.engineLifecycle.engineStartMark !== undefined ||
+                    context.admissions.temporalSceneRegistration !== undefined);
+            if (live) context.reachFeature("frame-graph:live-task-add", call);
+            const taskCall = live
+                ? `bbl::add_live_task(${sceneCpp}, ${task.cpp}, ${importedName === "addTaskAtStart"})`
+                : importedName === "addTaskAtStart"
+                  ? `bbl::add_task_at_start(${sceneCpp}, ${task.cpp})`
+                  : `bbl::add_task(${sceneCpp}, ${task.cpp})`;
             return {
                 kind: "void",
                 cpp: defaultTask
