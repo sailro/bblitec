@@ -156,6 +156,8 @@ struct DocumentSnapshot {
     std::uint64_t text_selection_revision = 0;
     std::set<std::string> dom_event_types;
     std::set<std::uint32_t> dom_pointer_elements;
+    /** The realm's pointer capture state, which the display targets input by. */
+    std::shared_ptr<DomPointerCaptures> pointer_captures;
 };
 struct LayoutSnapshot {
     std::vector<UiClientRect> rectangles;
@@ -444,6 +446,7 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
     if (engine.dom_input) {
         snapshot->dom_event_types = engine.dom_input->event_types;
         snapshot->dom_pointer_elements = engine.dom_input->pointer_elements;
+        snapshot->pointer_captures = engine.dom_input->pointer_captures;
     }
     return snapshot;
 }
@@ -469,6 +472,8 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
     engine.ui_focus_visible = snapshot.focus_visible;
     engine.ui_text_selection = snapshot.text_selection;
     engine.ui_text_selection_revision = snapshot.text_selection_revision;
+    if (snapshot.pointer_captures)
+        dom_input(engine).pointer_captures = std::move(snapshot.pointer_captures);
     if (!snapshot.dom_event_types.empty()) {
         auto& input = dom_input(engine);
         input.event_types = std::move(snapshot.dom_event_types);
