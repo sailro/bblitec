@@ -19,6 +19,27 @@ import { resolvedSymbol } from "../symbols.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import type { LoweringServices } from "../lowering-services.js";
 
+/**
+ * Whether Texture2D data storage (`bbl::StoredTexture`) represents the value:
+ * file, pixels and solid textures, render-target textures and values already
+ * stored. A sprite render texture (`createRenderTexture2D`) has no arm.
+ */
+export function storesAsTexture2D(value: Value): boolean {
+    if (value.kind === "render-texture")
+        return (
+            value.renderTextureSource === undefined ||
+            value.renderTextureSource === "render-target"
+        );
+    return (
+        value.kind === "texture" &&
+        (value.textureStorage === "solid" ||
+            value.textureStorage === "pixels" ||
+            value.textureStorage === "file" ||
+            (value.dataType?.kind === "handle" &&
+                value.dataType.handle === "texture"))
+    );
+}
+
 /** A singleton cloned-root container shares the clone's mesh-only asset record. */
 export function projectAssetContainer(
     context: Pick<LoweringServices, "requireEngine" | "dataLowerer">,
@@ -382,10 +403,7 @@ function valueResource(
             ) {
                 return `bbl::StoredTexture{${value.cpp}}`;
             }
-            if (!(
-                value.dataType?.kind === "handle" &&
-                value.dataType.handle === "texture"
-            )) {
+            if (!storesAsTexture2D(value)) {
                 lowerer.context.fail(
                     node,
                     "Texture2D data storage supports file, pixel, and solid textures.",
