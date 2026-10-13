@@ -178,7 +178,7 @@ import {
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandleCpp } from "./properties.js";
-import { absenceKind, nullability } from "./type-facts.js";
+import { absenceKind, isNullable, nullability } from "./type-facts.js";
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import {
@@ -670,6 +670,8 @@ export class ExpressionLowerer {
         if (assertedValue) return assertedValue;
         const assertedNonNull = hasNonNullAssertion(expression);
         const unwrapped = this.context.unwrap(expression);
+        const stopped = this.optionalChainStop(unwrapped);
+        if (stopped) return stopped;
 
         if (ts.isCallExpression(unwrapped) || ts.isNewExpression(unwrapped)) {
             const formatter = compileDateTimeFormat(
@@ -1307,9 +1309,6 @@ export class ExpressionLowerer {
             if (this.isNavigatorGetGamepadsCall(unwrapped)) {
                 return this.compileCall(unwrapped);
             }
-            // A chain already stopped short is undefined whatever it names.
-            const shortCircuited = this.shortCircuitedChainCall(unwrapped);
-            if (shortCircuited) return shortCircuited;
             if (
                 this.context.browserErasure.isBrowserOnlyExpression(unwrapped)
             ) {
@@ -3427,15 +3426,15 @@ export class ExpressionLowerer {
     }
 
     /**
-     * A call in an optional chain whose nearest `?.` receiver is absent at
-     * generation (`undefined?.label().trim()`): the whole chain is
-     * undefined, and neither callee nor arguments evaluate. Only that
-     * receiver compiles here: an earlier stopped link already makes it absent.
+     * The undefined an optional chain evaluates to when it stops during
+     * generation: `node` is a link of a chain whose nearest `?.` receiver
+     * is null or undefined at generation (`undefined?.label().trim()`).
+     * Only that receiver compiles, and only when its type admits absence;
+     * a stopping receiver's evaluation is kept, and nothing after the `?.`
+     * evaluates. An earlier stopped link already makes that receiver absent.
      */
-    private shortCircuitedChainCall(
-        call: ts.CallExpression,
-    ): Value | undefined {
-        let link: ts.Expression = call;
+    public optionalChainStop(node: ts.Expression): Value | undefined {
+        let link: ts.Expression = node;
         for (;;) {
             if (!ts.isOptionalChain(link)) return undefined;
             // `owner.method?.()` tests a method, which is no value to
@@ -3453,13 +3452,15 @@ export class ExpressionLowerer {
             link = link.expression;
         }
         const receiver = link.expression;
+        const type = this.context.checker.getTypeAtLocation(receiver);
+        if (
+            !isNullable(type) &&
+            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0
+        )
+            return undefined;
         return this.context.probeEmission(() =>
             this.compileValue(receiver).kind === "json-null"
-                ? {
-                      kind: "json-null",
-                      cpp: "std::nullopt",
-                      optionalChainShortCircuited: true,
-                  }
+                ? { kind: "json-null", cpp: "std::nullopt" }
                 : undefined,
         );
     }
@@ -4821,18 +4822,10 @@ export class ExpressionLowerer {
      * element it would have read.
      */
     private compileAbsentElementAccess(
-        owner: Value,
         unwrapped: ts.ElementAccessExpression,
     ): Value {
-        if (
-            unwrapped.questionDotToken ||
-            (ts.isOptionalChain(unwrapped) && owner.optionalChainShortCircuited)
-        )
-            return {
-                kind: "json-null",
-                cpp: "std::nullopt",
-                optionalChainShortCircuited: true,
-            };
+        if (unwrapped.questionDotToken)
+            return { kind: "json-null", cpp: "std::nullopt" };
         const type = this.context.dataLowerer.dataTypeAt(unwrapped);
         if (!type)
             return this.context.fail(
@@ -4970,7 +4963,7 @@ export class ExpressionLowerer {
         }
         const owner = this.compileValue(unwrapped.expression);
         if (owner.kind === "json-null")
-            return this.compileAbsentElementAccess(owner, unwrapped);
+            return this.compileAbsentElementAccess(unwrapped);
         const dataElement = this.context.dataLowerer.compileElementFromValue(
             owner,
             unwrapped.argumentExpression,

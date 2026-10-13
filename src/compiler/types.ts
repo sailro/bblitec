@@ -2887,8 +2887,6 @@ export interface ValueFields {
     spriteLayerCpp?: string;
     /** A synchronous application error event; its native payload cannot escape dispatch. */
     nativeErrorEvent?: true;
-    /** A known absent receiver stopped this optional chain before member evaluation. */
-    optionalChainShortCircuited?: true;
     browserValue?:
         | { readonly kind: "boolean"; readonly value: boolean }
         | { readonly kind: "number"; readonly value: number }

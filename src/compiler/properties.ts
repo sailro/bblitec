@@ -1875,6 +1875,7 @@ interface PropertyAccessContext
             | "defaultEngine"
             | "deferredCapabilities"
             | "handleCollections"
+            | "optionalChainStop"
             | "platformDocumentHidden"
             | "useNativeValue"
         > {
@@ -2451,6 +2452,8 @@ export class PropertyAccessLowerer {
     public compilePropertyAccess(
         expression: ts.PropertyAccessExpression,
     ): Value {
+        const stopped = this.context.optionalChainStop(expression);
+        if (stopped) return stopped;
         const collection = this.context.unwrap(expression.expression);
         if (
             expression.name.text === "length" &&
@@ -2716,18 +2719,8 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (platformProperty) return platformProperty;
-        if (
-            owner.kind === "json-null" &&
-            (expression.questionDotToken ||
-                (ts.isOptionalChain(expression) &&
-                    owner.optionalChainShortCircuited))
-        ) {
-            return {
-                kind: "json-null",
-                cpp: "std::nullopt",
-                optionalChainShortCircuited: true,
-            };
-        }
+        if (owner.kind === "json-null" && expression.questionDotToken)
+            return { kind: "json-null", cpp: "std::nullopt" };
         const property = expression.name.text;
         if (owner.kind === "dom-event") {
             if (property === "target" || property === "currentTarget")
