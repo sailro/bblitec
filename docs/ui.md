@@ -96,7 +96,7 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 | Transforms | Uniform nonnegative scale | Nonuniform scale, nonempty clip rectangles |
 | Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`), `transition-delay`/`animation-delay` lists (negative delays start part-way) | `linear()` easing, other transition/animation longhands |
 | Selectors | Tags/IDs/classes, attribute presence/equality, combinators, state pseudo-classes, An+B, `not/is/where/has`, `::before/::after` | Nested `:has`, wider attribute operators, counters |
-| Other | Custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` | Runtime-generated stylesheet text, list markers, translucent accents |
+| Other | `!important`, custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` | Runtime-generated stylesheet text, list markers, translucent accents |
 
 In [deferred mode](features.md#deferred-capabilities), registered missing CSS properties, grid-track forms, nonconstant
 stylesheet installation and unstructured declaration strings throw at the write; host-page sheets still need admission.

@@ -77,6 +77,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -152,6 +153,21 @@ std::string_view trim_css_token(std::string_view value) {
         return {};
     const std::size_t last = value.find_last_not_of(" \t\r\n");
     return value.substr(first, last - first + 1);
+}
+
+/** A declaration value without its trailing `!important`, and whether it carried one. */
+std::pair<std::string_view, bool> split_css_important(std::string_view value) {
+    value = trim_css_token(value);
+    constexpr std::string_view keyword = "important";
+    if (value.size() <= keyword.size() ||
+        !ascii_iequals(value.substr(value.size() - keyword.size()), keyword))
+        return {value, false};
+    auto mark = value.size() - keyword.size();
+    while (mark > 0 && std::isspace(static_cast<unsigned char>(value[mark - 1])))
+        --mark;
+    if (mark == 0 || value[mark - 1] != '!')
+        return {value, false};
+    return {trim_css_token(value.substr(0, mark - 1)), true};
 }
 
 // CSS Backgrounds 3 `box-shadow: none | <shadow>#`: each shadow is an optional `inset`, two to four
@@ -2904,10 +2920,12 @@ std::string rml_css_font_families(std::string value, std::string_view property) 
             else if (character == ';' || character == '}')
                 break;
         }
-        const auto family = trim_css_token(std::string_view(value).substr(start, end - start));
+        const auto [family, important] =
+            split_css_important(std::string_view(value).substr(start, end - start));
         if (family.find(',') != std::string_view::npos) {
             // RmlUi parses a string property as one token; our font engine owns the CSS list.
-            const auto quoted = quote_css_font_family(std::string(family));
+            const auto quoted =
+                quote_css_font_family(std::string(family)) + (important ? " !important" : "");
             value.replace(start, end - start, quoted);
             end = start + quoted.size();
         }
@@ -2954,7 +2972,7 @@ void replace_css_identifier(std::string& text, std::string_view identifier,
  */
 std::string rml_css_delay_resets(std::string_view source) {
     std::string result;
-    std::size_t copied = 0, name_start = 0;
+    std::size_t copied = 0, name_start = 0, value_start = 0;
     std::string_view reset;
     char quote = 0;
     int depth = 0;
@@ -2965,6 +2983,8 @@ std::string rml_css_delay_resets(std::string_view source) {
         result += ';';
         result += reset;
         result += ":auto";
+        if (split_css_important(source.substr(value_start, at - value_start)).second)
+            result += " !important";
         copied = at;
         reset = {};
     };
@@ -2990,6 +3010,7 @@ std::string rml_css_delay_resets(std::string_view source) {
                     : ascii_iequals(name, "animation") ? "animation-delay"
                                                        : "";
             name_start = std::string_view::npos;
+            value_start = index + 1;
         } else if (depth == 0 && (token == ';' || token == '}')) {
             end_declaration(index);
             name_start = index + 1;
@@ -3489,16 +3510,19 @@ struct CascadedUiDeclaration {
     std::uint32_t specificity = 0;
     std::size_t source_order = 0;
     std::string value;
+    bool important = false;
 };
 
-void consider_cascaded_declaration(CascadedUiDeclaration& current, std::string value,
+/** Importance, then specificity, then source order. */
+void consider_cascaded_declaration(CascadedUiDeclaration& current, std::string_view value,
                                    std::uint32_t specificity, std::size_t source_order) {
-    if (value.empty() || (!current.value.empty() && (specificity < current.specificity ||
-                                                     (specificity == current.specificity &&
-                                                      source_order < current.source_order)))) {
+    const auto [declared, important] = split_css_important(value);
+    if (declared.empty() ||
+        (!current.value.empty() &&
+         std::tuple(important, specificity, source_order) <
+             std::tuple(current.important, current.specificity, current.source_order)))
         return;
-    }
-    current = {specificity, source_order, std::move(value)};
+    current = {specificity, source_order, std::string(declared), important};
 }
 
 struct ProjectedUiStyleSource {

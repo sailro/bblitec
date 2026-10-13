@@ -2719,6 +2719,39 @@ export class UiProjection {
             );
         }
         if (name !== "style") return value;
+        // Importance outranks order, so important declarations lower as a
+        // group after the normal ones, each native declaration keeping the
+        // mark (private PAL metadata excepted).
+        const normal: string[] = [];
+        const important: string[] = [];
+        UiProjection.forEachUiStyleDeclaration(value, (declaration) => {
+            const unmarked = declaration.replace(/\s*!\s*important\s*$/i, "");
+            (unmarked === declaration ? normal : important).push(unmarked);
+        });
+        if (important.length > 0) {
+            const marked: string[] = [];
+            UiProjection.forEachUiStyleDeclaration(
+                this.lowerUiAttributeLiteral(
+                    "style",
+                    important.join(";"),
+                    site,
+                ),
+                (declaration) => {
+                    if (!declaration.trim()) return;
+                    marked.push(
+                        declaration.trim().startsWith("--bbl-")
+                            ? declaration
+                            : `${declaration} !important`,
+                    );
+                },
+            );
+            return [
+                this.lowerUiAttributeLiteral("style", normal.join(";"), site),
+                ...marked,
+            ]
+                .filter((declarations) => declarations.trim())
+                .join(";");
+        }
         const customDeclarations: string[] = [];
         const authoredDeclarations: string[] = [];
         UiProjection.forEachUiStyleDeclaration(value, (declaration) => {
