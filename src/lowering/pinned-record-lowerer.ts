@@ -7210,7 +7210,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                       ? owner.element
                       : undefined;
             if (items) {
-                const values = `bbl::pinned::array_from_${owner.kind === "map" ? view : "values"}(${this.presentValue(unwrapped.expression.expression)})`;
+                const collection = this.presentValue(
+                    unwrapped.expression.expression,
+                );
+                const values =
+                    owner.kind === "map"
+                        ? `bbl::js::array_from_iterable<${this.cpp(items)}>(${collection}, [](const auto& entry) { return entry.${view === "keys" ? "first" : "second"}; })`
+                        : `bbl::js::array_from_iterable<${this.cpp(items)}>(${collection})`;
                 return finish(
                     mapper
                         ? `bbl::pinned::array_map<${this.cpp(element)}>(${values}, ${this.callbackArgument(mapper, [items, number], element)})`
@@ -7233,7 +7239,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         source,
                         `Pinned Array.from of ${this.cpp(shape)}.`,
                     );
-        const values = `bbl::pinned::array_from<${this.cpp(items)}>(${this.presentValue(unwrapped)})`;
+        // A typed array may be a view over another buffer, which only its
+        // element reads (`array_from_typed`) reach.
+        const values =
+            shape.kind === "typed"
+                ? `bbl::pinned::array_from_typed<${this.cpp(items)}>(${this.presentValue(unwrapped)})`
+                : `bbl::js::array_from_iterable<${this.cpp(items)}>(${this.presentValue(unwrapped)})`;
         return finish(
             mapper
                 ? `bbl::pinned::array_map<${this.cpp(element)}>(${values}, ${this.callbackArgument(mapper, [items, number], element)})`
@@ -7285,11 +7296,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 `${indent}return {${this.convert(entry.elements[0]!, shape.key)}, ${this.convert(entry.elements[1]!, shape.value)}};`,
             ],
         );
+        // Each entry goes straight into the map: the mapper cannot see the
+        // map the constructor has not returned yet, so no intermediate
+        // array of pairs is observable.
         const items = this.temporary("items");
         const mapped = this.temporary("mapper");
-        const pairs = this.temporary("entries");
         const map = this.temporary("map");
-        return `[&] { const auto ${items} = ${this.presentValue(seed.expression.expression)}; const auto ${mapped} = ${lambda}; std::vector<${pair}> ${pairs}; for (std::size_t index = 0; index < ${items}.size(); ++index) ${pairs}.push_back(${mapped}(${items}[index], static_cast<double>(index))); ${this.cpp(shape)} ${map}{}; for (auto& entry : ${pairs}) ${map}.set(std::move(entry.first), std::move(entry.second)); return ${map}; }()`;
+        return `[&] { const auto ${items} = ${this.presentValue(seed.expression.expression)}; const auto ${mapped} = ${lambda}; ${this.cpp(shape)} ${map}{}; for (std::size_t index = 0; index < ${items}.size(); ++index) { auto entry = ${mapped}(${items}[index], static_cast<double>(index)); ${map}.set(std::move(entry.first), std::move(entry.second)); } return ${map}; }()`;
     }
 
     /** The weak key a WeakMap or WeakSet files an object under. */
@@ -7687,7 +7700,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     return this.refuse(node, "Pinned includes from an index.");
                 return `bbl::js::array_includes(${receiver()}, ${this.convert(first, element)})`;
             case "shift":
-                return `bbl::pinned::array_shift<${this.cpp(optionalOf(element))}>(${receiver()})`;
+                return this.collectionResult(
+                    `bbl::js::array_shift_or_absent(${receiver()})`,
+                    element,
+                );
             case "join": {
                 const separator = first
                     ? this.convert(first, { kind: "string" })
