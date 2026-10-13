@@ -250,7 +250,8 @@ only a cache mode use packaged responses. A response fulfills at its head and ex
 byte ReadableStream (one object; null for null-body statuses and HEAD) with `locked`, `cancel()` and a default reader's
 `read()`/`cancel()`/`releaseLock()`; text/json/arrayBuffer consume it once. HTTP errors fulfill; transport/missing-file
 errors reject, or error a streaming body, with a TypeError. Aborting rejects a pending fetch, or errors a readable body,
-with the signal's reason and cancels the transfer.
+with the signal's reason and cancels the transfer. A body's end or transport error reaches reads in a task of its own,
+so an abort earlier in the current task wins over one the realm has not yet observed.
 Descriptor arrays and typed helpers retain closed local URL selections; filename patterns package only
 matching files in an authored directory. URL expressions run once, and keys outside the package reject.
 Request objects, reader options, `reader.closed`, piping, teeing, Headers iteration and wider options/methods refuse.

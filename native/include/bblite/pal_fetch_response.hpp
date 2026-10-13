@@ -85,9 +85,10 @@ struct HttpResponseHead {
  * The thread-safe exchange between one transfer's transport thread and its realm. The transport
  * delivers the head, then body chunks, then the end or a failure; the realm polls, taking every
  * queued chunk as one, and, when it needs more, registers one completion the transport posts at
- * its next delivery. A queue holding `high_water` bytes of chunk storage blocks the transport
- * until the realm reads (backpressure). `cancel` (either side, any thread) discards queued bytes
- * and wakes a blocked transport.
+ * its next delivery. The end or failure is the realm's only in a task such a completion runs, as
+ * the Fetch standard queues it as a task. A queue holding `high_water` bytes of chunk storage
+ * blocks the transport until the realm reads (backpressure). `cancel` (either side, any thread)
+ * discards queued bytes, wakes a blocked transport and ends what the transport reports.
  */
 class HttpExchange {
 public:
@@ -128,7 +129,7 @@ public:
     }
     void fail(std::string message) {
         std::lock_guard lock(mutex_);
-        if (finished_ || failure_)
+        if (finished_ || failure_ || canceled_)
             return;
         failure_ = std::move(message);
         post_locked(head_ ? std::exchange(waiting_, 0) : head_completion_);
@@ -148,7 +149,12 @@ public:
         return std::nullopt;
     }
     enum class Poll { chunk, pending, done, failed };
-    Poll poll(std::vector<std::uint8_t>& chunk, std::string& failure) {
+    /**
+     * The queued chunks, else, in a task a transport completion runs (`delivery_task`), the end or
+     * failure. A poll elsewhere reports `pending` instead, so that an abort in the realm's current
+     * task wins over an end or failure the realm has not yet observed.
+     */
+    Poll poll(std::vector<std::uint8_t>& chunk, std::string& failure, bool delivery_task) {
         std::lock_guard lock(mutex_);
         if (!chunks_.empty()) {
             // The queued chunks arrived in order: one read delivers them together.
@@ -168,6 +174,8 @@ public:
             space_.notify_all();
             return Poll::chunk;
         }
+        if (!delivery_task)
+            return Poll::pending;
         if (failure_) {
             failure = *failure_;
             return Poll::failed;
@@ -350,8 +358,12 @@ inline void error(HttpBodyState& state, js::Error reason) {
 inline js::Error type_error(std::string message) {
     return std::make_exception_ptr(js::NamedError("TypeError", std::move(message)));
 }
-/** Serve queued reads from the source; wait on the transport when it has nothing yet. */
-inline void pump(const std::shared_ptr<HttpBodyState>& state) {
+/**
+ * Serve queued reads from the source; wait on the transport when it has nothing yet. Only a
+ * `delivery_task` (the task a transport completion runs) ends or errors the stream, and only
+ * before it delivers a chunk: the end or failure is its own task after that chunk's.
+ */
+inline void pump(const std::shared_ptr<HttpBodyState>& state, bool delivery_task) {
     while (!state->reads.empty() && state->phase == HttpBodyState::Phase::readable) {
         std::vector<std::uint8_t> chunk;
         std::string failure;
@@ -361,12 +373,13 @@ inline void pump(const std::shared_ptr<HttpBodyState>& state) {
             state->whole.reset();
             poll = chunk.empty() ? HttpExchange::Poll::done : HttpExchange::Poll::chunk;
         } else if (state->transport && state->transport->exchange) {
-            poll = state->transport->exchange->poll(chunk, failure);
+            poll = state->transport->exchange->poll(chunk, failure, delivery_task);
         }
         if (poll == HttpExchange::Poll::chunk) {
             auto read = std::move(state->reads.front());
             state->reads.pop_front();
             read.resolve(BodyReadResult{false, js::U8Array(js::ArrayBuffer(std::move(chunk)))});
+            delivery_task = false;
             continue;
         }
         if (poll == HttpExchange::Poll::done) {
@@ -384,7 +397,7 @@ inline void pump(const std::shared_ptr<HttpBodyState>& state) {
         state->waiting = loop.register_completion([weak](std::unique_ptr<ExternalEvent>) {
             if (const auto current = weak.lock()) {
                 current->waiting = 0;
-                pump(current);
+                pump(current, true);
             }
         });
         state->transport->exchange->wait(state->waiting);
@@ -441,7 +454,7 @@ public:
                 return js::Promise<BodyReadResult>::rejected(*body.error);
             js::Promise<BodyReadResult> read;
             body.reads.push_back(read);
-            http_detail::pump(state().stream.shared_state());
+            http_detail::pump(state().stream.shared_state(), false);
             return read;
         } catch (...) {
             return js::Promise<BodyReadResult>::rejected(std::current_exception());

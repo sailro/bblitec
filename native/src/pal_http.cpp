@@ -188,14 +188,17 @@ struct AsyncRequest {
         SetEvent(request->completed.value);
     }
 
-    /** Wait for the operation just started; false when the exchange was canceled. */
+    /**
+     * Wait for the operation just started; false when the exchange was canceled, also when the
+     * operation completed (or failed) as the cancellation arrived.
+     */
     bool wait(DWORD expected) {
-        const std::array<HANDLE, 2> events{completed.value, canceled->value};
+        const std::array<HANDLE, 2> events{canceled->value, completed.value};
         const auto signaled = WaitForMultipleObjects(static_cast<DWORD>(events.size()),
                                                      events.data(), FALSE, INFINITE);
-        if (signaled == WAIT_OBJECT_0 + 1)
+        if (signaled == WAIT_OBJECT_0)
             return false;
-        if (signaled != WAIT_OBJECT_0)
+        if (signaled != WAIT_OBJECT_0 + 1)
             transport_failure(GetLastError());
         if (status == WINHTTP_CALLBACK_STATUS_REQUEST_ERROR)
             transport_failure(error);
