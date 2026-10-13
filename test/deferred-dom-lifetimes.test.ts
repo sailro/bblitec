@@ -165,9 +165,10 @@ test("tabIndex bridge failures evaluate receiver and RHS once without changing a
         if(order!=="rvr"||caught!==2)throw new Error("property effects");
         if(panel.getAttribute("tabindex")!==null)throw new Error("deferred write changed state");
     `;
-    assert.equal(
-        compileSource(source).manifest.deferredCapabilities,
-        undefined,
+    // Strict generation refuses the numeric focus order it cannot represent.
+    assert.throws(
+        () => compileSource(source),
+        /Retained element property 'tabIndex' assignment is not lowered natively/,
     );
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(

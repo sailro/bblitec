@@ -141,6 +141,8 @@ const WINDOW_INTERFACES: ReadonlyMap<string, WindowInterface> = new Map<
         [
             ["HTMLInputElement", "input"],
             ["HTMLSelectElement", "select"],
+            ["HTMLOptionElement", "option"],
+            ["HTMLOutputElement", "output"],
             ["HTMLTextAreaElement", "textarea"],
             ["HTMLButtonElement", "button"],
             ["HTMLCanvasElement", "canvas"],
