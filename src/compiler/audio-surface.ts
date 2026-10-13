@@ -10,7 +10,12 @@ import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 import { readProperty, type PropertyContext } from "./properties.js";
 import { isStringValue, type Feature, type Value } from "./types.js";
 import { domAudioHandleKind } from "./data-types.js";
-import { listenerOptions } from "./dom-listeners.js";
+import {
+    declaresListenerSignal,
+    listenerAddition,
+    listenerOptions,
+    pinListener,
+} from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { packagedUrlAssets, type StaticFetchContext } from "./static-fetch.js";
 import { deploymentUrl } from "./deployment.js";
@@ -538,10 +543,12 @@ const AUDIO_ELEMENT_EVENTS: Readonly<Record<string, string>> = {
 };
 
 /**
- * `add/removeEventListener(type, listener[, options])` on an audio target:
- * the target and the listener's identity pinned in source order. `event`
- * spells a represented type's native argument (with its trailing comma), or
- * refuses it; `rest` is the listener (when adding) and the options.
+ * `add/removeEventListener(type, listener[, options])` on an audio target,
+ * whose native registry is a `PlatformEventListeners`: the target and the
+ * listener's identity pinned in source order. `event` spells a represented
+ * type's native argument (with its trailing comma), or refuses it. `native`
+ * spells the registry call from the listener (when adding) and the options;
+ * an addition takes a `signal` lease (`listenerAddition`).
  */
 function compileAudioListener(
     context: AudioCallContext,
@@ -549,15 +556,15 @@ function compileAudioListener(
     callee: ts.PropertyAccessExpression,
     receiver: Value,
     event: (type: string) => string | undefined,
-    refusals: { type: string; payload: string; signal: string },
-): {
-    target: string;
-    event: string;
-    identity: string;
-    rest: string;
-    absent: boolean;
-    removing: boolean;
-} {
+    refusals: { type: string; payload: string },
+    native: (
+        removing: boolean,
+        target: string,
+        event: string,
+        identity: string,
+        rest: string,
+    ) => string,
+): Value {
     context.expectArgumentCount(call, 2, 3);
     if (!context.options.workers) throw new ApplicationRealmRequired();
     const selected = { ...receiver };
@@ -567,8 +574,8 @@ function compileAudioListener(
         "audio_event_target",
         callee.expression,
     );
-    const native = event(context.compileStringLiteral(argumentAt(call, 0)));
-    if (native === undefined) return context.fail(call, refusals.type);
+    const type = event(context.compileStringLiteral(argumentAt(call, 0)));
+    if (type === undefined) return context.fail(call, refusals.type);
     const callback = argumentAt(call, 1);
     context.callbacks.hoistForwardCallbackBindings(callback);
     const removing = callee.name.text === "removeEventListener";
@@ -610,17 +617,31 @@ function compileAudioListener(
             listener = compiled.cpp;
         }
     }
+    // A `signal` evaluates after the listener it may remove.
+    if (
+        !absent &&
+        !removing &&
+        declaresListenerSignal(context.checker, call.arguments[2])
+    )
+        listener = pinListener(context, listener);
     const options = listenerOptions(context, call.arguments[2], removing);
-    if (options.signal) context.fail(call.arguments[2]!, refusals.signal);
+    if (absent) return { kind: "void", cpp: "" };
+    if (removing)
+        return {
+            kind: "void",
+            cpp: native(true, target.cpp, type, identity, options.capture),
+        };
     return {
-        target: target.cpp,
-        event: native,
-        identity,
-        rest: removing
-            ? options.capture
-            : `${listener}, ${options.capture}, ${options.once}`,
-        absent,
-        removing,
+        kind: "void",
+        cpp: listenerAddition(options.signal, (lease) =>
+            native(
+                false,
+                target.cpp,
+                type,
+                identity,
+                `${listener}, ${options.capture}, ${options.once}${lease ? `, ${lease}` : ""}`,
+            ),
+        ),
     };
 }
 
@@ -633,8 +654,8 @@ function compileAudioElementMethod(
 ): Value | undefined {
     const method = callee.name.text;
     context.reachFeature("audio:media-element", call);
-    if (method === "addEventListener" || method === "removeEventListener") {
-        const lowered = compileAudioListener(
+    if (method === "addEventListener" || method === "removeEventListener")
+        return compileAudioListener(
             context,
             call,
             callee,
@@ -647,16 +668,10 @@ function compileAudioElementMethod(
                 type: `Only ${Object.keys(AUDIO_ELEMENT_EVENTS).join(", ")} listeners are represented on an Audio element.`,
                 payload:
                     "Audio element event payloads are not represented yet.",
-                signal: "Audio element listeners with an AbortSignal are not lowered.",
             },
+            (removing, target, event, identity, rest) =>
+                `bbl::pal::audio_element_${removing ? "remove" : "add"}_listener(${target}, ${event}${identity}, ${rest})`,
         );
-        return {
-            kind: "void",
-            cpp: lowered.absent
-                ? ""
-                : `bbl::pal::audio_element_${lowered.removing ? "remove" : "add"}_listener(${lowered.target}, ${lowered.event}${lowered.identity}, ${lowered.rest})`,
-        };
-    }
     if (method === "removeAttribute") {
         context.expectArgumentCount(call, 1, 1);
         if (context.compileStringLiteral(argumentAt(call, 0)) !== "src")
@@ -932,9 +947,9 @@ function compileAudioReceiverMethod(
     if (receiver.kind === "audio-node") {
         switch (method) {
             case "addEventListener":
-            case "removeEventListener": {
+            case "removeEventListener":
                 // An observed source retains its completion until a listener removal releases it.
-                const lowered = compileAudioListener(
+                return compileAudioListener(
                     context,
                     call,
                     callee,
@@ -944,16 +959,10 @@ function compileAudioReceiverMethod(
                         type: "Only scheduled audio source ended listeners are represented.",
                         payload:
                             "Audio ended event payloads are not represented yet.",
-                        signal: "Audio ended listeners with an AbortSignal are not lowered.",
                     },
+                    (removing, target, _event, identity, rest) =>
+                        `bbl::pal::audio_${removing ? "remove" : "add"}_ended_listener(${target}, ${identity}, ${rest})`,
                 );
-                return {
-                    kind: "void",
-                    cpp: lowered.absent
-                        ? ""
-                        : `bbl::pal::audio_${lowered.removing ? "remove" : "add"}_ended_listener(${lowered.target}, ${lowered.identity}, ${lowered.rest})`,
-                };
-            }
             case "connect": {
                 if (call.arguments.length !== 1) {
                     context.fail(

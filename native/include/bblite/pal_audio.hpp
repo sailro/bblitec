@@ -72,14 +72,19 @@
 #include <bblite/js_data.hpp>
 #include <bblite/pal_audio_types.hpp>
 #include <bblite/js_callback.hpp>
+#include <bblite/listener_lease.hpp>
 
 namespace bbl::pal {
 
 #if BBLITE_WORKERS
-/** Scheduled-source callbacks run through their owning realm's event queue. */
-void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
+/**
+ * Scheduled-source callbacks run through their owning realm's event queue. An
+ * addition under an AbortSignal holds its `lease` (`bbl::js::add_event_listener`);
+ * false for a listener already added.
+ */
+bool audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
                               js::Callback<void()> callback, bool capture = false,
-                              bool once = false);
+                              bool once = false, ListenerLeasePtr lease = {});
 void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture = false);
 void audio_set_ended_handler(AudioNodeHandle node, js::Callback<void()> callback);
 #endif

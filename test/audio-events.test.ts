@@ -50,6 +50,11 @@ test("scheduled audio events retain callbacks through playback and release their
             const later=()=>{throw new Error("removed during dispatch");};
             const handler=()=>{if(order!==1)throw new Error("capture order");order=2;natural++;alias.disconnect();alias.removeEventListener("ended",later);};
             alias.addEventListener("ended",removed);voice.removeEventListener("ended",removed);
+            const early=new AbortController();early.abort();
+            voice.addEventListener("ended",()=>{throw new Error("pre-aborted listener");},{signal:early.signal});
+            const late=new AbortController();
+            voice.addEventListener("ended",()=>{throw new Error("aborted listener");},{signal:late.signal});
+            late.abort();
             voice.addEventListener("ended",handler,{once:true});voice.addEventListener("ended",handler);
             voice.addEventListener("ended",()=>{order=1;},true);voice.addEventListener("ended",later);
             voice.start();

@@ -182,8 +182,8 @@ Heightfields need square ground grids. Contract: [physics](fidelity.md#physics-c
 LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling (value curves included), decoding, ended
 listeners, `disconnect(destination[, output[, input]])`, equal-power `PannerNode` and the context `listener` (`"HRTF"`
 refuses: no HRTF data is packaged). A buffer source loops its whole buffer only: a `loopStart`/`loopEnd` region inside
-it, or a loop started with a duration, throws at `start`. Event payloads, ended-listener `signal`, context options,
-statechange and output selection refuse or are absent; so does any other node, parameter or context property write.
+it, or a loop started with a duration, throws at `start`. Event payloads, context options, statechange and output
+selection refuse or are absent; so does any other node, parameter or context property write.
 `createAudioEngineAsync` adopts `audioContext`; its other options refuse.
 
 Media streams: `MediaStream`/`MediaStreamTrack` objects (track sets, `addTrack`/`removeTrack`, `clone`, `stop`,

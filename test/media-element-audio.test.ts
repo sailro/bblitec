@@ -271,6 +271,15 @@ async function main(): Promise<void> {
     probe.addEventListener("ended", () => {
         events.push("ended");
     });
+    const quiet = new AbortController();
+    probe.addEventListener(
+        "ended",
+        () => {
+            events.push("aborted");
+        },
+        { signal: quiet.signal },
+    );
+    quiet.abort();
     // Unrouted, the element plays to the default output; routing moves it.
     await probe.play();
     if (!(Math.abs(probe.duration - 0.6) < 0.001) || probe.paused)

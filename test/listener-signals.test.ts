@@ -317,6 +317,14 @@ test("listener signals lower in deferred mode and refuse unrepresented operands"
     );
     assert.equal(deferred.manifest.deferredCapabilities, undefined);
     assert.match(deferred.cpp, /bbl::js::add_event_listener\(/);
+    // Audio sources and elements take a signal through the same registry lease.
+    const audio = compileSource(
+        `${realm} const c = new AbortController(); const source = new AudioContext().createBufferSource(); source.addEventListener("ended", () => {}, { signal: c.signal });`,
+    );
+    assert.match(
+        audio.cpp,
+        /bbl::js::add_event_listener\([^;]*audio_add_ended_listener\([^;]*std::move\(listener_lease\)\)/,
+    );
     for (const [source, message] of [
         [
             `window.addEventListener("blur", () => {}, { signal: null });`,
@@ -325,10 +333,6 @@ test("listener signals lower in deferred mode and refuse unrepresented operands"
         [
             `window.addEventListener("blur", () => {}, { signal: 5 });`,
             /requires the DOM AbortSignal identity/,
-        ],
-        [
-            `const signal = new AbortController().signal; const source = new AudioContext().createBufferSource(); source.addEventListener("ended", () => {}, { signal });`,
-            /Audio ended listeners with an AbortSignal are not lowered/,
         ],
     ] as const)
         assert.throws(() => compileSource(realm + source), message);
