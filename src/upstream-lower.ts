@@ -1604,7 +1604,9 @@ ${lowerThinInstanceSync(context)}
             ),
         );
         emitReached("upstream/src/material_shader.cpp", () =>
-            factories.lowerShaderMaterialFactory(),
+            factories.lowerShaderMaterialFactory(
+                features.includes("material:shader-uniform-ranges"),
+            ),
         );
         emitReached("upstream/src/material_shader_external.cpp", () =>
             lowerShaderExternalTextures(context),

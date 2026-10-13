@@ -8,7 +8,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
 buffers, buses, spatial/stereo/analyzer and master volume, media streams/recording/streamed audio, script elements,
-idle callbacks, dynamic pixel ratio, application-realm device recovery, and the [UI](ui.md) items
+idle callbacks, application-realm device recovery, and the [UI](ui.md) items
 marked deferred. Unregistered APIs still refuse.
 
 ## Language
@@ -82,10 +82,14 @@ Rules:
 
 - One engine per entry setup. Rebinding an engine alias refuses.
 - `msaaSamples`: 1 for numeric 1, else 4; other constants refuse.
-- `resizeEngine` is a no-op; native loops own extent refresh.
+- Native loops own extent refresh; `resizeEngine` only applies `maxDevicePixelRatio` writes.
+- `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
+- `maxDevicePixelRatio` writes (application realm) size a DOM canvas backing store at `resizeEngine` and the next frame
+  head; the window composites it scaled. The `createEngine` option keeps the platform rules below.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
+- `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer
   storage views with cube sampling need Dawn or patched SDL D3D12/Vulkan/Metal.
 
@@ -134,10 +138,11 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 ## Materials
 
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
-- Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions.
-- Shader materials: 2D/array samplers, storage buffers, `get/setShaderUniform` by runtime name. Template text and plugin
-  `getCustomCode` functions run at generation; reaching host/engine APIs, `this`, module `let`, clock or random refuses.
-  Alpha-to-coverage only on shader materials.
+- Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions, except Standard
+  `diffuseColor` after `enableMaterialTracking` (re-read each frame).
+- Shader materials: 2D/array samplers, storage buffers, `get/setShaderUniform` by runtime name,
+  `enableShaderUniformRangeUpdates`. Template text and plugin `getCustomCode` functions run at generation; reaching
+  host/engine APIs, `this`, module `let`, clock or random refuses. Alpha-to-coverage only on shader materials.
 - External video textures come from a closed zero-parameter producer before engine start.
 - Node materials: closed NME graphs; scalar inputs writable live; vector writes and topology changes refuse. Geometry MRTs
   need static packed FLOAT attributes.

@@ -2328,6 +2328,9 @@ public:
             encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
         }
 #endif
+        // The first encoder submitted carries the opening marker.
+        if (const auto frame_timer = gpu_frame_timer_begin(engine))
+            encode_dawn_gpu_timestamp(encoder, *frame_timer);
         capture_source = surface_texture.texture;
         // Meaningful only under the frame-graph arm, where the default
         // above is a never-rendered surface: set by the same two arms
@@ -4248,12 +4251,15 @@ public:
             capture =
                 begin_dawn_surface_capture(state.device, encoder, capture_source, width, height);
         }
+        if (const auto frame_timer = gpu_frame_timer_end(engine))
+            encode_dawn_gpu_timestamp(encoder, *frame_timer);
         DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
         submit_dawn_command(state.queue, command);
         command.reset();
         encoder.reset();
         flush_frame_gpu_retirements(engine);
         finish_gpu_task_timing_frame(engine);
+        resolve_gpu_frame_timer(engine);
 #if BBLITE_COMPUTE_FRAME_GRAPH
         finish_compute_frame_prefix(engine);
 #endif

@@ -540,6 +540,7 @@ export interface AssignmentContext
             | "isNativeUiValueExpression"
             | "emit"
             | "allocateTemporaryCppName"
+            | "nativeEmission"
             | "reachFeature"
             | "reachJsData"
             | "propertyName"
@@ -2314,6 +2315,8 @@ import {
 } from "./particle-buffer.js";
 import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { surfaceResizeFunction } from "./surface-pixel-ratio.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
@@ -2526,6 +2529,30 @@ function emitTargetPropertyAssignment(
         context.emit({
             kind: "expression",
             code: `bbl::compute_task_${field}(${target.cpp}) = ${context.dataLowerer.compileForSink(expression.right, type)};`,
+        });
+        return true;
+    }
+    if (target.kind === "engine" && property === "maxDevicePixelRatio") {
+        requireSimpleAssignment(
+            context,
+            expression,
+            "SurfaceContext.maxDevicePixelRatio",
+        );
+        // Only an application realm presents a DOM canvas whose backing store a cap sizes.
+        if (!context.options.workers) throw new ApplicationRealmRequired();
+        // The owner is evaluated before the assigned value.
+        const surface = context.allocateTemporaryCppName("surface_owner");
+        context.emit({
+            kind: "declaration",
+            type: "auto&",
+            name: surface,
+            initializer: target.cpp,
+            attributes: "[[maybe_unused]] ",
+        });
+        const cap = context.compileNumber(expression.right, "double");
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_surface_max_device_pixel_ratio(${surface}, ${cap}, &bblscene::${surfaceResizeFunction(context)});`,
         });
         return true;
     }

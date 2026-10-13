@@ -676,6 +676,7 @@ void bind_canvas_engine(const std::shared_ptr<CanvasElement>& canvas,
     engine->options.height = height;
     engine->canvas_client_width = box.width;
     engine->canvas_client_height = box.height;
+    engine->dom_canvas = true;
 }
 
 Engine& window_document_engine() { return current_document().engine; }
