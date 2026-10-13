@@ -180,46 +180,37 @@ inline UiControlColors ui_control_colors(Rml::Element& element,
 }
 
 /**
- * Exposes each element's scheme and enabled accent to the user-agent sheet:
+ * Exposes an element's scheme and enabled accent to the user-agent sheet:
  * `:bbl-dark-scheme` and `:bbl-accent` with `--bbl-accent`, so author rules
  * keep their precedence over the control defaults.
  */
-inline bool sync_ui_control_schemes(Rml::Element& document,
-                                    const UiControlSchemeProperties& properties) {
+inline bool sync_ui_control_scheme_element(Rml::Element& element,
+                                           const UiControlSchemeProperties& properties) {
     static const Rml::String dark_name = "bbl-dark-scheme", accent_name = "bbl-accent",
                              accent_variable = "--bbl-accent";
     bool changed = false;
-    const auto pseudo = [&](Rml::Element& element, const Rml::String& name, bool active) {
+    const auto pseudo = [&](const Rml::String& name, bool active) {
         if (element.IsPseudoClassSet(name) != active) {
             element.SetPseudoClass(name, active);
             changed = true;
         }
     };
-    const auto visit = [&](const auto& self, Rml::Element& element) -> void {
-        pseudo(element, dark_name, ui_dark_color_scheme(element, properties));
-        const auto accent = element.IsPseudoClassSet("disabled")
-                                ? std::nullopt
-                                : ui_accent_color(element, properties);
-        pseudo(element, accent_name, accent.has_value());
-        const auto* previous = element.GetLocalProperty(accent_variable);
-        if (accent) {
-            const auto value = "rgb(" + std::to_string(accent->r) + "," +
-                               std::to_string(accent->g) + "," + std::to_string(accent->b) + ")";
-            if (!previous || previous->Get<Rml::String>() != value) {
-                element.SetProperty(accent_variable, value);
-                changed = true;
-            }
-        } else if (previous) {
-            element.RemoveProperty(accent_variable);
+    pseudo(dark_name, ui_dark_color_scheme(element, properties));
+    const auto accent =
+        element.IsPseudoClassSet("disabled") ? std::nullopt : ui_accent_color(element, properties);
+    pseudo(accent_name, accent.has_value());
+    const auto* previous = element.GetLocalProperty(accent_variable);
+    if (accent) {
+        const auto value = "rgb(" + std::to_string(accent->r) + "," + std::to_string(accent->g) +
+                           "," + std::to_string(accent->b) + ")";
+        if (!previous || previous->Get<Rml::String>() != value) {
+            element.SetProperty(accent_variable, value);
             changed = true;
         }
-        for (int index = 0; index < element.GetNumChildren(); ++index) {
-            auto* child = element.GetChild(index);
-            if (!rmlui_dynamic_cast<Rml::ElementText*>(child))
-                self(self, *child);
-        }
-    };
-    visit(visit, document);
+    } else if (previous) {
+        element.RemoveProperty(accent_variable);
+        changed = true;
+    }
     return changed;
 }
 

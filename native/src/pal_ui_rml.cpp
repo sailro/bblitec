@@ -4625,9 +4625,7 @@ struct UiRmlRuntime {
                 if (sync_generated_content())
                     context->Update();
             }
-            if (sync_ui_scrollbar_styles(*document, scrollbar_properties))
-                context->Update();
-            if (sync_ui_control_schemes(*document, control_scheme_properties))
+            if (sync_control_states())
                 context->Update();
             if (background_styles.sync(*document))
                 context->Update();
@@ -4708,6 +4706,26 @@ struct UiRmlRuntime {
         path.push_back(DomEventTarget::document());
         path.push_back(DomEventTarget::window());
         return path;
+    }
+
+    /**
+     * One walk per update syncs the cascaded state the user-agent sheet reads:
+     * scrollbar styles on scroll owners, scheme and accent on every element.
+     */
+    bool sync_control_states() {
+        bool changed = false;
+        const auto visit = [&](const auto& self, Rml::Element& element) -> void {
+            changed = sync_ui_scrollbar_element(element, scrollbar_properties) || changed;
+            changed = sync_ui_control_scheme_element(element, control_scheme_properties) || changed;
+            // Internal controls inherit the variables but are not scroll owners.
+            for (int index = 0; index < element.GetNumChildren(); ++index) {
+                auto* child = element.GetChild(index);
+                if (!rmlui_dynamic_cast<Rml::ElementText*>(child))
+                    self(self, *child);
+            }
+        };
+        visit(visit, *document);
+        return changed;
     }
 
     bool update_density_ratio() {
@@ -7048,9 +7066,7 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
                 runtime.context->Update();
         }
     }
-    if (sync_ui_scrollbar_styles(*runtime.document, runtime.scrollbar_properties))
-        runtime.context->Update();
-    if (sync_ui_control_schemes(*runtime.document, runtime.control_scheme_properties))
+    if (runtime.sync_control_states())
         runtime.context->Update();
     if (focus_changed || hover_changed || motion_changed || dimensions_changed || density_changed ||
         generated_changed || containers_changed) {
