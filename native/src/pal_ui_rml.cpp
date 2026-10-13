@@ -3117,6 +3117,74 @@ std::string rml_css_color_alpha(std::string value, bool clamp_channels = false) 
     return value;
 }
 
+/** rgb()/rgba() over var() keep CSS channel ranges until var() substitution resolves them. */
+std::string rml_css_variable_colors(std::string value) {
+    constexpr std::string_view marker = "bbl-css-color";
+    for (std::size_t position = 0; (position = value.find("rgb", position)) != std::string::npos;) {
+        const bool alpha = value.compare(position, 5, "rgba(") == 0;
+        const std::size_t open = position + (alpha ? 4 : 3);
+        if ((!alpha && value.compare(position, 4, "rgb(") != 0) ||
+            (position && css_identifier_character(value[position - 1]))) {
+            position += 3;
+            continue;
+        }
+        std::size_t end = open;
+        for (int depth = 0; end < value.size(); ++end) {
+            depth += value[end] == '(' ? 1 : value[end] == ')' ? -1 : 0;
+            if (depth == 0)
+                break;
+        }
+        if (std::string_view(value).substr(open, end - open).find("var(") == std::string::npos) {
+            position = end;
+            continue;
+        }
+        value.replace(position, open - position, marker);
+        position += marker.size();
+    }
+    return value;
+}
+
+/** Substituted rgb()/rgba() over var(): CSS channels and alpha to RmlUi's 0..255 channels. */
+std::string rml_css_resolve_variable_colors(std::string value) {
+    constexpr std::string_view marker = "bbl-css-color(";
+    for (std::size_t position = 0;
+         (position = value.find(marker, position)) != std::string::npos;) {
+        const std::size_t open = position + marker.size();
+        const std::size_t end = value.find(')', open);
+        const auto refuse = [&] {
+            throw std::runtime_error(
+                "Unsupported retained UI colour after variable substitution: " +
+                value.substr(position));
+        };
+        if (end == std::string::npos)
+            refuse();
+        Rml::StringList arguments;
+        Rml::StringUtilities::ExpandString(arguments, value.substr(open, end - open), ',');
+        if (arguments.size() != 3 && arguments.size() != 4)
+            refuse();
+        std::string resolved = arguments.size() == 4 ? "rgba(" : "rgb(";
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
+            const std::string_view argument = trim_css_token(arguments[index]);
+            const bool negative = !argument.empty() && argument.front() == '-';
+            std::size_t offset = !argument.empty() && (negative || argument.front() == '+') ? 1 : 0;
+            const auto number = pal::detail::css_decimal(argument, offset);
+            const bool percent = offset + 1 == argument.size() && argument[offset] == '%';
+            if (!number || (offset != argument.size() && !percent))
+                refuse();
+            const double signed_number = negative ? -*number : *number;
+            const double channel =
+                index == 3
+                    ? std::clamp(percent ? signed_number / 100 : signed_number, 0.0, 1.0) * 255
+                    : std::clamp(percent ? signed_number * 2.55 : signed_number, 0.0, 255.0);
+            resolved += std::to_string(std::lround(channel));
+            resolved += index + 1 == arguments.size() ? ")" : ",";
+        }
+        value.replace(position, end + 1 - position, resolved);
+        position += resolved.size();
+    }
+    return value;
+}
+
 std::string rml_css_density_units(std::string value) {
     // The Rml context and recorded vertices use drawable pixels. Browser CSS
     // px, however, are density-independent CSS pixels. Rml's dp unit is the
@@ -4717,6 +4785,11 @@ public:
     }
 };
 
+struct UiRmlRuntime;
+/** The one live runtime, whose viewport and root font complete math after var() substitution. */
+UiRmlRuntime* substitution_runtime = nullptr;
+Rml::String substitute_css(const Rml::String& property, const Rml::String& value);
+
 struct UiRmlRuntime {
     UiRmlRuntime(Engine& engine, SDL_Window* window, std::uint32_t width, std::uint32_t height,
                  bool (*read_motion_preference)() = system_reduced_motion)
@@ -4730,6 +4803,8 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi initialization failed.");
             }
             initialized = true;
+            substitution_runtime = this;
+            Rml::StyleSheetSpecification::SetSubstitutionFilter(&substitute_css);
             register_ui_style_properties();
             for (const auto* name : {"brightness", "contrast", "grayscale", "invert", "opacity",
                                      "saturate", "sepia", "hue-rotate", "blur", "drop-shadow"}) {
@@ -4940,6 +5015,8 @@ struct UiRmlRuntime {
 #endif
         } catch (...) {
             if (initialized) {
+                Rml::StyleSheetSpecification::SetSubstitutionFilter(nullptr);
+                substitution_runtime = nullptr;
                 style_selectors.clear();
                 background_styles.clear();
                 Rml::Shutdown();
@@ -4957,6 +5034,8 @@ struct UiRmlRuntime {
             engine.dom_input->end_withheld_press = {};
         }
         if (initialized) {
+            Rml::StyleSheetSpecification::SetSubstitutionFilter(nullptr);
+            substitution_runtime = nullptr;
             style_selectors.clear();
             background_styles.clear();
             Rml::Shutdown();
@@ -5031,7 +5110,17 @@ struct UiRmlRuntime {
         value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
                                     viewport_height / density_ratio, root_font_size, property);
         value = rml_css_density_units(std::move(value));
-        return rml_css_color_alpha(std::move(value));
+        return rml_css_color_alpha(rml_css_variable_colors(std::move(value)));
+    }
+
+    /** Completes the math and colours the projection left over var() once it is substituted. */
+    std::string project_substituted_css(std::string value, std::string_view property) const {
+        // Filter arguments resolve their own arithmetic (UiResolvedFilter).
+        if (property == "filter" || property == "backdrop-filter")
+            return value;
+        value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
+                                    viewport_height / density_ratio, root_font_size, property);
+        return rml_css_resolve_variable_colors(rml_css_density_units(std::move(value)));
     }
 
     void set_projected_property(Rml::Element& element, const std::string& name,
@@ -7130,6 +7219,12 @@ struct UiRmlRuntime {
     UiBackgroundStyles background_styles;
     double canvas_render_ms = 0;
 };
+
+Rml::String substitute_css(const Rml::String& property, const Rml::String& value) {
+    if (!substitution_runtime)
+        throw std::runtime_error("CSS variable substitution needs the retained UI runtime.");
+    return substitution_runtime->project_substituted_css(value, property);
+}
 
 // A canvas is a replaced element: its backing size, in CSS pixels, is its
 // intrinsic size and ratio wherever CSS leaves a dimension auto.

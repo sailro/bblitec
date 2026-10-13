@@ -86,7 +86,7 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 
 | Area | Admitted | Refuses |
 | --- | --- | --- |
-| Box | fixed/inset, px/rem/viewport calc/min/max/clamp, box sizing, physical and horizontal-LTR logical edges, float/clear | Vertical/RTL logical mapping, element-font-relative math |
+| Box | fixed/inset, px/rem/viewport calc/min/max/clamp (also over `var()`, with times and angles), box sizing, physical and horizontal-LTR logical edges, float/clear | Vertical/RTL logical mapping, element-font-relative math, other units in math over `var()` |
 | Flex | Wrap, direction, grow/shrink/basis, alignment, gaps | Intrinsic basis keywords |
 | Grid | Line placement, spans, auto/px/fr/minmax, repeat/auto-fit/auto-fill (≤256 tracks/axis) | Named areas/lines, subgrid, percentage tracks |
 | Containers/media | inline-size containment, unnamed max-width queries; max-width, orientation, reduced-motion media | Named/height/style queries |
