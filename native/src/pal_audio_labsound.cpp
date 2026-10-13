@@ -18,6 +18,7 @@
 #include <bblite/features/has_audio_biquad_filter.hpp>
 #include <bblite/features/has_audio_buffer_source.hpp>
 #include <bblite/features/has_audio_decode_file.hpp>
+#include <bblite/features/has_audio_media_stream.hpp>
 #include <bblite/features/has_audio_oscillator.hpp>
 #include <bblite/features/has_audio_stereo_panner.hpp>
 #include <bblite/features/workers.hpp>
@@ -55,6 +56,11 @@
 #endif
 #if BBLITE_HAS_AUDIO_STEREO_PANNER
 #include "LabSound/core/StereoPannerNode.h"
+#endif
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+#include <bblite/pal_media_stream.hpp>
+#include "LabSound/core/AudioNodeInput.h"
+#include <mutex>
 #endif
 #if BBLITE_AUDIO_CAPTURE
 #include "LabSound/extended/RecorderNode.h"
@@ -117,7 +123,66 @@ struct AudioNodeRecord {
     double source_loop_end = 0.0;
     AudioBufferHandle buffer{};
 #endif
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    /** A MediaStreamAudioDestinationNode's `stream`. */
+    MediaStreamHandle stream;
+#endif
 };
+
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+/**
+ * The stereo samples a stream destination renders, read by the stream sources
+ * of any context (each its own audio thread, or offline renders in turn). A
+ * reader starts at the position it was created at and keeps at most the last
+ * `capacity` frames behind.
+ */
+class MediaStreamAudioTap {
+public:
+    static constexpr std::size_t capacity = std::size_t{1} << 16;
+    explicit MediaStreamAudioTap(double sample_rate)
+        : sample_rate_(sample_rate), samples_(2 * capacity) {}
+    [[nodiscard]] double sample_rate() const noexcept { return sample_rate_; }
+    [[nodiscard]] std::uint64_t position() const {
+        std::lock_guard lock(mutex_);
+        return written_;
+    }
+    /** Appends `frames` stereo frames; null channels write silence. */
+    void write(const float* left, const float* right, int frames) {
+        std::lock_guard lock(mutex_);
+        for (int frame = 0; frame < frames; ++frame) {
+            const auto slot = static_cast<std::size_t>(
+                                  (written_ + static_cast<std::uint64_t>(frame)) % capacity) *
+                              2;
+            samples_[slot] = left ? left[frame] : 0.0f;
+            samples_[slot + 1] = right ? right[frame] : 0.0f;
+        }
+        written_ += static_cast<std::uint64_t>(frames);
+    }
+    /** Copies up to `frames` frames after `cursor` and advances it; returns how many. */
+    int read(std::uint64_t& cursor, float* left, float* right, int frames) {
+        std::lock_guard lock(mutex_);
+        if (written_ - cursor > capacity)
+            cursor = written_ - capacity;
+        const auto count = static_cast<int>(
+            std::min<std::uint64_t>(static_cast<std::uint64_t>(frames), written_ - cursor));
+        for (int frame = 0; frame < count; ++frame) {
+            const auto slot =
+                static_cast<std::size_t>((cursor + static_cast<std::uint64_t>(frame)) % capacity) *
+                2;
+            left[frame] = samples_[slot];
+            right[frame] = samples_[slot + 1];
+        }
+        cursor += static_cast<std::uint64_t>(count);
+        return count;
+    }
+
+private:
+    const double sample_rate_;
+    mutable std::mutex mutex_;
+    std::vector<float> samples_;
+    std::uint64_t written_ = 0;
+};
+#endif
 
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
 struct AudioBufferRecord {
@@ -142,6 +207,8 @@ struct AudioGraphNode {
     std::vector<lab::AudioNode*> param_edges;
     double retire_after = -1.0;
     bool reached = false;
+    /** A stream destination: the context pulls it every quantum. */
+    bool automatic_pull = false;
 };
 
 struct ContextRecord {
@@ -164,6 +231,11 @@ struct ContextRecord {
             // destination also owns the device, so release this reverse edge
             // while the record and context still retain the destination.
             device->setDestinationNode({});
+        }
+        for (const auto& [identity, entry] : graph) {
+            (void)identity;
+            if (entry.automatic_pull)
+                context->removeAutomaticPullNode(entry.node);
         }
 #if BBLITE_WORKERS
         for (const auto& [identity, entry] : graph) {
@@ -336,6 +408,9 @@ void collect_audio_graph(ContextRecord& context) {
                 detach_outputs(entry, graph, false);
         }
     }
+    for (auto& [identity, entry] : context.graph)
+        if (!entry.reached && entry.automatic_pull)
+            context.context->removeAutomaticPullNode(entry.node);
     context.context->handlePostRenderTasks(render);
     std::erase_if(context.graph, [](const auto& item) { return !item.second.reached; });
     pending.clear();
@@ -646,6 +721,15 @@ lab::FilterType to_lab(BiquadFilterKind kind) {
 }
 #endif
 
+/** Registers a constructed node in its context's handles and graph. */
+AudioNodeHandle insert_node(AudioContextHandle context, ContextRecord& record,
+                            std::shared_ptr<AudioNodeRecord> value) {
+    auto entry = record.nodes.insert(std::move(value));
+    AudioNodeHandle handle{pack(context.value, entry.index), std::move(entry.ownership)};
+    register_graph_node(record, handle);
+    return handle;
+}
+
 template <typename Node> AudioNodeHandle create_node(AudioContextHandle context) {
     ContextRecord& record = require_context(context.value);
     auto value = js::make_gc_shared<AudioNodeRecord>();
@@ -664,11 +748,85 @@ template <typename Node> AudioNodeHandle create_node(AudioContextHandle context)
             }
         });
     }
-    auto entry = record.nodes.insert(std::move(value));
-    AudioNodeHandle handle{pack(context.value, entry.index), std::move(entry.ownership)};
-    register_graph_node(record, handle);
-    return handle;
+    return insert_node(context, record, std::move(value));
 }
+
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+/** A stereo node descriptor with one output. */
+const lab::AudioNodeDescriptor& stereo_node_descriptor() {
+    static const lab::AudioNodeDescriptor descriptor{nullptr, nullptr, 2};
+    return descriptor;
+}
+
+/**
+ * MediaStreamAudioDestinationNode: a sink that renders its stereo input into
+ * its stream's tap every quantum, connected or not, while the context pulls it.
+ */
+class StreamDestinationNode final : public lab::AudioNode {
+public:
+    StreamDestinationNode(lab::AudioContext& context, std::shared_ptr<MediaStreamAudioTap> tap)
+        : lab::AudioNode(context, stereo_node_descriptor()), tap_(std::move(tap)) {
+        _self->m_channelCount = 2;
+        _self->m_channelCountMode = lab::ChannelCountMode::Explicit;
+        _self->m_channelInterpretation = lab::ChannelInterpretation::Speakers;
+        addInput(std::make_unique<lab::AudioNodeInput>(this));
+        initialize();
+    }
+    ~StreamDestinationNode() override { uninitialize(); }
+    const char* name() const override { return "MediaStreamAudioDestination"; }
+    void process(lab::ContextRenderLock& render, int frames) override {
+        auto* input = this->input(0)->bus(render);
+        const int channels = input && this->input(0)->isConnected() ? input->numberOfChannels() : 0;
+        // Speaker up-mix: mono feeds both channels.
+        if (channels > 0)
+            tap_->write(input->channel(0)->data(), input->channel(channels > 1 ? 1 : 0)->data(),
+                        frames);
+        else
+            tap_->write(nullptr, nullptr, frames);
+        output(0)->bus(render)->zero();
+    }
+    void reset(lab::ContextRenderLock&) override {}
+
+private:
+    double tailTime(lab::ContextRenderLock&) const override { return 0; }
+    double latencyTime(lab::ContextRenderLock&) const override { return 0; }
+    std::shared_ptr<MediaStreamAudioTap> tap_;
+};
+
+/**
+ * MediaStreamAudioSourceNode: its track's destination audio from where the
+ * track's tap stood when the node was created; silence while the track is
+ * disabled or ended, or until audio arrives.
+ */
+class StreamSourceNode final : public lab::AudioNode {
+public:
+    StreamSourceNode(lab::AudioContext& context, MediaStreamTrackHandle track)
+        : lab::AudioNode(context, stereo_node_descriptor()), track_(std::move(track)),
+          cursor_(track_->audio->position()) {
+        _self->m_channelCountMode = lab::ChannelCountMode::Explicit;
+        initialize();
+    }
+    ~StreamSourceNode() override { uninitialize(); }
+    const char* name() const override { return "MediaStreamAudioSource"; }
+    void process(lab::ContextRenderLock& render, int frames) override {
+        auto* bus = output(0)->bus(render);
+        float* left = bus->channel(0)->mutableData();
+        float* right = bus->channel(1)->mutableData();
+        int copied = track_->audio->read(cursor_, left, right, frames);
+        if (!track_->state->live.load() || !track_->state->enabled.load())
+            copied = 0;
+        std::fill(left + copied, left + frames, 0.0f);
+        std::fill(right + copied, right + frames, 0.0f);
+    }
+    void reset(lab::ContextRenderLock&) override {}
+
+private:
+    double tailTime(lab::ContextRenderLock&) const override { return 0; }
+    double latencyTime(lab::ContextRenderLock&) const override { return 0; }
+    MediaStreamTrackHandle track_;
+    std::uint64_t cursor_;
+};
+#endif
 
 /** Peak and RMS in one walk over the captured bus. */
 #if BBLITE_AUDIO_CAPTURE
@@ -999,6 +1157,68 @@ AudioNodeHandle audio_destination(AudioContextHandle context) {
 
 AudioNodeHandle audio_create_gain(AudioContextHandle context) {
     return create_node<lab::GainNode>(context);
+}
+
+AudioNodeHandle audio_create_media_stream_destination(AudioContextHandle context) {
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    ContextRecord& record = require_context(context.value);
+    const auto tap = std::make_shared<MediaStreamAudioTap>(record.sample_rate);
+    auto value = js::make_gc_shared<AudioNodeRecord>();
+    value->node = std::make_shared<StreamDestinationNode>(*record.context, tap);
+    js::Array<MediaStreamTrackHandle> tracks;
+    tracks.push_back(create_media_stream_track("audio", tap));
+    value->stream = create_media_stream(tracks);
+    const auto node = value->node;
+    auto handle = insert_node(context, record, std::move(value));
+    record.context->addAutomaticPullNode(node);
+    record.graph.at(node.get()).automatic_pull = true;
+    return handle;
+#else
+    (void)context;
+    throw std::runtime_error("Media stream audio support was not compiled.");
+#endif
+}
+
+std::shared_ptr<MediaStream> audio_destination_stream(AudioNodeHandle node) {
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    require_node(node);
+    if (!node.ownership->stream)
+        throw std::runtime_error("Audio node is not a MediaStreamAudioDestinationNode.");
+    return node.ownership->stream;
+#else
+    (void)node;
+    throw std::runtime_error("Media stream audio support was not compiled.");
+#endif
+}
+
+AudioNodeHandle audio_create_media_stream_source(AudioContextHandle context,
+                                                 const std::shared_ptr<MediaStream>& stream) {
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    ContextRecord& record = require_context(context.value);
+    if (!stream)
+        throw js::make_error("TypeError", "createMediaStreamSource requires a MediaStream.");
+    // The audio track whose id sorts first.
+    MediaStreamTrackHandle selected;
+    for (const auto& track : stream->tracks)
+        if (track->kind == "audio" && (!selected || track->id < selected->id))
+            selected = track;
+    if (!selected)
+        throw js::make_dom_exception("The MediaStream has no audio track.", "InvalidStateError");
+    if (selected->audio->sample_rate() != record.sample_rate)
+        throw js::make_dom_exception(
+            "The MediaStream audio sample rate differs from the AudioContext sample rate.",
+            "NotSupportedError");
+    auto value = js::make_gc_shared<AudioNodeRecord>();
+    value->node = std::make_shared<StreamSourceNode>(*record.context, selected);
+    // A stream source keeps producing while connected, like a started source.
+    value->source = std::make_shared<AudioSourceState>();
+    value->source->started = true;
+    return insert_node(context, record, std::move(value));
+#else
+    (void)context;
+    (void)stream;
+    throw std::runtime_error("Media stream audio support was not compiled.");
+#endif
 }
 
 AudioNodeHandle audio_create_oscillator(AudioContextHandle context) {
