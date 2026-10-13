@@ -3452,7 +3452,7 @@ public:
                             SdlRenderPass effect_pass{
                                 SDL_BeginGPURenderPass(command, &effect_target, 1, nullptr)};
                             record_effect_pass(command, effect_pass, engine, pass,
-                                               task.effect.effect);
+                                               task.effect.effect, source_texture);
                             effect_pass.end();
                             continue;
                         }

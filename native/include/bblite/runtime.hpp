@@ -2861,7 +2861,11 @@ struct SplatMeshRecord {
 
 struct EffectTextureSlot {
     std::string name;
+    /** The descriptor's binding number, which `setEffectTexture` also matches. */
+    std::uint32_t binding = 0;
     SolidTexture texture{};
+    /** A render target's texture, resolved where a frame graph records the pass. */
+    std::optional<RenderTextureRef> render_texture;
     bool set = false;
 };
 
@@ -7269,8 +7273,12 @@ bool sprite_2d_id_alive(const Engine& engine, Sprite2DLayerHandle layer, std::ui
 EffectWrapperHandle create_effect_wrapper(Engine& engine, std::uint32_t variant);
 void set_effect_uniforms(Engine& engine, EffectWrapperHandle effect,
                          const std::vector<float>& values);
-void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const std::string& name,
+/** `setEffectTexture`'s binding: a number, or a name or number as a string. */
+using EffectBindingKey = std::variant<std::string, double>;
+void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
                         SolidTexture texture);
+void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
+                        RenderTextureRef texture);
 void dispose_effect_wrapper(Engine& engine, EffectWrapperHandle effect);
 /** The pin's bind-group build for the wrapper's declared bindings; refuses a released slot. */
 void require_effect_bind_group(const Engine& engine, EffectWrapperHandle effect);

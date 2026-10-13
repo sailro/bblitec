@@ -1897,17 +1897,17 @@ bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task) {
     return false;
 }
 
-const SolidTexture& effect_texture_for_binding(const EffectWrapperRecord& wrapper,
-                                               std::string_view name) {
+const EffectTextureSlot& effect_texture_slot(const EffectWrapperRecord& wrapper,
+                                             std::uint32_t binding) {
     for (const EffectTextureSlot& candidate : wrapper.textures) {
-        if (candidate.name != name)
+        if (candidate.binding != binding)
             continue;
         if (!candidate.set)
             break;
-        return candidate.texture;
+        return candidate;
     }
-    throw std::runtime_error("Effect texture binding '" + std::string(name) +
-                             "' was not set before the first render.");
+    throw std::runtime_error("Effect texture binding " + std::to_string(binding) +
+                             " was not set before the first render.");
 }
 
 void require_effect_uniform_size(const EffectWrapperRecord& wrapper, std::uint32_t uniform_bytes) {

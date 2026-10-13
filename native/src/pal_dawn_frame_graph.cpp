@@ -457,6 +457,13 @@ public:
                                                    target_samples(state, record));
                 }
                 upload_dawn_effect_pass(state.queue, engine, pass, task.effect.effect);
+                bind_dawn_effect_render_textures(
+                    state.device, engine, pass, task.effect.effect,
+                    [&](const RenderTextureRef& source) -> WGPUTextureView {
+                        if (handle_at(engine.render_targets, source.target).swapchain)
+                            throw std::runtime_error("An effect cannot sample the swapchain target.");
+                        return state.targets.at(source.target.value).sampled_view;
+                    });
                 WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
                 attachment.view = record.swapchain ? surface_view : output.view;
                 if (target_samples(state, record) > 1) {

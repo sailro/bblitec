@@ -208,6 +208,8 @@ context is not running throws (no statechange).
   binding refuses.
 - TAA: one scene, explicit Standard color tasks, engine-format color, depth24plus-stencil8, single-sample inputs.
 - Contact shadows, one-bounce GI, EffectWrapper/EffectRenderer with bounded layouts; custom vertices refuse.
+- `setEffectTexture` takes solid or render-target colour textures by binding name or number; render targets bind in
+  frame-graph effect tasks only.
 - Image processing: exposure, contrast, toneMapping, toneMappingEnabled.
 
 ## Text
