@@ -1,16 +1,14 @@
-// The splat-stream library's web platform (bblite/splat_stream_platform.hpp
-// and the loader's additions in bblite/splat_stream_runtime.hpp) as
-// native/src/pal_splat_stream_platform.cpp defines it over the native
-// services, run against test/splat-stream-platform.test.ts's local server.
-// Each line it prints is one observation the test compares with what the
-// web platform does.
+// The web platform lowered libraries reach (bblite/web_platform.hpp): its seam
+// as native/src/pal_web_platform.cpp defines it over the native services
+// (fetch, image decoding, timers and tasks), and its calls over the runtime's
+// own objects, run against test/web-platform.test.ts's local server. Each line
+// it prints is one observation the test compares with the web platform's.
 
 #include <bblite/gpu.hpp>
 #include <bblite/js_abort.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_event_loop.hpp>
-#include <bblite/splat_stream_platform.hpp>
-#include <bblite/splat_stream_runtime.hpp>
+#include <bblite/web_platform.hpp>
 #include <webp/encode.h>
 
 #include <cassert>
@@ -24,10 +22,10 @@
 #include <vector>
 
 using namespace bbl;
-namespace sp = bbl::splat_stream_platform;
+namespace web = bbl::web_platform;
 
 // pal.cpp's clock reports a build's stamp; a fixture has none of its own.
-const char* bbl::pal::bblite_build_stamp() { return "splat-stream-platform-check"; }
+const char* bbl::pal::bblite_build_stamp() { return "web-platform-check"; }
 
 namespace {
 
@@ -87,60 +85,48 @@ std::string bytes_text(const std::vector<std::uint8_t>& bytes) {
 
 /** What a rejected or thrown error is: its name and message. */
 std::string described(const js::Error& error) {
-    return js::error_name(error) + (sp::is_dom_exception(error) ? "(dom)" : "") + ":" +
+    return js::error_name(error) +
+           (js::is_dom_exception(static_cast<std::exception_ptr>(error)) ? "(dom)" : "") + ":" +
            js::error_message(error);
 }
 
-js::Promise<js::PromiseVoid> url_and_fetch(std::string base, std::vector<std::string>& lines) {
-    const auto url = sp::url_parse("chunks/../data.bin?x=1#f", base + "/root/meta.json");
-    lines.push_back("url " + sp::url_href(url) + " " + sp::url_protocol(url) + " " +
-                    sp::url_pathname(url));
-    sp::url_set_pathname(url, "/a b/c%");
-    lines.push_back("pathname " + sp::url_pathname(url));
-    try {
-        static_cast<void>(sp::url_parse("not a url"));
-        lines.push_back("invalid parsed");
-    } catch (...) {
-        lines.push_back("invalid " + js::error_name(std::current_exception()));
-    }
-
-    // A streamed body read chunk by chunk, each its own Uint8Array, into a Blob.
-    const auto response = co_await sp::fetch(sp::url_parse("/stream", base), sp::RequestInit{});
-    const auto body = sp::response_body(response);
-    assert(sp::response_body(response) == body);
-    const auto reader = sp::readable_stream_get_reader(body);
+js::Promise<js::PromiseVoid> fetches(std::string base, std::vector<std::string>& lines) {
+    // A streamed body read chunk by chunk, each its own Uint8Array, into one Blob.
+    const auto response = co_await web::fetch(js::Url("/stream", base), web::RequestInit{});
+    const auto body = web::response_body(response);
+    assert(web::response_body(response) == body);
+    const auto reader = web::readable_stream_get_reader(body);
     js::Array<js::TypedArray<std::uint8_t>> chunks;
     for (;;) {
-        const auto part = co_await sp::reader_read(reader);
+        const auto part = co_await web::reader_read(reader);
         if (part.done) {
             assert(!part.value);
             break;
         }
         chunks.push_back(*part.value);
     }
-    sp::reader_release_lock(reader);
-    const auto text = co_await sp::blob_text(sp::blob_create(chunks, {std::string("text/plain")}));
-    lines.push_back("stream " + std::to_string(sp::response_ok(response)) + " " +
-                    std::to_string(static_cast<int>(sp::response_status(response))) + " " +
-                    sp::response_url(response) + " " +
-                    sp::response_header(response, "X-Chunks").value_or("none") + " " +
-                    sp::response_header(response, "missing").value_or("none") + " " + text);
+    web::reader_release_lock(reader);
+    const auto text = co_await js::blob_text(js::Blob::from_parts(chunks, "text/plain"));
+    lines.push_back("stream " + std::to_string(web::response_ok(response)) + " " +
+                    std::to_string(static_cast<int>(web::response_status(response))) + " " +
+                    web::response_url(response) + " " +
+                    web::response_header(response, "X-Chunks").value_or("none") + " " +
+                    web::response_header(response, "missing").value_or("none") + " " + text);
 
-    const auto missing = co_await sp::fetch(base + "/missing", sp::RequestInit{});
-    lines.push_back("missing " + std::to_string(sp::response_ok(missing)) + " " +
-                    std::to_string(static_cast<int>(sp::response_status(missing))));
-    co_await sp::readable_stream_cancel(sp::response_body(missing));
+    const auto missing = co_await web::fetch(base + "/missing", web::RequestInit{});
+    lines.push_back("missing " + std::to_string(web::response_ok(missing)) + " " +
+                    std::to_string(static_cast<int>(web::response_status(missing))));
+    co_await web::readable_stream_cancel(web::response_body(missing));
 
-    const auto redirected = co_await sp::fetch(base + "/moved", sp::RequestInit{});
-    lines.push_back("redirect " + sp::response_url(redirected));
-    co_await sp::reader_cancel(sp::readable_stream_get_reader(sp::response_body(redirected)));
+    const auto redirected = co_await web::fetch(base + "/moved", web::RequestInit{});
+    lines.push_back("redirect " + web::response_url(redirected));
+    co_await web::reader_cancel(web::readable_stream_get_reader(web::response_body(redirected)));
 
     // An abort before the head rejects with the default AbortError.
-    const auto early = sp::abort_controller_create();
-    const auto hanging =
-        sp::fetch(base + "/hang", sp::RequestInit{sp::abort_controller_signal(early)});
-    static_cast<void>(sp::set_timeout(
-        js::Callback<void()>([early] { sp::abort_controller_abort(early, js::Error{}); }), 30));
+    const auto early = js::AbortController::create();
+    const auto hanging = web::fetch(base + "/hang", web::RequestInit{early.signal()});
+    static_cast<void>(
+        web::set_timeout(js::Callback<void()>([early] { web::abort(early, js::Error{}); }), 30));
     try {
         static_cast<void>(co_await hanging);
         lines.push_back("early fulfilled");
@@ -149,13 +135,12 @@ js::Promise<js::PromiseVoid> url_and_fetch(std::string base, std::vector<std::st
     }
 
     // An abort with a reason while the body streams errors the pending read.
-    const auto middle = sp::abort_controller_create();
-    const auto slow =
-        co_await sp::fetch(base + "/slow", sp::RequestInit{sp::abort_controller_signal(middle)});
-    const auto slow_reader = sp::readable_stream_get_reader(sp::response_body(slow));
-    const auto head = co_await sp::reader_read(slow_reader);
-    const auto next = sp::reader_read(slow_reader);
-    sp::abort_controller_abort(middle, js::make_error("RangeError", "stop"));
+    const auto middle = js::AbortController::create();
+    const auto slow = co_await web::fetch(base + "/slow", web::RequestInit{middle.signal()});
+    const auto slow_reader = web::readable_stream_get_reader(web::response_body(slow));
+    const auto head = co_await web::reader_read(slow_reader);
+    const auto next = web::reader_read(slow_reader);
+    web::abort(middle, js::make_error("RangeError", "stop"));
     try {
         static_cast<void>(co_await next);
         lines.push_back("middle fulfilled");
@@ -164,14 +149,12 @@ js::Promise<js::PromiseVoid> url_and_fetch(std::string base, std::vector<std::st
                         described(std::current_exception()));
     }
 
-    // An application signal seen through the library's handle.
-    auto application = js::AbortController::create();
-    const auto signal = sp::abort_signal_of(application.signal());
-    application.abort(js::make_error("TypeError", "gone"));
-    lines.push_back("application " + std::to_string(sp::abort_signal_aborted(signal)) + " " +
-                    described(sp::abort_signal_reason(signal)));
+    // An already aborted signal rejects with its reason before any transfer.
+    const auto aborted = js::AbortController::create();
+    aborted.abort(js::make_error("TypeError", "gone"));
     try {
-        static_cast<void>(co_await sp::fetch(base + "/stream", sp::RequestInit{signal}));
+        static_cast<void>(
+            co_await web::fetch(base + "/stream", web::RequestInit{aborted.signal()}));
         lines.push_back("aborted fulfilled");
     } catch (...) {
         lines.push_back("aborted " + described(std::current_exception()));
@@ -186,25 +169,31 @@ js::Promise<js::PromiseVoid> images(std::vector<std::string>& lines) {
     js::Array<js::TypedArray<std::uint8_t>> chunks;
     chunks.push_back(js::TypedArray<std::uint8_t>(webp.begin(), webp.begin() + 7));
     chunks.push_back(js::TypedArray<std::uint8_t>(webp.begin() + 7, webp.end()));
-    const auto blob = sp::blob_create(chunks, {std::string("image/webp")});
-    const auto bitmap = co_await sp::create_image_bitmap(
-        blob, {std::string("none"), std::string("none"), std::string("none")});
-    lines.push_back("bitmap " + std::to_string(static_cast<int>(sp::image_bitmap_width(bitmap))) +
-                    "x" + std::to_string(static_cast<int>(sp::image_bitmap_height(bitmap))));
+    const auto blob = js::Blob::from_parts(chunks, "image/webp");
+    const auto options = [](js::Nullable<std::string> premultiply, js::Nullable<std::string> space,
+                            js::Nullable<std::string> orientation) {
+        return pal::ImageBitmapOptionsInit{std::move(premultiply), std::move(space),
+                                           std::move(orientation)};
+    };
+    const auto bitmap = co_await web::create_image_bitmap(
+        blob, pal::image_bitmap_options(options("none", "none", "none")));
+    lines.push_back("bitmap " + std::to_string(blob.size() == webp.size()) + " " +
+                    std::to_string(static_cast<int>(bitmap.width())) + "x" +
+                    std::to_string(static_cast<int>(bitmap.height())));
 
     RecordingDevice device;
     const auto texture = std::make_shared<RecordingTexture>();
-    sp::copy_external_image_to_texture(device, {bitmap, false}, {texture, false}, {3, 2, 1});
+    web::copy_external_image_to_texture(device, {bitmap, false}, {texture, false}, {3, 2, 1});
     lines.push_back("copy " + std::to_string(texture->bytes == rgba) + " " +
                     std::to_string(texture->layout.offset) + " " +
                     std::to_string(texture->layout.bytes_per_row.value_or(0)) + " " +
                     std::to_string(texture->layout.rows_per_image.value_or(0)) + " " +
                     std::to_string(texture->extent.width) + "x" +
                     std::to_string(texture->extent.height));
-    const auto refused = [&](const char* name, sp::CopyExternalImageSource source,
-                             sp::CopyExternalImageDestination destination, GpuExtent3D size) {
+    const auto refused = [&](const char* name, web::CopyExternalImageSource source,
+                             web::CopyExternalImageDestination destination, GpuExtent3D size) {
         try {
-            sp::copy_external_image_to_texture(device, source, destination, size);
+            web::copy_external_image_to_texture(device, source, destination, size);
             lines.push_back(std::string(name) + " copied");
         } catch (const std::runtime_error&) {
             lines.push_back(std::string(name) + " refused");
@@ -214,18 +203,33 @@ js::Promise<js::PromiseVoid> images(std::vector<std::string>& lines) {
     refused("premultiplied", {bitmap, false}, {texture, true}, {3, 2, 1});
     refused("outside", {bitmap, false}, {texture, false}, {4, 2, 1});
 
-    js::Array<js::TypedArray<std::uint8_t>> text_chunks;
+    // The one decode policy.
+    const auto policy = [&](const char* name, pal::ImageBitmapOptionsInit init) {
+        try {
+            lines.push_back(std::string(name) + " premultiply=" +
+                            std::to_string(pal::image_bitmap_options(init).premultiply));
+        } catch (...) {
+            lines.push_back(std::string(name) + " " + described(std::current_exception()));
+        }
+    };
+    policy("premultiply", options("premultiply", "none", std::nullopt));
+    policy("from-image", options("none", "none", "from-image"));
+    policy("default-alpha", options(std::nullopt, "none", "none"));
+    policy("color", options("none", "default", "none"));
+    policy("orientation", options("none", "none", "flipY"));
+
     const std::string plain = "plain";
+    js::Array<js::TypedArray<std::uint8_t>> text_chunks;
     text_chunks.push_back(js::TypedArray<std::uint8_t>(plain.begin(), plain.end()));
     try {
-        static_cast<void>(co_await sp::create_image_bitmap(
-            sp::blob_create(text_chunks, {}), {std::string("none"), std::string("none"), {}}));
+        static_cast<void>(co_await web::create_image_bitmap(js::Blob::from_parts(text_chunks, ""),
+                                                            pal::ImageBitmapOptions{}));
         lines.push_back("undecodable fulfilled");
     } catch (...) {
         lines.push_back("undecodable " + js::error_name(std::current_exception()));
     }
-    sp::image_bitmap_close(bitmap);
-    lines.push_back("closed " + std::to_string(static_cast<int>(sp::image_bitmap_width(bitmap))));
+    bitmap.close();
+    lines.push_back("closed " + std::to_string(static_cast<int>(bitmap.width())));
 
     // queue.writeBuffer with each source kind, whole and in ranges.
     using Source = std::variant<js::ArrayBuffer, js::TypedArray<float>,
@@ -244,86 +248,74 @@ js::Promise<js::PromiseVoid> images(std::vector<std::string>& lines) {
 }
 
 void decoders(std::vector<std::string>& lines) {
-    const auto streaming = sp::text_decoder_create(" UTF8\n", {});
+    const auto streaming = web::text_decoder({});
     const std::vector<std::uint8_t> first{0xef, 0xbb, 0xbf, 'a', 0xc3};
     const std::vector<std::uint8_t> second{0xa9, 'b', 0xe2};
     const auto head =
-        sp::text_decoder_decode(streaming, js::TypedArray<std::uint8_t>(first.begin(), first.end()),
-                                sp::TextDecodeOptions{true});
-    const auto tail = sp::text_decoder_decode(
-        streaming, js::TypedArray<std::uint8_t>(second.begin(), second.end()),
-        sp::TextDecodeOptions{true});
-    const auto end = sp::text_decoder_flush(streaming);
+        web::text_decode(streaming, js::TypedArray<std::uint8_t>(first.begin(), first.end()),
+                         web::TextDecodeOptions{true});
+    const auto tail =
+        web::text_decode(streaming, js::TypedArray<std::uint8_t>(second.begin(), second.end()),
+                         web::TextDecodeOptions{true});
+    const auto end = js::text_decode(streaming);
     lines.push_back("decode [" + head + "][" + tail + "][" + end + "]");
-    const auto keep = sp::text_decoder_create("utf-8", sp::TextDecoderOptions{false, true});
-    lines.push_back("bom [" +
-                    sp::text_decoder_decode(
-                        keep, js::TypedArray<std::uint8_t>(first.begin(), first.begin() + 4)) +
-                    "]");
-    const auto fatal = sp::text_decoder_create("utf-8", sp::TextDecoderOptions{true, {}});
+    const auto keep = web::text_decoder(web::TextDecoderOptions{false, true});
+    lines.push_back(
+        "bom [" +
+        web::text_decode(keep, js::TypedArray<std::uint8_t>(first.begin(), first.begin() + 4), {}) +
+        "]");
+    const auto fatal = web::text_decoder(web::TextDecoderOptions{true, {}});
     try {
-        static_cast<void>(sp::text_decoder_decode(
+        static_cast<void>(web::text_decode(
             fatal, js::TypedArray<std::uint8_t>(second.begin(), second.begin() + 1), {}));
         lines.push_back("fatal decoded");
     } catch (...) {
         lines.push_back("fatal " + js::error_name(std::current_exception()));
     }
-    try {
-        static_cast<void>(sp::text_decoder_create("latin1", {}));
-        lines.push_back("label decoded");
-    } catch (...) {
-        lines.push_back("label " + js::error_name(std::current_exception()));
-    }
 }
 
-void listeners(std::vector<std::string>& lines) {
-    const auto controller = sp::abort_controller_create();
-    const auto signal = sp::abort_controller_signal(controller);
-    assert(sp::abort_controller_signal(controller) == signal);
+void aborts(std::vector<std::string>& lines) {
+    const auto controller = js::AbortController::create();
+    const auto& signal = controller.signal();
     std::string heard;
     const js::Callback<void()> once([&] { heard += "once;"; });
-    const js::Callback<void()> removed([&] { heard += "removed;"; });
     const js::Callback<void()> kept([&] { heard += "kept;"; });
-    sp::abort_signal_add_event_listener(signal, "abort", once, sp::AddEventListenerOptions{true});
-    sp::abort_signal_add_event_listener(signal, "abort", removed, {});
-    sp::abort_signal_add_event_listener(signal, "abort", kept, {});
-    sp::abort_signal_add_event_listener(signal, "abort", kept, {});
-    sp::abort_signal_remove_event_listener(signal, "abort", removed);
-    const bool before = sp::abort_signal_aborted(signal);
-    sp::abort_controller_abort(controller, js::Error{});
-    sp::abort_controller_abort(controller, js::make_error("Error", "second"));
-    lines.push_back("listeners " + std::to_string(before) + " " +
-                    std::to_string(sp::abort_signal_aborted(signal)) + " " + heard + " " +
-                    described(sp::abort_signal_reason(signal)));
-    const auto error = sp::dom_exception("quota", "QuotaExceededError");
-    lines.push_back("dom " + described(error) + " " +
-                    std::to_string(sp::is_dom_exception(js::make_error("Error", "plain"))));
+    signal.add_abort_listener(once, web::once(web::AddEventListenerOptions{true}));
+    signal.add_abort_listener(kept, web::once({}));
+    const bool before = signal.aborted();
+    web::abort(controller, js::Error{});
+    web::abort(controller, js::make_error("Error", "second"));
+    lines.push_back("abort " + std::to_string(before) + " " + std::to_string(signal.aborted()) +
+                    " " + heard + " " + described(*signal.reason()));
+    const auto reasoned = js::AbortController::create();
+    web::abort(reasoned, js::make_error("RangeError", "why"));
+    lines.push_back("reason " + described(*reasoned.signal().reason()));
 }
 
 js::Promise<js::PromiseVoid> timers(std::vector<std::string>& lines) {
     auto order = std::make_shared<std::string>();
-    const double started = sp::performance_now();
-    static_cast<void>(sp::set_timeout(js::Callback<void()>([order] { *order += "timeout;"; }), 0));
+    const double started = web::performance_now();
+    static_cast<void>(web::set_timeout(js::Callback<void()>([order] { *order += "timeout;"; }), 0));
     const double canceled =
-        sp::set_timeout(js::Callback<void()>([order] { *order += "canceled;"; }), 0);
-    sp::clear_timeout(canceled);
-    sp::clear_timeout(0);
-    sp::queue_microtask(js::Callback<void()>([order] { *order += "microtask;"; }));
+        web::set_timeout(js::Callback<void()>([order] { *order += "canceled;"; }), 0);
+    web::clear_timeout(canceled);
+    web::clear_timeout(0);
+    web::queue_microtask(js::Callback<void()>([order] { *order += "microtask;"; }));
     *order += "sync;";
     const js::Promise<js::PromiseVoid> resolve;
-    static_cast<void>(sp::set_timeout(
+    static_cast<void>(web::set_timeout(
         js::Callback<void()>([resolve] { resolve.resolve(js::PromiseVoid{}); }), 20));
     co_await resolve;
-    const double elapsed = sp::performance_now() - started;
+    const double elapsed = web::performance_now() - started;
     lines.push_back("timers " + *order + " " + std::to_string(elapsed >= 19));
     co_return js::PromiseVoid{};
 }
 
 js::Promise<js::PromiseVoid> run(std::string base, std::vector<std::string>& lines) {
     decoders(lines);
-    listeners(lines);
+    aborts(lines);
     co_await timers(lines);
-    co_await url_and_fetch(base, lines);
+    co_await fetches(base, lines);
     co_await images(lines);
     co_return js::PromiseVoid{};
 }

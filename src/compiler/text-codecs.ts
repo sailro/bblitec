@@ -14,6 +14,13 @@ const UTF8_LABELS: ReadonlySet<string> = new Set([
     "x-unicode20utf8",
 ]);
 
+/** Whether an encoding label names UTF-8, after ASCII whitespace is trimmed. */
+export function isUtf8Label(label: string): boolean {
+    return UTF8_LABELS.has(
+        label.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "").toLowerCase(),
+    );
+}
+
 /**
  * `new TextDecoder(label?, { fatal, ignoreBOM })` and `new TextEncoder()`.
  * A decoder carries its two flags; the label must name UTF-8 at

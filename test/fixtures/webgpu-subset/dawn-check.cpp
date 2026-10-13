@@ -1,4 +1,5 @@
-// The splat-stream GPU work on a headless Dawn device through `DawnWebGpuDevice`.
+// The lowered splat-stream library's GPU work on a headless Dawn device through
+// `DawnWebGpuDevice`.
 
 #include "pal_dawn_webgpu.hpp"
 #include "stream-render.hpp"
@@ -6,6 +7,7 @@
 #include <bblite/js_realm_state.hpp>
 
 #include <mutex>
+#include <thread>
 
 namespace {
 
@@ -89,20 +91,11 @@ struct DawnTarget final : stream_check::RenderTarget {
     bbl::pal::DawnTexture color, multisampled, depth;
     bbl::pal::DawnTextureView color_view, multisampled_view, depth_view;
     bbl::pal::DawnBuffer readback;
-    bbl::GpuHandle scene_uniforms;
     static constexpr std::uint32_t row_bytes = 512;
     DawnTarget(DawnHarness& owner, bbl::pal::DawnWebGpuDevice& gpu) : harness(owner), device(gpu) {
         width = 96;
         height = 64;
         signature = {"rgba8unorm", std::string("depth24plus-stencil8"), {}, 1};
-        // The scene's group 0: a uniform block both stages see, as the scene layout declares.
-        scene_layout = stream_check::layout(
-            device, {stream_check::buffer_entry(
-                        0, stream_check::SS::VERTEX | stream_check::SS::FRAGMENT, "uniform")});
-        scene_uniforms = stream_check::buffer(
-            device, 256, stream_check::BU::UNIFORM | stream_check::BU::COPY_DST);
-        scene_group = stream_check::group(device, scene_layout,
-                                          {stream_check::buffer_binding(0, scene_uniforms)});
         WGPUBufferDescriptor info = WGPU_BUFFER_DESCRIPTOR_INIT;
         info.size = row_bytes * height;
         info.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
@@ -192,57 +185,50 @@ struct DawnTarget final : stream_check::RenderTarget {
     }
 };
 
-bbl::js::Promise<bbl::js::PromiseVoid> run(bbl::pal::DawnWebGpuDevice& device, DawnHarness& harness,
-                                           const stream_check::Shaders& shaders,
+bbl::js::Promise<bbl::js::PromiseVoid> run(std::shared_ptr<bbl::pal::DawnWebGpuDevice> device,
+                                           DawnHarness& harness,
                                            const bbl::GpuSupportedLimits& limits) {
-    stream_check::check_limits(device, limits);
-    co_await stream_check::check_mapping(device);
-    const auto pipelines = stream_check::create_pipelines(device, shaders);
-    co_await stream_check::check_sort(device, pipelines, 70000, 69123, 0x13579bdfu);
-    co_await stream_check::check_projection(device, pipelines);
-    co_await stream_check::check_gather(device, pipelines);
-    DawnTarget target(harness, device);
-    stream_check::check_render(device, pipelines, shaders, target);
+    stream_check::Library library(device);
+    stream_check::check_limits(*device, limits);
+    co_await stream_check::check_mapping(*device);
+    co_await stream_check::check_sort(library, 70000, 69123, 0x13579bdfu);
+    co_await stream_check::check_projection(library);
+    const auto sog = stream_check::sog_images();
+    const auto source = stream_check::upload_source(*device, sog);
+    co_await stream_check::check_gather(library, sog, source);
+    DawnTarget target(harness, *device);
+    co_await stream_check::check_render(library, source, target);
     co_return bbl::js::PromiseVoid{};
 }
 
 } // namespace
 
-namespace bbl {
-// The lowered GPU retirement (gpu-resource-retirement.ts) a released batch runs through;
-// the fixture's GPU is idle when the protocol releases its renderables.
-void retire_gpu_resources(std::shared_ptr<pal::GpuRetirementState>, pal::GpuRetirement retirement) {
-    retirement();
-}
-void dispose_gpu_resource_retirements(std::shared_ptr<pal::GpuRetirementState>) {}
-void run_gpu_resource_callbacks(pal::GpuRetirementBatch disposers) {
-    for (const auto& dispose : *disposers)
-        dispose();
-}
-} // namespace bbl
-
-int main(int argc, char** argv) {
+int main() {
     try {
-        stream_check::require(argc == 2, "usage: dawn-check <shader directory>");
-        const auto shaders = stream_check::read_shaders(argv[1]);
         const auto limits = bbl::gpu_required_limits(
             {{"maxBufferSize", 256640000}, {"maxStorageBufferBindingSize", 256640000}});
         DawnHarness harness(limits);
         std::exception_ptr failure;
-        {
-            const bbl::js::RealmScope realm;
-            bbl::pal::EventLoop loop;
-            loop.run([&] {
-                auto device = std::make_shared<bbl::pal::DawnWebGpuDevice>(
-                    harness.instance, harness.device, harness.queue);
-                run(*device, harness, shaders, limits)
-                    .then([device, &loop](const bbl::js::PromiseVoid&) { loop.close(); },
-                          [device, &loop, &failure](std::exception_ptr error) {
-                              failure = error;
-                              loop.close();
-                          });
-            });
-        }
+        // The realm runs on its own thread: the library's realm state (its
+        // pipeline caches) ends with that thread, before the device does.
+        std::thread([&] {
+            try {
+                const bbl::js::RealmScope realm;
+                bbl::pal::EventLoop loop;
+                loop.run([&] {
+                    auto device = std::make_shared<bbl::pal::DawnWebGpuDevice>(
+                        harness.instance, harness.device, harness.queue);
+                    run(device, harness, limits)
+                        .then([device, &loop](const bbl::js::PromiseVoid&) { loop.close(); },
+                              [device, &loop, &failure](std::exception_ptr error) {
+                                  failure = error;
+                                  loop.close();
+                              });
+                });
+            } catch (...) {
+                failure = std::current_exception();
+            }
+        }).join();
         if (failure)
             std::rethrow_exception(failure);
         harness.check_errors();

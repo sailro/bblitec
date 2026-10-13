@@ -35,11 +35,17 @@ template <class T> [[nodiscard]] bool truthy_object(const T& value) {
 [[nodiscard]] inline bool truthy(double value) { return js::number_truthy(value); }
 [[nodiscard]] inline bool truthy(bool value) { return value; }
 [[nodiscard]] inline bool truthy(const std::string& value) { return !value.empty(); }
-/** Every other value is an object, and an object is truthy. */
+/**
+ * Every other value is an object, and an object is truthy; a runtime handle
+ * that can be empty (`js::AbortSignal`, `js::Url`) is an absent object then.
+ */
 template <class T>
     requires(std::is_class_v<T> && !js::IsNullable<T>::value)
-[[nodiscard]] bool truthy(const T&) {
-    return true;
+[[nodiscard]] bool truthy(const T& value) {
+    if constexpr (std::is_constructible_v<bool, const T&>)
+        return static_cast<bool>(value);
+    else
+        return true;
 }
 template <class T> [[nodiscard]] bool truthy(const std::shared_ptr<T>& value) {
     return static_cast<bool>(value);

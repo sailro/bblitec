@@ -19,7 +19,7 @@
 #include <bblite/pal_gpu_retirement.hpp>
 #include <bblite/pal_source_gpu.hpp>
 #include <bblite/runtime.hpp>
-#include <bblite/splat_stream_platform.hpp>
+#include <bblite/web_platform.hpp>
 
 #include <array>
 #include <cstddef>
@@ -29,35 +29,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-namespace bbl::splat_stream_platform {
-
-// The platform beyond the transport's seam (splat_stream_platform.hpp) that
-// the loader reaches: the manifest's streaming UTF-8 decode, and the
-// application's own AbortSignal passed as a stream option.
-
-/** `{ fatal, ignoreBOM }` of `new TextDecoder(label, options)`. */
-struct TextDecoderOptions {
-    js::Nullable<bool> fatal;
-    js::Nullable<bool> ignore_bom;
-};
-/** `{ stream }` of `decoder.decode(input, options)`. */
-struct TextDecodeOptions {
-    js::Nullable<bool> stream;
-};
-/** `new TextDecoder(label, options)`: UTF-8 only (a RangeError for another label). */
-[[nodiscard]] TextDecoder text_decoder_create(const std::string& label,
-                                              const js::Nullable<TextDecoderOptions>& options);
-/** `decoder.decode(input, { stream })`. */
-[[nodiscard]] std::string text_decoder_decode(const TextDecoder& decoder,
-                                              const js::TypedArray<std::uint8_t>& bytes,
-                                              const js::Nullable<TextDecodeOptions>& options);
-/** `decoder.decode()`: the end of a stream. */
-[[nodiscard]] std::string text_decoder_flush(const TextDecoder& decoder);
-/** The library's handle on an application AbortSignal (the same signal object). */
-[[nodiscard]] AbortSignal abort_signal_of(const js::AbortSignal& signal);
-
-} // namespace bbl::splat_stream_platform
 
 namespace bbl {
 

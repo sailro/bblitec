@@ -1,5 +1,6 @@
 import { CPP_ELEMENT, CPP_SCALAR } from "./cpp-types.js";
 import ts from "typescript";
+import type { MemberSpec, RecordSpec } from "./pinned-record-lowerer.js";
 
 /** The represented shape of a pinned value, independent of its native owner. */
 export type RecordShape =
@@ -89,6 +90,53 @@ export function optionalOf(shape: RecordShape): RecordShape {
         ? shape
         : { kind: "optional", value: shape };
 }
+
+export const promiseOf = (value: RecordShape): RecordShape => ({
+    kind: "promise",
+    value,
+});
+export const functionOf = (
+    parameters: readonly RecordShape[],
+    result: RecordShape,
+): RecordShape => ({ kind: "function", parameters, result });
+
+/** A backend GPU object a record holds by identity; absent while `null`. */
+export const gpuObjectShape: RecordShape = {
+    kind: "native",
+    cpp: "bbl::GpuHandle",
+    nullable: true,
+};
+
+// Record-spec builders the schemas over native types share.
+
+/** A stored member, under its own field name or `name`. */
+export const field = (shape: RecordShape, name?: string): MemberSpec =>
+    name === undefined ? { shape } : { shape, field: name };
+export const members = (
+    entries: readonly (readonly [string, MemberSpec])[],
+): ReadonlyMap<string, MemberSpec> => new Map(entries);
+/** A member whose call the port spells over the receiver and arguments. */
+export const spelled = (
+    shape: RecordShape,
+    call: (owner: string, args: readonly string[]) => string,
+): MemberSpec => ({ shape, access: (owner) => owner, call });
+/** A member read the port spells over the receiver. */
+export const reads = (
+    shape: RecordShape,
+    access: (owner: string) => string,
+): MemberSpec => ({ shape, access });
+/** A value dictionary a native header declares, its members exactly `entries`. */
+export const descriptor = (
+    pinned: string,
+    cpp: string,
+    entries: readonly (readonly [string, MemberSpec])[],
+): RecordSpec => ({
+    pinned: [pinned],
+    cpp,
+    reference: false,
+    native: true,
+    members: members(entries),
+});
 
 export function stripOptional(shape: RecordShape): RecordShape {
     return shape.kind === "optional" ? shape.value : shape;

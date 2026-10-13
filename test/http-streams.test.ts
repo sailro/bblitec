@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { createServer, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -10,6 +9,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    serveHttpFixture,
 } from "./native-fixture.js";
 
 const LARGE_BYTES = 40 * 1024 * 1024;
@@ -23,8 +23,7 @@ test("fetch streams bodies, reads headers, honours abort and reuses connections"
     const smallSockets = new Set<Socket>();
     let smallRequests = 0;
     let interrupted = 0;
-    const pending: ServerResponse[] = [];
-    const server = createServer((request, response) => {
+    const base = await serveHttpFixture(t, (request, response, hold) => {
         const watchInterruption = () =>
             response.on("close", () => {
                 if (!response.writableEnded) ++interrupted;
@@ -41,12 +40,12 @@ test("fetch streams bodies, reads headers, honours abort and reuses connections"
             watchInterruption();
             response.writeHead(200, { "content-length": "1000000" });
             response.write(Buffer.alloc(10, 7));
-            pending.push(response);
+            hold(response);
             return;
         }
         if (request.url === "/hang") {
             watchInterruption();
-            pending.push(response);
+            hold(response);
             return;
         }
         if (request.url === "/large") {
@@ -80,15 +79,6 @@ test("fetch streams bodies, reads headers, honours abort and reuses connections"
         response.writeHead(404);
         response.end();
     });
-    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-    t.after(() => {
-        for (const response of pending) response.destroy();
-        server.closeAllConnections();
-        server.close();
-    });
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const base = `http://127.0.0.1:${address.port}`;
     const source = `
         async function drain(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<number> {
             let total = 0;

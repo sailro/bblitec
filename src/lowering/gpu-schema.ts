@@ -1,45 +1,28 @@
+/** WebGPU declarations shared by pinned record families at the platform boundary. */
 import {
     arrayOf as array,
+    descriptor,
+    field,
+    functionOf as fn,
+    gpuObjectShape as gpuObject,
+    members,
+    promiseOf,
     recordOf as record,
     optionalOf as optional,
     recordScalars,
+    spelled,
 } from "./record-shapes.js";
-/** WebGPU declarations shared by pinned record families at the platform boundary. */
 import type {
     MemberSpec,
     RecordShape,
     RecordSpec,
 } from "./pinned-record-lowerer.js";
-const { number, string, void: none } = recordScalars;
+import { copyExternalImageToTexture } from "./web-platform-schema.js";
+const { number, boolean, string, void: none } = recordScalars;
 const buffer: RecordShape = { kind: "buffer" };
-const gpuObject: RecordShape = {
-    kind: "native",
-    cpp: "bbl::GpuHandle",
-    nullable: true,
-};
-const fn = (
-    parameters: readonly RecordShape[],
-    result: RecordShape,
-): RecordShape => ({ kind: "function", parameters, result });
 const method = (shape: RecordShape, native: string): MemberSpec => ({
     shape,
     access: (owner) => `${owner}->${native}`,
-});
-const members = (
-    entries: readonly (readonly [string, MemberSpec])[],
-): ReadonlyMap<string, MemberSpec> => new Map(entries);
-const field = (shape: RecordShape, name?: string): MemberSpec =>
-    name === undefined ? { shape } : { shape, field: name };
-const descriptor = (
-    pinned: string,
-    cpp: string,
-    entries: readonly (readonly [string, MemberSpec])[],
-): RecordSpec => ({
-    pinned: [pinned],
-    cpp,
-    reference: false,
-    native: true,
-    members: members(entries),
 });
 const encoder = (pinned: string): RecordSpec => ({
     pinned: [pinned],
@@ -266,16 +249,6 @@ export const gpuRecords: readonly RecordSpec[] = [
     ]),
 ];
 
-const boolean: RecordShape = { kind: "boolean" };
-const promiseOf = (value: RecordShape): RecordShape => ({
-    kind: "promise",
-    value,
-});
-/** A member whose call the port spells over the receiver and arguments. */
-const spelled = (
-    shape: RecordShape,
-    call: (owner: string, args: readonly string[]) => string,
-): MemberSpec => ({ shape, access: (owner) => owner, call });
 /** An optional trailing argument, absent when the call omits it. */
 const or = (args: readonly string[], index: number, absent = "{}"): string =>
     args[index] ?? absent;
@@ -470,6 +443,8 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
                 "onSubmittedWorkDone",
                 method(fn([], promiseOf(none)), "on_submitted_work_done"),
             ],
+            // A decoded ImageBitmap's upload (web-platform-schema.ts).
+            copyExternalImageToTexture,
         ]),
     },
     {

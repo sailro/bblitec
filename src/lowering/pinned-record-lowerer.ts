@@ -169,7 +169,7 @@ interface ModuleValue {
     readonly cpp: string;
 }
 
-interface RecordSchema {
+export interface RecordSchema {
     readonly records: readonly RecordSpec[];
     /** Pinned type names represented by a native value. */
     readonly values: ReadonlyMap<string, RecordShape>;

@@ -99,10 +99,11 @@ may change its target, refuse. A frame's leading guards run before its closure e
 A parameter whose type a type-only module erased takes each call's argument shape (one overload per
 signature). A bundled package's classes and calls bind by `package#name` to native records and
 adapters: text-shaper's font, shaping buffers and `shapeInto` are HarfBuzz (`text_layout.hpp`). The web
-APIs the splat-stream transport calls (`fetch`, abort signals, timers, `createImageBitmap`) are schema
-adapters onto `splat_stream_platform.hpp`, which `pal_splat_stream_platform.cpp` defines over the native
-services (a test may define fakes); the loader's engine, scene, camera and renderable objects are
-`splat_stream_runtime.hpp`'s. A lazy loader's root is the module function its
+platform a lowered library reaches is one shared schema (`web-platform-schema.ts`) over the runtime's own
+URL, AbortController/AbortSignal, DOMException, TextDecoder, Blob and ImageBitmap (`web_platform.hpp`); only
+fetch, image decoding and the timers and task queue are a seam, which `pal_web_platform.cpp` defines over the
+native services and a test may define deterministically. The splat-stream loader's engine, scene, camera and
+renderable objects are `splat_stream_runtime.hpp`'s. A lazy loader's root is the module function its
 `(await import(...)).name` returns. The pin's WebGPU calls lower one to one onto the device interface in
 `gpu.hpp`, shared by text, storage, uniform and scene uploads; its compute, indirect and buffer-mapping
 subset has a device per backend (`pal_dawn_webgpu.hpp`, `pal_sdl_gpu_webgpu.hpp`). Backend adapters preserve native

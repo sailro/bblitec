@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -11,6 +10,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    serveHttpFixture,
 } from "./native-fixture.js";
 
 const WIDTH = 5;
@@ -157,7 +157,7 @@ int main() {
 
     // The library's flow: a streamed body into a Blob of its chunks, then a decode.
     const webp = readFileSync(join(directory, "sample.webp"));
-    const server = createServer((request, response) => {
+    const base = await serveHttpFixture(t, (request, response) => {
         if (request.url === "/sample.webp") {
             response.writeHead(200, { "content-type": "image/webp" });
             response.write(webp.subarray(0, 9));
@@ -169,14 +169,6 @@ int main() {
         });
         response.end("﻿héllo");
     });
-    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-    t.after(() => {
-        server.closeAllConnections();
-        server.close();
-    });
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const base = `http://127.0.0.1:${address.port}`;
     const source = `
         async function blobOf(url: string): Promise<Blob> {
             const response = await fetch(url, {});
@@ -243,21 +235,23 @@ test("image decode and Blob forms without a native representation refuse", () =>
         `async function run(): Promise<void> { const chunks: Uint8Array[] = []; chunks.push(new Uint8Array(4)); const blob = new Blob(chunks, { type: "image/webp" }); ${body} } run();`;
     for (const [body, message] of [
         [
-            `await createImageBitmap(blob, { premultiplyAlpha: "default", colorSpaceConversion: "none" });`,
-            /createImageBitmap premultiplyAlpha lowers "none" or "premultiply"/,
-        ],
-        [
-            `await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "default" });`,
-            /createImageBitmap colorSpaceConversion lowers "none"/,
-        ],
-        [
             `await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "none", resizeWidth: 4 });`,
             /createImageBitmap option 'resizeWidth' is not lowered/,
         ],
         [
-            `await createImageBitmap(blob, { premultiplyAlpha: "none" });`,
-            /requires an explicit colorSpaceConversion/,
+            `const alpha = String(chunks.length); await createImageBitmap(blob, { premultiplyAlpha: alpha, colorSpaceConversion: "none" });`,
+            /createImageBitmap premultiplyAlpha requires a static string/,
         ],
     ] as const)
         assert.throws(() => compileSource(realm(body)), message);
+    // The values pass through the one decode policy (pal::image_bitmap_options,
+    // run in test/web-platform.test.ts), which rejects what it does not decode.
+    assert.match(
+        compileSource(
+            realm(
+                `await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "default" });`,
+            ),
+        ).cpp,
+        /bbl::pal::image_bitmap_options\(bbl::pal::ImageBitmapOptionsInit\{std::string\("none"\), std::string\("default"\), std::nullopt\}\)/,
+    );
 });

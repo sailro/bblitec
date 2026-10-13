@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -9,6 +8,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    serveHttpFixture,
 } from "./native-fixture.js";
 
 async function checkRuntimeHttp(
@@ -26,7 +26,7 @@ async function checkRuntimeHttp(
         body: string;
         contentType: string | undefined;
     }[] = [];
-    const server = createServer((request, response) => {
+    const base = await serveHttpFixture(t, (request, response) => {
         const chunks: Buffer[] = [];
         request.on("data", (chunk: Buffer) => chunks.push(chunk));
         request.on("end", () => {
@@ -59,16 +59,6 @@ async function checkRuntimeHttp(
             response.end('{"answer":42}');
         });
     });
-    await new Promise<void>((resolve) =>
-        server.listen(0, "127.0.0.1", resolve),
-    );
-    t.after(() => {
-        server.closeAllConnections();
-        server.close();
-    });
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const base = `http://127.0.0.1:${address.port}`;
     const directory = resolve(
         `artifacts/runtime-http${deferred ? "-headers" : ""}`,
     );

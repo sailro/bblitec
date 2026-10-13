@@ -99,7 +99,8 @@ test("a stream program lowers its loads, attachment, stats, writes and collision
     assert.match(cpp, /stream_options_\d+\.max_splats = 1000/);
     assert.match(
         cpp,
-        /stream_options_\d+\.signal = bbl::splat_stream_platform::abort_signal_of\(/,
+        // The application's own AbortSignal object is the library's.
+        /stream_options_\d+\.signal = \(v_\w+\)\.signal\(\);/,
     );
     assert.match(cpp, /bbl::attach_gaussian_splat_stream\([^;]*\.state, /);
     assert.match(cpp, /bbl::dispose_gaussian_splat_stream\([^;]*\.state, /);
@@ -157,7 +158,7 @@ test("stream members without a native form refuse", () => {
     refuses(
         "await stream.firstFrameReady;",
         "await stream.firstFrameReady;\n    canvas.dataset.children = String(stream.children.length);",
-        /GaussianSplatStream\.children is not a public stream member read natively/,
+        /GaussianSplatStream\.children is not a public member the native stream reads/,
     );
 });
 

@@ -31,6 +31,37 @@ struct ImageBitmapOptions {
     bool premultiply = false;
 };
 
+/** The `ImageBitmapOptions` dictionary a program passes, as its strings. */
+struct ImageBitmapOptionsInit {
+    js::Nullable<std::string> premultiply_alpha;
+    js::Nullable<std::string> color_space_conversion;
+    js::Nullable<std::string> image_orientation;
+};
+
+/**
+ * The decode policy: `premultiplyAlpha` `"none"` or `"premultiply"` and `colorSpaceConversion`
+ * `"none"`, each explicit (the native decode applies no defaults), and `imageOrientation`
+ * absent, `"none"` or `"from-image"` (orientation metadata is not applied). Anything else
+ * throws a NotSupportedError DOMException.
+ */
+[[nodiscard]] inline ImageBitmapOptions image_bitmap_options(const ImageBitmapOptionsInit& init) {
+    const auto unsupported = [](const char* member, const js::Nullable<std::string>& value) {
+        return js::make_dom_exception(std::string("createImageBitmap ") + member + " " +
+                                          (value ? "\"" + *value + "\"" : "undefined") +
+                                          " is not supported natively.",
+                                      "NotSupportedError");
+    };
+    if (!init.premultiply_alpha ||
+        (*init.premultiply_alpha != "none" && *init.premultiply_alpha != "premultiply"))
+        throw unsupported("premultiplyAlpha", init.premultiply_alpha);
+    if (!init.color_space_conversion || *init.color_space_conversion != "none")
+        throw unsupported("colorSpaceConversion", init.color_space_conversion);
+    if (init.image_orientation && *init.image_orientation != "none" &&
+        *init.image_orientation != "from-image")
+        throw unsupported("imageOrientation", init.image_orientation);
+    return {*init.premultiply_alpha == "premultiply"};
+}
+
 /** Whether `bytes` start with the RIFF/WEBP container signature. */
 [[nodiscard]] inline bool webp_signature(std::span<const std::uint8_t> bytes) {
     return bytes.size() >= 12 && std::memcmp(bytes.data(), "RIFF", 4) == 0 &&

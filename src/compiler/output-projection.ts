@@ -112,8 +112,9 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:splat-sog": [],
     "loader:splat-spz": [],
     // The pin's splat-stream library, lowered whole; its renderable draws
-    // through renderer:external-renderables.
-    "loader:splat-stream": ["src/pal_splat_stream_platform.cpp"],
+    // through renderer:external-renderables, its fetch, decode and timers
+    // through the web platform seam.
+    "loader:splat-stream": ["src/pal_web_platform.cpp"],
     "material:pbr": [],
     "material:source-texture-read": [],
     "material:clearcoat": [],
