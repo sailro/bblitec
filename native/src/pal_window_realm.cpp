@@ -181,8 +181,6 @@ struct LayoutElement {
     UiContentBox content_box;
     /** Computed style, for an element the realm requested it of. */
     UiComputedStyle style;
-    /** `UiElementRecord::pointer_states` the update styled it with. */
-    std::uint8_t pointer_states = 0;
     [[nodiscard]] bool operator==(const LayoutElement&) const = default;
 };
 
@@ -314,6 +312,11 @@ struct WindowServices final : CanvasProvider {
      * presents. Mouse motion remains ordered without blocking presentation. */
     std::uint64_t input_posted = 0, input_handled = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
+    /**
+     * `UiElementRecord::pointer_states` by element as the display's last update styled them,
+     * apart from `layout` so a hover change copies no layout; replaced only when one changes.
+     */
+    std::shared_ptr<const std::vector<std::uint8_t>> pointer_states;
     std::atomic<bool> screen_requested = false;
     std::atomic<bool> reload_requested = false;
     std::shared_ptr<WindowLocation> location;
@@ -1133,7 +1136,6 @@ void update_window_document(bool wait) {
             record.client_rect = laid.rectangle;
             record.content_box = laid.content_box;
             record.computed_style = laid.style;
-            record.pointer_states = laid.pointer_states;
         }
         for (const auto& [index, canvas] : doc.canvases) {
             if (index >= layout->elements.size())
@@ -1203,19 +1205,17 @@ const void* window_screen_identity() { return std::addressof(current_document().
 namespace {
 void adopt_window_pointer_states() {
     auto& doc = current_document();
-    std::shared_ptr<const LayoutSnapshot> layout;
+    std::shared_ptr<const std::vector<std::uint8_t>> states;
     {
         const std::lock_guard lock(doc.host->mutex);
         if (doc.host->stopping)
             throw WorkerTerminated{};
-        layout = doc.host->layout;
+        states = doc.host->pointer_states;
     }
-    // Only pointer states: rectangles and styles still adopt with their
-    // published document in update_window_document.
+    // Rectangles and styles adopt with their published document in update_window_document.
     for (std::size_t index = 0;
-         layout && index < layout->elements.size() && index < doc.engine.ui_elements.size();
-         ++index)
-        doc.engine.ui_elements[index].pointer_states = layout->elements[index].pointer_states;
+         states && index < states->size() && index < doc.engine.ui_elements.size(); ++index)
+        doc.engine.ui_elements[index].pointer_states = (*states)[index];
 }
 } // namespace
 UiClientRect window_element_size(UiElementHandle element) {
@@ -1553,6 +1553,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             PlatformInputReplay input_replay;
             LayoutSnapshot next_layout;
             std::shared_ptr<const LayoutSnapshot> layout;
+            std::vector<std::uint8_t> next_pointer_states;
+            std::shared_ptr<const std::vector<std::uint8_t>> pointer_states;
             const auto canvas_at = [&](double x, double y) -> UiElementHandle {
                 for (std::size_t index = 0;
                      index < display.ui_elements.size() && index < layout->elements.size();
@@ -1631,14 +1633,22 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 }
                 next_layout.elements.clear();
                 next_layout.elements.reserve(display.ui_elements.size());
-                for (const auto& record : display.ui_elements)
-                    next_layout.elements.push_back({record.client_rect, record.content_box,
-                                                    record.computed_style, record.pointer_states});
+                next_pointer_states.clear();
+                next_pointer_states.reserve(display.ui_elements.size());
+                for (const auto& record : display.ui_elements) {
+                    next_layout.elements.push_back(
+                        {record.client_rect, record.content_box, record.computed_style});
+                    next_pointer_states.push_back(record.pointer_states);
+                }
                 if (!layout || !layout->equals(next_layout))
                     layout = std::make_shared<LayoutSnapshot>(next_layout);
+                if (!pointer_states || *pointer_states != next_pointer_states)
+                    pointer_states =
+                        std::make_shared<const std::vector<std::uint8_t>>(next_pointer_states);
                 {
                     const std::lock_guard lock(services->mutex);
                     services->layout = layout;
+                    services->pointer_states = pointer_states;
                     services->completed = revision;
                 }
                 services->wake.notify_all();
