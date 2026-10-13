@@ -109,9 +109,9 @@ export class AudioLowerer {
     }
 
     /**
-     * `createAudioEngineAsync`'s own output-graph block: the two
-     * constructions in order, and the master-volume default that makes
-     * the third statement inert.
+     * `createAudioEngineAsync`'s own output-graph block: the context it
+     * adopts or creates, the two constructions in order, and the
+     * master-volume default that makes the third statement inert.
      */
     private assertEngineComposition(): void {
         const { declaration } = this.context.functionDeclaration(
@@ -126,6 +126,11 @@ export class AudioLowerer {
             ...Array.from({ length: 7 }, () => "expression statement"),
             "return statement",
         ]);
+        this.assertStatement(
+            declaration,
+            "options.audioContext ?? new AudioContext()",
+            "the engine's adopted or created context",
+        );
         this.assertStatement(
             declaration,
             "engine._mainOut = createMainOut(ctx, engine)",

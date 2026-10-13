@@ -1053,8 +1053,14 @@ export class PinnedRecordModel {
         }
         // A literal with exactly a schema record's members is that record
         // (`{ ...request, url }`), as TypeScript's structural typing says.
+        // A record whose members are being resolved (the one declaring this
+        // literal as a member) is not yet comparable, and is not the literal.
         const matching = this.schema.records.filter((spec) => {
-            if (spec.native || this.literalTypes.has(spec.pinned[0]!))
+            if (
+                spec.native ||
+                this.literalTypes.has(spec.pinned[0]!) ||
+                this.resolvingMembers.has(spec.pinned[0]!)
+            )
                 return false;
             const declared = this.record(spec.pinned[0]!).members();
             const stored = [...declared.values()].filter(
@@ -1274,11 +1280,24 @@ export class PinnedRecordModel {
         );
     }
 
+    /** Records whose members are being resolved, by key. */
+    private readonly resolvingMembers = new Set<string>();
+
     private resolveRecord(spec: RecordSpec): ResolvedRecord {
         let members: Map<string, ResolvedMember> | undefined;
         return {
             spec,
-            members: () => (members ??= this.recordMembers(spec)),
+            members: () => {
+                if (members) return members;
+                const key = spec.pinned[0]!;
+                this.resolvingMembers.add(key);
+                try {
+                    members = this.recordMembers(spec);
+                } finally {
+                    this.resolvingMembers.delete(key);
+                }
+                return members;
+            },
         };
     }
 
@@ -2613,10 +2632,21 @@ export class PinnedRecordModel {
                 (variable) => variable.namespace,
                 (variable) => {
                     const initializer = variable.declaration.initializer;
+                    // Value-initialized native state is `false`, `0` or
+                    // `""`, the only literals it starts from.
                     if (
                         variable.initializer === undefined &&
                         initializer &&
                         initializer.kind !== ts.SyntaxKind.NullKeyword &&
+                        initializer.kind !== ts.SyntaxKind.FalseKeyword &&
+                        !(
+                            ts.isNumericLiteral(initializer) &&
+                            Number(initializer.text) === 0
+                        ) &&
+                        !(
+                            ts.isStringLiteral(initializer) &&
+                            initializer.text === ""
+                        ) &&
                         !(
                             ts.isIdentifier(initializer) &&
                             initializer.text === "undefined"
@@ -2624,7 +2654,7 @@ export class PinnedRecordModel {
                     )
                         this.fail(
                             initializer,
-                            "Pinned module state starts from null or undefined only.",
+                            "Pinned module state starts from null, undefined, false, 0 or an empty string only.",
                         );
                     const provenance = `// ${this.context.provenance(modulePathOf(variable.declaration.getSourceFile()), variable.declaration.name.getText(), "realm state")}`;
                     const type = this.cppType(variable.shape);
@@ -5786,6 +5816,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.nullishAssign(node);
         if (kind === ts.SyntaxKind.InstanceOfKeyword)
             return this.instanceOf(node);
+        if (kind === ts.SyntaxKind.InKeyword) return this.memberTest(node);
         if (
             kind === ts.SyntaxKind.PlusToken &&
             this.shapeAt(node).kind === "string"
@@ -5864,6 +5895,33 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ? `(${literal(left)} == ${literal(right)})`
                 : `(${this.value(left)} == ${this.value(right)})`;
         return negated ? `!${comparison}` : comparison;
+    }
+
+    /**
+     * `"member" in value` over a record or a variant of records: whether the
+     * record (or the variant's current member) declares the member, as the
+     * pin's structural discriminations (`"_graph" in bus`) test it.
+     */
+    private memberTest(node: ts.BinaryExpression): string {
+        const key = this.skipParentheses(node.left);
+        if (!ts.isStringLiteral(key))
+            return this.refuse(node, "Pinned `in` with a computed key.");
+        if (!this.pure(node.right))
+            return this.refuse(node, "Pinned `in` of an effectful value.");
+        const declares = (shape: RecordShape): boolean =>
+            shape.kind === "record" &&
+            this.model.record(shape.name).members().has(key.text);
+        const shape = this.shapeAt(node.right);
+        if (shape.kind === "variant") {
+            const members = shape.members.filter(declares);
+            const value = this.value(node.right);
+            return members.length === 0
+                ? "false"
+                : `(${members.map((member) => `std::holds_alternative<${this.cpp(member)}>(${value})`).join(" || ")})`;
+        }
+        if (shape.kind !== "record")
+            return this.refuse(node, `Pinned \`in\` over ${this.cpp(shape)}.`);
+        return declares(shape) ? "true" : "false";
     }
 
     /**
@@ -7237,8 +7295,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             }
         }
         const shape = stripOptional(this.shapeAt(unwrapped));
+        // A Set iterates its values in insertion order, as an array does.
         const items =
-            shape.kind === "array"
+            shape.kind === "array" || shape.kind === "set"
                 ? shape.element
                 : shape.kind === "typed" || shape.kind === "tuple"
                   ? number
@@ -9320,8 +9379,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 const place = this.numericPlace(expression.left);
                 return `${place} = static_cast<double>(${jsBitwiseCall(bitwise, place, this.value(expression.right))})`;
             }
+            // `x %= y`: JavaScript's remainder of doubles is `fmod`.
+            if (kind === ts.SyntaxKind.PercentEqualsToken) {
+                const place = this.numericPlace(expression.left);
+                return `${place} = std::fmod(${place}, ${this.value(expression.right)})`;
+            }
             if (compound)
                 return `${this.numericPlace(expression.left)} ${compound} ${this.value(expression.right)}`;
+            // `i++, j--` (a loop's incrementors): each effect in order.
+            if (kind === ts.SyntaxKind.CommaToken) {
+                const effects = [
+                    this.effect(expression.left),
+                    this.effect(expression.right),
+                ].filter((effect) => effect !== null);
+                return effects.length ? effects.join(", ") : null;
+            }
         }
         if (
             ts.isPrefixUnaryExpression(expression) ||

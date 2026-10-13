@@ -5,7 +5,12 @@ import type { LoweringServices } from "../lowering-services.js";
 // Unreached sound, bus, and spatial behavior remains an explicit refusal.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { presenceCpp, type Value } from "../types.js";
+import {
+    optionalPresentCpp,
+    optionalValueCpp,
+    presenceCpp,
+    type Value,
+} from "../types.js";
 import type { DataType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { refuseAudioName } from "../audio-surface.js";
@@ -16,6 +21,7 @@ import {
 } from "../native-statements.js";
 import { lowerAudioSourceDisposal } from "../../lowering/audio-source-lowerer.js";
 import { isNullable } from "../type-facts.js";
+import { retainedOptions } from "./retained-options.js";
 
 export interface AudioIntrinsicContext
     extends
@@ -34,6 +40,9 @@ export interface AudioIntrinsicContext
             | "bindings"
             | "deferredCapabilities"
             | "checker"
+            | "cppString"
+            | "dataTypes"
+            | "emitDiscardedValue"
         > {}
 
 const sourceDisposers = new EmissionWeakMap<object, string>();
@@ -133,6 +142,107 @@ function mainOutputGraph(engine: string, ctx: string): NativeStatement[] {
     ];
 }
 
+/**
+ * `AudioEngineOptions` members the native engine does not honour, each
+ * refused by name; `audioContext` is adopted (`engineOptions`).
+ */
+const ENGINE_OPTION_REFUSALS: Readonly<Record<string, string>> = {
+    volume:
+        "the master volume is applied through `setMainOutVolume`'s ramp, " +
+        "whose `setValueCurveAtTime` component is not lowered",
+    parameterRampDuration:
+        "no lowered parameter ramp reads the engine's ramp duration",
+    resumeOnInteraction:
+        "the native engine installs no document click resume hook",
+    resumeOnPause: "the native engine installs no statechange resume timer",
+    resumeOnPauseRetryInterval:
+        "the native engine installs no statechange resume timer",
+};
+
+/** What `createAudioEngineAsync`'s options decide. */
+interface EngineOptions {
+    /** `options.audioContext`, selected where `present` holds. */
+    adopted?: { cpp: string; present?: string };
+    /** A `const char*` naming a present refused member, null otherwise. */
+    refusal?: string;
+}
+
+/**
+ * The context `createAudioEngineAsync` builds its graph on is
+ * `options.audioContext ?? new AudioContext()` (audio-engine.ts). A present
+ * refused member fails generation, or refuses at run time where its
+ * presence is a run-time fact.
+ */
+function engineOptions(
+    context: AudioIntrinsicContext,
+    call: ts.CallExpression,
+): EngineOptions {
+    const argument = call.arguments[0];
+    if (!argument) return {};
+    const value = context.compileValue(argument);
+    if (value.kind === "json-null" || value.dataType?.kind === "undefined") {
+        context.emitDiscardedValue(value);
+        return {};
+    }
+    const nullable = isNullable(context.checker.getTypeAtLocation(argument));
+    const owner = context.bindings.pinValueToTemporary(
+        value,
+        "audio_engine_options",
+        argument,
+    );
+    const ownerPresent = nullable ? presenceCpp(owner) : undefined;
+    if (nullable && !ownerPresent)
+        context.fail(
+            argument,
+            "createAudioEngineAsync options that may be absent need represented presence.",
+        );
+    const when = (...tests: (string | undefined)[]): string | undefined => {
+        const present = tests.filter((test) => test !== undefined);
+        return present.length ? present.join(" && ") : undefined;
+    };
+    const options: EngineOptions = {};
+    const refusals: string[] = [];
+    for (const member of retainedOptions(context, owner, argument)) {
+        // `{ audioContext: undefined }` is the absent option.
+        if (
+            member.value?.kind === "json-null" ||
+            member.type?.kind === "undefined"
+        )
+            continue;
+        const type = member.type;
+        const optional = type?.kind === "optional";
+        const present = when(
+            ownerPresent,
+            member.present ??
+                (optional ? optionalPresentCpp(member.cpp) : undefined),
+        );
+        const reason = ENGINE_OPTION_REFUSALS[member.name];
+        if (reason) {
+            const message = `createAudioEngineAsync options are not lowered: '${member.name}' (${reason}).`;
+            if (!present) context.fail(argument, message);
+            refusals.push(`(${present}) ? ${context.cppString(message)} : `);
+            continue;
+        }
+        const handle = type?.kind === "optional" ? type.inner : type;
+        if (
+            member.name !== "audioContext" ||
+            handle?.kind !== "handle" ||
+            handle.handle !== "audio-context"
+        )
+            context.fail(
+                argument,
+                `createAudioEngineAsync option '${member.name}' is not an AudioContext the engine adopts.`,
+            );
+        options.adopted = {
+            cpp: optional ? optionalValueCpp(member.cpp) : member.cpp,
+            ...(present ? { present } : {}),
+        };
+    }
+    if (refusals.length)
+        options.refusal = `(${refusals.join("")}static_cast<const char*>(nullptr))`;
+    return options;
+}
+
 function requireAbsentOptions(
     context: AudioIntrinsicContext,
     argument: ts.Expression | undefined,
@@ -171,61 +281,77 @@ export function compileAudioIntrinsic(
 
     switch (importedName) {
         case "createAudioEngineAsync": {
-            // `AudioEngineOptions` carries the context to adopt, the
-            // master volume, the ramp duration and three browser
-            // auto-resume switches. The reached slice takes none of them:
-            // an offline context is generation's choice rather than a
-            // scene's, and that option path installs its own document
-            // listeners plus polling. Application `setInterval` calls are
+            // `AudioEngineOptions.audioContext` is adopted; the master
+            // volume, ramp duration and browser auto-resume switches refuse
+            // (`ENGINE_OPTION_REFUSALS`). Application `setInterval` calls are
             // separate platform input and run on the frame conductor.
             context.expectArgumentCount(call, 0, 1);
-            const supported = (): Value => {
-                context.reachFeature("audio:engine", call);
-
-                const engine = context.allocateTemporaryCppName("audio_engine");
-                const graph = mainOutputGraph(engine, `${engine}_ctx`);
-                if (context.options.workers) {
-                    // A realm's context opens its device in a native job, and
-                    // the engine promise settles after that device transition
-                    // (the audio contract); the graph is built on the realm.
-                    return {
-                        kind: "promise",
-                        cpp:
-                            `bbl::pal::audio_create_context_async(${context.audioSessionCpp()})` +
-                            `.then([](const bbl::pal::AudioContextHandle& ${engine}_ctx) { ` +
-                            `${graph.map(nativeStatementCode).join(" ")} ` +
-                            `return bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}; })`,
-                        promiseType: "bbl::AudioEngineHandle",
-                        promiseResult: {
-                            kind: "audio-engine",
-                            cpp: "",
-                            dataType: audioEngineType,
-                        },
-                    };
-                }
+            const options = engineOptions(context, call);
+            context.reachFeature("audio:engine", call);
+            const engine = context.allocateTemporaryCppName("audio_engine");
+            const graph = mainOutputGraph(engine, `${engine}_ctx`);
+            const refused = options.refusal && `${engine}_refused`;
+            if (options.refusal)
                 context.emit({
                     kind: "declaration",
-                    type: "bbl::pal::AudioContextHandle",
-                    name: `${engine}_ctx`,
-                    initializer: `bbl::pal::audio_create_context(${context.audioSessionCpp()})`,
+                    type: "const char* const",
+                    name: refused!,
+                    initializer: options.refusal,
                 });
-                for (const statement of graph) context.emit(statement);
-                context.registerNativeTemporary(`${engine}_ctx`);
-                context.registerNativeTemporary(`${engine}_main_bus`);
+            const adopted = options.adopted;
+            if (context.options.workers) {
+                // A realm's own context opens its device in a native job,
+                // and the engine promise settles after that device
+                // transition (the audio contract); an adopted context is
+                // already open. The graph is built on the realm.
+                const created = `bbl::pal::audio_create_context_async(${context.audioSessionCpp()})`;
+                const resolved = (cpp: string): string =>
+                    `bbl::js::Promise<bbl::pal::AudioContextHandle>::resolved(${cpp})`;
+                const contextPromise = !adopted
+                    ? created
+                    : adopted.present
+                      ? `((${adopted.present}) ? ${resolved(adopted.cpp)} : ${created})`
+                      : resolved(adopted.cpp);
+                const built =
+                    `${contextPromise}.then([](const bbl::pal::AudioContextHandle& ${engine}_ctx) { ` +
+                    `${graph.map(nativeStatementCode).join(" ")} ` +
+                    `return bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}; })`;
                 return {
-                    kind: "audio-engine",
-                    cpp: `bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}`,
-                    dataType: audioEngineType,
+                    kind: "promise",
+                    cpp: refused
+                        ? `(${refused} ? bbl::js::Promise<bbl::AudioEngineHandle>::rejected(std::make_exception_ptr(std::runtime_error(${refused}))) : ${built})`
+                        : built,
+                    promiseType: "bbl::AudioEngineHandle",
+                    promiseResult: {
+                        kind: "audio-engine",
+                        cpp: "",
+                        dataType: audioEngineType,
+                    },
                 };
+            }
+            if (refused)
+                context.emit(
+                    `if (${refused}) throw std::runtime_error(${refused});`,
+                );
+            const created = `bbl::pal::audio_create_context(${context.audioSessionCpp()})`;
+            context.emit({
+                kind: "declaration",
+                type: "bbl::pal::AudioContextHandle",
+                name: `${engine}_ctx`,
+                initializer: !adopted
+                    ? created
+                    : adopted.present
+                      ? `(${adopted.present}) ? ${adopted.cpp} : ${created}`
+                      : adopted.cpp,
+            });
+            for (const statement of graph) context.emit(statement);
+            context.registerNativeTemporary(`${engine}_ctx`);
+            context.registerNativeTemporary(`${engine}_main_bus`);
+            return {
+                kind: "audio-engine",
+                cpp: `bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}`,
+                dataType: audioEngineType,
             };
-            const deferred = context.deferredCapabilities.compileOptions(
-                call,
-                0,
-                supported,
-            );
-            if (deferred) return deferred;
-            requireAbsentOptions(context, call.arguments[0], importedName);
-            return supported();
         }
 
         case "unlockAudioEngineAsync": {
