@@ -423,6 +423,8 @@ void pal::run_engine(Engine& engine) {
 #endif
 }
 
+#if BBLITE_WORKERS
+// Declared by pal_async_engine.hpp, the realm engine's header.
 void pal::bind_engine_webgpu_device(Engine& engine) {
     const pal::GpuBackend& backend = pal::selected_gpu_backend();
     if (!backend.bind_webgpu_device)
@@ -430,6 +432,7 @@ void pal::bind_engine_webgpu_device(Engine& engine) {
                                  " provides no engine WebGPU device in this build.");
     backend.bind_webgpu_device(engine);
 }
+#endif
 
 #if BBLITE_WORKERS
 js::Promise<js::PromiseVoid> pal::start_realm_engine(std::shared_ptr<Engine> engine) {
