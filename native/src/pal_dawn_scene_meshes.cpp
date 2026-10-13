@@ -181,8 +181,10 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     };
     // A render target's slot binds the target's current view: a rebuilt target
     // rebuilds the groups that named the old one.
-    std::vector<WGPUTextureView> render_views(material.shader_render_textures.size(), nullptr);
-    std::vector<WGPUSampler> render_samplers(render_views.size(), nullptr);
+    std::vector<WGPUTextureView>& render_views = state.shader_render_views;
+    std::vector<WGPUSampler>& render_samplers = state.shader_render_samplers;
+    render_views.assign(material.shader_render_textures.size(), nullptr);
+    render_samplers.assign(render_views.size(), nullptr);
     for (std::size_t slot = 0; slot < render_views.size(); ++slot) {
         if (const auto& reference = material.shader_render_textures[slot]) {
 #if BBLITE_RENDER_TASK_TRANSMISSION
@@ -361,7 +363,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
             dawn_error("Shader fragment bind group creation failed.");
         }
     }
-    bindings.render_views = std::move(render_views);
+    bindings.render_views = render_views;
     return mesh.shader_bindings.emplace(key, std::move(bindings)).first->second;
 }
 #endif

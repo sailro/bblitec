@@ -11,13 +11,33 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace bbl::pal {
+
+/** A non-owning reference to a callable a pass invokes synchronously: no allocation. */
+template <class Signature> class FunctionRef;
+template <class Result, class... Args> class FunctionRef<Result(Args...)> {
+public:
+    template <class Callable>
+        requires(!std::is_same_v<std::remove_cvref_t<Callable>, FunctionRef>)
+    FunctionRef(Callable& callable) noexcept
+        : object_(const_cast<void*>(static_cast<const void*>(std::addressof(callable)))),
+          call_([](void* object, Args... args) -> Result {
+              return (*static_cast<Callable*>(object))(std::forward<Args>(args)...);
+          }) {}
+    Result operator()(Args... args) const { return call_(object_, std::forward<Args>(args)...); }
+
+private:
+    void* object_;
+    Result (*call_)(void*, Args...);
+};
 
 /** A non-owning draw list for one command in an ordered pass. */
 template <class Command> struct BorrowedDrawList {

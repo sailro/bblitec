@@ -3,7 +3,9 @@
 #include <bblite/runtime.hpp>
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace bbl::pal {
@@ -94,11 +96,29 @@ public:
                 PixelsTexels::Region region = texels->written_since(entry.source.pixels_version);
                 if (region.whole())
                     region = {0, 0, width, height};
-                write(*image, texels->rgba.data(), width, region);
+                write(*image, region_texels(texels->rgba.data(), width, region), region);
             }
             entry.source.pixels_version = texels->version;
         }
     }
+
+private:
+    /** The region's rows, tightly packed: its own span of full-width rows, else a copy. */
+    std::span<const std::uint8_t> region_texels(const std::uint8_t* texels, std::uint32_t width,
+                                                PixelsTexels::Region region) {
+        const std::size_t stride = static_cast<std::size_t>(width) * 4u;
+        const std::size_t row_bytes = static_cast<std::size_t>(region.width) * 4u;
+        const std::uint8_t* first =
+            texels + region.y * stride + static_cast<std::size_t>(region.x) * 4u;
+        if (region.width == width)
+            return {first, row_bytes * region.height};
+        packed_.resize(row_bytes * region.height);
+        for (std::uint32_t row = 0; row < region.height; ++row)
+            std::memcpy(packed_.data() + row * row_bytes, first + row * stride, row_bytes);
+        return packed_;
+    }
+
+    std::vector<std::uint8_t> packed_;
 };
 
 } // namespace bbl::pal

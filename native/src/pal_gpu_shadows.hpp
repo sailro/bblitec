@@ -202,6 +202,24 @@ struct ShadowRefreshState {
 };
 
 /**
+ * One shadow caster task's work this frame, decided once for both backends:
+ * the cache layers copied into its map before any draw, whether it draws,
+ * and whether that draw loads what the copy left (`renderCsmShadowMapCached`).
+ */
+struct ShadowTaskPass {
+    const std::vector<std::uint32_t>* copy_layers = nullptr;
+    RenderTargetHandle copy_source{};
+    bool draws = false;
+    bool load_depth = false;
+};
+
+ShadowTaskPass shadow_task_pass(const Engine& engine, const ShadowRefreshState& refresh,
+                                const FrameTaskRecord& task);
+
+/** Whether the refresh refilled a cached generator's caster passes; it is consumed. */
+bool take_moved_task_lists(ShadowRefreshState& refresh);
+
+/**
  * Refresh every generator the scene's lights name, then hand each to the
  * backend.
  *

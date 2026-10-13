@@ -4359,8 +4359,10 @@ class Compiler implements LoweringServices {
                 ? "std::shared_ptr<bbl::Engine>"
                 : "bbl::Engine",
         );
-        // The pin's createEngine resizes its surface once; the cap writes share this resize.
-        if (pixelRatioCap !== undefined && this.options.workers)
+        // The pin's createEngine resizes its surface once, and every frame
+        // head and cap write runs the same resize: a DOM canvas's backing
+        // store has this one writer.
+        if (this.options.workers)
             this.emit({
                 kind: "expression",
                 code: `bbl::install_surface_resize(*${cppName}, &bblscene::${surfaceResizeFunction(this)});`,

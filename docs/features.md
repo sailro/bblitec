@@ -81,12 +81,12 @@ Rules:
 
 - One engine per entry setup. Rebinding an engine alias refuses.
 - `msaaSamples`: 1 for numeric 1, else 4; other constants refuse.
-- Native loops own extent refresh; `resizeEngine` only applies `maxDevicePixelRatio`.
+- Native loops own extent refresh; `resizeEngine` runs the pin's `resizeSurface` on an application realm's DOM canvas.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
-- `maxDevicePixelRatio` (`createEngine` option or write) sizes an application realm's DOM canvas backing store at
-  `createEngine`, `resizeEngine` and each frame head, on every platform; windows keep native density and composite it
-  scaled. Without a realm the window is the only surface: a static cap of 1 or more applies as below (desktop keeps
-  devicePixelRatio 1); any other cap selects a realm.
+- An application realm's DOM canvas backing store is sized only by the pin's `resizeSurface` (client box, device
+  pixel ratio, `maxDevicePixelRatio` option or write) at `createEngine`, `resizeEngine` and each frame head, on every
+  platform; windows keep native density and composite it scaled. Without a realm the window is the only surface: a
+  static cap of 1 or more applies as below (desktop keeps devicePixelRatio 1); any other cap selects a realm.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.

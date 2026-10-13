@@ -50,6 +50,8 @@ struct EffectResources {
     std::vector<SDL_GPUTextureSamplerBinding> textures;
     /** Positions in `textures` a render target fills at record time, by binding number. */
     std::vector<std::pair<std::size_t, std::uint32_t>> render_textures;
+    /** `textures` with those positions filled, rewritten in place at each record. */
+    mutable std::vector<SDL_GPUTextureSamplerBinding> bound_textures;
     /**
      * Whether the compiled fragment kept a uniform block at all — the
      * sidecar's answer, not the WGSL's: a block the caller's body never reads
@@ -194,7 +196,11 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
     if (!pass.textures.empty()) {
         // The bind group reads each render target's current texture, so a
         // rebuilt target (resize) is what the next draw samples.
-        std::vector<SDL_GPUTextureSamplerBinding> textures = pass.textures;
+        const std::vector<SDL_GPUTextureSamplerBinding>* textures = &pass.textures;
+        if (!pass.render_textures.empty()) {
+            pass.bound_textures = pass.textures;
+            textures = &pass.bound_textures;
+        }
         for (const auto& [index, binding] : pass.render_textures) {
             if (!render_texture)
                 throw std::runtime_error(
@@ -203,10 +209,10 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
             if (!slot.render_texture)
                 throw std::runtime_error(
                     "An effect binding changed texture kind after its first draw.");
-            textures[index].texture = render_texture(*slot.render_texture);
+            pass.bound_textures[index].texture = render_texture(*slot.render_texture);
         }
-        SDL_BindGPUFragmentSamplers(render_pass, 0, textures.data(),
-                                    static_cast<Uint32>(textures.size()));
+        SDL_BindGPUFragmentSamplers(render_pass, 0, textures->data(),
+                                    static_cast<Uint32>(textures->size()));
     }
     SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
 }

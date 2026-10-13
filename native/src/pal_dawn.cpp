@@ -1,6 +1,4 @@
-#include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/gpu_retirement.hpp>
-#include <bblite/features/refreshed_task_overrides.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The Dawn scene renderer's driver: the pass helpers, the pipelines the
@@ -25,7 +23,6 @@
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
-#include <bblite/features/effect_wrapper_disposal.hpp>
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_geometry_output.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -722,13 +719,7 @@ class DawnSceneRun {
                     render_task.view_projection =
                         create_buffer(state, WGPUBufferUsage_Uniform, nullptr, 64);
                 }
-#if BBLITE_REFRESHED_TASK_OVERRIDES
-                order_refreshed_render_task(task);
-#endif
-                render_task.draw_lists =
-                    upstream::build_render_task_draw_lists(task_plan, engine, task);
-                task.render_recorded = true;
-                task.render_meshes_dirty = false;
+                render_task.draw_lists = record_task_draw_lists(task_plan, engine, task);
             }
         }
     }
@@ -1828,21 +1819,17 @@ public:
         // Queue writes, which land before the frame's submit.
         void upload_pixels_texture_writes() {
             rows.state.shared_material_images.upload_pixels_writes(
-                [&](DawnTexture& image, const std::uint8_t* texels, std::uint32_t width,
+                [&](DawnTexture& image, std::span<const std::uint8_t> texels,
                     PixelsTexels::Region region) {
-                    const std::size_t stride = static_cast<std::size_t>(width) * 4u;
                     WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
                     destination.texture = image.get();
                     destination.origin = {region.x, region.y, 0};
                     WGPUTexelCopyBufferLayout layout{};
-                    layout.bytesPerRow = static_cast<std::uint32_t>(stride);
+                    layout.bytesPerRow = region.width * 4u;
                     layout.rowsPerImage = region.height;
                     const WGPUExtent3D size{region.width, region.height, 1};
-                    DawnGpuDevice{rows.state.queue}.write_texture(
-                        &destination,
-                        texels + region.y * stride + static_cast<std::size_t>(region.x) * 4u,
-                        (region.height - 1u) * stride + static_cast<std::size_t>(region.width) * 4u,
-                        &layout, &size);
+                    DawnGpuDevice{rows.state.queue}.write_texture(&destination, texels.data(),
+                                                                  texels.size(), &layout, &size);
                 });
         }
 #endif
@@ -2028,12 +2015,8 @@ public:
         for (const auto& registered_scene : engine.scenes()) {
             write_shadow_generators(state, *registered_scene, engine);
         }
-#if BBLITE_CSM_STATIC_CACHE
-        if (state.shadow_refresh.task_lists_moved) {
+        if (take_moved_task_lists(state.shadow_refresh))
             rebuild_task_draw_lists();
-            state.shadow_refresh.task_lists_moved = false;
-        }
-#endif
 #endif
 #endif
         // Sampled render targets must exist before material bind groups are built.
@@ -3058,11 +3041,7 @@ public:
                             }
 #endif
 #if BBLITE_HAS_TAA
-#if BBLITE_RENDER_TASK_TRANSMISSION
-                            if (task.transmission)
-                                throw std::runtime_error(
-                                    "Render-task transmission with temporal anti-aliasing is not lowered.");
-#endif
+                            (void)pal::task_pass_breaks(task, {.temporal = true});
                             if (task.source_scene != graph_scene.state ||
                                 task.render.scene_stages ||
                                 task.render.shadow_generator.value != invalid_handle ||
@@ -3118,16 +3097,12 @@ public:
                                 // receiver keeps sampling last render's bit-identical
                                 // content. The verdict was written onto the gate by
                                 // `refresh_shadow_generators` earlier this frame.
-#if BBLITE_CSM_STATIC_CACHE
-                                const ShadowGeneratorRecord& due_generator = handle_at(
-                                    engine.shadow_generators, task.render.shadow_generator);
-                                // `renderCsmShadowMapCached`: the copied cache layers
-                                // reach the map before any dynamic pass draws over it.
-                                if (const auto* copies = pal::csm_cache_copies(engine, task)) {
+                                const pal::ShadowTaskPass caster_plan =
+                                    pal::shadow_task_pass(engine, state.shadow_refresh, task);
+                                if (caster_plan.copy_layers) {
                                     const auto& cache_target =
-                                        handle_at(state.render_targets,
-                                                  due_generator.csm_cache->cache_target);
-                                    for (const std::uint32_t layer : *copies) {
+                                        handle_at(state.render_targets, caster_plan.copy_source);
+                                    for (const std::uint32_t layer : *caster_plan.copy_layers) {
                                         WGPUTexelCopyTextureInfo copy_source{};
                                         copy_source.texture = cache_target.depth;
                                         copy_source.origin = {0, 0, layer};
@@ -3141,19 +3116,8 @@ public:
                                             encoder, &copy_source, &copy_destination, &extent);
                                     }
                                 }
-                                if (due_generator.csm_cache
-                                        ? !pal::csm_cache_task_due(due_generator, task)
-                                        : !state.shadow_refresh
-                                               .gates[task.render.shadow_generator.value]
-                                               .due) {
+                                if (!caster_plan.draws)
                                     continue;
-                                }
-#else
-                                if (!state.shadow_refresh.gates[task.render.shadow_generator.value]
-                                         .due) {
-                                    continue;
-                                }
-#endif
                                 const auto caster = shadow_caster_matrices(engine, task);
                                 ShaderPassMatrices caster_pass{caster.view_projection.data(),
                                                                &caster.view, nullptr};
@@ -3183,12 +3147,8 @@ public:
                                 // a cascaded one is the single layer 0.
                                 shadow_attachment.view =
                                     target.depth_layer_views[task.render.depth_layer];
-                                shadow_attachment.depthLoadOp = WGPULoadOp_Clear;
-#if BBLITE_CSM_STATIC_CACHE
-                                // A cached dynamic pass draws over the copied cache.
-                                if (!task.render.depth_clear)
-                                    shadow_attachment.depthLoadOp = WGPULoadOp_Load;
-#endif
+                                shadow_attachment.depthLoadOp =
+                                    caster_plan.load_depth ? WGPULoadOp_Load : WGPULoadOp_Clear;
                                 // The pin's own shadow target clears to ITS far value,
                                 // which standard-Z puts at 1 where this port's reverse-Z
                                 // puts it at 0.
@@ -3515,19 +3475,13 @@ public:
                             set_task_camera_viewport(task_pass, pass_camera, target.width,
                                                      target.height);
                             WGPURenderPipeline bound_pipeline = nullptr;
-#if BBLITE_RENDER_TASK_TRANSMISSION
-                            // The task's grab latch (`_copies`), reset per execution.
-                            std::optional<TaskTransmissionCopies> transmission_copies;
-                            if (const RenderTaskTransmission* settings = task_transmission(
-                                    task, target_sample_count(state, target_record) > 1,
-                                    target_record.swapchain))
-                                transmission_copies.emplace(*settings);
-#if BBLITE_HAS_BILLBOARDS
-                            if (transmission_copies && task.render.scene_stages)
-                                throw std::runtime_error(
-                                    "Render-task transmission with billboard scene stages is not lowered.");
-#endif
-#endif
+                            // The task's colour-pass plan (`_copies` reset per execution).
+                            pal::TaskPassBreaks pass_breaks = pal::task_pass_breaks(
+                                task,
+                                {.multisampled = target_sample_count(state, target_record) > 1,
+                                 .swapchain = target_record.swapchain,
+                                 .billboard_stages =
+                                     BBLITE_HAS_BILLBOARDS && task.render.scene_stages});
 #if BBLITE_HAS_BILLBOARDS
                             const auto draw_task_billboards = [&](BillboardDepthMode mode) {
                                 for (const DawnBillboardPass& billboard : state.billboard_passes) {
@@ -3620,21 +3574,17 @@ public:
                                 }
                             } else
 #endif
-#if BBLITE_RENDER_TASK_TRANSMISSION
-                                if (transmission_copies) {
-                                // executePassWithTransmission: the transparent list
-                                // breaks the pass before each transmissive draw the
-                                // copy latch still allows, then resumes with load.
-                                for (const auto& draw :
-                                     render_task.draw_lists.transparent.commands) {
-                                    if (transmissive_draw_material(
-                                            handle_find(engine.materials, draw.item.material)) &&
-                                        transmission_copies->can_update()) {
+                                // The plan's break: end the pass, grab, and resume
+                                // loading what the first segment stored.
+                                pal::draw_split_list(
+                                    engine, pass_breaks, render_task.draw_lists.transparent,
+                                    draw_transparent, [&] {
                                         wgpuRenderPassEncoderEnd(task_pass);
                                         task_pass.reset();
+#if BBLITE_RENDER_TASK_TRANSMISSION
                                         encode_task_transmission_grab(state, engine, encoder,
                                                                       handle);
-                                        ++transmission_copies->copies;
+#endif
                                         color_attachment.loadOp = WGPULoadOp_Load;
                                         if (pass_descriptor.depthStencilAttachment) {
                                             depth_attachment.depthLoadOp = WGPULoadOp_Load;
@@ -3649,12 +3599,7 @@ public:
                                         set_task_camera_viewport(task_pass, pass_camera,
                                                                  target.width, target.height);
                                         bound_pipeline = nullptr;
-                                    }
-                                    draw_transparent(BorrowedDrawList{draw});
-                                }
-                            } else
-#endif
-                                draw_transparent(render_task.draw_lists.transparent);
+                                    });
 #if BBLITE_HAS_TEXT
                             // The scene's text, bound for this pass's
                             // attachments (`validate_text_scene`).
@@ -3972,10 +3917,7 @@ public:
                         }
 #if BBLITE_HAS_EFFECT_TASK
                         if (task.kind == FrameTaskKind::effect) {
-#if BBLITE_EFFECT_WRAPPER_DISPOSAL
-                            // `execute` rebuilds the wrapper's dirty bind group before drawing.
-                            require_effect_bind_group(engine, task.effect.effect);
-#endif
+                            pal::prepare_effect_task(engine, task);
                             // The same two halves the swapchain renderer draws through,
                             // recorded into the frame graph's encoder instead: the pin
                             // ships two entry points over one pass, not two passes.

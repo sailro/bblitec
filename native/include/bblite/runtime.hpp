@@ -1958,6 +1958,14 @@ public:
 
     [[nodiscard]] operator const Storage&() const { return *storage_; }
 
+    /**
+     * The one buffer every holder shares, written in place: a pixels
+     * texture's texels, which every copy and binding of the texture sees as
+     * the pin's one GPUTexture serves every reference.
+     */
+    [[nodiscard]] std::uint8_t* shared_data() { return storage_->data(); }
+    void assign_shared(Storage bytes) { *storage_ = std::move(bytes); }
+
 private:
     void detach() {
         if (storage_.use_count() != 1) {
@@ -2073,10 +2081,10 @@ public:
     PixelsTexels() : state_(std::make_shared<State>()) {}
     PixelsTexels(const PixelsTexels&) = default;
     PixelsTexels& operator=(const PixelsTexels&) = default;
-    /** Replaces every texel, as a whole-texture write does. */
+    /** Replaces every texel in place, as a whole-texture write does. */
     PixelsTexels& operator=(Storage texels) {
         state_->require_writable();
-        state_->rgba = std::move(texels);
+        state_->rgba.assign_shared(std::move(texels));
         state_->note_write({});
         return *this;
     }
@@ -4406,9 +4414,7 @@ struct Engine {
     double canvas_window_to_client_scale = 1.0;
     /** The engine draws into a Window realm's DOM canvas (the pin's `isDomCanvas`). */
     bool dom_canvas = false;
-    /** `SurfaceContext.maxDevicePixelRatio` once written; createEngine's option before. */
-    std::optional<double> max_device_pixel_ratio;
-    /** The pin's `resizeSurface`, installed by a program that writes the cap; frame heads run it. */
+    /** The pin's `resizeSurface`, installed on every realm engine; frame heads run it. */
     std::function<void(Engine&)> resize_surface;
     /** Retained primary-canvas dataset, including the harness readiness handshake. */
     std::unordered_map<std::string, std::string> canvas_dataset;
@@ -5519,19 +5525,20 @@ inline void project_material_source_colors(MaterialRecord& material) {
     }
 }
 
+/** `SurfaceContext.maxDevicePixelRatio`: createEngine's option until a write replaces it. */
 [[nodiscard]] inline double surface_max_device_pixel_ratio(const Engine& engine) {
-    return engine.max_device_pixel_ratio.value_or(engine.options.max_device_pixel_ratio);
+    return engine.options.max_device_pixel_ratio;
 }
 
 /** A cap write; the installed resize applies it where the pin's `resizeSurface` runs. */
 inline void set_surface_max_device_pixel_ratio(Engine& engine, double cap,
                                                void (*resize_surface)(Engine&)) {
-    engine.max_device_pixel_ratio = cap;
+    engine.options.max_device_pixel_ratio = cap;
     if (!engine.resize_surface)
         engine.resize_surface = resize_surface;
 }
 
-/** createEngine's cap option: the same resize, which the pin's createEngine runs once. */
+/** A realm engine's surface resize, which the pin's createEngine runs once. */
 inline void install_surface_resize(Engine& engine, void (*resize_surface)(Engine&)) {
     if (!engine.resize_surface)
         engine.resize_surface = resize_surface;

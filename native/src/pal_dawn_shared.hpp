@@ -1323,18 +1323,28 @@ inline WGPURenderPipeline mip_pipeline_for(WGPUDevice device, DawnMipGenerator& 
     return result;
 }
 
+/**
+ * One texture's mip chain, ready to encode: each level's target view and the
+ * group binding the level above it. A texture blitted every frame keeps its
+ * chain; the generator owns the pipeline.
+ */
+struct DawnMipChain {
+    WGPURenderPipeline pipeline = nullptr;
+    std::vector<DawnTextureView> targets;
+    std::vector<DawnBindGroup> groups;
+};
+
 // The pinned generator blits one face at a time for cube textures
-// (recordMipmaps' optional layer): views become single-layer 2D. The
-// record variant encodes into a caller-owned encoder (the pinned
-// recordMipmaps) so mid-frame chains stay ordered with the frame.
-inline void record_mipmaps(WGPUDevice device, DawnMipGenerator& mips, WGPUCommandEncoder encoder,
-                           WGPUTexture texture, WGPUTextureFormat format, std::uint32_t mip_count,
-                           std::int32_t face = -1) {
+// (recordMipmaps' optional layer): views become single-layer 2D.
+inline DawnMipChain prepare_mip_chain(WGPUDevice device, DawnMipGenerator& mips,
+                                      WGPUTexture texture, WGPUTextureFormat format,
+                                      std::uint32_t mip_count, std::int32_t face = -1) {
+    DawnMipChain chain;
     if (mip_count <= 1)
-        return;
-    WGPURenderPipeline pipeline = mip_pipeline_for(device, mips, format);
-    DawnBindGroupLayout layout{
-        require_dawn_resource(wgpuRenderPipelineGetBindGroupLayout(pipeline, 0), "mip layout")};
+        return chain;
+    chain.pipeline = mip_pipeline_for(device, mips, format);
+    DawnBindGroupLayout layout{require_dawn_resource(
+        wgpuRenderPipelineGetBindGroupLayout(chain.pipeline, 0), "mip layout")};
     for (std::uint32_t level = 1; level < mip_count; ++level) {
         WGPUTextureViewDescriptor source_descriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
         source_descriptor.baseMipLevel = level - 1;
@@ -1364,11 +1374,19 @@ inline void record_mipmaps(WGPUDevice device, DawnMipGenerator& mips, WGPUComman
         bind_descriptor.layout = layout;
         bind_descriptor.entryCount = entries.size();
         bind_descriptor.entries = entries.data();
-        DawnBindGroup bind_group{require_dawn_resource(
-            wgpuDeviceCreateBindGroup(device, &bind_descriptor), "mip binding")};
+        chain.groups.emplace_back(require_dawn_resource(
+            wgpuDeviceCreateBindGroup(device, &bind_descriptor), "mip binding"));
+        chain.targets.push_back(std::move(target));
+    }
+    return chain;
+}
 
+// Encodes into a caller-owned encoder (the pinned recordMipmaps) so
+// mid-frame chains stay ordered with the frame.
+inline void encode_mip_chain(WGPUCommandEncoder encoder, const DawnMipChain& chain) {
+    for (std::size_t level = 0; level < chain.targets.size(); ++level) {
         WGPURenderPassColorAttachment color_attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-        color_attachment.view = target;
+        color_attachment.view = chain.targets[level];
         color_attachment.loadOp = WGPULoadOp_Clear;
         color_attachment.storeOp = WGPUStoreOp_Store;
         WGPURenderPassDescriptor pass_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
@@ -1376,11 +1394,17 @@ inline void record_mipmaps(WGPUDevice device, DawnMipGenerator& mips, WGPUComman
         pass_descriptor.colorAttachments = &color_attachment;
         DawnRenderPass pass{require_dawn_resource(
             wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor), "mip render pass")};
-        wgpuRenderPassEncoderSetPipeline(pass, pipeline);
-        wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
+        wgpuRenderPassEncoderSetPipeline(pass, chain.pipeline);
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, chain.groups[level], 0, nullptr);
         wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
         wgpuRenderPassEncoderEnd(pass);
     }
+}
+
+inline void record_mipmaps(WGPUDevice device, DawnMipGenerator& mips, WGPUCommandEncoder encoder,
+                           WGPUTexture texture, WGPUTextureFormat format, std::uint32_t mip_count,
+                           std::int32_t face = -1) {
+    encode_mip_chain(encoder, prepare_mip_chain(device, mips, texture, format, mip_count, face));
 }
 
 /** The whole chain in one submitted encoder, for a texture uploaded once. */

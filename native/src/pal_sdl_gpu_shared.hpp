@@ -36,6 +36,7 @@
 #include <memory>
 #include <fstream>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -722,10 +723,25 @@ public:
         write_buffer(buffer, destination_offset, data, size, false);
     }
 
+    /**
+     * Tightly packed RGBA8 rows into a texture's base level, uploaded in the
+     * same copy pass as the batch's buffers (`queue.writeTexture`).
+     */
+    void upload_texture_region(SDL_GPUTexture* texture, std::uint32_t x, std::uint32_t y,
+                               std::uint32_t width, std::uint32_t height,
+                               std::span<const std::uint8_t> texels) {
+        if (!texture || texels.size() != static_cast<std::size_t>(width) * height * 4u)
+            throw std::runtime_error("SDL texture write has no resource or matching texels.");
+        // The placement alignment a texture copy source keeps on every driver.
+        const std::size_t offset = reserve(texels.size(), 512);
+        std::memcpy(bytes_.get() + offset, texels.data(), texels.size());
+        texture_uploads_.push_back({texture, offset, x, y, width, height});
+    }
+
     // The queue's `submit(commandBuffers)` stays visible beside the batch's own.
     using SdlGpuWriteDevice::submit;
     void submit() {
-        if (uploads_.empty())
+        if (uploads_.empty() && texture_uploads_.empty())
             return;
         if (transfer_capacity_ < bytes_size_) {
             if (transfer_) {
@@ -769,11 +785,19 @@ public:
             };
             SDL_UploadToGPUBuffer(copy, &source, &destination, upload.cycle);
         }
+        for (const StagedTextureUpload& upload : texture_uploads_) {
+            const SDL_GPUTextureTransferInfo source{transfer_, gpu_u32(upload.offset), upload.width,
+                                                    upload.height};
+            const SDL_GPUTextureRegion destination{
+                upload.texture, 0, 0, upload.x, upload.y, 0, upload.width, upload.height, 1};
+            SDL_UploadToGPUTexture(copy, &source, &destination, false);
+        }
         copy.end();
         if (!command.submit()) {
             gpu_error("SDL_SubmitGPUCommandBuffer buffer batch");
         }
         uploads_.clear();
+        texture_uploads_.clear();
         bytes_size_ = 0;
     }
 
@@ -807,7 +831,19 @@ private:
 
     void stage(SDL_GPUBuffer* buffer, std::size_t destination_offset, const void* data,
                std::size_t size, bool cycle) {
-        constexpr std::size_t alignment = 4;
+        const std::size_t offset = reserve(size, 4);
+        std::memcpy(bytes_.get() + offset, data, size);
+        uploads_.push_back(StagedUpload{
+            .buffer = buffer,
+            .offset = offset,
+            .destination_offset = destination_offset,
+            .size = size,
+            .cycle = cycle,
+        });
+    }
+
+    /** Room for `size` staged bytes at an `alignment` offset, which it returns. */
+    std::size_t reserve(std::size_t size, std::size_t alignment) {
         const std::size_t offset = (bytes_size_ + alignment - 1) & ~(alignment - 1);
         const std::size_t required = offset + size;
         if (required > bytes_capacity_) {
@@ -824,16 +860,18 @@ private:
             bytes_ = std::move(grown);
             bytes_capacity_ = capacity;
         }
-        std::memcpy(bytes_.get() + offset, data, size);
         bytes_size_ = required;
-        uploads_.push_back(StagedUpload{
-            .buffer = buffer,
-            .offset = offset,
-            .destination_offset = destination_offset,
-            .size = size,
-            .cycle = cycle,
-        });
+        return offset;
     }
+
+    struct StagedTextureUpload {
+        SDL_GPUTexture* texture = nullptr;
+        std::size_t offset = 0;
+        std::uint32_t x = 0;
+        std::uint32_t y = 0;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+    };
 
     struct StagedUpload {
         SDL_GPUBuffer* buffer = nullptr;
@@ -848,6 +886,7 @@ private:
     SDL_GPUTransferBuffer* transfer_ = nullptr;
     std::size_t transfer_capacity_ = 0;
     std::vector<StagedUpload> uploads_;
+    std::vector<StagedTextureUpload> texture_uploads_;
     // The staged bytes of one submit; grown without initialization (see
     // `stage`) and reused across submits like the transfer buffer.
     std::unique_ptr<std::uint8_t[]> bytes_;

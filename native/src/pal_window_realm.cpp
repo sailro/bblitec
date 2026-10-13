@@ -847,14 +847,9 @@ void bind_canvas_engine(const std::shared_ptr<CanvasElement>& canvas,
     if (!doc.primary_canvas)
         doc.primary_canvas = entry->first;
     doc.input_targets.insert_or_assign(entry->first, WindowDocument::InputTarget(engine));
+    // The engine's lowered `resizeSurface` sizes the backing store from this
+    // client box, as createEngine and every frame head run it.
     const auto box = window_element_size({entry->first});
-    const auto width = static_cast<std::uint32_t>(
-        std::max(1.0, std::round(box.width * window_device_pixel_ratio())));
-    const auto height = static_cast<std::uint32_t>(
-        std::max(1.0, std::round(box.height * window_device_pixel_ratio())));
-    canvas->resize_layout(width, height);
-    engine->options.width = width;
-    engine->options.height = height;
     engine->canvas_client_width = box.width;
     engine->canvas_client_height = box.height;
     engine->dom_canvas = true;
@@ -1139,15 +1134,18 @@ void update_window_document(bool wait) {
             if (index >= layout->elements.size())
                 continue;
             const auto& box = layout->elements[index].rectangle;
-            if (box.width > 0 && box.height > 0)
+            const auto target = doc.input_targets.find(index);
+            const auto engine =
+                target != doc.input_targets.end() ? target->second.engine.lock() : nullptr;
+            if (engine) {
+                // The engine's next frame head resizes its backing store
+                // from the client box (`resizeSurface`).
+                engine->canvas_client_width = box.width / layout->pixel_ratio;
+                engine->canvas_client_height = box.height / layout->pixel_ratio;
+            } else if (box.width > 0 && box.height > 0) {
                 canvas->resize_layout(static_cast<std::uint32_t>(std::round(box.width)),
                                       static_cast<std::uint32_t>(std::round(box.height)));
-            const auto target = doc.input_targets.find(index);
-            if (target != doc.input_targets.end())
-                if (const auto engine = target->second.engine.lock()) {
-                    engine->canvas_client_width = box.width / layout->pixel_ratio;
-                    engine->canvas_client_height = box.height / layout->pixel_ratio;
-                }
+            }
         }
     }
 }

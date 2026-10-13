@@ -2,7 +2,6 @@
 // ordered render-target tasks, so this translation unit deliberately has no
 // scene renderer, camera, mesh, material, or image-loader dependency.
 #include <bblite/upstream/pinned_surface.hpp>
-#include <bblite/features/effect_wrapper_disposal.hpp>
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_frame_graph_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
@@ -442,10 +441,7 @@ public:
             const auto timing_scope = timing_sequence.scoped_task(engine, handle);
 #if BBLITE_HAS_EFFECT_TASK
             if (task.kind == FrameTaskKind::effect) {
-#if BBLITE_EFFECT_WRAPPER_DISPOSAL
-                // `execute` rebuilds the wrapper's dirty bind group before drawing.
-                require_effect_bind_group(engine, task.effect.effect);
-#endif
+                prepare_effect_task(engine, task);
                 EffectPass& pass = state.effects.at(handle.value);
                 const RenderTargetRecord& record =
                     handle_at(engine.render_targets, task.effect.target);

@@ -226,21 +226,23 @@ std::vector<std::uint8_t> ramp(std::size_t count, std::uint8_t first) {
 bool same(PixelsTexels::Region a, PixelsTexels::Region b) {
     return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
 }
-struct Image { std::vector<std::uint8_t> texels; };
+struct Image { std::vector<std::uint8_t> texels; std::uint32_t width = 0; };
 using Uploads = std::vector<PixelsTexels::Region>;
 void sync(pal::TextureUploadCache<Image>& cache, Uploads& uploads) {
-    cache.upload_pixels_writes([&](Image& image, const std::uint8_t* texels, std::uint32_t width, PixelsTexels::Region region) {
+    // The region's rows arrive tightly packed.
+    cache.upload_pixels_writes([&](Image& image, std::span<const std::uint8_t> texels, PixelsTexels::Region region) {
         uploads.push_back(region);
+        const std::size_t row_bytes = static_cast<std::size_t>(region.width) * 4u;
+        assert(texels.size() == row_bytes * region.height);
         for (std::uint32_t row = 0; row < region.height; ++row)
-            for (std::uint32_t byte = 0; byte < region.width * 4u; ++byte) {
-                const std::size_t at = (static_cast<std::size_t>(region.y + row) * width + region.x) * 4u + byte;
-                image.texels[at] = texels[at];
-            }
+            for (std::size_t byte = 0; byte < row_bytes; ++byte)
+                image.texels[(static_cast<std::size_t>(region.y + row) * image.width + region.x) * 4u + byte] =
+                    texels[row * row_bytes + byte];
     });
 }
 std::shared_ptr<Image> bind(pal::TextureUploadCache<Image>& cache, const TextureData& binding) {
     return cache.acquire(binding, false, {255, 255, 255, 255}, [&] {
-        return Image{std::vector<std::uint8_t>(binding.bytes.begin(), binding.bytes.end())};
+        return Image{std::vector<std::uint8_t>(binding.bytes.begin(), binding.bytes.end()), binding.rgba_width};
     });
 }
 int main() {
@@ -261,7 +263,8 @@ int main() {
     // binding's image takes exactly that region.
     update_texture_2d_from_pixels(engine, copy, js::U8Array(js::ArrayBuffer(ramp(8, 1))), 1.0, 1.0, 2.0, 1.0);
     assert(texture.rgba[20] == 1 && texture.rgba[27] == 8 && texture.rgba[19] == 0 && texture.rgba[28] == 0);
-    assert(binding.bytes[20] == 0);
+    // Written in place: the binding shares the texels rather than a snapshot.
+    assert(binding.bytes[20] == 1 && binding.bytes.data() == texture.rgba.data());
     sync(cache, uploads);
     assert(uploads.size() == 1 && same(uploads[0], {1, 1, 2, 1}));
     assert(image->texels == std::vector<std::uint8_t>(texture.rgba.begin(), texture.rgba.end()));
@@ -295,11 +298,11 @@ int main() {
     assert(texture.rgba.version() == version);
     rejects([&] { changed::update_texture_2d_from_pixels(engine, texture, js::U8Array(64), 0.0, 0.0, 1.0, 1.0); }, "#826");
 
-    // Device recovery: a rebuilt device uploads the binding's bytes, then
-    // everything written since, which is the latest texels.
+    // Device recovery: a rebuilt device uploads the binding's bytes, which
+    // are the latest texels, then everything written since its version.
     pal::TextureUploadCache<Image> recovered;
     const auto rebuilt = bind(recovered, binding);
-    assert(rebuilt->texels != image->texels);
+    assert(rebuilt->texels == image->texels);
     Uploads replayed;
     sync(recovered, replayed);
     assert(replayed.size() == 1 && same(replayed[0], {0, 0, 4, 3}));
