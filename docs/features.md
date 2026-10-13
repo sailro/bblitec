@@ -7,7 +7,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: audio graph
-operations, media streams/recording/streamed audio, script elements, session storage, idle callbacks, dynamic
+operations, media streams/recording/streamed audio, script elements, idle callbacks, dynamic
 pixel ratio, application-realm device recovery, Blob streams/piping/compression, and the [UI](ui.md)
 items marked deferred. Unregistered APIs still refuse.
 
@@ -23,7 +23,7 @@ items marked deferred. Unregistered APIs still refuse.
 | Data | Records, tagged/structural unions, arrays, tuples, dictionaries, Map/Set, JSON documents, record accessors, `{}` identity tokens, phantom brands | Record conversions no single layout can hold; mutation through erased native views; identity comparison of unnamed literals |
 | Async | Promises, async functions, `all`/`allSettled`/`race`/`any` over tuples and sync iterables | Custom thenables, async iterables in combinators, MessageChannel, runtime-sized resource construction |
 | Generators | Sync/async, `for...of`, `for await`, `yield*` over generators/iterators/arrays | `next(value)`, `throw`, return payloads, yield in finally, `yield*` from async generators |
-| Workers | Module workers, structured clone (records, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer | Classic scripts; messages with class instances, Errors, functions, promises, platform objects; listener options except `once` |
+| Workers | Module workers, structured clone and `structuredClone` (records incl. own accessors, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer | Classic scripts; clones of class instances, prototype accessors, Errors, promises, platform objects; functions in messages (`structuredClone` throws DataCloneError); `structuredClone` transfer lists; listener options except `once` |
 
 Rules:
 

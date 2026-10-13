@@ -4551,6 +4551,9 @@ export class DeclarationLowerer {
                 initializer: owner.cpp,
             });
             const consumed = new EmissionSet<string>();
+            const omits = pattern.elements.some(
+                (element) => element.dotDotDotToken,
+            );
             for (const element of pattern.elements) {
                 if (element.dotDotDotToken) {
                     this.bindStructRest(
@@ -4678,6 +4681,8 @@ export class DeclarationLowerer {
                     type: `${this.context.dataTypes.cppType(field.type)}${aliases ? "&" : ""}`,
                     name: cppName,
                     initializer: fieldCpp,
+                    // `{ omitted: _, ...rest }` binds a property only to leave it out.
+                    ...(omits ? { attributes: "[[maybe_unused]] " } : {}),
                 });
                 const fieldValue = this.context.dataLowerer.leafValue(
                     cppName,

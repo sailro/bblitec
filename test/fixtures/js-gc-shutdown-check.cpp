@@ -1,4 +1,4 @@
-#include <bblite/js_data.hpp>
+#include <bblite/js_storage.hpp>
 #include <atomic>
 #include <cassert>
 #include <iostream>
@@ -36,8 +36,8 @@ void use_realm_statics() {
         return value;
     }();
     static thread_local Map<int, Ref<RealmPayload>> values{{1, cycle}};
-    auto storage = local_storage_object();
-    assert(storage == local_storage_object());
+    auto storage = session_storage_object();
+    assert(storage == session_storage_object());
     storage_identity = storage.weak_identity();
     assert(values.at(1) == cycle);
 }

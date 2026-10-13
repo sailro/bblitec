@@ -1,7 +1,7 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { rootIdentifier, argumentAt } from "./syntax.js";
-import { isSymbolPropertyKey } from "./symbols.js";
+import { isGlobalUndefined, isSymbolPropertyKey } from "./symbols.js";
 import {
     validateObjectProperties,
     type ObjectValidationContext,
@@ -156,7 +156,20 @@ function uncloneablePosition(
             for (const field of context.dataTypes.structFields(
                 type.name,
                 node,
+                "accessors",
             )) {
+                // An own accessor clones as the data its getter reads; a
+                // class's prototype accessor is no own property and refuses.
+                if (
+                    field.accessor &&
+                    !field.accessorReceiver &&
+                    context.dataTypes.holdsPrototypeAccessors(type.name)
+                )
+                    context.dataTypes.structField(
+                        type.name,
+                        field.sourceName,
+                        node,
+                    );
                 // Cloning drops a symbol-keyed property the struct keeps.
                 if (isSymbolPropertyKey(field.sourceName))
                     return refuse("an object with a symbol-keyed property");
@@ -259,19 +272,23 @@ function requireCloneable(
 }
 
 /**
- * `structuredClone(value)`: a deep copy through the message codecs, which
- * keep aliases and cycles; a function met on the way throws DataCloneError,
- * as it does in JavaScript. Shapes a message refuses refuse here too.
+ * `structuredClone(value, options?)`: a deep copy through the message codecs,
+ * which keep aliases and cycles; a function met on the way throws a
+ * DataCloneError DOMException, as it does in JavaScript. Shapes a message
+ * refuses refuse here too. Options move nothing: absent, `undefined`, `{}`
+ * or an empty `transfer` literal.
  */
 function compileStructuredClone(
     context: WorkerLoweringContext,
     call: ts.CallExpression,
 ): Value {
-    if (call.arguments.length !== 1)
+    if (call.arguments.length < 1 || call.arguments.length > 2)
         return context.fail(
             call,
-            "structuredClone takes one value; transfer options are not lowered.",
+            "structuredClone takes a value and optional options.",
         );
+    const options = call.arguments[1];
+    if (options) requireNoTransfer(context, options);
     const argument = argumentAt(call, 0);
     const type = messageDataType(context, argument);
     if (!type)
@@ -295,6 +312,31 @@ function compileStructuredClone(
         ),
         freshData: true,
     };
+}
+
+/** Clone options that transfer nothing; moving a value (detaching it) is not lowered. */
+function requireNoTransfer(
+    context: WorkerLoweringContext,
+    node: ts.Expression,
+): void {
+    const options = context.unwrap(node);
+    if (isGlobalUndefined(context.checker, options)) return;
+    const refuse = (): never =>
+        context.fail(
+            node,
+            "structuredClone options admit only an empty literal transfer list; transferring a value is not lowered.",
+        );
+    if (!ts.isObjectLiteralExpression(options)) return refuse();
+    for (const property of options.properties) {
+        if (
+            !ts.isPropertyAssignment(property) ||
+            context.propertyName(property.name) !== "transfer"
+        )
+            return refuse();
+        const list = context.unwrap(property.initializer);
+        if (!ts.isArrayLiteralExpression(list) || list.elements.length !== 0)
+            return refuse();
+    }
 }
 
 /**

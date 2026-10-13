@@ -1583,6 +1583,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "from a Babylon declaration",
         consumers: CMAKE,
     },
+    "storage:session": {
+        provenance:
+            "the Web Storage sessionStorage object -- process memory shared " +
+            "by the realms one window recreates, never written to disk",
+        consumers: ["fidelity.json"],
+    },
 };
 
 /** The runtime features the inventory maps, in emission order. */

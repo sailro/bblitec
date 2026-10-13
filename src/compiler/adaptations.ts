@@ -331,6 +331,21 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("storage:session")) {
+        adaptations.push({
+            id: "native-session-storage",
+            category: "browser-erasure",
+            sourceSemantics:
+                "sessionStorage is the top-level browsing session's storage: it survives reloads and same-document navigation of that tab, ends with the tab, and is absent in workers.",
+            nativeSemantics:
+                "The three reached methods read and write one process-memory map shared by every realm the window recreates; nothing is written to disk and the process exit ends the session. Worker realms refuse the global and read its typeof as undefined.",
+            risk: "low",
+            validation: [
+                "Web Storage compiler tests",
+                "native realm-recreation session storage check",
+            ],
+        });
+    }
     if (features.includes("platform:http"))
         adaptations.push({
             id: "native-http-transport",

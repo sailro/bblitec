@@ -5048,10 +5048,6 @@ class Compiler implements LoweringServices {
         this.reachFeature("data:json");
     }
 
-    public reachLocalStorage(): void {
-        this.reachFeature("storage:local");
-    }
-
     public reachImageDecode(): void {
         this.imageDecodeReached = true;
     }

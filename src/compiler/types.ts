@@ -3259,6 +3259,8 @@ export type Feature =
     | "data:tagged-template"
     /** Web Storage: the durable per-user key/value store behind `localStorage`. */
     | "storage:local"
+    /** Web Storage: the session key/value store behind `sessionStorage`, in process memory. */
+    | "storage:session"
     | "platform:workers"
     | "platform:window";
 

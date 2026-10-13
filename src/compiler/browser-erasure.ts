@@ -1108,17 +1108,14 @@ export class BrowserErasure {
     }
 
     /**
-     * The `localStorage` global, or a read or call on it. Spelled through
-     * the same global recognizer as every other host object, so
-     * `window.localStorage` and a lexical shadow answer correctly.
+     * The `localStorage` or `sessionStorage` global, or a read or call on
+     * it. Spelled through the same global recognizer as every other host
+     * object, so `window.localStorage` and a lexical shadow answer correctly.
      */
     private isWebStorageExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
-        if (
-            this.context.libraryGlobal(unwrapped) === "localStorage" ||
-            (this.context.options.deferredCapabilities &&
-                this.context.libraryGlobal(unwrapped) === "sessionStorage")
-        ) {
+        const global = this.context.libraryGlobal(unwrapped);
+        if (global === "localStorage" || global === "sessionStorage") {
             return true;
         }
         const type = this.context.checker.getNonNullableType(
@@ -1740,6 +1737,15 @@ export class BrowserErasure {
                 unwrapped.expression,
             );
             if (intrinsic) return { kind: "string", value: intrinsic };
+            // Window-only, like a browser worker's missing global.
+            if (global === "sessionStorage")
+                return {
+                    kind: "string",
+                    value:
+                        this.context.options.workers?.namespace === undefined
+                            ? "object"
+                            : "undefined",
+                };
             if (
                 global &&
                 [

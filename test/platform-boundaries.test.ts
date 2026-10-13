@@ -111,7 +111,7 @@ test("idle aliases preserve owned callbacks and throw after argument evaluation"
     );
 });
 
-test("session storage has no successful provider and retains method bodies", () => {
+test("session storage is a native provider in both modes and never reaches the durable store", () => {
     const source = `
         let caught=0; let effects=0;
         try {
@@ -120,21 +120,18 @@ test("session storage has no successful provider and retains method bodies", () 
                 storage.setItem('key',String(++effects));
                 const value=storage.getItem('key');
                 storage.removeItem('key');
-                if(value!==null) effects++;
+                if(value==='1' && storage.getItem('key')===null) effects++;
             }
-        } catch(error) {
-            if(!error.message.includes('dom:Window.sessionStorage')) throw error;
+        } catch {
             caught++;
         }
-        if(caught!==1 || effects!==0) throw new Error('storage provider');
+        if(caught!==0 || effects!==2) throw new Error('storage provider');
     `;
-    assert.throws(() => compileSource(source), /sessionStorage/);
-    const result = compileSource(source, { deferredCapabilities });
     assert.ok(
-        result.manifest.deferredCapabilities!.some(
-            (site) => site.id === "dom:Window.sessionStorage",
-        ),
+        compileSource(source).manifest.features.includes("storage:session"),
     );
+    const result = compileSource(source, { deferredCapabilities });
+    assert.equal(result.manifest.deferredCapabilities, undefined);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(

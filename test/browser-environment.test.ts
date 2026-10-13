@@ -41,8 +41,8 @@ test("local storage can be injected through nullable method records", async (t) 
         optionalStore({storage:optionalStorage});
         if (argumentEffects !== 1) throw new Error("optional service argument evaluation");
     `);
-    assert.match(result.cpp, /local_storage_get_item/);
-    assert.match(result.cpp, /local_storage_set_item/);
+    assert.match(result.cpp, /local_storage_object\(\)[\s\S]*->get_item/);
+    assert.match(result.cpp, /->set_item/);
     assert.ok(result.manifest.features.includes("storage:local"));
     const native = optionalNativeFixtureTools(false);
     await t.test(
@@ -119,8 +119,8 @@ test("storage availability guards reach durable native reads", () => {
             const saved = typeof ${storage} !== "undefined" ? ${storage}.getItem("preferences") : null;
             if (saved) ${storage}.setItem("copy", saved);
         `);
-        assert.match(result.cpp, /local_storage_get_item/);
-        assert.match(result.cpp, /local_storage_set_item/);
+        assert.match(result.cpp, /local_storage_object\(\)[\s\S]*->get_item/);
+        assert.match(result.cpp, /->set_item/);
     }
 });
 

@@ -2986,11 +2986,15 @@ export class PropertyAccessLowerer {
                 this.declaredEventInterface(ownerExpression) !== "KeyboardEvent"
             ) {
                 const payload = `${owner.cpp}.as<bbl::PlatformStorageEvent>()`;
-                if (property === "storageArea")
+                if (property === "storageArea") {
+                    // A storage event's area is `localStorage`: one window
+                    // shares no session.
+                    this.context.reachFeature("storage:local", expression);
                     return this.context.dataLowerer.leafValue(
                         `(${payload}.has_storage_area ? bbl::js::Nullable<bbl::js::Storage>{bbl::js::local_storage_object()} : bbl::js::Nullable<bbl::js::Storage>{})`,
                         { kind: "optional", inner: { kind: "storage" } },
                     );
+                }
                 if (property === "url")
                     return this.context.dataLowerer.leafValue(
                         `${payload}.url`,
