@@ -190,6 +190,7 @@ const resourceValueCppTypes: ReadonlyMap<string, string> = new Map([
     ["camera-gizmo", "bbl::CameraGizmoHandle"],
     ["light-gizmo", "bbl::LightGizmoHandle"],
     ["asset-root", "bbl::AssetHandle"],
+    ["frame-graph", "bbl::Scene"],
 ]);
 
 export function resourceValueCppType(kind: string): string | undefined {

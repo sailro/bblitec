@@ -579,6 +579,42 @@ export function compileSceneIntrinsic(
             };
         }
 
+        case "getFrameGraph": {
+            context.expectArgumentCount(call, 1, 1);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
+            // A native scene copy shares its state, task list included.
+            return {
+                kind: "frame-graph",
+                cpp: scene.cpp,
+                ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}),
+            };
+        }
+
+        case "buildFrameGraphTask": {
+            context.expectArgumentCount(call, 2, 2);
+            const frameGraph = context.compileValue(argumentAt(call, 0));
+            context.expectKind(frameGraph, "frame-graph", argumentAt(call, 0));
+            const task = context.compileValue(argumentAt(call, 1));
+            context.expectKind(task, "task", argumentAt(call, 1));
+            if (!task.renderTask && !task.effectTask)
+                context.fail(
+                    argumentAt(call, 1),
+                    "buildFrameGraphTask lowers render tasks and effect render tasks.",
+                );
+            context.expectSameEngine(frameGraph, task, call);
+            context.admissions.noteTemporalRecordBoundary(
+                call,
+                importedName,
+                "always",
+            );
+            context.reachFeature("frame-graph:task-build", call);
+            return {
+                kind: "void",
+                cpp: `bbl::build_frame_graph_task(${frameGraph.cpp}, ${task.cpp})`,
+            };
+        }
+
         case "rebuildSceneRenderables": {
             context.expectArgumentCount(call, 1, 1);
             const scene = context.compileValue(argumentAt(call, 0));

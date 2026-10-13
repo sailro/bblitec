@@ -3631,6 +3631,14 @@ export class PropertyAccessLowerer {
         ) {
             return owner;
         }
+        // The native list also holds the default task's resolve and present
+        // copies and each shadow generator's caster passes, where the pin's
+        // holds one task each, so no view of it keeps the pin's indices.
+        if (owner.kind === "frame-graph" && expression.name.text === "_tasks")
+            this.context.fail(
+                expression,
+                "FrameGraph._tasks is private and is not represented: the native scene task list holds tasks the pin's does not, so its indices differ. Removing a task from a live graph is refused.",
+            );
         if (
             owner.kind === "utility-layer" &&
             expression.name.text === "scene"

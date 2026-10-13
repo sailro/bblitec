@@ -1593,6 +1593,8 @@ export type ValueKind =
     | "scene"
     | "surface"
     | "frame-graph-context"
+    /** `getFrameGraph(scene)`: the scene's live task list, held by its scene. */
+    | "frame-graph"
     | "sprite-atlas"
     | "sprite-layer"
     | "sprite-blend"
@@ -2705,6 +2707,8 @@ export interface ValueFields {
     postProcessComposite?: PostProcessCompositeManifest;
     /** Proven scene-render task factory result, including its constant aliases. */
     renderTask?: true;
+    /** Proven `createEffectRenderTask` result. */
+    effectTask?: true;
     /** Proven target descriptor retained by aliases for pass-signature admission. */
     renderTargetSignature?: {
         readonly surfaceFormat: boolean;
@@ -3220,6 +3224,8 @@ export type Feature =
     | "frame-graph:task-mesh-removal"
     | "frame-graph:task-mesh-refresh"
     | "frame-graph:task-material-override"
+    | "frame-graph:task-build"
+    | "frame-graph:task-disposal"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:wrapper-disposal"

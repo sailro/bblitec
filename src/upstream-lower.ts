@@ -1308,6 +1308,8 @@ ${lowerThinInstanceSync(context)}
                 gltfSceneHooks: features.includes("loader:gltf"),
                 thinBindings: options.gpuInstancing,
                 meshGpuDisposal: features.includes("mesh:dispose-gpu"),
+                taskBuild: features.includes("frame-graph:task-build"),
+                effectTasks: features.includes("effect:task"),
             }),
         );
         this.emitTextData(features, context, options, generated);
@@ -1512,6 +1514,8 @@ ${lowerThinInstanceSync(context)}
             composedShaders,
             generated,
             features.includes("effect:wrapper-disposal"),
+            features.includes("frame-graph:task-build"),
+            features.includes("frame-graph:task-disposal"),
         );
         this.emitLoaderSplat(
             features,
@@ -1571,6 +1575,7 @@ ${lowerThinInstanceSync(context)}
             features.includes("frame-graph:task-mesh-removal"),
             features.includes("frame-graph:task-mesh-refresh") &&
                 features.includes("frame-graph:task-material-override"),
+            features.includes("frame-graph:task-disposal"),
         );
         this.emitRendererPostProcess(
             features,
@@ -2430,6 +2435,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         composedShaders: ComposedShader[],
         generated: { modulePath: string; symbolName: string }[],
         disposal: boolean,
+        taskBuild: boolean,
+        taskDisposal: boolean,
     ): void {
         if (this.reaches("upstream/src/effect_renderer.cpp")) {
             // One module per descriptor, both entry points in it: the pin
@@ -2476,7 +2483,7 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/effect_renderer.cpp",
-                effects.lowerFactory(disposal),
+                effects.lowerFactory(disposal, taskBuild, taskDisposal),
                 generated,
             );
         }
@@ -3070,6 +3077,7 @@ ${wgsl}`,
         thinBindings: boolean,
         meshRemoval: boolean,
         refreshedOverrides: boolean,
+        taskDisposal: boolean,
     ): void {
         if (this.reaches("upstream/src/frame_graph_geometry.cpp")) {
             this.writeSource(
@@ -3078,6 +3086,7 @@ ${wgsl}`,
                     thinBindings,
                     meshRemoval,
                     refreshedOverrides,
+                    taskDisposal,
                 ),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_geometry.hpp",

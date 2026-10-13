@@ -94,11 +94,16 @@ export function lowerRenderTargetDisposal(
     `,
         "RTT attachment release",
     );
-    return `// ${context.provenance(rttModule, "disposeRenderTargetTexture", `${targetModule}#disposeRenderTarget and ${rttModule}#releaseAttachments`)}
-void dispose_render_target_texture(Engine& engine, RenderTargetTexture result) {
-    [[maybe_unused]] auto& target = ${recordAt("engine.render_targets", "result.rt")};
-    // The attachments: a disposed target hands the hook none again.
-    const auto release = [&engine, handle = result.rt] {
+    return `// ${context.provenance(targetModule, "disposeRenderTarget", `${rttModule}#releaseAttachments`)}
+void dispose_render_target(Engine& engine, RenderTargetHandle handle) {
+    // \`!rt || (rt._eager && !rt._disposeAttachments)\`: no target, or the
+    // swapchain's, which only native targets are eager without the hook.
+    if (handle.value == invalid_handle) return;
+    [[maybe_unused]] auto& target = ${recordAt("engine.render_targets", "handle")};
+    if (target.swapchain) return;
+    // The attachments: a disposed target hands the hook none again. A plain
+    // target's destroyed textures retire the same way.
+    const auto release = [&engine, handle] {
         auto& record = ${recordAt("engine.render_targets", "handle")};
         if (record.retired) return;
         record.retired = true;
@@ -110,6 +115,11 @@ ${
     target.lifecycle->dispose(release);`
         : "    release();"
 }
+}
+
+// ${context.provenance(rttModule, "disposeRenderTargetTexture")}
+void dispose_render_target_texture(Engine& engine, RenderTargetTexture result) {
+    dispose_render_target(engine, result.rt);
 }
 `;
 }

@@ -533,6 +533,7 @@ export function compileEffectIntrinsic(
                     `${clearFlag(context, object)}, ` +
                     `${clearColor(context, object)}})`,
                 engineCpp: engine,
+                effectTask: true,
             };
         }
 
