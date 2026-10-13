@@ -133,7 +133,9 @@ place in the transparent bucket (`pal_transparent_order.hpp`): transparent meshe
 external bindings sort by the pin's lowered `compareTransparentBindings` and `_sortDistance`
 (`transparent_order.hpp`; distance 0 without `_worldCenter`). Mixed families without a camera, or tied
 in distance and order, refuse; so do external renderables beside text, splat clouds or depth-hosted
-sprite layers, in render tasks, or opaque.
+sprite layers, in render tasks, or opaque. Text keeps its own instance of the protocol (`TextScenePass`)
+and its own devices: its generated bindings draw into a text surface with the live view-projection, also
+run inside render tasks, and need render bundles, vertex buffers and samplers outside the subset.
 
 ## Temporal post-process transport
 
