@@ -308,6 +308,24 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
 #endif
     }
 #endif
+    // A render target's slot binds the target's current texture, so a rebuilt
+    // target is what this draw samples.
+    for (std::size_t packed = 0;
+         !material.shader_render_textures.empty() && packed < names.size(); ++packed) {
+        const auto declared =
+            std::find_if(info.samplers.begin(), info.samplers.end(),
+                         [&](const char* candidate) { return names[packed] == candidate; });
+        if (declared == info.samplers.end())
+            continue;
+        const std::size_t slot = static_cast<std::size_t>(declared - info.samplers.begin());
+        if (slot >= material.shader_render_textures.size() ||
+            !material.shader_render_textures[slot] ||
+            packed >= state.shader_texture_binding_scratch.size())
+            continue;
+        state.shader_texture_binding_scratch[packed] = {
+            sdl_render_texture_color(state, engine, *material.shader_render_textures[slot]),
+            state.ground_sampler};
+    }
     if (state.shader_texture_binding_scratch.size() != names.size()) {
         gpu_error((std::string("Shader material texture binding count is stale for '") + info.name +
                    "' (uploaded " + std::to_string(state.shader_texture_binding_scratch.size()) +

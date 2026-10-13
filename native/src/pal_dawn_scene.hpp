@@ -145,6 +145,8 @@ struct DawnShaderBindings {
     DawnBindGroup scene{};
     DawnBindGroup resources{};
     DawnBindGroup material{};
+    /** The render-target views the resource group was built from, by sampler slot. */
+    std::vector<WGPUTextureView> render_views;
 };
 
 struct DawnShaderBindingKey {

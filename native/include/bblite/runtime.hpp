@@ -3276,6 +3276,8 @@ struct MaterialRecord {
     // bindings resolved against the scene's `textures` record. Empty for
     // every other family, and for a program that samples nothing.
     std::vector<FileTexture> shader_textures;
+    /** Shader slots a render target fills, resolved where each draw binds them. */
+    std::vector<std::optional<RenderTextureRef>> shader_render_textures;
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;
     // The pin's 2D reflection slot: the non-cube arm of the same
@@ -6522,6 +6524,8 @@ void set_shader_external_texture(Engine& engine, MaterialHandle material, std::u
                                  ExternalTextureHandle texture);
 void set_shader_storage_buffer(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                StorageBufferHandle buffer);
+void set_shader_render_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
+                               RenderTextureRef texture);
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                             ShadowGeneratorHandle generator);
 void set_shadow_caster_material(Engine& engine, MaterialHandle material, MaterialHandle caster);

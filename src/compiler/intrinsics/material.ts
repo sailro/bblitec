@@ -1258,6 +1258,21 @@ function compileSetShaderTexture(
         argumentAt(call, 1),
     );
     const texture = context.compileValue(argumentAt(call, 2));
+    if (texture.kind === "render-texture") {
+        if (texture.isDepthTexture)
+            context.fail(
+                argumentAt(call, 2),
+                "Shader-material textures sample a render target's colour; depth textures are not lowered.",
+            );
+        context.expectSameEngine(material, texture, call);
+        return {
+            kind: "void",
+            cpp:
+                `bbl::set_shader_render_texture(` +
+                `${context.requireEngine(material, call)}, ` +
+                `${material.cpp}, ${slot}u, ${texture.cpp})`,
+        };
+    }
     context.expectKind(texture, "texture", argumentAt(call, 2));
     const cachedPixelsTexture =
         texture.dataType?.kind === "handle" &&
