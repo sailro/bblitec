@@ -124,7 +124,9 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 - Thin-instance pools with compute tasks, geometry-output tasks or device recovery refuse.
 - Meshes parent to meshes or transform nodes; transform nodes only to transform nodes. Scene writes to imported nodes load
   the pin's glTF node hierarchy; animated/morphed assets, punctual lights and cameras then refuse.
-- A mesh removed from its last scene retires ([fidelity](fidelity.md#semantic-contract)); re-adding or cloning it refuses.
+- A mesh removed from its last scene or passed to `disposeMeshGpu` retires
+  ([fidelity](fidelity.md#semantic-contract)); re-adding or cloning it refuses. `disposeMeshGpu` of a mesh a scene or
+  live render task still lists refuses.
 
 ## Materials
 
@@ -176,7 +178,10 @@ absent. `createAudioEngineAsync` adopts `audioContext`; its other options refuse
 
 ## Frame graph and post-process
 
-- Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup.
+- Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup; `removeMeshFromTask`.
+- `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
+  keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform
+  binding refuses.
 - TAA: one scene, explicit Standard color tasks, engine-format color, depth24plus-stencil8, single-sample inputs.
 - Contact shadows, one-bounce GI, EffectWrapper/EffectRenderer with bounded layouts; custom vertices refuse.
 - Image processing: exposure, contrast, toneMapping, toneMappingEnabled.

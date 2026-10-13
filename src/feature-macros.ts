@@ -94,6 +94,14 @@ export const featureMacros: readonly FeatureMacro[] = [
         anyOf: ["renderer:frame-graph"],
     },
     { macro: "BBLITE_HAS_EFFECT_WRAPPER", anyOf: ["effect:wrapper"] },
+    {
+        macro: "BBLITE_EFFECT_WRAPPER_DISPOSAL",
+        anyOf: ["effect:wrapper-disposal"],
+    },
+    {
+        macro: "BBLITE_RENDER_TARGET_DISPOSAL",
+        anyOf: ["frame-graph:target-disposal"],
+    },
     // The pin's mesh-phase Standard extension, reached only through
     // enableMaterialUvTransform().
     {

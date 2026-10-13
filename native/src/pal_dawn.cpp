@@ -22,6 +22,7 @@
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
+#include <bblite/features/effect_wrapper_disposal.hpp>
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_geometry_output.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -3862,6 +3863,10 @@ public:
                         }
 #if BBLITE_HAS_EFFECT_TASK
                         if (task.kind == FrameTaskKind::effect) {
+#if BBLITE_EFFECT_WRAPPER_DISPOSAL
+                            // `execute` rebuilds the wrapper's dirty bind group before drawing.
+                            require_effect_bind_group(engine, task.effect.effect);
+#endif
                             // The same two halves the swapchain renderer draws through,
                             // recorded into the frame graph's encoder instead: the pin
                             // ships two entry points over one pass, not two passes.

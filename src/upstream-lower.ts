@@ -1306,6 +1306,7 @@ ${lowerThinInstanceSync(context)}
                     features.includes("mesh:thin-instances"),
                 gltfSceneHooks: features.includes("loader:gltf"),
                 thinBindings: options.gpuInstancing,
+                meshGpuDisposal: features.includes("mesh:dispose-gpu"),
             }),
         );
         this.emitTextData(features, context, options, generated);
@@ -1313,6 +1314,7 @@ ${lowerThinInstanceSync(context)}
             new RenderTargetLowerer(
                 context,
                 features.includes("frame-graph:surface-target"),
+                features.includes("frame-graph:target-disposal"),
             ).lower(),
         );
         emitReached("upstream/src/frame_graph_context.cpp", () =>
@@ -1497,7 +1499,13 @@ ${lowerThinInstanceSync(context)}
         // sprite renderer for an atlas the pinned loader gave a chain.
         const deployMipBlit = (): void => deployUtility(pinnedMipBlitModule());
         if (features.includes("compute:texture-mipmaps")) deployMipBlit();
-        this.emitEffectWrapper(context, options, composedShaders, generated);
+        this.emitEffectWrapper(
+            context,
+            options,
+            composedShaders,
+            generated,
+            features.includes("effect:wrapper-disposal"),
+        );
         this.emitLoaderSplat(
             features,
             context,
@@ -1553,6 +1561,7 @@ ${lowerThinInstanceSync(context)}
             context,
             generated,
             options.gpuInstancing,
+            features.includes("frame-graph:task-mesh-removal"),
         );
         this.emitRendererPostProcess(
             features,
@@ -2411,6 +2420,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         options: UpstreamEmitOptions,
         composedShaders: ComposedShader[],
         generated: { modulePath: string; symbolName: string }[],
+        disposal: boolean,
     ): void {
         if (this.reaches("upstream/src/effect_renderer.cpp")) {
             // One module per descriptor, both entry points in it: the pin
@@ -2457,7 +2467,7 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/effect_renderer.cpp",
-                effects.lowerFactory(),
+                effects.lowerFactory(disposal),
                 generated,
             );
         }
@@ -3049,12 +3059,14 @@ ${wgsl}`,
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
         thinBindings: boolean,
+        meshRemoval: boolean,
     ): void {
         if (this.reaches("upstream/src/frame_graph_geometry.cpp")) {
             this.writeSource(
                 "upstream/src/frame_graph_geometry.cpp",
                 new GeometryOutputLowerer(context).lowerTaskRecords(
                     thinBindings,
+                    meshRemoval,
                 ),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_geometry.hpp",

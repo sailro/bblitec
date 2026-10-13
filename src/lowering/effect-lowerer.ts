@@ -18,6 +18,7 @@ import { renderingContextKind } from "./rendering-context-kind.js";
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
+import { lowerEffectWrapperDisposal } from "./effect-wrapper-disposal.js";
 
 const effectModule = "src/effect/effect-renderer.ts";
 const uniformEffectModule = "src/effect/uniform-effect-renderer.ts";
@@ -180,7 +181,7 @@ export class EffectLowerer {
      * wrapper a renderer or task draws, its clear state, and the uniform and
      * texture slots the setters write.
      */
-    public lowerFactory(): LoweredSource {
+    public lowerFactory(disposal = false): LoweredSource {
         return {
             modulePath: effectModule,
             symbolName: "createEffectWrapper,createEffectRenderer",
@@ -237,7 +238,7 @@ void set_effect_uniforms(
         bytes = binding.uniform_bytes;
         break;
     }
-    if (bytes == 0) {
+    if (bytes == 0${disposal ? " || wrapper.uniform_slots_released" : ""}) {
         throw std::runtime_error(
             "setEffectUniforms: wrapper has no uniform binding.");
     }
@@ -285,7 +286,13 @@ EffectRendererHandle create_effect_renderer(
 void register_effect_renderer(
     Engine& engine,
     EffectRendererHandle renderer) {
-    for (const EffectRendererHandle& registered :
+${
+    disposal
+        ? `    // prepareEffectRenderer builds the wrapper's bind group first.
+    require_effect_bind_group(engine, ${recordAt("engine.effect_renderers", "renderer")}.effect);
+`
+        : ""
+}    for (const EffectRendererHandle& registered :
          engine.effect_renderer_contexts()) {
         if (registered.value == renderer.value) return;
     }
@@ -305,7 +312,7 @@ TaskHandle create_effect_render_task(
     return TaskHandle{
         static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
 }
-
+${disposal ? lowerEffectWrapperDisposal(this.context) : ""}
 } // namespace bbl
 `,
         };

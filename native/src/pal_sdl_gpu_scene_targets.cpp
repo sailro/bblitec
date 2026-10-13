@@ -10,6 +10,7 @@
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/features/render_target_disposal.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
 
@@ -222,7 +223,7 @@ std::shared_ptr<GpuRenderTarget> retain_render_target(SDL_GPUDevice* device,
 void release_frame_graph_textures(GpuState& state, const Engine* preserve) {
     for (std::size_t index = 0; index < state.render_targets.size(); ++index) {
         if (preserve && index < preserve->render_targets.size() &&
-            preserve->render_targets[index].lifecycle)
+            preserve->render_targets[index].lifecycle && !preserve->render_targets[index].retired)
             continue;
         release_render_target(state.device, state.render_targets[index]);
     }
@@ -292,6 +293,9 @@ SDL_GPUTextureFormat depth_texture_format(const GpuState& state, const RenderTar
 void create_frame_graph_textures(GpuState& state, const Engine& engine,
                                  SDL_GPUTextureFormat surface_format, std::uint32_t width,
                                  std::uint32_t height) {
+#if BBLITE_RENDER_TARGET_DISPOSAL
+    require_live_render_targets(engine);
+#endif
     if (state.render_targets_version == engine.render_targets_version &&
         state.render_targets.size() == engine.render_targets.size() &&
         state.frame_graph_width == width && state.frame_graph_height == height &&

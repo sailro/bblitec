@@ -461,6 +461,18 @@ export function compileEngineIntrinsic(
             };
         }
 
+        case "disposeRenderTargetTexture": {
+            context.expectArgumentCount(call, 1, 1);
+            const target = context.compileValue(argumentAt(call, 0));
+            context.expectKind(target, "render-target-texture", call);
+            context.reachFeature("frame-graph:resources", call);
+            context.reachFeature("frame-graph:target-disposal", call);
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_render_target_texture(${context.requireEngine(target, call)}, ${target.cpp})`,
+            };
+        }
+
         case "enableRenderTaskMeshRefresh": {
             context.expectArgumentCount(call, 1, 1);
             const task = context.compileValue(argumentAt(call, 0));
@@ -474,6 +486,21 @@ export function compileEngineIntrinsic(
             return {
                 kind: "void",
                 cpp: `bbl::enable_render_task_mesh_refresh(${context.requireEngine(task, call)}, ${task.cpp})`,
+            };
+        }
+
+        case "removeMeshFromTask": {
+            context.expectArgumentCount(call, 2, 2);
+            const task = context.compileValue(argumentAt(call, 0));
+            context.expectKind(task, "task", argumentAt(call, 0));
+            const mesh = context.compileValue(argumentAt(call, 1));
+            context.expectKind(mesh, "mesh", argumentAt(call, 1));
+            context.expectSameEngine(task, mesh, call);
+            reachRenderer(context, call);
+            context.reachFeature("frame-graph:task-mesh-removal", call);
+            return {
+                kind: "void",
+                cpp: `bbl::remove_render_task_mesh(${context.requireEngine(task, call)}, ${task.cpp}, ${mesh.cpp})`,
             };
         }
 

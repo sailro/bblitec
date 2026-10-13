@@ -395,6 +395,17 @@ export function compileEffectIntrinsic(
             };
         }
 
+        case "disposeEffectWrapper": {
+            context.expectArgumentCount(call, 1, 1);
+            const wrapper = context.compileValue(argumentAt(call, 0));
+            context.expectKind(wrapper, "effect-wrapper", argumentAt(call, 0));
+            context.reachFeature("effect:wrapper-disposal", call);
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_effect_wrapper(${context.requireEngine(wrapper, call)}, ${wrapper.cpp})`,
+            };
+        }
+
         case "setEffectTexture": {
             context.expectArgumentCount(call, 3, 3);
             const wrapper = context.compileValue(argumentAt(call, 0));

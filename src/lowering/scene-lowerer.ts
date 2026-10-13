@@ -13,6 +13,7 @@ import {
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 import { lowerAssetSceneAttachment } from "./asset-scene-attachment.js";
 import { lowerMeshMaterialSetter } from "./mesh-material-setter.js";
+import { lowerMeshGpuDisposal } from "./mesh-gpu-disposal.js";
 import { lowerPbrMaterialGroups } from "./pbr-material-groups.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerMeshGeometryAccess } from "./mesh-geometry-access.js";
@@ -112,6 +113,8 @@ interface SceneCoreOptions {
     pbrSceneHooks?: boolean;
     gltfSceneHooks?: boolean;
     thinBindings?: boolean;
+    /** The scene reaches `disposeMeshGpu`. */
+    meshGpuDisposal?: boolean;
 }
 
 export class SceneLowerer {
@@ -2085,7 +2088,7 @@ ${options.nodeMaterials ? "    for (const auto& group : scene.state->node_materi
     const std::vector<MeshHandle> children = ${recordAt("engine.meshes", "mesh")}.children;
     for (const MeshHandle child : children) remove_from_scene(scene, child);
 }
-
+${options.meshGpuDisposal ? lowerMeshGpuDisposal(this.context, options.thinBindings ?? false) : ""}
 
 // Light removal is a topology mutation rather than a light-record disposal:
 // handles stay stable in the engine, while the scene list and receiver render
