@@ -452,6 +452,139 @@ function isInlineCallback(node: ts.Node, checker: ts.TypeChecker): boolean {
     return checker.isArrayType(receiver) || checker.isTupleType(receiver);
 }
 
+// ── Evaluation order ───────────────────────────────────────────────────
+
+/**
+ * Library calls that change no state a program can observe (they may run
+ * the callbacks they are handed, which the analysis reads itself): the
+ * global conversions, and the static methods of the library namespaces.
+ */
+const PURE_LIBRARY_GLOBALS = new Set([
+    "Number",
+    "String",
+    "Boolean",
+    "isNaN",
+    "isFinite",
+    "parseInt",
+    "parseFloat",
+    "decodeURIComponent",
+    "encodeURIComponent",
+]);
+const PURE_LIBRARY_METHODS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+    ["Number", new Set(["isFinite", "isInteger", "isSafeInteger", "isNaN"])],
+    ["Object", new Set(["keys", "entries", "values", "is"])],
+    ["Array", new Set(["isArray", "of"])],
+    ["String", new Set(["fromCharCode", "fromCodePoint"])],
+    ["JSON", new Set(["stringify"])],
+    ["Promise", new Set(["resolve", "reject"])],
+]);
+
+/** Methods that write their receiver, by the library type that declares them. */
+const MUTATING_ARRAY_METHODS = new Set([
+    "push",
+    "pop",
+    "shift",
+    "unshift",
+    "splice",
+    "sort",
+    "reverse",
+    "fill",
+    "copyWithin",
+    "set",
+]);
+const MUTATING_COLLECTION_METHODS = new Set(["set", "add", "delete", "clear"]);
+const COLLECTION_TYPES = new Set([
+    "Map",
+    "ReadonlyMap",
+    "Set",
+    "ReadonlySet",
+    "WeakMap",
+    "WeakSet",
+]);
+const TYPED_ARRAY_TYPES = new Set([
+    "Int8Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "Float32Array",
+    "Float64Array",
+]);
+
+/** Library constructors that only allocate (an executor runs as a callback). */
+const PURE_CONSTRUCTIONS = new Set([
+    ...TYPED_ARRAY_TYPES,
+    "Array",
+    "ArrayBuffer",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "Error",
+    "RangeError",
+    "TypeError",
+    "Promise",
+    "AbortController",
+    "TextDecoder",
+    "DOMException",
+    "Blob",
+]);
+
+/** Library constructors that only allocate, or throw on what they are handed. */
+const THROWING_CONSTRUCTIONS = new Set(["URL"]);
+
+/** Binary operators C++ already sequences (or evaluates conditionally). */
+const NONSEQUENCED_BINARY_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([
+    ts.SyntaxKind.AmpersandAmpersandToken,
+    ts.SyntaxKind.BarBarToken,
+    ts.SyntaxKind.QuestionQuestionToken,
+    ts.SyntaxKind.CommaToken,
+]);
+
+/** What calling a function does, read from its body. */
+interface CallEffects {
+    /** It writes state its caller can see, or runs code the analysis cannot follow. */
+    writes: boolean;
+    /** It may throw. */
+    throws: boolean;
+}
+
+/** The effects of each pinned function the analysis has read, by declaration. */
+const functionEffects = new WeakMap<ts.Node, CallEffects>();
+
+/** What evaluating one operand of a multi-operand form does. */
+interface OperandEvaluation extends CallEffects {
+    awaits: boolean;
+    /** It reads state a write elsewhere may change: object members, shared bindings. */
+    state: boolean;
+    /** The frame's own bindings it reads, and those it assigns. */
+    readonly reads: Set<ts.Symbol>;
+    readonly assigns: Set<ts.Symbol>;
+}
+
+/**
+ * How a form evaluates its operands natively: `unordered` as a call's
+ * arguments (C++ leaves their order unspecified), `ordered` as statements
+ * or a chain already in source order, which only an `await` must leave
+ * (a lambda cannot hold a `co_await`, and MSVC fails on one inside a
+ * braced list beside a lambda).
+ */
+type OperandOrder = "unordered" | "ordered";
+
+/** An operand a form evaluates ahead of itself, into a temporary. */
+interface OrderedSlot {
+    /** Its temporary, named once the form reads it. */
+    name?: string;
+    /** Its native value, rendered where the form first reads it. */
+    init?: string;
+    /** The native type of `init`, for a temporary declared ahead. */
+    type?: () => string;
+    /** The representation it was rendered in (a natural value or a sink's). */
+    via?: string;
+}
+
 function isExported(node: ts.Node): boolean {
     return (
         ts.canHaveModifiers(node) &&
@@ -2751,8 +2884,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private readonly names: Set<string>[] = [new Set()];
     private readonly declared = new Set<string>();
     private readonly substitutions = new Map<ts.Node, string>();
+    /** Operands a form being lowered evaluates ahead of itself (`sequenced`). */
+    private readonly slots = new Map<ts.Node, OrderedSlot>();
+    /** Forms `sequenced` is lowering now (their operands are already ordered). */
+    private readonly sequencing = new Set<ts.Node>();
+    /** Declarations the statements being lowered need first, innermost last. */
+    private readonly preludes: string[][] = [];
     private readonly source: ts.SourceFile;
     private temporaries = 0;
+    private orderedTemporaries = 0;
     /** Bindings a closure inside this function reads or writes. */
     private readonly captured = new Set<ts.Symbol>();
     /** Where the first closure over each captured binding is created. */
@@ -4033,11 +4173,26 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ...this.statements(this.hoisted(body.statements), inner),
             );
         else if (this.frame.async)
-            lines.push(`${inner}${this.asyncReturn(body)};`);
+            lines.push(
+                ...this.collected(
+                    inner,
+                    () => `${inner}${this.asyncReturn(body)};`,
+                ),
+            );
         else if (result.kind === "void") {
-            const effect = this.effect(this.skipParentheses(body));
-            if (effect !== null) lines.push(`${inner}${effect};`);
-        } else lines.push(`${inner}return ${this.convert(body, result)};`);
+            const outcome: { effect: string | null } = { effect: null };
+            const collected = this.collected(inner, () => {
+                outcome.effect = this.effect(this.skipParentheses(body));
+                return `${inner}${outcome.effect ?? ""};`;
+            });
+            if (outcome.effect !== null) lines.push(...collected);
+        } else
+            lines.push(
+                ...this.collected(
+                    inner,
+                    () => `${inner}return ${this.convert(body, result)};`,
+                ),
+            );
         return this.frame.async ? this.coroutine(node, lines, inner) : lines;
     }
 
@@ -5087,6 +5242,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     /** `node` lowered into a sink of shape `to`. */
     public convert(node: ts.Expression, to: RecordShape): string {
+        const ordered = this.orderedOperand(
+            node,
+            () => `convert ${this.cpp(to)}`,
+            () => this.cpp(to),
+            () => this.convert(node, to),
+        );
+        if (ordered !== undefined) return ordered;
         let unwrapped = this.skipParentheses(node);
         // A literal under `satisfies T` is built as the sink takes it: the
         // check names its type, not its storage.
@@ -5229,6 +5391,32 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     public override renderExpression(expression: ts.Expression): RenderedCpp {
         const substituted = this.substitutions.get(expression);
         if (substituted !== undefined) return cppPrimary(substituted);
+        const ordered = this.orderedOperand(
+            expression,
+            () => "value",
+            () => this.cpp(this.shapeAt(expression)),
+            () => this.renderExpression(expression).text,
+        );
+        if (ordered !== undefined) return cppPrimary(ordered);
+        // A binary operator's operands, in source order.
+        const binary = this.skipParentheses(expression);
+        if (
+            ts.isBinaryExpression(binary) &&
+            !this.sequencing.has(binary) &&
+            !NONSEQUENCED_BINARY_OPERATORS.has(binary.operatorToken.kind) &&
+            !(
+                binary.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                binary.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+            ) &&
+            this.orderPlan([binary.left, binary.right], "unordered")
+        )
+            return cppPrimary(
+                this.sequenced(
+                    binary,
+                    [binary.left, binary.right],
+                    () => this.renderExpression(expression).text,
+                ),
+            );
         if (ts.isNonNullExpression(expression)) {
             const inner = this.value(expression.expression);
             return cppPrimary(
@@ -5294,6 +5482,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private typed(node: ts.Expression): string | undefined {
         const substituted = this.substitutions.get(node);
         if (substituted !== undefined) return substituted;
+        const ordered = this.orderedOperand(
+            node,
+            () => "value",
+            () => this.cpp(this.shapeAt(node)),
+            () => this.renderExpression(node).text,
+        );
+        if (ordered !== undefined) return ordered;
         // An assertion over a dynamic value reached through grouping
         // (`(value as number) < m`) reads what it asserts.
         if (
@@ -5506,6 +5701,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     private template(node: ts.TemplateExpression): string {
+        return this.sequenced(
+            node,
+            node.templateSpans.map((span) => span.expression),
+            () => this.unorderedTemplate(node),
+        );
+    }
+
+    /** A template literal's parts, its substitutions already in order (`template`). */
+    private unorderedTemplate(node: ts.TemplateExpression): string {
         const parts: string[] = [];
         if (node.head.text) parts.push(stringLiteral(node.head.text));
         for (const span of node.templateSpans) {
@@ -5567,12 +5771,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private binaryValue(node: ts.BinaryExpression): string | undefined {
         const kind = node.operatorToken.kind;
         // `a = b` as a value (`m[0] = m[5] = 1`): the stored value, once.
-        if (kind === ts.SyntaxKind.EqualsToken) {
-            const place = this.place(node.left);
-            const type = this.cpp(place.storage);
-            const assigned = this.temporary("assigned");
-            return `[&]() -> ${type} { ${type} ${assigned} = ${this.convert(node.right, place.storage)}; ${place.store(assigned)}; return ${assigned}; }()`;
-        }
+        if (kind === ts.SyntaxKind.EqualsToken)
+            return this.sequenced(
+                node,
+                [...this.targetOperands(node.left), node.right],
+                () => {
+                    const place = this.place(node.left);
+                    const type = this.cpp(place.storage);
+                    const assigned = this.temporary("assigned");
+                    return `[&]() -> ${type} { ${type} ${assigned} = ${this.convert(node.right, place.storage)}; ${place.store(assigned)}; return ${assigned}; }()`;
+                },
+            );
         if (kind === ts.SyntaxKind.QuestionQuestionToken)
             return this.nullish(node, this.shapeAt(node));
         if (
@@ -6255,6 +6464,700 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return false;
     }
 
+    // ── Evaluation order ────────────────────────────────────────────────
+
+    /**
+     * What evaluating `root` does, read from the source: writing state its
+     * caller can see (a member, a shared or module binding, a mutating
+     * library method, a call that does, code the analysis cannot follow),
+     * throwing, awaiting, and reading state such a write may change. A
+     * function literal does nothing when evaluated, unless a library call
+     * runs it inline. Reading a callee's body, `owner` is that callee: its
+     * own bindings, and the objects it creates itself, are invisible to its
+     * caller. Reading an operand (no `owner`), the frame's own bindings are
+     * tracked by symbol.
+     */
+    private evaluationOf(root: ts.Node, owner?: ts.Node): OperandEvaluation {
+        const evaluation: OperandEvaluation = {
+            writes: false,
+            throws: false,
+            awaits: false,
+            state: false,
+            reads: new Set(),
+            assigns: new Set(),
+        };
+        const assign = (target: ts.Expression): void => {
+            const node = this.skipParentheses(target);
+            if (!ts.isIdentifier(node)) {
+                if (!(owner && this.freshRoot(node, owner)))
+                    evaluation.writes = true;
+                return;
+            }
+            const symbol = declaredSymbol(this.checker, node);
+            const declaration =
+                symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+            if (owner) {
+                if (!declaration || !this.within(owner, declaration))
+                    evaluation.writes = true;
+            } else if (
+                symbol &&
+                declaration &&
+                !this.captured.has(symbol) &&
+                this.within(this.entry.declaration, declaration)
+            )
+                evaluation.assigns.add(symbol);
+            else evaluation.writes = true;
+        };
+        const call = (effects: CallEffects): void => {
+            evaluation.writes ||= effects.writes;
+            evaluation.throws ||= effects.throws;
+        };
+        const visit = (current: ts.Node): void => {
+            if (ts.isTypeNode(current) || ts.isClassExpression(current)) return;
+            if (isFunctionLike(current)) {
+                if (isInlineCallback(current, this.checker) && current.body)
+                    visit(current.body);
+                return;
+            }
+            if (
+                ts.isAwaitExpression(current) ||
+                ts.isYieldExpression(current)
+            ) {
+                call({ writes: true, throws: true });
+                evaluation.awaits ||= ts.isAwaitExpression(current);
+            } else if (ts.isThrowStatement(current)) evaluation.throws = true;
+            else if (ts.isDeleteExpression(current)) assign(current.expression);
+            else if (ts.isTaggedTemplateExpression(current))
+                call({ writes: true, throws: true });
+            else if (ts.isCallExpression(current))
+                call(this.callEffects(current, owner));
+            else if (ts.isNewExpression(current))
+                call(
+                    this.pureConstruction(current)
+                        ? {
+                              writes: false,
+                              throws:
+                                  ts.isIdentifier(current.expression) &&
+                                  THROWING_CONSTRUCTIONS.has(
+                                      current.expression.text,
+                                  ),
+                          }
+                        : { writes: true, throws: true },
+                );
+            else if (
+                ts.isBinaryExpression(current) &&
+                current.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                current.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+            )
+                assign(current.left);
+            else if (
+                (ts.isPrefixUnaryExpression(current) ||
+                    ts.isPostfixUnaryExpression(current)) &&
+                (current.operator === ts.SyntaxKind.PlusPlusToken ||
+                    current.operator === ts.SyntaxKind.MinusMinusToken)
+            )
+                assign(current.operand);
+            else if (ts.isPropertyAccessExpression(current)) {
+                if (!this.constantMember(current)) evaluation.state = true;
+                visit(current.expression);
+                return;
+            } else if (ts.isElementAccessExpression(current))
+                evaluation.state = true;
+            else if (ts.isIdentifier(current)) {
+                if (!owner) this.operandRead(current, evaluation);
+                return;
+            } else if (ts.isShorthandPropertyAssignment(current)) {
+                if (!owner) this.operandRead(current.name, evaluation);
+                return;
+            } else if (ts.isPropertyAssignment(current)) {
+                visit(current.initializer);
+                return;
+            }
+            ts.forEachChild(current, visit);
+        };
+        visit(root);
+        return evaluation;
+    }
+
+    private operandEvaluation(node: ts.Expression): OperandEvaluation {
+        return this.evaluationOf(node);
+    }
+
+    /**
+     * What a call does: a pure library call nothing; the pin's error helper
+     * throws; a pinned function what its body does; a library method
+     * writing an object the calling function created itself nothing its
+     * caller sees; anything else may write and throw.
+     */
+    private callEffects(node: ts.CallExpression, owner?: ts.Node): CallEffects {
+        if (isPinnedErrorCall(node.getSourceFile(), node))
+            return { writes: false, throws: true };
+        const callee = this.skipParentheses(node.expression);
+        if (this.pureCall(node))
+            return {
+                writes: false,
+                throws:
+                    ts.isPropertyAccessExpression(callee) &&
+                    this.libraryName(callee.expression) === "JSON" &&
+                    callee.name.text === "parse",
+            };
+        if (
+            owner &&
+            ts.isPropertyAccessExpression(callee) &&
+            this.libraryReceiver(callee.expression) &&
+            this.freshRoot(callee.expression, owner)
+        )
+            return { writes: false, throws: false };
+        // A WebGPU method runs no program code and writes no program
+        // state; it may throw (a validation error).
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            this.webgpuReceiver(callee.expression)
+        )
+            return { writes: false, throws: true };
+        const declaration = ts.isIdentifier(callee)
+            ? this.model.declarationOf(callee)
+            : undefined;
+        // A function declaration, or a `const` bound to a function literal.
+        const called =
+            declaration &&
+            ts.isFunctionDeclaration(declaration) &&
+            declaration.body
+                ? declaration
+                : ts.isIdentifier(callee)
+                  ? this.constFunction(callee)
+                  : undefined;
+        if (called?.body) {
+            const known = functionEffects.get(called);
+            if (known) return known;
+            // A recursive call reads as what the rest of the body does.
+            const effects: CallEffects = { writes: false, throws: false };
+            functionEffects.set(called, effects);
+            const body = this.evaluationOf(called.body, called);
+            effects.writes = body.writes;
+            effects.throws = body.throws;
+            return effects;
+        }
+        return { writes: true, throws: true };
+    }
+
+    /** The function literal a `const` binding holds, which it never rebinds. */
+    private constFunction(
+        name: ts.Identifier,
+    ): ts.ArrowFunction | ts.FunctionExpression | undefined {
+        const declaration = declaredSymbol(
+            this.checker,
+            name,
+        )?.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+            !declaration.initializer
+        )
+            return undefined;
+        const initializer = this.skipParentheses(declaration.initializer);
+        return ts.isArrowFunction(initializer) ||
+            ts.isFunctionExpression(initializer)
+            ? initializer
+            : undefined;
+    }
+
+    /** Whether a receiver is a WebGPU object (`@webgpu/types`). */
+    private webgpuReceiver(receiver: ts.Expression): boolean {
+        const symbol = this.checker
+            .getNonNullableType(this.checker.getTypeAtLocation(receiver))
+            .getSymbol();
+        return (
+            symbol !== undefined &&
+            symbol.name.startsWith("GPU") &&
+            (symbol.declarations ?? []).some((declaration) =>
+                declaration
+                    .getSourceFile()
+                    .fileName.replaceAll("\\", "/")
+                    .includes("/@webgpu/types/"),
+            )
+        );
+    }
+
+    /** Whether a receiver is a library array, typed array or collection. */
+    private libraryReceiver(receiver: ts.Expression): boolean {
+        const type = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(receiver),
+        );
+        if (this.checker.isArrayType(type) || this.checker.isTupleType(type))
+            return true;
+        const symbol = type.getSymbol();
+        return (
+            symbol !== undefined &&
+            declaredInDefaultLibrary(symbol) &&
+            (TYPED_ARRAY_TYPES.has(symbol.name) ||
+                COLLECTION_TYPES.has(symbol.name))
+        );
+    }
+
+    /**
+     * Whether a member chain (`list[i].x`) starts at an object `owner`
+     * created itself: a local initialized by a literal or a construction.
+     */
+    private freshRoot(node: ts.Expression, owner: ts.Node): boolean {
+        let root = this.skipParentheses(node);
+        while (
+            ts.isPropertyAccessExpression(root) ||
+            ts.isElementAccessExpression(root)
+        )
+            root = this.skipParentheses(root.expression);
+        if (!ts.isIdentifier(root)) return false;
+        const declaration = declaredSymbol(
+            this.checker,
+            root,
+        )?.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !this.within(owner, declaration) ||
+            !declaration.initializer
+        )
+            return false;
+        const initializer = this.skipParentheses(declaration.initializer);
+        return (
+            ts.isArrayLiteralExpression(initializer) ||
+            ts.isObjectLiteralExpression(initializer) ||
+            ts.isNewExpression(initializer)
+        );
+    }
+
+    /**
+     * A binding an operand reads: the frame's own (by symbol), state (a
+     * binding a closure shares, or a module's), or a constant (a `const`,
+     * a function, a library global).
+     */
+    private operandRead(
+        node: ts.Identifier,
+        evaluation: OperandEvaluation,
+    ): void {
+        const symbol = declaredSymbol(this.checker, node);
+        if (!symbol) return;
+        const target = resolvedSymbol(this.checker, node) ?? symbol;
+        if (declaredInDefaultLibrary(target)) return;
+        const declaration = target.valueDeclaration ?? target.declarations?.[0];
+        if (
+            !declaration ||
+            ts.isFunctionDeclaration(declaration) ||
+            ts.isClassDeclaration(declaration) ||
+            ts.isEnumDeclaration(declaration)
+        )
+            return;
+        // A `const` never rebinds; what it holds is read through members.
+        if (
+            ts.isVariableDeclaration(declaration) &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+        )
+            return;
+        if (
+            this.captured.has(symbol) ||
+            !this.within(this.entry.declaration, declaration)
+        ) {
+            evaluation.state = true;
+            return;
+        }
+        evaluation.reads.add(symbol);
+    }
+
+    /** A member read that is a constant: an enum member or a library constant (`Math.PI`). */
+    private constantMember(node: ts.PropertyAccessExpression): boolean {
+        return (
+            this.checker.getConstantValue(node) !== undefined ||
+            this.libraryName(node.expression) !== undefined
+        );
+    }
+
+    /**
+     * A library call that changes nothing a program observes: a pure
+     * global or namespace method, or a method of a string, number, array,
+     * typed array, collection or DataView that does not write its receiver.
+     * A function value it is handed runs code the analysis cannot see.
+     */
+    private pureCall(node: ts.CallExpression): boolean {
+        if (
+            node.arguments.some(
+                (argument) =>
+                    !(
+                        (ts.isArrowFunction(argument) ||
+                            ts.isFunctionExpression(argument)) &&
+                        isInlineCallback(argument, this.checker)
+                    ) &&
+                    this.checker.getTypeAtLocation(argument).getCallSignatures()
+                        .length > 0,
+            )
+        )
+            return false;
+        const callee = this.skipParentheses(node.expression);
+        if (ts.isIdentifier(callee)) {
+            const symbol = resolvedSymbol(this.checker, callee);
+            return (
+                symbol !== undefined &&
+                declaredInDefaultLibrary(symbol) &&
+                PURE_LIBRARY_GLOBALS.has(callee.text)
+            );
+        }
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const method = callee.name.text;
+        const library = this.libraryName(callee.expression);
+        if (library !== undefined)
+            return library === "Math"
+                ? method !== "random"
+                : (PURE_LIBRARY_METHODS.get(library)?.has(method) ?? false);
+        const receiver = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(callee.expression),
+        );
+        if (
+            receiver.flags &
+            (ts.TypeFlags.StringLike |
+                ts.TypeFlags.NumberLike |
+                ts.TypeFlags.BooleanLike)
+        )
+            return true;
+        if (
+            this.checker.isArrayType(receiver) ||
+            this.checker.isTupleType(receiver)
+        )
+            return !MUTATING_ARRAY_METHODS.has(method);
+        const symbol = receiver.getSymbol();
+        if (!symbol || !declaredInDefaultLibrary(symbol)) return false;
+        if (TYPED_ARRAY_TYPES.has(symbol.name))
+            return !MUTATING_ARRAY_METHODS.has(method);
+        if (COLLECTION_TYPES.has(symbol.name))
+            return !MUTATING_COLLECTION_METHODS.has(method);
+        if (symbol.name === "DataView") return method.startsWith("get");
+        // A regular expression literal without a `lastIndex` to advance.
+        const literal = this.skipParentheses(callee.expression);
+        if (
+            symbol.name === "RegExp" &&
+            ts.isRegularExpressionLiteral(literal)
+        ) {
+            const flags = literal.text.slice(literal.text.lastIndexOf("/") + 1);
+            return !flags.includes("g") && !flags.includes("y");
+        }
+        return false;
+    }
+
+    /** A library construction that only allocates. */
+    private pureConstruction(node: ts.NewExpression): boolean {
+        if (!ts.isIdentifier(node.expression)) return false;
+        const symbol = resolvedSymbol(this.checker, node.expression);
+        return (
+            symbol !== undefined &&
+            declaredInDefaultLibrary(symbol) &&
+            (PURE_CONSTRUCTIONS.has(node.expression.text) ||
+                THROWING_CONSTRUCTIONS.has(node.expression.text))
+        );
+    }
+
+    /**
+     * Whether two operands' evaluations observe each other's order: one
+     * writes what the other reads, writes or throws past; both may throw
+     * (which error escapes); one assigns a frame binding the other reads
+     * or assigns.
+     */
+    private conflicts(a: OperandEvaluation, b: OperandEvaluation): boolean {
+        const binds = (from: OperandEvaluation, to: OperandEvaluation) =>
+            [...from.assigns].some(
+                (symbol) => to.reads.has(symbol) || to.assigns.has(symbol),
+            );
+        return (
+            (a.writes && (b.state || b.writes || b.throws)) ||
+            (b.writes && (a.state || a.throws)) ||
+            (a.throws && b.throws) ||
+            binds(a, b) ||
+            binds(b, a)
+        );
+    }
+
+    /**
+     * The operands a form must evaluate ahead of itself, by index, or none.
+     * In an unordered form, every operand whose order another observes
+     * (`conflicts`) except the last such operand; in any form, an awaited
+     * operand (a lambda cannot hold a `co_await`), with every such operand
+     * before it.
+     */
+    private orderPlan(
+        operands: readonly ts.Expression[],
+        order: OperandOrder,
+    ): Set<number> | undefined {
+        if (operands.length === 0) return undefined;
+        const evaluations = operands.map((operand) =>
+            this.operandEvaluation(operand),
+        );
+        const sensitive = evaluations.map((evaluation, index) =>
+            evaluations.some(
+                (other, at) =>
+                    at !== index && this.conflicts(evaluation, other),
+            ),
+        );
+        const hoisted = new Set<number>();
+        if (order === "unordered") {
+            const last = sensitive.lastIndexOf(true);
+            sensitive.forEach((flag, index) => {
+                if (flag && index !== last) hoisted.add(index);
+            });
+        }
+        evaluations.forEach((evaluation, index) => {
+            if (
+                evaluation.awaits &&
+                (operands.length > 1 || order === "ordered")
+            )
+                hoisted.add(index);
+        });
+        if (hoisted.size === 0) return undefined;
+        const latest = Math.max(...hoisted);
+        sensitive.forEach((flag, index) => {
+            if (flag && index < latest) hoisted.add(index);
+        });
+        return hoisted;
+    }
+
+    /**
+     * A form over `operands` whose native spelling may not evaluate them
+     * in source order (`orderPlan`): the operands that must run first are
+     * evaluated into temporaries, in order, before the form reads them --
+     * inside an immediately invoked lambda, or, when an operand awaits,
+     * through declared temporaries the comma operator assigns in order.
+     * Operands that touch nothing another one changes stay inline, so
+     * effect-free code is spelled as before. A `receiver` the form spells
+     * as its own postfix operand (`owner->method(...)`), which C++ already
+     * evaluates first, is put back.
+     */
+    private sequenced(
+        form: ts.Node,
+        operands: readonly ts.Expression[],
+        render: () => string,
+        order: OperandOrder = "unordered",
+        receiver?: ts.Expression,
+    ): string {
+        if (this.sequencing.has(form)) return render();
+        const plan = this.orderPlan(operands, order);
+        if (!plan) return render();
+        const slots: (OrderedSlot | undefined)[] = operands.map(
+            (operand, index) => {
+                if (!plan.has(index)) return undefined;
+                const slot: OrderedSlot = {};
+                this.slots.set(this.skipParentheses(operand), slot);
+                return slot;
+            },
+        );
+        this.sequencing.add(form);
+        let text: string;
+        try {
+            text = render();
+        } finally {
+            this.sequencing.delete(form);
+            operands.forEach((operand, index) => {
+                if (plan.has(index))
+                    this.slots.delete(this.skipParentheses(operand));
+            });
+        }
+        const used = slots.filter(
+            (
+                slot,
+            ): slot is OrderedSlot & {
+                name: string;
+                init: string;
+                type: () => string;
+            } =>
+                slot?.name !== undefined &&
+                slot.init !== undefined &&
+                slot.type !== undefined,
+        );
+        // A receiver hoisted alone: C++ evaluates a postfix receiver before
+        // the arguments, so the form keeps it in place.
+        const first = used[0];
+        if (
+            first &&
+            used.length === 1 &&
+            receiver !== undefined &&
+            slots[0] === first &&
+            operands[0] === receiver &&
+            (text.startsWith(`${first.name}.`) ||
+                text.startsWith(`${first.name}->`))
+        ) {
+            text = `${first.init}${text.slice(first.name.length)}`;
+            used.shift();
+        }
+        if (used.length === 0) return text;
+        if (
+            !used.some((slot) => slot.init.includes("co_await")) &&
+            !text.includes("co_await")
+        )
+            return `[&] { ${used.map((slot) => `auto ${slot.name} = ${slot.init};`).join(" ")} return ${text}; }()`;
+        const prelude = this.preludes[this.preludes.length - 1];
+        if (!prelude)
+            return this.refuse(
+                form,
+                "A pinned awaited operand outside a statement.",
+            );
+        prelude.push(...used.map((slot) => `${slot.type()} ${slot.name}{};`));
+        return `(${used.map((slot) => `static_cast<void>(${slot.name} = ${slot.init})`).join(", ")}, ${text})`;
+    }
+
+    /** `sequenced` over a form that may decline to lower (`undefined`). */
+    private sequencedOptional(
+        form: ts.Node,
+        operands: readonly ts.Expression[],
+        render: () => string | undefined,
+        order: OperandOrder = "unordered",
+    ): string | undefined {
+        let declined = false;
+        const text = this.sequenced(
+            form,
+            operands,
+            () => {
+                const rendered = render();
+                if (rendered === undefined) declined = true;
+                return rendered ?? "";
+            },
+            order,
+        );
+        return declined ? undefined : text;
+    }
+
+    /**
+     * An operand `sequenced` evaluates ahead: its temporary, its value
+     * rendered once, in the representation (`via`) the form first reads it
+     * in.
+     */
+    private orderedOperand(
+        node: ts.Expression,
+        via: () => string,
+        type: () => string,
+        render: () => string,
+    ): string | undefined {
+        const key = this.skipParentheses(node);
+        const slot = this.slots.get(key);
+        if (!slot) return undefined;
+        if (slot.name === undefined) {
+            this.slots.delete(key);
+            try {
+                slot.init = render();
+            } finally {
+                this.slots.set(key, slot);
+            }
+            slot.type = type;
+            slot.via = via();
+            // Its own counter: a slot the form puts back leaves every other
+            // temporary's name as it was.
+            this.orderedTemporaries += 1;
+            slot.name = `ordered_${this.orderedTemporaries}`;
+            this.declared.add(slot.name);
+        } else if (slot.via !== via())
+            return this.refuse(
+                node,
+                "A pinned ordered operand read in two representations.",
+            );
+        return slot.name;
+    }
+
+    /** `render`'s line, after the declarations its ordered operands need. */
+    private collected(indent: string, render: () => string): string[] {
+        const prelude: string[] = [];
+        this.preludes.push(prelude);
+        let line: string;
+        try {
+            line = render();
+        } finally {
+            this.preludes.pop();
+        }
+        this.refuseAwaitInLambda(this.frame.node, [line]);
+        return [
+            ...prelude.map((declaration) => `${indent}${declaration}`),
+            line,
+        ];
+    }
+
+    /** Whether a copy of a value of `shape` shares its storage, as a reference does. */
+    private sharesStorage(shape: RecordShape): boolean {
+        const present = stripOptional(shape);
+        if (present.kind === "tuple") return false;
+        if (present.kind === "record")
+            return this.model.record(present.name).spec.reference;
+        return true;
+    }
+
+    /** The operands a call evaluates: its receiver, then its arguments. */
+    private callOperands(node: ts.CallExpression): {
+        operands: ts.Expression[];
+        order: OperandOrder;
+        receiver?: ts.Expression;
+    } {
+        const args = node.arguments.map((argument) =>
+            ts.isSpreadElement(argument) ? argument.expression : argument,
+        );
+        const callee = this.skipParentheses(node.expression);
+        if (!ts.isPropertyAccessExpression(callee))
+            return { operands: args, order: "unordered" };
+        const library = this.libraryName(callee.expression);
+        // `Object.assign(target, { ... })` writes the target, then each
+        // member in order (`objectAssign`).
+        if (library === "Object" && callee.name.text === "assign")
+            return { operands: args, order: "ordered" };
+        // A tuple receiver of a writing method is a value: a copy would
+        // take the write.
+        if (
+            library !== undefined ||
+            this.checker.isTupleType(
+                this.checker.getNonNullableType(
+                    this.checker.getTypeAtLocation(callee.expression),
+                ),
+            )
+        )
+            return { operands: args, order: "unordered" };
+        return {
+            operands: [callee.expression, ...args],
+            order: "unordered",
+            receiver: callee.expression,
+        };
+    }
+
+    /**
+     * The operands an assignment evaluates before its value: the owner and
+     * key of a member or element it writes (a value owner, which the write
+     * updates in place, stays where it is).
+     */
+    private targetOperands(target: ts.Expression): ts.Expression[] {
+        const node = this.skipParentheses(target);
+        if (
+            !ts.isPropertyAccessExpression(node) &&
+            !ts.isElementAccessExpression(node)
+        )
+            return [];
+        const owner = this.sharesStorage(this.ownerShape(node.expression))
+            ? [node.expression]
+            : [];
+        return ts.isElementAccessExpression(node)
+            ? [...owner, node.argumentExpression]
+            : owner;
+    }
+
+    /**
+     * A compound assignment reads its target before its value; C++
+     * evaluates the value first. Refused when the value's effects may
+     * change what the target reads.
+     */
+    private refuseCompoundHazard(node: ts.BinaryExpression): void {
+        const target = this.operandEvaluation(node.left);
+        const value = this.operandEvaluation(node.right);
+        if (
+            (value.writes && target.state) ||
+            [...target.reads].some((symbol) => value.assigns.has(symbol))
+        )
+            this.refuse(
+                node,
+                "Pinned compound assignment whose value's effects may change its target.",
+            );
+    }
+
     // ── Calls ───────────────────────────────────────────────────────────
 
     private callValue(
@@ -6264,6 +7167,18 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     ): string {
         if (!inChain && ts.isOptionalChain(node) && !this.inChain(node))
             return this.optionalChain(node);
+        const { operands, order, receiver } = this.callOperands(node);
+        return this.sequenced(
+            node,
+            operands,
+            () => this.unorderedCall(node, to),
+            order,
+            receiver,
+        );
+    }
+
+    /** A call, its operands already in order (`callValue`). */
+    private unorderedCall(node: ts.CallExpression, to?: RecordShape): string {
         const callee = this.skipParentheses(node.expression);
         if (ts.isIdentifier(callee)) {
             const library = this.libraryFunction(node, callee);
@@ -6488,8 +7403,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                             `bbl::js::array_pop_or_absent(${receiver()})`,
                             element,
                         );
-                    case "indexOf":
-                        return `bbl::js::array_index_of(${receiver()}, ${this.convert(node.arguments[0]!, element)})`;
+                    case "indexOf": {
+                        // `indexOf(value, fromIndex)`: the search's start.
+                        const from = node.arguments[1];
+                        return `bbl::js::array_index_of(${receiver()}, ${this.convert(node.arguments[0]!, element)}${from ? `, ${this.convert(from, { kind: "number" })}` : ""})`;
+                    }
                     case "slice":
                         return `bbl::js::array_slice(${receiver()}, ${node.arguments[0] ? this.value(node.arguments[0]) : "0.0"}, ${node.arguments[1] ? this.value(node.arguments[1]) : "std::numeric_limits<double>::infinity()"})`;
                     case "splice": {
@@ -7742,6 +8660,30 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         node: ts.ObjectLiteralExpression,
         to: RecordShape,
     ): string {
+        // Its members are statements in source order; an awaited one
+        // leaves the builder lambda.
+        const values = node.properties.flatMap((property) =>
+            ts.isPropertyAssignment(property)
+                ? [property.initializer]
+                : ts.isShorthandPropertyAssignment(property)
+                  ? [property.name]
+                  : ts.isSpreadAssignment(property)
+                    ? [property.expression]
+                    : [],
+        );
+        return this.sequenced(
+            node,
+            values,
+            () => this.orderedObjectLiteral(node, to),
+            "ordered",
+        );
+    }
+
+    /** An object literal, its awaited members already evaluated (`objectLiteral`). */
+    private orderedObjectLiteral(
+        node: ts.ObjectLiteralExpression,
+        to: RecordShape,
+    ): string {
         const shape = stripOptional(to);
         if (shape.kind === "object") {
             if (node.properties.length > 0)
@@ -7779,6 +8721,23 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     private arrayLiteral(
+        node: ts.ArrayLiteralExpression,
+        to: RecordShape,
+    ): string {
+        // A braced list and a builder chain evaluate in source order; an
+        // awaited element leaves the list.
+        return this.sequenced(
+            node,
+            node.elements.map((element) =>
+                ts.isSpreadElement(element) ? element.expression : element,
+            ),
+            () => this.orderedArrayLiteral(node, to),
+            "ordered",
+        );
+    }
+
+    /** An array literal, its awaited elements already evaluated (`arrayLiteral`). */
+    private orderedArrayLiteral(
         node: ts.ArrayLiteralExpression,
         to: RecordShape,
     ): string {
@@ -7831,6 +8790,20 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     /** `new Map()`, `new Float32Array(n)` and their kin, typed by `to`. */
     private construct(
+        node: ts.NewExpression,
+        to: RecordShape,
+    ): string | undefined {
+        return this.sequencedOptional(
+            node,
+            (node.arguments ?? []).map((argument) =>
+                ts.isSpreadElement(argument) ? argument.expression : argument,
+            ),
+            () => this.unorderedConstruct(node, to),
+        );
+    }
+
+    /** A construction, its arguments already in order (`construct`). */
+    private unorderedConstruct(
         node: ts.NewExpression,
         to: RecordShape,
     ): string | undefined {
@@ -8263,10 +9236,65 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     // ── Statements ──────────────────────────────────────────────────────
 
+    /** A statement, after the temporaries its ordered operands declare. */
     public override statement(
         statement: ts.Statement,
         indent: string,
     ): string[] {
+        const prelude: string[] = [];
+        this.preludes.push(prelude);
+        let lines: string[];
+        try {
+            lines = this.statementLines(statement, indent);
+        } finally {
+            this.preludes.pop();
+        }
+        this.refuseAwaitInLambda(statement, lines);
+        return [
+            ...prelude.map((declaration) => `${indent}${declaration}`),
+            ...lines,
+        ];
+    }
+
+    /**
+     * A `co_await` lowered inside an immediately invoked `[&]` lambda (a
+     * value-selecting `||`, a `??` fallback, an optional chain held once):
+     * the lambda is not a coroutine. Refused where it arises, before C++
+     * would.
+     */
+    private refuseAwaitInLambda(node: ts.Node, lines: readonly string[]): void {
+        if (!this.frame.async) return;
+        const text = lines.join("\n");
+        for (
+            let start = text.indexOf("[&]");
+            start >= 0;
+            start = text.indexOf("[&]", start + 3)
+        ) {
+            const open = text.indexOf("{", start);
+            if (open < 0) return;
+            let depth = 0;
+            let end = open;
+            for (; end < text.length; end += 1) {
+                const character = text[end];
+                if (character === '"') {
+                    for (
+                        end += 1;
+                        end < text.length && text[end] !== '"';
+                        end += 1
+                    )
+                        if (text[end] === "\\") end += 1;
+                } else if (character === "{") depth += 1;
+                else if (character === "}" && --depth === 0) break;
+            }
+            if (text.slice(open, end).includes("co_await"))
+                this.refuse(
+                    node,
+                    "A pinned await inside an expression lowered as a lambda (a value-selecting operator, a `??` fallback, an optional chain).",
+                );
+        }
+    }
+
+    private statementLines(statement: ts.Statement, indent: string): string[] {
         if (ts.isVariableStatement(statement))
             return this.variableStatement(statement, indent);
         if (ts.isExpressionStatement(statement))
@@ -8611,12 +9639,28 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return `static_cast<void>(${this.value(expression.expression)})`;
         if (ts.isCallExpression(expression)) {
             const adapter = this.adapterOf(expression);
-            if (adapter)
-                return adapter.cpp(
-                    (index) => this.adapterArgument(expression, index),
+            if (adapter) {
+                // A platform statement (`null`) has no native effect.
+                let statement = true;
+                const { operands, order, receiver } =
+                    this.callOperands(expression);
+                const spelled = this.sequenced(
                     expression,
-                    (name) => this.localNamed(name, expression),
+                    operands,
+                    () => {
+                        const cpp = adapter.cpp(
+                            (index) => this.adapterArgument(expression, index),
+                            expression,
+                            (name) => this.localNamed(name, expression),
+                        );
+                        statement = cpp !== null;
+                        return cpp ?? "";
+                    },
+                    order,
+                    receiver,
                 );
+                return statement ? spelled : null;
+            }
             const value = this.value(expression);
             const type = this.typeAt(expression);
             return type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)
@@ -8631,12 +9675,25 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ts.isArrayLiteralExpression(pattern)
             )
                 return this.arrayAssignment(pattern, expression.right);
-            if (kind === ts.SyntaxKind.EqualsToken) {
-                const place = this.place(expression.left);
-                return place.store(
-                    this.convert(expression.right, place.storage),
+            // The target's owner and key, then the value (C++ evaluates an
+            // assignment's value first).
+            if (kind === ts.SyntaxKind.EqualsToken)
+                return this.sequenced(
+                    expression,
+                    [...this.targetOperands(expression.left), expression.right],
+                    () => {
+                        const place = this.place(expression.left);
+                        return place.store(
+                            this.convert(expression.right, place.storage),
+                        );
+                    },
                 );
-            }
+            if (
+                kind !== ts.SyntaxKind.QuestionQuestionEqualsToken &&
+                kind !== ts.SyntaxKind.AmpersandAmpersandEqualsToken &&
+                kind !== ts.SyntaxKind.BarBarEqualsToken
+            )
+                this.refuseCompoundHazard(expression);
             if (kind === ts.SyntaxKind.QuestionQuestionEqualsToken)
                 return `static_cast<void>(${this.nullishAssign(expression)})`;
             if (
