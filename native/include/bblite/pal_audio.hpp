@@ -101,9 +101,17 @@ public:
 
 private:
     std::vector<AudioContextHandle> contexts_;
+    /** The default output unrouted media elements share, once one plays. */
+    AudioContextHandle media_output_{};
+    /** A silent input keeping that output's capture recorder fed once elements leave it. */
+    AudioNodeHandle media_output_feed_{};
     friend AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session,
                                                    std::shared_ptr<AudioPlaybackDevice> device);
+    friend AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session);
 };
+
+/** The session's media element output context, created on first use. */
+AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session);
 
 /** `OscillatorNode.type`. */
 enum class OscillatorWave : std::uint8_t {
@@ -194,6 +202,19 @@ AudioNodeHandle audio_create_gain(AudioContextHandle context);
 AudioNodeHandle audio_create_oscillator(AudioContextHandle context);
 AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context);
 AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context);
+/**
+ * `ctx.createMediaStreamDestination()`: a sink the context renders every
+ * quantum into its `stream`'s one audio track (`bblite/pal_media_stream.hpp`).
+ */
+AudioNodeHandle audio_create_media_stream_destination(AudioContextHandle context);
+std::shared_ptr<MediaStream> audio_destination_stream(AudioNodeHandle node);
+/**
+ * `ctx.createMediaStreamSource(stream)`: the stream's first audio track by id,
+ * the destination audio it carries from any context at the same sample rate.
+ * InvalidStateError without an audio track.
+ */
+AudioNodeHandle audio_create_media_stream_source(AudioContextHandle context,
+                                                 const std::shared_ptr<MediaStream>& stream);
 
 /**
  * `ctx.createPanner()` / `new PannerNode(ctx)`, with Web Audio's defaults:

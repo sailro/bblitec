@@ -38,6 +38,8 @@ export interface SceneIntrinsicContext
             | "ensureDefaultRenderTask"
             | "compileSceneRegistration"
             | "fail"
+            | "isRuntimeCallback"
+            | "isInNativeFunctionBody"
         > {}
 
 export function compileSceneIntrinsic(
@@ -277,10 +279,23 @@ export function compileSceneIntrinsic(
                     ? context.ensureDefaultRenderTask(scene, call)
                     : undefined;
             const sceneCpp = defaultTask?.sceneCpp ?? scene.cpp;
-            const taskCall =
-                importedName === "addTaskAtStart"
-                    ? `bbl::add_task_at_start(${sceneCpp}, ${task.cpp})`
-                    : `bbl::add_task(${sceneCpp}, ${task.cpp})`;
+            // After a registration in source order, in a callback or a
+            // function body, the scene may be live: the pin records the
+            // task only through buildFrameGraphTask, so its runtime notes
+            // whether the graph was built.
+            const live =
+                scene.kind === "scene" &&
+                task.kind === "task" &&
+                (context.isRuntimeCallback() ||
+                    context.isInNativeFunctionBody() ||
+                    context.engineLifecycle.engineStartMark !== undefined ||
+                    context.admissions.temporalSceneRegistration !== undefined);
+            if (live) context.reachFeature("frame-graph:live-task-add", call);
+            const taskCall = live
+                ? `bbl::add_live_task(${sceneCpp}, ${task.cpp}, ${importedName === "addTaskAtStart"})`
+                : importedName === "addTaskAtStart"
+                  ? `bbl::add_task_at_start(${sceneCpp}, ${task.cpp})`
+                  : `bbl::add_task(${sceneCpp}, ${task.cpp})`;
             return {
                 kind: "void",
                 cpp: defaultTask
@@ -576,6 +591,42 @@ export function compileSceneIntrinsic(
             return {
                 kind: "void",
                 cpp: `bbl::dispose_scene(${scene.cpp})`,
+            };
+        }
+
+        case "getFrameGraph": {
+            context.expectArgumentCount(call, 1, 1);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
+            // A native scene copy shares its state, task list included.
+            return {
+                kind: "frame-graph",
+                cpp: scene.cpp,
+                ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}),
+            };
+        }
+
+        case "buildFrameGraphTask": {
+            context.expectArgumentCount(call, 2, 2);
+            const frameGraph = context.compileValue(argumentAt(call, 0));
+            context.expectKind(frameGraph, "frame-graph", argumentAt(call, 0));
+            const task = context.compileValue(argumentAt(call, 1));
+            context.expectKind(task, "task", argumentAt(call, 1));
+            if (!task.renderTask && !task.effectTask)
+                context.fail(
+                    argumentAt(call, 1),
+                    "buildFrameGraphTask lowers render tasks and effect render tasks.",
+                );
+            context.expectSameEngine(frameGraph, task, call);
+            context.admissions.noteTemporalRecordBoundary(
+                call,
+                importedName,
+                "always",
+            );
+            context.reachFeature("frame-graph:task-build", call);
+            return {
+                kind: "void",
+                cpp: `bbl::build_frame_graph_task(${frameGraph.cpp}, ${task.cpp})`,
             };
         }
 

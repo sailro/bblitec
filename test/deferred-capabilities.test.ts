@@ -104,8 +104,8 @@ test("deferred scalar calls throw clearly after arguments and preserve recovery"
         if(order!=="ab")throw new Error("argument order");
         try{prompt(argument("c"));}catch{++catches;}
         try{prompt(argument("d"));}catch{++catches;}
-        try{confirm(argument("e"));}catch{++catches;}
-        try{alert(argument("f"));}catch{++catches;}
+        try{prompt(argument("e"));}catch{++catches;}
+        try{prompt(argument("f"));}catch{++catches;}
         try{prompt(argument("g"));}catch{++catches;}
         if(order!=="abcdefg"||catches!==6)throw new Error("trap recovery");
     `;
@@ -193,7 +193,7 @@ test("optional Window receivers suppress arguments and deferred failures", () =>
         const targets:Array<Window|null>=[null,window];
         let argumentsRun=0; let caught=0;
         for(let i=0;i<targets.length;i++) {
-            try{targets[i]?.alert(++argumentsRun);}catch{++caught;}
+            try{targets[i]?.prompt(String(++argumentsRun));}catch{++caught;}
         }
         if(argumentsRun!==1||caught!==1)throw new Error("optional receiver");
         globalThis.close();
@@ -230,17 +230,19 @@ test("optional Window receivers suppress arguments and deferred failures", () =>
 test("deferred promise methods reject on the realm reaction queue", () => {
     const result = compileSource(
         `
+        import {createAudioEngineAsync,createAudioBusAsync} from "@babylonjs/lite";
         async function main():Promise<void>{
+            const engine=await createAudioEngineAsync();
             let synchronous=true; let reactions=0;
-            const pending=document.exitFullscreen();
+            const pending=createAudioBusAsync(engine,"bus");
             const handled=pending.catch(error=>{
-                if(synchronous||!error.message.includes("dom:Document.exitFullscreen"))throw new Error("rejection timing");
+                if(synchronous||!error.message.includes("babylon:createAudioBusAsync"))throw new Error("rejection timing");
                 ++reactions;
             });
             synchronous=false;
             try{await pending;}catch{}
             await handled;
-            try{await document.exitFullscreen();}catch{++reactions;}
+            try{await createAudioBusAsync(engine,"second");}catch{++reactions;}
             if(reactions!==2)throw new Error("rejections");
             // Blob reads are native.
             if(await new Blob(["payload"]).text()!=="payload")throw new Error("blob text");
@@ -262,14 +264,13 @@ test("deferred promise methods reject on the realm reaction queue", () => {
         result.cpp +
             `
         namespace bbl::pal {
-        Engine& window_document_engine() { static Engine engine; return engine; }
-        int run_window_application(WorkerEntry initialize, EngineOptions) {
-            const js::RealmScope scope;
-            EventLoop loop;
-            WorkerRealm realm(loop, "");
-            loop.run([&] { initialize(realm); });
-            return 0;
-        }
+            AudioSession::~AudioSession() = default;
+            bool audio_begin_context() { return true; }
+            std::shared_ptr<AudioPlaybackDevice> audio_open_device(bool) { return {}; }
+            AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&,std::shared_ptr<AudioPlaybackDevice>) { return {1}; }
+            AudioNodeHandle audio_create_gain(AudioContextHandle) { return {2,{}}; }
+            AudioNodeHandle audio_destination(AudioContextHandle) { return {3,{}}; }
+            void audio_connect(AudioNodeHandle,AudioNodeHandle) {}
         }
     `,
         { flags: ["/DBBLITE_WORKERS=1"], expectedOutput: "", timeoutMs: 10000 },
@@ -278,22 +279,18 @@ test("deferred promise methods reject on the realm reaction queue", () => {
 
 test("pinned public missing calls preserve engine arguments and original strict refusal", () => {
     const source = `
-        import {createEngine,enableAsyncShaderPipelineCompilation,setGpuTimingEnabled} from "@babylonjs/lite";
-        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
-        try{enableAsyncShaderPipelineCompilation(engine);}catch{}
-        try{setGpuTimingEnabled(engine,true);}catch{}
+        import {createAudioEngineAsync,setMasterVolume} from "@babylonjs/lite";
+        const audio=await createAudioEngineAsync();
+        try{setMasterVolume(audio,0.5);}catch{}
     `;
     assert.throws(
         () => compileSource(source),
-        /enableAsyncShaderPipelineCompilation.*not supported/,
+        /audio 'setMasterVolume' is not lowered/,
     );
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        [
-            "babylon:enableAsyncShaderPipelineCompilation",
-            "babylon:setGpuTimingEnabled",
-        ],
+        ["babylon:setMasterVolume"],
     );
     assert.match(result.cpp, /deferred_capability<void>/);
 });
@@ -303,7 +300,7 @@ test("pinned geometry descriptor batch retains declared result shapes", () => {
         "disposeMeshGpu(mesh)",
         "enableThinInstanceDynamicDrawCount(mesh)",
         "setThinInstanceDrawCount(mesh,2)",
-        "setVatTime(engine,mesh,1)",
+        "getMasterVolume(audio)",
     ];
     const result = compileSource(
         `
@@ -312,14 +309,17 @@ test("pinned geometry descriptor batch retains declared result shapes", () => {
         const mesh=api.createSphere(engine,{diameter:1});
         const camera=api.createFreeCamera([0,0,1],[0,0,0]);
         const bytes=new Float32Array([0,1,2]);
+        const audio=await api.createAudioEngineAsync();
         ${operations.map((operation) => `try{api.${operation};}catch{}`).join("\n")}
     `,
         { deferredCapabilities },
     );
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:setVatTime"],
+        ["babylon:getMasterVolume"],
     );
+    // A number-returning capability keeps its declared result shape.
+    assert.match(result.cpp, /deferred_capability<double>/);
     assert.match(result.cpp, /bbl::dispose_mesh_gpu\(/);
     assert.match(result.cpp, /bbl::enable_thin_instance_dynamic_draw_count\(/);
     assert.match(result.cpp, /bbl::set_thin_instance_draw_count\(/);
@@ -367,11 +367,11 @@ test("deferred result templates never construct successful payloads", () => {
 test("deferred engine arguments retain ordinary checked reads", () => {
     const result = compileSource(
         `
-        import {createEngine,setGpuTimingEnabled} from "@babylonjs/lite";
-        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
-        const engines=[engine];
+        import {createAudioEngineAsync,setMasterVolume} from "@babylonjs/lite";
+        const audio=await createAudioEngineAsync();
+        const engines=[audio];
         let index=0; let caught=0;
-        try{setGpuTimingEnabled(engines[++index]!,true);}catch(error){
+        try{setMasterVolume(engines[++index]!,0.5);}catch(error){
             if(error.message.includes("Deferred native capability"))throw new Error("argument read was dropped");
             ++caught;
         }
@@ -386,7 +386,13 @@ test("deferred engine arguments retain ordinary checked reads", () => {
         "deferred-capabilities/engine-arguments",
         result.cpp +
             `
-        namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+        namespace bbl::pal {
+        AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&) { return {}; }
+        AudioNodeHandle audio_create_gain(AudioContextHandle) { return {}; }
+        AudioNodeHandle audio_destination(AudioContextHandle) { return {}; }
+        void audio_connect(AudioNodeHandle, AudioNodeHandle) {}
+        AudioSession::~AudioSession() = default;
+        }
     `,
         { expectedOutput: "" },
     );

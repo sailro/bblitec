@@ -431,6 +431,8 @@ public:
     void synchronize() { build_graph(state, engine, width, height); }
     void encode() {
         capture_texture = nullptr;
+        if (const auto frame_timer = gpu_frame_timer_begin(engine))
+            encode_sdl_gpu_timestamp(command, *frame_timer);
         GpuTaskTimingSequence timing_sequence(engine);
         for (const TaskHandle handle : context->tasks) {
             FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
@@ -468,7 +470,13 @@ public:
                 }
                 const auto effect_timing = sdl_timed_pass(command, timing_sequence.pass());
                 SdlRenderPass render_pass{SDL_BeginGPURenderPass(command, &target, 1, nullptr)};
-                record_effect_pass(command, render_pass, engine, pass, task.effect.effect);
+                record_effect_pass(
+                    command, render_pass, engine, pass, task.effect.effect,
+                    [&](const RenderTextureRef& source) -> SDL_GPUTexture* {
+                        if (handle_at(engine.render_targets, source.target).swapchain)
+                            throw std::runtime_error("An effect cannot sample the swapchain target.");
+                        return target_texture(state, engine, source.target, swapchain, true);
+                    });
                 render_pass.end();
                 if (record.swapchain)
                     capture_texture = swapchain;
@@ -491,6 +499,8 @@ public:
         }
     }
     void present() {
+        if (const auto frame_timer = gpu_frame_timer_end(engine))
+            encode_sdl_gpu_timestamp(command, *frame_timer);
         const bool capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("sdl_gpu", engine, width, height, frame);
         if (capture_frame) {
@@ -505,6 +515,7 @@ public:
             gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
         }
         finish_gpu_task_timing_frame(engine);
+        resolve_gpu_frame_timer(engine);
     }
     void finish_run() {
         if (!SDL_WaitForGPUIdle(state.gpu.device))

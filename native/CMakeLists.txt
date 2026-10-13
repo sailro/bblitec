@@ -678,6 +678,11 @@ if("platform:http" IN_LIST BBLITE_RUNTIME_FEATURES)
     endif()
 endif()
 
+if("platform:compression" IN_LIST BBLITE_RUNTIME_FEATURES)
+    find_package(ZLIB REQUIRED)
+    target_link_libraries(bblite_features INTERFACE ZLIB::ZLIB)
+endif()
+
 if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     # The exact RmlUi revision projected by our backend-neutral recorder
     # is pinned in upstream/rmlui.json and installed once by

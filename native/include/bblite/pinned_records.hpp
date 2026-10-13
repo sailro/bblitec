@@ -110,6 +110,14 @@ template <class T>
                : js::Nullable<T>{};
 }
 
+/** An element that may itself be undefined (a capture) is the same `undefined` past the end. */
+template <class T>
+[[nodiscard]] js::Nullable<T> array_at_optional(const js::Array<js::Nullable<T>>& values,
+                                                double index) {
+    return js::array_has_index(values, index) ? values[static_cast<std::size_t>(index)]
+                                              : js::Nullable<T>{};
+}
+
 /** A typed-array read, including views; past the end reads NaN. */
 template <class T> [[nodiscard]] double typed_get(const js::TypedArray<T>& values, double index) {
     return js::array_has_index(values, index)

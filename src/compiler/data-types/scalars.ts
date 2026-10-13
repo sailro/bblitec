@@ -56,6 +56,7 @@ export const scalarKinds: DataKindOperations<
     | "byte-stream"
     | "byte-stream-reader"
     | "byte-read-result"
+    | "byte-transform-stream"
     | "abort-controller"
     | "abort-signal"
     | "url"
@@ -63,6 +64,7 @@ export const scalarKinds: DataKindOperations<
     | "gpu"
     | "gpu-adapter"
     | "gpu-adapter-info"
+    | "idle-deadline"
     | "storage"
     | "date"
     | "regexp"
@@ -86,7 +88,7 @@ export const scalarKinds: DataKindOperations<
     | "numberindex"
     | "json"
     | "event-target"
-    | "deferred-platform-object"
+    | "uninhabited-object"
     | "borrowed-platform-event"
     | "handle"
     | TypedArrayKind
@@ -115,9 +117,9 @@ export const scalarKinds: DataKindOperations<
         opaqueReference: true,
     },
     "event-target": reseatingLeaf("bbl::DomEventTargetValue", "event-target"),
-    "deferred-platform-object": {
-        cpp: (type) => `std::shared_ptr<bbl::Deferred${type.name}>`,
-        key: (type) => `deferred-platform(${type.name})`,
+    "uninhabited-object": {
+        cpp: (type) => `std::shared_ptr<bbl::pal::Uninhabited${type.name}>`,
+        key: (type) => `uninhabited(${type.name})`,
         equal: (left, right) => left.name === right.name,
         children: () => [],
         byReference: true,
@@ -131,6 +133,10 @@ export const scalarKinds: DataKindOperations<
     "byte-stream-reader": opaqueLeaf("bbl::pal::BodyReader", "byte-reader"),
     // A fresh `{ done, value }` record each read; nothing aliases it.
     "byte-read-result": reseatingLeaf("bbl::pal::BodyReadResult", "byte-read"),
+    "byte-transform-stream": opaqueLeaf(
+        "bbl::pal::ByteTransformStream",
+        "byte-transform",
+    ),
     "abort-controller": opaqueLeaf(
         "bbl::js::AbortController",
         "abort-controller",
@@ -146,6 +152,10 @@ export const scalarKinds: DataKindOperations<
     "gpu-adapter-info": opaqueLeaf(
         "bbl::pal::GpuAdapterInfoHandle",
         "gpu-adapter-info",
+    ),
+    "idle-deadline": opaqueLeaf(
+        "bbl::pal::IdleDeadlineHandle",
+        "idle-deadline",
     ),
     "search-params": opaqueLeaf("bbl::js::SearchParams", "search-params"),
     storage: opaqueLeaf("bbl::js::Storage", "storage"),

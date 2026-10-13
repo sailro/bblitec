@@ -34,6 +34,9 @@ import {
     type ListenerOptions,
 } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { requireApplicationWindow } from "./window-members.js";
+import { compileFullscreenCall } from "./fullscreen.js";
+import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
 import { isPinnedType } from "./data-types.js";
@@ -398,6 +401,12 @@ export class PlatformCalls {
         if (beforeRender) return beforeRender;
         const web = compileWebPlatformCall(this.context, call);
         if (web) return web;
+        const fullscreen = compileFullscreenCall(
+            this.context.dataLowerer,
+            this.ui,
+            call,
+        );
+        if (fullscreen) return fullscreen;
         if (this.emitPlatformEventListener(call))
             return { kind: "void", cpp: "" };
         const styled = computedStyleElement(this.context, call);
@@ -1093,6 +1102,38 @@ export class PlatformCalls {
             }
             return true;
         }
+        if (target === "document" && event === "fullscreenchange") {
+            requireApplicationWindow(this.context, call);
+            if (removing) {
+                const identity = this.platformEventCallbackIdentity(
+                    this.context.compileValue(callback),
+                    callback,
+                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::pal::window_off_fullscreen_change(${identity});`,
+                });
+                return true;
+            }
+            const listener = this.context.callbacks.compilePlatformCallback(
+                callback,
+                undefined,
+                [],
+            );
+            const options = signalOptions
+                ? this.signalListenerOptions(call, listener.cpp)
+                : undefined;
+            this.context.emit({
+                kind: "expression",
+                code: `${listenerAddition(
+                    options?.signal,
+                    (lease) =>
+                        `bbl::pal::window_on_fullscreen_change(${listener.identity}, ` +
+                        `${options?.listener ?? listener.cpp}, ${options?.once ?? once}${lease ? `, ${lease}` : ""})`,
+                )};`,
+            });
+            return true;
+        }
         // A Window application's document reports its own visibility.
         const engine =
             (target === "document" && event === "visibilitychange"
@@ -1780,6 +1821,10 @@ export class PlatformCalls {
                     };
             }
         }
+        const captured =
+            element &&
+            compileCanvasCaptureStream(this.context.dataLowerer, call, element);
+        if (captured) return captured;
         if (element && callee.name.text === "decode") {
             if (!this.context.options.workers)
                 this.context.fail(

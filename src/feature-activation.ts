@@ -735,6 +735,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/shader/shader-material.ts",
         consumers: CMAKE,
     },
+    "material:shader-uniform-ranges": {
+        provenance: "src/material/shader/shader-uniform-range.ts",
+        consumers: CMAKE,
+    },
     "material:shader-storage": {
         provenance:
             "src/material/shader/storage-buffer.ts + " +
@@ -929,6 +933,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "mesh:vat-instances": {
         provenance: "src/vat/vat-baker.ts (setInstances)",
         consumers: ["features.cmake", "render_capabilities.hpp"],
+    },
+    "mesh:deformed-position": {
+        provenance:
+            "src/picking/deformed-vertex.ts computeDeformedPositionToRef",
+        consumers: CMAKE,
+    },
+    "mesh:vat-time": {
+        provenance: "src/vat/vat-baker.ts setVatTime",
+        consumers: CMAKE,
+    },
+    "mesh:vat-instance-storage": {
+        provenance: "src/vat/vat-baker.ts setVatInstanceStorage",
+        consumers: CMAKE,
     },
     "mesh:skeleton": {
         provenance:
@@ -1327,11 +1344,22 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the reached Web Audio graph calls AudioContext.createBiquadFilter()",
         consumers: CMAKE,
     },
+    "audio:media-element": {
+        provenance:
+            "new Audio(url) plays a packaged source through " +
+            "AudioContext.createMediaElementSource",
+        consumers: CMAKE,
+    },
     "audio:static-sound": {
         provenance:
             "src/audio/static-sound.ts createSoundAsync/playSound/stopSound/" +
             "setSoundVolume/disposeSound with the sound buffer, sub-graph, " +
             "ramped parameters, signals and fetch they reach, lowered whole",
+        consumers: CMAKE,
+    },
+    "audio:media-stream": {
+        provenance:
+            "the reached Web Audio graph calls AudioContext.createMediaStreamDestination() or createMediaStreamSource()",
         consumers: CMAKE,
     },
     "audio:stereo-panner": {
@@ -1473,6 +1501,22 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/frame-graph/render-task.ts addMeshToTask (opts.material)",
         consumers: CMAKE,
     },
+    "frame-graph:task-build": {
+        provenance: "src/frame-graph/frame-graph.ts buildFrameGraphTask",
+        consumers: CMAKE,
+    },
+    "frame-graph:live-task-add": {
+        provenance:
+            "src/frame-graph/frame-graph-actions.ts addTask on a built graph " +
+            "(src/frame-graph/frame-graph.ts buildFrameGraphTask)",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-disposal": {
+        provenance:
+            "src/frame-graph/render-task-base.ts RenderTask.dispose + " +
+            "src/effect/effect-renderer.ts EffectRenderTask.dispose",
+        consumers: CMAKE,
+    },
     "frame-graph:resources": {
         provenance:
             "src/engine/render-target.ts createRenderTarget + " +
@@ -1579,6 +1623,21 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "platform:packaged-fetch": {
         provenance:
             "owned fetch responses from the closed packaged asset manifest, without network transport",
+        consumers: INVENTORY,
+    },
+    "platform:compression": {
+        provenance:
+            "the Compression Streams CompressionStream and DecompressionStream transforms through zlib",
+        consumers: CMAKE,
+    },
+    "platform:media-stream": {
+        provenance:
+            "MediaStream and MediaStreamTrack objects, canvas capture streams and the encoder-less MediaRecorder",
+        consumers: INVENTORY,
+    },
+    "platform:idle-callbacks": {
+        provenance:
+            "the HTML requestIdleCallback idle periods and IdleDeadline over the realm event loop",
         consumers: INVENTORY,
     },
     "image:runtime-decode": {

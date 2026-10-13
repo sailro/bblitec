@@ -73,6 +73,8 @@ export interface GltfLoaderOptions {
      * it.
      */
     deformPicking?: boolean;
+    /** `computeDeformedPositionToRef` skins through `mesh.skeleton`: the third reader. */
+    deformedPosition?: boolean;
     /** A composed skeleton variant carries the palette, lifting the
      *  transcribed 64-matrix cap. */
     pinnedSkeletonPalette?: boolean;

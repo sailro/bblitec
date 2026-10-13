@@ -4,7 +4,7 @@ import {
     EngineOwnerStorageRequired,
     isEngineOwnerStorageDeclaration,
 } from "./engine-owner-storage.js";
-import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
+import { UNINHABITED_DOM_OBJECTS } from "./data-types/model.js";
 import { ERROR_CLASS_FIELDS, ERROR_CONSTRUCTORS } from "./error-values.js";
 import { functionSignatureSite } from "./function-storage-flow.js";
 import {
@@ -589,10 +589,12 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
         | "file-list"
         | "http-response"
         | "http-headers"
+        | "byte-transform-stream"
         | "abort-controller"
         | "abort-signal"
         | "url"
         | "image-bitmap"
+        | "idle-deadline"
         | "search-params"
         | "date"
         | "regexp"
@@ -613,10 +615,13 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["FileList", "dom", "file-list"],
     ["Response", "dom", "http-response"],
     ["Headers", "dom", "http-headers"],
+    ["CompressionStream", "dom", "byte-transform-stream"],
+    ["DecompressionStream", "dom", "byte-transform-stream"],
     ["AbortController", "dom", "abort-controller"],
     ["AbortSignal", "dom", "abort-signal"],
     ["URL", "dom", "url"],
     ["ImageBitmap", "dom", "image-bitmap"],
+    ["IdleDeadline", "dom", "idle-deadline"],
     ["URLSearchParams", "dom", "search-params"],
     ["Date", "default", "date"],
     ["RegExp", "default", "regexp"],
@@ -653,6 +658,7 @@ const RESPONSE_KINDS: readonly DataType["kind"][] = [
     "byte-stream",
     "byte-stream-reader",
     "byte-read-result",
+    "byte-transform-stream",
 ];
 
 /** Header-only web platform storage, included where a program stores it. */
@@ -663,6 +669,8 @@ const WEB_PLATFORM_HEADERS: readonly (readonly [
     [["abort-controller", "abort-signal"], "js_abort"],
     [["url"], "js_url"],
     [["image-bitmap"], "pal_image_bitmap"],
+    [["idle-deadline"], "pal_idle_callbacks"],
+    [["uninhabited-object"], "pal_media_stream"],
 ];
 
 /** A default-library binary class `instanceof` decides: ArrayBuffer, DataView, a view or typed array. */
@@ -697,6 +705,8 @@ export function domAudioHandleKind(type: ts.Type): HandleKind | undefined {
             return "audio-context";
         case "AudioNode":
             return "audio-node";
+        case "HTMLAudioElement":
+            return "audio-element";
     }
     return (type.getBaseTypes() ?? []).some(
         (base) => domAudioHandleKind(base) === "audio-node",
@@ -1083,7 +1093,6 @@ export class DataTypeRegistry {
     private readonly emittedNamedTypes = new EmissionSet<string>();
     @journaled private accessor emittedJsonType = false;
     @journaled private accessor emittedFileType = false;
-    @journaled private accessor emittedDeferredPlatformType = false;
     @journaled private accessor emittedWindowType = false;
     @journaled private accessor emittedResponseType = false;
     /** The web platform kinds whose storage was rendered (`webPlatformHeaders`). */
@@ -3914,11 +3923,11 @@ export class DataTypeRegistry {
             declaredInDefaultLibrary(type.symbol)
         )
             return { kind: "vector", element: { kind: "string" } };
-        const deferredObject =
+        const uninhabited =
             declaredInDomLibrary(type.symbol) &&
-            DEFERRED_DOM_OBJECTS.find((name) => name === type.symbol.name);
-        if (deferredObject)
-            return { kind: "deferred-platform-object", name: deferredObject };
+            UNINHABITED_DOM_OBJECTS.find((name) => name === type.symbol.name);
+        if (uninhabited)
+            return { kind: "uninhabited-object", name: uninhabited };
         if (
             BYTE_STREAM_KINDS.has(type.symbol?.name ?? "") &&
             declaredInDomLibrary(type.symbol)
@@ -8729,8 +8738,6 @@ export class DataTypeRegistry {
                 ...this.emittedWebPlatformKinds,
                 dataType.kind,
             ];
-        if (dataType.kind === "deferred-platform-object")
-            this.emittedDeferredPlatformType = true;
         if (this.isWindowType(dataType)) this.emittedWindowType = true;
         return dataTypeCppType(dataType, this.cppContext);
     }
@@ -8762,13 +8769,6 @@ export class DataTypeRegistry {
                     this.emittedWebPlatformKinds.includes(kind),
                 ) || this.usesNamedKind(kinds),
         ).map(([, header]) => header);
-    }
-
-    public usesDeferredPlatformStorage(): boolean {
-        return (
-            this.emittedDeferredPlatformType ||
-            this.usesNamedKind("deferred-platform-object")
-        );
     }
 
     /** JSON storage can occur in a defaulted field with no JSON expression. */

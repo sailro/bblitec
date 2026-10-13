@@ -20,16 +20,22 @@ anything not listed here must match it.
 | Promises outside a realm | `await` reads the settlement in place; a pending one ends the activation without catch/finally; a later settlement throws |
 | Uncaught callback errors | Reach the entry handler and exit with status 1 (browsers continue) |
 | Files | Atomic replacement; iOS publishes through UIKit/file providers; FileReader loads inside `readAsText` |
-| HTTP | WinHTTP/libcurl, system TLS, no cookies/CORS/HTTP cache; WinHTTP pool 6 per server; 8 MiB queued per transfer; 32 MiB bound on bodies and text/json/arrayBuffer (not streams); `statusText` is empty; a packaged response ignores an abort once its read started |
+| HTTP | WinHTTP/libcurl, system TLS, no cookies/CORS/HTTP cache; WinHTTP pool 6 per server; 8 MiB queued per transfer; 32 MiB bound on fetched bodies and text/json/arrayBuffer (not streams); `statusText` is empty; a packaged response ignores an abort once its read started |
 | HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect, then under 1 byte/s for 5 s. Realm close and abort cancel transfers |
+| Byte streams | Packaged responses have no headers; Blob and packaged bodies stream as one chunk (Chromium: 64 KiB chunks); compression is canonical zlib level 6, so deflate data can differ from Chromium's zlib (gzip header equal, OS byte per platform) and decompresses identically |
 | Packaged URL inference | 256 candidates; uncertain mutations, dynamic queries, traversal and encoded separators refuse |
 | Environment | `onLine=true`, secure context, no client hints or deviceMemory; one `performance.timeOrigin` per process |
 | GPU adapter info | Describes the selected device; SDL leaves architecture empty; Metal reports Apple vendor only for Apple GPUs |
 | Compute limits | Dawn queries device limits; SDL_GPU uses 256-byte uniform offsets |
 | GPU task timing | Dawn times on passes; SDL_GPU at source pass boundaries; omitted passes are untimed |
+| GPU frame timing | SDL_GPU writes the frame timestamps outside passes; Dawn in empty marker passes (the pin dispatches one workgroup) |
+| Scene registration | `registerScene` settles without the pin's intermediate awaits (builders, preloads, async pipeline preparation) |
+| Shader uniform ranges | A slot is marked when its value differs from its last upload; the pin marks every element write |
 | Listener signals | Abort removes only the listener its add created (DOM); Chromium can also remove a same-key re-add until GC |
 | Pointer offsets | `offsetX/Y` equal `clientX/Y`: exact only for the full-window primary canvas |
 | Touch | One finger rotates; two-finger span feeds wheel zoom; the primary contact drives mouse hooks |
+| Media recording | No encoders: no `MediaRecorder` type is supported, canvas capture frames reach no consumer; stream audio reaches a source a render quantum or more late |
+| Dialogs, fullscreen | `alert`/`confirm` are SDL message boxes; fullscreen needs no user activation and keeps the document layout (a fullscreen primary canvas is exact only when it fills the window) |
 | Pointer capture | Window applications: a capture a pointermove listener sets targets from a later motion packet; pointer lock does not make `setPointerCapture` throw |
 | Skinning | Eight influences reduced to four |
 | Video textures | One frame from Chromium's WebGPU import, baked RGBA8, sampled as 2D |
@@ -96,3 +102,7 @@ Arbitrary async text builders refuse.
 - LabSound plays without an autoplay gate.
 - SDL audio initializes once on the main thread (the Window host at realm start); devices never quit it.
 - Topology agreement does not establish PCM fidelity.
+- A media element decodes its whole source at its context's rate when routed (or at `play()` with `preload="none"`)
+  and holds it until `load()` or its release: 4 bytes per sample and channel, about 23 MB per stereo minute at
+  48 kHz. Its clock is that context's; unrouted elements share one default-output context per audio session.
+  `timeupdate` fires every 250 ms while playing (Chromium's cadence).

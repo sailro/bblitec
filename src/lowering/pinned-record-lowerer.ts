@@ -375,6 +375,12 @@ const regExpShape: RecordShape = {
     nullable: true,
 };
 
+/** One capture of a match: undefined when its group did not participate. */
+const regExpCaptureShape: RecordShape = {
+    kind: "optional",
+    value: { kind: "string" },
+};
+
 /** The native namespace of a module's internal functions. */
 function detailNamespace(module: string): string {
     // `_matrix-allocator.ts` is internal by its underscore; the native
@@ -994,13 +1000,12 @@ export class PinnedRecordModel {
                 return { kind: "typed", element: "f64" };
             if (library && name === "DataView") return { kind: "dataview" };
             if (library && name === "RegExp") return regExpShape;
-            // A match's captures: unmatched groups read as empty strings,
-            // as the runtime's RegExp reports them.
+            // A match's captures: an unmatched group is undefined.
             if (
                 library &&
                 (name === "RegExpMatchArray" || name === "RegExpExecArray")
             )
-                return { kind: "array", element: { kind: "string" } };
+                return { kind: "array", element: regExpCaptureShape };
             if (library && name === "ArrayLike") {
                 const [element] = argumentsOf();
                 if (!element || !(element.flags & ts.TypeFlags.NumberLike))
@@ -8349,6 +8354,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     return `bbl::js::array_join(${receiver()}, ${separator})`;
                 if (element.kind === "number")
                     return `bbl::js::array_join(${receiver()}, ${separator}, [](double value) { return bbl::js::number_to_string(value); })`;
+                // An undefined element (an unmatched capture) joins as "".
+                if (
+                    element.kind === "optional" &&
+                    element.value.kind === "string"
+                )
+                    return `bbl::js::array_join(${receiver()}, ${separator}, [](const auto& value) { return value.has_value() ? std::string(*value) : std::string{}; })`;
                 return this.refuse(
                     node,
                     `Pinned join of ${this.cpp(element)}.`,
@@ -8464,7 +8475,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                             this.cpp(regExpShape)
                       ? this.value(pattern)
                       : this.refuse(first!, "Pinned match takes a RegExp.");
-                return `[&](const std::string& subject) { return (${expression}).match(subject); }(${receiver()})`;
+                return `[&](const std::string& subject) { return (${expression}).match<${this.cpp(regExpCaptureShape)}>(subject); }(${receiver()})`;
             }
             case "trim":
                 arity(0);

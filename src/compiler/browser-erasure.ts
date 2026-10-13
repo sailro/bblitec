@@ -1,8 +1,9 @@
 import {
     deferredCapabilityDescriptor,
     deferredPropertyDescriptor,
-    deferredWindowFunctionSymbol,
 } from "./deferred-capabilities.js";
+import { idleWindowFunctionSymbol } from "./idle-callbacks.js";
+import { isWindowServiceCall } from "./window-members.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { gpuValue } from "./gpu-value.js";
 import {
@@ -94,6 +95,7 @@ const PLATFORM_TIMER_FUNCTIONS: ReadonlySet<string> = new Set([
 const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "record",
     "audio-engine",
+    "audio-element",
     "audio-buffer",
     "audio-context",
     "audio-node",
@@ -123,6 +125,8 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
 
 /** DOM-declared classes with native runtime values (`web-platform.ts`). */
 const NATIVE_PLATFORM_CLASSES: ReadonlySet<string> = new Set([
+    "MediaRecorder",
+    "MediaStream",
     "AbortController",
     "AbortSignal",
     "DOMException",
@@ -1008,8 +1012,12 @@ export class BrowserErasure {
                 : unwrapped;
         if (ts.isCallExpression(candidate)) {
             if (
-                this.context.options.deferredCapabilities &&
-                deferredCapabilityDescriptor(this.context.checker, candidate)
+                (this.context.options.deferredCapabilities &&
+                    deferredCapabilityDescriptor(
+                        this.context.checker,
+                        candidate,
+                    )) ||
+                isWindowServiceCall(this.context, candidate)
             )
                 return false;
             const callee = this.context.unwrap(candidate.expression);
@@ -1209,13 +1217,14 @@ export class BrowserErasure {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
         if (
+            idleWindowFunctionSymbol(this.context.checker, unwrapped) ||
+            isWindowServiceCall(this.context, unwrapped)
+        )
+            return false;
+        if (
             this.context.options.deferredCapabilities &&
-            (deferredWindowFunctionSymbol(this.context.checker, unwrapped) ||
-                (ts.isPropertyAccessExpression(unwrapped) &&
-                    deferredPropertyDescriptor(
-                        this.context.checker,
-                        unwrapped,
-                    )))
+            ts.isPropertyAccessExpression(unwrapped) &&
+            deferredPropertyDescriptor(this.context.checker, unwrapped)
         )
             return false;
         if (devicePixelRatioValue(this.context, unwrapped)) return false;
@@ -1736,10 +1745,14 @@ export class BrowserErasure {
             if (this.isAbsentGlobalMember(unwrapped.expression))
                 return { kind: "string", value: "undefined" };
             const global = this.context.libraryGlobal(unwrapped.expression);
-            // Native has no browser recording pipeline; authored capability
-            // guards can select their own unavailable-recording path.
-            if (global === "MediaRecorder")
-                return { kind: "string", value: "undefined" };
+            // Window interfaces with native values (`media-streams.ts`).
+            if (global === "MediaRecorder" || global === "MediaStream")
+                return {
+                    kind: "string",
+                    value: this.context.options.workers?.namespace
+                        ? "undefined"
+                        : "function",
+                };
             const windowInterface = windowInterfaceTypeof(
                 global,
                 this.context.options.workers,

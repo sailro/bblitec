@@ -19,8 +19,11 @@
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/effect_variants.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <utility>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -56,6 +59,10 @@ struct DawnEffectPass {
     DawnBuffer uniforms;
     std::uint32_t uniform_bytes = 0;
     std::vector<DawnSampledTexture> textures;
+    /** Bind-group entries a render target fills at record time: entry index, binding number. */
+    std::vector<std::pair<std::size_t, std::uint32_t>> render_textures;
+    /** The entries the group was last built from, kept to rebuild it on a new view. */
+    std::vector<WGPUBindGroupEntry> group_entries;
 };
 
 inline void release_dawn_effect_pass(DawnEffectPass& pass) {
@@ -84,8 +91,30 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
     // gives a uniform `{ type: "uniform" }`, a texture float/2d, and a
     // sampler `filtering`, all at fragment visibility unless the descriptor
     // named another — and the reached slice names none.
+    // The textures first, in their declared order: a sampler can precede the
+    // texture it samples in binding order. The lookup and its not-set refusal
+    // are the shared `effect_texture_slot`; a render target's view is bound
+    // when the pass records, since a rebuilt target replaces it.
+    std::vector<std::uint32_t> render_bindings;
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::EffectVariantBinding& binding =
+            upstream::effect_variant_bindings.at(entry.first_binding + index);
+        if (binding.kind != upstream::EffectBindingKind::texture)
+            continue;
+        const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding.binding);
+        if (slot.render_texture) {
+            DawnSampledTexture sampled;
+            sampled.sampler = create_texture_sampler(device_state.device, TextureSamplerState{});
+            pass.textures.push_back(std::move(sampled));
+            render_bindings.push_back(binding.binding);
+        } else {
+            pass.textures.push_back(
+                upload_dawn_solid_texture(device_state.device, device_state.queue, slot.texture));
+        }
+    }
     std::vector<WGPUBindGroupLayoutEntry> layout_entries;
     std::vector<WGPUBindGroupEntry> group_entries;
+    std::size_t texture_position = 0;
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
         const upstream::EffectVariantBinding& binding =
             upstream::effect_variant_bindings.at(entry.first_binding + index);
@@ -108,12 +137,10 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
         } else if (binding.kind == upstream::EffectBindingKind::texture) {
             layout.texture.sampleType = WGPUTextureSampleType_Float;
             layout.texture.viewDimension = WGPUTextureViewDimension_2D;
-            // The lookup and its not-set refusal are the shared
-            // `effect_texture_for_binding`.
-            pass.textures.push_back(
-                upload_dawn_solid_texture(device_state.device, device_state.queue,
-                                          effect_texture_for_binding(wrapper, binding.name)));
-            const DawnSampledTexture& sampled = pass.textures.back();
+            if (std::find(render_bindings.begin(), render_bindings.end(), binding.binding) !=
+                render_bindings.end())
+                pass.render_textures.emplace_back(group_entries.size(), binding.binding);
+            const DawnSampledTexture& sampled = pass.textures.at(texture_position++);
             WGPUBindGroupEntry group = WGPU_BIND_GROUP_ENTRY_INIT;
             group.binding = binding.binding;
             group.textureView = sampled.view;
@@ -149,7 +176,8 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
     pass.pipeline_layout =
         require_dawn_resource(wgpuDeviceCreatePipelineLayout(device_state.device, &pipeline_layout),
                               "effect pipeline layout");
-    if (!group_entries.empty()) {
+    pass.group_entries = group_entries;
+    if (!group_entries.empty() && pass.render_textures.empty()) {
         WGPUBindGroupDescriptor group_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         group_descriptor.layout = pass.group_layout;
         group_descriptor.entryCount = group_entries.size();
@@ -208,8 +236,43 @@ inline void upload_dawn_effect_pass(WGPUQueue queue, Engine& engine, const DawnE
     wrapper.uniforms_dirty = false;
 }
 
+/** A frame graph's render-target view for an effect binding. */
+using DawnEffectRenderTextureSource = std::function<WGPUTextureView(const RenderTextureRef&)>;
+
+/** Bind each render target's current view, rebuilding the group when one changed. */
+inline void bind_dawn_effect_render_textures(WGPUDevice device, const Engine& engine,
+                                             DawnEffectPass& pass, EffectWrapperHandle handle,
+                                             const DawnEffectRenderTextureSource& source) {
+    if (pass.render_textures.empty())
+        return;
+    if (!source)
+        throw std::runtime_error(
+            "An effect renderer samples render-target textures only in a frame graph.");
+    const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
+    bool changed = !pass.group;
+    for (const auto& [entry, binding] : pass.render_textures) {
+        const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding);
+        if (!slot.render_texture)
+            throw std::runtime_error("An effect binding changed texture kind after its first draw.");
+        const WGPUTextureView view = source(*slot.render_texture);
+        changed = changed || pass.group_entries[entry].textureView != view;
+        pass.group_entries[entry].textureView = view;
+    }
+    if (!changed)
+        return;
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = pass.group_layout;
+    descriptor.entryCount = pass.group_entries.size();
+    descriptor.entries = pass.group_entries.data();
+    pass.group = require_dawn_resource(wgpuDeviceCreateBindGroup(device, &descriptor),
+                                       "effect bind group");
+}
+
 /** `_record`: the pin's own three-vertex draw, into an already-open pass. */
 inline void record_dawn_effect_pass(WGPURenderPassEncoder render_pass, const DawnEffectPass& pass) {
+    if (!pass.render_textures.empty() && !pass.group)
+        throw std::runtime_error(
+            "An effect renderer samples render-target textures only in a frame graph.");
     wgpuRenderPassEncoderSetPipeline(render_pass, pass.pipeline);
     if (pass.group) {
         wgpuRenderPassEncoderSetBindGroup(render_pass, 0, pass.group, 0, nullptr);

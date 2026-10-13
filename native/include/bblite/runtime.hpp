@@ -806,6 +806,8 @@ struct VatData {
     std::vector<float> instance_params;
     std::uint32_t instance_texels = 0;
     std::uint64_t instance_version = 0;
+    /** `setVatInstanceStorage`: the published dual-clip params buffer, or none. */
+    std::optional<StorageBufferHandle> instance_storage;
 };
 
 struct BillboardSpriteHandle {
@@ -1695,8 +1697,19 @@ struct FrameTaskRecord {
     bool render_meshes_dirty = false;
     /** A backend built this task's draw lists once: the recorded generation is drawn. */
     bool render_generation_built = false;
+    /**
+     * `dispose()` ran. A render task stays disposed; an effect task's
+     * `dispose` only clears its pipeline, which its next record restores.
+     */
+    bool disposed = false;
     mutable double shader_packet_scene_version = -1;
     mutable bool shader_packet_rebuild_pending = false;
+    /**
+     * Added to a scene's live graph: the pin records it only through
+     * `buildFrameGraphTask` or the next registration's build, and its
+     * execute fails until then.
+     */
+    bool pending_record = false;
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
     /**
@@ -2848,7 +2861,11 @@ struct SplatMeshRecord {
 
 struct EffectTextureSlot {
     std::string name;
+    /** The descriptor's binding number, which `setEffectTexture` also matches. */
+    std::uint32_t binding = 0;
     SolidTexture texture{};
+    /** A render target's texture, resolved where a frame graph records the pass. */
+    std::optional<RenderTextureRef> render_texture;
     bool set = false;
 };
 
@@ -4347,6 +4364,12 @@ struct Engine {
     double canvas_client_height = 720.0;
     /** SDL window coordinates to browser client coordinates (CSS pixels). */
     double canvas_window_to_client_scale = 1.0;
+    /** The engine draws into a Window realm's DOM canvas (the pin's `isDomCanvas`). */
+    bool dom_canvas = false;
+    /** `SurfaceContext.maxDevicePixelRatio` once written; createEngine's option before. */
+    std::optional<double> max_device_pixel_ratio;
+    /** The pin's `resizeSurface`, installed by a program that writes the cap; frame heads run it. */
+    std::function<void(Engine&)> resize_surface;
     /** Retained primary-canvas dataset, including the harness readiness handshake. */
     std::unordered_map<std::string, std::string> canvas_dataset;
     /**
@@ -4527,6 +4550,8 @@ struct Engine {
     /** The last `SourceMaterialDraw::identity` this engine published. */
     std::uint64_t source_output_identity = 0;
     std::vector<MaterialRecord> materials;
+    /** Source materials `enableMaterialTracking` installed observable colors on. */
+    std::vector<MaterialHandle> tracked_materials;
     struct StorageBufferRecord {
         std::vector<std::uint8_t> bytes;
         std::shared_ptr<pal::StorageBufferOwner> gpu;
@@ -5375,6 +5400,50 @@ inline void project_material_source_colors(MaterialRecord& material) {
         material.diffuse_color =
             Color3{static_cast<float>(source[0]), static_cast<float>(source[1]),
                    static_cast<float>(source[2])};
+    }
+}
+
+[[nodiscard]] inline double surface_max_device_pixel_ratio(const Engine& engine) {
+    return engine.max_device_pixel_ratio.value_or(engine.options.max_device_pixel_ratio);
+}
+
+/** A cap write; the installed resize applies it where the pin's `resizeSurface` runs. */
+inline void set_surface_max_device_pixel_ratio(Engine& engine, double cap,
+                                               void (*resize_surface)(Engine&)) {
+    engine.max_device_pixel_ratio = cap;
+    if (!engine.resize_surface)
+        engine.resize_surface = resize_surface;
+}
+
+/** createEngine's cap option: the same resize, which the pin's createEngine runs once. */
+inline void install_surface_resize(Engine& engine, void (*resize_surface)(Engine&)) {
+    if (!engine.resize_surface)
+        engine.resize_surface = resize_surface;
+    engine.resize_surface(engine);
+}
+
+/** `resizeEngine`: native frame heads refresh extents; an installed resize runs here too. */
+inline void resize_engine(Engine& engine) {
+    if (engine.resize_surface)
+        engine.resize_surface(engine);
+}
+
+/** A tracked color element write marks the source UBO dirty; the next draw reads the array. */
+inline void project_tracked_material_colors(Engine& engine) {
+    for (const MaterialHandle handle : engine.tracked_materials) {
+        MaterialRecord& record = handle_at(engine.materials, handle);
+        if (!record.source_diffuse_color)
+            continue;
+        const auto& source = *record.source_diffuse_color;
+        if (source.size() != 3)
+            throw std::runtime_error("Material diffuseColor requires three numeric channels.");
+        const Color3 next{static_cast<float>(source[0]), static_cast<float>(source[1]),
+                          static_cast<float>(source[2])};
+        if (next.r == record.diffuse_color.r && next.g == record.diffuse_color.g &&
+            next.b == record.diffuse_color.b)
+            continue;
+        record.diffuse_color = next;
+        ++record.ubo_version;
     }
 }
 
@@ -6712,6 +6781,8 @@ std::array<double, 2> resolve_surface_render_target_size(double width, double he
 js::Callback<void()> on_render_target_texture_resize(Engine& engine, RenderTargetTexture result,
                                                      std::function<void()> callback);
 void dispose_render_target_texture(Engine& engine, RenderTargetTexture result);
+/** The pin's `disposeRenderTarget`: releases a target unless it is the swapchain's. */
+void dispose_render_target(Engine& engine, RenderTargetHandle target);
 RenderTargetHandle swapchain_render_target(Engine& engine);
 TaskHandle create_render_task(Engine& engine, Scene& scene, RenderTaskOptions options);
 TaskHandle create_geometry_renderer_task(Engine& engine, Scene& scene, GeometryTaskOptions options);
@@ -6732,6 +6803,10 @@ RenderTextureRef geometry_task_depth_texture(TaskHandle task);
 void add_task(Scene& scene, TaskHandle task);
 void add_task_at_start(Scene& scene, TaskHandle task);
 void add_task_after(Scene& scene, TaskHandle task, TaskHandle after);
+/** `buildFrameGraphTask(getFrameGraph(scene), task)`: record a task added to a live scene. */
+void build_frame_graph_task(Scene& scene, TaskHandle task);
+/** `addTask`/`addTaskAtStart` where the scene may already be registered. */
+void add_live_task(Scene& scene, TaskHandle task, bool at_start);
 void add_task(FrameGraphContext& context, TaskHandle task);
 void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 void add_task_after(FrameGraphContext& context, TaskHandle task, TaskHandle after);
@@ -6867,6 +6942,22 @@ void enable_skeleton_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void remove_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh);
+/** `computeDeformedPositionToRef`: whether the vertex resolved, and `out` as the pin leaves it. */
+struct DeformedPosition {
+    bool found = false;
+    Vec3d position{};
+};
+DeformedPosition compute_deformed_position(const Engine& engine, MeshHandle mesh,
+                                           double vertex_index, Vec3d out);
+/** `setVatTime`: the settings block's clock lane, apart from the handle's own clock. */
+void set_vat_time(Engine& engine, MeshHandle mesh, double seconds);
+/** `setVatInstanceStorage`. */
+void set_vat_instance_storage(Engine& engine, MeshHandle mesh,
+                              std::optional<StorageBufferHandle> buffer);
+/** `RenderTask.dispose()`. */
+void dispose_render_task(Engine& engine, TaskHandle task);
+/** `EffectRenderTask.dispose()`. */
+void dispose_effect_render_task(Engine& engine, TaskHandle task);
 /** A refreshed task's rebind publishes its generation in the pin's renderable order. */
 void order_refreshed_render_task(FrameTaskRecord& task);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);
@@ -7182,8 +7273,12 @@ bool sprite_2d_id_alive(const Engine& engine, Sprite2DLayerHandle layer, std::ui
 EffectWrapperHandle create_effect_wrapper(Engine& engine, std::uint32_t variant);
 void set_effect_uniforms(Engine& engine, EffectWrapperHandle effect,
                          const std::vector<float>& values);
-void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const std::string& name,
+/** `setEffectTexture`'s binding: a number, or a name or number as a string. */
+using EffectBindingKey = std::variant<std::string, double>;
+void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
                         SolidTexture texture);
+void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
+                        RenderTextureRef texture);
 void dispose_effect_wrapper(Engine& engine, EffectWrapperHandle effect);
 /** The pin's bind-group build for the wrapper's declared bindings; refuses a released slot. */
 void require_effect_bind_group(const Engine& engine, EffectWrapperHandle effect);

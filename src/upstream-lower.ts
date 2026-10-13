@@ -1312,6 +1312,10 @@ ${lowerThinInstanceSync(context)}
                 gltfSceneHooks: features.includes("loader:gltf"),
                 thinBindings: options.gpuInstancing,
                 meshGpuDisposal: features.includes("mesh:dispose-gpu"),
+                taskBuild: features.includes("frame-graph:task-build"),
+                effectTasks: features.includes("effect:task"),
+                liveTaskAdd: features.includes("frame-graph:live-task-add"),
+                deformedPosition: features.includes("mesh:deformed-position"),
             }),
         );
         this.emitTextData(features, context, options, generated);
@@ -1362,6 +1366,8 @@ ${lowerThinInstanceSync(context)}
         emitReached("upstream/src/vat.cpp", () =>
             new VatLowerer(context).lower({
                 instances: features.includes("mesh:vat-instances"),
+                time: features.includes("mesh:vat-time"),
+                instanceStorage: features.includes("mesh:vat-instance-storage"),
             }),
         );
         emitReached("upstream/src/skeleton.cpp", () =>
@@ -1522,6 +1528,8 @@ ${lowerThinInstanceSync(context)}
             composedShaders,
             generated,
             features.includes("effect:wrapper-disposal"),
+            features.includes("frame-graph:task-build"),
+            features.includes("frame-graph:task-disposal"),
         );
         this.emitLoaderSplat(
             features,
@@ -1581,6 +1589,7 @@ ${lowerThinInstanceSync(context)}
             features.includes("frame-graph:task-mesh-removal"),
             features.includes("frame-graph:task-mesh-refresh") &&
                 features.includes("frame-graph:task-material-override"),
+            features.includes("frame-graph:task-disposal"),
         );
         this.emitRendererPostProcess(
             features,
@@ -1608,7 +1617,9 @@ ${lowerThinInstanceSync(context)}
             ),
         );
         emitReached("upstream/src/material_shader.cpp", () =>
-            factories.lowerShaderMaterialFactory(),
+            factories.lowerShaderMaterialFactory(
+                features.includes("material:shader-uniform-ranges"),
+            ),
         );
         emitReached("upstream/src/material_shader_external.cpp", () =>
             lowerShaderExternalTextures(context),
@@ -2293,6 +2304,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     vat: features.includes("mesh:vat"),
                     deformPicking:
                         (options.pickingShaders?.deform?.length ?? 0) > 0,
+                    deformedPosition: features.includes(
+                        "mesh:deformed-position",
+                    ),
                     pinnedSkeletonPalette:
                         options.pinnedSkeletonPalette ?? false,
                     nodeTransforms: features.includes("scene:node-transforms"),
@@ -2440,6 +2454,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         composedShaders: ComposedShader[],
         generated: { modulePath: string; symbolName: string }[],
         disposal: boolean,
+        taskBuild: boolean,
+        taskDisposal: boolean,
     ): void {
         if (this.reaches("upstream/src/effect_renderer.cpp")) {
             // One module per descriptor, both entry points in it: the pin
@@ -2486,7 +2502,7 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/effect_renderer.cpp",
-                effects.lowerFactory(disposal),
+                effects.lowerFactory(disposal, taskBuild, taskDisposal),
                 generated,
             );
         }
@@ -3080,6 +3096,7 @@ ${wgsl}`,
         thinBindings: boolean,
         meshRemoval: boolean,
         refreshedOverrides: boolean,
+        taskDisposal: boolean,
     ): void {
         if (this.reaches("upstream/src/frame_graph_geometry.cpp")) {
             this.writeSource(
@@ -3088,6 +3105,7 @@ ${wgsl}`,
                     thinBindings,
                     meshRemoval,
                     refreshedOverrides,
+                    taskDisposal,
                 ),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_geometry.hpp",

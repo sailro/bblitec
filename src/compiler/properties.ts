@@ -54,6 +54,7 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { webPlatformProperty } from "./web-platform.js";
+import { fullscreenElementValue } from "./fullscreen.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
@@ -70,6 +71,7 @@ import { recordAt } from "./record-access.js";
 import { staticFetchProperty } from "./static-fetch.js";
 import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { readSplatStreamProperty } from "./splat-stream-surface.js";
 import {
     contextCanvas,
@@ -816,6 +818,33 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "audio:engine",
     },
     ...AUDIO_PARAM_RULES,
+    // An HTMLAudioElement's media state: written by the program and advanced
+    // by its context's clock, so two reads are two.
+    ...(
+        [
+            ["duration", "number", "duration"],
+            ["currentTime", "number", "current_time"],
+            ["loop", "boolean", "loop"],
+            ["paused", "boolean", "paused"],
+            ["ended", "boolean", "ended"],
+        ] as const
+    ).map(([property, value, member]): PropertyRead => ({
+        owner: "audio-element",
+        property,
+        value,
+        helper: `bbl::pal::audio_element_${member}`,
+        feature: "audio:media-element",
+        impure: true,
+    })),
+    {
+        owner: "audio-element",
+        property: "preload",
+        value: "data",
+        helper: "bbl::pal::audio_element_preload",
+        dataType: { kind: "string" },
+        feature: "audio:media-element",
+        impure: true,
+    },
     ...(
         [
             ["duration", "Duration"],
@@ -890,6 +919,54 @@ export const propertyRules: readonly PropertyRule[] = [
         helper: "bbl::pal::audio_param_value",
         feature: "audio:engine",
     },
+    // MediaStreamAudioDestinationNode.stream: one stream per node.
+    {
+        owner: "audio-node",
+        property: "stream",
+        value: "media-stream",
+        helper: "bbl::pal::audio_destination_stream",
+        feature: "audio:media-stream",
+    },
+    // MediaStream and MediaStreamTrack (`bblite/pal_media_stream.hpp`).
+    {
+        owner: "media-stream",
+        property: "id",
+        value: "string",
+        helper: "bbl::pal::media_stream_id",
+        feature: "platform:media-stream",
+    },
+    {
+        owner: "media-stream",
+        property: "active",
+        value: "boolean",
+        helper: "bbl::pal::media_stream_active",
+        feature: "platform:media-stream",
+        impure: true,
+    },
+    ...(["kind", "id", "label"] as const).map((property): PropertyRead => ({
+        owner: "media-stream-track",
+        property,
+        value: "string",
+        helper: `bbl::pal::media_stream_track_${property}`,
+        feature: "platform:media-stream",
+    })),
+    {
+        owner: "media-stream-track",
+        property: "readyState",
+        value: "string",
+        helper: "bbl::pal::media_stream_track_ready_state",
+        feature: "platform:media-stream",
+        impure: true,
+    },
+    {
+        owner: "media-stream-track",
+        property: "enabled",
+        value: "boolean",
+        helper: "bbl::pal::media_stream_track_enabled",
+        feature: "platform:media-stream",
+        impure: true,
+    },
+
     {
         // Device generation is observable by recovery. Queue uploads still
         // use their structurally checked transport instead of exposing a GPU API.
@@ -2496,6 +2573,11 @@ export class PropertyAccessLowerer {
                 dataType: { kind: "handle", handle: "ui-element" },
             };
         }
+        const fullscreen = fullscreenElementValue(
+            this.context.dataLowerer,
+            expression,
+        );
+        if (fullscreen) return fullscreen;
         if (
             expression.questionDotToken &&
             expression.name.text === "direction" &&
@@ -2809,6 +2891,22 @@ export class PropertyAccessLowerer {
                         impure: true,
                     },
                 },
+            };
+        }
+        if (owner.kind === "engine" && property === "gpuFrameTimeMs") {
+            if (!owner.ownedEngineCpp) throw new ApplicationRealmRequired();
+            this.context.reachFeature("engine:gpu-task-timing", expression);
+            return {
+                kind: "number",
+                cpp: `bbl::pal::gpu_task_timing_state(${owner.cpp})->gpu_frame_time_ms`,
+                impure: true,
+            };
+        }
+        if (owner.kind === "engine" && property === "maxDevicePixelRatio") {
+            return {
+                kind: "number",
+                cpp: `bbl::surface_max_device_pixel_ratio(${owner.cpp})`,
+                impure: true,
             };
         }
         if (owner.kind === "engine" && property === "drawCallCount") {
@@ -3676,6 +3774,14 @@ export class PropertyAccessLowerer {
         ) {
             return owner;
         }
+        // The native list also holds the default task's resolve and present
+        // copies and each shadow generator's caster passes, where the pin's
+        // holds one task each, so no view of it keeps the pin's indices.
+        if (owner.kind === "frame-graph" && expression.name.text === "_tasks")
+            this.context.fail(
+                expression,
+                "FrameGraph._tasks is private and is not represented: the native scene task list holds tasks the pin's does not, so its indices differ. Removing a task from a live graph is refused.",
+            );
         if (
             owner.kind === "utility-layer" &&
             expression.name.text === "scene"

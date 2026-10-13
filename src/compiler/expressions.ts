@@ -116,9 +116,24 @@ import { compileSearchParams } from "./search-params.js";
 import { compileWebPlatformNew } from "./web-platform.js";
 import { compileHttpFunction, compileHttpCall } from "./http.js";
 import { compileWindowServiceCall } from "./window-events.js";
+import {
+    compileIdleCallbackCall,
+    idleFunctionValue,
+} from "./idle-callbacks.js";
+import { compileMessageBoxCall } from "./message-boxes.js";
+import {
+    compileMediaRecorderStaticCall,
+    compileMediaStreamMethodCall,
+    mediaStreamTypeof,
+} from "./media-streams.js";
 import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
-import { regexpCaptureCount } from "./string-replacement.js";
+import {
+    regexpCaptureCount,
+    regexpCapturesMayBeUnmatched,
+    regexpCaptureFacts,
+    regexpGroupsType,
+} from "./string-replacement.js";
 import { compileAtomicsCall } from "./atomics.js";
 import { compileEnumElementAccess, enumObjectSymbol } from "./enum-objects.js";
 import {
@@ -248,6 +263,8 @@ export interface ExpressionContext
             LoweringServices,
             | "compileWorkerValue"
             | "audioSessionCpp"
+            | "staticAssetUrlCandidates"
+            | "sourceFiles"
             | "checker"
             | "program"
             | "sourceFile"
@@ -667,9 +684,8 @@ export class ExpressionLowerer {
         }
         const storage = compileWebStorageValue(this.context, unwrapped);
         if (storage) return storage;
-        const deferredFunction =
-            this.context.deferredCapabilities.functionValue(unwrapped);
-        if (deferredFunction) return deferredFunction;
+        const idleFunction = idleFunctionValue(this.context, unwrapped);
+        if (idleFunction) return idleFunction;
         const ratio = devicePixelRatioValue(this.context, unwrapped);
         if (ratio) {
             if (ratio.staticNumber === undefined)
@@ -1155,11 +1171,16 @@ export class ExpressionLowerer {
                     kind: "data",
                     dataType: { kind: "regexp" },
                     regexpUnicode: false,
+                    regexpGlobal: flags.includes("g"),
                     ...(patternValue.staticString !== undefined
                         ? {
                               regexpCaptureCount: regexpCaptureCount(
                                   patternValue.staticString,
                               ),
+                              regexpOptionalCaptures:
+                                  regexpCapturesMayBeUnmatched(
+                                      patternValue.staticString,
+                                  ),
                           }
                         : {}),
                     cpp:
@@ -1557,7 +1578,9 @@ export class ExpressionLowerer {
                 );
             }
             const expression = this.context.unwrap(unwrapped.expression);
-            const audio = audioTypeof(this.context, expression);
+            const audio =
+                audioTypeof(this.context, expression) ??
+                mediaStreamTypeof(this.context, expression);
             if (audio)
                 return staticStringValue(audio, (text) =>
                     this.context.cppString(text),
@@ -3439,6 +3462,11 @@ export class ExpressionLowerer {
             hostFunction,
         );
         if (windowService) return windowService;
+        const windowServiceCall =
+            compileMessageBoxCall(this.context.dataLowerer, call) ??
+            compileIdleCallbackCall(this.context.dataLowerer, call) ??
+            compileMediaRecorderStaticCall(this.context.dataLowerer, call);
+        if (windowServiceCall) return windowServiceCall;
         const gpuAdapter = compileGpuAdapterCall(
             this.context.dataLowerer,
             call,
@@ -6564,6 +6592,8 @@ export class ExpressionLowerer {
             dataType: { kind: "regexp" },
             regexpCaptureCount: regexpCaptureCount(translated.pattern),
             regexpUnicode: unicode,
+            regexpGlobal: flags.includes("g"),
+            regexpOptionalCaptures: regexpCapturesMayBeUnmatched(pattern),
             cpp:
                 `bbl::js::RegExp(${this.context.cppString(translated.pattern)}, ` +
                 `${flags.includes("g") ? "true" : "false"}, ` +
@@ -7050,15 +7080,21 @@ export class ExpressionLowerer {
                     cpp: `${owner.cpp}.test(${input})`,
                 };
             }
+            // An unmatched capture is undefined wherever the pattern allows one.
+            const groups = regexpGroupsType(
+                regexpCaptureFacts(
+                    this.context.checker,
+                    regexpOwner,
+                    callee.expression,
+                ),
+                (type) => this.context.dataTypes.cppType(type),
+            );
             return {
                 kind: "data",
-                cpp: `${owner.cpp}.exec(${input})`,
+                cpp: `${owner.cpp}.exec${groups.template}(${input})`,
                 dataType: {
                     kind: "optional",
-                    inner: {
-                        kind: "vector",
-                        element: { kind: "string" },
-                    },
+                    inner: { kind: "vector", element: groups.element },
                 },
             };
         }
@@ -7104,6 +7140,12 @@ export class ExpressionLowerer {
         // `node.connect(...)`, `param.setValueAtTime(...)`. Babylon
         // Lite is function-shaped and the browser API is not, so the
         // audio family is the one place a handle carries methods.
+        const media = compileMediaStreamMethodCall(
+            this.context.dataLowerer,
+            call,
+            callee,
+        );
+        if (media) return media;
         const audio = compileAudioMethodCall(this.context, call, callee);
         if (audio) {
             return audio;

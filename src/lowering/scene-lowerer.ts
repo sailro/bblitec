@@ -19,6 +19,8 @@ import { recordAt } from "../compiler/record-access.js";
 import { lowerMeshGeometryAccess } from "./mesh-geometry-access.js";
 import { lowerSceneNodeRemoval } from "./scene-node-removal.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
+import { lowerFrameGraphTaskBuild } from "./frame-graph-task-build.js";
+import { lowerDeformedVertex } from "./deformed-vertex.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -115,6 +117,14 @@ interface SceneCoreOptions {
     thinBindings?: boolean;
     /** The scene reaches `disposeMeshGpu`. */
     meshGpuDisposal?: boolean;
+    /** The scene reaches `buildFrameGraphTask`. */
+    taskBuild?: boolean;
+    /** The scene reaches `createEffectRenderTask`. */
+    effectTasks?: boolean;
+    /** A task may be added to a registered scene. */
+    liveTaskAdd?: boolean;
+    /** The program reads a deformed vertex (`computeDeformedPositionToRef`). */
+    deformedPosition?: boolean;
 }
 
 export class SceneLowerer {
@@ -2528,6 +2538,44 @@ void off_visibility_change(Engine& engine, std::size_t identity) {
 `;
     }
 
+    /** A task added to a registered scene waits for its record. */
+    private liveTaskAddSource(): string {
+        return `// ${this.context.provenance("src/scene/scene-core.ts", "registerScene", "src/frame-graph/frame-graph.ts#buildFrameGraphTask")}
+void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
+    if (at_start)
+        add_task_at_start(scene, task);
+    else
+        add_task(scene, task);
+    const auto& scenes = scene.engine->scenes();
+    if (std::any_of(scenes.begin(), scenes.end(), [&scene](const std::shared_ptr<Scene>& registered) {
+            return registered && registered->shares_identity(scene);
+        }))
+        ${recordAt("scene.engine->frame_tasks", "task")}.pending_record = true;
+}
+
+`;
+    }
+
+    /**
+     * Registration's record of one queued explicit render task `task`:
+     * resolvePendingTaskMeshes constructs each renderable, publishing a
+     * shader material's uniforms and packet state for the task's scene.
+     */
+    private renderTaskRecordSource(options: SceneCoreOptions): string {
+        return `        const auto task_scene = Scene::from_state(task.source_scene ? task.source_scene : scene.state);
+        for (const auto& entry : task.render_meshes) {
+            const auto material = render_task_mesh_material(*scene.engine, entry);
+            if (material.value >= scene.engine->materials.size()) continue;
+            const auto& record = ${recordAt("scene.engine->materials", "material")};
+            ${shaderUniformPublication(this.context, "record", "task_scene")}
+            if (record.shader_uniform_snapshot || record.shader_packet_initialize)
+                entry.shader_packet = std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
+${options.thinBindings ? "            entry.thin_binding = create_thin_material_binding(*scene.engine, entry.mesh, material);" : ""}
+        }
+        task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
+        task.render_recorded = true;`;
+    }
+
     private sceneLifecycleSource(
         managerSeek: string,
         vatSeek: string,
@@ -2625,23 +2673,21 @@ ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
         }
     }
     scene.material_family_mask = scene_material_families(scene);
+${
+    options.liveTaskAdd
+        ? `    // \`ctx._frameGraph.build()\` records every task, including those
+    // added while the scene was registered before.
+    for (const auto task_handle : scene.tasks)
+        ${recordAt("scene.engine->frame_tasks", "task_handle")}.pending_record = false;
+`
+        : ""
+}\
     // registerScene builds the frame graph after the scene's material groups.
     // resolvePendingTaskMeshes constructs the queued explicit task renderables there.
     for (const auto task_handle : scene.tasks) {
         auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
         if (task.kind != FrameTaskKind::render || task.render_recorded) continue;
-        const auto task_scene = Scene::from_state(task.source_scene ? task.source_scene : scene.state);
-        for (const auto& entry : task.render_meshes) {
-            const auto material = render_task_mesh_material(*scene.engine, entry);
-            if (material.value >= scene.engine->materials.size()) continue;
-            const auto& record = ${recordAt("scene.engine->materials", "material")};
-            ${shaderUniformPublication(this.context, "record", "task_scene")}
-            if (record.shader_uniform_snapshot || record.shader_packet_initialize)
-                entry.shader_packet = std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
-${options.thinBindings ? "            entry.thin_binding = create_thin_material_binding(*scene.engine, entry.mesh, material);" : ""}
-        }
-        task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
-        task.render_recorded = true;
+${this.renderTaskRecordSource(options)}
     }
 ${
     options.text
@@ -2767,7 +2813,12 @@ ${
     scene.camera = {};
 }
 
-void rebuild_scene_renderables(Scene& scene) {
+${
+    options.taskBuild
+        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false)}
+`
+        : ""
+}${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${options.deformedPosition ? `${lowerDeformedVertex(this.context)}\n` : ""}void rebuild_scene_renderables(Scene& scene) {
     require_scene_engine(scene);
 ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
 #if BBLITE_HAS_SHADOWS

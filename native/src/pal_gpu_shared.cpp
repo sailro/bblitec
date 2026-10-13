@@ -12,10 +12,12 @@
 #include <bblite/features/has_sprites.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadow_skeleton_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
+#include <bblite/features/task_disposal.hpp>
 #include <bblite/features/thin_instances.hpp>
 
 #include "pal_gpu_common.hpp"
@@ -1895,17 +1897,17 @@ bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task) {
     return false;
 }
 
-const SolidTexture& effect_texture_for_binding(const EffectWrapperRecord& wrapper,
-                                               std::string_view name) {
+const EffectTextureSlot& effect_texture_slot(const EffectWrapperRecord& wrapper,
+                                             std::uint32_t binding) {
     for (const EffectTextureSlot& candidate : wrapper.textures) {
-        if (candidate.name != name)
+        if (candidate.binding != binding)
             continue;
         if (!candidate.set)
             break;
-        return candidate.texture;
+        return candidate;
     }
-    throw std::runtime_error("Effect texture binding '" + std::string(name) +
-                             "' was not set before the first render.");
+    throw std::runtime_error("Effect texture binding " + std::to_string(binding) +
+                             " was not set before the first render.");
 }
 
 void require_effect_uniform_size(const EffectWrapperRecord& wrapper, std::uint32_t uniform_bytes) {
@@ -1994,6 +1996,15 @@ void require_live_task_targets(const Engine& engine, TaskHandle handle) {
     const FrameTaskRecord* task = handle_find(engine.frame_tasks, handle);
     if (!task || task->execution_enabled == false)
         return;
+#if BBLITE_TASK_DISPOSAL
+    // An effect task's dispose() cleared the pipeline its execute throws the
+    // pin's #37 without; a render task's destroyed its scene uniform buffer.
+    if (task->disposed && task->kind == FrameTaskKind::effect)
+        throw std::runtime_error("#37");
+    if (task->disposed)
+        throw std::runtime_error("Render task '" + task->render.name +
+                                 "' executes after dispose() destroyed its scene uniform buffer.");
+#endif
     switch (task->kind) {
     case FrameTaskKind::render: {
         const TargetUser user{"Render task", task->render.name};
@@ -2044,6 +2055,26 @@ void require_live_render_targets(const Engine& engine) {
         if (graph)
             for (const TaskHandle task : graph->tasks)
                 require_live_task_targets(engine, task);
+}
+#endif
+
+#if BBLITE_LIVE_TASK_ADD
+void require_recorded_tasks(const Engine& engine) {
+    for (const auto& scene : engine.scenes()) {
+        if (!scene)
+            continue;
+        for (const TaskHandle handle : scene->tasks) {
+            const FrameTaskRecord* task = handle_find(engine.frame_tasks, handle);
+            if (!task || !task->pending_record || task->execution_enabled == false)
+                continue;
+            // The pin's effect execute throws #37 without the pipeline its
+            // record builds; any other unrecorded task fails in its pass.
+            if (task->kind == FrameTaskKind::effect)
+                throw std::runtime_error("#37");
+            throw std::runtime_error(
+                "A task added to a live scene executes before buildFrameGraphTask recorded it.");
+        }
+    }
 }
 #endif
 

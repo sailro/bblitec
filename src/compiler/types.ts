@@ -1580,6 +1580,7 @@ export type ValueKind =
     | "audio-engine"
     | "audio-source"
     | "static-sound"
+    | "audio-element"
     | "audio-buffer"
     | "audio-context"
     | "audio-node"
@@ -1593,6 +1594,8 @@ export type ValueKind =
     | "scene"
     | "surface"
     | "frame-graph-context"
+    /** `getFrameGraph(scene)`: the scene's live task list, held by its scene. */
+    | "frame-graph"
     | "sprite-atlas"
     | "sprite-layer"
     | "sprite-blend"
@@ -2321,6 +2324,10 @@ export interface ValueFields {
     regexpCaptureCount?: number;
     /** Known `u` flag; absent when storage erased the pattern's grammar. */
     regexpUnicode?: boolean;
+    /** Known `g` flag; absent when storage erased the pattern's grammar. */
+    regexpGlobal?: boolean;
+    /** Whether a match can leave a capture undefined; absent when unknown. */
+    regexpOptionalCaptures?: boolean;
     callbackDeclaration?:
         | ts.Identifier
         | ts.FunctionDeclaration
@@ -2701,6 +2708,8 @@ export interface ValueFields {
     postProcessComposite?: PostProcessCompositeManifest;
     /** Proven scene-render task factory result, including its constant aliases. */
     renderTask?: true;
+    /** Proven `createEffectRenderTask` result. */
+    effectTask?: true;
     /** Proven target descriptor retained by aliases for pass-signature admission. */
     renderTargetSignature?: {
         readonly surfaceFormat: boolean;
@@ -2915,6 +2924,9 @@ export interface ValueFields {
 export type Feature =
     | "platform:http"
     | "platform:packaged-fetch"
+    | "platform:compression"
+    | "platform:idle-callbacks"
+    | "platform:media-stream"
     | "image:runtime-decode"
     | "text:data"
     | "text:layout"
@@ -3025,6 +3037,7 @@ export type Feature =
     | "material:node"
     | "material:node-inputs"
     | "material:shader"
+    | "material:shader-uniform-ranges"
     | "material:shader-storage"
     | "material:shader-external-texture"
     | "material:standard"
@@ -3073,6 +3086,9 @@ export type Feature =
     // that also thin-instances the baked mesh allocates one.
     | "mesh:vat"
     | "mesh:vat-instances"
+    | "mesh:vat-time"
+    | "mesh:deformed-position"
+    | "mesh:vat-instance-storage"
     // A skeleton a scene authored in code rather than one the glTF loader
     // built from a skin. `createSkeleton` is the pin's own resource factory
     // and `mesh.skeleton = ...` is what puts the mesh on the skinned arm.
@@ -3096,8 +3112,10 @@ export type Feature =
     | "audio:biquad-filter"
     | "audio:stereo-panner"
     | "audio:panner"
+    | "audio:media-stream"
     | "audio:static-sound"
     | "audio:spatial-sound"
+    | "audio:media-element"
     | "physics:world"
     | "physics:aggregate"
     | "physics:queries"
@@ -3217,6 +3235,9 @@ export type Feature =
     | "frame-graph:task-mesh-removal"
     | "frame-graph:task-mesh-refresh"
     | "frame-graph:task-material-override"
+    | "frame-graph:task-build"
+    | "frame-graph:task-disposal"
+    | "frame-graph:live-task-add"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:wrapper-disposal"

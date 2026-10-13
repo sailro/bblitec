@@ -43,6 +43,9 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:workers": [],
     "platform:http": ["src/pal_http.cpp"],
     "platform:packaged-fetch": [],
+    "platform:compression": ["src/pal_compression.cpp"],
+    "platform:idle-callbacks": [],
+    "platform:media-stream": [],
     "image:runtime-decode": [],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
@@ -134,6 +137,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:node": [],
     "material:node-inputs": [],
     "material:shader": [],
+    "material:shader-uniform-ranges": [],
     // Storage buffers are owned by the common runtime record and uploaded by
     // whichever already-reached scene renderer is selected.
     "material:shader-storage": [],
@@ -172,6 +176,9 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:pickable": [],
     "mesh:vat": [],
     "mesh:vat-instances": [],
+    "mesh:vat-time": [],
+    "mesh:deformed-position": [],
+    "mesh:vat-instance-storage": [],
     "mesh:skeleton": [],
     "mesh:transform-node": [],
     "mesh:mirrored": [],
@@ -293,10 +300,13 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],
     "audio:panner": [],
+    "audio:media-stream": [],
     // The pin's static-sound family, lowered whole; it fetches its sources
     // through the web platform seam.
     "audio:static-sound": ["src/pal_web_platform.cpp"],
     "audio:spatial-sound": [],
+    // HTMLAudioElement playback lives in the engine PAL's unit.
+    "audio:media-element": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
     "sprite:billboard-custom-shader": [],
@@ -315,6 +325,9 @@ export const featureSources: Record<Feature, string[]> = {
     "frame-graph:task-mesh-removal": [],
     "frame-graph:task-mesh-refresh": [],
     "frame-graph:task-material-override": [],
+    "frame-graph:task-build": [],
+    "frame-graph:task-disposal": [],
+    "frame-graph:live-task-add": [],
     // A standalone FrameGraphContext has its own task-only driver. It does
     // not pull the scene renderer, camera math, mesh upload, or image loader.
     "renderer:frame-graph": ["src/pal_sdl_gpu_frame_graph.cpp"],
@@ -403,6 +416,9 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
     ],
     // Spatial audio is a static sound's panner sub-node.
     "audio:spatial-sound": ["audio:static-sound", "audio:panner"],
+    // An element decodes its packaged source and plays it through a
+    // sampled node.
+    "audio:media-element": ["audio:buffer-source", "audio:decoded-buffer"],
     // Bindings build pipelines on the engine's WebGPU device; replaced
     // update batches retire behind the GPU.
     "renderer:external-renderables": [
@@ -808,6 +824,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("loader:splat-stream")
             ? "#include <bblite/upstream_splat_stream.hpp>\n"
             : "") +
+        (features.includes("audio:media-element")
+            ? "#include <bblite/pal_audio_element.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"
+            : "") +
         (features.includes("audio:static-sound")
             ? "#include <bblite/upstream_static_sound.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"
             : "") +
@@ -819,6 +838,18 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
               : "") +
         (features.includes("platform:packaged-fetch")
             ? "#include <bblite/pal_packaged_fetch.hpp>\n"
+            : "") +
+        (features.includes("platform:compression")
+            ? "#include <bblite/pal_compression.hpp>\n"
+            : "") +
+        (features.includes("platform:media-stream") &&
+        !projection.webPlatformHeaders?.includes("pal_media_stream")
+            ? "#include <bblite/pal_media_stream.hpp>\n"
+            : "") +
+        // IdleDeadline storage also names the header among the web platform ones.
+        (features.includes("platform:idle-callbacks") &&
+        !projection.webPlatformHeaders?.includes("pal_idle_callbacks")
+            ? "#include <bblite/pal_idle_callbacks.hpp>\n"
             : "") +
         (projection.webPlatformHeaders ?? [])
             .map((header) => `#include <bblite/${header}.hpp>\n`)

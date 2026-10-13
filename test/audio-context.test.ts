@@ -85,7 +85,7 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", (t) 
             if (typeof context.setSinkId !== "undefined") throw new Error("sink capability");
             let inspected = 0;
             function inspect(): AudioContext { inspected++; return context; }
-            if (typeof inspect().createMediaStreamDestination === "function") throw new Error("recording capability");
+            if (typeof inspect().createMediaStreamDestination !== "function") throw new Error("recording capability");
             if (inspected !== 1) throw new Error("capability receiver evaluation");
             async function load(frames:number):Promise<AudioBuffer> {
                 await Promise.resolve();
@@ -277,7 +277,6 @@ test("audio capability guards and constructor boundaries", () => {
         const prototype = typeof AudioContext === "undefined" ? null : AudioContext.prototype;
         if (typeof AudioContext !== "function") throw new Error("constructor capability");
         if (typeof prototype?.setSinkId === "function") throw new Error("unavailable sink");
-        if (typeof prototype?.createMediaStreamDestination === "function") throw new Error("unavailable recording");
     `);
     assert.doesNotMatch(
         guarded.cpp,
@@ -285,14 +284,14 @@ test("audio capability guards and constructor boundaries", () => {
     );
     assert.doesNotMatch(
         guarded.cpp,
-        /throw std::runtime_error\("(?:constructor capability|unavailable recording)"\)/,
+        /throw std::runtime_error\("constructor capability"\)/,
     );
     assert.throws(
         () =>
             compileSource(
-                "const context = new AudioContext(); context.createMediaStreamDestination();",
+                'const context = new AudioContext(); void context.setSinkId("speakers");',
             ),
-        /native recording streams are unavailable/,
+        /native output-device selection is unavailable/,
     );
     assert.throws(
         () =>

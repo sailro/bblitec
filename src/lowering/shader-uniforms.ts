@@ -500,3 +500,163 @@ const std::vector<float>& shader_uniform_render_values(const MaterialRecord& mat
 
 `;
 }
+
+/**
+ * `enableShaderUniformRangeUpdates`: the registration, the slot mark and the
+ * version gate come from the pin. Its Proxy marks a slot on every element
+ * write; natively a slot is marked when its value differs from the packed
+ * bytes the UBO last received, which every draw gathers.
+ */
+export function lowerShaderUniformRangeUpdates(
+    context: LoweringContext,
+): string {
+    const module = "src/material/shader/shader-uniform-range.ts";
+    const { declaration: enable } = context.functionDeclaration(
+        module,
+        "enableShaderUniformRangeUpdates",
+    );
+    context.assertStatementShapes(
+        enable,
+        enable.body!.statements,
+        "const state = material as RangeShaderMaterialState; if (!state._rangeUniformUpdate) { installRangeUpdater(state); } const registrations = (state._rangeUniformScenes ??= new WeakMap()); let callback = registrations.get(scene); if (!callback) { callback = () => state._rangeUniformUpdate!(scene.surface.engine); registrations.set(scene, callback); } if (!scene._beforeRender.includes(callback)) { scene._beforeRender.push(callback); }",
+        "Shader uniform range registration",
+    );
+    const { file, declaration: install } = context.functionDeclaration(
+        module,
+        "installRangeUpdater",
+    );
+    const mark = context.variableInitializer(install, "mark");
+    if (!ts.isArrowFunction(mark) || !ts.isBlock(mark.body))
+        return context.contractError(
+            install,
+            "Expected the range updater's slot mark.",
+        );
+    context.assertStatementShapes(
+        mark,
+        mark.body.statements,
+        "if (dirty.size === 0) { dirtyVersion = material._uniformVersion; } const slot = material._uniformValues.get(name)!; slot._v = (slot._v! | 0) + 1; dirty.add(name);",
+        "Shader uniform range mark",
+    );
+    const updater = install.body!.statements.find(
+        (statement): statement is ts.ExpressionStatement =>
+            ts.isExpressionStatement(statement) &&
+            ts.isBinaryExpression(statement.expression) &&
+            context.propertyPath(statement.expression.left)?.join(".") ===
+                "material._rangeUniformUpdate",
+    );
+    const update =
+        updater && ts.isBinaryExpression(updater.expression)
+            ? updater.expression.right
+            : undefined;
+    if (!update || !ts.isArrowFunction(update) || !ts.isBlock(update.body))
+        return context.contractError(
+            install,
+            "Expected the range updater body.",
+        );
+    const statements = update.body.statements;
+    context.assertStatementShapes(
+        update,
+        statements,
+        "if (dirty.size === 0) { return; } const spec = material._shaderCustomSpec; const data = material._shaderCustomData; const buffer = material._shaderCustomUbo; if (!spec || !data || !buffer) { return; } const directMutation = material._uniformVersion === dirtyVersion; if (!directMutation && material._shaderCustomVersion === material._uniformVersion) { dirty.clear(); dirtyVersion = -1; return; } if (directMutation) { material._uniformVersion++; material._uboVersion = material._uniformVersion; } let min = 0x7fffffff; let max = -1; for (const name of dirty) { const slot = material._uniformValues.get(name)!; const offset = spec._offsets.get(name); if (offset === undefined) { continue; } writeTypedValue(data, offset, slot.decl.type, slot.value); min = Math.min(min, offset); max = Math.max(max, offset + slot.value.length * 4); } if (max > min) { engine._device.queue.writeBuffer(buffer, min, data, min, max - min); } dirty.clear(); dirtyVersion = -1; material._shaderCustomVersion = material._uniformVersion;",
+        "Shader uniform range update",
+    );
+    const absent = "!material.shader_uniform_upload";
+    const bindings = new Map<string, PinnedBinding>([
+        [
+            "dirty.size",
+            { cpp: "static_cast<double>(dirty.size())", type: "scalar" },
+        ],
+        ["dirtyVersion", { cpp: "dirty_version", type: "scalar" }],
+        ["material._uniformVersion", { cpp: "state.version", type: "scalar" }],
+        ["material._uboVersion", { cpp: "state.ubo_version", type: "scalar" }],
+        [
+            "material._shaderCustomVersion",
+            { cpp: "material.shader_uniform_upload->version", type: "scalar" },
+        ],
+        ["spec", { cpp: "material", type: "opaque", absentCpp: absent }],
+        ["data", { cpp: "material", type: "opaque", absentCpp: absent }],
+        ["buffer", { cpp: "material", type: "opaque", absentCpp: absent }],
+        ["slot._v", { cpp: "slot.version", type: "scalar" }],
+    ]);
+    const calls = new Map<string, (args: readonly string[]) => string>([
+        ["dirty.clear", () => "dirty.clear()"],
+    ]);
+    // The packed write and its ranged upload are the native transport below.
+    const writes = statements.findIndex(ts.isForOfStatement);
+    const packed = (statement: ts.Statement): boolean =>
+        ts.isVariableStatement(statement) &&
+        ["spec", "data", "buffer", "min", "max"].includes(
+            statement.declarationList.declarations[0]!.name.getText(file),
+        );
+    const gate = lowerPinnedBody(
+        file,
+        statements.slice(0, writes).filter((statement) => !packed(statement)),
+        { bindings, calls },
+    );
+    const tail = lowerPinnedBody(file, statements.slice(writes + 2), {
+        bindings,
+        calls,
+    });
+    const slotMark = lowerPinnedBody(
+        file,
+        [mark.body.statements[2]!],
+        { bindings, calls },
+        "                ",
+    );
+    return `// ${context.provenance(module, "enableShaderUniformRangeUpdates, installRangeUpdater")}
+static void update_shader_uniform_ranges(Engine& engine, MaterialHandle handle) {
+    auto& material = shader_material(engine, handle);
+    auto& state = *material.shader_uniforms;
+    std::vector<std::size_t> dirty;
+    // A mark's version: the one the last packed upload stamped.
+    double dirty_version = material.shader_uniform_upload ? material.shader_uniform_upload->version : -1.0;
+    if (material.shader_uniform_upload) {
+        for (std::size_t index = 0; index < state.slots.size(); ++index) {
+            auto& slot = state.slots[index];
+            if (slot.offset == invalid_handle) continue;
+            bool differs = false;
+            for (std::size_t lane = 0; lane < slot.value.size() && !differs; ++lane)
+                differs = std::bit_cast<std::uint32_t>(static_cast<float>(slot.value.load(lane))) !=
+                          std::bit_cast<std::uint32_t>(material.shader_uniform_values.at(slot.offset + lane));
+            if (differs) {
+${slotMark}
+                dirty.push_back(index);
+            }
+        }
+    }
+${gate}
+    for (const auto index : dirty) {
+        const auto& slot = state.slots[index];
+        for (std::size_t lane = 0; lane < slot.value.size(); ++lane)
+            material.shader_uniform_values.at(slot.offset + lane) = static_cast<float>(slot.value.load(lane));
+    }
+${tail}
+}
+
+void enable_shader_uniform_range_updates(Engine& engine, Scene& scene, MaterialHandle material) {
+    auto& state = *shader_material(engine, material).shader_uniforms;
+    if (!state.range_updates) state.range_updates = std::make_shared<ShaderUniformRangeUpdates>();
+    auto& registrations = state.range_updates->scenes;
+    std::erase_if(registrations, [](const auto& entry) { return entry.first.expired(); });
+    auto found = std::find_if(registrations.begin(), registrations.end(), [&](const auto& entry) {
+        return entry.first.lock().get() == scene.identity();
+    });
+    if (found == registrations.end()) {
+        js::Callback<void(double)> callback(
+            [owner = std::weak_ptr<SceneState>(scene.state), material](double) {
+                const auto shared = owner.lock();
+                if (!shared) return;
+                const auto registered = Scene::from_state(shared);
+                if (!registered.engine) throw std::runtime_error("A scene uniform range update requires its engine.");
+                update_shader_uniform_ranges(*registered.engine, material);
+            });
+        registrations.emplace_back(scene.state, std::move(callback));
+        found = std::prev(registrations.end());
+    }
+    const auto callback = found->second;
+    const auto& registered = std::as_const(scene.before_render);
+    if (std::find(registered.begin(), registered.end(), callback) == registered.end())
+        scene.before_render.push_back(callback);
+}
+`;
+}

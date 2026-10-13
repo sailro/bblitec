@@ -34,6 +34,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "audio-engine": "bbl::AudioEngineHandle",
     "audio-source": "bbl::AudioSourceHandle",
     "static-sound": "std::shared_ptr<bbl::StaticSound>",
+    "audio-element": "bbl::pal::AudioElement",
     "audio-context": "bbl::pal::AudioContextHandle",
     "audio-node": "bbl::pal::AudioNodeHandle",
     "audio-param": "bbl::pal::AudioParamHandle",
@@ -190,6 +191,7 @@ const resourceValueCppTypes: ReadonlyMap<string, string> = new Map([
     ["camera-gizmo", "bbl::CameraGizmoHandle"],
     ["light-gizmo", "bbl::LightGizmoHandle"],
     ["asset-root", "bbl::AssetHandle"],
+    ["frame-graph", "bbl::Scene"],
 ]);
 
 export function resourceValueCppType(kind: string): string | undefined {

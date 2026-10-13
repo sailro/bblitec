@@ -5,6 +5,7 @@
 #include "pal_gpu_surface.hpp"
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 
 #include <bblite/runtime.hpp>
@@ -88,17 +89,20 @@ inline std::uint32_t render_target_requested_samples(const RenderTargetRecord& r
 void require_live_render_targets(const Engine& engine);
 #endif
 
-/**
- * The texture `setEffectTexture` stored for one declared binding name.
- *
- * The walk and the refusal are the pin's own `findTextureSlot` contract:
- * a binding the compiled fragment kept must have been set before the
- * first render, and a name the wrapper never stored fails by name rather
- * than binding a neighbour. Both backends resolve through this.
- */
+#if BBLITE_LIVE_TASK_ADD
+/** A registered scene executes no task added to its live graph and never recorded. */
+void require_recorded_tasks(const Engine& engine);
+#endif
 
-const SolidTexture& effect_texture_for_binding(const EffectWrapperRecord& wrapper,
-                                               std::string_view name);
+/**
+ * The texture slot `setEffectTexture` filled for one declared binding number.
+ *
+ * A binding the compiled fragment kept must have been set before the first
+ * render, and a binding the wrapper never declared fails rather than binding
+ * a neighbour. Both backends resolve through this.
+ */
+const EffectTextureSlot& effect_texture_slot(const EffectWrapperRecord& wrapper,
+                                             std::uint32_t binding);
 
 /**
  * The uniform floats a scene set must fill the block the descriptor
