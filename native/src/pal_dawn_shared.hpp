@@ -16,6 +16,7 @@
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 #include "pal_gpu_common.hpp"
+#include "pal_gpu_shader_path.hpp"
 #include "pal_dawn_completion.hpp"
 #include "pal_dawn_formats.hpp"
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -911,11 +912,7 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
 /** A deployed shader artifact: `<stem><suffix>` in the shader directory. */
 inline std::vector<std::uint8_t> read_dawn_shader_file(const std::string& base_name,
                                                        std::string_view suffix) {
-    const std::string shader_override = environment_variable("BBLITE_GPU_SHADER_DIR");
-    const std::string shader_root = shader_override.empty()
-                                        ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
-                                        : shader_override;
-    return read_binary_file(join_path(shader_root, base_name + std::string(suffix)));
+    return read_binary_file(gpu_shader_path(base_name + std::string(suffix)));
 }
 
 inline WGPUShaderModule load_wgsl_module(WGPUDevice device, const std::string& base_name) {
@@ -1004,13 +1001,7 @@ inline WGPUTextureSampleType dawn_reflected_sample_type(std::string_view value,
 /** Parses one `@binding <group> <binding> <name> <resource...>` line. */
 inline DawnReflectedBinding parse_dawn_reflected_binding(std::string_view line,
                                                          std::string_view stem) {
-    std::vector<std::string_view> words;
-    for (std::size_t start = 0; start < line.size();) {
-        const std::size_t end = std::min(line.find(' ', start), line.size());
-        if (end > start)
-            words.push_back(line.substr(start, end - start));
-        start = end + 1;
-    }
+    const std::vector<std::string_view> words = sidecar_words(line);
     const auto malformed = [&]() -> DawnReflectedBinding {
         dawn_error(std::string(stem) + ".slots has a malformed layout line '" + std::string(line) +
                    "'.");

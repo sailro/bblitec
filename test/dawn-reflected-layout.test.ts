@@ -29,7 +29,7 @@ test("Dawn lays a group out from its stages' reflected .slots lines and the site
     const start = source.indexOf(first);
     const end = source.indexOf(last);
     assert.ok(start >= 0 && end > start);
-    // The sidecar line walk and index parser both backends share.
+    // The sidecar line walk, index parser and word split both backends share.
     const common = readFileSync("native/src/pal_gpu_common.hpp", "utf8");
     const sidecarHelpers = [
         cppFunction(
@@ -39,6 +39,10 @@ test("Dawn lays a group out from its stages' reflected .slots lines and the site
         cppFunction(
             common,
             "inline std::optional<std::uint32_t> parse_sidecar_index(",
+        ),
+        cppFunction(
+            common,
+            "inline std::vector<std::string_view> sidecar_words(",
         ),
     ].join("\n");
     writeFileSync(

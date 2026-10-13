@@ -11,7 +11,7 @@ inline void update_dawn_text_renderers(Engine& engine, DawnTextRenderer& text, d
     const auto& surface = bbl::text_surface(engine);
     surface->device = text.device;
     surface->canvas = {width, height};
-    surface->format = dawn_text_format_name(text.device->color_format);
+    surface->format = dawn_webgpu_format_name(text.device->color_format);
     const auto renderers = engine.text_renderer_contexts();
     for (std::size_t index = 0; index < renderers.size(); ++index)
         renderers[index]->update();

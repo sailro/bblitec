@@ -11,6 +11,9 @@
 #include <bblite/runtime.hpp>
 
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
 
 #include <webgpu/webgpu.h>
 
@@ -125,6 +128,32 @@ inline WGPUAddressMode dawn_address_mode(TextureAddressMode mode) {
     return mode == TextureAddressMode::clamp    ? WGPUAddressMode_ClampToEdge
            : mode == TextureAddressMode::mirror ? WGPUAddressMode_MirrorRepeat
                                                 : WGPUAddressMode_Repeat;
+}
+
+/** The WebGPU names of the formats Dawn render targets use (WebGPU subset, text). */
+inline constexpr std::pair<std::string_view, WGPUTextureFormat> dawn_webgpu_formats[] = {
+    {"rgba8unorm", WGPUTextureFormat_RGBA8Unorm},
+    {"rgba8unorm-srgb", WGPUTextureFormat_RGBA8UnormSrgb},
+    {"bgra8unorm", WGPUTextureFormat_BGRA8Unorm},
+    {"bgra8unorm-srgb", WGPUTextureFormat_BGRA8UnormSrgb},
+    {"rgba16float", WGPUTextureFormat_RGBA16Float},
+    {"depth16unorm", WGPUTextureFormat_Depth16Unorm},
+    {"depth24plus", WGPUTextureFormat_Depth24Plus},
+    {"depth24plus-stencil8", WGPUTextureFormat_Depth24PlusStencil8},
+    {"depth32float", WGPUTextureFormat_Depth32Float},
+    {"depth32float-stencil8", WGPUTextureFormat_Depth32FloatStencil8}};
+inline WGPUTextureFormat dawn_webgpu_format(const std::string& name) {
+    for (const auto& [text, format] : dawn_webgpu_formats)
+        if (text == name)
+            return format;
+    throw std::runtime_error("Texture format '" + name + "' has no Dawn target format.");
+}
+/** A renderer attachment's WebGPU format name, for a target signature. */
+inline std::string dawn_webgpu_format_name(WGPUTextureFormat format) {
+    for (const auto& [text, value] : dawn_webgpu_formats)
+        if (value == format)
+            return std::string(text);
+    throw std::runtime_error("A Dawn target format has no WebGPU name.");
 }
 
 } // namespace bbl::pal

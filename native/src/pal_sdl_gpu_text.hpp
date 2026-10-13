@@ -12,25 +12,6 @@
 
 namespace bbl::pal {
 
-inline const char* sdl_text_format_name(SDL_GPUTextureFormat format) {
-    switch (format) {
-    case SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM:
-        return "bgra8unorm";
-    case SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM:
-        return "rgba8unorm";
-    case SDL_GPU_TEXTUREFORMAT_D24_UNORM:
-        return "depth24plus";
-    case SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT:
-        return "depth24plus-stencil8";
-    case SDL_GPU_TEXTUREFORMAT_D32_FLOAT:
-        return "depth32float";
-    case SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT:
-        return "depth32float-stencil8";
-    default:
-        throw std::runtime_error("Unmapped SDL text target format.");
-    }
-}
-
 /**
  * The pin's `GPUDevice` for text on SDL_GPU: WebGPU objects over SDL
  * resources, and the per-device pipeline cache `getOrCreateTextPipeline`
@@ -86,7 +67,7 @@ struct SdlTextGpuDevice final : SdlTextGpuResources, TextPipelineProvider {
                                   const bbl::js::Nullable<std::string>& depth_stencil_format,
                                   bool depth_write, const std::shared_ptr<const void>& owner_object,
                                   const std::string& depth_compare) override {
-        if (format != sdl_text_format_name(color_format))
+        if (format != sdl_webgpu_format_name(color_format))
             throw std::runtime_error("Text pipeline format differs from the SDL target: " + format);
         const auto samples = gpu_u32(gpu_size(sample_count));
         const bool has_depth = depth_stencil_format.has_value();
@@ -181,8 +162,8 @@ struct SdlTextGpuDevice final : SdlTextGpuResources, TextPipelineProvider {
             "pipeline");
         if (owner->capture.enabled())
             created->capture =
-                text_pipeline_capture(info, sdl_text_format_name(color_format),
-                                      info.has_depth ? sdl_text_format_name(depth) : "");
+                text_pipeline_capture(info, sdl_webgpu_format_name(color_format),
+                                      info.has_depth ? sdl_webgpu_format_name(depth) : "");
         pipelines.emplace(key, created);
         return created;
     }
