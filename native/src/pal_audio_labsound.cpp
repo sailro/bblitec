@@ -18,6 +18,7 @@
 #include <bblite/features/has_audio_biquad_filter.hpp>
 #include <bblite/features/has_audio_buffer_source.hpp>
 #include <bblite/features/has_audio_decode_file.hpp>
+#include <bblite/features/has_audio_media_element.hpp>
 #include <bblite/features/has_audio_oscillator.hpp>
 #include <bblite/features/has_audio_stereo_panner.hpp>
 #include <bblite/features/workers.hpp>
@@ -29,6 +30,14 @@
 #include <bblite/pal.hpp>
 #if BBLITE_WORKERS
 #include <bblite/pal_event_loop.hpp>
+#endif
+#if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
+#if !BBLITE_WORKERS || !BBLITE_HAS_AUDIO_BUFFER_SOURCE || !BBLITE_HAS_AUDIO_DECODE_FILE
+#error "audio:media-element needs an application realm, buffer sources and decoding."
+#endif
+#include <bblite/pal_audio_element.hpp>
+#include <bblite/pal_native_workers.hpp>
+#include <bblite/pal_packaged_responses.hpp>
 #endif
 
 #include "pal_audio_sdl_device.hpp"
@@ -70,6 +79,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -1592,6 +1602,454 @@ void audio_param_set_value_curve(AudioParamHandle param, const bbl::js::F32Array
             values.load(index), static_cast<float>(start + duration * static_cast<double>(index) /
                                                                static_cast<double>(count - 1)));
 }
+
+#if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
+/**
+ * An `HTMLAudioElement`'s media state. The packaged source is decoded whole,
+ * at its routing context's rate, by a native job, and plays through the
+ * `MediaElementAudioSourceNode` (a sampled node with no scheduled-source
+ * state) as one segment from `segment_offset` at context time
+ * `segment_start`; the element's clock is that context's clock.
+ */
+struct AudioElementPlayback {
+    /** The URL `new Audio(url)` set; absent after `removeAttribute("src")`. */
+    std::optional<std::string> source;
+    std::string preload = "auto";
+    bool loop = false;
+    bool paused = true;
+    /** The source failed to load since the last `load()`. */
+    bool failed = false;
+    bool loading = false;
+    /** A decode a later `load()` superseded is discarded. */
+    std::uint64_t generation = 0;
+    /** The official playback position while no segment plays. */
+    double position = 0.0;
+    double duration = std::numeric_limits<double>::quiet_NaN();
+    std::shared_ptr<const DecodedAudio> decoded;
+    AudioContextHandle context{};
+    std::optional<AudioNodeHandle> output;
+    bool playing = false;
+    bool segment_loops = false;
+    double segment_start = 0.0;
+    double segment_offset = 0.0;
+    EventLoop::TimerId timer = 0;
+    std::vector<js::Promise<js::PromiseVoid>> pending_plays;
+    /** Capture and non-capture listeners per `AudioElementEvent`. */
+    std::array<std::array<PlatformEventListeners<void()>, 2>, 4> listeners;
+};
+
+AudioElementState::AudioElementState() : playback(std::make_unique<AudioElementPlayback>()) {}
+
+namespace {
+
+/** Browsers fire `timeupdate` every 15 to 250 ms while playing; Chromium every 250 ms. */
+constexpr double media_time_update_ms = 250.0;
+
+AudioElementPlayback& playback_of(const AudioElement& element) {
+    if (!element || !element->playback)
+        throw std::runtime_error("Invalid HTMLAudioElement handle.");
+    return *element->playback;
+}
+
+std::shared_ptr<lab::SampledAudioNode> element_node(const AudioElementPlayback& playback) {
+    if (!playback.output || !playback.output->ownership)
+        return nullptr;
+    return std::static_pointer_cast<lab::SampledAudioNode>(playback.output->ownership->node);
+}
+
+/** The position the scheduled segment has reached, before looping or clamping. */
+double raw_position(const AudioElementPlayback& playback) {
+    if (!playback.playing)
+        return playback.position;
+    return playback.segment_offset +
+           (audio_current_time(playback.context) - playback.segment_start);
+}
+
+double current_position(const AudioElementPlayback& playback) {
+    const double raw = raw_position(playback);
+    if (!playback.playing)
+        return raw;
+    return playback.segment_loops ? std::fmod(raw, playback.duration)
+                                  : std::min(raw, playback.duration);
+}
+
+void dispatch_element_event(AudioElementPlayback& playback, AudioElementEvent type) {
+    auto& owner = EventLoop::current();
+    for (auto& listeners : playback.listeners[static_cast<std::size_t>(type)])
+        listeners.dispatch_with([&](auto& listener) {
+            owner.dispatch_callback([callback = listener] { callback(); });
+        });
+}
+
+/** One media element task firing `types` in order. */
+void queue_element_events(const AudioElement& element, std::vector<AudioElementEvent> types) {
+    EventLoop::current().post([element, types = std::move(types)] {
+        for (const auto type : types)
+            dispatch_element_event(*element->playback, type);
+    });
+}
+
+void reject_plays(std::vector<js::Promise<js::PromiseVoid>> plays, const char* message,
+                  const char* name) {
+    for (const auto& play : plays)
+        play.reject(js::dom_exception_error(message, name));
+}
+
+std::shared_ptr<lab::AudioBus> decoded_bus(const AudioElementPlayback& playback) {
+    return {playback.decoded, playback.decoded->bus.get()};
+}
+
+/** Drop the node's segments. Clearing also drops a source bus the node has not
+ * taken yet, so the decoded source is queued again behind it. */
+void clear_segments(const AudioElementPlayback& playback) {
+    const auto node = element_node(playback);
+    if (!node)
+        return;
+    node->clearSchedules();
+    if (playback.decoded)
+        node->setBus(decoded_bus(playback));
+}
+
+void stop_segment(AudioElementPlayback& playback) {
+    if (!playback.playing)
+        return;
+    playback.position = current_position(playback);
+    playback.playing = false;
+    if (playback.timer)
+        EventLoop::current().clear_timer(std::exchange(playback.timer, 0));
+    clear_segments(playback);
+}
+
+void tick_element(const AudioElement& element);
+
+/** The next tick: the `timeupdate` cadence, or the end of a segment that does not loop. */
+void arm_element_timer(const AudioElement& element) {
+    auto& playback = *element->playback;
+    double delay = media_time_update_ms;
+    if (!playback.segment_loops)
+        delay = std::clamp(std::ceil((playback.duration - raw_position(playback)) * 1000.0), 1.0,
+                           media_time_update_ms);
+    playback.timer = EventLoop::current().set_timeout([element] { tick_element(element); }, delay);
+}
+
+/** Schedule the decoded source from the official position; a loop restarts at zero. */
+void start_segment(const AudioElement& element) {
+    auto& playback = *element->playback;
+    const auto node = element_node(playback);
+    if (!node || audio_state(playback.context) == "closed")
+        return;
+    const double offset = std::clamp(playback.position, 0.0, playback.duration);
+    if (offset < playback.duration)
+        node->schedule(0.0f, static_cast<float>(offset), 0);
+    if (playback.loop)
+        node->schedule(static_cast<float>(playback.duration - offset), 0.0f, -1);
+    playback.playing = true;
+    playback.segment_loops = playback.loop;
+    playback.segment_start = audio_current_time(playback.context);
+    playback.segment_offset = offset;
+    arm_element_timer(element);
+}
+
+/** `timeupdate` while playing; at the end of a segment that does not loop, the ended steps. */
+void tick_element(const AudioElement& element) {
+    auto& playback = *element->playback;
+    playback.timer = 0;
+    if (!playback.playing)
+        return;
+    if (playback.segment_loops || raw_position(playback) < playback.duration) {
+        arm_element_timer(element);
+        dispatch_element_event(playback, AudioElementEvent::TimeUpdate);
+        return;
+    }
+    stop_segment(playback);
+    dispatch_element_event(playback, AudioElementEvent::TimeUpdate);
+    if (!playback.paused) {
+        playback.paused = true;
+        auto plays = std::exchange(playback.pending_plays, {});
+        dispatch_element_event(playback, AudioElementEvent::Pause);
+        reject_plays(std::move(plays), "The play() request was interrupted by the end of playback.",
+                     "AbortError");
+    }
+    dispatch_element_event(playback, AudioElementEvent::Ended);
+}
+
+void resolve_plays(AudioElementPlayback& playback) {
+    for (const auto& play : std::exchange(playback.pending_plays, {}))
+        play.resolve(js::PromiseVoid{});
+}
+
+void fail_element_source(AudioElementPlayback& playback) {
+    playback.loading = false;
+    playback.failed = true;
+    reject_plays(std::exchange(playback.pending_plays, {}),
+                 "Failed to load because no supported source was found.", "NotSupportedError");
+}
+
+void finish_element_load(const AudioElement& element, std::uint64_t generation,
+                         std::shared_ptr<const DecodedAudio> decoded) {
+    auto& playback = *element->playback;
+    if (generation != playback.generation)
+        return;
+    const auto node = element_node(playback);
+    if (!decoded || !node || audio_state(playback.context) == "closed") {
+        fail_element_source(playback);
+        return;
+    }
+    playback.loading = false;
+    playback.decoded = std::move(decoded);
+    const lab::AudioBus& bus = *playback.decoded->bus;
+    playback.duration = static_cast<double>(bus.length()) / audio_sample_rate(playback.context);
+    {
+        auto& context = require_context(context_of(playback.output->value));
+        lab::ContextRenderLock render(context.context.get(), "bblite media element source");
+        node->setBus(decoded_bus(playback));
+        node->output(0)->setNumberOfChannels(render, bus.numberOfChannels());
+        node->output(0)->updateRenderingState(render);
+    }
+    // A position set before the source loaded is its default start position.
+    playback.position = std::clamp(playback.position, 0.0, playback.duration);
+    if (!playback.paused) {
+        start_segment(element);
+        resolve_plays(playback);
+    }
+}
+
+/** Read and decode the packaged source on a native job, settling on the realm. */
+void begin_element_load(const AudioElement& element) {
+    auto& playback = *element->playback;
+    playback.loading = true;
+    const auto generation = playback.generation;
+    std::string path;
+    try {
+        const auto& table = packaged_responses();
+        const auto found = table.outputs.find(packaged_response_key(*playback.source, table.base));
+        if (found != table.outputs.end())
+            path = found->second;
+    } catch (const js::NamedError&) {
+        // A URL that does not parse selects nothing.
+    }
+    if (path.empty()) {
+        EventLoop::current().post([element, generation] {
+            if (generation == element->playback->generation)
+                fail_element_source(*element->playback);
+        });
+        return;
+    }
+    using Decoded = std::shared_ptr<const DecodedAudio>;
+    auto& loop = EventLoop::current();
+    auto job = std::make_shared<NativeWork<Decoded>>();
+    std::weak_ptr<AudioElementState> target = element;
+    const auto id =
+        loop.register_ordered_completion([job, target, generation](std::unique_ptr<ExternalEvent>) {
+            Decoded decoded;
+            try {
+                decoded = job->get();
+            } catch (const WorkerTerminated&) {
+                throw;
+            } catch (...) {
+                // An unreadable file fails the source like an undecodable one.
+            }
+            if (const auto owner = target.lock())
+                finish_element_load(owner, generation, std::move(decoded));
+        });
+    try {
+        *job = start_native_work(
+            [path = std::move(path), rate = audio_sample_rate(playback.context)] {
+                return audio_decode_samples(read_binary_file(path), rate);
+            },
+            [inbox = loop.inbox(), id] { inbox->post(std::make_unique<CompletionEvent>(id)); });
+    } catch (...) {
+        loop.cancel_completion(id);
+        throw;
+    }
+}
+
+/** The resource selection a routed element with a source runs when it may load. */
+void select_element_resource(const AudioElement& element, bool playing) {
+    auto& playback = *element->playback;
+    if (playback.source && playback.output && !playback.decoded && !playback.loading &&
+        !playback.failed && (playing || audio_element_detail::lowered(playback.preload) != "none"))
+        begin_element_load(element);
+}
+
+} // namespace
+
+AudioElementState::~AudioElementState() {
+    if (playback && playback->playing)
+        if (const auto node = element_node(*playback))
+            node->clearSchedules();
+}
+
+void AudioElementState::gc_trace(const js::TraceVisitor& visitor) const {
+    if (!playback)
+        return;
+    visitor(playback->pending_plays);
+    visitor(playback->listeners);
+    visitor(playback->output);
+}
+
+AudioElement audio_create_element(std::string url) {
+    auto element = audio_create_element();
+    element->playback->source = std::move(url);
+    return element;
+}
+
+js::Promise<js::PromiseVoid> audio_element_play(const AudioElement& element) {
+    auto& playback = playback_of(element);
+    if (!playback.source || playback.failed)
+        return js::Promise<js::PromiseVoid>::rejected(
+            js::dom_exception_error("The element has no supported sources.", "NotSupportedError"));
+    if (!playback.output)
+        return js::Promise<js::PromiseVoid>::rejected(js::dom_exception_error(
+            "A native HTMLAudioElement plays only through createMediaElementSource.",
+            "NotSupportedError"));
+    js::Promise<js::PromiseVoid> promise;
+    playback.pending_plays.push_back(promise);
+    select_element_resource(element, true);
+    // Playback that ended restarts from the beginning.
+    if (playback.decoded && !playback.playing && !playback.loop &&
+        playback.position >= playback.duration)
+        playback.position = 0.0;
+    if (playback.paused) {
+        playback.paused = false;
+        queue_element_events(element, {AudioElementEvent::Play});
+        if (playback.decoded)
+            start_segment(element);
+    }
+    if (playback.decoded)
+        EventLoop::current().post([element] { resolve_plays(*element->playback); });
+    return promise;
+}
+
+void audio_element_pause(const AudioElement& element) {
+    auto& playback = playback_of(element);
+    select_element_resource(element, false);
+    if (playback.paused)
+        return;
+    playback.paused = true;
+    stop_segment(playback);
+    auto plays = std::exchange(playback.pending_plays, {});
+    EventLoop::current().post([element, plays = std::move(plays)]() mutable {
+        dispatch_element_event(*element->playback, AudioElementEvent::TimeUpdate);
+        dispatch_element_event(*element->playback, AudioElementEvent::Pause);
+        reject_plays(std::move(plays), "The play() request was interrupted by a call to pause().",
+                     "AbortError");
+    });
+}
+
+void audio_element_load(const AudioElement& element) {
+    auto& playback = playback_of(element);
+    ++playback.generation;
+    playback.loading = false;
+    stop_segment(playback);
+    const bool moved = playback.position != 0.0;
+    playback.decoded.reset();
+    // The node releases the decoded source once it takes a silent frame in
+    // its place (LabSound cannot render a source-less node it once fed).
+    if (const auto node = element_node(playback))
+        node->setBus(std::make_shared<lab::AudioBus>(1, 1));
+    playback.duration = std::numeric_limits<double>::quiet_NaN();
+    playback.failed = false;
+    playback.paused = true;
+    playback.position = 0.0;
+    if (moved)
+        queue_element_events(element, {AudioElementEvent::TimeUpdate});
+    reject_plays(std::exchange(playback.pending_plays, {}),
+                 "The play() request was interrupted by a new load request.", "AbortError");
+    select_element_resource(element, false);
+}
+
+void audio_element_remove_source(const AudioElement& element) {
+    playback_of(element).source.reset();
+}
+
+double audio_element_duration(const AudioElement& element) { return playback_of(element).duration; }
+
+double audio_element_current_time(const AudioElement& element) {
+    return current_position(playback_of(element));
+}
+
+void audio_element_set_current_time(const AudioElement& element, double seconds) {
+    if (!std::isfinite(seconds))
+        throw js::NamedError("TypeError", "The provided double value is non-finite.");
+    auto& playback = playback_of(element);
+    const bool playing = playback.playing;
+    stop_segment(playback);
+    playback.position =
+        playback.decoded ? std::clamp(seconds, 0.0, playback.duration) : std::max(seconds, 0.0);
+    if (!playback.decoded)
+        return;
+    if (playing)
+        start_segment(element);
+    queue_element_events(element, {AudioElementEvent::TimeUpdate});
+}
+
+bool audio_element_loop(const AudioElement& element) { return playback_of(element).loop; }
+
+void audio_element_set_loop(const AudioElement& element, bool loop) {
+    auto& playback = playback_of(element);
+    if (playback.loop == loop)
+        return;
+    playback.loop = loop;
+    if (playback.playing) {
+        stop_segment(playback);
+        start_segment(element);
+    }
+}
+
+std::string audio_element_preload(const AudioElement& element) {
+    // The enumerated attribute as Chromium reflects it: "" is Automatic, an
+    // invalid value Metadata.
+    std::string value = audio_element_detail::lowered(playback_of(element).preload);
+    if (value == "none" || value == "metadata")
+        return value;
+    return value.empty() || value == "auto" ? "auto" : "metadata";
+}
+
+void audio_element_set_preload(const AudioElement& element, std::string preload) {
+    playback_of(element).preload = std::move(preload);
+    select_element_resource(element, false);
+}
+
+bool audio_element_paused(const AudioElement& element) { return playback_of(element).paused; }
+
+bool audio_element_ended(const AudioElement& element) {
+    const auto& playback = playback_of(element);
+    return playback.decoded && !playback.loop && current_position(playback) >= playback.duration;
+}
+
+void audio_element_add_listener(const AudioElement& element, AudioElementEvent type,
+                                std::size_t identity, js::Callback<void()> callback, bool capture,
+                                bool once) {
+    playback_of(element).listeners[static_cast<std::size_t>(type)][capture ? 0 : 1].add(
+        identity, std::move(callback), once);
+}
+
+void audio_element_remove_listener(const AudioElement& element, AudioElementEvent type,
+                                   std::size_t identity, bool capture) {
+    playback_of(element).listeners[static_cast<std::size_t>(type)][capture ? 0 : 1].remove(
+        identity);
+}
+
+AudioNodeHandle audio_create_media_element_source(AudioContextHandle context,
+                                                  const AudioElement& element) {
+    auto& playback = playback_of(element);
+    if (playback.output)
+        throw js::make_dom_exception("HTMLMediaElement already connected previously to a different "
+                                     "MediaElementSourceNode.",
+                                     "InvalidStateError");
+    ContextRecord& record = require_context(context.value);
+    auto value = js::make_gc_shared<AudioNodeRecord>();
+    value->node = std::make_shared<lab::SampledAudioNode>(*record.context);
+    auto entry = record.nodes.insert(std::move(value));
+    AudioNodeHandle handle{pack(context.value, entry.index), std::move(entry.ownership)};
+    register_graph_node(record, handle);
+    playback.output = handle;
+    playback.context = context;
+    select_element_resource(element, false);
+    return handle;
+}
+#endif
 
 namespace {
 void render_audio_capture([[maybe_unused]] std::uint32_t id) noexcept {

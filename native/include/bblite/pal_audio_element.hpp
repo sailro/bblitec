@@ -1,10 +1,11 @@
 #pragma once
 
 /**
- * `HTMLAudioElement`, as far as the native platform holds one. A lowered
- * library reaches it only to ask `canPlayType`, answered from the decoders
- * this build links (`audio:decode-*`); element playback extends this record
- * rather than replacing it.
+ * `HTMLAudioElement`. A lowered library asks `canPlayType`, answered from the
+ * decoders this build links (`audio:decode-*`). Application playback
+ * (`audio:media-element`, `pal_audio_labsound.cpp`) decodes the element's
+ * packaged source whole on a native job once `createMediaElementSource`
+ * routes it, and plays it through that node on the context's clock.
  */
 
 #include <bblite/features/audio_decode_flac.hpp>
@@ -14,6 +15,14 @@
 #include <bblite/features/audio_decode_opus.hpp>
 #include <bblite/features/audio_decode_wav.hpp>
 #include <bblite/features/audio_decode_wv.hpp>
+#include <bblite/features/has_audio_media_element.hpp>
+
+#include <bblite/js_gc.hpp>
+#include <bblite/pal_audio_types.hpp>
+#if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
+#include <bblite/js_callback.hpp>
+#include <bblite/js_promise.hpp>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -24,14 +33,73 @@
 
 namespace bbl::pal {
 
+#if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
+/** An element's source, playback state and listeners (`pal_audio_labsound.cpp`). */
+struct AudioElementPlayback;
+#endif
+
 /** One `HTMLAudioElement`. */
-struct AudioElementState {};
+struct AudioElementState {
+#if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
+    AudioElementState();
+    AudioElementState(const AudioElementState&) = delete;
+    AudioElementState& operator=(const AudioElementState&) = delete;
+    ~AudioElementState();
+    std::unique_ptr<AudioElementPlayback> playback;
+    void gc_trace(const js::TraceVisitor& visitor) const;
+#endif
+};
 using AudioElement = std::shared_ptr<AudioElementState>;
 
 /** `new Audio()`. */
 [[nodiscard]] inline AudioElement audio_create_element() {
-    return std::make_shared<AudioElementState>();
+    return js::make_gc_shared<AudioElementState>();
 }
+
+#if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
+/** `new Audio(url)`: `url` selects a packaged response (`register_packaged_responses`). */
+[[nodiscard]] AudioElement audio_create_element(std::string url);
+
+/**
+ * `play()`: settles in a task once playback starts. Rejects with
+ * NotSupportedError for an element with no source, a source that is not
+ * packaged or not decodable, or one no `createMediaElementSource` routed;
+ * with AbortError when `pause()` or `load()` interrupts it.
+ */
+[[nodiscard]] js::Promise<js::PromiseVoid> audio_element_play(const AudioElement& element);
+void audio_element_pause(const AudioElement& element);
+/** `load()`: rejects pending plays, releases the decoded source, rewinds, reloads. */
+void audio_element_load(const AudioElement& element);
+/** `removeAttribute("src")`: takes effect at the next `load()`. */
+void audio_element_remove_source(const AudioElement& element);
+
+/** `duration`: NaN until the source is decoded. */
+[[nodiscard]] double audio_element_duration(const AudioElement& element);
+[[nodiscard]] double audio_element_current_time(const AudioElement& element);
+/** `currentTime = seconds`: a seek, clamped to the duration once known. */
+void audio_element_set_current_time(const AudioElement& element, double seconds);
+[[nodiscard]] bool audio_element_loop(const AudioElement& element);
+void audio_element_set_loop(const AudioElement& element, bool loop);
+[[nodiscard]] std::string audio_element_preload(const AudioElement& element);
+void audio_element_set_preload(const AudioElement& element, std::string preload);
+[[nodiscard]] bool audio_element_paused(const AudioElement& element);
+[[nodiscard]] bool audio_element_ended(const AudioElement& element);
+
+/** The events an element dispatches to listeners. */
+enum class AudioElementEvent : std::uint8_t { TimeUpdate, Ended, Play, Pause };
+void audio_element_add_listener(const AudioElement& element, AudioElementEvent type,
+                                std::size_t identity, js::Callback<void()> callback, bool capture,
+                                bool once);
+void audio_element_remove_listener(const AudioElement& element, AudioElementEvent type,
+                                   std::size_t identity, bool capture);
+
+/**
+ * `context.createMediaElementSource(element)`: the element's output, from now
+ * on only into the returned node. A second call throws InvalidStateError.
+ */
+[[nodiscard]] AudioNodeHandle audio_create_media_element_source(AudioContextHandle context,
+                                                                const AudioElement& element);
+#endif
 
 namespace audio_element_detail {
 
