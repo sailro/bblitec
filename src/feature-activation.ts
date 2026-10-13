@@ -1460,6 +1460,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/frame-graph/render-task.ts addMeshToTask (opts.material)",
         consumers: CMAKE,
     },
+    "frame-graph:task-build": {
+        provenance: "src/frame-graph/frame-graph.ts buildFrameGraphTask",
+        consumers: CMAKE,
+    },
     "frame-graph:resources": {
         provenance:
             "src/engine/render-target.ts createRenderTarget + " +

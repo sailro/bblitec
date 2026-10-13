@@ -186,6 +186,7 @@ context is not running throws (no statechange).
 ## Frame graph and post-process
 
 - Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup; `removeMeshFromTask`.
+- `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene.
 - `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
   keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform
   binding refuses.

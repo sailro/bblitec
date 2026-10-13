@@ -16,9 +16,13 @@ const module = "src/effect/effect-renderer.ts";
  * empties both. The pin rebuilds its dirty bind group before the next draw,
  * where a released slot throws; every native effect draw runs that build
  * first (`require_effect_bind_group`), so a backend pass never binds the
- * storage the pin destroyed.
+ * storage the pin destroyed. Without `disposal`, only the bind-group build
+ * is emitted, for a live task record (`buildFrameGraphTask`).
  */
-export function lowerEffectWrapperDisposal(context: LoweringContext): string {
+export function lowerEffectWrapperDisposal(
+    context: LoweringContext,
+    disposal = true,
+): string {
     const dispose = context.functionDeclaration(
         module,
         "disposeEffectWrapper",
@@ -203,7 +207,7 @@ export function lowerEffectWrapperDisposal(context: LoweringContext): string {
         },
         "        ",
     );
-    return `// ${context.provenance(module, "disposeEffectWrapper")}
+    const disposeSource = `// ${context.provenance(module, "disposeEffectWrapper")}
 void dispose_effect_wrapper(Engine& engine, EffectWrapperHandle effect) {
     EffectWrapperRecord& wrapper = ${recordAt("engine.effect_wrappers", "effect")};
     // \`_uniforms\`: the backend pass owns each slot's storage and binds it
@@ -216,11 +220,8 @@ void dispose_effect_wrapper(Engine& engine, EffectWrapperHandle effect) {
     // the next draw rebuilds the group (\`_bindGroupDirty\`).
 }
 
-static const EffectTextureSlot* effect_texture_slot(const EffectWrapperRecord& wrapper, std::size_t ordinal) {
-    return ordinal < wrapper.textures.size() ? &wrapper.textures[ordinal] : nullptr;
-}
-
-// ${context.provenance(module, "prepareEffectRenderer")}
+`;
+    const storageSource = `// ${context.provenance(module, "prepareEffectRenderer")}
 // A registered renderer draws the group it built at registration, which
 // binds the uniform storage disposal destroyed: the pin submits destroyed
 // buffers, which is not represented. Texture slots keep their images.
@@ -236,7 +237,12 @@ void require_effect_renderer_storage(const Engine& engine, EffectWrapperHandle e
     }
 }
 
-// ${context.provenance(module, "getEffectBindGroup", `${module}#bindGroupEntry`)}
+`;
+    return `${disposal ? disposeSource : ""}static const EffectTextureSlot* effect_texture_slot(const EffectWrapperRecord& wrapper, std::size_t ordinal) {
+    return ordinal < wrapper.textures.size() ? &wrapper.textures[ordinal] : nullptr;
+}
+
+${disposal ? storageSource : ""}// ${context.provenance(module, "getEffectBindGroup", `${module}#bindGroupEntry`)}
 void require_effect_bind_group(const Engine& engine, EffectWrapperHandle effect) {
     const EffectWrapperRecord& wrapper = ${recordAt("engine.effect_wrappers", "effect")};
     const upstream::EffectVariantEntry& entry = upstream::effect_variants.at(wrapper.variant);

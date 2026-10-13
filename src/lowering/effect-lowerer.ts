@@ -181,7 +181,7 @@ export class EffectLowerer {
      * wrapper a renderer or task draws, its clear state, and the uniform and
      * texture slots the setters write.
      */
-    public lowerFactory(disposal = false): LoweredSource {
+    public lowerFactory(disposal = false, taskBuild = false): LoweredSource {
         return {
             modulePath: effectModule,
             symbolName: "createEffectWrapper,createEffectRenderer",
@@ -312,7 +312,7 @@ TaskHandle create_effect_render_task(
     return TaskHandle{
         static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
 }
-${disposal ? lowerEffectWrapperDisposal(this.context) : ""}
+${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}
 } // namespace bbl
 `,
         };

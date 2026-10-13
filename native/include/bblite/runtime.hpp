@@ -6732,6 +6732,8 @@ RenderTextureRef geometry_task_depth_texture(TaskHandle task);
 void add_task(Scene& scene, TaskHandle task);
 void add_task_at_start(Scene& scene, TaskHandle task);
 void add_task_after(Scene& scene, TaskHandle task, TaskHandle after);
+/** `buildFrameGraphTask(getFrameGraph(scene), task)`: record a task added to a live scene. */
+void build_frame_graph_task(Scene& scene, TaskHandle task);
 void add_task(FrameGraphContext& context, TaskHandle task);
 void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 void add_task_after(FrameGraphContext& context, TaskHandle task, TaskHandle after);

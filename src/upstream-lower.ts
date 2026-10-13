@@ -1308,6 +1308,8 @@ ${lowerThinInstanceSync(context)}
                 gltfSceneHooks: features.includes("loader:gltf"),
                 thinBindings: options.gpuInstancing,
                 meshGpuDisposal: features.includes("mesh:dispose-gpu"),
+                taskBuild: features.includes("frame-graph:task-build"),
+                effectTasks: features.includes("effect:task"),
             }),
         );
         this.emitTextData(features, context, options, generated);
@@ -1512,6 +1514,7 @@ ${lowerThinInstanceSync(context)}
             composedShaders,
             generated,
             features.includes("effect:wrapper-disposal"),
+            features.includes("frame-graph:task-build"),
         );
         this.emitLoaderSplat(
             features,
@@ -2430,6 +2433,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         composedShaders: ComposedShader[],
         generated: { modulePath: string; symbolName: string }[],
         disposal: boolean,
+        taskBuild: boolean,
     ): void {
         if (this.reaches("upstream/src/effect_renderer.cpp")) {
             // One module per descriptor, both entry points in it: the pin
@@ -2476,7 +2480,7 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/effect_renderer.cpp",
-                effects.lowerFactory(disposal),
+                effects.lowerFactory(disposal, taskBuild),
                 generated,
             );
         }

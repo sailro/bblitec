@@ -158,6 +158,7 @@ const resourceMetadataFields = {
         "postProcessTask",
         "postProcessComposite",
         "renderTask",
+        "effectTask",
         "screenSpaceTask",
     ],
     "render-target": ["renderTargetSignature"],
