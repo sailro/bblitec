@@ -302,7 +302,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
 #endif
         } else
 #endif
-        if (slot < render_views.size() && render_views[slot]) {
+            if (slot < render_views.size() && render_views[slot]) {
             view = render_views[slot];
             sampler = render_samplers[slot] ? render_samplers[slot] : state.ground_sampler;
         } else {
