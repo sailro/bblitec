@@ -346,7 +346,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/texture_pixels.cpp",
-        features: ["texture:pixels"],
+        features: ["texture:pixels", "texture:pixels-writes"],
     },
     {
         source: "upstream/src/material_shader.cpp",

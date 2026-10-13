@@ -1930,8 +1930,106 @@ inline SharedTexels share_texels(std::vector<std::uint8_t> texels) {
     return std::make_shared<const std::vector<std::uint8_t>>(std::move(texels));
 }
 
+/**
+ * The texels of one `createTexture2DFromPixels` texture object (pixels-texture.ts).
+ *
+ * Every copy of the texture value and every binding of it share them, so a
+ * runtime write (`updateTexture2DFromPixels`, `queue.writeTexture`) reaches
+ * all of them, as the pin's one GPUTexture serves every reference. They also
+ * stand for the pin's device-recovery record (`_dlr.p`, `_dlr.w`): a rebuilt
+ * renderer uploads the latest bytes.
+ */
+class PixelsTexels {
+public:
+    using Storage = SharedTextureBytes::Storage;
+    /** A texel rectangle; an empty one stands for the whole texture. */
+    struct Region {
+        std::uint32_t x = 0;
+        std::uint32_t y = 0;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        [[nodiscard]] bool whole() const { return width == 0 || height == 0; }
+    };
+    struct State {
+        SharedTextureBytes rgba;
+        /** Advanced by every write; a binding's bytes record the version they hold. */
+        std::uint64_t version = 1;
+        /** Each write's region and the version it produced, oldest first. */
+        std::vector<std::pair<std::uint64_t, Region>> writes;
+        /** A consumer copied the texels (`snapshot`); a later write would miss that copy. */
+        bool snapshotted = false;
+
+        void require_writable() const {
+            if (snapshotted)
+                throw std::runtime_error(
+                    "Writes to a pixels texture whose texels a sprite atlas copied are not "
+                    "represented.");
+        }
+        /** Logs one write. Past the bound, the oldest two merge: a superset stays correct. */
+        void note_write(Region region) {
+            writes.emplace_back(++version, region);
+            if (writes.size() > 16u) {
+                writes[1].second = merge(writes[0].second, writes[1].second);
+                writes.erase(writes.begin());
+            }
+        }
+        /** What the writes after `since` cover: the region a holder of `since` uploads. */
+        [[nodiscard]] Region written_since(std::uint64_t since) const {
+            std::optional<Region> covered;
+            for (const auto& [written, region] : writes)
+                if (written > since)
+                    covered = covered ? merge(*covered, region) : region;
+            return covered.value_or(Region{});
+        }
+
+    private:
+        static Region merge(Region a, Region b) {
+            if (a.whole() || b.whole())
+                return {};
+            const std::uint32_t x = std::min(a.x, b.x), y = std::min(a.y, b.y);
+            return {x, y, std::max(a.x + a.width, b.x + b.width) - x,
+                    std::max(a.y + a.height, b.y + b.height) - y};
+        }
+    };
+
+    PixelsTexels() : state_(std::make_shared<State>()) {}
+    PixelsTexels(const PixelsTexels&) = default;
+    PixelsTexels& operator=(const PixelsTexels&) = default;
+    /** Replaces every texel, as a whole-texture write does. */
+    PixelsTexels& operator=(Storage texels) {
+        state_->require_writable();
+        state_->rgba = std::move(texels);
+        state_->note_write({});
+        return *this;
+    }
+
+    [[nodiscard]] const SharedTextureBytes& bytes() const { return state_->rgba; }
+    [[nodiscard]] bool empty() const { return bytes().empty(); }
+    [[nodiscard]] std::size_t size() const { return bytes().size(); }
+    [[nodiscard]] const std::uint8_t* data() const { return bytes().data(); }
+    [[nodiscard]] const std::uint8_t& operator[](std::size_t index) const { return bytes()[index]; }
+    [[nodiscard]] SharedTextureBytes::const_iterator begin() const { return bytes().begin(); }
+    [[nodiscard]] SharedTextureBytes::const_iterator end() const { return bytes().end(); }
+    [[nodiscard]] operator const Storage&() const { return bytes(); }
+    [[nodiscard]] std::uint64_t version() const { return state_->version; }
+    [[nodiscard]] const std::shared_ptr<State>& state() const { return state_; }
+    /** The texels now, for a consumer that keeps its own copy; later writes refuse. */
+    [[nodiscard]] Storage snapshot() const {
+        state_->snapshotted = true;
+        return bytes();
+    }
+
+private:
+    std::shared_ptr<State> state_;
+};
+
 struct TextureData {
     SharedTextureBytes bytes;
+    // A `createTexture2DFromPixels` texture's shared texels and the version
+    // `bytes` hold: runtime writes advance the texels past it, and the
+    // backends upload what they wrote since (pixels-texture.ts).
+    std::shared_ptr<const PixelsTexels::State> pixels;
+    std::uint64_t pixels_version = 0;
     // When both are non-zero, `bytes` are RGBA texels at this size rather
     // than an encoded image. `createTexture2DFromPixels` hands over the
     // caller's own bytes where every loader hands over a file, and the pin
@@ -2026,15 +2124,14 @@ inline std::string file_texture_cache_key(const std::string& path,
  * the caller's rather than an image header's.
  */
 struct PixelsTexture {
-    SharedTextureBytes rgba;
+    /** Shared by every copy; queue writes advance their version. */
+    PixelsTexels rgba;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     /** Whether the RGBA8 bytes are sampled through the sRGB format view. */
     bool srgb = false;
     /** Object identity shared by copies bound into sprite descriptors. */
     std::uint64_t identity = 0;
-    /** Incremented whenever a reached queue write replaces the texels. */
-    std::uint64_t version = 1;
     TextureSamplerState sampler{};
     // The `Texture2D` properties a scene writes on the result before binding
     // it: the per-texture transform `enableMaterialUvTransform` reads, and
@@ -2047,7 +2144,9 @@ struct PixelsTexture {
 /** The texture record a `PixelsTexture` binds as: its texels, sampler, transform and encoding. */
 inline TextureData pixels_texture_data(const PixelsTexture& texture) {
     TextureData data;
-    data.bytes = texture.rgba;
+    data.bytes = texture.rgba.bytes();
+    data.pixels = texture.rgba.state();
+    data.pixels_version = texture.rgba.version();
     data.rgba_width = texture.width;
     data.rgba_height = texture.height;
     data.sampler = texture.sampler;
@@ -6989,6 +7088,15 @@ struct PixelsTextureOptions {
 PixelsTexture create_texture_2d_from_pixels(Engine& engine, const std::string& path, double width,
                                             double height, PixelsTextureOptions options = {});
 void update_pixels_texture(Engine& engine, PixelsTexture& texture, const js::U8Array& pixels);
+/** `updateTexture2DFromPixels`; an absent origin or extent takes the pin's default. */
+void update_texture_2d_from_pixels(Engine& engine, const PixelsTexture& tex,
+                                   const js::U8Array& data, std::optional<double> x,
+                                   std::optional<double> y, std::optional<double> width,
+                                   std::optional<double> height);
+void update_texture_2d_from_pixels(Engine& engine, const StoredTexture& tex,
+                                   const js::U8Array& data, std::optional<double> x,
+                                   std::optional<double> y, std::optional<double> width,
+                                   std::optional<double> height);
 PixelsTexture create_texture_2d_from_pixels(Engine& engine, const js::U8Array& pixels, double width,
                                             double height, PixelsTextureOptions options = {});
 

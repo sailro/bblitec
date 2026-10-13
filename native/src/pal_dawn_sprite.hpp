@@ -606,7 +606,7 @@ inline void upload_dawn_sprite_layer(WGPUDevice device, WGPUQueue queue, Engine&
     for (std::size_t extra_index = 0; extra_index < layer.custom_textures.size(); ++extra_index) {
         const PixelsTexture& extra = layer.custom_textures[extra_index];
         DawnSampledTexture& uploaded = gpu.extras[extra_index];
-        if (uploaded.uploaded_version != extra.version) {
+        if (uploaded.uploaded_version != extra.rgba.version()) {
             update_dawn_extra_texture(queue, uploaded, extra);
         }
     }

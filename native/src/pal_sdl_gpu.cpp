@@ -37,6 +37,7 @@
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/features/texture_pixel_writes.hpp>
 #include <bblite/features/workers.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
@@ -1838,6 +1839,45 @@ public:
         void publish_storage() {
             sync_shader_storage_buffers(rows.state, run.data_.engine, rows.uploads);
         }
+
+#if BBLITE_TEXTURE_PIXEL_WRITES
+        // One copy pass for the frame's pixels-texture regions, submitted
+        // before the frame's own command buffer.
+        void upload_pixels_texture_writes() {
+            SDL_GPUDevice* device = rows.state.device;
+            std::vector<OwnedSdlTransfer> transfers;
+            std::optional<SdlGpuCommand> command;
+            SdlCopyPass copy;
+            rows.state.shared_material_images.upload_pixels_writes(
+                [&](OwnedSdlTexture& image, const std::uint8_t* texels, std::uint32_t width,
+                    PixelsTexels::Region region) {
+                    if (!command) {
+                        command.emplace(SDL_AcquireGPUCommandBuffer(device));
+                        if (!*command)
+                            gpu_error("SDL_AcquireGPUCommandBuffer pixels texture writes");
+                        copy = SDL_BeginGPUCopyPass(*command);
+                        if (!copy)
+                            gpu_error("SDL_BeginGPUCopyPass pixels texture writes");
+                    }
+                    const std::size_t stride = static_cast<std::size_t>(width) * 4u;
+                    const SDL_GPUTextureRegion target{
+                        image.get(), 0, 0, region.x, region.y, 0, region.width, region.height, 1};
+                    SdlCopyTextureDestination destination{device,    copy,  target,
+                                                          transfers, width, region.height};
+                    SdlGpuWriteDevice{device}.write_texture(
+                        destination,
+                        {texels + region.y * stride + static_cast<std::size_t>(region.x) * 4u,
+                         (region.height - 1u) * stride +
+                             static_cast<std::size_t>(region.width) * 4u},
+                        {}, {region.width, region.height, 1});
+                });
+            if (!command)
+                return;
+            copy.end();
+            if (!command->submit())
+                gpu_error("SDL_SubmitGPUCommandBuffer pixels texture writes");
+        }
+#endif
 
         void submit_uploads() { rows.uploads.submit(); }
 

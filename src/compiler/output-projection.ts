@@ -230,6 +230,7 @@ export const featureSources: Record<Feature, string[]> = {
     "texture:file": [],
     "texture:compressed": [],
     "texture:pixels": [],
+    "texture:pixels-writes": [],
     "sprite:billboard": [],
     // A frozen node-particle system draws through the billboard family; the
     // simulation itself is baked at generation, so nothing of the pin's own

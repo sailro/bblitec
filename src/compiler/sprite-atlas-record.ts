@@ -157,7 +157,7 @@ export function compileSpriteAtlasRecord(
         }
         if (!variantTexture && texture.textureStorage === "pixels") {
             return (
-                `${atlas}.rgba = bbl::share_texels(${source}.rgba); ` +
+                `${atlas}.rgba = bbl::share_texels(${source}.rgba.snapshot()); ` +
                 `${atlas}.sampler = ${source}.sampler; `
             );
         }
@@ -166,7 +166,7 @@ export function compileSpriteAtlasRecord(
             `using Stored = std::decay_t<decltype(${stored})>; ` +
             `if constexpr (std::is_same_v<Stored, bbl::FileTexture>) { ` +
             fileTextureSetup(stored, atlas) +
-            `} else { ${atlas}.rgba = bbl::share_texels(${stored}.rgba); ` +
+            `} else { ${atlas}.rgba = bbl::share_texels(${stored}.rgba.snapshot()); ` +
             `${atlas}.sampler = ${stored}.sampler; } ` +
             `}, ${source}); `
         );

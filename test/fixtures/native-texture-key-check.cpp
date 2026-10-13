@@ -13,7 +13,7 @@ int main() {
     pixels.identity = 7;
     pixels.width = 1;
     auto pixels_alias = pixels;
-    pixels_alias.version = 9;
+    pixels_alias.srgb = true;
     pixels_alias.width = 8;
 
     bbl::js::Map<bbl::StoredTexture, double> values;

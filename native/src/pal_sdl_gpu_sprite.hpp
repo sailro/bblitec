@@ -363,7 +363,7 @@ build_sprite_layer_gpu(SDL_GPUDevice* device, Engine& engine, Sprite2DLayerHandl
         slots, gpu.textures, layer.custom_texture_names, "sprite fragment shader");
     gpu.extra_uploaded_versions.reserve(layer.custom_textures.size());
     for (const PixelsTexture& extra : layer.custom_textures) {
-        gpu.extra_uploaded_versions.push_back(extra.version);
+        gpu.extra_uploaded_versions.push_back(extra.rgba.version());
     }
     return gpu;
 }
@@ -503,13 +503,13 @@ inline void upload_sprite_layer_gpu(SDL_GPUDevice* device, Engine& engine,
     }
     for (std::size_t extra_index = 0; extra_index < layer.custom_textures.size(); ++extra_index) {
         const PixelsTexture& extra = layer.custom_textures[extra_index];
-        if (gpu.extra_uploaded_versions[extra_index] == extra.version) {
+        if (gpu.extra_uploaded_versions[extra_index] == extra.rgba.version()) {
             continue;
         }
         upload_2d_texture_into(device, gpu.textures[extra_index + 1u].texture, extra.rgba.data(),
                                extra.rgba.size(), extra.width, extra.height,
                                "sprite custom texture update");
-        gpu.extra_uploaded_versions[extra_index] = extra.version;
+        gpu.extra_uploaded_versions[extra_index] = extra.rgba.version();
     }
     // The pin advances the clock in `_update`, before and regardless of
     // whether the instance data moved.

@@ -112,8 +112,9 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 | `.babylon` | Parented meshes/nodes, Standard materials, point lights, cameras; no `maxMeshes` |
 | Closed collectors | No rest/default parameters, early break, instanced/splat producers |
 
-`enableGltfCameras` and `enableGltfCpuTangents` must precede loading. Partial/runtime texture uploads and 3D textures
-are unsupported.
+`enableGltfCameras` and `enableGltfCpuTangents` must precede loading. `updateTexture2DFromPixels` and
+`queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
+texels a sprite atlas copied throw. Other runtime texture uploads and 3D textures are unsupported.
 
 ## Meshes and hierarchy
 

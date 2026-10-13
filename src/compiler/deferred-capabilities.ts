@@ -167,7 +167,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "setVatInstanceStorage",
         "setVatTime",
         "stopSound",
-        "updateTexture2DFromPixels",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "throw" })),
 ];
 

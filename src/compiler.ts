@@ -3415,6 +3415,7 @@ class Compiler implements LoweringServices {
             );
         }
         this.reachFeature("texture:pixels", call);
+        this.reachFeature("texture:pixels-writes", call);
         this.admissions.noteNodeInputAdmissionFailure(
             call,
             "Node input bindings do not represent later GPU writes to a texture producer.",

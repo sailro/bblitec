@@ -3196,6 +3196,7 @@ export type Feature =
     | "texture:file"
     | "texture:compressed"
     | "texture:pixels"
+    | "texture:pixels-writes"
     | "sprite:billboard"
     | "sprite:billboard-axis-locked"
     | "sprite:billboard-cutout"
