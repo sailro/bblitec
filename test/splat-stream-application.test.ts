@@ -202,7 +202,7 @@ test("a retained anchor's document URL renders a link; a download or a click ref
         );
 });
 
-test("a generic awaited resource, a rejection-only then and an inferred record let run as JavaScript does", () => {
+test("a generic awaited resource, rejection-only and fulfillment-only thens and an inferred record let run as JavaScript does", () => {
     const result = compileSource(`
         async function acquire<T>(resource: Promise<T>, isDisposed: () => boolean, late: (value: T) => void): Promise<T | null> {
             const value = await resource;
@@ -238,11 +238,14 @@ test("a generic awaited resource, a rejection-only then and an inferred record l
             const failing = new Promise<number>((_, reject) => reject(new Error("boom")));
             void failing.then(undefined, (reason: unknown) => { observed = (reason as Error).message; });
             const passed = await Promise.resolve(3).then(undefined, () => -1);
+            const viaNull = await Promise.resolve(4).then(null, () => -1);
+            const viaVoid = await Promise.resolve(6).then(void 0, () => -1);
+            const fulfilledOnly = await Promise.resolve(7).then((value) => value + 1, undefined);
             const readiness = observe(Promise.resolve());
             await readiness;
             await Promise.resolve();
-            const text = String(kept) + " " + String(dropped) + " " + String(late) + " " + observed + " " + String(passed) + " " + describe(1.25) + " " + describe(-1);
-            if (text !== "5 null 7 boom 3 1.3,2.5 unavailable negative") throw new Error(text);
+            const text = String(kept) + " " + String(dropped) + " " + String(late) + " " + observed + " " + String(passed) + " " + describe(1.25) + " " + describe(-1) + " " + String(viaNull) + " " + String(viaVoid) + " " + String(fulfilledOnly);
+            if (text !== "5 null 7 boom 3 1.3,2.5 unavailable negative 4 6 8") throw new Error(text);
             globalThis.close();
         }
         run();

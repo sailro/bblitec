@@ -20,7 +20,11 @@ import {
     tryResolveFunctionDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
-import { unwrapExpression, argumentAt } from "./syntax.js";
+import {
+    unwrapExpression,
+    argumentAt,
+    expressionHasEffects,
+} from "./syntax.js";
 import {
     declarationInDefaultLibrary,
     declaredInDefaultLibrary,
@@ -331,13 +335,37 @@ export class AsyncLowerer {
         )
             return this.compileRace(node, callee.name.text);
         if (this.isPromiseMethod(callee)) {
-            // `promise.then(undefined, onRejected)` is `promise.catch(onRejected)`.
+            // A reaction the checker types undefined, null or void
+            // (`undefined`, `null`, `void 0`) is no callback: then passes
+            // the settlement on. `then(absent, onRejected)` is
+            // `catch(onRejected)`; `then(onFulfilled, absent)` is
+            // `then(onFulfilled)`.
+            const absent = (index: number): boolean => {
+                const argument = node.arguments[index];
+                if (!argument || expressionHasEffects(argument)) return false;
+                const type = context.checker.getTypeAtLocation(argument);
+                return (
+                    !type.isUnion() &&
+                    (type.flags &
+                        (ts.TypeFlags.Undefined |
+                            ts.TypeFlags.Null |
+                            ts.TypeFlags.Void)) !==
+                        0
+                );
+            };
             const absentFulfillment =
                 callee.name.text === "then" &&
                 node.arguments.length === 2 &&
-                ts.isIdentifier(context.unwrap(argumentAt(node, 0))) &&
-                (context.unwrap(argumentAt(node, 0)) as ts.Identifier).text ===
-                    "undefined";
+                absent(0);
+            const absentRejection =
+                callee.name.text === "then" &&
+                node.arguments.length === 2 &&
+                !absentFulfillment &&
+                absent(1);
+            const bothReactions =
+                node.arguments.length === 2 &&
+                !absentFulfillment &&
+                !absentRejection;
             const rejection = callee.name.text === "catch" || absentFulfillment;
             const reactionIndex = absentFulfillment ? 1 : 0;
             const cleanup = callee.name.text === "finally";
@@ -412,7 +440,7 @@ export class AsyncLowerer {
                 };
             }
             let settlement =
-                rejection || node.arguments.length === 2
+                rejection || bothReactions
                     ? this.settlementType(node)
                     : undefined;
             if (rejection && settlement)
@@ -466,7 +494,7 @@ export class AsyncLowerer {
             let output = rejection ? promise.promiseResult! : first.output;
             const cppType = rejection ? promise.promiseType! : first.cppType;
             const reactions = [first.cpp];
-            if (node.arguments.length === 2 && !absentFulfillment) {
+            if (bothReactions) {
                 const second = this.compileReaction(
                     argumentAt(node, 1),
                     promise,
