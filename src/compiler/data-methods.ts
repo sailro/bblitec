@@ -60,6 +60,7 @@ import { isJsonValue } from "./json-bridge.js";
 import {
     commonResourceValue,
     presenceCpp,
+    presenceFlagCpp,
     runtimeMeshValue,
     type Value,
 } from "./types.js";
@@ -978,9 +979,16 @@ export function compileDataMethodCall(
     // Optional chains continue through later calls even without another ?.
     // Guard the whole method, including its argument effects, with the same
     // snapshot and result-flattening mechanism used by property/DOM accesses.
+    // An element read carries its presence beside a default
+    // (`list[0]?.trim()`): the `?.` tests it, as JavaScript tests undefined.
     if (
         ts.isPropertyAccessChain(callee) &&
-        owner.dataType?.kind === "optional"
+        (owner.dataType?.kind === "optional" ||
+            (callee.questionDotToken &&
+                ts.isElementAccessExpression(
+                    lowerer.context.unwrap(callee.expression),
+                ) &&
+                presenceFlagCpp(owner) !== undefined))
     ) {
         return lowerer.optionalAccess(owner, call, (present) =>
             compileKnownDataMethod(

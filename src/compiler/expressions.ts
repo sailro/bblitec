@@ -1305,6 +1305,9 @@ export class ExpressionLowerer {
             if (this.isNavigatorGetGamepadsCall(unwrapped)) {
                 return this.compileCall(unwrapped);
             }
+            // A chain already stopped short is undefined whatever it names.
+            const shortCircuited = this.shortCircuitedChainCall(unwrapped);
+            if (shortCircuited) return shortCircuited;
             if (
                 this.context.browserErasure.isBrowserOnlyExpression(unwrapped)
             ) {
@@ -3408,6 +3411,33 @@ export class ExpressionLowerer {
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "getGamepads" &&
             this.context.libraryGlobal(callee.expression) === "navigator"
+        );
+    }
+
+    /**
+     * A call in an optional chain whose nearest `?.` receiver is absent at
+     * generation (`undefined?.label().trim()`): the whole chain is
+     * undefined, and neither callee nor arguments evaluate. Only that
+     * receiver compiles here: an earlier stopped link already makes it absent.
+     */
+    private shortCircuitedChainCall(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        let link: ts.Expression = call;
+        for (;;) {
+            if (!ts.isOptionalChain(link)) return undefined;
+            if (!ts.isNonNullExpression(link) && link.questionDotToken) break;
+            link = link.expression;
+        }
+        const receiver = link.expression;
+        return this.context.probeEmission(() =>
+            this.compileValue(receiver).kind === "json-null"
+                ? {
+                      kind: "json-null",
+                      cpp: "std::nullopt",
+                      optionalChainShortCircuited: true,
+                  }
+                : undefined,
         );
     }
 

@@ -2513,11 +2513,28 @@ export class DataLowerer {
             const bound = ts.isIdentifier(receiver)
                 ? this.context.bindings.lookupOptional(receiver)
                 : undefined;
+            // A chain continuation (`a?.list()[0]`) indexes the value the
+            // chain produced, absent when an earlier `?.` short-circuited.
+            const chainOwner =
+                unwrapped.questionDotToken ||
+                (mode === "read" &&
+                    ts.isOptionalChain(unwrapped) &&
+                    ts.isCallExpression(receiver));
             const owner =
                 this.compileDataPath(unwrapped.expression, mode, true) ??
-                (unwrapped.questionDotToken &&
-                !this.namesHandleCollection(unwrapped.expression)
-                    ? this.context.compileValue(unwrapped.expression)
+                (chainOwner && !this.namesHandleCollection(unwrapped.expression)
+                    ? this.context.probeEmission(() => {
+                          const value = this.context.compileValue(
+                              unwrapped.expression,
+                          );
+                          // An absent receiver the chain did not stop at is
+                          // the element reader's TypeError to raise.
+                          return value.kind === "json-null" &&
+                              !unwrapped.questionDotToken &&
+                              !value.optionalChainShortCircuited
+                              ? undefined
+                              : value;
+                      })
                     : undefined) ??
                 (this.isStaticIndex(unwrapped.argumentExpression)
                     ? undefined
@@ -2529,6 +2546,18 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
+            // The chain stopped at an absent receiver: the whole chain is undefined.
+            if (
+                owner.kind === "json-null" &&
+                (unwrapped.questionDotToken ||
+                    (ts.isOptionalChain(unwrapped) &&
+                        owner.optionalChainShortCircuited))
+            )
+                return {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                    optionalChainShortCircuited: true,
+                };
             if (ts.isOptionalChain(unwrapped)) {
                 const optional = this.optionalElementRead(owner, unwrapped);
                 if (optional) return optional;
