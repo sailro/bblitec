@@ -111,8 +111,8 @@ struct WindowFocusEvent final : ExternalEvent {
     UiElementHandle element;
     bool visible = false;
 };
-/** Only pointer event structs are copied; SDL events containing pointers are
- * never admitted to the realm mailbox. */
+/** Only pointer and key event structs are copied; SDL events containing
+ * pointers are never admitted to the realm mailbox. */
 struct WindowPointerEvent final : ExternalEvent {
     UiElementHandle element;
     SDL_Event pointer{};
@@ -368,7 +368,9 @@ struct WindowDocument {
         explicit InputTarget(const std::shared_ptr<Engine>& engine) : engine(engine) {}
         std::weak_ptr<Engine> engine;
 #if BBLITE_HAS_PBR_RENDERER
+        /** The camera controls' gesture state, as a standalone driver keeps it per surface. */
         CameraPointerState camera;
+        SurfaceCameraPointerState surfaces;
 #endif
     };
     std::unordered_map<std::uint32_t, InputTarget> input_targets;
@@ -553,6 +555,24 @@ void tick_document() {
     tick_document_changes();
 }
 
+#if BBLITE_HAS_PBR_RENDERER
+/**
+ * A canvas's input for its engine's camera controls, through the dispatcher the standalone
+ * drivers use: owned controls (`attachFreeControl` and kin) take pointer and key events first,
+ * otherwise the first scene's legacy controls take pointer events.
+ */
+void dispatch_camera_input(Engine& engine, const SDL_Event& event,
+                           WindowDocument::InputTarget& target) {
+    CameraRecord* primary = nullptr;
+    if (!engine.scenes().empty() && engine.scenes().front()) {
+        const auto camera = engine.scenes().front()->camera;
+        if (camera.value < engine.cameras.size())
+            primary = &handle_at(engine.cameras, camera);
+    }
+    dispatch_surface_camera_pointer(engine, event, primary, target.camera, target.surfaces);
+}
+#endif
+
 void dispatch_canvas_input(const WindowPointerEvent& packet) {
     auto& doc = current_document();
     if (packet.pointer.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
@@ -563,9 +583,13 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
                     dispatch_dom_batch(*engine, batch);
                     dispatch_touch_defaults(*engine, *batch);
                 }
+#if BBLITE_HAS_PBR_RENDERER
+                dispatch_camera_input(*engine, packet.pointer, target);
+#endif
             }
 #if BBLITE_HAS_PBR_RENDERER
             target.camera = {};
+            target.surfaces = {};
 #endif
         }
         return;
@@ -577,6 +601,14 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
     if (!engine)
         return;
     const auto& event = packet.pointer;
+    if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+        // The document's listeners already had the key; the display forwards it to the canvas
+        // holding keyboard focus only when neither they nor the retained UI consumed it.
+#if BBLITE_HAS_PBR_RENDERER
+        dispatch_camera_input(*engine, event, target->second);
+#endif
+        return;
+    }
     if (is_touch_event(event)) {
         const auto batch = prepare_dom_platform_input(*engine, event);
         dispatch_dom_batch(*engine, batch);
@@ -605,13 +637,7 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
                                       event.wheel.mouse_y);
     }
 #if BBLITE_HAS_PBR_RENDERER
-    if (engine->scenes().empty() || !engine->scenes().front())
-        return;
-    const auto camera = engine->scenes().front()->camera;
-    if (camera.value < engine->cameras.size())
-        handle_camera_pointer_event(event, handle_at(engine->cameras, camera),
-                                    target->second.camera, engine->canvas_client_width,
-                                    engine->canvas_client_height);
+    dispatch_camera_input(*engine, event, target->second);
 #endif
 }
 } // namespace
@@ -1169,6 +1195,11 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 return {};
             };
             UiElementHandle pointer_capture{};
+            // The canvas a primary press last reached holds keyboard focus, as the pinned
+            // controls' tabindex lets a pressed canvas take it; a press elsewhere takes it
+            // away. A released key goes where its press went.
+            UiElementHandle keyboard_canvas{};
+            std::map<SDL_Scancode, UiElementHandle> held_keys;
             std::map<std::pair<std::uint64_t, std::uint64_t>, UiElementHandle> touch_captures;
             SDL_MouseButtonFlags pointer_buttons = 0;
             int width = 0, height = 0;
@@ -1381,9 +1412,31 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         services->inbox->post(std::move(packet));
                         continue;
                     }
+                    if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+                        UiElementHandle target{};
+                        if (event.type == SDL_EVENT_KEY_UP) {
+                            if (const auto held = held_keys.find(event.key.scancode);
+                                held != held_keys.end()) {
+                                target = held->second;
+                                held_keys.erase(held);
+                            }
+                        } else if (reaches_canvas && keyboard_canvas.value != invalid_handle) {
+                            target = keyboard_canvas;
+                            held_keys.insert_or_assign(event.key.scancode, target);
+                        }
+                        if (target.value != invalid_handle) {
+                            auto packet = std::make_unique<WindowPointerEvent>();
+                            packet->element = target;
+                            packet->pointer = event;
+                            services->inbox->post(std::move(packet));
+                        }
+                        continue;
+                    }
                     const bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
                     const bool up = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
                     const bool wheel = event.type == SDL_EVENT_MOUSE_WHEEL;
+                    if (down && event.button.button == SDL_BUTTON_LEFT)
+                        keyboard_canvas = {};
                     if (!(move || down || up || wheel) ||
                         (!reaches_canvas && pointer_capture.value == invalid_handle))
                         continue;
@@ -1403,6 +1456,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     if (down) {
                         pointer_capture = target;
                         pointer_buttons |= SDL_BUTTON_MASK(event.button.button);
+                        if (event.button.button == SDL_BUTTON_LEFT)
+                            keyboard_canvas = target;
                     }
                     if (up) {
                         pointer_buttons &= ~SDL_BUTTON_MASK(event.button.button);
