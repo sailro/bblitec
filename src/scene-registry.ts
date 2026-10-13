@@ -1242,6 +1242,84 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // updateTexture2DFromPixels regions, full-texture and defaulted
+        // writes on shader, Standard and billboard custom-shader textures;
+        // writes from the frame callback land before that frame's draws.
+        id: "regression-texture-region-writes",
+        name: "Regression - Texture Region Writes",
+        source: "examples/regression-texture-region-writes.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Texture Region Writes",
+        buildDirectory: "native/build-regression-texture-region-writes-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-texture-region-writes/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-texture-region-writes",
+            // The cursor texels move every frame, so both sides capture
+            // one fixed frame's writes.
+            referenceFrame: 12,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // Scene 218's VAT shark posed by one setVatTime write after
+        // attachVat, with no handle update.
+        id: "regression-vat-time",
+        name: "Regression - VAT Time",
+        source: "examples/regression-vat-time.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - VAT Time",
+        buildDirectory: "native/build-regression-vat-time-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-vat-time/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-vat-time",
+            // The glTF's first animation group plays from load on its own
+            // clock: one fixed frame pins it on both sides.
+            referenceFrame: 12,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [36, 36, 41],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // Scene 214 with enableCsmStaticCache: quiet casters demote into
+        // the static cache, and a caster moved every frame stays dynamic
+        // and draws over the copied cache layers.
+        id: "regression-csm-static-cache",
+        name: "Regression - CSM Static Cache",
+        source: "examples/regression-csm-static-cache.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - CSM Static Cache",
+        buildDirectory: "native/build-regression-csm-static-cache-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-csm-static-cache/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-csm-static-cache",
+            // Past the refit that demotes casters quiet for 120 frames; the
+            // mover's position is a function of the frame.
+            referenceFrame: 240,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [127, 153, 191],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "scene168",
         name: "Scene 168 - Mirrored Double-Sided Winding",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene168.ts",
