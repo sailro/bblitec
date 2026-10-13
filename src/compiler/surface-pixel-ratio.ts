@@ -5,7 +5,7 @@ import { lowerSurfaceResize } from "../lowering/surface-resize.js";
 
 const resizers = new EmissionWeakMap<object, string>();
 
-/** The lowered `resizeSurface` a cap write installs in an application realm. */
+/** The lowered `resizeSurface` every application-realm engine installs. */
 export function surfaceResizeFunction(
     context: Pick<
         LoweringServices,
