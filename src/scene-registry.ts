@@ -1269,6 +1269,31 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Scene 218's VAT shark posed by one setVatTime write after
+        // attachVat, with no handle update.
+        id: "regression-vat-time",
+        name: "Regression - VAT Time",
+        source: "examples/regression-vat-time.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - VAT Time",
+        buildDirectory: "native/build-regression-vat-time-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-vat-time/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-vat-time",
+            // The glTF's first animation group plays from load on its own
+            // clock: one fixed frame pins it on both sides.
+            referenceFrame: 12,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [36, 36, 41],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "scene168",
         name: "Scene 168 - Mirrored Double-Sided Winding",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene168.ts",
