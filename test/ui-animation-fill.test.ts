@@ -46,15 +46,22 @@ test("animation fill modes and directions run natively", (t) => {
     });
 });
 
-// RmlUi's parser is the animation grammar: ui-easing-check.cpp checks that it
-// refuses paused, zero-length and fractional or zero iteration forms when applied.
-test("animation shorthands compile for the native parser", () => {
+test("unrepresented animation shorthands refuse at generation", () => {
     const prefix = `const panel = document.createElement("div");`;
+    for (const [value, diagnostic] of [
+        ["spin 1s paused", /paused animations/],
+        ["spin 0s forwards", /positive duration/],
+        ["spin 1s 1.5", /whole iteration counts/],
+        ["spin 1s 0", /whole iteration counts/],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(
+                    `${prefix}panel.style.animation = ${JSON.stringify(value)};`,
+                ),
+            diagnostic,
+        );
     for (const value of [
-        "spin 1s paused",
-        "spin 0s forwards",
-        "spin 1s 1.5",
-        "spin 1s 0",
         "none",
         "1s",
         "forwards forwards 1s",

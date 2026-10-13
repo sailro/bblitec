@@ -21,7 +21,12 @@ import {
     visitUiStyleSheetDeclarations,
 } from "../deferred-ui-style.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
+import {
+    unrepresentedUiAnimation,
+    unrepresentedUiEasing,
+} from "../ui-motion.js";
 import { uiGradientBackground } from "../ui-gradient-background.js";
+import { unresolvableUiVariableMathUnit } from "../ui-variable-math.js";
 import {
     parseHtmlFragment,
     type HtmlFragmentNode,
@@ -2009,6 +2014,21 @@ export class UiProjection {
         return { uiCanvas: true, uiCanvasId: this.retainedCanvasId(id) };
     }
 
+    /** Math over var() resolves natively after substitution only in the units the PAL math reads. */
+    private refuseUnresolvableVariableMath(
+        property: string,
+        value: string,
+        site: ts.Node | undefined,
+    ): void {
+        const unit = unresolvableUiVariableMathUnit(value);
+        if (unit !== undefined)
+            this.uiStyleRefusal(
+                site,
+                property,
+                `CSS math over var() resolves px/rem/viewport lengths, times and angles; '${unit}' is not represented`,
+            );
+    }
+
     private uiStyleRefusal(
         site: ts.Node | undefined,
         property: string,
@@ -2057,6 +2077,7 @@ export class UiProjection {
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            this.refuseUnresolvableVariableMath(property, literalValue, site);
             if (UiProjection.isCustomStyleProperty(property)) return;
             if (
                 property === "place-items" &&
@@ -2099,6 +2120,14 @@ export class UiProjection {
                         "only auto or an opaque literal hex, rgb() or named color is represented",
                     );
                 return;
+            }
+            if (property === "transition" || property === "animation") {
+                const reason =
+                    unrepresentedUiEasing(literalValue) ??
+                    (property === "animation"
+                        ? unrepresentedUiAnimation(literalValue)
+                        : undefined);
+                if (reason) this.uiStyleRefusal(site, property, reason);
             }
             if (property === "scale") {
                 if (
@@ -2788,6 +2817,14 @@ export class UiProjection {
             );
         });
         value = authoredDeclarations.join(";");
+        for (const declaration of customDeclarations) {
+            const colon = declaration.indexOf(":");
+            this.refuseUnresolvableVariableMath(
+                declaration.slice(0, colon).trim(),
+                declaration.slice(colon + 1).toLowerCase(),
+                site,
+            );
+        }
         const authoredDisplay = /(?:^|;)\s*display\s*:/i.test(value);
         this.auditUiStyleDeclarations(value, site);
         {

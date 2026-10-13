@@ -105,7 +105,7 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 
 | Area | Admitted | Refuses |
 | --- | --- | --- |
-| Box | fixed/inset, px/rem/viewport calc/min/max/clamp (also over `var()`, with times and angles), box sizing, physical and horizontal-LTR logical edges, float/clear | Vertical/RTL logical mapping, element-font-relative math, other units in math over `var()` (refused once substituted) |
+| Box | fixed/inset, px/rem/viewport calc/min/max/clamp (also over `var()`, with times and angles), box sizing, physical and horizontal-LTR logical edges, float/clear | Vertical/RTL logical mapping, element-font-relative math, other units in math over `var()` |
 | Flex | Wrap, direction, grow/shrink/basis, alignment, gaps | Intrinsic basis keywords |
 | Grid | Line placement, spans, auto/px/fr/minmax, repeat/auto-fit/auto-fill (≤256 tracks/axis) | Named areas/lines, subgrid, percentage tracks |
 | Containers/media | inline-size containment, unnamed max-width queries; max-width, orientation, reduced-motion media | Named/height/style queries |
@@ -113,7 +113,7 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 | Borders/backgrounds | Solid borders, radii, gradients, one packaged image, raster border-image slices | Elliptical radius syntax, multiple image layers, sized repetition |
 | Shadows/filters | Box shadows, filters, drop-shadow chains, backdrop blur | Non-pixel shadow lengths, other backdrop functions (may degrade) |
 | Transforms | Uniform nonnegative scale | Nonuniform scale, nonempty clip rectangles |
-| Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way) | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations (refused by the native parser when applied), other transition/animation longhands |
+| Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way) | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
 | Selectors | Tags/IDs/classes, attribute presence/equality, combinators, state pseudo-classes, An+B, `not/is/where/has`, `::before/::after` | Nested `:has`, wider attribute operators, counters |
 | Other | `!important`, custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` | Runtime-generated stylesheet text, list markers, translucent accents |
 

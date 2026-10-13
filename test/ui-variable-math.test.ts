@@ -53,19 +53,23 @@ test("math over var() resolves natively after substitution", (t) => {
     });
 });
 
-// The native math is the grammar for math over var(): these compile, and the
-// fixture checks that a unit it cannot resolve refuses once substituted.
-test("math over var() compiles for the native math", () => {
+test("math over var() with unresolvable units refuses at generation", () => {
     const prefix = `const panel = document.createElement("div");`;
-    for (const declaration of [
-        "width: calc(var(--x) * 2em)",
-        "width: calc(100% - var(--x))",
-        "--size: min(4ch, var(--x))",
-        "width: calc(94 * var(--dvh)); height: calc(var(--b2b) * 1dvh)",
-    ])
-        assert.doesNotThrow(() =>
-            compileSource(
-                `${prefix}panel.style.cssText = ${JSON.stringify(declaration)};`,
-            ),
+    for (const [declaration, unit] of [
+        ["width: calc(var(--x) * 2em)", /'em'/],
+        ["width: calc(100% - var(--x))", /'%'/],
+        ["--size: min(4ch, var(--x))", /'ch'/],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(
+                    `${prefix}panel.style.cssText = ${JSON.stringify(declaration)};`,
+                ),
+            unit,
         );
+    assert.doesNotThrow(() =>
+        compileSource(
+            `${prefix}panel.style.cssText = "width: calc(94 * var(--dvh)); height: calc(var(--b2b) * 1dvh)";`,
+        ),
+    );
 });
