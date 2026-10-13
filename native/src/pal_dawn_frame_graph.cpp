@@ -433,6 +433,8 @@ public:
     }
     void encode() {
         encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+        if (const auto frame_timer = gpu_frame_timer_begin(engine))
+            encode_dawn_gpu_timestamp(encoder, *frame_timer);
         GpuTaskTimingSequence timing_sequence(engine);
         for (const TaskHandle handle : context->tasks) {
             FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
@@ -499,11 +501,14 @@ public:
             capture = begin_dawn_surface_capture(state.device, encoder, surface_texture.texture,
                                                  width, height);
         }
+        if (const auto frame_timer = gpu_frame_timer_end(engine))
+            encode_dawn_gpu_timestamp(encoder, *frame_timer);
         DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
         submit_dawn_command(state.queue, command);
         command.reset();
         encoder.reset();
         finish_gpu_task_timing_frame(engine);
+        resolve_gpu_frame_timer(engine);
         if (capture_frame) {
             finish_dawn_surface_capture(state, capture, width, height,
                                         frame_options.screenshot_path);

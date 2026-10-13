@@ -70,6 +70,7 @@ import { recordAt } from "./record-access.js";
 import { staticFetchProperty } from "./static-fetch.js";
 import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { readSplatStreamProperty } from "./splat-stream-surface.js";
 import {
     contextCanvas,
@@ -2764,6 +2765,22 @@ export class PropertyAccessLowerer {
                         impure: true,
                     },
                 },
+            };
+        }
+        if (owner.kind === "engine" && property === "gpuFrameTimeMs") {
+            if (!owner.ownedEngineCpp) throw new ApplicationRealmRequired();
+            this.context.reachFeature("engine:gpu-task-timing", expression);
+            return {
+                kind: "number",
+                cpp: `bbl::pal::gpu_task_timing_state(${owner.cpp})->gpu_frame_time_ms`,
+                impure: true,
+            };
+        }
+        if (owner.kind === "engine" && property === "maxDevicePixelRatio") {
+            return {
+                kind: "number",
+                cpp: `bbl::surface_max_device_pixel_ratio(${owner.cpp})`,
+                impure: true,
             };
         }
         if (owner.kind === "engine" && property === "drawCallCount") {

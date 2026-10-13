@@ -14,7 +14,7 @@ Both backends consume the same generated plans, layouts and uniform writers.
 | iOS Simulator           | Unsupported by pinned SDL               | Metal                                            |
 | iOS device              | Metal, unqualified                      | Metal, unqualified                               |
 | Lifetime                | SDL objects and fences                  | WebGPU objects and submission retention          |
-| GPU task timestamps     | D3D12; other drivers report unsupported | Enabled when the device supports timestamp-query |
+| GPU timestamps          | D3D12; other drivers report unsupported | Enabled when the device supports timestamp-query |
 
 - Runtime prefers SDL_GPU when compiled, else Dawn. Invalid or uncompiled requests fail; GPU initialization and
   recovery failures never fall back to the other backend.
