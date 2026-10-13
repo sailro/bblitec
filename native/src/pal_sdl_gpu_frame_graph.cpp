@@ -470,7 +470,13 @@ public:
                 }
                 const auto effect_timing = sdl_timed_pass(command, timing_sequence.pass());
                 SdlRenderPass render_pass{SDL_BeginGPURenderPass(command, &target, 1, nullptr)};
-                record_effect_pass(command, render_pass, engine, pass, task.effect.effect);
+                record_effect_pass(
+                    command, render_pass, engine, pass, task.effect.effect,
+                    [&](const RenderTextureRef& source) -> SDL_GPUTexture* {
+                        if (handle_at(engine.render_targets, source.target).swapchain)
+                            throw std::runtime_error("An effect cannot sample the swapchain target.");
+                        return target_texture(state, engine, source.target, swapchain, true);
+                    });
                 render_pass.end();
                 if (record.swapchain)
                     capture_texture = swapchain;

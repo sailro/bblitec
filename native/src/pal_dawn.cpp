@@ -3891,6 +3891,11 @@ public:
                                     target_sample_count(state, target_record));
                             }
                             upload_dawn_effect_pass(state.queue, engine, pass, task.effect.effect);
+                            bind_dawn_effect_render_textures(
+                                state.device, engine, pass, task.effect.effect,
+                                [&](const RenderTextureRef& reference) {
+                                    return source_texture_view(reference).second;
+                                });
                             WGPURenderPassColorAttachment attachment =
                                 WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
                             attachment.view =

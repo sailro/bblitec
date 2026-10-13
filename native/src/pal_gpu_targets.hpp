@@ -95,16 +95,14 @@ void require_recorded_tasks(const Engine& engine);
 #endif
 
 /**
- * The texture `setEffectTexture` stored for one declared binding name.
+ * The texture slot `setEffectTexture` filled for one declared binding number.
  *
- * The walk and the refusal are the pin's own `findTextureSlot` contract:
- * a binding the compiled fragment kept must have been set before the
- * first render, and a name the wrapper never stored fails by name rather
- * than binding a neighbour. Both backends resolve through this.
+ * A binding the compiled fragment kept must have been set before the first
+ * render, and a binding the wrapper never declared fails rather than binding
+ * a neighbour. Both backends resolve through this.
  */
-
-const SolidTexture& effect_texture_for_binding(const EffectWrapperRecord& wrapper,
-                                               std::string_view name);
+const EffectTextureSlot& effect_texture_slot(const EffectWrapperRecord& wrapper,
+                                             std::uint32_t binding);
 
 /**
  * The uniform floats a scene set must fill the block the descriptor
