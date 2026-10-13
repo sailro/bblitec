@@ -728,10 +728,10 @@ interface EnginePrecisionPolicy {
 
 /**
  * `createEngine`'s `maxDevicePixelRatio`, stored as the pin stores it
- * (`?? Infinity`, unvalidated) for its `resizeSurface` to apply. Without an
- * application realm the single native surface reports devicePixelRatio 1,
- * where `Math.min(1, cap)` keeps the extent unless 0 < cap < 1; any other cap
- * selects the realm, whose DOM canvas runs the lowered resize.
+ * (`?? Infinity`, unvalidated). An application realm's DOM canvas applies it
+ * through the lowered `resizeSurface`. Without a realm the window is the only
+ * surface: Android and iOS size it by a static cap of 1 or more (`pal_window`)
+ * and desktop keeps devicePixelRatio 1; any other cap selects the realm.
  */
 export function compileEnginePixelRatioCap(
     context: PositiveIntegerContext &
@@ -749,14 +749,11 @@ export function compileEnginePixelRatioCap(
     if (!expression) return;
     if (!context.options.workers) {
         const cap = staticNumberValue(context, expression);
-        if (cap === undefined) throw new ApplicationRealmRequired();
-        const scale = Math.min(1, cap);
-        if (scale > 0 && scale < 1) throw new ApplicationRealmRequired();
+        if (cap === undefined || !(cap >= 1))
+            throw new ApplicationRealmRequired();
         return Number.isFinite(cap)
             ? String(cap)
-            : Number.isNaN(cap)
-              ? "std::numeric_limits<double>::quiet_NaN()"
-              : "std::numeric_limits<double>::infinity()";
+            : "std::numeric_limits<double>::infinity()";
     }
     const cap = context.allocateTemporaryCppName("max_device_pixel_ratio");
     context.emit({

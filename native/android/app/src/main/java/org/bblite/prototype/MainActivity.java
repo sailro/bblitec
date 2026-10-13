@@ -72,9 +72,12 @@ public final class MainActivity extends SDLActivity {
 
     // Called on SDL's native thread before creating the Vulkan window.
     public boolean configureSurface(double cap) {
+        boolean debug = (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        double selectedCap = debug && (getIntent().getBooleanExtra("capture", false) || getIntent().getBooleanExtra("nativeResolution", false))
+            ? Double.POSITIVE_INFINITY : cap;
         CountDownLatch ready = new CountDownLatch(1);
         runOnUiThread(() -> {
-            surface.cap = cap;
+            surface.cap = selectedCap;
             surface.trace = "1".equals(getIntent().getStringExtra("BBLITE_RUNTIME_TRACE"));
             surface.ready = ready;
             surface.resizeBuffer();

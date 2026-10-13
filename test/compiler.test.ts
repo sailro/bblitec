@@ -15838,12 +15838,12 @@ test("rejects unsupported dynamic engine and scene options", () => {
     `);
     assert.doesNotMatch(pixelRatio.cpp, /maxDevicePixelRatio|MAX_DPR/);
     assert.match(pixelRatio.cpp, /EngineOptions\{[^}]*, 0, 1\}/);
-    // A cap the single surface's devicePixelRatio 1 cannot absorb selects
-    // the application realm and the pinned resize.
+    // Without a realm only a static cap of 1 or more sizes the window; any
+    // other cap selects the application realm and the pinned resize.
     for (const [cap, realm] of [
         ["cap", true],
         ["0.5", true],
-        ["0", false],
+        ["0", true],
         ["3", false],
     ] as const) {
         const compiled = compileSource(`

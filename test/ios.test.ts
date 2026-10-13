@@ -543,7 +543,7 @@ test("iOS SDL entry accepts both generated main signatures and preserves a faili
     }
 });
 
-test("iOS windows keep native density whatever canvas cap an engine authors", (t) => {
+test("iOS window density preserves native pixels and authored DPR 1 without rounding other caps", (t) => {
     const native = optionalNativeFixtureTools();
     if (!native) {
         t.skip("Native compiler and SDL are required.");
@@ -563,17 +563,34 @@ test("iOS windows keep native density whatever canvas cap an engine authors", (t
 #include <cmath>
 #include <stdexcept>
 #define SDL_PLATFORM_IOS 1
+static SDL_DisplayID primary_display() { return 1; }
+static const SDL_DisplayMode* display_mode(SDL_DisplayID) {
+    static const auto mode = [] { SDL_DisplayMode value{}; value.pixel_density = 2; return value; }();
+    return &mode;
+}
+#define SDL_GetPrimaryDisplay primary_display
+#define SDL_GetCurrentDisplayMode display_mode
 namespace bbl::pal {
 ${cppFunction(source, "inline void configure_run_surface(")}
 ${cppFunction(source, "inline SDL_WindowFlags run_window_flags(")}
 }
 int main() {
     bbl::EngineOptions options;
-    for (const double value : {std::numeric_limits<double>::infinity(), 0.0, 0.5, 1.0, 1.5, 3.0, std::numeric_limits<double>::quiet_NaN()}) {
+    bbl::pal::configure_run_surface(options);
+    if (!(bbl::pal::run_window_flags(0, options) & SDL_WINDOW_HIGH_PIXEL_DENSITY)) return 1;
+    options.max_device_pixel_ratio = 1;
+    bbl::pal::configure_run_surface(options);
+    const auto low = bbl::pal::run_window_flags(SDL_WINDOW_HIGH_PIXEL_DENSITY, options);
+    if ((low & SDL_WINDOW_HIGH_PIXEL_DENSITY) || !(low & SDL_WINDOW_FULLSCREEN)) return 2;
+    for (const double value : {2.0, 3.0}) {
         options.max_device_pixel_ratio = value;
         bbl::pal::configure_run_surface(options);
-        const auto flags = bbl::pal::run_window_flags(0, options);
-        if (!(flags & SDL_WINDOW_HIGH_PIXEL_DENSITY) || !(flags & SDL_WINDOW_FULLSCREEN)) return 1;
+        if (!(bbl::pal::run_window_flags(0, options) & SDL_WINDOW_HIGH_PIXEL_DENSITY)) return 3;
+    }
+    for (const double value : {0.0, 0.5, 1.5, std::numeric_limits<double>::quiet_NaN()}) {
+        options.max_device_pixel_ratio = value;
+        try { bbl::pal::configure_run_surface(options); return 4; }
+        catch (const std::runtime_error&) {}
     }
 }
 `,
