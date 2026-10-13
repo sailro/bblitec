@@ -2050,6 +2050,8 @@ struct AudioElementPlayback {
     /** The session whose default output an unrouted element plays to. */
     std::shared_ptr<AudioSession> session;
     AudioContextHandle context{};
+    /** The session's default output this element keeps running while it plays there. */
+    AudioContextHandle held_output{};
     std::optional<AudioNodeHandle> output;
     /** `createMediaElementSource` made `output`; otherwise it feeds the default output. */
     bool routed = false;
@@ -2064,6 +2066,54 @@ struct AudioElementPlayback {
 };
 
 AudioElementState::AudioElementState() : playback(std::make_unique<AudioElementPlayback>()) {}
+
+/**
+ * A session's media element state: the decodes its elements share
+ * (`AudioSession::decoded_`), and the default output's device, which runs
+ * only while an unrouted element plays (`AudioSession::media_playing_`).
+ */
+struct AudioSessionMedia {
+    using Key = std::pair<std::string, double>;
+    static std::shared_ptr<const DecodedAudio> find(AudioSession& session, const Key& key) {
+        const auto found = session.decoded_.find(key);
+        return found == session.decoded_.end() ? nullptr : found->second.lock();
+    }
+    /** Record `decoded`, dropping the entries no element holds any more. */
+    static void keep(AudioSession& session, Key key,
+                     const std::shared_ptr<const DecodedAudio>& decoded) {
+        std::erase_if(session.decoded_, [](const auto& entry) { return entry.second.expired(); });
+        session.decoded_.insert_or_assign(std::move(key), decoded);
+    }
+    /** An element starts playing: on the default output, it keeps that output's device running. */
+    static void hold_output(AudioElementPlayback& playback) {
+        if (playback.held_output.value || !playback.session)
+            return;
+        auto& session = *playback.session;
+        if (playback.context.value != session.media_output_.value)
+            return;
+        playback.held_output = session.media_output_;
+        if (session.media_playing_++ == 0 && audio_state(session.media_output_) != "closed")
+            audio_resume(session.media_output_);
+    }
+    /** The element stops playing there; the last one to stop suspends the output's device. */
+    static void release_output(AudioElementPlayback& playback) {
+        const auto held = std::exchange(playback.held_output, AudioContextHandle{});
+        if (!held.value || !playback.session)
+            return;
+        auto& session = *playback.session;
+        // A hold on an output since closed and replaced counts for nothing.
+        if (held.value != session.media_output_.value || session.media_playing_ == 0)
+            return;
+        if (--session.media_playing_ == 0 && audio_state(held) != "closed")
+            audio_suspend(held);
+    }
+    /** A new default output starts suspended, with nothing playing to it. */
+    static void reset_output(AudioSession& session, AudioContextHandle output) {
+        session.media_output_ = output;
+        session.media_playing_ = 0;
+        audio_suspend(output);
+    }
+};
 
 namespace {
 
@@ -2138,6 +2188,7 @@ void stop_segment(AudioElementPlayback& playback) {
         return;
     playback.position = current_position(playback);
     playback.playing = false;
+    AudioSessionMedia::release_output(playback);
     if (playback.timer)
         EventLoop::current().clear_timer(std::exchange(playback.timer, 0));
     clear_segments(playback);
@@ -2166,6 +2217,7 @@ void start_segment(const AudioElement& element) {
         node->schedule(0.0f, static_cast<float>(offset), 0);
     if (playback.loop)
         node->schedule(static_cast<float>(playback.duration - offset), 0.0f, -1);
+    AudioSessionMedia::hold_output(playback);
     playback.playing = true;
     playback.segment_loops = playback.loop;
     playback.segment_start = audio_current_time(playback.context);
@@ -2249,25 +2301,6 @@ void finish_element_load(const AudioElement& element, std::uint64_t generation,
     }
 }
 
-} // namespace
-
-/** A session's shared media element decodes (`AudioSession::decoded_`). */
-struct AudioSessionDecodes {
-    using Key = std::pair<std::string, double>;
-    static std::shared_ptr<const DecodedAudio> find(AudioSession& session, const Key& key) {
-        const auto found = session.decoded_.find(key);
-        return found == session.decoded_.end() ? nullptr : found->second.lock();
-    }
-    /** Record `decoded`, dropping the entries no element holds any more. */
-    static void keep(AudioSession& session, Key key,
-                     const std::shared_ptr<const DecodedAudio>& decoded) {
-        std::erase_if(session.decoded_, [](const auto& entry) { return entry.second.expired(); });
-        session.decoded_.insert_or_assign(std::move(key), decoded);
-    }
-};
-
-namespace {
-
 /**
  * Read and decode the packaged source on a native job, settling on the realm;
  * a source another element of the session holds decoded settles with that.
@@ -2285,8 +2318,8 @@ void begin_element_load(const AudioElement& element) {
         return;
     }
     using Decoded = std::shared_ptr<const DecodedAudio>;
-    AudioSessionDecodes::Key key{std::move(packaged->path), audio_sample_rate(playback.context)};
-    if (auto shared = AudioSessionDecodes::find(*playback.session, key)) {
+    AudioSessionMedia::Key key{std::move(packaged->path), audio_sample_rate(playback.context)};
+    if (auto shared = AudioSessionMedia::find(*playback.session, key)) {
         EventLoop::current().post([element, generation, shared = std::move(shared)] {
             finish_element_load(element, generation, shared);
         });
@@ -2309,7 +2342,7 @@ void begin_element_load(const AudioElement& element) {
             // An unreadable file fails the source like an undecodable one.
         }
         if (const auto owner = session.lock(); owner && decoded)
-            AudioSessionDecodes::keep(*owner, std::move(key), decoded);
+            AudioSessionMedia::keep(*owner, std::move(key), decoded);
         if (const auto owner = target.lock())
             finish_element_load(owner, generation, std::move(decoded));
     });
@@ -2326,9 +2359,16 @@ void select_element_resource(const AudioElement& element, bool playing) {
 } // namespace
 
 AudioElementState::~AudioElementState() {
-    if (playback && playback->playing)
+    if (!playback)
+        return;
+    if (playback->playing)
         if (const auto node = element_node(*playback))
             node->clearSchedules();
+    try {
+        AudioSessionMedia::release_output(*playback);
+    } catch (...) {
+        // A device that cannot stop while the session tears down stops with it.
+    }
 }
 
 void AudioElementState::gc_trace(const js::TraceVisitor& visitor) const {
@@ -2359,7 +2399,7 @@ AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session) {
     if (session->media_output_.value && audio_state(session->media_output_) != "closed")
         return session->media_output_;
     const auto output = audio_create_context(session);
-    session->media_output_ = output;
+    AudioSessionMedia::reset_output(*session, output);
 #if BBLITE_AUDIO_CAPTURE
     // A capture recorder renders only while something feeds it, and routed
     // elements leave this output.

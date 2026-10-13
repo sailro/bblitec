@@ -114,7 +114,9 @@ private:
      * elements playing one share its decode, which lives while one holds it.
      */
     std::map<std::pair<std::string, double>, std::weak_ptr<const DecodedAudio>> decoded_;
-    friend struct AudioSessionDecodes;
+    /** Unrouted elements playing to the default output: its device runs while one does. */
+    std::size_t media_playing_ = 0;
+    friend struct AudioSessionMedia;
     friend AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session,
                                                    std::shared_ptr<AudioPlaybackDevice> device);
     friend AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session);

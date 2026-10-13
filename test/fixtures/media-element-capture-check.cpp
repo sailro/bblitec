@@ -85,8 +85,11 @@ js::Promise<js::PromiseVoid> run(std::vector<std::string> files, std::vector<std
     const auto direct = pal::audio_create_element(session, std::string("/beds/high.wav"));
     co_await pal::audio_element_play(direct);
     const auto output = direct->playback->context;
+    const auto playing_state = pal::audio_state(output);
     const auto heard = render(output, rate / 10);
     pal::audio_connect(pal::audio_create_media_element_source(context, direct), master);
+    // Nothing plays to the default output any more: its device stops.
+    const auto left_state = pal::audio_state(output);
     const auto left = render(output, rate / 10);
     const auto moved = render(context, rate / 10);
     lines.push_back("direct " + fixed(heard.back()) + " " + fixed(peak(left, 0, left.size())) +
@@ -170,6 +173,7 @@ js::Promise<js::PromiseVoid> run(std::vector<std::string> files, std::vector<std
                     fixed(fading[fading.size() / 2]) + " " + fixed(after.back()));
 
     // The direct element still holds high.wav: the session decoded it once.
+    lines.push_back("output " + playing_state + " " + left_state);
     lines.push_back("shared " +
                     std::to_string(high->playback->decoded &&
                                    high->playback->decoded == direct->playback->decoded));

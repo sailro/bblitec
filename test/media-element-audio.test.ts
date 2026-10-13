@@ -470,6 +470,7 @@ test("a media element plays, moves, pauses, seeks, ends, loops and crossfades in
         ended,
         looped,
         crossfade,
+        outputStates,
         shared,
         released,
         events,
@@ -507,6 +508,8 @@ test("a media element plays, moves, pauses, seeks, ends, loops and crossfades in
     near(start!, 0.5, 0.01);
     near(middle!, 0.375, 0.01);
     near(end!, 0.25, 0.002);
+    // The default output's device runs only while an unrouted element plays.
+    assert.equal(outputStates, "output running suspended");
     // Two elements of one source share the session's one decode.
     assert.equal(shared, "shared 1");
     assert.equal(released, "released 0.250 nan 1");
