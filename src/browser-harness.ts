@@ -216,15 +216,7 @@ export async function waitForSceneReady(
     settle?: ReferenceSettle,
 ): Promise<void> {
     await gotoScenePage(page, origin, search);
-    // Any canvas the page marks ready (a host page names its own canvases),
-    // or the harness's mark for a program with nothing else to wait for.
-    await page.waitForFunction(
-        () =>
-            document.querySelector('canvas[data-ready="true"]') !== null ||
-            document.documentElement.dataset.captureReady === "true",
-        undefined,
-        { timeout: 120_000 },
-    );
+    await waitForCanvasSettles(page, [canvasReadySettle], 120_000);
     if (awaitFrozenPose) {
         await page.waitForFunction(
             () =>
@@ -268,7 +260,11 @@ export async function waitForSceneReady(
             );
         }
     } else if (settle !== undefined) {
-        await waitForCanvasSettle(page, settle);
+        await waitForCanvasSettles(
+            page,
+            [canvasReadySettle, settle],
+            settleTimeoutMilliseconds,
+        );
     } else {
         await page.waitForTimeout(captureSettleMilliseconds);
     }
@@ -278,36 +274,73 @@ export async function waitForSceneReady(
 const settleTimeoutMilliseconds = 600_000;
 
 /**
- * Wait until the primary canvas has held one of the settle values in its
- * dataset for the settle time, polling the live (unfrozen) page.
+ * The data-ready gate as a settle: any canvas marks `data-ready="true"`, at
+ * once. The harness's document mark answers it for a program with no canvas
+ * of its own to wait for.
  */
-async function waitForCanvasSettle(
+const canvasReadySettle: ReferenceSettle = {
+    key: "ready",
+    values: ["true"],
+    settleMilliseconds: 0,
+};
+
+/**
+ * Wait until every settle holds, each on any canvas's dataset, for the
+ * longest settle time, polling the live (unfrozen) page; a canvas's
+ * nonempty `data-error` fails the capture at once. The native capture waits
+ * on the same settles (`pal_window_realm.cpp`).
+ */
+async function waitForCanvasSettles(
     page: Page,
-    settle: ReferenceSettle,
+    settles: readonly ReferenceSettle[],
+    timeoutMilliseconds: number,
 ): Promise<void> {
-    const deadline = Date.now() + settleTimeoutMilliseconds;
+    const deadline = Date.now() + timeoutMilliseconds;
+    const hold = Math.max(
+        ...settles.map((settle) => settle.settleMilliseconds),
+    );
     let since: number | undefined;
-    let last: string | undefined;
     for (;;) {
-        last = await page.evaluate(
-            (key) =>
-                document.getElementById("renderCanvas")?.dataset[key] ??
-                undefined,
-            settle.key,
+        const state = await page.evaluate(
+            (rows) => {
+                const canvases = [...document.querySelectorAll("canvas")];
+                const error = canvases
+                    .map((canvas) => canvas.dataset.error)
+                    .find((value) => value);
+                const held = rows.map(
+                    (row) =>
+                        (row.key === "ready" &&
+                            document.documentElement.dataset.captureReady ===
+                                "true") ||
+                        canvases.some((canvas) =>
+                            row.values.includes(canvas.dataset[row.key] ?? ""),
+                        ),
+                );
+                return { error, held };
+            },
+            settles.map(({ key, values }) => ({ key, values: [...values] })),
         );
+        if (state.error)
+            throw new Error(`A canvas reported data-error: ${state.error}`);
         const now = Date.now();
-        if (last !== undefined && settle.values.includes(last)) {
+        if (state.held.every(Boolean)) {
             since ??= now;
-            if (now - since >= settle.settleMilliseconds) return;
+            if (now - since >= hold) return;
         } else {
             since = undefined;
         }
         if (now >= deadline) {
+            const waiting = settles
+                .filter((_, index) => !state.held[index])
+                .map(
+                    (settle) =>
+                        `${settle.key} in [${settle.values.join(", ")}]`,
+                );
             throw new Error(
-                `Timed out waiting for canvas dataset ${settle.key} in [${settle.values.join(", ")}] (last ${last ?? "unset"}).`,
+                `Timed out waiting for canvas dataset ${waiting.join(" and ") || "settle time"}.`,
             );
         }
-        await page.waitForTimeout(250);
+        await page.waitForTimeout(hold > 0 ? 250 : 25);
     }
 }
 

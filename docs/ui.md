@@ -76,7 +76,9 @@ Host multi-canvas companions retain canvases, dividers and labels. Canvas-only c
 canvas at its page position.
 Reached canvas `dataset.ready` writes gate Window captures until a rendering canvas has `data-ready="true"`
 and publishes a fresh frame; startup rendering continues past a requested capture frame when necessary.
-Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
+The browser and native captures wait on the same canvas settles: that gate (`data-ready` `true`, at once) and a
+registered `referenceSettle`, each held on any canvas, together for the longest settle time. A canvas's nonempty
+`data-error` fails either capture (and a bounded native run).
 
 ## DOM and events
 
