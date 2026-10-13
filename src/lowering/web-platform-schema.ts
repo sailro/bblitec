@@ -361,7 +361,7 @@ export const webPlatformConstructors: ReadonlyMap<string, CallAdapter> =
             "DOMException",
             {
                 cpp: (argument) =>
-                    `bbl::js::Error(std::make_exception_ptr(bbl::js::make_dom_exception(${argument(0)}, ${argument(1)})))`,
+                    `bbl::js::Error(bbl::js::dom_exception_error(${argument(0)}, ${argument(1)}))`,
                 parameters: [string, string],
             },
         ],

@@ -231,8 +231,8 @@ js::Promise<pal::ImageBitmap> create_image_bitmap(const js::Blob& blob,
     js::Promise<pal::ImageBitmap> promise;
     const auto& b = blob.bytes();
     if (b.size() < 25 || std::string(b.begin() + 12, b.begin() + 16) != "VP8L") {
-        promise.reject(std::make_exception_ptr(
-            js::make_dom_exception("The source image could not be decoded.", "InvalidStateError")));
+        promise.reject(
+            js::dom_exception_error("The source image could not be decoded.", "InvalidStateError"));
         return promise;
     }
     const std::uint32_t bits =
