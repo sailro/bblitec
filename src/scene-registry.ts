@@ -1250,14 +1250,7 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-texture-region-writes.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Texture Region Writes",
-        buildDirectory: "native/build-regression-texture-region-writes-release",
         parity: {
-            reference: {
-                kind: "source",
-                path: "reference/regression-texture-region-writes/babylon-lite-golden.png",
-            },
-            outputDirectory:
-                "artifacts/parity/regression-texture-region-writes",
             // The cursor texels move every frame, so both sides capture
             // one fixed frame's writes.
             referenceFrame: 12,
@@ -1276,13 +1269,7 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-vat-time.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - VAT Time",
-        buildDirectory: "native/build-regression-vat-time-release",
         parity: {
-            reference: {
-                kind: "source",
-                path: "reference/regression-vat-time/babylon-lite-golden.png",
-            },
-            outputDirectory: "artifacts/parity/regression-vat-time",
             // The glTF's first animation group plays from load on its own
             // clock: one fixed frame pins it on both sides.
             referenceFrame: 12,
@@ -1302,13 +1289,7 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-csm-static-cache.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - CSM Static Cache",
-        buildDirectory: "native/build-regression-csm-static-cache-release",
         parity: {
-            reference: {
-                kind: "source",
-                path: "reference/regression-csm-static-cache/babylon-lite-golden.png",
-            },
-            outputDirectory: "artifacts/parity/regression-csm-static-cache",
             // Past the refit that demotes casters quiet for 120 frames; the
             // mover's position is a function of the frame.
             referenceFrame: 240,
@@ -1327,15 +1308,7 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-render-task-transmission.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Render Task Transmission",
-        buildDirectory:
-            "native/build-regression-render-task-transmission-release",
         parity: {
-            reference: {
-                kind: "source",
-                path: "reference/regression-render-task-transmission/babylon-lite-golden.png",
-            },
-            outputDirectory:
-                "artifacts/parity/regression-render-task-transmission",
             // The grab textures exist once the task has run, and the frame
             // callback re-binds them: one fixed frame pins both sides.
             referenceFrame: 12,
