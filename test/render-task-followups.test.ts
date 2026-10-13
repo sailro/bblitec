@@ -189,7 +189,7 @@ int main() {
     // What a backend's draw-list build publishes after drawing.
     const auto build = [&] {
         order_refreshed_render_task(task);
-        task.render_recorded = true;
+        task.record_state = FrameTaskRecordState::recorded;
         task.render_meshes_dirty = false;
         task.shader_packet_rebuild_pending = false;
         task.shader_packet_scene_version = static_cast<double>(scene.state->renderable_version);
@@ -199,7 +199,7 @@ int main() {
     add_render_task_mesh(engine, handle, t2, {0}, false);
     add_render_task_mesh(engine, handle, o2, view, true);
     // Registration records the task.
-    task.render_recorded = true;
+    task.record_state = FrameTaskRecordState::recorded;
     task.shader_packet_scene_version = static_cast<double>(scene.state->renderable_version);
     build(); order();
     const auto epoch = engine.draw_list_epoch;

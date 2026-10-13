@@ -360,7 +360,7 @@ int main() {
     assert(record.render_meshes.size() == 1 && record.render_meshes[0].mesh == b);
     assert(engine.draw_list_epoch == epoch && record.shader_packet_scene_version == -1);
     // The same task once built: the draw lists rebuild without the mesh.
-    record.render_recorded = true; record.shader_packet_scene_version = 7;
+    record.record_state = FrameTaskRecordState::recorded; record.shader_packet_scene_version = 7;
     add_render_task_mesh(engine, queued, a, {0}, false);
     const auto built = engine.draw_list_epoch;
     remove_render_task_mesh(engine, queued, a);
@@ -373,7 +373,7 @@ int main() {
     RenderTaskOptions mirrored = options; mirrored.auto_mirror = true;
     const auto published = create_render_task(engine, scene, mirrored);
     add_render_task_mesh(engine, published, a, {0}, false);
-    engine.frame_tasks[published.value].render_recorded = true;
+    engine.frame_tasks[published.value].record_state = FrameTaskRecordState::recorded;
     remove_render_task_mesh(engine, published, a);
     assert(engine.frame_tasks[published.value].render_meshes.empty());
     assert(!engine.frame_tasks[published.value].render.auto_mirror);
@@ -393,7 +393,7 @@ int main() {
     remove_render_task_mesh(engine, refreshed, c);
     assert(tracked.render_meshes.empty() && tracked.render_meshes_dirty && engine.draw_list_epoch == before);
     add_render_task_mesh(engine, refreshed, c, {1}, false);
-    tracked.render_recorded = true; tracked.render_meshes_dirty = false;
+    tracked.record_state = FrameTaskRecordState::recorded; tracked.render_meshes_dirty = false;
     const auto recorded = engine.draw_list_epoch;
     remove_render_task_mesh(engine, refreshed, c);
     assert(tracked.render_meshes.empty() && tracked.render_meshes_dirty && engine.draw_list_epoch > recorded);

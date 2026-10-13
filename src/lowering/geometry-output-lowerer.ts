@@ -506,9 +506,10 @@ void add_render_task_mesh(
     } else if (material.value != invalid_handle) {
 ${taskDisposal ? '        // queueMesh: a disposed task throws.\n        if (record.disposed) throw std::runtime_error("RenderTask has been disposed.");\n' : ""}\
         RenderTaskMesh entry{mesh, material};
-        if (record.render_recorded) initialize_render_task_shader_material(engine, record, entry);
+        const bool recorded = record.record_state == FrameTaskRecordState::recorded;
+        if (recorded) initialize_render_task_shader_material(engine, record, entry);
         record.render_meshes.push_back(std::move(entry));
-        if (record.render_recorded) ++engine.draw_list_epoch;
+        if (recorded) ++engine.draw_list_epoch;
     }
 }
 ${meshRemoval ? lowerRenderTaskMeshRemoval(this.context) : ""}${taskDisposal ? lowerRenderTaskDisposal(this.context) : ""}

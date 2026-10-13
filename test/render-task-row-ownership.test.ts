@@ -237,7 +237,7 @@ int main() {
     for (std::size_t index=0;index<2;++index) {
         auto& task=engine.frame_tasks[index];
         task.kind=FrameTaskKind::render; task.source_scene=scene.state;
-        task.render.auto_mirror=false; task.render_recorded=true;
+        task.render.auto_mirror=false; task.record_state=FrameTaskRecordState::recorded;
         task.render_meshes.push_back({MeshHandle{1},MaterialHandle{static_cast<std::uint32_t>(index+1)}});
         scene.tasks.push_back({static_cast<std::uint32_t>(index)});
     }

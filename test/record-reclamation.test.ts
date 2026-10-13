@@ -156,7 +156,7 @@ int main() {
     engine.frame_tasks.emplace_back();
     engine.frame_tasks[0].render_meshes = {bbl::RenderTaskMesh{parent, {}}, bbl::RenderTaskMesh{follower, {}}};
     // A recorded task: removal drops built entries, never queued ones.
-    engine.frame_tasks[0].render_recorded = true;
+    engine.frame_tasks[0].record_state = bbl::FrameTaskRecordState::recorded;
     scene.tasks.push_back(bbl::TaskHandle{0});
     auto group = std::make_shared<bbl::SourceMaterialGroupState>();
     group->meshes = {parent, child, follower};

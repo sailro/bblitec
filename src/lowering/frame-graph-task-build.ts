@@ -121,7 +121,7 @@ export function lowerFrameGraphTaskBuild(
                     `${indent}        throw std::runtime_error("RenderTask has been disposed.");`,
                     // Registration records each queued task once; a
                     // recorded task's next draw-list build re-records it.
-                    `${indent}    if (!task.render_recorded) record_render_task(scene, task);`,
+                    `${indent}    if (task.record_state != FrameTaskRecordState::recorded) record_render_task(scene, task);`,
                     ...(effectTasks
                         ? [
                               `${indent}} else if (task.kind == FrameTaskKind::effect) {`,
@@ -136,7 +136,7 @@ export function lowerFrameGraphTaskBuild(
                 ];
             if (node === initialize)
                 return [
-                    `${indent}task.pending_record = false;`,
+                    `${indent}task.record_state = FrameTaskRecordState::recorded;`,
                     `${indent}++engine.draw_list_epoch;`,
                 ];
             return undefined;

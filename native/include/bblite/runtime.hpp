@@ -1716,6 +1716,18 @@ struct PersistentSceneUniforms {
     std::vector<float> drawn{};
 };
 
+/**
+ * A task against the pin's record: registration's build records every
+ * queued task, and one added to a registered scene's built graph waits for
+ * `buildFrameGraphTask` (its execute fails until then). A backend's first
+ * draw-list build records a queued task the build did not.
+ */
+enum class FrameTaskRecordState : std::uint8_t {
+    queued,
+    pending_build,
+    recorded,
+};
+
 struct FrameTaskRecord {
     FrameTaskKind kind = FrameTaskKind::render;
     std::optional<bool> execution_enabled;
@@ -1723,24 +1735,19 @@ struct FrameTaskRecord {
     RenderTaskOptions render;
     std::vector<RenderTaskMesh> render_meshes;
     bool render_mesh_refresh = false;
-    bool render_recorded = false;
+    FrameTaskRecordState record_state = FrameTaskRecordState::queued;
     std::optional<RenderTaskTransmission> transmission;
     bool render_meshes_dirty = false;
     /** A backend built this task's draw lists once: the recorded generation is drawn. */
     bool render_generation_built = false;
     /**
-     * `dispose()` ran. A render task stays disposed; an effect task's
-     * `dispose` only clears its pipeline, which its next record restores.
+     * `dispose()` ran. A render task stays disposed and keeps its record
+     * state; an effect task's `dispose` only clears its pipeline, which its
+     * next record restores.
      */
     bool disposed = false;
     mutable double shader_packet_scene_version = -1;
     mutable bool shader_packet_rebuild_pending = false;
-    /**
-     * Added to a scene's live graph: the pin records it only through
-     * `buildFrameGraphTask` or the next registration's build, and its
-     * execute fails until then.
-     */
-    bool pending_record = false;
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
     /**
@@ -4900,7 +4907,7 @@ inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHand
         record.render.target.value != invalid_handle) {
         auto& target = handle_at(engine.render_targets, record.render.target);
         if (target.has_depth && !target.sampled_depth) {
-            if (record.render_recorded)
+            if (record.record_state == FrameTaskRecordState::recorded)
                 throw std::runtime_error(
                     "enableRenderTaskTransmission's grabDepth must precede the task's recording.");
             target.sampled_depth = true;
@@ -4913,7 +4920,7 @@ inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHand
 inline js::Nullable<StoredTexture> transmission_grab_texture(Engine& engine,
                                                              const TransmissionGrab& grab) {
     const auto& record = handle_at(engine.frame_tasks, grab.task);
-    if (!record.render_recorded)
+    if (record.record_state != FrameTaskRecordState::recorded)
         return {};
     RenderTextureRef reference;
     reference.source = RenderTextureSource::transmission_color;
@@ -4925,7 +4932,7 @@ inline js::Nullable<StoredTexture> transmission_grab_texture(Engine& engine,
 inline js::Nullable<StoredTexture> transmission_grab_depth_texture(Engine& engine,
                                                                    const TransmissionGrab& grab) {
     const auto& record = handle_at(engine.frame_tasks, grab.task);
-    if (!record.render_recorded || !record.transmission ||
+    if (record.record_state != FrameTaskRecordState::recorded || !record.transmission ||
         !record.transmission->grab_depth.value_or(false) ||
         !handle_at(engine.render_targets, record.render.target).has_depth)
         return {};

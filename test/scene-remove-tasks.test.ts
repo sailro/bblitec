@@ -178,7 +178,7 @@ int main() {
         FrameTaskRecord record;
         record.render.auto_mirror = mirror;
         record.render_mesh_refresh = refresh;
-        record.render_recorded = recorded;
+        record.record_state = recorded ? FrameTaskRecordState::recorded : FrameTaskRecordState::queued;
         record.render_meshes = std::move(entries);
         if (recorded) record.shader_packet_scene_version = 1;
         engine.frame_tasks.push_back(std::move(record));

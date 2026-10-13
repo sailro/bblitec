@@ -449,7 +449,8 @@ test("a task added to a live scene waits for its record, as the pin's unrecorded
     );
     assert.ok(live.manifest.features.includes("frame-graph:live-task-add"));
     assert.match(live.cpp, /bbl::add_live_task\([^;]*, true\);/);
-    // Before registration the build records every task: no live add.
+    // Before registration too: the native add finds no registered scene,
+    // so registration's build records the task.
     const setup = compileSource(
         prefix.replace(
             "await registerScene(scene);\n",
@@ -458,6 +459,6 @@ test("a task added to a live scene waits for its record, as the pin's unrecorded
             await registerScene(scene);\n`,
         ),
     );
-    assert.ok(!setup.manifest.features.includes("frame-graph:live-task-add"));
-    assert.doesNotMatch(setup.cpp, /add_live_task/);
+    assert.ok(setup.manifest.features.includes("frame-graph:live-task-add"));
+    assert.match(setup.cpp, /bbl::add_live_task\([^;]*, false\);/);
 });

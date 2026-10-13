@@ -58,7 +58,8 @@ inline upstream::RenderDrawLists record_task_draw_lists(const upstream::RenderPl
     order_refreshed_render_task(task);
 #endif
     upstream::RenderDrawLists lists = upstream::build_render_task_draw_lists(plan, engine, task);
-    task.render_recorded = true;
+    if (task.record_state == FrameTaskRecordState::queued)
+        task.record_state = FrameTaskRecordState::recorded;
     task.render_meshes_dirty = false;
     return lists;
 }

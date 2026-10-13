@@ -66,12 +66,12 @@ function refreshedRemovalCpp(context: LoweringContext, indent: string): string {
     // through its next draw-list rebuild.
     return [
         "if (task.render_mesh_refresh) {",
-        "    if (!task.render_recorded)",
+        "    if (task.record_state != FrameTaskRecordState::recorded)",
         "        std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {",
         "            return entry.mesh == mesh && entry.follows_material;",
         "        });",
         "    task.render_meshes_dirty = true;",
-        "    if (task.render_recorded) ++engine.draw_list_epoch;",
+        "    if (task.record_state == FrameTaskRecordState::recorded) ++engine.draw_list_epoch;",
         "}",
     ]
         .map((line) => indent + line)
@@ -84,7 +84,7 @@ function refreshedRemovalCpp(context: LoweringContext, indent: string): string {
  * of removeMeshFromScene, as the pin calls it from both.
  *
  * Native `render_meshes` holds a task's queued requests, its tracked
- * entries and, once recorded (`render_recorded`), its built entries; each
+ * entries and, once recorded (`record_state`), its built entries; each
  * backend rebuilds its bucketed draw lists from it when the draw-list epoch
  * moves. So the built-renderable and binding removals are one erase on a
  * recorded task, the source's `removed` is that erase, and the bindings
@@ -200,7 +200,7 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
             if (node === guard)
                 return [
                     `${indent}if (task.kind != FrameTaskKind::render) return;`,
-                    `${indent}if (task.render_recorded && !task.render_meshes.empty()) task.render.auto_mirror = false;`,
+                    `${indent}if (task.record_state == FrameTaskRecordState::recorded && !task.render_meshes.empty()) task.render.auto_mirror = false;`,
                 ];
             if (node === hook) return [refreshedRemovalCpp(context, indent)];
             // A built renderable's lifetime owners (`shader_packet`,
@@ -209,7 +209,7 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
             // rebuild, so the owners outlive every submission reading them.
             if (node === renderables)
                 return [
-                    `${indent}if (task.render_recorded && std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) { return entry.mesh == mesh; }) != 0)`,
+                    `${indent}if (task.record_state == FrameTaskRecordState::recorded && std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) { return entry.mesh == mesh; }) != 0)`,
                     `${indent}    removed = true;`,
                 ];
             // Each backend rebuilds its bucketed draw lists from
@@ -276,7 +276,7 @@ export function lowerRenderTaskMeshRemoval(context: LoweringContext): string {
 void remove_render_task_mesh(Engine& engine, TaskHandle handle, MeshHandle mesh) {
     FrameTaskRecord& task = task_record(engine, handle);
     // The queued requests a task has not recorded yet.
-    if (task.kind == FrameTaskKind::render && !task.render_recorded)
+    if (task.kind == FrameTaskKind::render && task.record_state != FrameTaskRecordState::recorded)
         std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) { return entry.mesh == mesh; });
     remove_mesh_from_render_task(engine, task, mesh);
 }

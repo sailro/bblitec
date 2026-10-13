@@ -2113,7 +2113,8 @@ void require_recorded_tasks(const Engine& engine) {
             continue;
         for (const TaskHandle handle : scene->tasks) {
             const FrameTaskRecord* task = handle_find(engine.frame_tasks, handle);
-            if (!task || !task->pending_record || task->execution_enabled == false)
+            if (!task || task->record_state != FrameTaskRecordState::pending_build ||
+                task->execution_enabled == false)
                 continue;
             // The pin's effect execute throws #37 without the pipeline its
             // record builds; any other unrecorded task fails in its pass.

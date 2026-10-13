@@ -2601,11 +2601,13 @@ void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
         add_task_at_start(scene, task);
     else
         add_task(scene, task);
+    auto& record = ${recordAt("scene.engine->frame_tasks", "task")};
     const auto& scenes = scene.engine->scenes();
-    if (std::any_of(scenes.begin(), scenes.end(), [&scene](const std::shared_ptr<Scene>& registered) {
+    if (record.record_state == FrameTaskRecordState::queued &&
+        std::any_of(scenes.begin(), scenes.end(), [&scene](const std::shared_ptr<Scene>& registered) {
             return registered && registered->shares_identity(scene);
         }))
-        ${recordAt("scene.engine->frame_tasks", "task")}.pending_record = true;
+        record.record_state = FrameTaskRecordState::pending_build;
 }
 
 `;
@@ -2628,7 +2630,7 @@ void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
 ${options.thinBindings ? "            entry.thin_binding = create_thin_material_binding(*scene.engine, entry.mesh, material);" : ""}
         }
         task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
-        task.render_recorded = true;`;
+        task.record_state = FrameTaskRecordState::recorded;`;
     }
 
     private sceneLifecycleSource(
@@ -2732,8 +2734,11 @@ ${
     options.liveTaskAdd
         ? `    // \`ctx._frameGraph.build()\` records every task, including those
     // added while the scene was registered before.
-    for (const auto task_handle : scene.tasks)
-        ${recordAt("scene.engine->frame_tasks", "task_handle")}.pending_record = false;
+    for (const auto task_handle : scene.tasks) {
+        auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
+        if (task.record_state == FrameTaskRecordState::pending_build)
+            task.record_state = FrameTaskRecordState::queued;
+    }
 `
         : ""
 }\
@@ -2741,7 +2746,7 @@ ${
     // resolvePendingTaskMeshes constructs the queued explicit task renderables there.
     for (const auto task_handle : scene.tasks) {
         auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
-        if (task.kind != FrameTaskKind::render || task.render_recorded) continue;
+        if (task.kind != FrameTaskKind::render || task.record_state == FrameTaskRecordState::recorded) continue;
 ${this.renderTaskRecordSource(options)}
     }
 ${

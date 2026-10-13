@@ -232,7 +232,13 @@ function refreshedOverridesCpp(
                     type: "bool",
                 },
             ],
-            ["this._sceneBG", { cpp: "record.render_recorded", type: "bool" }],
+            [
+                "this._sceneBG",
+                {
+                    cpp: "(record.record_state == FrameTaskRecordState::recorded)",
+                    type: "bool",
+                },
+            ],
         ]),
         calls: new Map(),
         statement(node, lowerer, indent) {
@@ -282,7 +288,7 @@ static void order_render_task_generation(FrameTaskRecord& task) {
 }
 
 static void insert_render_task_mesh(FrameTaskRecord& task, RenderTaskMesh entry) {
-    if (task.render_recorded) {
+    if (task.record_state == FrameTaskRecordState::recorded) {
         order_render_task_generation(task);
         task.render_meshes.push_back(std::move(entry));
         return;
@@ -376,7 +382,13 @@ export function renderTaskMeshRefreshCpp(
             "task._prepareTaskMeshes",
             { cpp: "record.render_mesh_refresh", type: "bool" },
         ],
-        ["task._sceneBG", { cpp: "record.render_recorded", type: "bool" }],
+        [
+            "task._sceneBG",
+            {
+                cpp: "(record.record_state == FrameTaskRecordState::recorded)",
+                type: "bool",
+            },
+        ],
         [
             "task._config.autoMirror",
             { cpp: "record.render.auto_mirror", type: "bool" },
