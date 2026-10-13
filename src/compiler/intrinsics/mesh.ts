@@ -1767,6 +1767,25 @@ function compileMarkMeshRenderableDirty(
 }
 
 /**
+ * The pinned `disposeMeshGpu`: the mesh releases its claims once and is
+ * retired for good (`src/lowering/mesh-gpu-disposal.ts`).
+ */
+function compileDisposeMeshGpu(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const mesh = context.compileValue(argumentAt(call, 0));
+    context.expectKind(mesh, "mesh", call);
+    context.reachFeature("renderer:scene", call);
+    context.reachFeature("mesh:dispose-gpu", call);
+    return {
+        kind: "void",
+        cpp: `bbl::dispose_mesh_gpu(${context.requireEngine(mesh, call)}, ${mesh.cpp})`,
+    };
+}
+
+/**
  * The pinned `invalidateRenderBundles`: the visibility epoch and every
  * registered scene's renderable version move, so native draw lists and
  * bundles rebuild on the next frame.
@@ -3421,6 +3440,7 @@ const meshIntrinsicHandlers = new EmissionMap<
         (context, call) => compileResizeMeshGeometry(context, call, true),
     ],
     ["markMeshRenderableDirty", compileMarkMeshRenderableDirty],
+    ["disposeMeshGpu", compileDisposeMeshGpu],
     ["invalidateRenderBundles", compileInvalidateRenderBundles],
     ["createHierarchyInstancePool", compileCreateHierarchyInstancePool],
     [

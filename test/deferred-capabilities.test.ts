@@ -274,8 +274,9 @@ test("pinned geometry descriptor batch retains declared result shapes", () => {
     );
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:disposeMeshGpu", "babylon:setVatTime"],
+        ["babylon:setVatTime"],
     );
+    assert.match(result.cpp, /bbl::dispose_mesh_gpu\(/);
     assert.match(result.cpp, /bbl::enable_thin_instance_dynamic_draw_count\(/);
     assert.match(result.cpp, /bbl::set_thin_instance_draw_count\(/);
 });

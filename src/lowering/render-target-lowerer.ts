@@ -3,6 +3,7 @@ import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { lowerSurfaceRenderTargetSize } from "./render-target-size.js";
 import { lowerRenderTargetLifecycle } from "./render-target-lifecycle.js";
+import { lowerRenderTargetDisposal } from "./render-target-disposal.js";
 import { pinnedErrorCode } from "./pinned-error.js";
 import { recordAt } from "../compiler/record-access.js";
 
@@ -17,6 +18,7 @@ export class RenderTargetLowerer {
     public constructor(
         private readonly context: LoweringContext,
         private readonly surface = false,
+        private readonly disposal = false,
     ) {
         this.context.functionDeclaration(
             renderTargetModule,
@@ -236,7 +238,7 @@ RenderTextureRef render_target_texture(RenderTargetHandle target) {
     result.target = target;
     return result;
 }
-
+${this.disposal ? lowerRenderTargetDisposal(this.context, this.surface) : ""}
 } // namespace bbl
 `,
         };

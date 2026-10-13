@@ -3,6 +3,7 @@ import { pinnedHeader } from "./pinned-header.js";
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { renderTaskMeshRefreshCpp } from "./render-task-mesh-refresh.js";
+import { lowerRenderTaskMeshRemoval } from "./render-task-removal.js";
 import { assertGeometryTaskSync } from "./geometry-task-sync.js";
 import { recordAt } from "../compiler/record-access.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
@@ -10,7 +11,10 @@ import { shaderUniformPublication } from "./shader-uniforms.js";
 export class GeometryOutputLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerTaskRecords(thinBindings = false): LoweredSource {
+    public lowerTaskRecords(
+        thinBindings = false,
+        meshRemoval = false,
+    ): LoweredSource {
         const geometryModule = "src/frame-graph/geometry-renderer-task.ts";
         const copyModule = "src/frame-graph/copy-to-texture-task.ts";
         const actionsModule = "src/frame-graph/frame-graph-actions.ts";
@@ -495,7 +499,7 @@ void add_render_task_mesh(
         if (record.render_recorded) ++engine.draw_list_epoch;
     }
 }
-
+${meshRemoval ? lowerRenderTaskMeshRemoval(this.context) : ""}
 } // namespace bbl
 `,
         };
