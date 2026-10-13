@@ -4,6 +4,7 @@
 // second context, and both renders are measured. Prints one line per step.
 
 #include "pal_audio_labsound.cpp"
+#include "labsound-fixture.hpp"
 
 #include "../../artifacts/engine-media-stream-capture/library.hpp"
 
@@ -25,17 +26,9 @@ namespace {
 
 /** Render `frames` more frames offline; the peak of channel 0 over their second half. */
 std::string render(pal::AudioContextHandle context, int frames) {
-    auto& record = pal::require_context(context.value);
-    auto scratch = std::make_shared<lab::AudioBus>(2, lab::AudioNode::ProcessingSizeInFrames);
-    record.destination->offlineRender(scratch.get(), frames);
-    const auto pcm = record.recorder->createBusFromRecording(false);
-    const auto* samples = pcm->channel(0)->data();
-    float peak = 0.0f;
-    for (int index = pcm->length() - frames / 2; index < pcm->length(); ++index)
-        peak = std::max(peak, std::abs(samples[index]));
-    char text[32];
-    std::snprintf(text, sizeof text, "%.3f", static_cast<double>(peak));
-    return text;
+    const auto recorded = labsound_fixture::samples(*labsound_fixture::render(context, frames));
+    return labsound_fixture::fixed(
+        labsound_fixture::peak(recorded, recorded.size() - frames / 2, recorded.size()));
 }
 
 js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& lines) {

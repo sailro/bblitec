@@ -7,6 +7,7 @@
 // application's shape. Prints one line per step.
 
 #include "pal_audio_labsound.cpp"
+#include "labsound-fixture.hpp"
 
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_packaged_responses.hpp>
@@ -29,26 +30,13 @@ constexpr int rate = 48000;
 
 /** Render `frames` more frames offline; the last `frames` samples of channel 0. */
 std::vector<float> render(pal::AudioContextHandle context, int frames) {
-    auto& record = pal::require_context(context.value);
-    auto scratch = std::make_shared<lab::AudioBus>(2, lab::AudioNode::ProcessingSizeInFrames);
-    record.destination->offlineRender(scratch.get(), frames);
-    const auto pcm = record.recorder->createBusFromRecording(false);
-    const auto* samples = pcm->channel(0)->data();
-    return std::vector<float>(samples + (pcm->length() - frames), samples + pcm->length());
+    const auto pcm = labsound_fixture::render(context, frames);
+    const auto recorded = labsound_fixture::samples(*pcm);
+    return {recorded.end() - frames, recorded.end()};
 }
 
-float peak(const std::vector<float>& samples, std::size_t first, std::size_t last) {
-    float value = 0.0f;
-    for (std::size_t index = first; index < last; ++index)
-        value = std::max(value, std::abs(samples[index]));
-    return value;
-}
-
-std::string fixed(double value) {
-    char text[32];
-    std::snprintf(text, sizeof text, "%.3f", value);
-    return text;
-}
+using labsound_fixture::fixed;
+using labsound_fixture::peak;
 
 js::Promise<js::PromiseVoid> sleep(double milliseconds) {
     js::Promise<js::PromiseVoid> promise;

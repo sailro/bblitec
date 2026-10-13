@@ -4,25 +4,11 @@
 #include <cassert>
 #include <iostream>
 
-namespace bbl::pal {
-std::string environment_variable(const char* name) {
-    char* value = nullptr;
-    std::size_t length = 0;
-    _dupenv_s(&value, &length, name);
-    const std::string result = value ? value : "";
-    std::free(value);
-    return result;
-}
-} // namespace bbl::pal
+#define LABSOUND_FIXTURE_ENVIRONMENT
+#include "labsound-fixture.hpp"
 
 using namespace bbl::pal;
-
-static std::unique_ptr<lab::AudioBus> render(AudioContextHandle handle, int frames) {
-    auto& record = require_context(handle.value);
-    auto scratch = std::make_shared<lab::AudioBus>(2, lab::AudioNode::ProcessingSizeInFrames);
-    record.destination->offlineRender(scratch.get(), frames);
-    return record.recorder->createBusFromRecording(false);
-}
+using labsound_fixture::render;
 
 static void check_loop_and_playback_rate() {
     for (const bool loop : {false, true}) {

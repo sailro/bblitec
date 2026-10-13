@@ -5,57 +5,13 @@
 #include <iostream>
 #include <string>
 
-namespace bbl::pal {
-std::string environment_variable(const char* name) {
-    char* value = nullptr;
-    std::size_t length = 0;
-    _dupenv_s(&value, &length, name);
-    const std::string result = value ? value : "";
-    std::free(value);
-    return result;
-}
-} // namespace bbl::pal
+#define LABSOUND_FIXTURE_ENVIRONMENT
+#include "labsound-fixture.hpp"
 
 using namespace bbl::pal;
+using namespace labsound_fixture;
 
 namespace {
-
-std::unique_ptr<lab::AudioBus> render(AudioContextHandle handle, int frames) {
-    auto& record = require_context(handle.value);
-    auto scratch = std::make_shared<lab::AudioBus>(2, lab::AudioNode::ProcessingSizeInFrames);
-    record.destination->offlineRender(scratch.get(), frames);
-    return record.recorder->createBusFromRecording(false);
-}
-
-/** A one-channel buffer source holding `value` in every one of `frames`. */
-AudioNodeHandle constant_source(AudioContextHandle context, float value, std::uint32_t frames) {
-    const auto source = audio_create_buffer_source(context);
-    const auto buffer = audio_create_buffer(context, 1, frames, 48000.0);
-    auto channel = audio_buffer_channel(buffer, 0);
-    for (std::size_t index = 0; index < channel.size(); ++index)
-        channel[index] = value;
-    audio_set_buffer(source, buffer);
-    return source;
-}
-
-/** The DOMException name (or Error name) a call throws, empty when it returns. */
-template <class Call> std::string thrown(Call call) {
-    try {
-        call();
-    } catch (const bbl::js::NamedError& error) {
-        return error.name;
-    } catch (const std::runtime_error&) {
-        return "runtime_error";
-    }
-    return {};
-}
-
-float peak_between(const lab::AudioBus& bus, int first, int last) {
-    float peak = 0.0f;
-    for (int index = first; index < last; ++index)
-        peak = std::max(peak, std::abs(bus.channel(0)->data()[index]));
-    return peak;
-}
 
 void check_targeted_disconnect() {
     const auto context = audio_create_context();
@@ -74,12 +30,12 @@ void check_targeted_disconnect() {
     audio_node_start(source, 0.0);
     audio_node_start(modulator, 0.0);
     auto both = render(context, 512);
-    assert(std::abs(peak_between(*both, 256, 512) - 0.5f) < 1e-3f);
+    assert(std::abs(peak(samples(*both), 256, 512) - 0.5f) < 1e-3f);
 
     // Only the source's edge into `left` goes; `right` still sounds.
     audio_disconnect(source, left);
     auto one = render(context, 512);
-    assert(std::abs(peak_between(*one, one->length() - 256, one->length()) - 0.25f) < 1e-3f);
+    assert(std::abs(peak(samples(*one), one->length() - 256, one->length()) - 0.25f) < 1e-3f);
     // Disconnecting it again, or through an index the nodes do not have.
     assert(thrown([&] { audio_disconnect(source, left); }) == "InvalidAccessError");
     assert(thrown([&] { audio_disconnect(source, right, 1.0); }) == "IndexSizeError");
@@ -144,7 +100,7 @@ void check_loop_points_and_duration() {
     // An absent duration is the two-argument start: a whole-buffer loop plays on.
     audio_node_start(whole, 0.0, 0.0, bbl::js::Nullable<double>{});
     auto pcm = render(context, 4096);
-    assert(peak_between(*pcm, pcm->length() - 512, pcm->length()) > 0.2f);
+    assert(peak(samples(*pcm), pcm->length() - 512, pcm->length()) > 0.2f);
 
     // Points spanning the whole buffer are the whole-buffer loop.
     const auto spanning = constant_source(context, 0.25f, 480);

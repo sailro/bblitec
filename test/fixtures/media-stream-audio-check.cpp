@@ -5,48 +5,19 @@
 #include <iostream>
 #include <string>
 
-namespace bbl::pal {
-std::string environment_variable(const char* name) {
-    char* value = nullptr;
-    std::size_t length = 0;
-    _dupenv_s(&value, &length, name);
-    const std::string result = value ? value : "";
-    std::free(value);
-    return result;
-}
-} // namespace bbl::pal
+#define LABSOUND_FIXTURE_ENVIRONMENT
+#include "labsound-fixture.hpp"
 
 using namespace bbl::pal;
+using namespace labsound_fixture;
 
 namespace {
 
-/** Renders `frames` more frames; the bus holds every frame rendered so far. */
-std::unique_ptr<lab::AudioBus> render(AudioContextHandle handle, int frames) {
-    auto& record = require_context(handle.value);
-    auto scratch = std::make_shared<lab::AudioBus>(2, lab::AudioNode::ProcessingSizeInFrames);
-    record.destination->offlineRender(scratch.get(), frames);
-    return record.recorder->createBusFromRecording(false);
-}
-
-/** A one-channel buffer source holding `value` in every one of `frames`, started. */
-AudioNodeHandle constant_source(AudioContextHandle context, float value, std::uint32_t frames) {
-    const auto source = audio_create_buffer_source(context);
-    const auto buffer = audio_create_buffer(context, 1, frames, 48000.0);
-    auto channel = audio_buffer_channel(buffer, 0);
-    for (std::size_t index = 0; index < channel.size(); ++index)
-        channel[index] = value;
-    audio_set_buffer(source, buffer);
+/** A constant source, started. */
+AudioNodeHandle started_source(AudioContextHandle context, float value, std::uint32_t frames) {
+    const auto source = constant_source(context, value, frames);
     audio_node_start(source, 0.0);
     return source;
-}
-
-template <class Call> std::string thrown(Call call) {
-    try {
-        call();
-    } catch (const bbl::js::NamedError& error) {
-        return error.name;
-    }
-    return {};
 }
 
 /** What a lowered `catch (error)` reads off any thrown value: its name and message. */
@@ -91,7 +62,7 @@ void check_same_context_routing() {
     assert(stream->tracks.size() == 1 && stream->tracks[0]->kind == "audio");
     assert(media_stream_track_ready_state(stream->tracks[0]) == "live");
     // A mono input is up-mixed to both channels of the stream.
-    audio_connect(constant_source(context, 0.25f, 48000), destination);
+    audio_connect(started_source(context, 0.25f, 48000), destination);
     const auto input = audio_create_media_stream_source(context, stream);
     audio_connect(input, audio_destination(context));
     const auto bus = render(context, 1024);
@@ -107,7 +78,7 @@ void check_cross_context_routing() {
     const auto producer = audio_create_context();
     const auto mixer = audio_create_context();
     const auto output = audio_create_gain(producer);
-    audio_connect(constant_source(producer, 0.5f, 48000), output);
+    audio_connect(started_source(producer, 0.5f, 48000), output);
     audio_connect(output, audio_destination(producer));
     const auto tap = audio_create_media_stream_destination(producer);
     audio_connect(output, tap);

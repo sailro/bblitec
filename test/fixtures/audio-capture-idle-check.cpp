@@ -10,37 +10,13 @@
 #include <iostream>
 #include <string>
 
-namespace bbl::pal {
-std::string environment_variable(const char* name) {
-    char* value = nullptr;
-    std::size_t length = 0;
-    _dupenv_s(&value, &length, name);
-    const std::string result = value ? value : "";
-    std::free(value);
-    return result;
-}
-} // namespace bbl::pal
+#define LABSOUND_FIXTURE_ENVIRONMENT
+#include "labsound-fixture.hpp"
 
 using namespace bbl::pal;
+using namespace labsound_fixture;
 
 namespace {
-
-void render(AudioContextHandle handle, int frames) {
-    auto& record = require_context(handle.value);
-    auto scratch = std::make_shared<lab::AudioBus>(2, lab::AudioNode::ProcessingSizeInFrames);
-    record.destination->offlineRender(scratch.get(), frames);
-}
-
-/** A one-channel buffer source holding `value` in every one of `frames`. */
-AudioNodeHandle constant_source(AudioContextHandle context, float value, std::uint32_t frames) {
-    const auto source = audio_create_buffer_source(context);
-    const auto buffer = audio_create_buffer(context, 1, frames, 48000.0);
-    auto channel = audio_buffer_channel(buffer, 0);
-    for (std::size_t index = 0; index < channel.size(); ++index)
-        channel[index] = value;
-    audio_set_buffer(source, buffer);
-    return source;
-}
 
 /** An idle context: its recorder renders and is written at the session's finish. */
 void check_idle_context() {

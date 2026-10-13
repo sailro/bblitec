@@ -102,18 +102,8 @@ test("application Web Audio lowers targeted disconnects, value curves and loop p
 #define main generated_main
 #include "program.hpp"
 #undef main
-#include <cstdlib>
-#include <string>
-namespace bbl::pal {
-std::string environment_variable(const char* name) {
-    char* value = nullptr;
-    std::size_t length = 0;
-    _dupenv_s(&value, &length, name);
-    const std::string result = value ? value : "";
-    std::free(value);
-    return result;
-}
-} // namespace bbl::pal
+#define LABSOUND_FIXTURE_ENVIRONMENT
+#include "../../test/fixtures/labsound-fixture.hpp"
 int main() { return generated_main(); }
 `,
     );
