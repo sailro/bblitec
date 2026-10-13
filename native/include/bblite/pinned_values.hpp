@@ -140,7 +140,11 @@ template <std::size_t N>
     return std::vector<double>(values.begin(), values.end());
 }
 
-/** `[...a, b, ...c]`: a fresh array, its parts appended in source order. */
+/**
+ * `[...a, b, ...c]`: a fresh array, its parts appended in source order
+ * straight into the array it returns (no source can alias an array that
+ * does not exist yet, so a spread reads its source once, in place).
+ */
 template <class T> class ArrayBuilder {
 public:
     ArrayBuilder& add(T value) {
@@ -148,46 +152,43 @@ public:
         return *this;
     }
     template <class Range> ArrayBuilder& spread(const Range& range) {
-        // Spreading snapshots the source first, so a source that aliases the
-        // result still yields its elements once.
-        std::vector<T> items;
+        if constexpr (requires { range.size(); })
+            values_.reserve(values_.size() + range.size());
         for (const auto& item : range)
-            items.push_back(static_cast<T>(item));
-        for (auto& item : items)
-            values_.push_back(std::move(item));
+            values_.push_back(static_cast<T>(item));
         return *this;
     }
     template <class V> ArrayBuilder& spread(const js::TypedArray<V>& range) {
+        values_.reserve(values_.size() + range.size());
         for (std::size_t index = 0; index < range.size(); ++index)
             values_.push_back(static_cast<T>(range.load(index)));
         return *this;
     }
     /** `...map.values()` / `...map.keys()`: one part of each entry, in insertion order. */
     template <class K, class V> ArrayBuilder& spread_values(const js::Map<K, V>& map) {
-        std::vector<T> items;
         for (const auto& entry : map)
-            items.push_back(entry.second);
-        for (auto& item : items)
-            values_.push_back(std::move(item));
+            values_.push_back(entry.second);
         return *this;
     }
     template <class K, class V> ArrayBuilder& spread_keys(const js::Map<K, V>& map) {
-        std::vector<T> items;
         for (const auto& entry : map)
-            items.push_back(entry.first);
-        for (auto& item : items)
-            values_.push_back(std::move(item));
+            values_.push_back(entry.first);
         return *this;
     }
-    [[nodiscard]] js::Array<T> array() { return js::Array<T>(values_.begin(), values_.end()); }
+    /** The array built; the builder is a temporary that ends here. */
+    [[nodiscard]] js::Array<T> array() { return std::move(values_); }
     template <std::size_t N> [[nodiscard]] js::Tuple<N> tuple() {
         if (values_.size() != N)
             throw std::runtime_error("A spread tuple has another length.");
-        return js::Tuple<N>(std::make_shared<std::vector<double>>(values_.begin(), values_.end()));
+        if constexpr (std::is_same_v<typename js::Array<T>::Storage, std::vector<double>>)
+            return js::Tuple<N>(values_.retained_storage());
+        else
+            return js::Tuple<N>(
+                std::make_shared<std::vector<double>>(values_.begin(), values_.end()));
     }
 
 private:
-    std::vector<T> values_;
+    js::Array<T> values_;
 };
 
 // ── Array iteration over callbacks ────────────────────────────────────
@@ -199,7 +200,7 @@ private:
 template <class R, class T, class F>
 [[nodiscard]] js::Array<R> array_map(const js::Array<T>& values, F&& callback) {
     const std::size_t length = values.size();
-    std::vector<R> result;
+    js::Array<R> result;
     result.reserve(length);
     for (std::size_t index = 0; index < length; ++index) {
         if (index >= values.size())
@@ -207,7 +208,7 @@ template <class R, class T, class F>
                 "An array shrank under Array.prototype.map; its holes are not represented.");
         result.push_back(callback(values[index], static_cast<double>(index)));
     }
-    return js::Array<R>(result.begin(), result.end());
+    return result;
 }
 
 template <class T, class F>
@@ -303,23 +304,19 @@ js::Array<T> sort_array(js::Array<T> values, const Compare& compare) {
                                   parts.begin() + static_cast<std::ptrdiff_t>(count));
 }
 
-/** `array.shift()`: the first element, or absence. */
-template <class R, class T> R array_shift(js::Array<T>& values) {
-    if (values.empty())
-        return R{};
-    R first(std::move(values[0]));
-    values.erase(values.begin());
-    return first;
-}
-
 /** `new Float32Array(source)`: a fresh copy, each element converted as a store converts it. */
 template <class T, class V>
 [[nodiscard]] js::TypedArray<T> typed_copy(const js::TypedArray<V>& source) {
-    js::TypedArray<T> result(source.size());
-    for (std::size_t index = 0; index < source.size(); ++index)
-        js::typed_array_write(result, static_cast<double>(index),
-                              static_cast<double>(source.load(index)));
-    return result;
+    // The same element type copies its bytes (a view's included).
+    if constexpr (std::is_same_v<T, V>) {
+        return source.copy_range(0, source.size());
+    } else {
+        js::TypedArray<T> result(source.size());
+        for (std::size_t index = 0; index < source.size(); ++index)
+            js::typed_array_write(result, static_cast<double>(index),
+                                  static_cast<double>(source.load(index)));
+        return result;
+    }
 }
 template <class T, class Values>
     requires requires(const Values& values) { static_cast<double>(values[0]); }
@@ -361,9 +358,6 @@ template <std::size_t N> void tuple_write(js::Tuple<N>& values, double index, do
 [[nodiscard]] inline double array_like_get(const NumberArrayLike& values, double index) {
     return values.at(index);
 }
-
-/** `Number.isInteger`. */
-[[nodiscard]] inline bool number_is_integer(double value) { return js::number_is_integer(value); }
 
 /** `Number(string)`. */
 [[nodiscard]] inline double number_of(const std::string& value) {

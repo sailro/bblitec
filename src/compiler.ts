@@ -262,6 +262,7 @@ import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
     bindingNameIdentifiers,
+    heldIdentifiers,
     identifierText,
     isAssignmentExpression,
     isDeclaredInside,
@@ -896,6 +897,15 @@ class Compiler implements LoweringServices {
         new EmissionWeakSet<NativeCaptureBinding>();
     private readonly nativeDependencyStack: Set<NativeCaptureBinding>[] =
         emissionArray([]);
+    /**
+     * The native bindings a store placed inside another binding's value
+     * (`saved = { box }`), by a native binding of the holder: a hoisted
+     * finally reading the holder reaches them (`captureHoistedLines`).
+     */
+    private readonly heldNativeBindings = new EmissionMap<
+        NativeCaptureBinding,
+        readonly NativeCaptureBinding[]
+    >();
     private readonly realmEngineCaptures = new EmissionMap<
         string,
         readonly NativeCaptureBinding[]
@@ -2226,9 +2236,45 @@ class Compiler implements LoweringServices {
 
     public emitAssignment(expression: ts.BinaryExpression): void {
         traceSourceNode(expression.left);
+        this.noteHeldNativeBindings(expression);
         this.dataLowerer.withStoreKeysHeld(expression, () =>
             this.emitStore(expression),
         );
+    }
+
+    /**
+     * `holder = { box }`: the native bindings whose values the store places
+     * inside the holder's value -- the stored value itself, or a member,
+     * element or branch of a literal it builds -- whatever storage the
+     * holder's type (declared or inferred) gave it. A value computed from
+     * them (`createCsgFromMesh(box)`) holds none of them.
+     */
+    public noteHeldNativeBindings(expression: ts.BinaryExpression): void {
+        if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return;
+        const target = this.unwrap(expression.left);
+        if (!ts.isIdentifier(target)) return;
+        const holders = this.identifierNativeBindings(target);
+        if (holders.length === 0) return;
+        const held = heldIdentifiers(this.unwrap(expression.right), (node) =>
+            this.unwrap(node),
+        ).flatMap((identifier) => this.identifierNativeBindings(identifier));
+        if (held.length === 0) return;
+        for (const holder of holders)
+            this.heldNativeBindings.set(holder, [
+                ...(this.heldNativeBindings.get(holder) ?? []),
+                ...held,
+            ]);
+    }
+
+    /** The native bindings a source binding's current value reads. */
+    private identifierNativeBindings(
+        identifier: ts.Identifier,
+    ): readonly NativeCaptureBinding[] {
+        const symbol = this.symbols.valueSymbol(identifier);
+        const binding = symbol && this.bindings.peekBinding(symbol);
+        return binding
+            ? this.nativeValueCaptures.bindingsOf(binding.value)
+            : [];
     }
 
     /** `emitAssignment` once its target's keys are read. */
@@ -6179,7 +6225,14 @@ class Compiler implements LoweringServices {
             this.synchronousCleanupFrames.pop();
             this.popDependencies(this.nativeDependencyStack);
         }
-        for (const binding of dependencies) {
+        // A native local of the try body, read directly or held by a
+        // binding the guard reads (`saved = { box }`), has left scope when
+        // the guard runs.
+        const reached = [...dependencies].flatMap((binding) => [
+            binding,
+            ...(this.heldNativeBindings.get(binding) ?? []),
+        ]);
+        for (const binding of reached) {
             if (
                 binding.sequence > beforeBody &&
                 binding.sequence <= beforeGuard

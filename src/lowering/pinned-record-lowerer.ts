@@ -29,7 +29,13 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
  */
 import ts from "typescript";
 import { findAnalysisNode } from "../compiler/analysis-walk.js";
-import { numberConstant } from "../compiler/number-intrinsics.js";
+import { ClassHierarchy } from "../compiler/class-members.js";
+import { EvaluationOrder } from "../compiler/evaluation-order.js";
+import {
+    numberConstant,
+    numberPredicateCpp,
+} from "../compiler/number-intrinsics.js";
+import { SYNCHRONOUS_CALLBACK_METHODS } from "../compiler/parameter-effects.js";
 import {
     declarationInDefaultLibrary,
     declaredInDefaultLibrary,
@@ -375,28 +381,6 @@ function enclosingFunctionLike(node: ts.Node): ts.Node | undefined {
     return undefined;
 }
 
-/**
- * The array methods that call a callback synchronously and keep nothing of
- * it: a function literal passed to one never outlives the call.
- */
-const INLINE_CALLBACK_METHODS = new Set([
-    "map",
-    "filter",
-    "reduce",
-    "some",
-    "every",
-    "find",
-    "findIndex",
-    "forEach",
-    "sort",
-]);
-
-/**
- * Whether a function literal is an inline callback: the argument of an
- * array iteration method (`list.findIndex((x) => ...)`). It lowers as a
- * native lambda over its frame's own storage, so the bindings it reads are
- * not captures; a closure it creates captures through it.
- */
 /** `Array.from(...)` with the library's own `Array`. */
 function isArrayFromCall(
     node: ts.Node,
@@ -414,6 +398,14 @@ function isArrayFromCall(
     );
 }
 
+/**
+ * Whether a function literal is an inline callback: the argument of an
+ * array method that calls it before returning and keeps nothing of it
+ * (`list.findIndex((x) => ...)`, the analysis' own table), an
+ * `Array.from` mapper or a `new Promise` executor. It lowers as a native
+ * lambda over its frame's own storage, so the bindings it reads are not
+ * captures; a closure it creates captures through it.
+ */
 function isInlineCallback(node: ts.Node, checker: ts.TypeChecker): boolean {
     if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node))
         return false;
@@ -443,7 +435,7 @@ function isInlineCallback(node: ts.Node, checker: ts.TypeChecker): boolean {
         !ts.isCallExpression(parent) ||
         parent.expression === child ||
         !ts.isPropertyAccessExpression(parent.expression) ||
-        !INLINE_CALLBACK_METHODS.has(parent.expression.name.text)
+        !SYNCHRONOUS_CALLBACK_METHODS.has(parent.expression.name.text)
     )
         return false;
     const receiver = checker.getNonNullableType(
@@ -454,87 +446,6 @@ function isInlineCallback(node: ts.Node, checker: ts.TypeChecker): boolean {
 
 // ── Evaluation order ───────────────────────────────────────────────────
 
-/**
- * Library calls that change no state a program can observe (they may run
- * the callbacks they are handed, which the analysis reads itself): the
- * global conversions, and the static methods of the library namespaces.
- */
-const PURE_LIBRARY_GLOBALS = new Set([
-    "Number",
-    "String",
-    "Boolean",
-    "isNaN",
-    "isFinite",
-    "parseInt",
-    "parseFloat",
-    "decodeURIComponent",
-    "encodeURIComponent",
-]);
-const PURE_LIBRARY_METHODS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-    ["Number", new Set(["isFinite", "isInteger", "isSafeInteger", "isNaN"])],
-    ["Object", new Set(["keys", "entries", "values", "is"])],
-    ["Array", new Set(["isArray", "of"])],
-    ["String", new Set(["fromCharCode", "fromCodePoint"])],
-    ["JSON", new Set(["stringify"])],
-    ["Promise", new Set(["resolve", "reject"])],
-]);
-
-/** Methods that write their receiver, by the library type that declares them. */
-const MUTATING_ARRAY_METHODS = new Set([
-    "push",
-    "pop",
-    "shift",
-    "unshift",
-    "splice",
-    "sort",
-    "reverse",
-    "fill",
-    "copyWithin",
-    "set",
-]);
-const MUTATING_COLLECTION_METHODS = new Set(["set", "add", "delete", "clear"]);
-const COLLECTION_TYPES = new Set([
-    "Map",
-    "ReadonlyMap",
-    "Set",
-    "ReadonlySet",
-    "WeakMap",
-    "WeakSet",
-]);
-const TYPED_ARRAY_TYPES = new Set([
-    "Int8Array",
-    "Uint8Array",
-    "Uint8ClampedArray",
-    "Int16Array",
-    "Uint16Array",
-    "Int32Array",
-    "Uint32Array",
-    "Float32Array",
-    "Float64Array",
-]);
-
-/** Library constructors that only allocate (an executor runs as a callback). */
-const PURE_CONSTRUCTIONS = new Set([
-    ...TYPED_ARRAY_TYPES,
-    "Array",
-    "ArrayBuffer",
-    "Map",
-    "Set",
-    "WeakMap",
-    "WeakSet",
-    "Error",
-    "RangeError",
-    "TypeError",
-    "Promise",
-    "AbortController",
-    "TextDecoder",
-    "DOMException",
-    "Blob",
-]);
-
-/** Library constructors that only allocate, or throw on what they are handed. */
-const THROWING_CONSTRUCTIONS = new Set(["URL"]);
-
 /** Binary operators C++ already sequences (or evaluates conditionally). */
 const NONSEQUENCED_BINARY_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([
     ts.SyntaxKind.AmpersandAmpersandToken,
@@ -542,27 +453,6 @@ const NONSEQUENCED_BINARY_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([
     ts.SyntaxKind.QuestionQuestionToken,
     ts.SyntaxKind.CommaToken,
 ]);
-
-/** What calling a function does, read from its body. */
-interface CallEffects {
-    /** It writes state its caller can see, or runs code the analysis cannot follow. */
-    writes: boolean;
-    /** It may throw. */
-    throws: boolean;
-}
-
-/** The effects of each pinned function the analysis has read, by declaration. */
-const functionEffects = new WeakMap<ts.Node, CallEffects>();
-
-/** What evaluating one operand of a multi-operand form does. */
-interface OperandEvaluation extends CallEffects {
-    awaits: boolean;
-    /** It reads state a write elsewhere may change: object members, shared bindings. */
-    state: boolean;
-    /** The frame's own bindings it reads, and those it assigns. */
-    readonly reads: Set<ts.Symbol>;
-    readonly assigns: Set<ts.Symbol>;
-}
 
 /**
  * How a form evaluates its operands natively: `unordered` as a call's
@@ -618,6 +508,20 @@ export class PinnedRecordModel {
     public readonly checker: ts.TypeChecker;
     /** Environment structs named so far, so each has its own name. */
     private environments = 0;
+    private order_: EvaluationOrder | undefined;
+
+    /**
+     * The entry compiler's evaluation-order analysis over this program
+     * (which operands of one expression must be read before the rest),
+     * built on first use and shared by every body.
+     */
+    public get evaluationOrder(): EvaluationOrder {
+        this.order_ ??= new EvaluationOrder(
+            this.checker,
+            new ClassHierarchy(this.checker, this.typed.program),
+        );
+        return this.order_;
+    }
 
     public constructor(
         public readonly context: LoweringContext,
@@ -2756,33 +2660,25 @@ export class PinnedRecordModel {
 }
 
 /**
- * `Number`'s predicates, over a number and over a dynamic value (which
- * answers `false` unless it holds a number).
+ * `Number`'s predicates over a dynamic value, which answers `false` unless
+ * it holds a number (over a number they are the entry compiler's,
+ * `numberPredicateCpp`).
  */
-const NUMBER_PREDICATES: ReadonlyMap<
-    string,
-    { readonly number: string; readonly json: string }
-> = new Map([
-    [
-        "isFinite",
-        { number: "std::isfinite", json: "bbl::pinned::json_is_finite" },
-    ],
-    ["isNaN", { number: "std::isnan", json: "bbl::pinned::json_is_nan" }],
-    [
-        "isInteger",
-        {
-            number: "bbl::pinned::number_is_integer",
-            json: "bbl::pinned::json_is_integer",
-        },
-    ],
-    [
-        "isSafeInteger",
-        {
-            number: "bbl::js::number_is_safe_integer",
-            json: "bbl::pinned::json_is_safe_integer",
-        },
-    ],
+const JSON_NUMBER_PREDICATES: ReadonlyMap<string, string> = new Map([
+    ["isFinite", "bbl::pinned::json_is_finite"],
+    ["isNaN", "bbl::pinned::json_is_nan"],
+    ["isInteger", "bbl::pinned::json_is_integer"],
+    ["isSafeInteger", "bbl::pinned::json_is_safe_integer"],
 ]);
+
+/** `Number.<name>` over a number and over a dynamic value, when it is a predicate. */
+function numberPredicate(
+    name: string,
+): { readonly number: string; readonly json: string } | undefined {
+    const number = numberPredicateCpp(name);
+    const json = JSON_NUMBER_PREDICATES.get(name);
+    return number && json ? { number, json } : undefined;
+}
 
 /** The native name of a parameter: a defaulted one's argument, before its default. */
 function parameterCpp(parameter: NativeParameter): string {
@@ -3049,24 +2945,91 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         "A pinned closure captures a defaulted parameter beside a closure default.",
                     );
             }
-        const lines = closureDefault
-            ? [...prolog(), ...this.parameterDefaults("    ")]
-            : [...this.parameterDefaults("    "), ...prolog()];
         if (
             ts.isClassDeclaration(declaration) ||
             ts.isConstructorDeclaration(declaration)
         )
-            return this.constructorBody(lines);
-        const body = [
-            ...lines,
-            ...this.statements(
-                this.hoisted(declaration.body!.statements),
-                "    ",
-            ),
-        ];
+            return this.constructorBody(
+                closureDefault
+                    ? [...prolog(), ...this.parameterDefaults("    ")]
+                    : [...this.parameterDefaults("    "), ...prolog()],
+            );
+        const statements = this.hoisted(declaration.body!.statements);
+        let lines: string[];
+        let rest = statements;
+        if (closureDefault)
+            lines = [...prolog(), ...this.parameterDefaults("    ")];
+        else {
+            lines = this.parameterDefaults("    ");
+            const guards = this.leadingGuards(declaration, statements);
+            lines.push(...this.statements(guards, "    "), ...prolog());
+            rest = statements.slice(guards.length);
+        }
+        const body = [...lines, ...this.statements(rest, "    ")];
         return (
             this.frame.async ? this.coroutine(declaration, body, "    ") : body
         ).join("\n");
+    }
+
+    /**
+     * A body's leading guards: `if (...) return ...;` (or a throw) with no
+     * else, creating no closure and reading no binding the body declares
+     * besides its parameters, and not always taken. They run before the
+     * frame's environment exists -- a frame that returns at once allocates
+     * nothing -- reading captured parameters where they arrived.
+     */
+    private leadingGuards(
+        owner: ts.Node,
+        statements: readonly ts.Statement[],
+    ): readonly ts.Statement[] {
+        const guards: ts.Statement[] = [];
+        for (const statement of statements) {
+            if (
+                !ts.isIfStatement(statement) ||
+                statement.elseStatement ||
+                this.terminates(statement)
+            )
+                break;
+            const then = statement.thenStatement;
+            const exit =
+                ts.isBlock(then) && then.statements.length === 1
+                    ? then.statements[0]!
+                    : then;
+            if (
+                !ts.isReturnStatement(exit) &&
+                !ts.isThrowStatement(exit) &&
+                !(
+                    ts.isExpressionStatement(exit) &&
+                    ts.isCallExpression(exit.expression) &&
+                    isPinnedErrorCall(this.source, exit.expression)
+                )
+            )
+                break;
+            let clean = true;
+            const visit = (node: ts.Node): void => {
+                if (!clean) return;
+                if (isFunctionLike(node) || ts.isClassExpression(node)) {
+                    clean = false;
+                    return;
+                }
+                if (ts.isIdentifier(node)) {
+                    const symbol = declaredSymbol(this.checker, node);
+                    const declaration =
+                        symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+                    if (
+                        declaration &&
+                        !ts.isParameter(declaration) &&
+                        this.within(owner, declaration)
+                    )
+                        clean = false;
+                }
+                ts.forEachChild(node, visit);
+            };
+            visit(statement);
+            if (!clean) break;
+            guards.push(statement);
+        }
+        return guards;
     }
 
     /** The environment structs this function's frames declared. */
@@ -4167,10 +4130,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const body = node.body;
         if (!body) return this.refuse(node, "Pinned closure has no body.");
         const statements = ts.isBlock(body) ? body.statements : [];
-        const lines = [...this.frameProlog(node.parameters, statements, inner)];
+        const executed = this.hoisted(statements);
+        // Leading guards run before the environment is allocated.
+        const guards = this.leadingGuards(node, executed);
+        const lines = [
+            ...this.statements(guards, inner),
+            ...this.frameProlog(node.parameters, statements, inner),
+        ];
         if (ts.isBlock(body))
             lines.push(
-                ...this.statements(this.hoisted(body.statements), inner),
+                ...this.statements(executed.slice(guards.length), inner),
             );
         else if (this.frame.async)
             lines.push(
@@ -6467,454 +6436,36 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     // ── Evaluation order ────────────────────────────────────────────────
 
     /**
-     * What evaluating `root` does, read from the source: writing state its
-     * caller can see (a member, a shared or module binding, a mutating
-     * library method, a call that does, code the analysis cannot follow),
-     * throwing, awaiting, and reading state such a write may change. A
-     * function literal does nothing when evaluated, unless a library call
-     * runs it inline. Reading a callee's body, `owner` is that callee: its
-     * own bindings, and the objects it creates itself, are invisible to its
-     * caller. Reading an operand (no `owner`), the frame's own bindings are
-     * tracked by symbol.
-     */
-    private evaluationOf(root: ts.Node, owner?: ts.Node): OperandEvaluation {
-        const evaluation: OperandEvaluation = {
-            writes: false,
-            throws: false,
-            awaits: false,
-            state: false,
-            reads: new Set(),
-            assigns: new Set(),
-        };
-        const assign = (target: ts.Expression): void => {
-            const node = this.skipParentheses(target);
-            if (!ts.isIdentifier(node)) {
-                if (!(owner && this.freshRoot(node, owner)))
-                    evaluation.writes = true;
-                return;
-            }
-            const symbol = declaredSymbol(this.checker, node);
-            const declaration =
-                symbol?.valueDeclaration ?? symbol?.declarations?.[0];
-            if (owner) {
-                if (!declaration || !this.within(owner, declaration))
-                    evaluation.writes = true;
-            } else if (
-                symbol &&
-                declaration &&
-                !this.captured.has(symbol) &&
-                this.within(this.entry.declaration, declaration)
-            )
-                evaluation.assigns.add(symbol);
-            else evaluation.writes = true;
-        };
-        const call = (effects: CallEffects): void => {
-            evaluation.writes ||= effects.writes;
-            evaluation.throws ||= effects.throws;
-        };
-        const visit = (current: ts.Node): void => {
-            if (ts.isTypeNode(current) || ts.isClassExpression(current)) return;
-            if (isFunctionLike(current)) {
-                if (isInlineCallback(current, this.checker) && current.body)
-                    visit(current.body);
-                return;
-            }
-            if (
-                ts.isAwaitExpression(current) ||
-                ts.isYieldExpression(current)
-            ) {
-                call({ writes: true, throws: true });
-                evaluation.awaits ||= ts.isAwaitExpression(current);
-            } else if (ts.isThrowStatement(current)) evaluation.throws = true;
-            else if (ts.isDeleteExpression(current)) assign(current.expression);
-            else if (ts.isTaggedTemplateExpression(current))
-                call({ writes: true, throws: true });
-            else if (ts.isCallExpression(current))
-                call(this.callEffects(current, owner));
-            else if (ts.isNewExpression(current))
-                call(
-                    this.pureConstruction(current)
-                        ? {
-                              writes: false,
-                              throws:
-                                  ts.isIdentifier(current.expression) &&
-                                  THROWING_CONSTRUCTIONS.has(
-                                      current.expression.text,
-                                  ),
-                          }
-                        : { writes: true, throws: true },
-                );
-            else if (
-                ts.isBinaryExpression(current) &&
-                current.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                current.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-            )
-                assign(current.left);
-            else if (
-                (ts.isPrefixUnaryExpression(current) ||
-                    ts.isPostfixUnaryExpression(current)) &&
-                (current.operator === ts.SyntaxKind.PlusPlusToken ||
-                    current.operator === ts.SyntaxKind.MinusMinusToken)
-            )
-                assign(current.operand);
-            else if (ts.isPropertyAccessExpression(current)) {
-                if (!this.constantMember(current)) evaluation.state = true;
-                visit(current.expression);
-                return;
-            } else if (ts.isElementAccessExpression(current))
-                evaluation.state = true;
-            else if (ts.isIdentifier(current)) {
-                if (!owner) this.operandRead(current, evaluation);
-                return;
-            } else if (ts.isShorthandPropertyAssignment(current)) {
-                if (!owner) this.operandRead(current.name, evaluation);
-                return;
-            } else if (ts.isPropertyAssignment(current)) {
-                visit(current.initializer);
-                return;
-            }
-            ts.forEachChild(current, visit);
-        };
-        visit(root);
-        return evaluation;
-    }
-
-    private operandEvaluation(node: ts.Expression): OperandEvaluation {
-        return this.evaluationOf(node);
-    }
-
-    /**
-     * What a call does: a pure library call nothing; the pin's error helper
-     * throws; a pinned function what its body does; a library method
-     * writing an object the calling function created itself nothing its
-     * caller sees; anything else may write and throw.
-     */
-    private callEffects(node: ts.CallExpression, owner?: ts.Node): CallEffects {
-        if (isPinnedErrorCall(node.getSourceFile(), node))
-            return { writes: false, throws: true };
-        const callee = this.skipParentheses(node.expression);
-        if (this.pureCall(node))
-            return {
-                writes: false,
-                throws:
-                    ts.isPropertyAccessExpression(callee) &&
-                    this.libraryName(callee.expression) === "JSON" &&
-                    callee.name.text === "parse",
-            };
-        if (
-            owner &&
-            ts.isPropertyAccessExpression(callee) &&
-            this.libraryReceiver(callee.expression) &&
-            this.freshRoot(callee.expression, owner)
-        )
-            return { writes: false, throws: false };
-        // A WebGPU method runs no program code and writes no program
-        // state; it may throw (a validation error).
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            this.webgpuReceiver(callee.expression)
-        )
-            return { writes: false, throws: true };
-        const declaration = ts.isIdentifier(callee)
-            ? this.model.declarationOf(callee)
-            : undefined;
-        // A function declaration, or a `const` bound to a function literal.
-        const called =
-            declaration &&
-            ts.isFunctionDeclaration(declaration) &&
-            declaration.body
-                ? declaration
-                : ts.isIdentifier(callee)
-                  ? this.constFunction(callee)
-                  : undefined;
-        if (called?.body) {
-            const known = functionEffects.get(called);
-            if (known) return known;
-            // A recursive call reads as what the rest of the body does.
-            const effects: CallEffects = { writes: false, throws: false };
-            functionEffects.set(called, effects);
-            const body = this.evaluationOf(called.body, called);
-            effects.writes = body.writes;
-            effects.throws = body.throws;
-            return effects;
-        }
-        return { writes: true, throws: true };
-    }
-
-    /** The function literal a `const` binding holds, which it never rebinds. */
-    private constFunction(
-        name: ts.Identifier,
-    ): ts.ArrowFunction | ts.FunctionExpression | undefined {
-        const declaration = declaredSymbol(
-            this.checker,
-            name,
-        )?.valueDeclaration;
-        if (
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            !ts.isVariableDeclarationList(declaration.parent) ||
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
-            !declaration.initializer
-        )
-            return undefined;
-        const initializer = this.skipParentheses(declaration.initializer);
-        return ts.isArrowFunction(initializer) ||
-            ts.isFunctionExpression(initializer)
-            ? initializer
-            : undefined;
-    }
-
-    /** Whether a receiver is a WebGPU object (`@webgpu/types`). */
-    private webgpuReceiver(receiver: ts.Expression): boolean {
-        const symbol = this.checker
-            .getNonNullableType(this.checker.getTypeAtLocation(receiver))
-            .getSymbol();
-        return (
-            symbol !== undefined &&
-            symbol.name.startsWith("GPU") &&
-            (symbol.declarations ?? []).some((declaration) =>
-                declaration
-                    .getSourceFile()
-                    .fileName.replaceAll("\\", "/")
-                    .includes("/@webgpu/types/"),
-            )
-        );
-    }
-
-    /** Whether a receiver is a library array, typed array or collection. */
-    private libraryReceiver(receiver: ts.Expression): boolean {
-        const type = this.checker.getNonNullableType(
-            this.checker.getTypeAtLocation(receiver),
-        );
-        if (this.checker.isArrayType(type) || this.checker.isTupleType(type))
-            return true;
-        const symbol = type.getSymbol();
-        return (
-            symbol !== undefined &&
-            declaredInDefaultLibrary(symbol) &&
-            (TYPED_ARRAY_TYPES.has(symbol.name) ||
-                COLLECTION_TYPES.has(symbol.name))
-        );
-    }
-
-    /**
-     * Whether a member chain (`list[i].x`) starts at an object `owner`
-     * created itself: a local initialized by a literal or a construction.
-     */
-    private freshRoot(node: ts.Expression, owner: ts.Node): boolean {
-        let root = this.skipParentheses(node);
-        while (
-            ts.isPropertyAccessExpression(root) ||
-            ts.isElementAccessExpression(root)
-        )
-            root = this.skipParentheses(root.expression);
-        if (!ts.isIdentifier(root)) return false;
-        const declaration = declaredSymbol(
-            this.checker,
-            root,
-        )?.valueDeclaration;
-        if (
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            !this.within(owner, declaration) ||
-            !declaration.initializer
-        )
-            return false;
-        const initializer = this.skipParentheses(declaration.initializer);
-        return (
-            ts.isArrayLiteralExpression(initializer) ||
-            ts.isObjectLiteralExpression(initializer) ||
-            ts.isNewExpression(initializer)
-        );
-    }
-
-    /**
-     * A binding an operand reads: the frame's own (by symbol), state (a
-     * binding a closure shares, or a module's), or a constant (a `const`,
-     * a function, a library global).
-     */
-    private operandRead(
-        node: ts.Identifier,
-        evaluation: OperandEvaluation,
-    ): void {
-        const symbol = declaredSymbol(this.checker, node);
-        if (!symbol) return;
-        const target = resolvedSymbol(this.checker, node) ?? symbol;
-        if (declaredInDefaultLibrary(target)) return;
-        const declaration = target.valueDeclaration ?? target.declarations?.[0];
-        if (
-            !declaration ||
-            ts.isFunctionDeclaration(declaration) ||
-            ts.isClassDeclaration(declaration) ||
-            ts.isEnumDeclaration(declaration)
-        )
-            return;
-        // A `const` never rebinds; what it holds is read through members.
-        if (
-            ts.isVariableDeclaration(declaration) &&
-            ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0
-        )
-            return;
-        if (
-            this.captured.has(symbol) ||
-            !this.within(this.entry.declaration, declaration)
-        ) {
-            evaluation.state = true;
-            return;
-        }
-        evaluation.reads.add(symbol);
-    }
-
-    /** A member read that is a constant: an enum member or a library constant (`Math.PI`). */
-    private constantMember(node: ts.PropertyAccessExpression): boolean {
-        return (
-            this.checker.getConstantValue(node) !== undefined ||
-            this.libraryName(node.expression) !== undefined
-        );
-    }
-
-    /**
-     * A library call that changes nothing a program observes: a pure
-     * global or namespace method, or a method of a string, number, array,
-     * typed array, collection or DataView that does not write its receiver.
-     * A function value it is handed runs code the analysis cannot see.
-     */
-    private pureCall(node: ts.CallExpression): boolean {
-        if (
-            node.arguments.some(
-                (argument) =>
-                    !(
-                        (ts.isArrowFunction(argument) ||
-                            ts.isFunctionExpression(argument)) &&
-                        isInlineCallback(argument, this.checker)
-                    ) &&
-                    this.checker.getTypeAtLocation(argument).getCallSignatures()
-                        .length > 0,
-            )
-        )
-            return false;
-        const callee = this.skipParentheses(node.expression);
-        if (ts.isIdentifier(callee)) {
-            const symbol = resolvedSymbol(this.checker, callee);
-            return (
-                symbol !== undefined &&
-                declaredInDefaultLibrary(symbol) &&
-                PURE_LIBRARY_GLOBALS.has(callee.text)
-            );
-        }
-        if (!ts.isPropertyAccessExpression(callee)) return false;
-        const method = callee.name.text;
-        const library = this.libraryName(callee.expression);
-        if (library !== undefined)
-            return library === "Math"
-                ? method !== "random"
-                : (PURE_LIBRARY_METHODS.get(library)?.has(method) ?? false);
-        const receiver = this.checker.getNonNullableType(
-            this.checker.getTypeAtLocation(callee.expression),
-        );
-        if (
-            receiver.flags &
-            (ts.TypeFlags.StringLike |
-                ts.TypeFlags.NumberLike |
-                ts.TypeFlags.BooleanLike)
-        )
-            return true;
-        if (
-            this.checker.isArrayType(receiver) ||
-            this.checker.isTupleType(receiver)
-        )
-            return !MUTATING_ARRAY_METHODS.has(method);
-        const symbol = receiver.getSymbol();
-        if (!symbol || !declaredInDefaultLibrary(symbol)) return false;
-        if (TYPED_ARRAY_TYPES.has(symbol.name))
-            return !MUTATING_ARRAY_METHODS.has(method);
-        if (COLLECTION_TYPES.has(symbol.name))
-            return !MUTATING_COLLECTION_METHODS.has(method);
-        if (symbol.name === "DataView") return method.startsWith("get");
-        // A regular expression literal without a `lastIndex` to advance.
-        const literal = this.skipParentheses(callee.expression);
-        if (
-            symbol.name === "RegExp" &&
-            ts.isRegularExpressionLiteral(literal)
-        ) {
-            const flags = literal.text.slice(literal.text.lastIndexOf("/") + 1);
-            return !flags.includes("g") && !flags.includes("y");
-        }
-        return false;
-    }
-
-    /** A library construction that only allocates. */
-    private pureConstruction(node: ts.NewExpression): boolean {
-        if (!ts.isIdentifier(node.expression)) return false;
-        const symbol = resolvedSymbol(this.checker, node.expression);
-        return (
-            symbol !== undefined &&
-            declaredInDefaultLibrary(symbol) &&
-            (PURE_CONSTRUCTIONS.has(node.expression.text) ||
-                THROWING_CONSTRUCTIONS.has(node.expression.text))
-        );
-    }
-
-    /**
-     * Whether two operands' evaluations observe each other's order: one
-     * writes what the other reads, writes or throws past; both may throw
-     * (which error escapes); one assigns a frame binding the other reads
-     * or assigns.
-     */
-    private conflicts(a: OperandEvaluation, b: OperandEvaluation): boolean {
-        const binds = (from: OperandEvaluation, to: OperandEvaluation) =>
-            [...from.assigns].some(
-                (symbol) => to.reads.has(symbol) || to.assigns.has(symbol),
-            );
-        return (
-            (a.writes && (b.state || b.writes || b.throws)) ||
-            (b.writes && (a.state || a.throws)) ||
-            (a.throws && b.throws) ||
-            binds(a, b) ||
-            binds(b, a)
-        );
-    }
-
-    /**
      * The operands a form must evaluate ahead of itself, by index, or none.
-     * In an unordered form, every operand whose order another observes
-     * (`conflicts`) except the last such operand; in any form, an awaited
-     * operand (a lambda cannot hold a `co_await`), with every such operand
-     * before it.
+     * Which operands another one's evaluation could overtake is the entry
+     * compiler's own analysis (`EvaluationOrder.operandsToPin`, over the
+     * pinned bodies the operands call); only where the temporaries go is
+     * this lowering's. In an unordered form, every operand a later one
+     * conflicts with; in any form, an awaited operand (a lambda cannot hold
+     * a `co_await`), with every such operand before it.
      */
     private orderPlan(
         operands: readonly ts.Expression[],
         order: OperandOrder,
     ): Set<number> | undefined {
         if (operands.length === 0) return undefined;
-        const evaluations = operands.map((operand) =>
-            this.operandEvaluation(operand),
-        );
-        const sensitive = evaluations.map((evaluation, index) =>
-            evaluations.some(
-                (other, at) =>
-                    at !== index && this.conflicts(evaluation, other),
-            ),
-        );
+        const awaited = operands.map((operand) => this.containsAwait(operand));
+        if (order === "ordered" && !awaited.some((awaits) => awaits))
+            return undefined;
+        const pinned = this.model.evaluationOrder.operandsToPin(operands);
         const hoisted = new Set<number>();
-        if (order === "unordered") {
-            const last = sensitive.lastIndexOf(true);
-            sensitive.forEach((flag, index) => {
-                if (flag && index !== last) hoisted.add(index);
+        if (order === "unordered")
+            pinned.forEach((pin, index) => {
+                if (pin) hoisted.add(index);
             });
-        }
-        evaluations.forEach((evaluation, index) => {
-            if (
-                evaluation.awaits &&
-                (operands.length > 1 || order === "ordered")
-            )
+        awaited.forEach((awaits, index) => {
+            if (awaits && (operands.length > 1 || order === "ordered"))
                 hoisted.add(index);
         });
         if (hoisted.size === 0) return undefined;
         const latest = Math.max(...hoisted);
-        sensitive.forEach((flag, index) => {
-            if (flag && index < latest) hoisted.add(index);
+        pinned.forEach((pin, index) => {
+            if (pin && index < latest) hoisted.add(index);
         });
         return hoisted;
     }
@@ -7146,11 +6697,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
      * change what the target reads.
      */
     private refuseCompoundHazard(node: ts.BinaryExpression): void {
-        const target = this.operandEvaluation(node.left);
-        const value = this.operandEvaluation(node.right);
         if (
-            (value.writes && target.state) ||
-            [...target.reads].some((symbol) => value.assigns.has(symbol))
+            this.model.evaluationOrder.operandsToPin([node.left, node.right])[0]
         )
             this.refuse(
                 node,
@@ -7662,7 +7210,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                       ? owner.element
                       : undefined;
             if (items) {
-                const values = `bbl::pinned::array_from_${owner.kind === "map" ? view : "values"}(${this.presentValue(unwrapped.expression.expression)})`;
+                const collection = this.presentValue(
+                    unwrapped.expression.expression,
+                );
+                const values =
+                    owner.kind === "map"
+                        ? `bbl::js::array_from_iterable<${this.cpp(items)}>(${collection}, [](const auto& entry) { return entry.${view === "keys" ? "first" : "second"}; })`
+                        : `bbl::js::array_from_iterable<${this.cpp(items)}>(${collection})`;
                 return finish(
                     mapper
                         ? `bbl::pinned::array_map<${this.cpp(element)}>(${values}, ${this.callbackArgument(mapper, [items, number], element)})`
@@ -7685,7 +7239,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         source,
                         `Pinned Array.from of ${this.cpp(shape)}.`,
                     );
-        const values = `bbl::pinned::array_from<${this.cpp(items)}>(${this.presentValue(unwrapped)})`;
+        // A typed array may be a view over another buffer, which only its
+        // element reads (`array_from_typed`) reach.
+        const values =
+            shape.kind === "typed"
+                ? `bbl::pinned::array_from_typed<${this.cpp(items)}>(${this.presentValue(unwrapped)})`
+                : `bbl::js::array_from_iterable<${this.cpp(items)}>(${this.presentValue(unwrapped)})`;
         return finish(
             mapper
                 ? `bbl::pinned::array_map<${this.cpp(element)}>(${values}, ${this.callbackArgument(mapper, [items, number], element)})`
@@ -7737,11 +7296,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 `${indent}return {${this.convert(entry.elements[0]!, shape.key)}, ${this.convert(entry.elements[1]!, shape.value)}};`,
             ],
         );
+        // Each entry goes straight into the map: the mapper cannot see the
+        // map the constructor has not returned yet, so no intermediate
+        // array of pairs is observable.
         const items = this.temporary("items");
         const mapped = this.temporary("mapper");
-        const pairs = this.temporary("entries");
         const map = this.temporary("map");
-        return `[&] { const auto ${items} = ${this.presentValue(seed.expression.expression)}; const auto ${mapped} = ${lambda}; std::vector<${pair}> ${pairs}; for (std::size_t index = 0; index < ${items}.size(); ++index) ${pairs}.push_back(${mapped}(${items}[index], static_cast<double>(index))); ${this.cpp(shape)} ${map}{}; for (auto& entry : ${pairs}) ${map}.set(std::move(entry.first), std::move(entry.second)); return ${map}; }()`;
+        return `[&] { const auto ${items} = ${this.presentValue(seed.expression.expression)}; const auto ${mapped} = ${lambda}; ${this.cpp(shape)} ${map}{}; for (std::size_t index = 0; index < ${items}.size(); ++index) { auto entry = ${mapped}(${items}[index], static_cast<double>(index)); ${map}.set(std::move(entry.first), std::move(entry.second)); } return ${map}; }()`;
     }
 
     /** The weak key a WeakMap or WeakSet files an object under. */
@@ -7790,7 +7351,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 break;
             }
             case "Number": {
-                const predicate = NUMBER_PREDICATES.get(name);
+                const predicate = numberPredicate(name);
                 if (predicate && first && node.arguments.length === 1) {
                     const shape = this.shapeAt(first);
                     if (shape.kind === "json") {
@@ -8139,7 +7700,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     return this.refuse(node, "Pinned includes from an index.");
                 return `bbl::js::array_includes(${receiver()}, ${this.convert(first, element)})`;
             case "shift":
-                return `bbl::pinned::array_shift<${this.cpp(optionalOf(element))}>(${receiver()})`;
+                return this.collectionResult(
+                    `bbl::js::array_shift_or_absent(${receiver()})`,
+                    element,
+                );
             case "join": {
                 const separator = first
                     ? this.convert(first, { kind: "string" })
@@ -8195,7 +7759,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ts.isPropertyAccessExpression(unwrapped) &&
             this.libraryName(unwrapped.expression) === "Number"
         ) {
-            const predicate = NUMBER_PREDICATES.get(unwrapped.name.text);
+            const predicate = numberPredicate(unwrapped.name.text);
             const element = parameters[0];
             if (!predicate || !element)
                 return this.refuse(argument, "Pinned library callback.");

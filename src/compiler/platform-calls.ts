@@ -228,7 +228,8 @@ export class PlatformCalls {
     /**
      * `scene._beforeRender.push(callback)`, `.indexOf(callback)` and
      * `.splice(index, count)`: the scene's before-render list
-     * (`SceneState::before_render`), its entries keyed by callback identity.
+     * (`SceneState::before_render`), its entries keyed by callback identity,
+     * through the scene-list helpers lowered libraries share (`runtime.hpp`).
      */
     private compileSceneBeforeRenderList(
         call: ts.CallExpression,
@@ -262,7 +263,7 @@ export class PlatformCalls {
                 );
                 return {
                     kind: "number",
-                    cpp: `[&](auto& list) { list.push_back(bbl::js::Callback<void(double)>(static_cast<std::size_t>(${compiled.identity}), ${compiled.cpp})); return static_cast<double>(list.size()); }(${list})`,
+                    cpp: `bbl::scene_list_push(${list}, bbl::js::Callback<void(double)>(static_cast<std::size_t>(${compiled.identity}), ${compiled.cpp}))`,
                     impure: true,
                 };
             }
@@ -274,7 +275,7 @@ export class PlatformCalls {
                 );
                 return {
                     kind: "number",
-                    cpp: `[&](const auto& list, std::size_t identity) { for (std::size_t index = 0; index < list.size(); ++index) if (list[index].identity() == identity) return static_cast<double>(index); return -1.0; }(${list}, static_cast<std::size_t>(${identity}))`,
+                    cpp: `bbl::scene_list_index_of(${list}, static_cast<std::size_t>(${identity}))`,
                     impure: true,
                 };
             }
@@ -290,7 +291,7 @@ export class PlatformCalls {
                 );
                 return {
                     kind: "void",
-                    cpp: `[&](auto& list, double start, double count) { if (!(start >= 0 && count >= 0 && start + count <= static_cast<double>(list.size()))) throw std::out_of_range("A before-render splice is outside the list."); const auto first = list.begin() + static_cast<std::ptrdiff_t>(start); list.erase(first, first + static_cast<std::ptrdiff_t>(count)); }(${list}, ${start}, ${count})`,
+                    cpp: `bbl::scene_list_splice(${list}, ${start}, ${count})`,
                 };
             }
             default:

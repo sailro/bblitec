@@ -1334,7 +1334,7 @@ export class PinnedNumericLowerer {
     }
 
     /** Whether control never continues past `statement`. */
-    private terminates(statement: ts.Statement): boolean {
+    protected terminates(statement: ts.Statement): boolean {
         if (
             ts.isReturnStatement(statement) ||
             ts.isThrowStatement(statement) ||

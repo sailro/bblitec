@@ -22,6 +22,7 @@ import {
     argumentAt,
     identifierText,
     isAssignmentExpression,
+    outermostWrapper,
     stringLiteralText,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
@@ -1357,8 +1358,13 @@ export class BrowserErasure {
             ) {
                 return true;
             }
-            // Runtime web platform classes (`instanceof`, `new`) are native.
-            if (NATIVE_PLATFORM_CLASSES.has(global) && global !== "URL")
+            // Runtime web platform classes (`instanceof`, `new`) are native;
+            // URL's statics (`URL.createObjectURL`) are the browser-file
+            // bridge's, classified as any other browser read.
+            if (
+                NATIVE_PLATFORM_CLASSES.has(global) &&
+                !(global === "URL" && this.isStaticMemberReceiver(unwrapped))
+            )
                 return false;
             const value = this.context.bindings.lookupOptional(unwrapped);
             const bound = value?.kind;
@@ -1529,6 +1535,17 @@ export class BrowserErasure {
                 callee.expression.name.text === "head") &&
             this.context.libraryGlobal(callee.expression.expression) ===
                 "document"
+        );
+    }
+
+    /** Whether an expression is the object a member is read off (`URL.createObjectURL`). */
+    private isStaticMemberReceiver(expression: ts.Expression): boolean {
+        const outer = outermostWrapper(expression);
+        const parent = outer.parent;
+        return (
+            (ts.isPropertyAccessExpression(parent) ||
+                ts.isElementAccessExpression(parent)) &&
+            parent.expression === outer
         );
     }
 

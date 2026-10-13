@@ -6814,6 +6814,41 @@ void remove_from_scene(Scene& scene, const SceneNodeHandle& node);
 void on_before_render(Scene& scene, js::Callback<void(double)> callback);
 void run_scene_before_render(Scene& scene, double delta_ms);
 void on_scene_dispose(Scene& scene, js::Callback<void()> callback);
+
+// The scene's own lists the pin reaches as arrays (`scene._beforeRender`,
+// `_disposables`, `_renderables`: SceneState::before_render, disposables,
+// external_renderables), as scene programs and lowered libraries both spell
+// them: entries are found by identity, and a splice takes the in-range start
+// the pin reads from `indexOf`.
+
+/** `list.push(entry)`: the list's new length. */
+template <class List, class Entry> double scene_list_push(List& list, Entry entry) {
+    list.push_back(std::move(entry));
+    return static_cast<double>(list.size());
+}
+/** Whether a list entry is `key`: the same object, or a callback of that identity. */
+template <class Entry, class Key>
+[[nodiscard]] bool scene_list_entry_is(const Entry& entry, const Key& key) {
+    if constexpr (std::is_same_v<Key, std::size_t>)
+        return entry.identity() == key;
+    else
+        return entry == key;
+}
+/** `list.indexOf(key)`: the first entry that is `key`, or -1. */
+template <class List, class Key>
+[[nodiscard]] double scene_list_index_of(const List& list, const Key& key) {
+    for (std::size_t index = 0; index < list.size(); ++index)
+        if (scene_list_entry_is(list[index], key))
+            return static_cast<double>(index);
+    return -1.0;
+}
+/** `list.splice(start, count)`. */
+template <class List> void scene_list_splice(List& list, double start, double count) {
+    if (!(start >= 0 && count >= 0 && start + count <= static_cast<double>(list.size())))
+        throw std::out_of_range("A scene list splice is outside the list.");
+    const auto first = list.begin() + static_cast<std::ptrdiff_t>(start);
+    list.erase(first, first + static_cast<std::ptrdiff_t>(count));
+}
 void on_key_down(Engine& engine, std::size_t identity,
                  js::Callback<void(const PlatformKeyboardEvent&)> callback, bool once = false);
 void off_key_down(Engine& engine, std::size_t identity);

@@ -1,8 +1,8 @@
 #pragma once
 
 // `Array.from` as the record lowerer (src/lowering/pinned-record-lowerer.ts)
-// spells it: a fresh array of a source's elements, read once in order, then
-// mapped by `array_map` when the pin passes a mapper.
+// spells it beyond `js::array_from_iterable`: a typed array read through its
+// view, `{ length }` with a mapper, a tuple assertion and a typed-array set.
 
 #include <bblite/js_data.hpp>
 #include <bblite/js_json.hpp>
@@ -15,56 +15,17 @@
 
 namespace bbl::pinned {
 
-/** `Array.from(array)`: a shallow copy. */
-template <class T> [[nodiscard]] js::Array<T> array_from(const js::Array<T>& values) {
-    return js::Array<T>(values.begin(), values.end());
-}
-
-/** `Array.from(typedArray)`: its elements as numbers. */
-template <class T, class V> [[nodiscard]] js::Array<T> array_from(const js::TypedArray<V>& values) {
-    std::vector<T> items;
+/**
+ * `Array.from(typedArray)`: its elements as numbers, read through the view
+ * (an array, a tuple or a collection view is `js::array_from_iterable`'s).
+ */
+template <class T, class V>
+[[nodiscard]] js::Array<T> array_from_typed(const js::TypedArray<V>& values) {
+    js::Array<T> items;
     items.reserve(values.size());
     for (std::size_t index = 0; index < values.size(); ++index)
         items.push_back(static_cast<T>(values.load(index)));
-    return js::Array<T>(items.begin(), items.end());
-}
-
-/** `Array.from(tuple)`: its elements. */
-template <class T, class Tuple>
-    requires requires(const Tuple& values) {
-        values.size();
-        static_cast<T>(values[0]);
-    }
-[[nodiscard]] js::Array<T> array_from(const Tuple& values) {
-    std::vector<T> items;
-    items.reserve(values.size());
-    for (std::size_t index = 0; index < values.size(); ++index)
-        items.push_back(static_cast<T>(values[index]));
-    return js::Array<T>(items.begin(), items.end());
-}
-
-/** `Array.from(map.values())`: the values in insertion order. */
-template <class K, class V> [[nodiscard]] js::Array<V> array_from_values(const js::Map<K, V>& map) {
-    std::vector<V> items;
-    for (const auto& entry : map)
-        items.push_back(entry.second);
-    return js::Array<V>(items.begin(), items.end());
-}
-
-/** `Array.from(map.keys())`: the keys in insertion order. */
-template <class K, class V> [[nodiscard]] js::Array<K> array_from_keys(const js::Map<K, V>& map) {
-    std::vector<K> items;
-    for (const auto& entry : map)
-        items.push_back(entry.first);
-    return js::Array<K>(items.begin(), items.end());
-}
-
-/** `Array.from(set.values())`: the elements in insertion order. */
-template <class T> [[nodiscard]] js::Array<T> array_from_values(const js::Set<T>& set) {
-    std::vector<T> items;
-    for (const auto& item : set)
-        items.push_back(item);
-    return js::Array<T>(items.begin(), items.end());
+    return items;
 }
 
 /**
@@ -74,11 +35,11 @@ template <class T> [[nodiscard]] js::Array<T> array_from_values(const js::Set<T>
 template <class R, class F>
 [[nodiscard]] js::Array<R> array_from_length(double length, F&& mapper) {
     const std::size_t count = array_length(length);
-    std::vector<R> items;
+    js::Array<R> items;
     items.reserve(count);
     for (std::size_t index = 0; index < count; ++index)
         items.push_back(mapper(js::JsonValue{}, static_cast<double>(index)));
-    return js::Array<R>(items.begin(), items.end());
+    return items;
 }
 
 /**

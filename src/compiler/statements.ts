@@ -153,6 +153,7 @@ interface StatementLoweringContext extends Pick<
     | "allocateTemporaryCppName"
     | "declarations"
     | "emitAssignment"
+    | "noteHeldNativeBindings"
     | "emitWindowLogicalAssignment"
     | "emitDelete"
     | "compileValue"
@@ -4699,6 +4700,7 @@ export class StatementLowerer {
         ) {
             if (emitBigIntCompoundAssignment(context, unwrapped)) return;
             if (ts.isIdentifier(unwrapped.left)) {
+                context.noteHeldNativeBindings(unwrapped);
                 const target = context.bindings.lookup(unwrapped.left);
                 const operator = assignmentOperator;
                 if (

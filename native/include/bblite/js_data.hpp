@@ -4860,7 +4860,7 @@ template <typename T>
 inline typename ArrayRemovalResult<T>::Type array_shift_or_absent(Array<T>& values) {
     if (values.empty())
         return {};
-    T first = values.front();
+    T first = std::move(values.front());
     values.erase(values.begin());
     return first;
 }

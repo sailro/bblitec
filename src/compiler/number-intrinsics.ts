@@ -51,6 +51,11 @@ const predicates: ReadonlyMap<
     ],
 ]);
 
+/** The native function of one of `Number`'s predicates over a double (`isFinite`, ...). */
+export function numberPredicateCpp(name: string): string | undefined {
+    return predicates.get(name)?.cpp;
+}
+
 /**
  * `Number.isFinite` and its siblings named as values (`list.every(Number.isFinite)`):
  * a function of one number, which ignores the index and array an array
