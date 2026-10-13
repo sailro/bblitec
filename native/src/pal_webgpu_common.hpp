@@ -2,6 +2,7 @@
 
 #include <bblite/byte_hash.hpp>
 #include <bblite/gpu.hpp>
+#include <bblite/gpu_renderable.hpp>
 #include <bblite/js_promise.hpp>
 #include <bblite/pal_offscreen.hpp>
 

@@ -132,10 +132,12 @@ struct StreamRenderable final : bbl::GpuExternalRenderable {
                      GpuHandle render_module, GpuHandle records, double count, Projection base)
         : engine(owner), device(gpu), pipelines(shared), module(std::move(render_module)),
           canonical(std::move(records)), capacity(count), projection(std::move(base)) {}
+    /** `getSceneBindGroupLayout(engine)`: the target's group-0 layout. */
+    GpuHandle scene_layout;
     double order() const override { return 200; }
     bool transparent() const override { return true; }
-    bbl::GpuDrawBindingHandle bind(const GpuHandle& scene_layout,
-                                   const bbl::GpuRenderTargetSignature& signature) override {
+    std::optional<std::array<double, 3>> world_center() const override { return std::nullopt; }
+    bbl::GpuDrawBindingHandle bind(const bbl::GpuRenderTargetSignature& signature) override {
         auto binding = std::make_shared<StreamBinding>(
             render_pipeline(device, module, scene_layout, signature),
             std::make_shared<StreamBatch>(engine, device, pipelines, canonical, capacity), device,
@@ -174,11 +176,12 @@ inline void check_render(bbl::GpuDevice& device, const Pipelines& p, const Shade
         device.create_shader_module({std::string("splat stream render"), shaders.render});
     auto renderable = std::make_shared<StreamRenderable>(engine, device, p, module, canonical,
                                                          count, test_projection(count));
+    renderable->scene_layout = target.scene_layout;
     scene.state->external_renderables.push_back(renderable);
     scene.state->renderable_version = 1;
     bbl::pal::ExternalRenderablePass pass;
     target.configure(1);
-    pass.follow(engine, scene, target.scene_layout, target.signature, false);
+    pass.follow(engine, scene, target.signature);
     require(!pass.empty() && renderable->bindings.size() == 1, "one binding per signature");
     const bbl::GpuDrawUpdateContext context{static_cast<double>(target.width),
                                             static_cast<double>(target.height), std::nullopt};
@@ -190,7 +193,8 @@ inline void check_render(bbl::GpuDevice& device, const Pipelines& p, const Shade
                         "the frame encoder is current while flushing only");
             },
             [&](const bbl::GpuEncoderHandle& render) {
-                require(pass.draw(render, target.scene_group) == 1, "one draw");
+                require(pass.size() == 1 && pass.draw(render, target.scene_group, 0) == 1,
+                        "one draw");
             });
     };
     std::vector<std::uint8_t> images[2];
@@ -200,7 +204,7 @@ inline void check_render(bbl::GpuDevice& device, const Pipelines& p, const Shade
     require(batch.recorded == 1, "an unchanged projection key records once");
     require(images[0] == images[1], "the second frame draws the retained sort");
     // An unchanged version and signature keep the binding.
-    pass.follow(engine, scene, target.scene_layout, target.signature, false);
+    pass.follow(engine, scene, target.signature);
     require(renderable->bindings.size() == 1, "an unchanged pass keeps its binding");
     const auto coverage = [](const std::vector<std::uint8_t>& image) {
         std::size_t covered = 0;
@@ -214,7 +218,7 @@ inline void check_render(bbl::GpuDevice& device, const Pipelines& p, const Shade
     // The engine's default four samples: a new signature, a new binding; the
     // binding it replaces retires its batch behind the GPU.
     target.configure(4);
-    pass.follow(engine, scene, target.scene_layout, target.signature, false);
+    pass.follow(engine, scene, target.signature);
     require(renderable->bindings.size() == 2, "a new signature rebinds");
     require(batch.retired_ && batch.destroyed, "a dropped batch retires and is destroyed");
     const auto multisampled = frame();

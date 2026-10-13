@@ -215,6 +215,10 @@ void retire_gpu_resources(std::shared_ptr<pal::GpuRetirementState>, pal::GpuReti
     retirement();
 }
 void dispose_gpu_resource_retirements(std::shared_ptr<pal::GpuRetirementState>) {}
+void run_gpu_resource_callbacks(pal::GpuRetirementBatch disposers) {
+    for (const auto& dispose : *disposers)
+        dispose();
+}
 } // namespace bbl
 
 int main(int argc, char** argv) {

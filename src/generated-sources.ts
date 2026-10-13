@@ -467,3 +467,21 @@ export function reachesSharedSpriteAtlasHeader(
         features.includes(feature),
     );
 }
+
+/**
+ * The transparent bucket's comparator and sort distance
+ * (`transparent_order.hpp`), which `pal_transparent_order.hpp` reads
+ * wherever a billboard or an external renderable can join a transparent mesh.
+ */
+const transparentOrderHeaderFeatures = [
+    "sprite:billboard",
+    "renderer:external-renderables",
+] as const;
+
+export function reachesTransparentOrderHeader(
+    features: readonly string[],
+): boolean {
+    return transparentOrderHeaderFeatures.some((feature) =>
+        features.includes(feature),
+    );
+}

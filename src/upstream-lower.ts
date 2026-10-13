@@ -35,6 +35,8 @@ import {
     SPLAT_STREAM_SHADER_MODULES,
 } from "./lowering/splat-stream-shaders.js";
 import { splatStreamLibraryHeader } from "./lowering/splat-stream-library.js";
+import { transparentOrderHeader } from "./lowering/transparent-order-lowerer.js";
+import { assertExternalRenderableContracts } from "./lowering/external-renderable-contract.js";
 import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
 import { TextWeightLowerer } from "./lowering/text-weight-lowerer.js";
 import { cameraChangeKeyHeader } from "./lowering/camera-change-key-lowerer.js";
@@ -190,6 +192,7 @@ import {
 import {
     reachedGeneratedSources,
     reachesSharedSpriteAtlasHeader,
+    reachesTransparentOrderHeader,
 } from "./generated-sources.js";
 import {
     materialTextureSlotsHeader,
@@ -1463,6 +1466,17 @@ ${lowerThinInstanceSync(context)}
                 splatStreamLibraryHeader(context),
             );
         }
+        // The transparent bucket's comparator and sort distance, wherever a
+        // billboard or an external renderable can join a transparent mesh.
+        if (reachesTransparentOrderHeader(features))
+            this.tree.write(
+                "upstream/include/bblite/upstream/transparent_order.hpp",
+                transparentOrderHeader(context),
+            );
+        // The scene pass transcribes the pin's render-task protocol for
+        // external renderables; a pinned change to it refuses generation.
+        if (features.includes("renderer:external-renderables"))
+            assertExternalRenderableContracts(context);
         // The pin's utility modules, each deployed whole under its stem pair.
         const deployUtility = (module: PinnedUtilityModule): void => {
             const shader = wholeModuleShader(

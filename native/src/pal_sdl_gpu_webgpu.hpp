@@ -300,8 +300,6 @@ struct SdlWebGpuRenderPipeline final : GpuObject {
 struct SdlWebGpuBindGroup final : GpuObject {
     std::shared_ptr<SdlWebGpuBindGroupLayout> layout;
     std::vector<GpuBindGroupEntry> entries;
-    /** A renderer's own group (the scene's group 0), whose resources it binds itself. */
-    bool renderer_owned = false;
 };
 
 /** The resource at `binding` of a bound group, at its dynamic offset. */
@@ -320,8 +318,6 @@ inline SdlWebGpuResolved resolve_sdl_webgpu_binding(const std::vector<SdlWebGpuB
     if (index >= groups.size() || !groups[index].group)
         webgpu_refuse("a stage reads bind group " + std::to_string(index) + ", which is unset.");
     const auto& bound = groups[index];
-    if (bound.group->renderer_owned)
-        webgpu_refuse("a stage reads the renderer's group; its resources are the renderer's.");
     const auto found =
         std::find_if(bound.group->entries.begin(), bound.group->entries.end(),
                      [&](const auto& entry) { return webgpu_flags(entry.binding) == binding; });
@@ -1127,23 +1123,15 @@ struct SdlWebGpuDevice : GpuDevice {
         result->pass = pass;
         return result;
     }
-    /** The renderer's group 0 layout and group: SDL_GPU binds their resources per pass. */
-    static GpuHandle renderer_bind_group_layout() {
-        return std::make_shared<SdlWebGpuBindGroupLayout>();
-    }
-    static GpuHandle renderer_bind_group(const GpuHandle& layout) {
-        auto group = std::make_shared<SdlWebGpuBindGroup>();
-        group->layout = sdl_webgpu_object<SdlWebGpuBindGroupLayout>(layout, "bind group layout");
-        group->renderer_owned = true;
-        return group;
-    }
 };
 
-/** `Engine::webgpu_device` over the engine's SDL_GPU device, created on first use. */
+/** `Engine::webgpu_device` over the engine's SDL_GPU device and its scene group, created on first use. */
 inline SdlWebGpuDevice& sdl_engine_webgpu_device(Engine& engine, SDL_GPUDevice* device) {
-    if (!engine.webgpu_device)
+    if (!engine.webgpu_device) {
         engine.webgpu_device = std::make_shared<SdlWebGpuDevice>(
             device, gpu_required_limits(engine.options.required_limits));
+        bind_engine_scene_group(engine);
+    }
     auto* result = dynamic_cast<SdlWebGpuDevice*>(engine.webgpu_device.get());
     if (!result || result->device_identity() != device)
         webgpu_refuse("the engine's WebGPU device belongs to another GPU device.");

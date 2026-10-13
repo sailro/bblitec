@@ -723,26 +723,15 @@ struct DawnWebGpuDevice : GpuDevice {
         result->pass = require_dawn_resource(pass, "renderer pass");
         return result;
     }
-    /** A renderer-owned layout or group (the scene's group 0), retained by its handle. */
-    GpuHandle adopt_bind_group_layout(WGPUBindGroupLayout layout) const {
-        wgpuBindGroupLayoutAddRef(require_dawn_resource(layout, "renderer bind group layout"));
-        auto result = std::make_shared<DawnWebGpuBindGroupLayout>();
-        result->lease = owner->adopt<DawnWebGpuLayoutLease>(layout, "bind group layout");
-        return result;
-    }
-    GpuHandle adopt_bind_group(WGPUBindGroup group) const {
-        wgpuBindGroupAddRef(require_dawn_resource(group, "renderer bind group"));
-        auto result = std::make_shared<DawnWebGpuBindGroup>();
-        result->lease = owner->adopt<DawnWebGpuGroupLease>(group, "bind group");
-        return result;
-    }
 };
 
-/** `Engine::webgpu_device` over the engine's Dawn device, created on first use. */
+/** `Engine::webgpu_device` over the engine's Dawn device and its scene group, created on first use. */
 inline DawnWebGpuDevice& dawn_engine_webgpu_device(Engine& engine, WGPUInstance instance,
                                                    WGPUDevice device, WGPUQueue queue) {
-    if (!engine.webgpu_device)
+    if (!engine.webgpu_device) {
         engine.webgpu_device = std::make_shared<DawnWebGpuDevice>(instance, device, queue);
+        bind_engine_scene_group(engine);
+    }
     auto* result = dynamic_cast<DawnWebGpuDevice*>(engine.webgpu_device.get());
     if (!result || result->device_identity() != queue)
         webgpu_refuse("the engine's WebGPU device belongs to another GPU device.");
