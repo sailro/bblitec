@@ -9,6 +9,11 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
+import {
+    createServer,
+    type IncomingMessage,
+    type ServerResponse,
+} from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
 import type { TestContext } from "node:test";
 
@@ -575,4 +580,32 @@ export function runRmlUiFixture(
         }),
         "",
     );
+}
+
+/**
+ * A local HTTP server a native fixture fetches from: `handler` answers each
+ * request, and a response it `hold`s open is destroyed after the test, with
+ * the server. Resolves to the server's base URL.
+ */
+export async function serveHttpFixture(
+    t: TestContext,
+    handler: (
+        request: IncomingMessage,
+        response: ServerResponse,
+        hold: (open: ServerResponse) => void,
+    ) => void,
+): Promise<string> {
+    const held: ServerResponse[] = [];
+    const server = createServer((request, response) =>
+        handler(request, response, (open) => held.push(open)),
+    );
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    t.after(() => {
+        for (const response of held) response.destroy();
+        server.closeAllConnections();
+        server.close();
+    });
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    return `http://127.0.0.1:${address.port}`;
 }

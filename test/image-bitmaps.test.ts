@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -11,6 +10,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    serveHttpFixture,
 } from "./native-fixture.js";
 
 const WIDTH = 5;
@@ -157,7 +157,7 @@ int main() {
 
     // The library's flow: a streamed body into a Blob of its chunks, then a decode.
     const webp = readFileSync(join(directory, "sample.webp"));
-    const server = createServer((request, response) => {
+    const base = await serveHttpFixture(t, (request, response) => {
         if (request.url === "/sample.webp") {
             response.writeHead(200, { "content-type": "image/webp" });
             response.write(webp.subarray(0, 9));
@@ -169,14 +169,6 @@ int main() {
         });
         response.end("﻿héllo");
     });
-    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-    t.after(() => {
-        server.closeAllConnections();
-        server.close();
-    });
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const base = `http://127.0.0.1:${address.port}`;
     const source = `
         async function blobOf(url: string): Promise<Blob> {
             const response = await fetch(url, {});
