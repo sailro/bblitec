@@ -13,6 +13,20 @@
 import ts from "typescript";
 import { stringLiteral } from "../cpp-literals.js";
 import { isUtf8Label } from "../compiler/text-codecs.js";
+import {
+    AUDIO_BUFFER_PROPERTIES,
+    AUDIO_ELEMENT_PROPERTIES,
+    AUDIO_LISTENER_PARAMS,
+    AUDIO_PARAM_NAMES,
+    AUDIO_PARAM_SCHEDULES,
+    MEDIA_STREAM_PROPERTIES,
+    MEDIA_STREAM_TRACK_LISTS,
+    MEDIA_STREAM_TRACK_PROPERTIES,
+    PANNER_MODELS,
+    PANNER_PROPERTIES,
+    SOURCE_LOOP_MEMBERS,
+    listenerParamName,
+} from "../compiler/web-audio-members.js";
 import type {
     CallAdapter,
     MemberSpec,
@@ -492,7 +506,7 @@ const pannerProperty = (property: string): MemberSpec => ({
 });
 
 /** `panningModel` / `distanceModel`: Web Audio's spelling both ways. */
-const pannerModel = (which: "Panning" | "Distance"): MemberSpec => ({
+const pannerModel = (which: string): MemberSpec => ({
     shape: string,
     access: (owner) =>
         `${AUDIO}::audio_panner_model(${owner}, ${AUDIO}::PannerModel::${which})`,
@@ -500,22 +514,9 @@ const pannerModel = (which: "Panning" | "Distance"): MemberSpec => ({
         `${AUDIO}::audio_set_panner_model(${owner}, ${AUDIO}::PannerModel::${which}, ${value})`,
 });
 
-/** The listener's parameters, each `AudioParamName::Listener<Name>`. */
-const LISTENER_PARAMS = [
-    "positionX",
-    "positionY",
-    "positionZ",
-    "forwardX",
-    "forwardY",
-    "forwardZ",
-    "upX",
-    "upY",
-    "upZ",
-] as const;
-
 /** A legacy listener setter: the values its parameters take now. */
 const listenerSetter = (
-    names: readonly (typeof LISTENER_PARAMS)[number][],
+    names: readonly (typeof AUDIO_LISTENER_PARAMS)[number][],
 ): MemberSpec =>
     spelled(
         fn(
@@ -526,17 +527,30 @@ const listenerSetter = (
             `[&](const ${AUDIO}::AudioContextHandle& listener) { ${names
                 .map(
                     (name, index) =>
-                        `${AUDIO}::audio_param_set_value(${AUDIO}::audio_listener_param(listener, ${AUDIO}::AudioParamName::Listener${name[0]!.toUpperCase()}${name.slice(1)}), static_cast<float>(${args[index]}));`,
+                        `${AUDIO}::audio_param_set_value(${AUDIO}::audio_listener_param(listener, ${AUDIO}::AudioParamName::${listenerParamName(name)}), static_cast<float>(${args[index]}));`,
                 )
                 .join(" ")} }(${owner})`,
     );
 
-/** A buffer source's flag or loop point: its PAL read and write. */
-const sourceProperty = (shape: RecordShape, native: string): MemberSpec => ({
+/** A member table's scalar shape. */
+const scalar = (shape: "boolean" | "number" | "string"): RecordShape =>
+    shape === "boolean" ? boolean : shape === "number" ? number : string;
+
+/** A PAL read `<prefix><native>(owner)`, and its `<prefix>set_<native>` write when writable. */
+const palProperty = (
+    shape: RecordShape,
+    prefix: string,
+    native: string,
+    writable: boolean,
+): MemberSpec => ({
     shape,
-    access: (owner) => `${AUDIO}::audio_${native}(${owner})`,
-    assign: (owner, value) =>
-        `${AUDIO}::audio_set_${native}(${owner}, ${value})`,
+    access: (owner) => `${AUDIO}::${prefix}${native}(${owner})`,
+    ...(writable
+        ? {
+              assign: (owner: string, value: string) =>
+                  `${AUDIO}::${prefix}set_${native}(${owner}, ${value})`,
+          }
+        : {}),
 });
 
 /**
@@ -559,23 +573,16 @@ export const webAudioRecords: readonly RecordSpec[] = [
         reference: false,
         native: true,
         members: members([
-            ["gain", param("Gain")],
-            ["detune", param("Detune")],
-            ["playbackRate", param("PlaybackRate")],
-            ["positionX", param("PositionX")],
-            ["positionY", param("PositionY")],
-            ["positionZ", param("PositionZ")],
-            ["orientationX", param("OrientationX")],
-            ["orientationY", param("OrientationY")],
-            ["orientationZ", param("OrientationZ")],
-            ["refDistance", pannerProperty("RefDistance")],
-            ["maxDistance", pannerProperty("MaxDistance")],
-            ["rolloffFactor", pannerProperty("RolloffFactor")],
-            ["coneInnerAngle", pannerProperty("ConeInnerAngle")],
-            ["coneOuterAngle", pannerProperty("ConeOuterAngle")],
-            ["coneOuterGain", pannerProperty("ConeOuterGain")],
-            ["panningModel", pannerModel("Panning")],
-            ["distanceModel", pannerModel("Distance")],
+            ...AUDIO_PARAM_NAMES.map(
+                ([name, enumerator]) => [name, param(enumerator)] as const,
+            ),
+            ...PANNER_PROPERTIES.map(
+                ([name, enumerator]) =>
+                    [name, pannerProperty(enumerator)] as const,
+            ),
+            ...PANNER_MODELS.map(
+                ([name, which]) => [name, pannerModel(which)] as const,
+            ),
             // A stream destination's stream, one per destination.
             [
                 "stream",
@@ -584,9 +591,13 @@ export const webAudioRecords: readonly RecordSpec[] = [
                     (owner) => `${AUDIO}::audio_destination_stream(${owner})`,
                 ),
             ],
-            ["loop", sourceProperty(boolean, "loop")],
-            ["loopStart", sourceProperty(number, "loop_start")],
-            ["loopEnd", sourceProperty(number, "loop_end")],
+            ...SOURCE_LOOP_MEMBERS.map(
+                ([name, shape, native]) =>
+                    [
+                        name,
+                        palProperty(scalar(shape), "audio_", native, true),
+                    ] as const,
+            ),
             [
                 "connect",
                 spelled(
@@ -664,17 +675,20 @@ export const webAudioRecords: readonly RecordSpec[] = [
                 spelled(
                     fn([number], none),
                     (owner, [time]) =>
-                        `${AUDIO}::audio_param_cancel_scheduled_values(${owner}, ${time})`,
+                        `${AUDIO}::audio_param_cancel_scheduled_values(${owner}, ${time ?? "0.0"})`,
                 ),
             ],
-            [
-                "setValueAtTime",
-                spelled(
-                    fn([number, number], none),
-                    (owner, [value, time]) =>
-                        `${AUDIO}::audio_param_set_value_at_time(${owner}, static_cast<float>(${value}), ${time})`,
-                ),
-            ],
+            ...AUDIO_PARAM_SCHEDULES.map(
+                ([name, native]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([number, number], none),
+                            (owner, [value, time]) =>
+                                `${AUDIO}::${native}(${owner}, static_cast<float>(${value}), ${time})`,
+                        ),
+                    ] as const,
+            ),
             [
                 "setValueCurveAtTime",
                 spelled(
@@ -734,14 +748,7 @@ export const webAudioRecords: readonly RecordSpec[] = [
         reference: false,
         native: true,
         members: members(
-            (
-                [
-                    ["duration", "Duration"],
-                    ["sampleRate", "SampleRate"],
-                    ["numberOfChannels", "NumberOfChannels"],
-                    ["length", "Length"],
-                ] as const
-            ).map(([name, property]) => [
+            AUDIO_BUFFER_PROPERTIES.map(([name, property]) => [
                 name,
                 reads(
                     number,
@@ -752,14 +759,26 @@ export const webAudioRecords: readonly RecordSpec[] = [
         ),
     },
     {
-        // `HTMLAudioElement` as a library probes it (`pal_audio_element.hpp`);
-        // element playback joins this record.
+        // `HTMLAudioElement` (`pal_audio_element.hpp`): a library probes it,
+        // an application plays it.
         pinned: ["HTMLAudioElement", "HTMLMediaElement"],
         cpp: "pal::AudioElementState",
         handle: "pal::AudioElement",
         reference: true,
         native: true,
         members: members([
+            ...AUDIO_ELEMENT_PROPERTIES.map(
+                ([name, shape, native, writable]) =>
+                    [
+                        name,
+                        palProperty(
+                            scalar(shape),
+                            "audio_element_",
+                            native,
+                            writable,
+                        ),
+                    ] as const,
+            ),
             [
                 "canPlayType",
                 spelled(
@@ -768,6 +787,24 @@ export const webAudioRecords: readonly RecordSpec[] = [
                         `${AUDIO}::audio_can_play_type(${owner}, ${type})`,
                 ),
             ],
+            [
+                "play",
+                spelled(
+                    fn([], promise(none)),
+                    (owner) => `${AUDIO}::audio_element_play(${owner})`,
+                ),
+            ],
+            ...(["pause", "load"] as const).map(
+                (name) =>
+                    [
+                        name,
+                        spelled(
+                            fn([], none),
+                            (owner) =>
+                                `${AUDIO}::audio_element_${name}(${owner})`,
+                        ),
+                    ] as const,
+            ),
         ]),
     },
     {
@@ -777,14 +814,14 @@ export const webAudioRecords: readonly RecordSpec[] = [
         reference: false,
         native: true,
         members: members([
-            ...LISTENER_PARAMS.map(
+            ...AUDIO_LISTENER_PARAMS.map(
                 (name) =>
                     [
                         name,
                         reads(
                             audioParam,
                             (owner) =>
-                                `${AUDIO}::audio_listener_param(${owner}, ${AUDIO}::AudioParamName::Listener${name[0]!.toUpperCase()}${name.slice(1)})`,
+                                `${AUDIO}::audio_listener_param(${owner}, ${AUDIO}::AudioParamName::${listenerParamName(name)})`,
                         ),
                     ] as const,
             ),
@@ -813,13 +850,29 @@ export const webAudioRecords: readonly RecordSpec[] = [
         reference: false,
         native: true,
         members: members([
-            [
-                "getTracks",
-                spelled(
-                    fn([], array(record("MediaStreamTrack"))),
-                    (owner) => `${AUDIO}::media_stream_tracks(${owner})`,
-                ),
-            ],
+            ...MEDIA_STREAM_PROPERTIES.map(
+                ([name, shape, native]) =>
+                    [
+                        name,
+                        palProperty(
+                            scalar(shape),
+                            "media_stream_",
+                            native,
+                            false,
+                        ),
+                    ] as const,
+            ),
+            ...MEDIA_STREAM_TRACK_LISTS.map(
+                ([name, kind]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([], array(record("MediaStreamTrack"))),
+                            (owner) =>
+                                `${AUDIO}::media_stream_tracks(${owner}, ${stringLiteral(kind)})`,
+                        ),
+                    ] as const,
+            ),
         ]),
     },
     {
@@ -828,6 +881,18 @@ export const webAudioRecords: readonly RecordSpec[] = [
         reference: false,
         native: true,
         members: members([
+            ...MEDIA_STREAM_TRACK_PROPERTIES.map(
+                ([name, shape, native]) =>
+                    [
+                        name,
+                        palProperty(
+                            scalar(shape),
+                            "media_stream_track_",
+                            native,
+                            name === "enabled",
+                        ),
+                    ] as const,
+            ),
             [
                 "stop",
                 spelled(
@@ -841,6 +906,23 @@ export const webAudioRecords: readonly RecordSpec[] = [
         ["buffer", field(optional(record("AudioBuffer")))],
     ]),
 ];
+
+/**
+ * A Web Audio or media method's native spelling, as the records above spell
+ * it for the pinned libraries; application calls on the same objects take
+ * it too, with their own operands.
+ */
+export function webAudioMemberCall(
+    record: string,
+    member: string,
+): (owner: string, args: readonly string[]) => string {
+    const call = webAudioRecords
+        .find((spec) => spec.pinned.includes(record))
+        ?.members?.get(member)?.call;
+    if (!call)
+        throw new Error(`The Web Audio records spell no ${record}.${member}.`);
+    return call;
+}
 
 /**
  * `new GainNode(context)` and `new AudioBufferSourceNode(context, {

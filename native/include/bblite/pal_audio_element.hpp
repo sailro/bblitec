@@ -94,9 +94,10 @@ void audio_element_set_preload(const AudioElement& element, std::string preload)
 
 /** The events an element dispatches to listeners. */
 enum class AudioElementEvent : std::uint8_t { TimeUpdate, Ended, Play, Pause };
-void audio_element_add_listener(const AudioElement& element, AudioElementEvent type,
+/** An addition under an AbortSignal holds its `lease`; false for a listener already added. */
+bool audio_element_add_listener(const AudioElement& element, AudioElementEvent type,
                                 std::size_t identity, js::Callback<void()> callback, bool capture,
-                                bool once);
+                                bool once, ListenerLeasePtr lease = {});
 void audio_element_remove_listener(const AudioElement& element, AudioElementEvent type,
                                    std::size_t identity, bool capture);
 

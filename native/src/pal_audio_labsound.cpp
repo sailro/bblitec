@@ -1151,13 +1151,16 @@ void audio_collect_finished() {
 }
 
 #if BBLITE_WORKERS
-void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
-                              js::Callback<void()> callback, bool capture, bool once) {
+bool audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
+                              js::Callback<void()> callback, bool capture, bool once,
+                              ListenerLeasePtr lease) {
     require_node(node);
     if (!node.ownership->source)
         throw std::runtime_error("Audio node is not a scheduled source.");
-    node.ownership->ended[capture ? 0 : 1].add(identity, std::move(callback), once);
+    const bool added = node.ownership->ended[capture ? 0 : 1].add(identity, std::move(callback),
+                                                                  once, std::move(lease));
     retain_audio_completion(node);
+    return added;
 }
 
 void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture) {
@@ -2506,11 +2509,11 @@ bool audio_element_ended(const AudioElement& element) {
     return playback.decoded && !playback.loop && current_position(playback) >= playback.duration;
 }
 
-void audio_element_add_listener(const AudioElement& element, AudioElementEvent type,
+bool audio_element_add_listener(const AudioElement& element, AudioElementEvent type,
                                 std::size_t identity, js::Callback<void()> callback, bool capture,
-                                bool once) {
-    playback_of(element).listeners[static_cast<std::size_t>(type)][capture ? 0 : 1].add(
-        identity, std::move(callback), once);
+                                bool once, ListenerLeasePtr lease) {
+    return playback_of(element).listeners[static_cast<std::size_t>(type)][capture ? 0 : 1].add(
+        identity, std::move(callback), once, std::move(lease));
 }
 
 void audio_element_remove_listener(const AudioElement& element, AudioElementEvent type,
