@@ -96,6 +96,7 @@ test("registers unique generated scene targets", () => {
             "regression-compiler-state",
             "regression-texture-region-writes",
             "regression-vat-time",
+            "regression-csm-static-cache",
             "scene168",
             "scene176",
             "scene213",

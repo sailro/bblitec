@@ -1294,6 +1294,32 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Scene 214 with enableCsmStaticCache: quiet casters demote into
+        // the static cache, and a caster moved every frame stays dynamic
+        // and draws over the copied cache layers.
+        id: "regression-csm-static-cache",
+        name: "Regression - CSM Static Cache",
+        source: "examples/regression-csm-static-cache.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - CSM Static Cache",
+        buildDirectory: "native/build-regression-csm-static-cache-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-csm-static-cache/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-csm-static-cache",
+            // Past the refit that demotes casters quiet for 120 frames; the
+            // mover's position is a function of the frame.
+            referenceFrame: 240,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [127, 153, 191],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "scene168",
         name: "Scene 168 - Mirrored Double-Sided Winding",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene168.ts",
