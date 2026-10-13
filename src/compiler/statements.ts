@@ -5647,6 +5647,7 @@ export class StatementLowerer {
             context.expectSameEngine(task, material, call);
             materialCpp = material.cpp;
             materialOverride = true;
+            context.reachFeature("frame-graph:task-material-override", call);
         }
         context.emit({
             kind: "expression",

@@ -1,4 +1,5 @@
 #include <bblite/features/gpu_retirement.hpp>
+#include <bblite/features/refreshed_task_overrides.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The SDL_GPU scene renderer's driver: the pass helpers, the state's
@@ -514,6 +515,9 @@ class SdlSceneRun {
                 if (handle.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error("Scene frame task handle is invalid.");
                 }
+#if BBLITE_REFRESHED_TASK_OVERRIDES
+                order_refreshed_render_task(handle_at(engine.frame_tasks, handle));
+#endif
                 handle_at(task_draw_lists, handle) = upstream::build_render_task_draw_lists(
                     task_plan, engine, handle_at(engine.frame_tasks, handle));
                 auto& task = handle_at(engine.frame_tasks, handle);

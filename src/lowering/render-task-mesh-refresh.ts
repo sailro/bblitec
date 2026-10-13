@@ -8,10 +8,14 @@ import type {
 import { recordAt } from "../compiler/record-access.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 
-/** Packet storage follows the explicit task's source renderable generations. */
-export function renderTaskShaderPacketOwnersCpp(
+/**
+ * The refreshed execute's rebind guard as `static bool <name>(task)`: a
+ * dirty task, or a moved scene version over tracked or owned renderables.
+ */
+function refreshRebindGuardCpp(
     context: LoweringContext,
-    thinBindings = false,
+    name: string,
+    thinBindings: boolean,
 ): string {
     const path = "src/frame-graph/render-task-mesh-refresh.ts";
     const { file, declaration } = context.functionDeclaration(
@@ -85,14 +89,23 @@ export function renderTaskShaderPacketOwnersCpp(
             return undefined;
         },
     });
+    return `static bool ${name}(const FrameTaskRecord& task) {
+${condition}
+    return false;
+}`;
+}
+
+/** Packet storage follows the explicit task's source renderable generations. */
+export function renderTaskShaderPacketOwnersCpp(
+    context: LoweringContext,
+    thinBindings = false,
+): string {
+    const path = "src/frame-graph/render-task-mesh-refresh.ts";
     const ownerType = thinBindings
         ? "RenderTaskBindingOwners"
         : "ShaderPacketSystemOwner";
     return `${thinBindings ? "struct RenderTaskBindingOwners { ShaderPacketSystemOwner shader_packet; ThinMaterialBindingOwner thin_binding; };\n" : ""}// ${context.provenance(path, "enableRenderTaskMeshRefresh")}
-static bool replace_render_task_shader_packets(const FrameTaskRecord& task) {
-${condition}
-    return false;
-}
+${refreshRebindGuardCpp(context, "replace_render_task_shader_packets", thinBindings)}
 
 static std::vector<${ownerType}> prepare_render_task_shader_packets(const FrameTaskRecord& task${thinBindings ? ", const Engine& engine" : ""}) {
     const bool replace_tracked = task.render_mesh_refresh &&
@@ -144,8 +157,169 @@ ${thinBindings ? "        task.render_meshes.at(index).thin_binding = owners[ind
 `;
 }
 
+/**
+ * A refreshed task's per-task material overrides: the base task's queued
+ * add, and the renderable order its transactions publish.
+ *
+ * `_prepareTaskMeshes` keeps the renderables a transaction does not own, in
+ * order, and queues the tracked requests ahead of the pending ones, which
+ * resolve after them. So a recorded generation is untracked entries, then
+ * tracked meshes, then what the transaction queued; the first recording is
+ * tracked meshes, then the queue. Native `render_meshes` keeps that order.
+ */
+function refreshedOverridesCpp(
+    context: LoweringContext,
+    thinBindings: boolean,
+): string {
+    const refreshModule = "src/frame-graph/render-task-mesh-refresh.ts";
+    const taskModule = "src/frame-graph/render-task.ts";
+    const refresh = context.functionDeclaration(
+        refreshModule,
+        "enableRenderTaskMeshRefresh",
+    ).declaration;
+    for (const [shape, label] of [
+        [
+            "candidate._renderables = candidate._renderables.filter((renderable) => !owned.has(renderable))",
+            "untracked renderables kept in order",
+        ],
+        [
+            "candidate._pendingMeshes.unshift(...requests)",
+            "tracked requests queued first",
+        ],
+    ] as const)
+        context.expectShapeCount(refresh, shape, label);
+    context.expectShapeCount(
+        context.functionDeclaration(
+            "src/frame-graph/render-task-transaction.ts",
+            "resolvePendingTaskMeshes",
+        ).declaration,
+        "candidate._renderables.push(renderable)",
+        "resolved requests appended",
+    );
+    const { file, declaration: queue } = context.functionDeclaration(
+        taskModule,
+        "queueMesh",
+    );
+    const statements = queue.body!.statements;
+    context.assertStatementShapes(
+        queue.body!,
+        statements,
+        `
+        if (this._disposed) {
+            throw new Error("RenderTask has been disposed.");
+        }
+        const material = opts?.material ?? mesh.material;
+        if (!material) {
+            return;
+        }
+        this._pendingMeshes!.push({ mesh, material });
+        if (this._sceneBG) {
+            _rebindRenderTask(this);
+        }
+    `,
+        "Queued task mesh",
+    );
+    const queued = lowerPinnedBody(file, statements, {
+        bindings: new Map<string, PinnedBinding>([
+            [
+                "this._disposed",
+                {
+                    cpp: "(record.source_scene && record.source_scene->disposed)",
+                    type: "bool",
+                },
+            ],
+            ["this._sceneBG", { cpp: "record.render_recorded", type: "bool" }],
+        ]),
+        calls: new Map(),
+        statement(node, lowerer, indent) {
+            if (
+                ts.isExpressionStatement(node) &&
+                context.expressionMatchesShape(
+                    node.expression,
+                    "_rebindRenderTask(this)",
+                )
+            )
+                return [
+                    `${indent}rebind_queued_render_task_mesh(engine, record, record.render_meshes.back());`,
+                ];
+            if (ts.isVariableStatement(node)) {
+                // The refreshed add queues only with an override, so the
+                // material is the override it was handed.
+                const [local] = node.declarationList.declarations;
+                context.assertExpressionShape(
+                    local!.initializer!,
+                    "opts?.material ?? mesh.material",
+                    "Queued material selection",
+                );
+                lowerer.bindLocal(local!.name as ts.Identifier, {
+                    cpp: "material",
+                    type: "opaque",
+                    absentCpp: "material.value == invalid_handle",
+                });
+                return [];
+            }
+            if (
+                ts.isExpressionStatement(node) &&
+                context.expressionMatchesShape(
+                    node.expression,
+                    "this._pendingMeshes!.push({ mesh, material })",
+                )
+            )
+                return [
+                    `${indent}insert_render_task_mesh(record, RenderTaskMesh{mesh, material});`,
+                ];
+            return undefined;
+        },
+    });
+    return `// ${context.provenance(refreshModule, "enableRenderTaskMeshRefresh", `${taskModule}#queueMesh`)}
+static void order_render_task_generation(FrameTaskRecord& task) {
+    std::stable_partition(task.render_meshes.begin(), task.render_meshes.end(),
+                          [](const RenderTaskMesh& entry) { return !entry.follows_material; });
+}
+
+static void insert_render_task_mesh(FrameTaskRecord& task, RenderTaskMesh entry) {
+    if (task.render_recorded) {
+        order_render_task_generation(task);
+        task.render_meshes.push_back(std::move(entry));
+        return;
+    }
+    const auto queue = entry.follows_material
+        ? std::find_if(task.render_meshes.begin(), task.render_meshes.end(),
+                       [](const RenderTaskMesh& candidate) { return !candidate.follows_material; })
+        : task.render_meshes.end();
+    task.render_meshes.insert(queue, std::move(entry));
+}
+
+static void rebind_queued_render_task_mesh(Engine& engine, FrameTaskRecord& record,
+                                           const RenderTaskMesh& entry) {
+    initialize_render_task_shader_material(engine, record, entry);
+    initialize_refreshed_render_task_shader_materials(engine, record);
+}
+
+static void queue_refreshed_render_task_mesh(Engine& engine, FrameTaskRecord& record,
+                                             MeshHandle mesh, MaterialHandle material) {
+${queued}
+}
+
+${refreshRebindGuardCpp(context, "rebinds_refreshed_render_task", thinBindings)}
+
+void order_refreshed_render_task(FrameTaskRecord& task) {
+    if (task.kind != FrameTaskKind::render || !task.render_mesh_refresh) return;
+    // The first build draws the recorded generation.
+    if (!std::exchange(task.render_generation_built, true)) return;
+    // An add published this generation in order.
+    if (task.shader_packet_rebuild_pending) return;
+    if (rebinds_refreshed_render_task(task)) order_render_task_generation(task);
+}
+`;
+}
+
 /** Source tracking decisions; native scene generations own binding replacement/retirement. */
-export function renderTaskMeshRefreshCpp(context: LoweringContext): string {
+export function renderTaskMeshRefreshCpp(
+    context: LoweringContext,
+    overrides = false,
+    thinBindings = false,
+): string {
     const path = "src/frame-graph/render-task-mesh-refresh.ts";
     const { file, declaration } = context.functionDeclaration(
         path,
@@ -231,12 +405,16 @@ export function renderTaskMeshRefreshCpp(context: LoweringContext): string {
         [
             "tracked.push",
             (args) =>
-                `record.render_meshes.push_back(RenderTaskMesh{${args[0]}, ${recordAt("engine.meshes", args[0]!)}.material, true})`,
+                overrides
+                    ? `insert_render_task_mesh(record, RenderTaskMesh{${args[0]}, ${recordAt("engine.meshes", args[0]!)}.material, true})`
+                    : `record.render_meshes.push_back(RenderTaskMesh{${args[0]}, ${recordAt("engine.meshes", args[0]!)}.material, true})`,
         ],
         [
             "addMesh",
-            () =>
-                `throw std::runtime_error("Mesh refresh with per-task material overrides is not supported.")`,
+            (args) =>
+                overrides
+                    ? `queue_refreshed_render_task_mesh(engine, record, ${args[0]}, material)`
+                    : `throw std::runtime_error("Mesh refresh with per-task material overrides is not supported.")`,
         ],
         [
             "_rebindRenderTask",
@@ -313,7 +491,7 @@ export function renderTaskMeshRefreshCpp(context: LoweringContext): string {
         scope,
     );
     const body = lowerPinnedBody(file, add.body.statements, scope);
-    return `// ${context.provenance(path, "enableRenderTaskMeshRefresh")}
+    return `${overrides ? refreshedOverridesCpp(context, thinBindings) : ""}// ${context.provenance(path, "enableRenderTaskMeshRefresh")}
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task) {
     auto& record = task_record(engine, task);
     if (record.kind != FrameTaskKind::render) throw std::runtime_error("Mesh refresh requires a render task.");

@@ -308,6 +308,8 @@ export const featureSources: Record<Feature, string[]> = {
     "frame-graph:surface-target": [],
     "frame-graph:target-disposal": [],
     "frame-graph:task-mesh-removal": [],
+    "frame-graph:task-mesh-refresh": [],
+    "frame-graph:task-material-override": [],
     // A standalone FrameGraphContext has its own task-only driver. It does
     // not pull the scene renderer, camera math, mesh upload, or image loader.
     "renderer:frame-graph": ["src/pal_sdl_gpu_frame_graph.cpp"],

@@ -1,4 +1,5 @@
 #include <bblite/features/gpu_retirement.hpp>
+#include <bblite/features/refreshed_task_overrides.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The Dawn scene renderer's driver: the pass helpers, the pipelines the
 // frame run builds and the frame run itself. The feature families it draws
@@ -719,6 +720,9 @@ class DawnSceneRun {
                     render_task.view_projection =
                         create_buffer(state, WGPUBufferUsage_Uniform, nullptr, 64);
                 }
+#if BBLITE_REFRESHED_TASK_OVERRIDES
+                order_refreshed_render_task(task);
+#endif
                 render_task.draw_lists =
                     upstream::build_render_task_draw_lists(task_plan, engine, task);
                 task.render_recorded = true;

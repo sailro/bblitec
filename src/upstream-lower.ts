@@ -1562,6 +1562,8 @@ ${lowerThinInstanceSync(context)}
             generated,
             options.gpuInstancing,
             features.includes("frame-graph:task-mesh-removal"),
+            features.includes("frame-graph:task-mesh-refresh") &&
+                features.includes("frame-graph:task-material-override"),
         );
         this.emitRendererPostProcess(
             features,
@@ -3060,6 +3062,7 @@ ${wgsl}`,
         generated: { modulePath: string; symbolName: string }[],
         thinBindings: boolean,
         meshRemoval: boolean,
+        refreshedOverrides: boolean,
     ): void {
         if (this.reaches("upstream/src/frame_graph_geometry.cpp")) {
             this.writeSource(
@@ -3067,6 +3070,7 @@ ${wgsl}`,
                 new GeometryOutputLowerer(context).lowerTaskRecords(
                     thinBindings,
                     meshRemoval,
+                    refreshedOverrides,
                 ),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_geometry.hpp",

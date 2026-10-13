@@ -3209,6 +3209,8 @@ export type Feature =
     | "frame-graph:surface-target"
     | "frame-graph:target-disposal"
     | "frame-graph:task-mesh-removal"
+    | "frame-graph:task-mesh-refresh"
+    | "frame-graph:task-material-override"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:wrapper-disposal"

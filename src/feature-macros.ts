@@ -102,6 +102,15 @@ export const featureMacros: readonly FeatureMacro[] = [
         macro: "BBLITE_RENDER_TARGET_DISPOSAL",
         anyOf: ["frame-graph:target-disposal"],
     },
+    // A refreshed task orders the overrides it queues beside its tracked
+    // meshes at each rebind.
+    {
+        macro: "BBLITE_REFRESHED_TASK_OVERRIDES",
+        allOf: [
+            "frame-graph:task-mesh-refresh",
+            "frame-graph:task-material-override",
+        ],
+    },
     // The pin's mesh-phase Standard extension, reached only through
     // enableMaterialUvTransform().
     {

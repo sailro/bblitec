@@ -483,6 +483,7 @@ export function compileEngineIntrinsic(
                     "Mesh refresh requires a retained render task.",
                 );
             reachRenderer(context, call);
+            context.reachFeature("frame-graph:task-mesh-refresh", call);
             return {
                 kind: "void",
                 cpp: `bbl::enable_render_task_mesh_refresh(${context.requireEngine(task, call)}, ${task.cpp})`,

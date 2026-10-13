@@ -1443,6 +1443,16 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(src/frame-graph/render-task-base.ts _removeMeshFromRenderTask)",
         consumers: CMAKE,
     },
+    "frame-graph:task-mesh-refresh": {
+        provenance:
+            "src/frame-graph/render-task-mesh-refresh.ts enableRenderTaskMeshRefresh",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-material-override": {
+        provenance:
+            "src/frame-graph/render-task.ts addMeshToTask (opts.material)",
+        consumers: CMAKE,
+    },
     "frame-graph:resources": {
         provenance:
             "src/engine/render-target.ts createRenderTarget + " +
