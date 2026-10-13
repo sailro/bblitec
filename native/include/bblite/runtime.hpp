@@ -1958,6 +1958,14 @@ public:
 
     [[nodiscard]] operator const Storage&() const { return *storage_; }
 
+    /**
+     * The one buffer every holder shares, written in place: a pixels
+     * texture's texels, which every copy and binding of the texture sees as
+     * the pin's one GPUTexture serves every reference.
+     */
+    [[nodiscard]] std::uint8_t* shared_data() { return storage_->data(); }
+    void assign_shared(Storage bytes) { *storage_ = std::move(bytes); }
+
 private:
     void detach() {
         if (storage_.use_count() != 1) {
@@ -2073,10 +2081,10 @@ public:
     PixelsTexels() : state_(std::make_shared<State>()) {}
     PixelsTexels(const PixelsTexels&) = default;
     PixelsTexels& operator=(const PixelsTexels&) = default;
-    /** Replaces every texel, as a whole-texture write does. */
+    /** Replaces every texel in place, as a whole-texture write does. */
     PixelsTexels& operator=(Storage texels) {
         state_->require_writable();
-        state_->rgba = std::move(texels);
+        state_->rgba.assign_shared(std::move(texels));
         state_->note_write({});
         return *this;
     }

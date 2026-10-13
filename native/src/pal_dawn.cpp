@@ -1828,21 +1828,17 @@ public:
         // Queue writes, which land before the frame's submit.
         void upload_pixels_texture_writes() {
             rows.state.shared_material_images.upload_pixels_writes(
-                [&](DawnTexture& image, const std::uint8_t* texels, std::uint32_t width,
+                [&](DawnTexture& image, std::span<const std::uint8_t> texels,
                     PixelsTexels::Region region) {
-                    const std::size_t stride = static_cast<std::size_t>(width) * 4u;
                     WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
                     destination.texture = image.get();
                     destination.origin = {region.x, region.y, 0};
                     WGPUTexelCopyBufferLayout layout{};
-                    layout.bytesPerRow = static_cast<std::uint32_t>(stride);
+                    layout.bytesPerRow = region.width * 4u;
                     layout.rowsPerImage = region.height;
                     const WGPUExtent3D size{region.width, region.height, 1};
-                    DawnGpuDevice{rows.state.queue}.write_texture(
-                        &destination,
-                        texels + region.y * stride + static_cast<std::size_t>(region.x) * 4u,
-                        (region.height - 1u) * stride + static_cast<std::size_t>(region.width) * 4u,
-                        &layout, &size);
+                    DawnGpuDevice{rows.state.queue}.write_texture(&destination, texels.data(),
+                                                                  texels.size(), &layout, &size);
                 });
         }
 #endif

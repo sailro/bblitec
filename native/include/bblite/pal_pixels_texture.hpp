@@ -53,9 +53,9 @@ inline void record_pixels_texture_write(const PixelsTexture& texture, const js::
     SharedTextureBytes& texels = texture.rgba.state()->rgba;
     if (texels.size() / stride < texture.height)
         throw std::runtime_error("Pixels texture texels are shorter than the texture.");
-    // A binding's snapshot keeps the bytes it uploaded: the first write after
-    // one copies the texels rather than moving them under it.
-    std::uint8_t* destination = texels.data();
+    // In place: every binding shares the texels and uploads the regions
+    // written since the version it holds.
+    std::uint8_t* destination = texels.shared_data();
     for (std::uint32_t row = 0; row < region.height; ++row)
         std::memcpy(destination + (static_cast<std::size_t>(region.y) + row) * stride +
                         static_cast<std::size_t>(region.x) * 4u,
