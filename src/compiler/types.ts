@@ -3188,6 +3188,7 @@ export type Feature =
     | "shadow:pcf"
     | "shadow:pcf-directional"
     | "shadow:csm"
+    | "shadow:csm-static-cache"
     | "shadow:task"
     // `enableMorphTargetShadows`, the caster fit's morph-expanded bounds
     // (upstream's own `shadow/enable-morph-target-shadows.ts` module).

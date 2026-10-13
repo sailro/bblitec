@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { compileSource } from "../src/compiler.js";
 import { csmRefitGateCpp } from "../src/lowering/csm-static-cache.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
@@ -202,5 +203,40 @@ ${frames.map((frame) => `        {{${cpp(frame.moved)}}, ${frame.light.map((v) =
             timeoutMs: 20000,
             expectedOutput: joined,
         },
+    );
+});
+
+test("enableCsmStaticCache lowers in a scene and refuses an unawaited call", () => {
+    const prefix = `import {createEngine,createSceneContext,createFreeCamera,createTorusKnot,addToScene,createDirectionalLight,
+createCsmDirectionalShadowGenerator,setShadowTaskCasterMeshes,registerSceneWithShadowSupport,enableCsmStaticCache,
+createStandardMaterial} from "@babylonjs/lite";
+const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+const scene=createSceneContext(engine);
+scene.camera=createFreeCamera([0,10,-20],[0,0,0]);
+const light=createDirectionalLight([0,-1,-1],1);
+addToScene(scene,light);
+const knot=createTorusKnot(engine,{radius:2,tube:0.5});
+knot.material=createStandardMaterial();
+addToScene(scene,knot);
+const sg=createCsmDirectionalShadowGenerator(engine,light,{numCascades:2});
+light.shadowGenerator=sg;
+setShadowTaskCasterMeshes(sg,[knot]);
+`;
+    const result = compileSource(
+        `${prefix}await enableCsmStaticCache(engine,sg,{refitAngle:0.01,staticCascadesPerFrame:1});
+await registerSceneWithShadowSupport(scene);`,
+    );
+    assert.equal(result.manifest.deferredCapabilities?.length ?? 0, 0);
+    assert.ok(result.manifest.features.includes("shadow:csm-static-cache"));
+    assert.match(
+        result.cpp,
+        /bbl::enable_csm_static_cache\(v_engine, v_sg, 0\.01, std::nullopt, std::optional<double>\{1\.0\}, false\)/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `${prefix}void enableCsmStaticCache(engine,sg,{refitAngle:0.01});`,
+            ),
+        /awaits enableCsmStaticCache directly/,
     );
 });

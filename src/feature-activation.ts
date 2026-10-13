@@ -1096,6 +1096,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/shadow/csm-directional-shadow-generator.ts",
         consumers: CMAKE,
     },
+    "shadow:csm-static-cache": {
+        provenance:
+            "src/shadow/enable-csm-static-cache.ts enableCsmStaticCache " +
+            "(src/shadow/csm-shadow-cache.ts, src/shadow/csm-refit-gate.ts)",
+        consumers: CMAKE,
+    },
     // The scheduler alone owns no generator, so no build rule tests it:
     // the compiler emits the registration where it is reached.
     "shadow:task": {

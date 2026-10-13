@@ -1,3 +1,4 @@
+#include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/refreshed_task_overrides.hpp>
 #include <bblite/features/render_target_disposal.hpp>
@@ -2202,6 +2203,12 @@ public:
                         graph_extent.width, graph_extent.height);
 #if BBLITE_SHADOW_RECEIVERS
                     update_shadow_generators(state, graph_scene, engine);
+#if BBLITE_CSM_STATIC_CACHE
+                    if (state.shadow_refresh.task_lists_moved) {
+                        rebuild_task_draw_lists();
+                        state.shadow_refresh.task_lists_moved = false;
+                    }
+#endif
                     // CSM receiver-data callbacks can rewrite a shader storage
                     // buffer; publish that rewrite before any caster or colour
                     // draw in this command buffer reads it.
@@ -2901,10 +2908,40 @@ public:
                                 // was written onto the gate by
                                 // `refresh_shadow_generators` earlier this
                                 // frame.
+#if BBLITE_CSM_STATIC_CACHE
+                                const ShadowGeneratorRecord& due_generator = handle_at(
+                                    engine.shadow_generators, task.render.shadow_generator);
+                                // `renderCsmShadowMapCached`: the copied cache layers
+                                // reach the map before any dynamic pass draws over it.
+                                if (const auto* copies = pal::csm_cache_copies(engine, task)) {
+                                    GpuRenderTarget& cache_target = handle_at(
+                                        state.render_targets, due_generator.csm_cache->cache_target);
+                                    SDL_GPUCopyPass* layer_copy = SDL_BeginGPUCopyPass(command);
+                                    for (const std::uint32_t layer : *copies) {
+                                        SDL_GPUTextureLocation copy_source{};
+                                        copy_source.texture = cache_target.depth;
+                                        copy_source.layer = layer;
+                                        SDL_GPUTextureLocation copy_destination{};
+                                        copy_destination.texture = target.depth;
+                                        copy_destination.layer = layer;
+                                        SDL_CopyGPUTextureToTexture(layer_copy, &copy_source,
+                                                                    &copy_destination, target.width,
+                                                                    target.height, 1, false);
+                                    }
+                                    SDL_EndGPUCopyPass(layer_copy);
+                                }
+                                if (due_generator.csm_cache
+                                        ? !pal::csm_cache_task_due(due_generator, task)
+                                        : !state.shadow_refresh.gates[task.render.shadow_generator.value]
+                                               .due) {
+                                    continue;
+                                }
+#else
                                 if (!state.shadow_refresh.gates[task.render.shadow_generator.value]
                                          .due) {
                                     continue;
                                 }
+#endif
                                 if (!target_record.has_depth || !target.depth) {
                                     throw std::runtime_error(
                                         "Shadow render task has no depth attachment.");
@@ -2930,6 +2967,11 @@ public:
                                 // this port's reverse-Z puts it at 0.
                                 shadow_depth.clear_depth = pass_depth_clear(true);
                                 shadow_depth.load_op = SDL_GPU_LOADOP_CLEAR;
+#if BBLITE_CSM_STATIC_CACHE
+                                // A cached dynamic pass draws over the copied cache.
+                                if (!task.render.depth_clear)
+                                    shadow_depth.load_op = SDL_GPU_LOADOP_LOAD;
+#endif
                                 shadow_depth.store_op = SDL_GPU_STOREOP_STORE;
                                 shadow_depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
                                 shadow_depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;

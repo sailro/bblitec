@@ -51,6 +51,8 @@ export class AdmissionRecorder {
         "baseColorFactor" | "diffuseColor"
     > = emissionArray([]);
     @journaled public accessor temporalSceneRegistration: ts.Node | undefined;
+    /** Generators whose `getCsmReceiverTexture` was compiled (`sg._csmReceiverTexture`). */
+    public readonly csmReceiverTextureReads: number[] = emissionArray([]);
     public readonly temporalRegisteredScenes: Array<
         Value["sceneTopologyState"]
     > = emissionArray([]);

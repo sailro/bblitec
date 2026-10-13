@@ -1,3 +1,4 @@
+#include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/refreshed_task_overrides.hpp>
 #include <bblite/features/thin_instances.hpp>
@@ -2026,6 +2027,12 @@ public:
         for (const auto& registered_scene : engine.scenes()) {
             write_shadow_generators(state, *registered_scene, engine);
         }
+#if BBLITE_CSM_STATIC_CACHE
+        if (state.shadow_refresh.task_lists_moved) {
+            rebuild_task_draw_lists();
+            state.shadow_refresh.task_lists_moved = false;
+        }
+#endif
 #endif
 #endif
         // Sampled render targets must exist before material bind groups are built.
@@ -2340,7 +2347,7 @@ public:
         // instead of reading the raw surface back.
         frame_graph_presented = false;
 #if BBLITE_SHADOW_RECEIVERS
-        std::vector<bool> wrote_caster_blocks(engine.shadow_generators.size(), false);
+        std::vector<bool> wrote_caster_blocks(engine.shadow_generators.size() * 2u, false);
 #endif
         const auto draw_list_into = [&](WGPURenderPassEncoder list_pass, const auto& list,
                                         std::uint32_t samples, WGPURenderPipeline& bound_pipeline,
@@ -3105,10 +3112,40 @@ public:
                                 // receiver keeps sampling last render's bit-identical
                                 // content. The verdict was written onto the gate by
                                 // `refresh_shadow_generators` earlier this frame.
+#if BBLITE_CSM_STATIC_CACHE
+                                const ShadowGeneratorRecord& due_generator = handle_at(
+                                    engine.shadow_generators, task.render.shadow_generator);
+                                // `renderCsmShadowMapCached`: the copied cache layers
+                                // reach the map before any dynamic pass draws over it.
+                                if (const auto* copies = pal::csm_cache_copies(engine, task)) {
+                                    const auto& cache_target = handle_at(
+                                        state.render_targets, due_generator.csm_cache->cache_target);
+                                    for (const std::uint32_t layer : *copies) {
+                                        WGPUTexelCopyTextureInfo copy_source{};
+                                        copy_source.texture = cache_target.depth;
+                                        copy_source.origin = {0, 0, layer};
+                                        copy_source.aspect = WGPUTextureAspect_All;
+                                        WGPUTexelCopyTextureInfo copy_destination{};
+                                        copy_destination.texture = target.depth;
+                                        copy_destination.origin = {0, 0, layer};
+                                        copy_destination.aspect = WGPUTextureAspect_All;
+                                        const WGPUExtent3D extent{target.width, target.height, 1u};
+                                        wgpuCommandEncoderCopyTextureToTexture(encoder, &copy_source,
+                                                                               &copy_destination, &extent);
+                                    }
+                                }
+                                if (due_generator.csm_cache
+                                        ? !pal::csm_cache_task_due(due_generator, task)
+                                        : !state.shadow_refresh.gates[task.render.shadow_generator.value]
+                                               .due) {
+                                    continue;
+                                }
+#else
                                 if (!state.shadow_refresh.gates[task.render.shadow_generator.value]
                                          .due) {
                                     continue;
                                 }
+#endif
                                 const auto caster = shadow_caster_matrices(engine, task);
                                 ShaderPassMatrices caster_pass{caster.view_projection.data(),
                                                                &caster.view, nullptr};
@@ -3117,7 +3154,12 @@ public:
                                 caster_pass.camera_position =
                                     &binding_camera.matrices.camera_position;
 #endif
-                                const auto generator_index = task.render.shadow_generator.value;
+                                // Each caster list writes its draws' blocks once; a
+                                // cached generator's static and dynamic passes draw
+                                // different casters, so each list keeps its own mark.
+                                const auto generator_index =
+                                    task.render.shadow_generator.value * 2u +
+                                    (task.render.shadow_cache_static ? 1u : 0u);
                                 const bool later_cascade = wrote_caster_blocks[generator_index];
                                 wrote_caster_blocks[generator_index] = true;
                                 write_material_uniforms(render_task.draw_lists.opaque, caster_pass,
@@ -3134,6 +3176,11 @@ public:
                                 shadow_attachment.view =
                                     target.depth_layer_views[task.render.depth_layer];
                                 shadow_attachment.depthLoadOp = WGPULoadOp_Clear;
+#if BBLITE_CSM_STATIC_CACHE
+                                // A cached dynamic pass draws over the copied cache.
+                                if (!task.render.depth_clear)
+                                    shadow_attachment.depthLoadOp = WGPULoadOp_Load;
+#endif
                                 // The pin's own shadow target clears to ITS far value,
                                 // which standard-Z puts at 1 where this port's reverse-Z
                                 // puts it at 0.

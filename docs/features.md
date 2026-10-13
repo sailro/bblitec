@@ -191,6 +191,8 @@ context is not running throws (no statechange).
 ## Shadows and navigation
 
 - PCF spot/directional, ESM directional, CSM. Thin-instance contracts refuse.
+- `enableCsmStaticCache` (awaited, before registration): static casters render into a cache texture, copied per layer
+  into the map before dynamic casters draw; refit gate and per-frame cascade budget as pinned.
 - Recast/Detour solo and obstacle tile-cache builds, crowds, obstacles. Tiled builds without obstacles and off-mesh
   connections in tile caches refuse.
 

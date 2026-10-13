@@ -100,7 +100,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "createAudioEngineMediaStream",
         "setMasterVolume",
         "getMasterVolume",
-        "enableCsmStaticCache",
         "enableRenderTaskTransmission",
         "setSpatialListenerPosition",
         "setSpatialPosition",

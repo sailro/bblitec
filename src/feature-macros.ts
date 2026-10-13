@@ -149,6 +149,12 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_DETAILED_PICKING", anyOf: ["picking:detailed"] },
     { macro: "BBLITE_HAS_CLUSTERED_LIGHTS", anyOf: ["light:clustered"] },
     { macro: "BBLITE_SHADOWS_CSM", anyOf: ["shadow:csm"] },
+    // The cached CSM generator's per-frame plan: static passes, layer
+    // copies and dynamic passes over the copied cache.
+    {
+        macro: "BBLITE_CSM_STATIC_CACHE",
+        anyOf: ["shadow:csm-static-cache"],
+    },
     {
         macro: "BBLITE_SHADER_EXTERNAL_TEXTURES",
         anyOf: ["material:shader-external-texture"],
