@@ -234,6 +234,13 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer);
 /** `source.loop = enabled`. */
 void audio_set_loop(AudioNodeHandle source, bool enabled);
 
+/** `source.loop`, `source.loopStart`, `source.loopEnd`, and their writes. */
+bool audio_loop(AudioNodeHandle source);
+double audio_loop_start(AudioNodeHandle source);
+double audio_loop_end(AudioNodeHandle source);
+void audio_set_loop_start(AudioNodeHandle source, double seconds);
+void audio_set_loop_end(AudioNodeHandle source, double seconds);
+
 // -- graph ---------------------------------------------------------------
 
 /**
@@ -250,6 +257,15 @@ void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination);
 /** `node.disconnect()` -- every outgoing edge. */
 void audio_disconnect(AudioNodeHandle node);
 
+/**
+ * `node.disconnect(destination[, output[, input]])` -- the edges into
+ * `destination`'s input (never its parameters). An index the nodes do not
+ * have is an IndexSizeError; no such edge is an InvalidAccessError.
+ */
+void audio_disconnect(AudioNodeHandle node, AudioNodeHandle destination,
+                      bbl::js::Nullable<double> output = std::nullopt,
+                      bbl::js::Nullable<double> input = std::nullopt);
+
 /** `source.start(when)`, in context time. */
 void audio_node_start(AudioNodeHandle node, double when);
 
@@ -258,6 +274,10 @@ void audio_node_start(AudioNodeHandle node, double when, double offset);
 
 /** `source.start(when, offset, duration)`, all values in seconds. */
 void audio_node_start(AudioNodeHandle node, double when, double offset, double duration);
+
+/** `source.start(when, offset, duration)` where `duration` may be `undefined`. */
+void audio_node_start(AudioNodeHandle node, double when, double offset,
+                      bbl::js::Nullable<double> duration);
 
 /** `source.stop(when)`, in context time. */
 void audio_node_stop(AudioNodeHandle node, double when);
@@ -292,6 +312,14 @@ void audio_param_exponential_ramp(AudioParamHandle param, float value, double ti
 
 /** `param.cancelScheduledValues(t)`. */
 void audio_param_cancel_scheduled_values(AudioParamHandle param, double time);
+
+/**
+ * `param.setValueCurveAtTime(values, startTime, duration)`: the values are
+ * copied at the call. Fewer than two values is an InvalidStateError; a
+ * negative start or a non-positive duration a RangeError.
+ */
+void audio_param_set_value_curve(AudioParamHandle param, const bbl::js::F32Array& values,
+                                 double start, double duration);
 
 /** Reclaim discarded graphs at a control-thread frame boundary. */
 void audio_collect_finished();

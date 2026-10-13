@@ -809,6 +809,22 @@ export const propertyRules: readonly PropertyRule[] = [
         helperArgument: `bbl::pal::AudioBufferProperty::${member}`,
         feature: "audio:buffer-source",
     })),
+    // A buffer source's loop flag and points: written by the program, so
+    // two reads are two.
+    ...(
+        [
+            ["loop", "boolean", "bbl::pal::audio_loop"],
+            ["loopStart", "number", "bbl::pal::audio_loop_start"],
+            ["loopEnd", "number", "bbl::pal::audio_loop_end"],
+        ] as const
+    ).map(([property, value, helper]): PropertyRead => ({
+        owner: "audio-node",
+        property,
+        value,
+        helper,
+        feature: "audio:buffer-source",
+        impure: true,
+    })),
     {
         owner: "audio-node",
         property: "buffer",

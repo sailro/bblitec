@@ -164,7 +164,9 @@ Heightfields need square ground grids. Contract: [physics](fidelity.md#physics-c
 
 ## Audio
 
-LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling, decoding, ended listeners. Event payloads,
+LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling (value curves included), decoding, ended
+listeners, `disconnect(destination[, output[, input]])`. A buffer source loops its whole buffer only: a
+`loopStart`/`loopEnd` region inside it, or a loop started with a duration, throws at `start`. Event payloads,
 ended-listener `signal`, context options, statechange, output selection, media streams and recording refuse or are
 absent. `createAudioEngineAsync` adopts `audioContext`; its other options refuse.
 

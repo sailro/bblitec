@@ -149,7 +149,7 @@ function mainOutputGraph(engine: string, ctx: string): NativeStatement[] {
 const ENGINE_OPTION_REFUSALS: Readonly<Record<string, string>> = {
     volume:
         "the master volume is applied through `setMainOutVolume`'s ramp, " +
-        "whose `setValueCurveAtTime` component is not lowered",
+        "and the pinned `audio-param.ts` ramp is not lowered",
     parameterRampDuration:
         "no lowered parameter ramp reads the engine's ramp duration",
     resumeOnInteraction:

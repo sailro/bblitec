@@ -22,6 +22,7 @@
 #include <bblite/features/has_audio_stereo_panner.hpp>
 #include <bblite/features/workers.hpp>
 
+#include <bblite/js_error.hpp>
 #include <bblite/pal_audio.hpp>
 #include <bblite/teardown.hpp>
 
@@ -112,6 +113,8 @@ struct AudioNodeRecord {
 #endif
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     bool source_loop = false;
+    double source_loop_start = 0.0;
+    double source_loop_end = 0.0;
     AudioBufferHandle buffer{};
 #endif
 };
@@ -132,7 +135,11 @@ struct AudioGraphNode {
     std::shared_ptr<lab::AudioNode> node;
     std::weak_ptr<AudioNodeRecord> javascript;
     std::shared_ptr<AudioSourceState> source;
+    /** Every node an edge reaches: the union of the two lists below. */
     std::vector<lab::AudioNode*> outputs;
+    /** Nodes whose input this node feeds, and nodes one of whose parameters it drives. */
+    std::vector<lab::AudioNode*> node_edges;
+    std::vector<lab::AudioNode*> param_edges;
     double retire_after = -1.0;
     bool reached = false;
 };
@@ -210,7 +217,7 @@ struct ContextRecord {
 void register_graph_node(ContextRecord& context, const AudioNodeHandle& handle) {
     const auto& value = handle.ownership;
     context.graph.emplace(value->node.get(),
-                          AudioGraphNode{value->node, value, value->source, {}, -1.0});
+                          AudioGraphNode{value->node, value, value->source, {}, {}, {}, -1.0});
 }
 
 /** Longest declared tail on the reachable graph. Feedback and unbounded
@@ -259,6 +266,8 @@ void detach_outputs(AudioGraphNode& node, lab::ContextGraphLock& lock) {
         lab::AudioNodeOutput::disconnectAll(lock, node.node->output(index));
     }
     node.outputs.clear();
+    node.node_edges.clear();
+    node.param_edges.clear();
 }
 
 void collect_audio_graph(ContextRecord& context) {
@@ -347,19 +356,29 @@ void invalidate_source_tails(ContextRecord& context, lab::AudioNode* changed) {
     }
 }
 
+/** Add `target` to `edges` once; whether it was added. */
+bool add_edge(std::vector<lab::AudioNode*>& edges, lab::AudioNode* target) {
+    if (std::find(edges.begin(), edges.end(), target) != edges.end())
+        return false;
+    edges.push_back(target);
+    return true;
+}
+
 template <typename Connect>
 void connect_audio_graph(ContextRecord& context, const AudioNodeHandle& source,
-                         const AudioNodeHandle& destination, Connect connect) {
-    auto& outputs = context.graph.at(source.ownership->node.get()).outputs;
+                         const AudioNodeHandle& destination, bool to_parameter, Connect connect) {
+    auto& entry = context.graph.at(source.ownership->node.get());
     auto* target = destination.ownership->node.get();
-    const bool inserted = std::find(outputs.begin(), outputs.end(), target) == outputs.end();
-    if (inserted)
-        outputs.push_back(target);
+    auto& kind = to_parameter ? entry.param_edges : entry.node_edges;
+    const bool inserted = add_edge(entry.outputs, target);
+    const bool kind_inserted = add_edge(kind, target);
     try {
         connect();
     } catch (...) {
         if (inserted)
-            outputs.pop_back();
+            entry.outputs.pop_back();
+        if (kind_inserted)
+            kind.pop_back();
         throw;
     }
     if (inserted)
@@ -1205,6 +1224,72 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer) {
 #endif
 }
 
+namespace {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+AudioNodeRecord& require_buffer_source(AudioNodeHandle source) {
+    ContextRecord& record = require_context(context_of(source.value));
+    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(record, source)))
+        throw std::runtime_error("Audio node is not a buffer source.");
+    return *source.ownership;
+}
+#else
+[[noreturn]] void buffer_sources_absent() {
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+}
+#endif
+} // namespace
+
+bool audio_loop(AudioNodeHandle source) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    return require_buffer_source(source).source_loop;
+#else
+    (void)source;
+    buffer_sources_absent();
+#endif
+}
+
+double audio_loop_start(AudioNodeHandle source) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    return require_buffer_source(source).source_loop_start;
+#else
+    (void)source;
+    buffer_sources_absent();
+#endif
+}
+
+double audio_loop_end(AudioNodeHandle source) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    return require_buffer_source(source).source_loop_end;
+#else
+    (void)source;
+    buffer_sources_absent();
+#endif
+}
+
+void audio_set_loop_start(AudioNodeHandle source, double seconds) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    if (!std::isfinite(seconds))
+        throw js::NamedError("TypeError", "loopStart must be a finite number.");
+    require_buffer_source(source).source_loop_start = seconds;
+#else
+    (void)source;
+    (void)seconds;
+    buffer_sources_absent();
+#endif
+}
+
+void audio_set_loop_end(AudioNodeHandle source, double seconds) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    if (!std::isfinite(seconds))
+        throw js::NamedError("TypeError", "loopEnd must be a finite number.");
+    require_buffer_source(source).source_loop_end = seconds;
+#else
+    (void)source;
+    (void)seconds;
+    buffer_sources_absent();
+#endif
+}
+
 void audio_set_loop(AudioNodeHandle source, bool enabled) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     ContextRecord& record = require_context(context_of(source.value));
@@ -1228,7 +1313,7 @@ void audio_connect(AudioNodeHandle source, AudioNodeHandle destination) {
     ContextRecord& record = require_context(context_of(source.value));
     const auto source_node = require_node(record, source);
     const auto destination_node = require_node(record, destination);
-    connect_audio_graph(record, source, destination,
+    connect_audio_graph(record, source, destination, false,
                         [&] { record.context->connect(destination_node, source_node, 0, 0); });
 }
 
@@ -1240,7 +1325,7 @@ void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination) {
     ContextRecord& record = require_context(context_of(source.value));
     const auto source_node = require_node(record, source);
     const auto param = require_param(destination);
-    connect_audio_graph(record, source, destination.node,
+    connect_audio_graph(record, source, destination.node, true,
                         [&] { record.context->connectParam(param, source_node, 0); });
 }
 
@@ -1256,6 +1341,38 @@ void audio_disconnect(AudioNodeHandle node) {
         }
         record.context->handlePostRenderTasks(render);
     }
+    invalidate_source_tails(record, source.get());
+    collect_audio_graph(record);
+}
+
+void audio_disconnect(AudioNodeHandle node, AudioNodeHandle destination,
+                      bbl::js::Nullable<double> output, bbl::js::Nullable<double> input) {
+    if (context_of(node.value) != context_of(destination.value))
+        throw js::make_dom_exception("The destination belongs to another AudioContext.",
+                                     "InvalidAccessError");
+    ContextRecord& record = require_context(context_of(node.value));
+    const auto source = require_node(record, node);
+    const auto target = require_node(record, destination);
+    // WebIDL `unsigned long`, then the node's own output and input counts.
+    const auto index = [](const bbl::js::Nullable<double>& value) {
+        return value ? static_cast<double>(js::to_uint32(*value)) : 0.0;
+    };
+    if (output && index(output) >= static_cast<double>(source->numberOfOutputs()))
+        throw js::make_dom_exception("The output index is out of range.", "IndexSizeError");
+    if (input && index(input) >= static_cast<double>(target->numberOfInputs()))
+        throw js::make_dom_exception("The input index is out of range.", "IndexSizeError");
+    auto& entry = record.graph.at(source.get());
+    const auto edge = std::find(entry.node_edges.begin(), entry.node_edges.end(), target.get());
+    if (edge == entry.node_edges.end())
+        throw js::make_dom_exception("The node is not connected to that destination.",
+                                     "InvalidAccessError");
+    // Every reached node has one output and one input, so the edge is the indexed one.
+    record.context->disconnect(target, source, static_cast<int>(index(input)),
+                               static_cast<int>(index(output)));
+    entry.node_edges.erase(edge);
+    if (std::find(entry.param_edges.begin(), entry.param_edges.end(), target.get()) ==
+        entry.param_edges.end())
+        std::erase(entry.outputs, target.get());
     invalidate_source_tails(record, source.get());
     collect_audio_graph(record);
 }
@@ -1282,6 +1399,24 @@ static void audio_node_start_impl(AudioNodeHandle node, double when, double offs
     // common `start(when)` surface by dispatching this concrete node first.
     if (auto sampled = std::dynamic_pointer_cast<lab::SampledAudioNode>(source)) {
         const bool loop = node.ownership->source_loop;
+        if (loop) {
+            // Web Audio's actual loop is the whole buffer unless the points
+            // select a region inside it; LabSound loops whole grains only.
+            const double start = node.ownership->source_loop_start;
+            const double end = node.ownership->source_loop_end;
+            const double length =
+                node.ownership->buffer.value
+                    ? audio_buffer_property(node.ownership->buffer, AudioBufferProperty::Duration)
+                    : 0.0;
+            if (start >= 0.0 && end > 0.0 && start < end && (start > 0.0 || end < length))
+                throw std::runtime_error(
+                    "A looping AudioBufferSourceNode with a loopStart/loopEnd region inside its "
+                    "buffer is not supported natively.");
+            if (argument_count > 2)
+                throw std::runtime_error(
+                    "A looping AudioBufferSourceNode started with a duration is not supported "
+                    "natively.");
+        }
         if (argument_count == 1) {
             sampled->start(static_cast<float>(when), loop ? -1 : 0);
         } else if (argument_count == 2) {
@@ -1337,6 +1472,14 @@ void audio_node_start(AudioNodeHandle node, double when, double offset) {
 
 void audio_node_start(AudioNodeHandle node, double when, double offset, double duration) {
     audio_node_start_impl(node, when, offset, duration, 3);
+}
+
+void audio_node_start(AudioNodeHandle node, double when, double offset,
+                      bbl::js::Nullable<double> duration) {
+    if (duration)
+        audio_node_start_impl(node, when, offset, *duration, 3);
+    else
+        audio_node_start_impl(node, when, offset, 0.0, 2);
 }
 
 void audio_node_stop(AudioNodeHandle node, double when) {
@@ -1408,6 +1551,30 @@ void audio_param_exponential_ramp(AudioParamHandle param, float value, double ti
 
 void audio_param_cancel_scheduled_values(AudioParamHandle param, double time) {
     require_param(param)->cancelScheduledValues(static_cast<float>(time));
+}
+
+void audio_param_set_value_curve(AudioParamHandle param, const bbl::js::F32Array& values,
+                                 double start, double duration) {
+    if (!std::isfinite(start) || !std::isfinite(duration))
+        throw js::NamedError("TypeError", "setValueCurveAtTime takes finite times.");
+    if (start < 0.0)
+        throw js::NamedError("RangeError", "setValueCurveAtTime's startTime is negative.");
+    if (duration <= 0.0)
+        throw js::NamedError("RangeError", "setValueCurveAtTime's duration is not positive.");
+    if (values.size() < 2)
+        throw js::make_dom_exception("setValueCurveAtTime needs at least two values.",
+                                     "InvalidStateError");
+    // Web Audio interpolates linearly between the curve's values, which
+    // LabSound's own curve event does not (it holds each value for its
+    // share of the duration): the same timeline as linear ramps between
+    // consecutive values, from the first value at `start`.
+    const auto target = require_param(param);
+    const std::size_t count = values.size();
+    target->setValueAtTime(values.load(0), static_cast<float>(start));
+    for (std::size_t index = 1; index < count; ++index)
+        target->linearRampToValueAtTime(
+            values.load(index), static_cast<float>(start + duration * static_cast<double>(index) /
+                                                               static_cast<double>(count - 1)));
 }
 
 namespace {

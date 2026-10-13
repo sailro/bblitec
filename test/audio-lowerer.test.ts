@@ -87,7 +87,6 @@ test("the PAL header declares only what a generated scene can call", () => {
     for (const absent of [
         "audio_buffer_channel_data",
         "audio_set_source_buffer",
-        "audio_param_set_value_curve",
         "audio_flush_connections",
     ]) {
         assert.doesNotMatch(
@@ -101,6 +100,7 @@ test("the PAL header declares only what a generated scene can call", () => {
         "audio_buffer_channel",
         "audio_create_buffer_source",
         "audio_set_buffer",
+        "audio_param_set_value_curve",
     ]) {
         assert.match(
             header,

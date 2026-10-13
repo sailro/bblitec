@@ -19,6 +19,9 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
 void audio_connect(AudioNodeHandle, AudioNodeHandle) {
     throw std::runtime_error("Unexpected graph execution after unavailable producer");
 }
+void audio_disconnect(AudioNodeHandle, AudioNodeHandle, js::Nullable<double>, js::Nullable<double>) {
+    throw std::runtime_error("Unexpected graph execution after unavailable producer");
+}
 }
 `;
 
@@ -117,7 +120,6 @@ test("deferred media preserves typed bodies, optional evaluation and explicit fa
         "AudioContext.createMediaStreamSource",
         "AudioContext.createMediaStreamDestination",
         "MediaStreamAudioDestinationNode.stream",
-        "AudioNode.disconnect",
         "AudioContext.createMediaElementSource",
     ])
         assert.ok(ids.has(`dom:${id}`), id);
