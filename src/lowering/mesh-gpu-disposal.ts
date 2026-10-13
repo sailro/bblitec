@@ -1,6 +1,7 @@
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { taskDisposedCpp } from "./frame-graph-task-disposal.js";
 
 const module = "src/mesh/mesh-dispose.ts";
 
@@ -115,7 +116,7 @@ ${guard}
                     [](const auto& owner) { return !owner.expired(); });
     const bool task_member = std::any_of(
         engine.frame_tasks.begin(), engine.frame_tasks.end(), [mesh](const FrameTaskRecord& task) {
-            return task.kind == FrameTaskKind::render && !(task.source_scene && task.source_scene->disposed) &&
+            return task.kind == FrameTaskKind::render && !${taskDisposedCpp("task", false)} &&
                 std::any_of(task.render_meshes.begin(), task.render_meshes.end(),
                             [mesh](const RenderTaskMesh& entry) { return entry.mesh == mesh; });
         });

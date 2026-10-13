@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { taskDisposedCpp } from "./frame-graph-task-disposal.js";
 
 const graphModule = "src/frame-graph/frame-graph.ts";
 const baseModule = "src/frame-graph/render-task-base.ts";
@@ -136,7 +137,7 @@ export function lowerFrameGraphTaskBuild(
             if (node === recordCall)
                 return [
                     `${indent}if (task.kind == FrameTaskKind::render) {`,
-                    `${indent}    if (task.disposed || (task.source_scene && task.source_scene->disposed))`,
+                    `${indent}    if ${taskDisposedCpp("task", true)}`,
                     `${indent}        throw std::runtime_error("RenderTask has been disposed.");`,
                     // Registration records each queued task once; a
                     // recorded task's next draw-list build re-records it.
