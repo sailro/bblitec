@@ -56,6 +56,17 @@ inline std::optional<double> css_decimal(std::string_view source, std::size_t& o
     return number;
 }
 
+/** The index of the `)` closing the parenthesis at `open`, or the size when it is unclosed. */
+inline std::size_t css_function_end(std::string_view value, std::size_t open) {
+    std::size_t end = open;
+    for (int depth = 0; end < value.size(); ++end) {
+        depth += value[end] == '(' ? 1 : value[end] == ')' ? -1 : 0;
+        if (depth == 0)
+            break;
+    }
+    return end;
+}
+
 } // namespace detail
 
 // Root-relative lengths reproject when the document's computed font changes.
@@ -281,12 +292,7 @@ inline std::string rml_css_length_math(std::string value, double width, double h
             !tail.starts_with("clamp("))
             continue;
         // Math over var() resolves once the style engine substitutes the variables.
-        std::size_t end = value.find('(', index);
-        for (int depth = 0; end < value.size(); ++end) {
-            depth += value[end] == '(' ? 1 : value[end] == ')' ? -1 : 0;
-            if (depth == 0)
-                break;
-        }
+        const std::size_t end = detail::css_function_end(value, value.find('(', index));
         if (std::string_view(value).substr(index, end - index).find("var(") != std::string::npos) {
             index = end;
             continue;

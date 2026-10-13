@@ -88,6 +88,26 @@ int main() try {
         ui_set_style_property(engine, ui_get_element_by_id(engine, "bar"), "--n", "5");
         at(1100);
         check(width("bar", 50), "a changed custom property recomputes");
+        // The native math is the grammar: a unit it cannot resolve refuses once substituted.
+        const auto refuses = [&](const char* name, const char* value) {
+            const auto probe = ui_create_element(engine, "div");
+            ui_append_child(engine, ui_document_root(engine, UiDocumentPart::Body), probe);
+            ui_set_style_property(engine, probe, "--x", "2");
+            ui_set_style_property(engine, probe, name, value);
+            bool refused = false;
+            try {
+                at(1200);
+            } catch (const std::runtime_error& error) {
+                refused = std::string_view(error.what()).starts_with("UI CSS math requires");
+            }
+            ui_remove(engine, probe);
+            at(1200);
+            if (!refused)
+                std::fprintf(stderr, "%s: %s was not refused\n", name, value);
+            return refused;
+        };
+        check(refuses("width", "calc(var(--x) * 2em)") && refuses("width", "calc(100% - var(--x))"),
+              "math over var() with an unresolvable unit refuses natively");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

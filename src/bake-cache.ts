@@ -231,6 +231,29 @@ export function cachedBakeSync(
     return produced;
 }
 
+/** `cachedBakeSync` over several keys: `bake` runs once, for the indices of
+ *  the keys the cache misses, and returns their results in that order. */
+export function cachedBakeBatchSync(
+    keys: readonly BakeKey[],
+    bake: (missing: readonly number[]) => Uint8Array[],
+): Uint8Array[] {
+    const paths = keys.map(cachePath);
+    const replayed = paths.map(replayBake);
+    const missing = replayed.flatMap((bytes, index) =>
+        bytes === undefined ? [index] : [],
+    );
+    const produced = missing.length ? bake(missing) : [];
+    if (produced.length !== missing.length)
+        throw new Error("A batched bake returned a result per missing key.");
+    missing.forEach((index, at) => storeBake(paths[index], produced[at]!));
+    return replayed.map((bytes, index) => {
+        const result = bytes ?? produced[missing.indexOf(index)];
+        if (result === undefined)
+            throw new Error("A batched bake lost a result.");
+        return result;
+    });
+}
+
 /** A hit's bytes, or undefined on any doubt — a cache entry deleted
  *  from under a running compile means bake, never fail. */
 function replayBake(path: string | undefined): Uint8Array | undefined {

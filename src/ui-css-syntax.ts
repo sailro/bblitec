@@ -77,6 +77,20 @@ export function uiCssBlockEnd(
     return undefined;
 }
 
+/**
+ * The index just past the `)` closing the parenthesis at `open`, or the
+ * source length when it is unclosed; parentheses in strings and comments do
+ * not count.
+ */
+export function uiCssFunctionEnd(source: string, open: number): number {
+    let depth = 0;
+    for (const index of uiCssSyntaxIndices(source, open)) {
+        if (source[index] === "(") depth++;
+        else if (source[index] === ")" && --depth === 0) return index + 1;
+    }
+    return source.length;
+}
+
 /** Commas inside quotes or nested functions/attributes do not split a CSS list. */
 export function splitUiCssList(source: string): string[] {
     const result: string[] = [];

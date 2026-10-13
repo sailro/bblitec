@@ -1,3 +1,5 @@
+import { splitUiCssList, uiCssValueTokens } from "./ui-css-syntax.js";
+
 /**
  * Why a static transition/animation value's easing functions are outside
  * what the RmlUi animation parser represents, or undefined. Arguments that
@@ -48,30 +50,6 @@ export function unrepresentedUiEasing(value: string): string | undefined {
     return undefined;
 }
 
-/** Split at a separator outside parentheses and quotes. */
-function splitTopLevel(text: string, separator: RegExp): string[] {
-    const parts: string[] = [];
-    let depth = 0;
-    let quote = "";
-    let start = 0;
-    for (let index = 0; index <= text.length; index++) {
-        const character = text[index] ?? "";
-        if (quote) {
-            if (character === quote) quote = "";
-        } else if (character === '"' || character === "'") quote = character;
-        else if (character === "(") depth++;
-        else if (character === ")") depth--;
-        else if (
-            index === text.length ||
-            (depth === 0 && separator.test(character))
-        ) {
-            parts.push(text.slice(start, index).trim());
-            start = index + 1;
-        }
-    }
-    return parts.filter((part) => part.length > 0);
-}
-
 /**
  * Why a static animation shorthand is outside what the RmlUi animation
  * parser represents, or undefined. Each keyword fills the first longhand it
@@ -96,8 +74,8 @@ export function unrepresentedUiAnimation(value: string): string | undefined {
         ["fill", ["none", "forwards", "backwards", "both"]],
         ["state", ["running", "paused"]],
     ];
-    for (const item of splitTopLevel(value, /,/)) {
-        const tokens = splitTopLevel(item, /\s/);
+    for (const item of splitUiCssList(value)) {
+        const tokens = uiCssValueTokens(item) ?? [];
         if (tokens.some((token) => /var\(|__bblite_ui_/i.test(token))) continue;
         const taken = new Set<string>();
         const times: number[] = [];

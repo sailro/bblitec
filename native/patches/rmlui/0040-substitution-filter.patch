@@ -1,7 +1,8 @@
 Let the client complete a value after var() substitution: a substitution
 filter runs on each property and shorthand value once its variables are
 substituted and before it is parsed, so math such as calc() over var() can be
-resolved where the variables are known.
+resolved where the variables are known. The filter edits the value in place,
+and no filter costs no copy.
 
 diff --git a/Include/RmlUi/Core/StyleSheetSpecification.h b/Include/RmlUi/Core/StyleSheetSpecification.h
 index ee72ac9..83d37d3 100644
@@ -12,10 +13,10 @@ index ee72ac9..83d37d3 100644
  	static bool ParsePropertyDeclaration(PropertyDictionary& dictionary, const String& property_name, const String& property_value);
  
 +	/// A hook applied to a property or shorthand value after its var() substitution and before it is parsed, which may
-+	/// complete expressions the substituted values finish (such as calc()). It may throw to refuse a value.
-+	using SubstitutionFilter = String (*)(const String& property_name, const String& value);
++	/// complete in place expressions the substituted values finish (such as calc()). It may throw to refuse a value.
++	using SubstitutionFilter = void (*)(const String& property_name, String& value);
 +	static void SetSubstitutionFilter(SubstitutionFilter filter);
-+	static String FilterSubstitution(const String& property_name, const String& value);
++	static void FilterSubstitution(const String& property_name, String& value);
 +
  	static PropertyId GetPropertyId(const String& property_name);
  	static ShorthandId GetShorthandId(const String& shorthand_name);
@@ -28,7 +29,7 @@ index cff85f5..7c42e92 100644
  	SmallUnorderedSet<String> cycle_chain;
  	if (!SubstituteVariables(sources, property->Get<String>(), variable_dependencies, cycle_chain, substitution_result))
  		return nullptr;
-+	substitution_result = StyleSheetSpecification::FilterSubstitution(StyleSheetSpecification::GetPropertyName(id), substitution_result);
++	StyleSheetSpecification::FilterSubstitution(StyleSheetSpecification::GetPropertyName(id), substitution_result);
  
  	const PropertyDefinition* property_definition = StyleSheetSpecification::GetProperty(id);
  	if (!property_definition)
@@ -36,8 +37,8 @@ index cff85f5..7c42e92 100644
  			String substitution_result;
  			if (!SubstituteVariables(sources, property.Get<String>(), variable_dependencies, cycle_chain, substitution_result))
  				continue;
-+			substitution_result =
-+				StyleSheetSpecification::FilterSubstitution(StyleSheetSpecification::GetShorthandName(shorthand_id), substitution_result);
++			StyleSheetSpecification::FilterSubstitution(StyleSheetSpecification::GetShorthandName(shorthand_id),
++				substitution_result);
  
  			if (!StyleSheetSpecification::GetPropertySpecification().ParseShorthandDeclaration(out_substituted_shorthands, shorthand_id,
  					substitution_result))
@@ -45,7 +46,7 @@ diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpe
 index 78015da..b4afee6 100644
 --- a/Source/Core/StyleSheetSpecification.cpp
 +++ b/Source/Core/StyleSheetSpecification.cpp
-@@ -171,6 +171,18 @@ const ShorthandDefinition* StyleSheetSpecification::GetShorthand(ShorthandId id)
+@@ -171,6 +171,19 @@ const ShorthandDefinition* StyleSheetSpecification::GetShorthand(ShorthandId id)
  	return instance->properties.GetShorthand(id);
  }
  
@@ -56,9 +57,10 @@ index 78015da..b4afee6 100644
 +	substitution_filter = filter;
 +}
 +
-+String StyleSheetSpecification::FilterSubstitution(const String& property_name, const String& value)
++void StyleSheetSpecification::FilterSubstitution(const String& property_name, String& value)
 +{
-+	return substitution_filter ? substitution_filter(property_name, value) : value;
++	if (substitution_filter)
++		substitution_filter(property_name, value);
 +}
 +
  bool StyleSheetSpecification::ParsePropertyDeclaration(PropertyDictionary& dictionary, const String& property_name, const String& property_value)

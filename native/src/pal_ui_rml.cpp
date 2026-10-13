@@ -260,15 +260,29 @@ bool css_property_name_equals(std::string_view left, std::string_view right) {
     return right.starts_with("--") ? left == right : ascii_iequals(left, right);
 }
 
+/**
+ * Each declaration of a declaration list as `callback(declaration)`, or `callback(declaration,
+ * end)` with the offset of its terminator in `source`. Quotes, escapes, comments and nested
+ * brackets do not end a declaration. With `rule_blocks`, `source` is a sheet: a rule block's `}`
+ * also ends one, and the selectors and at-rule preludes before a `{` are not declarations.
+ */
 template <typename Callback>
-void for_each_css_declaration(std::string_view source, Callback&& callback) {
+void for_each_css_declaration(std::string_view source, Callback&& callback,
+                              bool rule_blocks = false) {
     std::size_t start = 0;
     std::string closing_brackets;
     char quote = 0;
     for (std::size_t index = 0; index <= source.size(); ++index) {
         const char token = index < source.size() ? source[index] : ';';
-        if (index == source.size() || (!quote && closing_brackets.empty() && token == ';')) {
-            callback(source.substr(start, index - start));
+        const bool top = !quote && closing_brackets.empty();
+        if (index == source.size() || (top && (token == ';' || (rule_blocks && token == '}')))) {
+            const auto declaration = source.substr(start, index - start);
+            if constexpr (std::is_invocable_v<Callback&, std::string_view, std::size_t>)
+                callback(declaration, index);
+            else
+                callback(declaration);
+            start = index + 1;
+        } else if (top && rule_blocks && token == '{') {
             start = index + 1;
         } else if (token == '\\') {
             if (index + 1 < source.size())
@@ -3075,55 +3089,28 @@ void replace_css_identifier(std::string& text, std::string_view identifier,
  */
 std::string rml_css_delay_resets(std::string_view source) {
     std::string result;
-    std::size_t copied = 0, name_start = 0, value_start = 0;
-    std::string_view reset;
-    char quote = 0;
-    int depth = 0;
-    const auto end_declaration = [&](std::size_t at) {
-        if (reset.empty())
-            return;
-        result.append(source.substr(copied, at - copied));
-        result += ';';
-        result += reset;
-        result += ":auto";
-        if (split_css_important(source.substr(value_start, at - value_start)).second)
-            result += " !important";
-        copied = at;
-        reset = {};
-    };
-    for (std::size_t index = 0; index < source.size(); ++index) {
-        const char token = source[index];
-        if (token == '\\') {
-            ++index;
-        } else if (quote) {
-            if (token == quote)
-                quote = 0;
-        } else if (token == '/' && index + 1 < source.size() && source[index + 1] == '*') {
-            const auto close = source.find("*/", index + 2);
-            index = close == std::string_view::npos ? source.size() : close + 1;
-        } else if (token == '\'' || token == '"') {
-            quote = token;
-        } else if (token == '(' || token == '[') {
-            ++depth;
-        } else if ((token == ')' || token == ']') && depth > 0) {
-            --depth;
-        } else if (depth == 0 && token == ':' && name_start != std::string_view::npos) {
-            const auto name = trim_css_token(source.substr(name_start, index - name_start));
-            reset = ascii_iequals(name, "transition")  ? "transition-delay"
-                    : ascii_iequals(name, "animation") ? "animation-delay"
-                                                       : "";
-            name_start = std::string_view::npos;
-            value_start = index + 1;
-        } else if (depth == 0 && (token == ';' || token == '}')) {
-            end_declaration(index);
-            name_start = index + 1;
-        } else if (depth == 0 && token == '{') {
-            // A selector or at-rule prelude, not a declaration.
-            reset = {};
-            name_start = index + 1;
-        }
-    }
-    end_declaration(source.size());
+    std::size_t copied = 0;
+    for_each_css_declaration(
+        source,
+        [&](std::string_view declaration, std::size_t end) {
+            const std::size_t colon = declaration.find(':');
+            if (colon == std::string_view::npos)
+                return;
+            const auto name = trim_css_token(declaration.substr(0, colon));
+            const std::string_view reset = ascii_iequals(name, "transition")  ? "transition-delay"
+                                           : ascii_iequals(name, "animation") ? "animation-delay"
+                                                                              : "";
+            if (reset.empty())
+                return;
+            result.append(source.substr(copied, end - copied));
+            result += ';';
+            result += reset;
+            result += ":auto";
+            if (split_css_important(declaration.substr(colon + 1)).second)
+                result += " !important";
+            copied = end;
+        },
+        true);
     result.append(source.substr(copied));
     return result;
 }
@@ -3231,12 +3218,7 @@ std::string rml_css_variable_colors(std::string value) {
             position += 3;
             continue;
         }
-        std::size_t end = open;
-        for (int depth = 0; end < value.size(); ++end) {
-            depth += value[end] == '(' ? 1 : value[end] == ')' ? -1 : 0;
-            if (depth == 0)
-                break;
-        }
+        const std::size_t end = pal::detail::css_function_end(value, open);
         if (std::string_view(value).substr(open, end - open).find("var(") == std::string::npos) {
             position = end;
             continue;
@@ -4891,7 +4873,7 @@ public:
 struct UiRmlRuntime;
 /** The one live runtime, whose viewport and root font complete math after var() substitution. */
 UiRmlRuntime* substitution_runtime = nullptr;
-Rml::String substitute_css(const Rml::String& property, const Rml::String& value);
+void substitute_css(const Rml::String& property, Rml::String& value);
 
 struct UiRmlRuntime {
     UiRmlRuntime(Engine& engine, SDL_Window* window, std::uint32_t width, std::uint32_t height,
@@ -5226,6 +5208,28 @@ struct UiRmlRuntime {
         return rml_css_resolve_variable_colors(rml_css_density_units(std::move(value)));
     }
 
+    /**
+     * RmlUi's parser is the motion grammar: a sheet's transition or animation it rejects refuses
+     * here, as a retained style write does, rather than leaving the sheet.
+     */
+    void require_parsed_motion(std::string_view style) const {
+        for_each_css_declaration(style, [&](std::string_view declaration) {
+            const std::size_t colon = declaration.find(':');
+            if (colon == std::string_view::npos)
+                return;
+            const std::string name =
+                js::string_lower(std::string(trim_css_token(declaration.substr(0, colon))));
+            if (name != "transition" && name != "animation")
+                return;
+            const std::string value(
+                trim_css_token(split_css_important(declaration.substr(colon + 1)).first));
+            Rml::PropertyDictionary properties;
+            if (!Rml::StyleSheetSpecification::ParsePropertyDeclaration(properties, name,
+                                                                        project_css(value, name)))
+                throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
+        });
+    }
+
     void set_projected_property(Rml::Element& element, const std::string& name,
                                 const std::string& value) const {
         if (name == "transition" || name == "animation") {
@@ -5437,6 +5441,7 @@ struct UiRmlRuntime {
                 ui_selector_uses_test(rule.sequence, UiSelectorTestKind::FocusWithin);
             observes_generated_content = observes_generated_content || rule.content.has_value();
             const std::string public_style = filter_private_ui_declarations(rule.style, false);
+            require_parsed_motion(public_style);
             // Empty conditional nodes still register thresholds used by native
             // presentation adaptations and content-only generated parts.
             if (public_style.empty() && rule.container_max_width < 0.0)
@@ -7316,10 +7321,16 @@ struct UiRmlRuntime {
     double canvas_render_ms = 0;
 };
 
-Rml::String substitute_css(const Rml::String& property, const Rml::String& value) {
+void substitute_css(const Rml::String& property, Rml::String& value) {
     if (!substitution_runtime)
         throw std::runtime_error("CSS variable substitution needs the retained UI runtime.");
-    return substitution_runtime->project_substituted_css(value, property);
+    // Substituted values were projected when set: only math and colours over var() remain.
+    constexpr std::string_view pending[] = {"calc(", "min(", "max(", "clamp(", "bbl-css-color("};
+    if (std::none_of(std::begin(pending), std::end(pending), [&](std::string_view token) {
+            return value.find(token) != Rml::String::npos;
+        }))
+        return;
+    value = substitution_runtime->project_substituted_css(std::move(value), property);
 }
 
 // A canvas is a replaced element: its backing size, in CSS pixels, is its
