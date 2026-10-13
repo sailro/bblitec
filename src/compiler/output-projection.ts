@@ -111,7 +111,10 @@ export const featureSources: Record<Feature, string[]> = {
     // The pin's splat-stream library, lowered whole, and the engine's
     // WebGPU-subset device it runs on from createEngine (each backend's
     // unit; CMake derives the Dawn twin).
-    "loader:splat-stream": ["src/pal_sdl_gpu_webgpu_device.cpp"],
+    "loader:splat-stream": [
+        "src/pal_sdl_gpu_webgpu_device.cpp",
+        "src/pal_splat_stream_platform.cpp",
+    ],
     "material:pbr": [],
     "material:source-texture-read": [],
     "material:clearcoat": [],
@@ -372,6 +375,8 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "image:runtime-decode",
         "data:json",
         "data:locale",
+        // The library reads the pass camera's view and projection matrices.
+        "camera:view-projection",
     ],
     "mesh:thin-instance-colors": ["mesh:thin-instances"],
     "mesh:thin-instances-dynamic": ["mesh:thin-instances"],
@@ -768,6 +773,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("data:locale")
             ? "#include <bblite/pal_locale.hpp>\n"
+            : "") +
+        (features.includes("loader:splat-stream")
+            ? "#include <bblite/upstream_splat_stream.hpp>\n"
             : "") +
         (features.includes("platform:http")
             ? "#include <bblite/pal_http.hpp>\n"

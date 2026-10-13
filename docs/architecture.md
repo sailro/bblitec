@@ -90,7 +90,8 @@ typed error object and matched by `instanceof`. A captured binding of a nested b
 header lives in an environment per block execution or per iteration; other loop-header and case-clause
 captures refuse. A generic arrow lowers once per instantiation its calls reach. The web APIs the
 splat-stream transport calls (`fetch`, abort signals, timers, `createImageBitmap`) are schema adapters
-onto `splat_stream_platform.hpp`, which the platform build or a test defines. A parameter whose type a type-only module erased takes each call's
+onto `splat_stream_platform.hpp`, which `pal_splat_stream_platform.cpp` defines over the native services (a test may
+define fakes); the loader's engine, scene, camera and renderable objects are `splat_stream_runtime.hpp`'s. A parameter whose type a type-only module erased takes each call's
 argument shape (one overload per signature). A bundled package's classes and calls bind by
 `package#name` to native records and adapters: text-shaper's font, shaping buffers and `shapeInto` are
 HarfBuzz (`text_layout.hpp`). A lazy loader's root is the module function its

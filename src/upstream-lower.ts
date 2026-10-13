@@ -34,6 +34,7 @@ import {
     runtimeWgslModules,
     SPLAT_STREAM_SHADER_MODULES,
 } from "./lowering/splat-stream-shaders.js";
+import { splatStreamLibraryHeader } from "./lowering/splat-stream-library.js";
 import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
 import { TextWeightLowerer } from "./lowering/text-weight-lowerer.js";
 import { cameraChangeKeyHeader } from "./lowering/camera-change-key-lowerer.js";
@@ -1452,11 +1453,16 @@ ${lowerThinInstanceSync(context)}
         }
         // The splat stream's run-time WGSL: SDL_GPU loads each stage by the
         // stem the module text and entry point name.
-        if (features.includes("loader:splat-stream"))
+        if (features.includes("loader:splat-stream")) {
             for (const module of runtimeWgslModules(
                 pinnedRawShaderImports(context, SPLAT_STREAM_SHADER_MODULES),
             ))
                 composedShaders.push({ ...module, family: "pinnedModule" });
+            this.tree.write(
+                "upstream/include/bblite/upstream_splat_stream.hpp",
+                splatStreamLibraryHeader(context),
+            );
+        }
         // The pin's utility modules, each deployed whole under its stem pair.
         const deployUtility = (module: PinnedUtilityModule): void => {
             const shader = wholeModuleShader(
