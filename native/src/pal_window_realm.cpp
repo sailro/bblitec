@@ -126,21 +126,15 @@ struct ListenerNames {
     bool click = false;
     std::vector<std::string> events;
 };
-struct ClipboardWrite final : CompletionEvent {
-    std::string text;
+struct PageFullscreen;
+/** Window-thread work a realm requests (`submit_window_request`). */
+using WindowWork = std::function<std::string(SDL_Window*, PageFullscreen&)>;
+/** One request on the Window thread, then its failure (empty on success) back to the realm. */
+struct WindowRequest final : CompletionEvent {
+    WindowWork perform;
     std::string error;
-    ClipboardWrite(std::uint64_t id, std::string value)
-        : CompletionEvent(id), text(std::move(value)) {}
-};
-/**
- * The window state a page fullscreen request or exit asks for (none keeps it, ordered after
- * earlier requests), and the platform's failure.
- */
-struct FullscreenRequest final : CompletionEvent {
-    std::optional<bool> fullscreen;
-    std::string error;
-    FullscreenRequest(std::uint64_t id, std::optional<bool> value)
-        : CompletionEvent(id), fullscreen(value) {}
+    WindowRequest(std::uint64_t id, WindowWork work)
+        : CompletionEvent(id), perform(std::move(work)) {}
 };
 /** The display ended page fullscreen itself: Escape, or the system left window fullscreen. */
 struct WindowFullscreenExit final : ExternalEvent {};
@@ -307,8 +301,8 @@ struct WindowServices final : CanvasProvider {
     std::string capture_failure;
     std::condition_variable wake;
     std::unique_ptr<DocumentSnapshot> pending;
-    std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
-    std::vector<std::unique_ptr<FullscreenRequest>> fullscreen_requests;
+    /** Requests the Window thread performs in submission order. */
+    std::vector<std::unique_ptr<WindowRequest>> window_requests;
     /** The realm's pending message box, answered in place; guarded by `mutex`. */
     std::shared_ptr<MessageBoxRequest> message_box;
     std::uint64_t requested = 0, completed = 0;
@@ -427,18 +421,17 @@ struct PageFullscreen {
     }
 };
 
-/** Applies the realm's fullscreen requests in order and posts each one's completion. */
-void serve_fullscreen_requests(WindowServices& services, SDL_Window* window,
-                               PageFullscreen& fullscreen) {
-    std::vector<std::unique_ptr<FullscreenRequest>> requests;
+/** Performs the realm's Window requests in order and posts each one's completion. */
+void serve_window_requests(WindowServices& services, SDL_Window* window,
+                           PageFullscreen& fullscreen) {
+    std::vector<std::unique_ptr<WindowRequest>> requests;
     {
         std::lock_guard lock(services.mutex);
-        requests.swap(services.fullscreen_requests);
+        requests.swap(services.window_requests);
     }
     for (auto& request : requests) {
-        if (request->fullscreen)
-            request->error =
-                *request->fullscreen ? fullscreen.enter(window) : fullscreen.leave(window);
+        // The work and what it captured end on this thread, before the completion is posted.
+        request->error = std::exchange(request->perform, {})(window, fullscreen);
         services.inbox->post(std::move(request));
     }
 }
@@ -885,27 +878,47 @@ void window_location_assign(const std::string& target, const std::string& curren
                                      "NotSupportedError");
     window_location_set_search(destination.search());
 }
-js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
-    auto& doc = current_document();
+namespace {
+/**
+ * Hands `perform` to the Window thread after earlier requests; `settle` runs on this realm with
+ * its failure, empty on success.
+ */
+void submit_window_request(WindowWork perform, std::function<void(const std::string&)> settle) {
+    auto& host = *current_document().host;
     auto& loop = EventLoop::current();
-    js::Promise<js::PromiseVoid> result;
-    const auto id = loop.register_completion([result](std::unique_ptr<ExternalEvent> event) {
-        const auto* completion = dynamic_cast<const ClipboardWrite*>(event.get());
-        if (!completion)
-            throw std::logic_error("Incorrect clipboard completion payload.");
-        if (completion->error.empty())
-            result.resolve(js::PromiseVoid{});
-        else
-            result.reject(std::make_exception_ptr(std::runtime_error(completion->error)));
-    });
+    const auto id = loop.register_completion(
+        [settle = std::move(settle)](std::unique_ptr<ExternalEvent> event) {
+            const auto* completion = dynamic_cast<const WindowRequest*>(event.get());
+            if (!completion)
+                throw std::logic_error("Incorrect Window request completion payload.");
+            settle(completion->error);
+        });
     try {
-        auto request = std::make_unique<ClipboardWrite>(id, std::move(text));
-        std::lock_guard lock(doc.host->mutex);
-        if (doc.host->stopping)
+        auto request = std::make_unique<WindowRequest>(id, std::move(perform));
+        std::lock_guard lock(host.mutex);
+        if (host.stopping)
             throw WorkerTerminated{};
-        doc.host->clipboard_writes.push_back(std::move(request));
+        host.window_requests.push_back(std::move(request));
     } catch (...) {
         loop.cancel_completion(id);
+        throw;
+    }
+}
+} // namespace
+js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
+    js::Promise<js::PromiseVoid> result;
+    try {
+        submit_window_request(
+            [text = std::move(text)](SDL_Window*, PageFullscreen&) {
+                return SDL_SetClipboardText(text.c_str()) ? std::string() : SDL_GetError();
+            },
+            [result](const std::string& error) {
+                if (error.empty())
+                    result.resolve(js::PromiseVoid{});
+                else
+                    result.reject(std::make_exception_ptr(std::runtime_error(error)));
+            });
+    } catch (...) {
         result.reject(std::current_exception());
     }
     return result;
@@ -950,25 +963,13 @@ void exit_page_fullscreen() {
  */
 void request_window_fullscreen(std::optional<bool> fullscreen,
                                std::function<void(const std::string&)> settle) {
-    auto& host = *current_document().host;
-    auto& loop = EventLoop::current();
-    const auto id = loop.register_completion(
-        [settle = std::move(settle)](std::unique_ptr<ExternalEvent> event) {
-            const auto* completion = dynamic_cast<const FullscreenRequest*>(event.get());
-            if (!completion)
-                throw std::logic_error("Incorrect fullscreen completion payload.");
-            settle(completion->error);
-        });
-    try {
-        auto request = std::make_unique<FullscreenRequest>(id, fullscreen);
-        std::lock_guard lock(host.mutex);
-        if (host.stopping)
-            throw WorkerTerminated{};
-        host.fullscreen_requests.push_back(std::move(request));
-    } catch (...) {
-        loop.cancel_completion(id);
-        throw;
-    }
+    submit_window_request(
+        [fullscreen](SDL_Window* window, PageFullscreen& page) {
+            if (!fullscreen)
+                return std::string();
+            return *fullscreen ? page.enter(window) : page.leave(window);
+        },
+        std::move(settle));
 }
 } // namespace
 js::Promise<js::PromiseVoid> window_request_fullscreen(UiElementHandle element) {
@@ -1670,21 +1671,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             while (running && !finished) {
                 co_yield true;
                 const double started = cpu_profile ? monotonic_milliseconds() : 0;
-                std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
-                {
-                    std::lock_guard lock(services->mutex);
-                    clipboard_writes.swap(services->clipboard_writes);
-                }
-                for (auto& request : clipboard_writes) {
-                    {
-                        const auto text = std::move(request->text);
-                        if (!SDL_SetClipboardText(text.c_str()))
-                            request->error = SDL_GetError();
-                    }
-                    services->inbox->post(std::move(request));
-                }
+                serve_window_requests(*services, window.get(), page_fullscreen);
                 serve_message_box(*services, window.get());
-                serve_fullscreen_requests(*services, window.get(), page_fullscreen);
                 SDL_Event event;
                 for (;;) {
                     if (!poll_sdl_event(&event))
