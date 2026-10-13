@@ -2,8 +2,7 @@ import {
     deferredCapabilityDescriptor,
     deferredPropertyDescriptor,
 } from "./deferred-capabilities.js";
-import { idleWindowFunctionSymbol } from "./idle-callbacks.js";
-import { isWindowServiceCall } from "./window-members.js";
+import { hasDomLowering } from "./dom-lowerings.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { gpuValue } from "./gpu-value.js";
 import {
@@ -29,7 +28,6 @@ import {
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
 import { customEventDispatchTarget } from "./custom-events.js";
-import { isCanvasPointerCapture } from "./pointer-capture.js";
 import { windowInterfaceTypeof } from "./dom-targets.js";
 import {
     hasOnlyReportingEffects,
@@ -1010,26 +1008,96 @@ export class BrowserErasure {
             unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
                 ? this.context.unwrap(unwrapped.left)
                 : unwrapped;
-        if (ts.isCallExpression(candidate)) {
-            if (
-                (this.context.options.deferredCapabilities &&
-                    deferredCapabilityDescriptor(
-                        this.context.checker,
-                        candidate,
-                    )) ||
-                isWindowServiceCall(this.context, candidate)
-            )
-                return false;
-            const callee = this.context.unwrap(candidate.expression);
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "getGamepads" &&
-                this.context.libraryGlobal(callee.expression) === "navigator"
-            ) {
-                return false;
-            }
-        }
+        if (
+            ts.isCallExpression(candidate) &&
+            this.context.options.deferredCapabilities &&
+            deferredCapabilityDescriptor(this.context.checker, candidate)
+        )
+            return false;
+        if (hasDomLowering(this.context.checker, candidate)) return false;
         return this.isBrowserOnlyNode(expression);
+    }
+
+    /**
+     * Whether a receiver is positively browser state, so a DOM call on it may
+     * erase: rooted at a library global, a value the deployment answers, a
+     * browser binding or field, a classified browser helper's result, or a
+     * library construction. A receiver this walk cannot classify is not.
+     */
+    public isBrowserOwner(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isMetaProperty(unwrapped) ||
+            this.browserValueOf(unwrapped) !== undefined
+        )
+            return true;
+        if (ts.isIdentifier(unwrapped)) {
+            if (this.context.libraryGlobal(unwrapped) !== undefined)
+                return true;
+            const bound = this.context.bindings.lookupOptional(unwrapped);
+            if (bound)
+                return (
+                    bound.kind === "browser" ||
+                    (bound.kind === "node-particle-2d-binding" &&
+                        !bound.nodeParticleLive)
+                );
+            const declaration =
+                this.context.symbols.valueSymbol(unwrapped)?.valueDeclaration;
+            return (
+                declaration !== undefined &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer !== undefined &&
+                declaration.initializer !== unwrapped &&
+                this.isBrowserOwner(declaration.initializer)
+            );
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.expression.kind === ts.SyntaxKind.ThisKeyword
+        )
+            return (
+                this.context.resolveThisField(unwrapped.name.text)?.kind ===
+                "browser"
+            );
+        if (
+            ts.isPropertyAccessExpression(unwrapped) ||
+            ts.isElementAccessExpression(unwrapped) ||
+            ts.isNonNullExpression(unwrapped) ||
+            ts.isAwaitExpression(unwrapped)
+        )
+            return this.isBrowserOwner(unwrapped.expression);
+        if (ts.isConditionalExpression(unwrapped))
+            return (
+                this.isBrowserOwner(unwrapped.whenTrue) &&
+                this.isBrowserOwner(unwrapped.whenFalse)
+            );
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken ||
+                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+        )
+            return (
+                this.isBrowserOwner(unwrapped.left) &&
+                this.isBrowserOwner(unwrapped.right)
+            );
+        if (ts.isNewExpression(unwrapped))
+            return (
+                this.context.libraryGlobal(unwrapped.expression) !== undefined
+            );
+        if (!ts.isCallExpression(unwrapped)) return false;
+        const callee = this.context.unwrap(unwrapped.expression);
+        if (
+            ts.isPropertyAccessExpression(callee) ||
+            ts.isElementAccessExpression(callee)
+        )
+            return this.isBrowserOwner(callee.expression);
+        return (
+            this.context.libraryGlobal(callee) !== undefined ||
+            this.isBrowserOnlyLocalCall(unwrapped) ||
+            this.isBrowserOnlyNullableClassFactoryCall(unwrapped) ||
+            this.evaluateBrowserHelperCall(unwrapped) !== undefined
+        );
     }
 
     public isBrowserDomValue(expression: ts.Expression): boolean {
@@ -1216,11 +1284,7 @@ export class BrowserErasure {
     private isBrowserOnlyNodeUncached(expression: ts.Expression): boolean {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
-        if (
-            idleWindowFunctionSymbol(this.context.checker, unwrapped) ||
-            isWindowServiceCall(this.context, unwrapped)
-        )
-            return false;
+        if (hasDomLowering(this.context.checker, unwrapped)) return false;
         if (
             this.context.options.deferredCapabilities &&
             ts.isPropertyAccessExpression(unwrapped) &&
@@ -1307,11 +1371,6 @@ export class BrowserErasure {
         ) {
             return false;
         }
-        if (
-            ts.isCallExpression(unwrapped) &&
-            isCanvasPointerCapture(this.context, unwrapped)
-        )
-            return false;
         if (
             ts.isCallExpression(unwrapped) &&
             this.isBrowserOnlyLocalCall(unwrapped)
@@ -1745,14 +1804,6 @@ export class BrowserErasure {
             if (this.isAbsentGlobalMember(unwrapped.expression))
                 return { kind: "string", value: "undefined" };
             const global = this.context.libraryGlobal(unwrapped.expression);
-            // Window interfaces with native values (`media-streams.ts`).
-            if (global === "MediaRecorder" || global === "MediaStream")
-                return {
-                    kind: "string",
-                    value: this.context.options.workers?.namespace
-                        ? "undefined"
-                        : "function",
-                };
             const windowInterface = windowInterfaceTypeof(
                 global,
                 this.context.options.workers,
@@ -1764,15 +1815,6 @@ export class BrowserErasure {
                 unwrapped.expression,
             );
             if (intrinsic) return { kind: "string", value: intrinsic };
-            // Window-only, like a browser worker's missing global.
-            if (global === "sessionStorage")
-                return {
-                    kind: "string",
-                    value:
-                        this.context.options.workers?.namespace === undefined
-                            ? "object"
-                            : "undefined",
-                };
             if (
                 global &&
                 [

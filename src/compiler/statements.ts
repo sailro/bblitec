@@ -1859,10 +1859,18 @@ export class StatementLowerer {
         const effect = ts.isVoidExpression(expression)
             ? context.unwrap(expression.expression)
             : expression;
+        const callee =
+            ts.isCallExpression(effect) && context.unwrap(effect.expression);
         if (
             ts.isCallExpression(effect) &&
             effect.arguments.length === 0 &&
-            context.browserErasure.isBrowserOnlyExpression(effect)
+            context.browserErasure.isBrowserOnlyExpression(effect) &&
+            (!callee ||
+                !(
+                    ts.isPropertyAccessExpression(callee) ||
+                    ts.isElementAccessExpression(callee)
+                ) ||
+                context.browserErasure.isBrowserOwner(callee.expression))
         ) {
             // Pointer-lock and similar zero-argument DOM effects are often
             // written behind their own browser-only state guard, sometimes

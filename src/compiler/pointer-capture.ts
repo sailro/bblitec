@@ -1,7 +1,8 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { pinDetached } from "./dom-listeners.js";
-import { declarationOrigin } from "./symbols.js";
+import { POINTER_CAPTURE_OPERATIONS } from "./dom-lowerings.js";
+import { resolvedDomApi } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
@@ -22,45 +23,6 @@ type Context = Pick<
     | "requireEngine"
     | "unwrap"
 >;
-
-/** `Element`'s pointer capture methods and the `pal_dom_events.hpp` operation each lowers to. */
-const POINTER_CAPTURE_METHODS: ReadonlyMap<string, string> = new Map([
-    ["setPointerCapture", "bbl::dom_set_pointer_capture"],
-    ["releasePointerCapture", "bbl::dom_release_pointer_capture"],
-    ["hasPointerCapture", "bbl::dom_has_pointer_capture"],
-]);
-
-/** The native operation of a call resolved to a DOM `Element` pointer capture method. */
-function pointerCaptureOperation(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
-): string | undefined {
-    const operation = POINTER_CAPTURE_METHODS.get(callee.name.text);
-    if (!operation) return undefined;
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    return declaration &&
-        ts.isMethodSignature(declaration) &&
-        ts.isInterfaceDeclaration(declaration.parent) &&
-        declaration.parent.name.text === "Element" &&
-        declarationOrigin(declaration) === "dom"
-        ? operation
-        : undefined;
-}
-
-/** Pointer capture on the engine canvas, which browser erasure keeps for {@link compilePointerCapture}. */
-export function isCanvasPointerCapture(
-    context: Pick<Context, "checker" | "isCanvasElement" | "unwrap">,
-    call: ts.CallExpression,
-): boolean {
-    const callee = context.unwrap(call.expression);
-    return (
-        ts.isPropertyAccessExpression(callee) &&
-        ts.isIdentifier(callee.expression) &&
-        context.isCanvasElement(callee.expression) &&
-        pointerCaptureOperation(context.checker, call, callee) !== undefined
-    );
-}
 
 /**
  * The `bbl::DomEventTargetValue` an element receiver names: a retained
@@ -122,7 +84,9 @@ export function compilePointerCapture(
 ): Value | undefined {
     const callee = context.unwrap(call.expression);
     if (!ts.isPropertyAccessExpression(callee)) return undefined;
-    const operation = pointerCaptureOperation(context.checker, call, callee);
+    const operation = POINTER_CAPTURE_OPERATIONS.get(
+        resolvedDomApi(context.checker, call) ?? "",
+    );
     if (!operation) return undefined;
     context.expectArgumentCount(call, 1, 1);
     context.reachFeature("input:dom", call);

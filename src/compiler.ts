@@ -119,6 +119,7 @@ import {
     nullableResourceEngine,
 } from "./compiler/window-events.js";
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
+import { featureRequiresApplicationRealm } from "./feature-activation.js";
 import { WindowProperties } from "./compiler/window-properties.js";
 import { AsyncLowerer, PendingActivationsRequired } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
@@ -9132,15 +9133,7 @@ class Compiler implements LoweringServices {
         }
         if (
             !this.options.workers &&
-            (feature === "frame-graph:surface-target" ||
-                feature === "environment:procedural-sky" ||
-                feature === "compute:storage-texture" ||
-                feature === "compute:storage-buffer" ||
-                feature === "compute:task" ||
-                feature === "compute:shader" ||
-                feature === "compute:uniform-buffer" ||
-                (feature === "engine:gpu-retirement" &&
-                    impliedBy !== "mesh:thin-instances"))
+            featureRequiresApplicationRealm(feature, impliedBy)
         )
             throw new ApplicationRealmRequired();
         if (

@@ -95,6 +95,41 @@ export function declarationOrigin(declaration: ts.Node): DeclarationOrigin {
 }
 
 /**
+ * The API a declaration names: `Interface.member` for an interface or class
+ * member, `Global.member` for a member of a declared global object's type
+ * literal (`MediaRecorder.isTypeSupported`), and a global function by name.
+ */
+export function declarationApi(
+    declaration: ts.Declaration,
+): string | undefined {
+    const name = ts.getNameOfDeclaration(declaration);
+    if (!name || !ts.isIdentifier(name)) return undefined;
+    const parent = declaration.parent;
+    if (
+        ts.isTypeLiteralNode(parent) &&
+        ts.isVariableDeclaration(parent.parent) &&
+        ts.isIdentifier(parent.parent.name)
+    )
+        return `${parent.parent.name.text}.${name.text}`;
+    if (ts.isInterfaceDeclaration(parent) || ts.isClassLike(parent))
+        return `${parent.name?.text}.${name.text}`;
+    return name.text;
+}
+
+/** The DOM API a call resolves to ({@link declarationApi}); undefined for any other callee. */
+export function resolvedDomApi(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): string | undefined {
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    return declaration &&
+        !ts.isJSDocSignature(declaration) &&
+        declarationOrigin(declaration) === "dom"
+        ? declarationApi(declaration)
+        : undefined;
+}
+
+/**
  * A storage declaration a replay can retype: a variable or parameter named
  * by an identifier, a record property or a method signature, in one of the
  * program's own sources (a declaration file describes storage its producer

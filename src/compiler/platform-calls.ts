@@ -34,7 +34,6 @@ import {
     type ListenerOptions,
 } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import { requireApplicationWindow } from "./window-members.js";
 import { compileFullscreenCall } from "./fullscreen.js";
 import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
@@ -1103,7 +1102,7 @@ export class PlatformCalls {
             return true;
         }
         if (target === "document" && event === "fullscreenchange") {
-            requireApplicationWindow(this.context, call);
+            requireWindowHost(this.context, call);
             if (removing) {
                 const identity = this.platformEventCallbackIdentity(
                     this.context.compileValue(callback),

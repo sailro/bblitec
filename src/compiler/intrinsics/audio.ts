@@ -29,7 +29,6 @@ import {
 import type { StaticFetchContext } from "../static-fetch.js";
 import { AUDIO_CODECS } from "../../audio-codecs.js";
 import { cppIdentifier, snakeCase } from "../../cpp-literals.js";
-import { ApplicationRealmRequired } from "../worker-modules.js";
 import { mediaStreamValue } from "../media-streams.js";
 
 export interface AudioIntrinsicContext
@@ -534,9 +533,8 @@ function compileStaticSound(
         case "createSoundAsync": {
             // The library listens for its sources' `ended` and decodes on
             // native jobs: both are an application realm's.
-            if (!context.options.workers) throw new ApplicationRealmRequired();
-            context.expectArgumentCount(call, 2, 3);
             context.reachFeature("audio:static-sound", call);
+            context.expectArgumentCount(call, 2, 3);
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "audio-engine", argumentAt(call, 0));
             const owner = context.bindings.pinValueToTemporary(

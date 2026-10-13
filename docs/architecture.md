@@ -63,7 +63,7 @@ Paths are relative to `generated/<id>/`.
 | `emission-transaction.ts` | Journaled compiler state; commit folds into the parent, failure restores. Unjournaled fields need `@unjournaled` with a reason |
 | `binding-scopes.ts` | Scopes, bindings, capture refusals |
 | `conditions.ts`, `comparisons.ts` | Truth tests, comparisons, settled folds |
-| `browser-erasure.ts` | Browser-only predicates, deployment folds, erased expressions |
+| `browser-erasure.ts`, `dom-lowerings.ts` | Browser-only predicates, deployment folds, erased expressions; the lowered DOM APIs |
 | `analysis-walk.ts`, `lowering-services.ts` | Shared traversal and compiler interface |
 | `ui-projection.ts`, `platform-calls.ts` | Retained UI, platform calls |
 | `callbacks.ts`, `shared-closure-analysis.ts` | Frame/platform/physics callbacks; shared vs rebound captures |
@@ -76,6 +76,10 @@ Paths are relative to `generated/<id>/`.
 
 - Storage demands trigger a discarded discovery pass, repeated to a fixed point, before strict emission. Coverage and
   surveys keep only strict attempts.
+- A feature marked `applicationRealm` (`feature-activation.ts`) replays the whole program in the application realm
+  from `reachFeature`; explicit `ApplicationRealmRequired` throws remain only for conditional shapes.
+- Erasure never drops an API `dom-lowerings.ts` lists, and an erased method call needs a receiver `isBrowserOwner`
+  classifies as browser state; any other receiver refuses.
 - Namespace member calls (`N.f`) are rewritten only in `compileCall`. Never in the shared `unwrap`: it would silently
   admit writes and rewrite library namespaces (`Intl.*`).
 - Pinned functions use `lowerPinnedFunction`, selected bodies `lowerPinnedBody`. Plain-record pinned modules (text family)

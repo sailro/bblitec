@@ -56,7 +56,7 @@ export function compileImageBitmapCall(
     });
     if (!blob) return undefined;
     // The decode settles on the application realm's task queue.
-    if (!context.options.workers) throw new ApplicationRealmRequired();
+    context.reachFeature("image:runtime-decode", call);
     context.expectArgumentCount(call, 2, 2);
     const held = context.bindings.pinValueToTemporary(
         context.compileValue(source),
@@ -90,7 +90,6 @@ export function compileImageBitmapCall(
         values[index] =
             `std::string(${context.cppString(property.initializer.text)})`;
     }
-    context.reachFeature("image:runtime-decode", call);
     context.reachJsData();
     return {
         ...context.dataLowerer.leafValue(

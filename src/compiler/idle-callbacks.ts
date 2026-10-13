@@ -1,17 +1,15 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
-import { isDomReceiver } from "./dom-targets.js";
+import { IDLE_FUNCTIONS } from "./dom-lowerings.js";
 import { pinDetached } from "./dom-listeners.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { nativeFunctionValue } from "./native-function-values.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 import { optionalPresentCpp, type Value } from "./types.js";
-import {
-    compileWindowMemberCall,
-    requireApplicationWindow,
-} from "./window-members.js";
+import { compileWindowMemberCall, isWindowReceiver } from "./window-members.js";
+import { requireWindowHost } from "./window-events.js";
 import { nativeWindowMember } from "./window-properties.js";
 import { timerCancellation } from "./workers.js";
 
@@ -22,7 +20,6 @@ import { timerCancellation } from "./workers.js";
  * `didTimeout`.
  */
 
-const IDLE_FUNCTIONS = ["requestIdleCallback", "cancelIdleCallback"] as const;
 type IdleFunction = (typeof IDLE_FUNCTIONS)[number];
 
 const IDLE_CALLBACK: DataType = {
@@ -34,12 +31,12 @@ function isIdleFunction(name: string | undefined): name is IdleFunction {
     return IDLE_FUNCTIONS.some((candidate) => candidate === name);
 }
 
-/** Idle callbacks are a Window's: they need the application realm and its Window host. */
+/** Idle callbacks are a Window's: they need its Window host. */
 function requireIdleRealm(
     context: Pick<LoweringServices, "options" | "reachFeature" | "fail">,
     node: ts.Node,
 ): void {
-    requireApplicationWindow(context, node);
+    requireWindowHost(context, node);
     context.reachFeature("platform:idle-callbacks", node);
 }
 
@@ -268,14 +265,7 @@ export function idleFunctionValue(
                 : undefined;
         });
         if (!owner) return undefined;
-        const receiver = context.unwrap(property.expression);
-        if (
-            owner.domEventTargetCpp !== "bbl::DomEventTarget::window()" &&
-            !["window", "globalThis"].includes(
-                context.libraryGlobal(receiver) ?? "",
-            ) &&
-            !isDomReceiver(context, receiver, "Window")
-        )
+        if (!isWindowReceiver(context, owner, property.expression))
             return context.fail(
                 property.expression,
                 `Window member '${name}' requires a proven Window receiver.`,

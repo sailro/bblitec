@@ -160,6 +160,12 @@ export interface FeatureActivationInputs {
 interface RuntimeFeatureEntry {
     provenance: string;
     consumers: readonly FeatureActivationConsumer[];
+    /**
+     * Reaching the feature needs an application realm (its scheduler, Window
+     * host or owned engines): a strict-entry compile replays as one. An
+     * implied reach from `except` does not.
+     */
+    applicationRealm?: true | { readonly except: Feature };
 }
 
 const CMAKE: readonly FeatureActivationConsumer[] = ["features.cmake"];
@@ -297,6 +303,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "engine:gpu-retirement": {
         provenance: "src/engine/gpu-resource-retirement.ts",
         consumers: CMAKE,
+        applicationRealm: { except: "mesh:thin-instances" },
     },
     "engine:gpu-task-timing": {
         provenance:
@@ -318,6 +325,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/resource/compute-storage-texture.ts + src/resource/compute-storage-texture-view.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:texture-mipmaps": {
         provenance: "src/compute/compute-storage-texture-mipmaps.ts",
@@ -326,6 +334,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "compute:storage-buffer": {
         provenance: "src/resource/storage-buffer.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:storage-readback": {
         provenance: "src/resource/storage-buffer.ts#readStorageBuffer",
@@ -338,6 +347,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "compute:shader": {
         provenance: "src/compute/compute-shader.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:dispatch": {
         provenance:
@@ -356,6 +366,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "compute:task": {
         provenance: "src/compute/compute-task.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:task-execution": {
         provenance:
@@ -370,6 +381,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "compute:uniform-buffer": {
         provenance: "src/compute/compute-uniform-buffer.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:uniform-arena": {
         provenance: "src/compute/compute-uniform-arena.ts",
@@ -469,6 +481,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/loader-env/procedural-sky-environment.ts (load and update)",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "environment:hdr": {
         provenance:
@@ -619,6 +632,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/loader-splat-stream/splat-stream-material.ts + " +
             "src/collision/splat-voxel-collision.ts",
         consumers: ["features.cmake", "deployed shaders"],
+        applicationRealm: true,
     },
     "loader:splat-sh": {
         provenance:
@@ -1362,6 +1376,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "setSoundVolume/disposeSound with the sound buffer, sub-graph, " +
             "ramped parameters, signals and fetch they reach, lowered whole",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "audio:media-stream": {
         provenance:
@@ -1490,6 +1505,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/texture/rtt-surface.ts createSurfaceRenderTargetTexture/onRenderTargetTextureResize",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "frame-graph:target-disposal": {
         provenance:
@@ -1637,6 +1653,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "runtime HTTP(S) requests and response data through native platform transport",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "platform:packaged-fetch": {
         provenance:
@@ -1647,6 +1664,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "the Compression Streams CompressionStream and DecompressionStream transforms through zlib",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "platform:media-stream": {
         provenance:
@@ -1657,16 +1675,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "the HTML requestIdleCallback idle periods and IdleDeadline over the realm event loop",
         consumers: INVENTORY,
+        applicationRealm: true,
     },
     "image:runtime-decode": {
         provenance:
             "the HTML createImageBitmap decode of run-time image bytes; generation adds the WebP codec it links (image-codecs.ts)",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "platform:window": {
         provenance:
             "the Window document, layout observers and native presentation host, independent of application and worker execution",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "ui:rml": {
         provenance:
@@ -1722,6 +1743,20 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
 export const inventoriedRuntimeFeatures: readonly Feature[] = Object.keys(
     runtimeFeatureTable,
 ) as Feature[];
+
+/**
+ * Whether reaching `feature` (implied by `impliedBy`, when it is) needs an
+ * application realm.
+ */
+export function featureRequiresApplicationRealm(
+    feature: Feature,
+    impliedBy?: Feature,
+): boolean {
+    const realm = runtimeFeatureTable[feature].applicationRealm;
+    return (
+        realm === true || (realm !== undefined && realm.except !== impliedBy)
+    );
+}
 
 function runtimeEntry(name: string): RuntimeFeatureEntry | undefined {
     return Object.prototype.hasOwnProperty.call(runtimeFeatureTable, name)
