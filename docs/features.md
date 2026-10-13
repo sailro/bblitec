@@ -7,8 +7,8 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
-buffers, buses, spatial/stereo/analyzer and master volume, the engine media-stream tap, streamed audio, script elements,
-`prompt`, application-realm device recovery, and the [UI](ui.md) items
+buffers, streaming sounds, buses, spatial/stereo/analyzer and master volume, the engine media-stream tap,
+script elements, `prompt`, application-realm device recovery, and the [UI](ui.md) items
 marked deferred. Unregistered APIs still refuse.
 
 ## Language
@@ -197,9 +197,17 @@ family in an application realm. Sources: a URL selecting packaged audio (a runti
 `ArrayBuffer` or an `AudioBuffer`; URL lists, sound buffers and `outBus` refuse. A looped sound started while its
 context is not running throws (no statechange).
 
+Media elements (application realm): `new Audio(url)` with a URL selecting packaged audio (a runtime URL needs
+inferable candidates), `play`/`pause`/`load`, `removeAttribute("src")`, `loop`, `preload`, `currentTime` (seek),
+`duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause` listeners without payloads.
+An unrouted element plays to the default output; `createMediaElementSource` routes it once (again:
+InvalidStateError), moving its playback into the graph. Other members and attributes refuse.
+
 ## Shadows and navigation
 
 - PCF spot/directional, ESM directional, CSM. Thin-instance contracts refuse.
+- `enableCsmStaticCache` (awaited, before registration): static casters render into a cache texture, copied per layer
+  into the map before dynamic casters draw; refit gate and per-frame cascade budget as pinned.
 - Recast/Detour solo and obstacle tile-cache builds, crowds, obstacles. Tiled builds without obstacles and off-mesh
   connections in tile caches refuse.
 

@@ -227,6 +227,7 @@ export const featureSources: Record<Feature, string[]> = {
     "shadow:pcf": [],
     "shadow:pcf-directional": [],
     "shadow:csm": [],
+    "shadow:csm-static-cache": [],
     "shadow:task": [],
     "shadow:morph-bounds": [],
     "shadow:skeleton-bounds": [],
@@ -303,6 +304,8 @@ export const featureSources: Record<Feature, string[]> = {
     // The pin's static-sound family, lowered whole; it fetches its sources
     // through the web platform seam.
     "audio:static-sound": ["src/pal_web_platform.cpp"],
+    // HTMLAudioElement playback lives in the engine PAL's unit.
+    "audio:media-element": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
     "sprite:billboard-custom-shader": [],
@@ -410,6 +413,9 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "audio:decoded-buffer",
         "platform:http",
     ],
+    // An element decodes its packaged source and plays it through a
+    // sampled node.
+    "audio:media-element": ["audio:buffer-source", "audio:decoded-buffer"],
     // Bindings build pipelines on the engine's WebGPU device; replaced
     // update batches retire behind the GPU.
     "renderer:external-renderables": [
@@ -814,6 +820,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("loader:splat-stream")
             ? "#include <bblite/upstream_splat_stream.hpp>\n"
+            : "") +
+        (features.includes("audio:media-element")
+            ? "#include <bblite/pal_audio_element.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"
             : "") +
         (features.includes("audio:static-sound")
             ? "#include <bblite/upstream_static_sound.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"

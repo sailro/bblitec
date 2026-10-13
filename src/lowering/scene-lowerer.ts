@@ -125,6 +125,8 @@ interface SceneCoreOptions {
     liveTaskAdd?: boolean;
     /** The program reads a deformed vertex (`computeDeformedPositionToRef`). */
     deformedPosition?: boolean;
+    /** A CSM generator keeps a static cache target (`enableCsmStaticCache`). */
+    csmStaticCache?: boolean;
 }
 
 export class SceneLowerer {
@@ -2752,6 +2754,20 @@ void retire_scene_shadow_states(Scene& scene) {
             *target = RenderTargetRecord{};
             target->retired = true;
             ++scene.engine->render_targets_version;
+        }${
+            options.csmStaticCache
+                ? `
+        // The cached state's \`csm-static-cache\` texture goes with its passes.
+        if (shadow.csm_cache) {
+            if (auto* cache_target = bbl::handle_find(scene.engine->render_targets,
+                                                      shadow.csm_cache->cache_target)) {
+                *cache_target = RenderTargetRecord{};
+                cache_target->retired = true;
+                ++scene.engine->render_targets_version;
+            }
+            shadow.csm_cache->cache_target = RenderTargetHandle{};
+        }`
+                : ""
         }
         shadow.caster_tasks = std::vector<TaskHandle>{};
         shadow.csm_cascades = std::vector<ShadowCascade>{};

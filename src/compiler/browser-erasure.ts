@@ -95,6 +95,7 @@ const PLATFORM_TIMER_FUNCTIONS: ReadonlySet<string> = new Set([
 const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "record",
     "audio-engine",
+    "audio-element",
     "audio-buffer",
     "audio-context",
     "audio-node",

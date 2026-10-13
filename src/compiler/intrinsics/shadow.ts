@@ -34,6 +34,9 @@ export interface ShadowIntrinsicContext
             | "ensureDefaultRenderTask"
             | "fail"
             | "sceneManifest"
+            | "expectSameEngine"
+            | "options"
+            | "unwrap"
         > {}
 
 /**
@@ -458,12 +461,85 @@ export function compileShadowIntrinsic(
                     "A CSM receiver texture requires a generator created in this scene.",
                 );
             }
+            context.admissions.csmReceiverTextureReads.push(
+                generator.shadowGeneratorIndex,
+            );
             return {
                 kind: "texture",
                 cpp: generator.cpp,
                 engineCpp: context.requireEngine(generator, call),
                 isDepthTexture: true,
                 csmReceiverGeneratorIndex: generator.shadowGeneratorIndex,
+            };
+        }
+
+        case "enableCsmStaticCache": {
+            // `enableCsmStaticCache(engine, sg, options)`: the pin rejects
+            // its promise rather than throwing, so the native rejection
+            // becomes the awaited promise's.
+            context.expectArgumentCount(call, 3, 3);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const generator = context.compileValue(argumentAt(call, 1));
+            context.expectKind(
+                generator,
+                "shadow-generator",
+                argumentAt(call, 1),
+            );
+            context.expectSameEngine(engine, generator, call);
+            const options = context.expectObjectLiteral(argumentAt(call, 2));
+            validateObjectProperties(
+                context,
+                options,
+                ["refitAngle", "refitMaxIntervalMs", "staticCascadesPerFrame"],
+                "Reached enableCsmStaticCache options are refitAngle, refitMaxIntervalMs and staticCascadesPerFrame.",
+            );
+            const refitAngle = context.objectProperty(options, "refitAngle");
+            if (!refitAngle)
+                context.fail(
+                    options,
+                    "enableCsmStaticCache requires refitAngle.",
+                );
+            const optional = (name: string): string => {
+                const value = context.objectProperty(options, name);
+                return value
+                    ? `std::optional<double>{${context.compileNumber(value, "double")}}`
+                    : "std::nullopt";
+            };
+            const read =
+                generator.shadowGeneratorIndex !== undefined &&
+                context.admissions.csmReceiverTextureReads.includes(
+                    generator.shadowGeneratorIndex,
+                );
+            context.reachFeature("shadow:csm-static-cache", call);
+            const rejection = context.allocateTemporaryCppName(
+                "csm_cache_rejection",
+            );
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: rejection,
+                initializer: `bbl::enable_csm_static_cache(${engine.cpp}, ${generator.cpp}, ${context.compileNumber(refitAngle, "double")}, ${optional("refitMaxIntervalMs")}, ${optional("staticCascadesPerFrame")}, ${read})`,
+            });
+            if (context.options.workers)
+                return {
+                    kind: "promise",
+                    cpp: `(${rejection} ? bbl::js::Promise<bbl::js::PromiseVoid>::rejected(std::make_exception_ptr(bbl::js::NamedError(${rejection}->name, ${rejection}->message))) : bbl::js::Promise<bbl::js::PromiseVoid>::resolved({}))`,
+                    promiseType: "bbl::js::PromiseVoid",
+                    promiseResult: { kind: "void", cpp: "" },
+                };
+            // A scene's awaits complete in order: the awaited rejection is a
+            // throw at the await, and an unawaited one has no scene spelling.
+            let parent: ts.Node = call.parent;
+            while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
+            if (!ts.isAwaitExpression(parent))
+                context.fail(
+                    call,
+                    "A scene awaits enableCsmStaticCache directly; its rejection is the await's throw.",
+                );
+            return {
+                kind: "void",
+                cpp: `(${rejection} ? throw bbl::js::NamedError(${rejection}->name, ${rejection}->message) : void())`,
             };
         }
 

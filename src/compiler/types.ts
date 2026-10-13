@@ -1580,6 +1580,7 @@ export type ValueKind =
     | "audio-engine"
     | "audio-source"
     | "static-sound"
+    | "audio-element"
     | "audio-buffer"
     | "audio-context"
     | "audio-node"
@@ -3112,6 +3113,7 @@ export type Feature =
     | "audio:stereo-panner"
     | "audio:media-stream"
     | "audio:static-sound"
+    | "audio:media-element"
     | "physics:world"
     | "physics:aggregate"
     | "physics:queries"
@@ -3190,6 +3192,7 @@ export type Feature =
     | "shadow:pcf"
     | "shadow:pcf-directional"
     | "shadow:csm"
+    | "shadow:csm-static-cache"
     | "shadow:task"
     // `enableMorphTargetShadows`, the caster fit's morph-expanded bounds
     // (upstream's own `shadow/enable-morph-target-shadows.ts` module).

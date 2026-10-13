@@ -120,6 +120,7 @@ import {
     pinnedShadowHeader,
     shadowFactorySource,
 } from "./lowering/shadow-lowerer.js";
+import { csmStaticCacheHeader } from "./lowering/csm-static-cache.js";
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
 import { pinnedWorldTransformHeader } from "./lowering/pinned-world-transform.js";
 import { pinnedTextureHeader } from "./lowering/pinned-texture.js";
@@ -1312,6 +1313,7 @@ ${lowerThinInstanceSync(context)}
                 effectTasks: features.includes("effect:task"),
                 liveTaskAdd: features.includes("frame-graph:live-task-add"),
                 deformedPosition: features.includes("mesh:deformed-position"),
+                csmStaticCache: features.includes("shadow:csm-static-cache"),
             }),
         );
         this.emitTextData(features, context, options, generated);
@@ -3350,6 +3352,12 @@ ${composed.wgsl}`,
                 this.tree.write(
                     "upstream/include/bblite/upstream/csm_shadow.hpp",
                     csmShadowHeader(context),
+                );
+            }
+            if (features.includes("shadow:csm-static-cache")) {
+                this.tree.write(
+                    "upstream/include/bblite/upstream/csm_static_cache.hpp",
+                    csmStaticCacheHeader(context),
                 );
             }
             this.writeSource(

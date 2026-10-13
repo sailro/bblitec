@@ -2225,6 +2225,83 @@ ${features.includes("shadow:csm") ? "#include <bblite/upstream/csm_shadow.hpp>\n
  * fitted to the CASTERS, which are registered after this returns, so the
  * first fit happens at the task's first frame.
  */
+/**
+ * \`enableCsmStaticCache\`: the pin's four rejections in its order, with
+ * the messages read from its own \`Promise.reject\` calls, then the cache
+ * state. A loaded cache resolves again without taking new options; the
+ * native cache loads synchronously, so there is no in-flight promise to
+ * return. \`sg._shadowTaskState\` is the caster passes registration builds
+ * and \`sg._csmReceiverTexture\` a \`getCsmReceiverTexture\` compiled before
+ * the call.
+ */
+function lowerCsmStaticCacheEnable(context: LoweringContext): string {
+    const enable = context.functionDeclaration(
+        "src/shadow/enable-csm-static-cache.ts",
+        "enableCsmStaticCache",
+    ).declaration;
+    const rejections = context
+        .findNodes(
+            enable,
+            (node): node is ts.NewExpression =>
+                ts.isNewExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                (node.expression.text === "Error" ||
+                    node.expression.text === "RangeError"),
+        )
+        .map((node) => {
+            const message = node.arguments?.[0];
+            if (!message || !ts.isStringLiteral(message))
+                return context.contractError(
+                    node,
+                    "Expected a literal enableCsmStaticCache rejection.",
+                );
+            return `PromiseRejection{${stringLiteral((node.expression as ts.Identifier).text)}, ${stringLiteral(message.text)}}`;
+        });
+    if (rejections.length !== 4)
+        context.contractError(
+            enable,
+            "Expected the four enableCsmStaticCache rejections.",
+        );
+    for (const shape of [
+        'sg._shadowType !== "csm"',
+        "!Number.isFinite(options.refitAngle) || options.refitAngle <= 0",
+        "options.staticCascadesPerFrame ?? 0",
+        "!Number.isInteger(staticCascadesPerFrame) || staticCascadesPerFrame < 0",
+        "sg._shadowTaskState || sg._csmReceiverTexture || engine.surfaces.some((surface) => surface._renderingContexts.length > 0)",
+        "sg._csmCache?._loaded",
+        "options.refitMaxIntervalMs ?? 0",
+    ])
+        context.expectShapeCount(enable, shape, "enableCsmStaticCache");
+    return `
+// ${context.provenance("src/shadow/enable-csm-static-cache.ts", "enableCsmStaticCache")}
+std::optional<PromiseRejection> enable_csm_static_cache(
+    Engine& engine, ShadowGeneratorHandle handle, double refit_angle,
+    std::optional<double> refit_max_interval_ms,
+    std::optional<double> static_cascades_per_frame, bool receiver_texture_read) {
+    ShadowGeneratorRecord& generator = ${recordAt("engine.shadow_generators", "handle")};
+    if (generator.filter != ShadowFilter::csm_directional) return ${rejections[0]};
+    if (!std::isfinite(refit_angle) || refit_angle <= 0.0) return ${rejections[1]};
+    const double per_frame = static_cascades_per_frame.value_or(0.0);
+    if (!std::isfinite(per_frame) || per_frame != std::floor(per_frame) || per_frame < 0.0)
+        return ${rejections[2]};
+    if (!generator.caster_tasks.empty() || receiver_texture_read || !engine.rendering_contexts.empty())
+        return ${rejections[3]};
+    if (generator.csm_cache) return std::nullopt;
+    auto cache = std::make_shared<CsmStaticCacheState>();
+    cache->refit_angle = refit_angle;
+    cache->refit_max_interval_ms = refit_max_interval_ms.value_or(0.0);
+    cache->static_cascades_per_frame = static_cast<std::uint32_t>(per_frame);
+    upstream::csm_scheduler_create(*cache, static_cast<double>(generator.csm_num_cascades), per_frame);
+    generator.csm_cache = std::move(cache);
+    return std::nullopt;
+}
+
+void refresh_csm_cache_casters(Engine& engine, ShadowGeneratorHandle generator) {
+    refresh_shadow_task_meshes(engine, generator);
+}
+`;
+}
+
 function shadowGeneratorFactory(spec: {
     name: string;
     options: string;
@@ -2297,6 +2374,9 @@ export function shadowFactorySource(
     const morphBounds = features.includes("shadow:morph-bounds");
     // `enableSkeletonShadows`, the same for the bone-box provider.
     const skeletonBounds = features.includes("shadow:skeleton-bounds");
+    // `enableCsmStaticCache`: static and dynamic caster passes per cascade
+    // over a cache texture, and the pin's rejections.
+    const csmCache = features.includes("shadow:csm-static-cache");
     // One family's caster view, under the filter its task carries. The node
     // family has a second compiled module for both modes: ESM adds its
     // shadow-params binding, while PCF uses NODE_NO_COLOR_OUTPUT and adds no
@@ -2467,6 +2547,7 @@ export function shadowFactorySource(
         )}
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/pinned_shadow.hpp>
+${csmCache ? "#include <bblite/upstream/csm_static_cache.hpp>\n" : ""}\
 
 #include <algorithm>
 #include <stdexcept>
@@ -2616,7 +2697,18 @@ void refresh_shadow_task_meshes(
             if (record.retired) continue;
             // Invisible anchors participate in the light-volume fit but
             // the pin's normal renderable traversal does not draw them.
-            if (!record.visible) continue;
+            if (!record.visible) continue;${
+                csmCache
+                    ? `
+            // A cached generator draws each caster in one layer: the
+            // static pass while the refit gate holds it static, the
+            // dynamic pass otherwise (\`isDynamic\`).
+            if (generator.csm_cache &&
+                upstream::csm_refit_is_dynamic(*generator.csm_cache, mesh) ==
+                    task.render.shadow_cache_static)
+                continue;`
+                    : ""
+            }
             const MaterialHandle material = record.material;
             if (material.value >= engine.materials.size()) {
                 throw std::runtime_error(
@@ -2658,7 +2750,7 @@ void set_shadow_task_caster_meshes(
     ++record.caster_list_version;
     refresh_shadow_task_meshes(engine, generator);
 }
-
+${csmCache ? lowerCsmStaticCacheEnable(context) : ""}
 namespace {
 
 /**
@@ -2725,7 +2817,44 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     target.shadow_map = true;
     target.width = map_size;
     target.height = map_size;
-    const RenderTargetHandle rt = create_render_target(engine, target);
+    const RenderTargetHandle rt = create_render_target(engine, target);${
+        csmCache
+            ? `
+    // \`ensureCsmShadowCacheState\`: one clearing static pass per cascade
+    // into the \`csm-static-cache\` layer, then the dynamic pass over the
+    // map layer, which loads the copied cache (\`clr: false\`,
+    // \`depthClear: false\`). Both are explicit (\`autoMirror: false\`).
+    const std::shared_ptr<CsmStaticCacheState> cache =
+        ${recordAt("engine.shadow_generators", "handle")}.csm_cache;
+    if (cache) {
+        // A new task state starts a new gate and scheduler; the options stay.
+        const CsmStaticCacheState options = *cache;
+        *cache = CsmStaticCacheState{};
+        cache->refit_angle = options.refit_angle;
+        cache->refit_max_interval_ms = options.refit_max_interval_ms;
+        cache->static_cascades_per_frame = options.static_cascades_per_frame;
+        upstream::csm_scheduler_create(*cache, static_cast<double>(layers),
+                                       static_cast<double>(options.static_cascades_per_frame));
+        ${recordAt("engine.shadow_generators", "handle")}.csm_cascades.resize(layers);
+        ${recordAt("engine.render_targets", "rt")}.copy_destination = true;
+        target.sampled_depth = false;
+        cache->cache_target = create_render_target(engine, target);
+        ${recordAt("engine.render_targets", "cache->cache_target")}.copy_source = true;
+        for (std::uint32_t layer = 0; layer < layers; ++layer) {
+            RenderTaskOptions task;
+            task.name = "csm" + std::to_string(layer) + "-static";
+            task.target = cache->cache_target;
+            task.clear = true;
+            task.auto_mirror = false;
+            task.shadow_generator = handle;
+            task.depth_layer = layer;
+            task.shadow_cache_static = true;
+            ${recordAt("engine.shadow_generators", "handle")}.caster_tasks.push_back(
+                create_render_task(engine, scene, std::move(task)));
+        }
+    }`
+            : ""
+    }
     for (std::uint32_t layer = 0; layer < layers; ++layer) {
         RenderTaskOptions task;
         task.name = esm
@@ -2734,7 +2863,16 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
         task.target = rt;
         task.clear = true;
         task.shadow_generator = handle;
-        task.depth_layer = layer;
+        task.depth_layer = layer;${
+            csmCache
+                ? `
+        if (cache) {
+            task.clear = false;
+            task.depth_clear = false;
+            task.auto_mirror = false;
+        }`
+                : ""
+        }
         const TaskHandle task_handle =
             create_render_task(engine, scene, std::move(task));
         ${recordAt("engine.shadow_generators", "handle")}.caster_tasks.push_back(

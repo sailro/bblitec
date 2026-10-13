@@ -1294,6 +1294,12 @@ struct RenderTaskOptions {
     std::uint32_t depth_layer = 0;
     bool depth_clear = true;
     bool shared_target = false;
+    /**
+     * A cached CSM generator's static caster pass, which renders into the
+     * cache texture's layer; the dynamic pass of the same cascade renders
+     * into the map over the copied cache (`depth_clear` false).
+     */
+    bool shadow_cache_static = false;
 };
 
 struct RenderTaskMesh {
@@ -1666,6 +1672,9 @@ struct RenderTargetRecord {
     DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;
     /** A retired internal target keeps its handle slot without retaining attachments. */
     bool retired = false;
+    /** The CSM static cache copies this depth into another target, or out of one. */
+    bool copy_source = false;
+    bool copy_destination = false;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -6939,6 +6948,22 @@ ShadowGeneratorHandle create_pcf_directional_shadow_generator(Engine& engine, Li
                                                               PcfDirectionalShadowOptions options);
 ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               CsmDirectionalShadowOptions options);
+/** A rejected promise's error: its constructor name and message. */
+struct PromiseRejection {
+    std::string name;
+    std::string message;
+};
+/**
+ * `enableCsmStaticCache`: the rejection its promise carries, or none when it
+ * resolves. `receiver_texture_read` is a prior `getCsmReceiverTexture`.
+ */
+std::optional<PromiseRejection> enable_csm_static_cache(Engine& engine, ShadowGeneratorHandle generator,
+                                                        double refit_angle,
+                                                        std::optional<double> refit_max_interval_ms,
+                                                        std::optional<double> static_cascades_per_frame,
+                                                        bool receiver_texture_read);
+/** A cached CSM generator's caster passes, refilled from the refit gate's split. */
+void refresh_csm_cache_casters(Engine& engine, ShadowGeneratorHandle generator);
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
