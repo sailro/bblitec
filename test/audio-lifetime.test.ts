@@ -4,13 +4,14 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
+    nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
-const labsound = resolve("artifacts/tools/labsound");
+const labsound = nativeFixtureLabSoundRoot;
 
 test(
     "audio playback preserves loops, rates and graph ownership",

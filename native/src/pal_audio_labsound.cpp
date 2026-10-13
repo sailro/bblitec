@@ -618,8 +618,7 @@ constexpr const char* spelling(AudioParamName name) {
 
 #if BBLITE_HAS_AUDIO_PANNER
 /** The context listener's parameter a `Listener*` name selects, or none. */
-std::shared_ptr<lab::AudioParam> listener_param(lab::AudioListener& listener,
-                                                AudioParamName name) {
+std::shared_ptr<lab::AudioParam> listener_param(lab::AudioListener& listener, AudioParamName name) {
     switch (name) {
     case AudioParamName::ListenerPositionX:
         return listener.positionX();
@@ -649,8 +648,8 @@ std::shared_ptr<lab::AudioParam> require_param(AudioParamHandle handle) {
 #if BBLITE_HAS_AUDIO_PANNER
     if (handle.name >= AudioParamName::ListenerPositionX) {
         require_node(handle.node);
-        auto param = listener_param(*require_context(context_of(handle.node.value)).context->listener(),
-                                    handle.name);
+        auto param = listener_param(
+            *require_context(context_of(handle.node.value)).context->listener(), handle.name);
         if (!param)
             throw std::runtime_error("The audio listener has no such parameter.");
         return param;

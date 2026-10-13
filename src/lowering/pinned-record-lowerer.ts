@@ -3102,7 +3102,16 @@ interface Place {
 /** `Math`'s constant members, by the dotted name a read spells. */
 const MATH_CONSTANTS: ReadonlyMap<string, number> = new Map(
     (
-        ["E", "LN10", "LN2", "LOG10E", "LOG2E", "PI", "SQRT1_2", "SQRT2"] as const
+        [
+            "E",
+            "LN10",
+            "LN2",
+            "LOG10E",
+            "LOG2E",
+            "PI",
+            "SQRT1_2",
+            "SQRT2",
+        ] as const
     ).map((name) => [`Math.${name}`, Math[name]]),
 );
 
@@ -4997,7 +5006,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 local &&
                 (collection?.kind === "set" || collection?.kind === "array") &&
                 collection.element.kind === "record" &&
-                !this.model.isLiteralRecord(collection.element.name)
+                !this.model.isLiteralRecord(collection.element.name) &&
+                !this.containsAny(this.typeAt(node))
             ) {
                 const declared = this.model.shapeOf(this.typeAt(node), node);
                 const iterable = stripOptional(declared);

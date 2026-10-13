@@ -7,7 +7,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
-buffers, buses, spatial/stereo/analyzer and master volume, media streams/recording/streamed audio, script elements,
+buffers, buses, stereo/analyzer and master volume, media streams/recording/streamed audio, script elements,
 idle callbacks, dynamic pixel ratio, application-realm device recovery, Blob streams/piping/compression, and the
 [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
 
@@ -167,15 +167,17 @@ Heightfields need square ground grids. Contract: [physics](fidelity.md#physics-c
 ## Audio
 
 LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling (value curves included), decoding, ended
-listeners, `disconnect(destination[, output[, input]])`. A buffer source loops its whole buffer only: a
-`loopStart`/`loopEnd` region inside it, or a loop started with a duration, throws at `start`. Event payloads,
-ended-listener `signal`, context options, statechange, output selection, media streams and recording refuse or are
-absent. `createAudioEngineAsync` adopts `audioContext`; its other options refuse.
+listeners, `disconnect(destination[, output[, input]])`, equal-power `PannerNode` and the context `listener` (`"HRTF"`
+refuses: no HRTF data is packaged). A buffer source loops its whole buffer only: a `loopStart`/`loopEnd` region inside
+it, or a loop started with a duration, throws at `start`. Event payloads, ended-listener `signal`, context options,
+statechange, output selection, media streams and recording refuse or are absent; so does any other node, parameter or
+context property write. `createAudioEngineAsync` adopts `audioContext`; its other options refuse.
 
 Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `disposeSound`) run the pin's lowered
 family in an application realm. Sources: a URL selecting packaged audio (a runtime URL needs inferable candidates), an
 `ArrayBuffer` or an `AudioBuffer`; URL lists, sound buffers and `outBus` refuse. A looped sound started while its
-context is not running throws (no statechange).
+context is not running throws (no statechange). `enableSpatial`, `setSpatialPosition` and `setSpatialListenerPosition`
+add the pin's panner sub-node and listener; the `position`, orientation and attachment options refuse.
 
 ## Shadows and navigation
 

@@ -1,0 +1,84 @@
+RecorderNode::createBusFromRecording copied the first recorded channel into every
+channel, so a capture of a stereo graph reported its left channel twice: a source
+panned right recorded as silence. Each channel now takes its own recording and a
+mono recording fills every channel, as speakers up-mix it. A channel that appears
+or disappears mid-recording stays frame-aligned with the first (lazy growth
+appended a full set of channels again and left later ones short), and mixing to
+mono averages the channels recorded rather than reading past them.
+
+diff --git a/src/extended/RecorderNode.cpp b/src/extended/RecorderNode.cpp
+index 89ba188..0c8e244 100644
+--- a/src/extended/RecorderNode.cpp
++++ b/src/extended/RecorderNode.cpp
+@@ -93,22 +93,25 @@ void RecorderNode::process(ContextRenderLock & r, int bufferSize)
+             channels.push_back(inputBus->channel(i)->data());
+         }
+ 
+-        if (m_data.size() < numChannels)
++        std::lock_guard<std::recursive_mutex> lock(m_mutex);
++        if (m_data.size() < static_cast<size_t>(numChannels))
+         {
+-            // allocate the recording buffers lazily when the number of input channels is finally known
+-            for (int i = 0; i < numChannels; ++i)
++            // allocate the recording buffers lazily when the number of input channels is finally known;
++            // a channel that appears later holds the silence it did not record, so every channel
++            // stays frame-aligned with the first
++            const size_t recorded = m_data.empty() ? 0 : m_data[0].size();
++            while (m_data.size() < static_cast<size_t>(numChannels))
+             {
+-                m_data.emplace_back(std::vector<float>());
+-                m_data[i].reserve(1024 * 1024);
++                m_data.emplace_back(recorded, 0.f);
++                m_data.back().reserve(1024 * 1024);
+             }
+         }
+ 
+-        // copy the output. @TODO this should be a memcpy
+-        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+-        for (int c = 0; c < numChannels; ++c)
++        // copy the output, and silence for a channel the input no longer has. @TODO this should be a memcpy
++        for (int c = 0; c < static_cast<int>(m_data.size()); ++c)
+         {
+             for (int i = 0; i < bufferSize; ++i)
+-                m_data[c].push_back(channels[c][i]);
++                m_data[c].push_back(c < numChannels ? channels[c][i] : 0.f);
+         }
+     }
+ 
+@@ -203,24 +206,31 @@ std::unique_ptr<AudioBus> RecorderNode::createBusFromRecording(bool mixToMono)
+     std::unique_ptr<lab::AudioBus> result_audioBus(new lab::AudioBus(result_channel_count, numSamples));
+     result_audioBus->setSampleRate(m_sampleRate);
+ 
+-    // Mix channels to mono if requested, and there's more than one input channel.
+-    if (_self->m_channelCount > 1 && mixToMono)
++    // Mix the recorded channels to mono if requested, and there's more than one of them.
++    const size_t recorded_channel_count = m_data.size();
++    if (recorded_channel_count > 1 && mixToMono)
+     {
+         float* destinationMono = result_audioBus->channel(0)->mutableData();
+ 
+         for (int i = 0; i < numSamples; i++)
+         {
+             destinationMono[i] = 0;
+-            for (size_t j = 0; j < _self->m_channelCount; ++j)
++            for (size_t j = 0; j < recorded_channel_count; ++j)
+                 destinationMono[i] += m_data[j][i];
+-            destinationMono[i] *= 1.f / static_cast<float>(_self->m_channelCount);
++            destinationMono[i] *= 1.f / static_cast<float>(recorded_channel_count);
+         }
+     }
+     else
+     {
++        // each channel its own recording; a mono recording fills every channel, as speakers up-mix it,
++        // and a channel never recorded is silent
+         for (int i = 0; i < result_channel_count; ++i)
+         {
+-            memcpy(result_audioBus->channel(i)->mutableData(), m_data[0].data(), numSamples * sizeof(float));
++            float* destination = result_audioBus->channel(i)->mutableData();
++            if (recorded_channel_count == 1 || static_cast<size_t>(i) < recorded_channel_count)
++                memcpy(destination, m_data[recorded_channel_count == 1 ? 0 : i].data(), numSamples * sizeof(float));
++            else
++                memset(destination, 0, numSamples * sizeof(float));
+         }
+     }
+ 

@@ -1,15 +1,16 @@
 /** Shared by the static and spatial sound tests: WAVE input and LabSound programs. */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import {
+    nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
-const labsound = resolve("artifacts/tools/labsound");
+const labsound = nativeFixtureLabSoundRoot;
 
 /** Whether the native compiler and the pinned LabSound library are present. */
 export const native = Boolean(

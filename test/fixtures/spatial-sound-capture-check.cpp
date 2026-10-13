@@ -2,7 +2,7 @@
 // writes it) over the real LabSound PAL, rendered offline between its calls:
 // a constant-level WAVE sound is made spatial with the linear distance model
 // (full within 6, silent from 42), then moved around a listener. Prints one
-// line per placement: the left and right channel peaks.
+// line per placement: the left and right channel peaks once settled.
 
 #include "pal_audio_labsound.cpp"
 
@@ -24,8 +24,8 @@ const char* bbl::pal::bblite_build_stamp() { return "spatial-sound-capture-check
 
 namespace {
 
-/** Render `frames` more frames offline; the peak of each channel over their second half. */
-std::string render(pal::AudioContextHandle context, int frames) {
+/** Render `frames` more frames offline; the peak of each channel over the last `measured`. */
+std::string render(pal::AudioContextHandle context, int frames, int measured) {
     auto& record = pal::require_context(context.value);
     auto scratch = std::make_shared<lab::AudioBus>(2, lab::AudioNode::ProcessingSizeInFrames);
     record.destination->offlineRender(scratch.get(), frames);
@@ -34,7 +34,7 @@ std::string render(pal::AudioContextHandle context, int frames) {
     for (int channel = 0; channel < 2; ++channel) {
         const auto* samples = pcm->channel(channel)->data();
         float peak = 0.0f;
-        for (int index = pcm->length() - frames / 2; index < pcm->length(); ++index)
+        for (int index = pcm->length() - measured; index < pcm->length(); ++index)
             peak = std::max(peak, std::abs(samples[index]));
         char text[32];
         std::snprintf(text, sizeof text, " %.3f", static_cast<double>(peak));
@@ -65,11 +65,13 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& line
     enable_spatial(sound, spatial);
     play_sound(sound);
 
-    // Each placement: the listener, then the source, then 0.1 s of sound.
+    // Each placement: the listener, then the source, then 0.4 s of sound, measured
+    // over its last 0.1 s -- once the panner's gains have settled (they approach a
+    // new placement with a 50 ms time constant).
     const auto place = [&](const char* name, Vec3d listener, Vec3d source) {
         set_spatial_listener_position(engine, listener);
         set_spatial_position(sound, source);
-        lines.push_back(name + render(context, 4800));
+        lines.push_back(name + render(context, 19200, 4800));
     };
     place("right", {0, 0, 0}, {3, 0, 0});
     place("left", {0, 0, 0}, {-3, 0, 0});

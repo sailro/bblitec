@@ -1,0 +1,31 @@
+PannerNode::getAzimuthElevation normalized the source-listener vector before
+testing it for zero, so a source at the listener divided by a zero length and its
+NaNs resolved to an azimuth of 90 degrees (hard right). The zero test now precedes
+the normalization: azimuth and elevation are 0, as Web Audio specifies.
+
+diff --git a/src/core/PannerNode.cpp b/src/core/PannerNode.cpp
+index 24a506b..c7ba03c 100755
+--- a/src/core/PannerNode.cpp
++++ b/src/core/PannerNode.cpp
+@@ -351,16 +351,19 @@ void PannerNode::getAzimuthElevation(ContextRenderLock & r, double * outAzimuth,
+         positionY()->value(),
+         positionZ()->value()};
+ 
+-    sourceListener = normalize(sourceListener - listenerPosition);
++    sourceListener = sourceListener - listenerPosition;
+ 
++    // degenerate case if source and listener are at the same point; tested before normalizing,
++    // whose division by a zero length would leave NaNs that read as hard right
+     if (is_zero(sourceListener))
+     {
+-        // degenerate case if source and listener are at the same point
+         *outAzimuth = 0.0;
+         *outElevation = 0.0;
+         return;
+     }
+ 
++    sourceListener = normalize(sourceListener);
++
+     // Align axes
+     /// @fixme these values should be per sample, not per quantum
+     FloatPoint3D listenerFront = normalize(FloatPoint3D{

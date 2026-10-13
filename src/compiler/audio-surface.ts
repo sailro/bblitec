@@ -883,6 +883,26 @@ function compileAudioReceiverMethod(
 
 // -- writes --------------------------------------------------------------
 
+/** The Web Audio interface a lowered value's kind stands for. */
+const AUDIO_INTERFACES: Readonly<Record<string, string>> = {
+    "audio-buffer": "AudioBuffer",
+    "audio-context": "AudioContext",
+    "audio-node": "AudioNode",
+    "audio-param": "AudioParam",
+};
+
+/** A Web Audio property write this surface does not lower, refused by name. */
+function refuseAudioWrite(
+    context: AudioWriteContext,
+    left: ts.PropertyAccessExpression,
+    owner: Value,
+): never {
+    return context.fail(
+        left,
+        `${AUDIO_INTERFACES[owner.kind] ?? "Web Audio"}.${left.name.text} is not lowered; writing it would be dropped.`,
+    );
+}
+
 /**
  * Emits a reached Web Audio property write, in the shape every other hook
  * on the assignment chain takes: it either handles the assignment and
@@ -917,8 +937,11 @@ export function emitAudioPropertyAssignment(
         return true;
     }
 
+    // Web Audio objects are DOM types, which the browser-erasure gate later
+    // in the chain drops: a write this surface does not lower refuses here.
     if (owner.kind !== "audio-node") {
-        return false;
+        if (owner.kind === "audio-engine") return false;
+        return refuseAudioWrite(context, left, owner);
     }
 
     if (property === "buffer") {
@@ -1030,7 +1053,7 @@ export function emitAudioPropertyAssignment(
         return true;
     }
     if (property !== "type") {
-        return false;
+        return refuseAudioWrite(context, left, owner);
     }
 
     const spelling = context.compileValue(right).staticString;
