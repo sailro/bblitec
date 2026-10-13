@@ -198,10 +198,11 @@ test("the record model refuses orders it cannot keep: a compound assignment's ta
         assert.ok(SOURCE.includes(from), from);
         assert.throws(() => lowered(SOURCE.replace(from, to)), message);
     };
-    // The value writes what the target reads, and C++ evaluates it first.
+    // The value writes what the target reads (`next` increments `n`), and
+    // C++ evaluates it first.
     refuses(
-        "n += 1;",
-        "n += relabel().length;",
+        "    const pair = new Pair(",
+        "    n += next();\n    const pair = new Pair(",
         /compound assignment whose value's effects may change its target/,
     );
     // A `??` fallback is a lambda, which cannot hold a `co_await`.

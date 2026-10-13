@@ -90,12 +90,12 @@ typed error object and matched by `instanceof`. A captured binding of a nested b
 header lives in an environment per block execution or per iteration; other loop-header and case-clause
 captures refuse. A generic arrow lowers once per instantiation its calls reach. C++ leaves the order
 of call arguments and operands unspecified; operands of one form (arguments and a receiver spelled as
-one, template substitutions, constructions, binary operands, an assignment's target and value) whose
-evaluations observe each other's order -- a write or a throw, read from the source and from the pinned
-callees' bodies, against a read of state, another write or another throw -- are evaluated first into
-temporaries in source order, and effect-free operands stay inline. An awaited operand leaves any lambda
-or braced list (a temporary declared before the statement, assigned through the comma operator); an
-`await` a lambda would still hold, and a compound assignment whose value may change its target, refuse. The web APIs the
+one, template substitutions, constructions, binary operands, an assignment's target and value) that the
+entry compiler's `EvaluationOrder` pins (a later operand writes what it touches, or touches what it
+writes) are evaluated first into temporaries in source order, and effect-free operands stay inline. An
+awaited operand leaves any lambda or braced list (a temporary declared before the statement, assigned
+through the comma operator); an `await` a lambda would still hold, and a compound assignment whose value
+may change its target, refuse. The web APIs the
 splat-stream transport calls (`fetch`, abort signals, timers, `createImageBitmap`) are schema adapters
 onto `splat_stream_platform.hpp`, which `pal_splat_stream_platform.cpp` defines over the native services (a test may
 define fakes); the loader's engine, scene, camera and renderable objects are `splat_stream_runtime.hpp`'s. A parameter whose type a type-only module erased takes each call's

@@ -217,7 +217,7 @@ function accessKey(
 }
 
 /** Library methods that call the function they are handed before returning. */
-const SYNCHRONOUS_CALLBACK_METHODS: ReadonlySet<string> = new Set([
+export const SYNCHRONOUS_CALLBACK_METHODS: ReadonlySet<string> = new Set([
     "every",
     "filter",
     "find",
