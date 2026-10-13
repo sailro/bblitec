@@ -65,7 +65,10 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 ## Markup and SVG
 
 - innerHTML admits text/div/span/label, comments, packaged img, reviewed SVG path/rect, role/aria-*/data-*; runtime text
-  is escaped. Scripts, event attributes and malformed nesting refuse; markup-created controls throw in deferred mode.
+  is escaped. Scripts, event attributes and malformed nesting refuse.
+- Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
+  ones do: div/span/p/h1/h2/b/strong/label/button and reviewed control attributes. Comments, other tags, textarea
+  content and dynamic markup with controls refuse; whitespace between options is not kept.
 - ARIA has no native accessibility bridge.
 - `createElementNS`: SVG svg/path/rect/circle/line/ellipse/polyline/polygon, rasterized at CSS size by RmlUi's SVG
   plugin. Shape styles, listeners, nested SVG and paint servers refuse.

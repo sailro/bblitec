@@ -76,7 +76,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "Element.releasePointerCapture",
         "Element.hasPointerCapture",
         "Element.innerHTML.svg-image",
-        "Element.innerHTML.form-controls",
         "EventTarget.addEventListener.signal",
         "MediaStream.constructor",
         "MediaStream.getTracks",

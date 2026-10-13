@@ -94,8 +94,6 @@ test("unrepresented markup bridges and pointer capture use explicit typed throws
     function value(): string { calls++; return 'asset.png'; }
     try { host.innerHTML = '<svg><image href="' + value() + '"/></svg>'; }
     catch(error) { if (!error.message.includes('dom:Element.innerHTML.svg-image')) throw error; caught++; }
-    try { host.innerHTML = '<label>Level<input type="range"></label>'; }
-    catch(error) { if (!error.message.includes('dom:Element.innerHTML.form-controls')) throw error; caught++; }
     function pointer(): number { calls++; return 1; }
     try { host.setPointerCapture(pointer()); }
     catch(error) { if (!error.message.includes('dom:Element.setPointerCapture')) throw error; caught++; }
@@ -103,25 +101,25 @@ test("unrepresented markup bridges and pointer capture use explicit typed throws
     catch(error) { if (!error.message.includes('dom:Element.releasePointerCapture')) throw error; caught++; }
     try { host.hasPointerCapture(pointer()); }
     catch(error) { if (!error.message.includes('dom:Element.hasPointerCapture')) throw error; caught++; }
-    if (calls !== 4 || caught !== 5 || host.textContent !== 'retained') throw new Error('deferred mutation');
+    if (calls !== 4 || caught !== 4 || host.textContent !== 'retained') throw new Error('deferred mutation');
     const conditional = document.createElement('div');
     let completed = 0, selectedCalls = 0;
     function selected(): string { selectedCalls++; return 'choice'; }
     function write(unsupported: boolean): void {
-        conditional.innerHTML = unsupported ? '<input type="range" title="' + selected() + '">' : '<label>' + selected() + '</label>';
+        conditional.innerHTML = unsupported ? '<svg><image href="' + selected() + '"/></svg>' : '<label>' + selected() + '</label>';
         completed++;
     }
     write(false);
     write(host.hasAttribute('missing'));
     try { write(true); } catch(error) {
-        if (!error.message.includes('dom:Element.innerHTML.form-controls')) throw error;
+        if (!error.message.includes('dom:Element.innerHTML.svg-image')) throw error;
         caught++;
     }
     try { write(!host.hasAttribute('missing')); } catch(error) {
-        if (!error.message.includes('dom:Element.innerHTML.form-controls')) throw error;
+        if (!error.message.includes('dom:Element.innerHTML.svg-image')) throw error;
         caught++;
     }
-    if (completed !== 2 || selectedCalls !== 4 || caught !== 7) throw new Error('conditional markup');
+    if (completed !== 2 || selectedCalls !== 4 || caught !== 6) throw new Error('conditional markup');
     const local = { setPointerCapture: (value: number) => value + 1 };
     if (local.setPointerCapture(2) !== 3) throw new Error('authored method');
     globalThis.close();
@@ -137,7 +135,6 @@ test("unrepresented markup bridges and pointer capture use explicit typed throws
         new Set(result.manifest.deferredCapabilities?.map((site) => site.id)),
         new Set([
             "dom:Element.innerHTML.svg-image",
-            "dom:Element.innerHTML.form-controls",
             "dom:Element.setPointerCapture",
             "dom:Element.releasePointerCapture",
             "dom:Element.hasPointerCapture",

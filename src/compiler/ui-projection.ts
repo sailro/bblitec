@@ -100,6 +100,11 @@ import type { LoweringServices } from "./lowering-services.js";
 import { declaredInDomLibrary, declaredSymbol } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
+import {
+    createsFormControls,
+    parseAuthoredMarkup,
+    type UiAuthoredMarkupNode,
+} from "./ui-authored-markup.js";
 import { argumentAt } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
@@ -110,7 +115,7 @@ import {
 
 /** Browser markup whose renderer exists but retained DOM state has no bridge. */
 class DeferredMarkupBridge extends Error {
-    constructor(readonly capability: "svg-image" | "form-controls") {
+    constructor(readonly capability: "svg-image") {
         super(`Retained markup requires the ${capability} bridge.`);
     }
 }
@@ -4085,18 +4090,22 @@ export class UiProjection {
                 fail(`contains invalid tag '<${token}>'.`);
             const tag = tagMatch[1]!.toLowerCase();
             const insideSvg = stack.some((node) => node.tag === "svg");
-            // RmlUi can draw these elements, but image references in SVG and
-            // markup-created controls do not yet retain browser state/ownership.
-            // Only these named bridges defer; malformed or unrelated tags refuse.
-            if (this.context.options.deferredCapabilities) {
-                if (insideSvg && tag === "image")
-                    throw new DeferredMarkupBridge("svg-image");
-                if (
-                    !insideSvg &&
-                    ["input", "select", "option", "textarea"].includes(tag)
-                )
-                    throw new DeferredMarkupBridge("form-controls");
-            }
+            // RmlUi can draw SVG images, but their references do not yet
+            // retain browser state; only that named bridge defers.
+            if (
+                this.context.options.deferredCapabilities &&
+                insideSvg &&
+                tag === "image"
+            )
+                throw new DeferredMarkupBridge("svg-image");
+            // Controls own state only as retained elements (`emitUiAuthoredMarkup`).
+            if (
+                !insideSvg &&
+                ["input", "select", "option", "textarea"].includes(tag)
+            )
+                fail(
+                    `form control <${tag}> requires static markup assigned to innerHTML.`,
+                );
             const svgPaint =
                 tag === "svg"
                     ? {
@@ -4500,6 +4509,94 @@ export class UiProjection {
             );
         }
         return `bbl::js::concat(${parts.join(", ")})`;
+    }
+
+    /** Static markup creating form controls, parsed into its element tree. */
+    private uiAuthoredMarkup(
+        expression: ts.Expression,
+    ): UiAuthoredMarkupNode[] | undefined {
+        const source = this.tryUiStaticString(expression);
+        if (source === undefined || !createsFormControls(source))
+            return undefined;
+        return parseAuthoredMarkup(source, (message) =>
+            this.context.fail(expression, `Native UI innerHTML ${message}`),
+        );
+    }
+
+    /**
+     * Builds static form-control markup as the retained elements createElement
+     * would create, so its controls own value, checkedness, selectedness and
+     * listeners. Each element is complete before it joins its parent.
+     */
+    private emitUiAuthoredMarkup(
+        receiver: Value,
+        engine: string,
+        nodes: readonly UiAuthoredMarkupNode[],
+        site: ts.Expression,
+    ): void {
+        this.recordUiStaticReplaceChildren(receiver);
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::ui_set_inner_rml(${engine}, ${receiver.cpp}, "");`,
+        });
+        const emit = (code: string): void =>
+            this.context.emit({ kind: "expression", code: `${code};` });
+        const build = (parent: Value, node: UiAuthoredMarkupNode): void => {
+            if (node.kind === "text") {
+                this.recordUiStaticAppend(parent, {
+                    kind: "ui-element",
+                    cpp: "",
+                    uiStaticId: this.createUiStaticElement("#text"),
+                });
+                emit(
+                    `bbl::ui_append_text(${engine}, ${parent.cpp}, ${this.context.cppString(node.text)})`,
+                );
+                return;
+            }
+            const name =
+                this.context.allocateTemporaryCppName("markup_element");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name,
+                initializer: `bbl::ui_create_element(${engine}, ${this.context.cppString(node.tag)})`,
+            });
+            const element: Value = {
+                kind: "ui-element",
+                cpp: name,
+                engineCpp: engine,
+                uiTag: node.tag,
+                uiStaticId: this.createUiStaticElement(node.tag),
+            };
+            for (const attribute of node.attributes) {
+                const value = this.lowerUiAttributeLiteral(
+                    attribute.name,
+                    attribute.value,
+                    site,
+                );
+                if (attribute.name === "class" || attribute.name === "id")
+                    this.recordUiStaticAttribute(
+                        element,
+                        attribute.name,
+                        site,
+                        value,
+                    );
+                emit(
+                    `bbl::ui_set_attribute(${engine}, ${name}, ${this.context.cppString(attribute.name)}, ${this.context.cppString(value)})`,
+                );
+            }
+            const [text] = node.children;
+            if (node.children.length === 1 && text?.kind === "text")
+                emit(
+                    `bbl::ui_set_text(${engine}, ${name}, ${this.context.cppString(text.text)})`,
+                );
+            else for (const child of node.children) build(element, child);
+            emit(
+                `static_cast<void>(bbl::ui_append_child(${engine}, ${parent.cpp}, ${name}))`,
+            );
+            this.recordUiStaticAppend(parent, element);
+        };
+        for (const node of nodes) build(receiver, node);
     }
 
     /** A selected unsupported markup arm throws before the setter mutates its owner. */
@@ -5342,6 +5439,16 @@ export class UiProjection {
                     "markup_receiver",
                     expression.left.expression,
                 );
+                const authored = this.uiAuthoredMarkup(expression.right);
+                if (authored) {
+                    this.emitUiAuthoredMarkup(
+                        receiver,
+                        engine,
+                        authored,
+                        expression.right,
+                    );
+                    return true;
+                }
                 let markup: string;
                 try {
                     markup = this.context.probeEmission(() => {

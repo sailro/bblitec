@@ -435,3 +435,98 @@ test("element surface writes refuse forms native order cannot hold", () => {
         /replaceWith text arguments are not represented/,
     );
 });
+
+test("static innerHTML form controls own state, listeners and queries as created elements", (t) => {
+    const output = resolve("artifacts/dom-authored-markup");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `${realm}
+        const panel = document.createElement("div");
+        panel.id = "panel";
+        panel.innerHTML = \`
+            <div class="title">Look &amp; feel</div>
+            <div class="drop">Drop <b>.cube</b> files</div>
+            <div class="list"><span>old</span></div>
+            <label class="row"><span>Strength</span><input class="strength" type="range" min="0" max="1" step="0.25" value="0.5"><span class="readout"></span></label>
+            <div class="keep-row">
+                <select class="slot">
+                    <option value="a.cube">first</option>
+                    <option value="b.cube" selected>second</option>
+                </select>
+                <button class="keep" type="button" style="position:absolute;left:0;top:200px;width:80px;height:30px">Keep</button>
+                <input class="flag" type="checkbox" checked>
+            </div>
+            <div class="status"></div>\`;
+        document.body.appendChild(panel);
+        const list = panel.querySelector(".list") as HTMLElement;
+        const strength = panel.querySelector(".strength") as HTMLInputElement;
+        const readout = panel.querySelector(".readout") as HTMLElement;
+        const slot = panel.querySelector(".slot") as HTMLSelectElement;
+        const keep = panel.querySelector(".keep") as HTMLButtonElement;
+        const flag = panel.querySelector(".flag") as HTMLInputElement;
+        const status = panel.querySelector(".status") as HTMLElement;
+        let steps = "";
+        function record(value: string): void { steps += value; status.textContent = steps; }
+        record(strength.value === "0.5" && slot.value === "b.cube" && flag.checked ? "D" : "d");
+        strength.id = "strength";
+        keep.id = "keep";
+        strength.addEventListener("input", () => {
+            readout.textContent = Number(strength.value).toFixed(2);
+            record("I");
+        });
+        keep.addEventListener("click", () => { keep.disabled = true; record("K"); });
+        list.innerHTML = "";
+        const entry = document.createElement("button");
+        entry.textContent = "entry";
+        list.appendChild(entry);
+        record(list.childElementCount === 1 && entry.parentElement === list ? "L" : "l");
+        slot.value = "a.cube";
+        flag.checked = false;
+        record(slot.value === "a.cube" && !flag.checked ? "W" : "w");
+        strength.focus();
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    assert.equal(result.manifest.deferredCapabilities, undefined);
+    assert.ok(
+        !result.cpp.includes("<select"),
+        "controls are not projected markup",
+    );
+    writeFileSync(join(output, "program.hpp"), result.cpp);
+    runRmlUiFixture(t, "dom-authored-markup", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+        },
+    });
+});
+
+test("innerHTML form controls refuse markup retained elements cannot hold", () => {
+    const refusal = (markup: string, pattern: RegExp): void =>
+        assert.throws(
+            () =>
+                compileEntry(
+                    `const host = document.createElement("div"); host.innerHTML = ${JSON.stringify(markup)};`,
+                ),
+            pattern,
+            markup,
+        );
+    refusal('<input type="file">', /<input> type 'file' is not represented/);
+    refusal("<select><!-- x --><option>a</option></select>", /has comments/);
+    refusal("<select>a<option>b</option></select>", /holds only options/);
+    refusal('<input onclick="run()">', /attribute 'onclick' is not supported/);
+    refusal("<select><option>a</select>", /mismatched closing tag/);
+    refusal("<textarea>text</textarea>", /textarea content is not represented/);
+    refusal('<img src="a.png"><input type="text">', /not <img>/);
+    assert.throws(
+        () =>
+            compileEntry(
+                `const host = document.createElement("div"); const kind = host.id;
+                 host.innerHTML = "<input type=\\"" + kind + "\\">";`,
+            ),
+        /form control <input> requires static markup assigned to innerHTML/,
+    );
+});
