@@ -80,7 +80,7 @@ export function compileAbortNew(
         return { kind: "string" as const, cpp };
     }) as [Value, Value];
     const base = lowerer.leafValue(
-        `bbl::js::Error(std::make_exception_ptr(bbl::js::make_dom_exception(${message.cpp}, ${errorName.cpp})))`,
+        `bbl::js::Error(bbl::js::dom_exception_error(${message.cpp}, ${errorName.cpp}))`,
         { kind: "error" },
     );
     if (base.kind !== "data") return base;

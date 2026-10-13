@@ -141,9 +141,9 @@ private:
             } catch (const WorkerTerminated&) {
                 throw;
             } catch (const std::exception& error) {
-                result.reject(std::make_exception_ptr(js::make_dom_exception(
+                result.reject(js::dom_exception_error(
                     std::string("The source image could not be decoded: ") + error.what(),
-                    "InvalidStateError")));
+                    "InvalidStateError"));
             }
         });
     try {

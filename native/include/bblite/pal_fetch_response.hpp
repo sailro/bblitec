@@ -25,14 +25,9 @@ struct HttpHeaderList {
     std::vector<std::pair<std::string, std::string>> entries;
 };
 
-/** ASCII lowercase, the header-name case fold. */
+/** The header-name case fold (ASCII lowercase). */
 [[nodiscard]] inline std::string http_header_name(std::string_view name) {
-    std::string lowered(name);
-    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char character) {
-        return static_cast<char>(character >= 'A' && character <= 'Z' ? character - 'A' + 'a'
-                                                                      : character);
-    });
-    return lowered;
+    return js::string_lower(std::string(name));
 }
 
 /**
