@@ -167,6 +167,8 @@ struct DocumentSnapshot {
     bool focus_visible = true;
     UiElementHandle text_selection{};
     std::uint64_t text_selection_revision = 0;
+    /** The realm's scrollIntoView requests since the last published snapshot. */
+    std::vector<std::pair<UiElementHandle, UiScrollIntoView>> scroll_requests;
     std::set<std::string> dom_event_types;
     std::set<std::uint32_t> dom_pointer_elements;
     /** The realm's pointer capture state, which the display targets input by. */
@@ -631,6 +633,9 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
  * as input the display waits on (WindowServices::post_input). */
 void apply_document(Engine& engine, DocumentSnapshot snapshot,
                     const std::function<void(std::unique_ptr<ExternalEvent>)>& post_input) {
+    engine.ui_scroll_requests.insert(engine.ui_scroll_requests.end(),
+                                     snapshot.scroll_requests.begin(),
+                                     snapshot.scroll_requests.end());
     if (snapshot.text_updates) {
         for (auto& update : *snapshot.text_updates)
             ui_set_text(engine, update.element, std::move(update.text));
@@ -1104,6 +1109,7 @@ void update_window_document(bool wait) {
     if (host.stopping)
         throw WorkerTerminated{};
     if (snapshot) {
+        snapshot->scroll_requests = std::exchange(doc.engine.ui_scroll_requests, {});
         host.pending = std::move(snapshot);
         const auto revision = ++host.requested;
         doc.published_revision = doc.engine.ui_revision;

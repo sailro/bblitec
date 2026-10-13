@@ -51,8 +51,15 @@ int main() {
         // Outside dispatch an event has no path.
         assert(dom_event_composed_path(create_custom_event("idle")).empty());
 
+        // Requests wait for the projection, in call order.
+        const auto row2 = ui_get_element_by_id(engine, "row2");
+        const auto requested = std::find_if(
+            engine.ui_scroll_requests.begin(), engine.ui_scroll_requests.end(),
+            [&](const auto& request) { return request.first == row2; });
+        assert(requested != engine.ui_scroll_requests.end() && !requested->second.smooth);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         pal::update_ui_rml_runtime(runtime, 640, 480);
+        assert(engine.ui_scroll_requests.empty());
         const auto rml = [&](UiElementHandle element) {
             auto* projected = runtime.projected_elements.at(element.value).element;
             assert(projected);
@@ -64,7 +71,6 @@ int main() {
         // The later request on the same container wins: row3's bottom edge ends the box.
         const auto scroller = ui_get_element_by_id(engine, "scroller");
         assert(std::abs(rml(scroller)->GetScrollTop() - 80.0f) < 0.5f);
-        assert(!ui_element(engine, ui_get_element_by_id(engine, "row2")).scroll_into_view->smooth);
         const auto scroll = [&](const char* id, std::string_view block) {
             ui_scroll_into_view(engine, ui_get_element_by_id(engine, id), block, "nearest",
                                 "instant");

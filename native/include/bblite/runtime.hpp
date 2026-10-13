@@ -406,7 +406,6 @@ struct UiScrollIntoView {
     Alignment block = Alignment::Start;
     Alignment inline_axis = Alignment::Nearest;
     bool smooth = false;
-    std::uint64_t sequence = 0;
 };
 
 struct MeshHandle {
@@ -3951,8 +3950,6 @@ struct UiElementRecord {
     std::optional<CanvasState> canvas;
     bool external_gpu_canvas = false;
     bool attached_to_root = false;
-    /** The latest scrollIntoView request, kept for Window snapshots. */
-    std::optional<UiScrollIntoView> scroll_into_view;
     /** `ui_pointer_hover`/`ui_pointer_active` as the UI projection's last update applied them. */
     std::uint8_t pointer_states = 0;
 };
@@ -4358,6 +4355,8 @@ struct Engine {
     /** The control whose text select() last selected; the projection applies each revision. */
     UiElementHandle ui_text_selection{};
     std::uint64_t ui_text_selection_revision = 0;
+    /** scrollIntoView requests the projection has not applied yet, in call order. */
+    std::vector<std::pair<UiElementHandle, UiScrollIntoView>> ui_scroll_requests;
     /** Direct document children in live DOM attachment order. */
     std::vector<UiElementHandle> ui_root_children;
     struct DocumentRoots {
