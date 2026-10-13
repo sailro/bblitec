@@ -694,7 +694,8 @@ class DawnSceneRun {
     /** The run scene's `scene_camera`. */
     CameraRecord* active_camera() { return scene_camera(data_.engine, data_.scene); }
 
-    void rebuild_task_draw_lists() {
+    /** Every task's draw lists, or only those of `only`. */
+    void rebuild_task_draw_lists(const std::vector<TaskHandle>* only = nullptr) {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& state = data_.state;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
@@ -710,6 +711,8 @@ class DawnSceneRun {
                 if (handle.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error("Scene frame task handle is invalid.");
                 }
+                if (only && std::find(only->begin(), only->end(), handle) == only->end())
+                    continue;
                 FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                 if (task.kind != FrameTaskKind::render && task.kind != FrameTaskKind::geometry) {
                     continue;
@@ -2015,8 +2018,9 @@ public:
         for (const auto& registered_scene : engine.scenes()) {
             write_shadow_generators(state, *registered_scene, engine);
         }
-        if (take_moved_task_lists(state.shadow_refresh))
-            rebuild_task_draw_lists();
+        if (const std::vector<TaskHandle> moved = take_moved_task_lists(state.shadow_refresh);
+            !moved.empty())
+            rebuild_task_draw_lists(&moved);
 #endif
 #endif
         // Sampled render targets must exist before material bind groups are built.

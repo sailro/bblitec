@@ -368,7 +368,13 @@ inline bool csm_static_cache_frame(Engine& engine, const Scene& scene, ShadowGen
         world[2] * dx + world[6] * dy + world[10] * dz, now_ms, camera_changed,
         generator.force_refresh_every_frame || content_changed, refit->on_move, refit->on_move);
     if (refit->moved || cache.membership_dirty) {
-        refresh_csm_cache_casters(engine, handle);
+        // The refill re-partitions the same casters between this generator's
+        // own passes: no GPU row changes, and the backend rebuilds those
+        // passes' draw lists alone (\`refilled\`), so the draw-list epoch
+        // every task rebuilds on stays where it was.
+        const std::uint64_t epoch = engine.draw_list_epoch;
+        refresh_shadow_task_meshes(engine, handle);
+        engine.draw_list_epoch = epoch;
         cache.membership_dirty = false;
         cache.refilled = true;
     }

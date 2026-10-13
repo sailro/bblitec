@@ -506,15 +506,18 @@ class SdlSceneRun {
     /** The run scene's `scene_camera`. */
     CameraRecord* active_camera() { return scene_camera(data_.engine, data_.scene); }
 
-    void rebuild_task_draw_lists() {
+    /** Every task's draw lists, or only those of `only`. */
+    void rebuild_task_draw_lists(const std::vector<TaskHandle>* only = nullptr) {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
         [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
         [[maybe_unused]] auto& task_draw_lists = data_.task_draw_lists;
 
         task_draw_lists.resize(engine.frame_tasks.size());
-        for (upstream::RenderDrawLists& lists : task_draw_lists) {
-            lists = {};
+        if (!only) {
+            for (upstream::RenderDrawLists& lists : task_draw_lists) {
+                lists = {};
+            }
         }
         for (std::size_t layer = 0; layer < data_.active_registered_scenes.size(); ++layer) {
             const Scene& task_scene = *data_.active_registered_scenes[layer];
@@ -524,6 +527,8 @@ class SdlSceneRun {
                 if (handle.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error("Scene frame task handle is invalid.");
                 }
+                if (only && std::find(only->begin(), only->end(), handle) == only->end())
+                    continue;
                 handle_at(task_draw_lists, handle) = record_task_draw_lists(
                     task_plan, engine, handle_at(engine.frame_tasks, handle));
             }
@@ -2171,8 +2176,10 @@ public:
                         graph_extent.width, graph_extent.height);
 #if BBLITE_SHADOW_RECEIVERS
                     update_shadow_generators(state, graph_scene, engine);
-                    if (take_moved_task_lists(state.shadow_refresh))
-                        rebuild_task_draw_lists();
+                    if (const std::vector<TaskHandle> moved =
+                            take_moved_task_lists(state.shadow_refresh);
+                        !moved.empty())
+                        rebuild_task_draw_lists(&moved);
                     // CSM receiver-data callbacks can rewrite a shader storage
                     // buffer; publish that rewrite before any caster or colour
                     // draw in this command buffer reads it.

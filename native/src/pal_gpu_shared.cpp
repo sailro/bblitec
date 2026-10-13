@@ -1477,11 +1477,11 @@ ShadowTaskPass shadow_task_pass(const Engine& engine, const ShadowRefreshState& 
     return pass;
 }
 
-bool take_moved_task_lists([[maybe_unused]] ShadowRefreshState& refresh) {
+std::vector<TaskHandle> take_moved_task_lists([[maybe_unused]] ShadowRefreshState& refresh) {
 #if BBLITE_CSM_STATIC_CACHE
-    return std::exchange(refresh.task_lists_moved, false);
+    return std::exchange(refresh.moved_tasks, {});
 #else
-    return false;
+    return {};
 #endif
 }
 #endif
