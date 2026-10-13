@@ -717,9 +717,11 @@ js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
     }
     return result;
 }
-void window_on_application_error(bool rejection, std::uint64_t identity,
-                                 ApplicationErrors::Callback callback, bool once) {
-    current_document().errors->add(rejection, identity, std::move(callback), once);
+bool window_on_application_error(bool rejection, std::uint64_t identity,
+                                 ApplicationErrors::Callback callback, bool once,
+                                 ListenerLeasePtr lease) {
+    return current_document().errors->add(rejection, identity, std::move(callback), once,
+                                          std::move(lease));
 }
 void window_off_application_error(bool rejection, std::uint64_t identity) {
     current_document().errors->remove(rejection, identity);

@@ -27,10 +27,12 @@ public:
     using Listeners = PlatformEventListeners<void(const Event&)>;
     using Callback = Listeners::Callback;
 
-    void add(DomEventTarget target, std::string type, std::size_t identity, Callback callback,
-             bool capture = false, bool once = false, bool passive = false) {
-        listeners_[key(target, std::move(type), capture)].add(
-            identity, wrap(std::move(callback), passive), once);
+    /** False for a duplicate (target, type, callback, capture) listener. */
+    bool add(DomEventTarget target, std::string type, std::size_t identity, Callback callback,
+             bool capture = false, bool once = false, bool passive = false,
+             ListenerLeasePtr lease = {}) {
+        return listeners_[key(target, std::move(type), capture)].add(
+            identity, wrap(std::move(callback), passive), once, std::move(lease));
     }
 
     /** The target's `on<type>` handler: a non-capture listener at its first position. */
@@ -217,22 +219,25 @@ inline DomInput& listen_dom_keyboard(Engine& engine, const std::string& type) {
     return listen_dom_type(engine, type);
 }
 
-inline void on_dom_pointer(Engine& engine, DomEventTarget target, std::string type,
+/** `on_dom_<family>` adds one listener; false for a duplicate. */
+inline bool on_dom_pointer(Engine& engine, DomEventTarget target, std::string type,
                            std::size_t identity,
                            DomEventListeners<PlatformMouseEvent>::Callback callback,
-                           bool capture = false, bool once = false, bool passive = false) {
-    listen_dom_pointer(engine, target, type)
-        .pointer.add(target, std::move(type), identity, std::move(callback), capture, once,
-                     passive);
+                           bool capture = false, bool once = false, bool passive = false,
+                           ListenerLeasePtr lease = {}) {
+    return listen_dom_pointer(engine, target, type)
+        .pointer.add(target, std::move(type), identity, std::move(callback), capture, once, passive,
+                     std::move(lease));
 }
 
-inline void on_dom_keyboard(Engine& engine, DomEventTarget target, std::string type,
+inline bool on_dom_keyboard(Engine& engine, DomEventTarget target, std::string type,
                             std::size_t identity,
                             DomEventListeners<PlatformKeyboardEvent>::Callback callback,
-                            bool capture = false, bool once = false, bool passive = false) {
-    listen_dom_keyboard(engine, type)
+                            bool capture = false, bool once = false, bool passive = false,
+                            ListenerLeasePtr lease = {}) {
+    return listen_dom_keyboard(engine, type)
         .keyboard.add(target, std::move(type), identity, std::move(callback), capture, once,
-                      passive);
+                      passive, std::move(lease));
 }
 
 /** `target.on<type> = callback`; an empty callback removes the handler. */
@@ -266,13 +271,14 @@ inline void off_dom_keyboard(Engine& engine, DomEventTarget target, std::string 
         engine.dom_input->keyboard.remove(target, std::move(type), identity, capture);
 }
 
-inline void on_dom_transition(Engine& engine, DomEventTarget target, std::string type,
+inline bool on_dom_transition(Engine& engine, DomEventTarget target, std::string type,
                               std::size_t identity,
                               DomEventListeners<PlatformTransitionEvent>::Callback callback,
-                              bool capture = false, bool once = false, bool passive = false) {
-    listen_dom_type(engine, type)
+                              bool capture = false, bool once = false, bool passive = false,
+                              ListenerLeasePtr lease = {}) {
+    return listen_dom_type(engine, type)
         .transition.add(target, std::move(type), identity, std::move(callback), capture, once,
-                        passive);
+                        passive, std::move(lease));
 }
 
 inline void off_dom_transition(Engine& engine, DomEventTarget target, std::string type,
@@ -282,12 +288,14 @@ inline void off_dom_transition(Engine& engine, DomEventTarget target, std::strin
 }
 
 /** The platform sources file drags while a listened type names them. */
-inline void on_dom_drag(Engine& engine, DomEventTarget target, std::string type,
+inline bool on_dom_drag(Engine& engine, DomEventTarget target, std::string type,
                         std::size_t identity,
                         DomEventListeners<PlatformDragEvent>::Callback callback,
-                        bool capture = false, bool once = false, bool passive = false) {
-    listen_dom_pointer(engine, target, type)
-        .drag.add(target, std::move(type), identity, std::move(callback), capture, once, passive);
+                        bool capture = false, bool once = false, bool passive = false,
+                        ListenerLeasePtr lease = {}) {
+    return listen_dom_pointer(engine, target, type)
+        .drag.add(target, std::move(type), identity, std::move(callback), capture, once, passive,
+                  std::move(lease));
 }
 
 inline void off_dom_drag(Engine& engine, DomEventTarget target, std::string type,
@@ -305,12 +313,13 @@ inline void set_dom_drag_handler(Engine& engine, DomEventTarget target, std::str
     engine.dom_input->drag.set_handler(target, std::move(type), std::move(callback));
 }
 
-inline void on_dom_storage(Engine& engine, DomEventTarget target, std::string type,
+inline bool on_dom_storage(Engine& engine, DomEventTarget target, std::string type,
                            std::size_t identity,
                            DomEventListeners<PlatformStorageEvent>::Callback callback,
-                           bool capture = false, bool once = false, bool passive = false) {
-    dom_input(engine).storage.add(target, std::move(type), identity, std::move(callback), capture,
-                                  once, passive);
+                           bool capture = false, bool once = false, bool passive = false,
+                           ListenerLeasePtr lease = {}) {
+    return dom_input(engine).storage.add(target, std::move(type), identity, std::move(callback),
+                                         capture, once, passive, std::move(lease));
 }
 
 inline void off_dom_storage(Engine& engine, DomEventTarget target, std::string type,

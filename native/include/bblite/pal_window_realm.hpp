@@ -35,8 +35,10 @@ ScreenMetrics window_screen_metrics();
 InputCapabilities window_input_capabilities();
 const void* window_screen_identity();
 UiClientRect window_element_size(UiElementHandle element);
-void window_on_application_error(bool rejection, std::uint64_t identity,
-                                 ApplicationErrors::Callback callback, bool once);
+/** False for a duplicate listener. */
+bool window_on_application_error(bool rejection, std::uint64_t identity,
+                                 ApplicationErrors::Callback callback, bool once,
+                                 ListenerLeasePtr lease = {});
 void window_off_application_error(bool rejection, std::uint64_t identity);
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element);
 /** The source's canvas readiness marker gates measured capture, never rendering. */

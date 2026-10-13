@@ -21,8 +21,8 @@ void on_visibility_change(Engine& engine, std::size_t identity, js::Callback<voi
 namespace bbl::pal {
 ApplicationErrors* errors = nullptr;
 Engine& window_document_engine() { static Engine engine; return engine; }
-void window_on_application_error(bool rejection, std::uint64_t identity, ApplicationErrors::Callback callback, bool once) {
-    errors->add(rejection, identity, std::move(callback), once);
+bool window_on_application_error(bool rejection, std::uint64_t identity, ApplicationErrors::Callback callback, bool once, ListenerLeasePtr lease) {
+    return errors->add(rejection, identity, std::move(callback), once, std::move(lease));
 }
 int run_window_application(WorkerEntry initialize, EngineOptions) {
     const js::RealmScope scope;
@@ -48,60 +48,6 @@ test("empty Abort storage needs no capability site", () => {
         "deferred-dom-lifetimes/nominal-storage",
         result.cpp,
         { expectedOutput: "" },
-    );
-});
-
-test("listener signals keep a throwing boundary over native AbortSignals and leave later sites reachable", () => {
-    const source =
-        realm +
-        `
-        let caught=0;
-        const controller=new AbortController();
-        const signal=controller.signal;
-        signal.throwIfAborted();
-        if(signal.aborted)throw new Error("state");
-        try {
-            window.addEventListener("blur",()=>{atob("lazy");},{signal});
-        } catch(error) {
-            if(!error.message.includes("dom:EventTarget.addEventListener.signal"))throw new Error("capability");
-            ++caught;
-        }
-        controller.abort();
-        if(caught!==1||!signal.aborted)throw new Error("listener signal completion");
-    `;
-    assert.throws(
-        () => compileSource(source),
-        /AbortSignal listener lifetime is not represented yet/,
-    );
-    const result = compileSource(source, { deferredCapabilities });
-    assert.deepEqual(
-        result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["dom:atob", "dom:EventTarget.addEventListener.signal"],
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                source.replace(
-                    'atob("lazy")',
-                    "new FinalizationRegistry(() => {})",
-                ),
-                {
-                    deferredCapabilities,
-                },
-            ),
-        /Unsupported constructor/,
-    );
-    const tools = optionalNativeFixtureTools(false);
-    assert.ok(tools, "Native fixture compiler required");
-    runGeneratedProgram(
-        tools,
-        "deferred-dom-lifetimes/abort",
-        result.cpp + runtime,
-        {
-            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
-            expectedOutput: "",
-            timeoutMs: 10000,
-        },
     );
 });
 

@@ -121,7 +121,7 @@ test("application errors dispatch before engine creation with native cancellatio
             ApplicationErrors* errors = nullptr;
             Engine& window_document_engine() { return document; }
             const void* window_document_identity() { static const bool identity = true; return &identity; }
-            void window_on_application_error(bool rejection, std::uint64_t id, ApplicationErrors::Callback callback, bool once) { errors->add(rejection, id, std::move(callback), once); }
+            bool window_on_application_error(bool rejection, std::uint64_t id, ApplicationErrors::Callback callback, bool once, ListenerLeasePtr lease) { return errors->add(rejection, id, std::move(callback), once, std::move(lease)); }
             void window_off_application_error(bool rejection, std::uint64_t id) { errors->remove(rejection, id); }
             int run_window_application(WorkerEntry initialize, EngineOptions) {
                 const js::RealmScope scope;

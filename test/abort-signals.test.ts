@@ -93,10 +93,6 @@ test("abort forms without a native representation refuse", () => {
             /dispatches only 'abort' events/,
         ],
         [
-            `const c = new AbortController(); c.signal.addEventListener("abort", () => {}, { signal: c.signal });`,
-            /AbortSignal listener lifetime is not represented yet/,
-        ],
-        [
             `const s = new AbortSignal();`,
             /AbortSignal has no public constructor/,
         ],

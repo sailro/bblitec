@@ -1,6 +1,11 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
-import { listenerOptions } from "./dom-listeners.js";
+import {
+    declaresListenerSignal,
+    listenerAddition,
+    listenerOptions,
+    pinListener,
+} from "./dom-listeners.js";
 import { authoredErrorBase, errorValue } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
@@ -277,14 +282,21 @@ export function compileAbortListenerCall(
             cpp: `(${receiver.cpp}).remove_abort_listener(${identity}, ${options.capture})`,
         };
     }
-    const listener = context.callbacks.compilePlatformCallback(
+    const compiled = context.callbacks.compilePlatformCallback(
         callback,
         undefined,
         [],
     );
+    const listener = declaresListenerSignal(context.checker, call.arguments[2])
+        ? pinListener(context, compiled.cpp)
+        : compiled.cpp;
     const options = listenerOptions(context, call.arguments[2], false);
     return {
         kind: "void",
-        cpp: `(${receiver.cpp}).add_abort_listener(${listener.identity}, ${listener.cpp}, ${options.once}, ${options.capture})`,
+        cpp: listenerAddition(
+            options.signal,
+            (lease) =>
+                `(${receiver.cpp}).add_abort_listener(${compiled.identity}, ${listener}, ${options.once}, ${options.capture}${lease ? `, ${lease}` : ""})`,
+        ),
     };
 }

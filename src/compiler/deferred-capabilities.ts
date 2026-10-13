@@ -82,7 +82,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "Element.innerHTML.form-controls",
         "ChildNode.replaceWith",
         "HTMLOrSVGElement.tabIndex",
-        "EventTarget.addEventListener.signal",
         "MediaStream.constructor",
         "MediaStream.getTracks",
         "MediaStream.getAudioTracks",
