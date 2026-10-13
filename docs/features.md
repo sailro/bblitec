@@ -7,9 +7,8 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
-buffers, streaming sounds, buses, spatial/stereo/analyzer and master volume, the engine media-stream tap,
-script elements, `prompt`, application-realm device recovery, and the [UI](ui.md) items
-marked deferred. Unregistered APIs still refuse.
+buffers, streaming sounds, buses, stereo/analyzer and master volume, script elements, `prompt`, application-realm
+device recovery, and the [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
 
 ## Language
 
@@ -181,9 +180,10 @@ Heightfields need square ground grids. Contract: [physics](fidelity.md#physics-c
 ## Audio
 
 LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling (value curves included), decoding, ended
-listeners, `disconnect(destination[, output[, input]])`. A buffer source loops its whole buffer only: a
-`loopStart`/`loopEnd` region inside it, or a loop started with a duration, throws at `start`. Event payloads,
-ended-listener `signal`, context options, statechange and output selection refuse or are absent.
+listeners, `disconnect(destination[, output[, input]])`, equal-power `PannerNode` and the context `listener` (`"HRTF"`
+refuses: no HRTF data is packaged). A buffer source loops its whole buffer only: a `loopStart`/`loopEnd` region inside
+it, or a loop started with a duration, throws at `start`. Event payloads, ended-listener `signal`, context options,
+statechange and output selection refuse or are absent; so does any other node, parameter or context property write.
 `createAudioEngineAsync` adopts `audioContext`; its other options refuse.
 
 Media streams: `MediaStream`/`MediaStreamTrack` objects (track sets, `addTrack`/`removeTrack`, `clone`, `stop`,
@@ -195,7 +195,9 @@ exists: `MediaRecorder.isTypeSupported` is false and `new MediaRecorder` throws 
 Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `disposeSound`) run the pin's lowered
 family in an application realm. Sources: a URL selecting packaged audio (a runtime URL needs inferable candidates), an
 `ArrayBuffer` or an `AudioBuffer`; URL lists, sound buffers and `outBus` refuse. A looped sound started while its
-context is not running throws (no statechange).
+context is not running throws (no statechange). `enableSpatial`, `setSpatialPosition` and `setSpatialListenerPosition`
+add the pin's panner sub-node and listener; the `position`, orientation and attachment options refuse.
+`createAudioEngineMediaStream` taps the engine's master output into a stream destination's stream.
 
 Media elements (application realm): `new Audio(url)` with a URL selecting packaged audio (a runtime URL needs
 inferable candidates), `play`/`pause`/`load`, `removeAttribute("src")`, `loop`, `preload`, `currentTime` (seek),

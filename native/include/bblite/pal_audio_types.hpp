@@ -36,6 +36,23 @@ enum class AudioParamName : std::uint8_t {
     Q,
     Pan,
     PlaybackRate,
+    // A PannerNode's.
+    PositionX,
+    PositionY,
+    PositionZ,
+    OrientationX,
+    OrientationY,
+    OrientationZ,
+    // The context's AudioListener, reached through its destination node.
+    ListenerPositionX,
+    ListenerPositionY,
+    ListenerPositionZ,
+    ListenerForwardX,
+    ListenerForwardY,
+    ListenerForwardZ,
+    ListenerUpX,
+    ListenerUpY,
+    ListenerUpZ,
 };
 
 /** Repeated reads of one node's parameter name refer to the same object. */

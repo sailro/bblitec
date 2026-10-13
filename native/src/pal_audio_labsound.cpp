@@ -21,6 +21,7 @@
 #include <bblite/features/has_audio_media_element.hpp>
 #include <bblite/features/has_audio_media_stream.hpp>
 #include <bblite/features/has_audio_oscillator.hpp>
+#include <bblite/features/has_audio_panner.hpp>
 #include <bblite/features/has_audio_stereo_panner.hpp>
 #include <bblite/features/workers.hpp>
 
@@ -62,6 +63,10 @@
 #endif
 #if BBLITE_HAS_AUDIO_OSCILLATOR
 #include "LabSound/core/OscillatorNode.h"
+#endif
+#if BBLITE_HAS_AUDIO_PANNER
+#include "LabSound/core/AudioListener.h"
+#include "LabSound/core/PannerNode.h"
 #endif
 #if BBLITE_HAS_AUDIO_STEREO_PANNER
 #include "LabSound/core/StereoPannerNode.h"
@@ -679,11 +684,64 @@ constexpr const char* spelling(AudioParamName name) {
         return "pan";
     case AudioParamName::PlaybackRate:
         return "playbackRate";
+    case AudioParamName::PositionX:
+        return "positionX";
+    case AudioParamName::PositionY:
+        return "positionY";
+    case AudioParamName::PositionZ:
+        return "positionZ";
+    case AudioParamName::OrientationX:
+        return "orientationX";
+    case AudioParamName::OrientationY:
+        return "orientationY";
+    case AudioParamName::OrientationZ:
+        return "orientationZ";
+    default:
+        return nullptr;
     }
-    return nullptr;
 }
 
+#if BBLITE_HAS_AUDIO_PANNER
+/** The context listener's parameter a `Listener*` name selects, or none. */
+std::shared_ptr<lab::AudioParam> listener_param(lab::AudioListener& listener, AudioParamName name) {
+    switch (name) {
+    case AudioParamName::ListenerPositionX:
+        return listener.positionX();
+    case AudioParamName::ListenerPositionY:
+        return listener.positionY();
+    case AudioParamName::ListenerPositionZ:
+        return listener.positionZ();
+    case AudioParamName::ListenerForwardX:
+        return listener.forwardX();
+    case AudioParamName::ListenerForwardY:
+        return listener.forwardY();
+    case AudioParamName::ListenerForwardZ:
+        return listener.forwardZ();
+    case AudioParamName::ListenerUpX:
+        return listener.upX();
+    case AudioParamName::ListenerUpY:
+        return listener.upY();
+    case AudioParamName::ListenerUpZ:
+        return listener.upZ();
+    default:
+        return nullptr;
+    }
+}
+#endif
+
 std::shared_ptr<lab::AudioParam> require_param(AudioParamHandle handle) {
+#if BBLITE_HAS_AUDIO_PANNER
+    if (handle.name >= AudioParamName::ListenerPositionX) {
+        require_node(handle.node);
+        auto param = listener_param(
+            *require_context(context_of(handle.node.value)).context->listener(), handle.name);
+        if (!param)
+            throw std::runtime_error("The audio listener has no such parameter.");
+        return param;
+    }
+#endif
+    if (!spelling(handle.name))
+        throw std::runtime_error("Audio node has no such parameter.");
     auto param = require_node(handle.node)->param(spelling(handle.name));
     if (!param) {
         throw std::runtime_error("Audio node has no such parameter.");
@@ -1264,6 +1322,159 @@ AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context) {
     (void)context;
     throw std::runtime_error("Stereo panner support was not compiled.");
 #endif
+}
+
+#if BBLITE_HAS_AUDIO_PANNER
+namespace {
+std::shared_ptr<lab::PannerNode> require_panner(AudioNodeHandle node) {
+    auto panner = std::dynamic_pointer_cast<lab::PannerNode>(require_node(node));
+    if (!panner)
+        throw std::runtime_error("Audio node is not a panner.");
+    return panner;
+}
+} // namespace
+#else
+namespace {
+[[noreturn]] void panners_absent() { throw std::runtime_error("Panner support was not compiled."); }
+} // namespace
+#endif
+
+AudioNodeHandle audio_create_panner(AudioContextHandle context) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const AudioNodeHandle node = create_node<lab::PannerNode>(context);
+    const auto panner = require_panner(node);
+    panner->setPanningModel(lab::PanningModel::EQUALPOWER);
+    panner->setDistanceModel(lab::PannerNode::INVERSE_DISTANCE);
+    panner->setRefDistance(1.0f);
+    panner->setMaxDistance(10000.0f);
+    panner->setRolloffFactor(1.0f);
+    panner->setConeInnerAngle(360.0f);
+    panner->setConeOuterAngle(360.0f);
+    panner->setConeOuterGain(0.0f);
+    return node;
+#else
+    (void)context;
+    panners_absent();
+#endif
+}
+
+double audio_panner_property(AudioNodeHandle node, PannerProperty property) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const auto panner = require_panner(node);
+    switch (property) {
+    case PannerProperty::RefDistance:
+        return panner->refDistance();
+    case PannerProperty::MaxDistance:
+        return panner->maxDistance();
+    case PannerProperty::RolloffFactor:
+        return panner->rolloffFactor();
+    case PannerProperty::ConeInnerAngle:
+        return panner->coneInnerAngle();
+    case PannerProperty::ConeOuterAngle:
+        return panner->coneOuterAngle();
+    case PannerProperty::ConeOuterGain:
+        return panner->coneOuterGain();
+    }
+    throw std::logic_error("Unknown panner property.");
+#else
+    (void)node;
+    (void)property;
+    panners_absent();
+#endif
+}
+
+void audio_set_panner_property(AudioNodeHandle node, PannerProperty property, double value) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const auto panner = require_panner(node);
+    if (!std::isfinite(value))
+        throw js::NamedError("TypeError", "A panner attribute takes a finite number.");
+    const auto at_least = [&](double minimum, bool inclusive, const char* name) {
+        if (inclusive ? value < minimum : value <= minimum)
+            throw js::NamedError("RangeError", std::string(name) + " is out of range.");
+    };
+    const auto single = static_cast<float>(value);
+    switch (property) {
+    case PannerProperty::RefDistance:
+        at_least(0.0, true, "refDistance");
+        panner->setRefDistance(single);
+        return;
+    case PannerProperty::MaxDistance:
+        at_least(0.0, false, "maxDistance");
+        panner->setMaxDistance(single);
+        return;
+    case PannerProperty::RolloffFactor:
+        at_least(0.0, true, "rolloffFactor");
+        panner->setRolloffFactor(single);
+        return;
+    case PannerProperty::ConeInnerAngle:
+        panner->setConeInnerAngle(single);
+        return;
+    case PannerProperty::ConeOuterAngle:
+        panner->setConeOuterAngle(single);
+        return;
+    case PannerProperty::ConeOuterGain:
+        if (value < 0.0 || value > 1.0)
+            throw js::make_dom_exception("coneOuterGain must lie in [0, 1].", "InvalidStateError");
+        panner->setConeOuterGain(single);
+        return;
+    }
+#else
+    (void)node;
+    (void)property;
+    (void)value;
+    panners_absent();
+#endif
+}
+
+std::string audio_panner_model(AudioNodeHandle node, PannerModel which) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const auto panner = require_panner(node);
+    if (which == PannerModel::Panning)
+        return panner->panningModel() == lab::PanningModel::HRTF ? "HRTF" : "equalpower";
+    switch (panner->distanceModel()) {
+    case lab::PannerNode::LINEAR_DISTANCE:
+        return "linear";
+    case lab::PannerNode::EXPONENTIAL_DISTANCE:
+        return "exponential";
+    default:
+        return "inverse";
+    }
+#else
+    (void)node;
+    (void)which;
+    panners_absent();
+#endif
+}
+
+void audio_set_panner_model(AudioNodeHandle node, PannerModel which, const std::string& value) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const auto panner = require_panner(node);
+    if (which == PannerModel::Panning) {
+        if (value == "equalpower")
+            panner->setPanningModel(lab::PanningModel::EQUALPOWER);
+        else if (value == "HRTF")
+            throw js::make_dom_exception(
+                "HRTF panning needs an HRTF database, which this build does not package.",
+                "NotSupportedError");
+        return;
+    }
+    if (value == "linear")
+        panner->setDistanceModel(lab::PannerNode::LINEAR_DISTANCE);
+    else if (value == "inverse")
+        panner->setDistanceModel(lab::PannerNode::INVERSE_DISTANCE);
+    else if (value == "exponential")
+        panner->setDistanceModel(lab::PannerNode::EXPONENTIAL_DISTANCE);
+#else
+    (void)node;
+    (void)which;
+    (void)value;
+    panners_absent();
+#endif
+}
+
+AudioParamHandle audio_listener_param(AudioContextHandle context, AudioParamName name) {
+    // Pure, like `audio_node_param`: one listener, one object per name.
+    return AudioParamHandle{audio_destination(context), name};
 }
 
 AudioBufferHandle audio_create_buffer(AudioContextHandle context, std::uint32_t channels,

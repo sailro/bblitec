@@ -373,6 +373,41 @@
       "variants": ["core-only"]
     },
     {
+      "library": "labsound",
+      "file": "native/patches/labsound/0003-recorder-channels.patch",
+      "purpose": "A recording keeps each channel its own, frame-aligned",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "labsound",
+      "file": "native/patches/labsound/0004-panner-coincident.patch",
+      "purpose": "A panner source at the listener is straight ahead, not NaN-right",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "labsound",
+      "file": "native/patches/labsound/0005-param-timeline-lock.patch",
+      "purpose": "Control-rate parameter reads see their automation (no same-thread relock)",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "labsound",
+      "file": "native/patches/labsound/0006-panner-automation.patch",
+      "purpose": "Panner and listener positions and orientations follow their automation",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "labsound",
+      "file": "native/patches/labsound/0007-output-in-place-bus.patch",
+      "purpose": "An output sets the sample rate of this quantum's bus, not a stale in-place one",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "sdl3",
       "file": "native/vcpkg-overlay-ports/sdl3/fix-freebsd.patch",
       "purpose": "vcpkg's FreeBSD pkg-config install path; no effect on the trimmed builds",

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -93,7 +94,7 @@ test("scheduled audio events retain callbacks through playback and release their
     );
     writeFileSync(join(output, "program.hpp"), result.cpp);
     const tools = optionalNativeFixtureTools(),
-        labsound = resolve("artifacts/tools/labsound");
+        labsound = nativeFixtureLabSoundRoot;
     if (!tools || !existsSync(join(labsound, "lib/LabSound.lib"))) {
         t.skip("Native compiler and pinned LabSound required.");
         return;

@@ -367,7 +367,29 @@ const AUDIO_PARAM_NAMES: readonly (readonly [
     ["Q", "Q"],
     ["pan", "Pan"],
     ["playbackRate", "PlaybackRate"],
+    ["positionX", "PositionX"],
+    ["positionY", "PositionY"],
+    ["positionZ", "PositionZ"],
+    ["orientationX", "OrientationX"],
+    ["orientationY", "OrientationY"],
+    ["orientationZ", "OrientationZ"],
 ];
+
+/** A panner's numeric attributes, each its `PannerProperty` enumerator. */
+export const PANNER_PROPERTIES = [
+    ["refDistance", "RefDistance"],
+    ["maxDistance", "MaxDistance"],
+    ["rolloffFactor", "RolloffFactor"],
+    ["coneInnerAngle", "ConeInnerAngle"],
+    ["coneOuterAngle", "ConeOuterAngle"],
+    ["coneOuterGain", "ConeOuterGain"],
+] as const;
+
+/** A panner's string models, each its `PannerModel` enumerator. */
+export const PANNER_MODELS = [
+    ["panningModel", "Panning"],
+    ["distanceModel", "Distance"],
+] as const;
 
 const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
     ([property, enumerator]) => ({
@@ -854,6 +876,29 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "audio:buffer-source",
         impure: true,
     })),
+    // A panner's attributes and models, as the program last wrote them.
+    ...PANNER_PROPERTIES.map(
+        ([property, member]): PropertyRead => ({
+            owner: "audio-node",
+            property,
+            value: "number",
+            helper: "bbl::pal::audio_panner_property",
+            helperArgument: `bbl::pal::PannerProperty::${member}`,
+            feature: "audio:panner",
+            impure: true,
+        }),
+    ),
+    ...PANNER_MODELS.map(
+        ([property, which]): PropertyRead => ({
+            owner: "audio-node",
+            property,
+            value: "string",
+            helper: "bbl::pal::audio_panner_model",
+            helperArgument: `bbl::pal::PannerModel::${which}`,
+            feature: "audio:panner",
+            impure: true,
+        }),
+    ),
     {
         owner: "audio-node",
         property: "buffer",

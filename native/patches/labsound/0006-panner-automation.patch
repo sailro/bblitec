@@ -1,0 +1,28 @@
+PannerNode read its own and the listener's positions and orientations as intrinsic
+values only, so a scheduled ramp or curve on them never moved the source or the
+listener. Their timelines are now evaluated once per render quantum before the
+azimuth, elevation and distance are computed (control rate, as the rest of the
+node already is).
+
+diff --git a/src/core/PannerNode.cpp b/src/core/PannerNode.cpp
+index c7ba03c..6d2fdc4 100755
+--- a/src/core/PannerNode.cpp
++++ b/src/core/PannerNode.cpp
+@@ -260,6 +260,17 @@ void PannerNode::process(ContextRenderLock & r, int bufferSize)
+     }
+ 
+ 
++    // The panner's and the listener's positions and orientations are automatable:
++    // evaluate their timelines for this render quantum, so the value() reads below
++    // see a scheduled ramp or curve rather than only the last value set directly.
++    for (auto & param : {m_positionX, m_positionY, m_positionZ, m_orientationX, m_orientationY, m_orientationZ})
++        param->finalValue(r);
++    auto listener = r.context()->listener();
++    for (auto & param : {listener->positionX(), listener->positionY(), listener->positionZ(),
++                         listener->forwardX(), listener->forwardY(), listener->forwardZ(),
++                         listener->upX(), listener->upY(), listener->upZ()})
++        param->finalValue(r);
++
+     // Apply the panning effect.
+     double azimuth;
+     double elevation;

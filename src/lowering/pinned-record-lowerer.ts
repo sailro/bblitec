@@ -3104,6 +3104,22 @@ interface Place {
  * One lowered function body: the record statements and expressions, with
  * JavaScript's arithmetic delegated to `PinnedNumericLowerer`.
  */
+/** `Math`'s constant members, by the dotted name a read spells. */
+const MATH_CONSTANTS: ReadonlyMap<string, number> = new Map(
+    (
+        [
+            "E",
+            "LN10",
+            "LN2",
+            "LOG10E",
+            "LOG2E",
+            "PI",
+            "SQRT1_2",
+            "SQRT2",
+        ] as const
+    ).map((name) => [`Math.${name}`, Math[name]]),
+);
+
 class RecordBodyLowerer extends PinnedNumericLowerer {
     private readonly locals = new Map<ts.Symbol, Local>();
     private readonly names: Set<string>[] = [new Set()];
@@ -4987,6 +5003,28 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const symbol = declaredSymbol(this.checker, node);
             const local = symbol ? this.locals.get(symbol) : undefined;
             if (local?.storage.kind === "record") return local.storage;
+            // A structural iterable specialized to the collection a call
+            // passes (`specialization`) is that collection, narrowed present
+            // where the checker narrowed it.
+            const collection = local ? stripOptional(local.storage) : undefined;
+            if (
+                local &&
+                (collection?.kind === "set" || collection?.kind === "array") &&
+                collection.element.kind === "record" &&
+                !this.model.isLiteralRecord(collection.element.name) &&
+                !this.containsAny(this.typeAt(node))
+            ) {
+                const declared = this.model.shapeOf(this.typeAt(node), node);
+                const iterable = stripOptional(declared);
+                if (
+                    iterable.kind === "array" &&
+                    iterable.element.kind === "record" &&
+                    this.model.isLiteralRecord(iterable.element.name)
+                )
+                    return declared.kind === "optional"
+                        ? local.storage
+                        : collection;
+            }
             // A function, promise or thrown value the lowering chose the
             // storage of (a promise's resolving functions, a caught error
             // the checker types `unknown`): the storage, narrowed present.
@@ -5779,6 +5817,22 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         expression,
                     ),
                 );
+            // `graph._spatial as SpatialSubNode`: a structural slot asserted
+            // back to the record its feature module stored there, which
+            // derives from the slot's record.
+            const slot = stripOptional(this.shapeAt(inner));
+            const asserted = stripOptional(this.shapeAt(expression));
+            if (
+                slot.kind === "record" &&
+                asserted.kind === "record" &&
+                this.model.recordKey(slot.name) !==
+                    this.model.recordKey(asserted.name) &&
+                this.model.record(asserted.name).spec.reference &&
+                this.derives(asserted.name, slot.name)
+            )
+                return cppPrimary(
+                    `std::static_pointer_cast<bbl::${this.model.record(asserted.name).spec.cpp}>(${this.value(inner)})`,
+                );
             return this.renderExpression(inner);
         }
         if (ts.isParenthesizedExpression(expression)) {
@@ -6540,6 +6594,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 : undefined;
         if (platformValue)
             return this.narrowed(platformValue.cpp, platformValue.shape, node);
+        // `Math.PI` and the other constants of `Math`: the doubles they are.
+        const mathConstant =
+            global !== undefined ? MATH_CONSTANTS.get(global) : undefined;
+        if (mathConstant !== undefined) return doubleCpp(mathConstant);
         const constant = this.constant(node);
         if (constant !== undefined) return doubleCpp(constant);
         // An enum member (`const enum` included) is its value.
@@ -7408,6 +7466,26 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (!this.containsAny(type)) {
                 if (!argument) return undefined;
                 const expected = this.model.declaredShape(type, parameter);
+                // `instances?: Iterable<{ _volumeNode: AudioNode }>` given
+                // a sound's `Set<SoundInstance>`: a structural element the
+                // pin only iterates and reads takes the collection passed.
+                const iterated = stripOptional(expected);
+                if (
+                    iterated.kind === "array" &&
+                    iterated.element.kind === "record" &&
+                    this.model.isLiteralRecord(iterated.element.name)
+                ) {
+                    const actual = stripOptional(this.shapeAt(argument));
+                    if (
+                        (actual.kind !== "set" && actual.kind !== "array") ||
+                        actual.element.kind !== "record" ||
+                        this.model.isLiteralRecord(actual.element.name)
+                    )
+                        return undefined;
+                    return expected.kind === "optional"
+                        ? optionalOf(actual)
+                        : actual;
+                }
                 if (expected.kind !== "record") return undefined;
                 const actual = this.recordShapeOf(argument);
                 return actual?.kind === "record" &&
@@ -10407,6 +10485,22 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         };
     }
 
+    /**
+     * A string case over a discriminant that may be absent
+     * (`SpatialAttachmentType | undefined`) compares as a string: the
+     * optional's equality with a present value, never with a literal array.
+     */
+    protected override switchCase(
+        statement: ts.SwitchStatement,
+        value: ts.Expression,
+    ): string {
+        const compared = super.switchCase(statement, value);
+        return ts.isStringLiteralLike(value) &&
+            this.shapeAt(statement.expression).kind === "optional"
+            ? `std::string(${compared})`
+            : compared;
+    }
+
     protected override forOfIteration(
         statement: ts.ForOfStatement,
         binding: ts.BindingName,
@@ -10464,10 +10558,20 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             `auto ${range} = ${this.ownedRead(iterated, this.presentValue(iterated), shape)};`,
         ];
         const bind = (name: ts.Identifier, value: string): string => {
-            const storage = this.model.shapeOf(
+            const declared = this.model.shapeOf(
                 this.checker.getTypeAtLocation(name),
                 name,
             );
+            // A specialized collection's element is its own record where
+            // the declaration names a structural one (`shapeAt`).
+            const storage =
+                (shape.kind === "set" || shape.kind === "array") &&
+                shape.element.kind === "record" &&
+                declared.kind === "record" &&
+                this.model.isLiteralRecord(declared.name) &&
+                !this.model.isLiteralRecord(shape.element.name)
+                    ? shape.element
+                    : declared;
             return `${this.cpp(storage)} ${this.declare(name, storage)} = ${this.model.representations.snapshot(value, storage)};`;
         };
         if (shape.kind === "array" && ts.isObjectBindingPattern(binding)) {

@@ -300,10 +300,13 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:oscillator": [],
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],
+    "audio:panner": [],
     "audio:media-stream": [],
     // The pin's static-sound family, lowered whole; it fetches its sources
     // through the web platform seam.
     "audio:static-sound": ["src/pal_web_platform.cpp"],
+    "audio:spatial-sound": [],
+    "audio:engine-media-stream": [],
     // HTMLAudioElement playback lives in the engine PAL's unit.
     "audio:media-element": [],
     "sprite:billboard-axis-locked": [],
@@ -412,6 +415,14 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "audio:buffer-source",
         "audio:decoded-buffer",
         "platform:http",
+    ],
+    // Spatial audio is a static sound's panner sub-node.
+    "audio:spatial-sound": ["audio:static-sound", "audio:panner"],
+    // The engine's tap lowers with the family, into a stream destination.
+    "audio:engine-media-stream": [
+        "audio:static-sound",
+        "audio:media-stream",
+        "platform:media-stream",
     ],
     // An element decodes its packaged source and plays it through a
     // sampled node.

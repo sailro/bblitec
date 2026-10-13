@@ -35,7 +35,12 @@ import {
     SPLAT_STREAM_SHADER_MODULES,
 } from "./lowering/splat-stream-shaders.js";
 import { splatStreamLibraryHeader } from "./lowering/splat-stream-library.js";
-import { staticSoundLibraryHeader } from "./lowering/static-sound-library.js";
+import {
+    MEDIA_STREAM_ROOTS,
+    SPATIAL_ROOTS,
+    STATIC_SOUND_ROOTS,
+    staticSoundLibraryHeader,
+} from "./lowering/static-sound-library.js";
 import { transparentOrderHeader } from "./lowering/transparent-order-lowerer.js";
 import { assertExternalRenderableContracts } from "./lowering/external-renderable-contract.js";
 import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
@@ -1477,11 +1482,20 @@ ${lowerThinInstanceSync(context)}
                 splatStreamLibraryHeader(context),
             );
         }
-        // The static-sound family, lowered whole over the Web Audio PAL.
+        // The static-sound family, lowered whole over the Web Audio PAL,
+        // with spatial audio when a program reaches it.
         if (features.includes("audio:static-sound"))
             this.tree.write(
                 "upstream/include/bblite/upstream_static_sound.hpp",
-                staticSoundLibraryHeader(context),
+                staticSoundLibraryHeader(context, [
+                    ...STATIC_SOUND_ROOTS,
+                    ...(features.includes("audio:spatial-sound")
+                        ? SPATIAL_ROOTS
+                        : []),
+                    ...(features.includes("audio:engine-media-stream")
+                        ? MEDIA_STREAM_ROOTS
+                        : []),
+                ]),
             );
         // The transparent bucket's comparator and sort distance, wherever a
         // billboard or an external renderable can join a transparent mesh.

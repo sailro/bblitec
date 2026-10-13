@@ -194,6 +194,7 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_AUDIO_OSCILLATOR", anyOf: ["audio:oscillator"] },
     { macro: "BBLITE_HAS_AUDIO_BIQUAD_FILTER", anyOf: ["audio:biquad-filter"] },
     { macro: "BBLITE_HAS_AUDIO_STEREO_PANNER", anyOf: ["audio:stereo-panner"] },
+    { macro: "BBLITE_HAS_AUDIO_PANNER", anyOf: ["audio:panner"] },
     { macro: "BBLITE_HAS_AUDIO_MEDIA_STREAM", anyOf: ["audio:media-stream"] },
     {
         macro: "BBLITE_HAS_AUDIO_MEDIA_ELEMENT",

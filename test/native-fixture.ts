@@ -39,6 +39,14 @@ export function developmentVcpkgRoot(triplet = "x64-windows"): string {
 
 export const nativeFixtureVcpkgRoot = developmentVcpkgRoot();
 
+/**
+ * The LabSound install audio fixtures link: `BBLITE_LABSOUND_DIR` selects
+ * another, as it does for the native configure.
+ */
+export const nativeFixtureLabSoundRoot = resolve(
+    process.env.BBLITE_LABSOUND_DIR ?? "artifacts/tools/labsound",
+);
+
 /** Isolate contiguous emitted helpers, refusing a missing or reversed boundary. */
 export function cppSection(
     source: string,

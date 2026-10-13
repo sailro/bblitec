@@ -30,6 +30,7 @@ import type { StaticFetchContext } from "../static-fetch.js";
 import { AUDIO_CODECS } from "../../audio-codecs.js";
 import { cppIdentifier, snakeCase } from "../../cpp-literals.js";
 import { ApplicationRealmRequired } from "../worker-modules.js";
+import { mediaStreamValue } from "../media-streams.js";
 
 export interface AudioIntrinsicContext
     extends
@@ -53,6 +54,8 @@ export interface AudioIntrinsicContext
             | "dataTypes"
             | "emitDiscardedValue"
             | "compileNumber"
+            | "compileVec3"
+            | "vec3FromRecord"
         > {}
 
 const sourceDisposers = new EmissionWeakMap<object, string>();
@@ -72,10 +75,10 @@ function sourceDisposer(context: AudioIntrinsicContext): string {
 
 /**
  * The Lite audio functions that are not lowered: sound buffers, streaming
- * sounds, buses, spatial, stereo, the analyzer, the unmute UI, the
- * visualizer and the media-stream tap refuse by name, because a silent
- * no-op would be a scene that renders without sounding. Static sounds
- * (`compileStaticSound`) run the pin's lowered family.
+ * sounds, buses, stereo, the analyzer, the unmute UI, the visualizer and
+ * the media-stream tap refuse by name, because a silent no-op would be a
+ * scene that renders without sounding. Static sounds and their spatial
+ * audio (`compileStaticSound`) run the pin's lowered family.
  */
 const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
     createSoundBufferAsync:
@@ -86,9 +89,6 @@ const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
         "has no equivalent for.",
     createAudioBusAsync:
         "buses are Babylon routing behaviour and are not lowered",
-    enableSpatial:
-        "spatial audio is not lowered; the PannerNode surface exists but " +
-        "the pin's attachment and update behaviour does not",
     enableStereo: "stereo panning is not lowered",
     enableAnalyzer: "the analyzer is not lowered",
     createMicrophoneSoundSourceAsync:
@@ -96,7 +96,6 @@ const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
         "runtime does not have",
     createUnmuteUI: "the unmute UI is a DOM button",
     createAudioVisualizer: "the visualizer draws through canvas2D",
-    createAudioEngineMediaStream: "the media-stream tap is a browser pipeline",
     setMasterVolume:
         "the pin has no un-ramped form of it. `setMainOutVolume` goes " +
         'through `setRampTarget`, whose shape defaults to `"linear"` and ' +
@@ -310,6 +309,27 @@ const SOUND_OPTION_REFUSALS: Readonly<Record<string, string>> = {
     outBus: "audio buses are not lowered, so no bus can be passed",
 };
 
+/** `enableSpatial`'s scalar options: the panner's attributes and models. */
+const SPATIAL_OPTIONS: OptionKinds = {
+    coneInnerAngle: "number",
+    coneOuterAngle: "number",
+    coneOuterVolume: "number",
+    distanceModel: "string",
+    maxDistance: "number",
+    minDistance: "number",
+    panningEnabled: "boolean",
+    panningModel: "string",
+    rolloffFactor: "number",
+};
+
+const SPATIAL_OPTION_REFUSALS: Readonly<Record<string, string>> = {
+    position: "place the sound with setSpatialPosition",
+    orientation: "orientation is not lowered",
+    rotationQuaternion: "orientation is not lowered",
+    attachedTo: "attaching a sound to a world transform is not lowered",
+    attachmentType: "attaching a sound to a world transform is not lowered",
+};
+
 /**
  * A sound function's options record as the library's value struct, each
  * present member written in source order; an absent argument is the
@@ -321,6 +341,8 @@ function soundOptions(
     cppType: string,
     kinds: OptionKinds,
     refused?: string,
+    refusals: Readonly<Record<string, string>> = SOUND_OPTION_REFUSALS,
+    label = "Static sound",
 ): string {
     const target = context.allocateTemporaryCppName("sound_options");
     context.emit({
@@ -354,11 +376,11 @@ function soundOptions(
             member.type?.kind === "undefined"
         )
             continue;
-        const refusal = SOUND_OPTION_REFUSALS[member.name];
+        const refusal = refusals[member.name];
         if (refusal) {
             // Present at generation, it fails there; a typed record's
             // member present at run time rejects the call (`refused`).
-            const message = `Static sound option '${member.name}' is not lowered: ${refusal}.`;
+            const message = `${label} option '${member.name}' is not lowered: ${refusal}.`;
             const memberPresent =
                 member.present ??
                 (member.type?.kind === "optional"
@@ -374,7 +396,7 @@ function soundOptions(
         if (!kind)
             context.fail(
                 argument,
-                `'${member.name}' is not a static sound option.`,
+                `'${member.name}' is not a ${label.toLowerCase()} option.`,
             );
         emitPresentOption(context, member, (selected) =>
             emitScalarOption(
@@ -388,6 +410,58 @@ function soundOptions(
     }
     if (present) context.emit({ kind: "close", code: "}" });
     return target;
+}
+
+/**
+ * A spatial position, `{ x, y, z }` at JavaScript number precision. A
+ * computed one (`opts.listenerPosition()`) is evaluated once, into a
+ * temporary, before its lanes are read.
+ */
+function spatialVector(
+    context: AudioIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    if (!ts.isCallExpression(expression))
+        return context.compileVec3(expression, "double");
+    const value = context.compileValue(expression);
+    if (value.kind !== "data" || value.dataType?.kind !== "struct")
+        context.fail(expression, "Expected a Vec3 record { x, y, z }.");
+    const name = context.allocateTemporaryCppName("spatial_vector");
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name,
+        initializer: value.cpp,
+    });
+    return context.vec3FromRecord(
+        { ...value, cpp: name },
+        expression,
+        "double",
+    );
+}
+
+/**
+ * `panningModel: "HRTF"` written as such: HRTF panning needs an HRTF
+ * database this build does not package, and equal-power panning is not it.
+ * A model chosen at run time throws there (`audio_set_panner_model`).
+ */
+function refuseHrtf(
+    context: AudioIntrinsicContext,
+    argument: ts.Expression | undefined,
+): void {
+    if (!argument) return;
+    const model = context.checker
+        .getTypeAtLocation(argument)
+        .getProperty("panningModel");
+    if (!model) return;
+    const type = context.checker.getNonNullableType(
+        context.checker.getTypeOfSymbolAtLocation(model, argument),
+    );
+    if (type.isStringLiteral() && type.value === "HRTF")
+        context.fail(
+            argument,
+            'Spatial panningModel "HRTF" is not lowered: it needs an HRTF database, which this build does not package.',
+        );
 }
 
 /** A sound function's sound, evaluated into a temporary in source order. */
@@ -553,6 +627,83 @@ function compileStaticSound(
                 cpp: `bbl::dispose_sound(${soundArgument(context, call)})`,
             };
         }
+        case "enableSpatial": {
+            context.expectArgumentCount(call, 1, 2);
+            context.reachFeature("audio:spatial-sound", call);
+            const sound = soundArgument(context, call);
+            refuseHrtf(context, call.arguments[1]);
+            const refused = context.allocateTemporaryCppName("spatial_refused");
+            context.emit({
+                kind: "declaration",
+                type: "const char*",
+                name: refused,
+                initializer: "nullptr",
+            });
+            const options = soundOptions(
+                context,
+                call.arguments[1],
+                "bbl::SpatialSoundOptions",
+                SPATIAL_OPTIONS,
+                refused,
+                SPATIAL_OPTION_REFUSALS,
+                "Spatial",
+            );
+            context.emit(
+                `if (${refused}) throw std::runtime_error(${refused});`,
+            );
+            return {
+                kind: "void",
+                cpp: `bbl::enable_spatial(${sound}, ${options})`,
+            };
+        }
+        case "setSpatialPosition": {
+            context.expectArgumentCount(call, 2, 2);
+            context.reachFeature("audio:spatial-sound", call);
+            const sound = soundArgument(context, call);
+            return {
+                kind: "void",
+                cpp: `bbl::set_spatial_position(${sound}, ${spatialVector(context, argumentAt(call, 1))})`,
+            };
+        }
+        case "createAudioEngineMediaStream": {
+            // The pin's tap over the engine's main output: a stream
+            // destination whose stream the program reads as `stream`.
+            context.expectArgumentCount(call, 1, 1);
+            context.reachFeature("audio:engine-media-stream", call);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "audio-engine", argumentAt(call, 0));
+            const output = context.allocateTemporaryCppName(
+                "engine_media_stream",
+            );
+            context.emit({
+                kind: "declaration",
+                type: "const std::shared_ptr<bbl::AudioEngineMediaStream>",
+                name: output,
+                initializer: `bbl::create_audio_engine_media_stream(${engine.cpp})`,
+            });
+            return {
+                kind: "record",
+                cpp: output,
+                recordProperties: {
+                    stream: mediaStreamValue(`${output}->stream`),
+                },
+            };
+        }
+        case "setSpatialListenerPosition": {
+            context.expectArgumentCount(call, 2, 2);
+            context.reachFeature("audio:spatial-sound", call);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "audio-engine", argumentAt(call, 0));
+            const owner = context.bindings.pinValueToTemporary(
+                engine,
+                "listener_engine",
+                argumentAt(call, 0),
+            );
+            return {
+                kind: "void",
+                cpp: `bbl::set_spatial_listener_position(${owner.cpp}, ${spatialVector(context, argumentAt(call, 1))})`,
+            };
+        }
         default:
             return undefined;
     }
@@ -609,7 +760,7 @@ export function compileAudioIntrinsic(
                 const built =
                     `${contextPromise}.then([](const bbl::pal::AudioContextHandle& ${engine}_ctx) { ` +
                     `${graph.map(nativeStatementCode).join(" ")} ` +
-                    `return bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}; })`;
+                    `return bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus, ${engine}_main_out}; })`;
                 return {
                     kind: "promise",
                     cpp: refused
@@ -643,7 +794,7 @@ export function compileAudioIntrinsic(
             context.registerNativeTemporary(`${engine}_main_bus`);
             return {
                 kind: "audio-engine",
-                cpp: `bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus}`,
+                cpp: `bbl::AudioEngineHandle{${engine}_ctx, ${engine}_main_bus, ${engine}_main_out}`,
                 dataType: audioEngineType,
             };
         }

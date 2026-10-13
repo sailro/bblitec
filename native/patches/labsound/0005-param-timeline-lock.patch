@@ -1,0 +1,32 @@
+AudioParamTimeline::valueForContextTime held the events mutex while calling
+valuesForTimeRange, which try-locks the same std::mutex again on the same thread;
+that second lock fails, so every control-rate (k-rate) read of an automated
+parameter returned its last intrinsic value and ignored scheduled values, ramps
+and curves (a panner's position, a biquad filter's automated frequency). The check
+now releases the lock before the evaluation, which re-checks under its own.
+
+diff --git a/src/core/AudioParamTimeline.cpp b/src/core/AudioParamTimeline.cpp
+index 737c647..8ee1b55 100644
+--- a/src/core/AudioParamTimeline.cpp
++++ b/src/core/AudioParamTimeline.cpp
+@@ -141,11 +141,16 @@ float AudioParamTimeline::valueForContextTime(
+     if (!context)
+         return defaultValue;
+ 
+-    std::unique_lock<std::mutex> lock(m_eventsMutex, std::try_to_lock);
+-    if (!lock.owns_lock() || !m_events.size() || context->currentTime() < m_events[0].time())
++    // valuesForTimeRange takes the events lock itself, and a std::mutex this thread
++    // already holds cannot be taken again: the check releases it before the
++    // evaluation, which re-checks under its own lock.
+     {
+-        hasValue = false;
+-        return defaultValue;
++        std::unique_lock<std::mutex> lock(m_eventsMutex, std::try_to_lock);
++        if (!lock.owns_lock() || !m_events.size() || context->currentTime() < m_events[0].time())
++        {
++            hasValue = false;
++            return defaultValue;
++        }
+     }
+ 
+     // Ask for just a single value.

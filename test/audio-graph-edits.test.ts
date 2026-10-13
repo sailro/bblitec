@@ -5,13 +5,14 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
-const labsound = resolve("artifacts/tools/labsound");
+const labsound = nativeFixtureLabSoundRoot;
 const native = Boolean(tools && existsSync(join(labsound, "lib/LabSound.lib")));
 
 /** Compile one LabSound fixture translation unit and run it. */
@@ -159,3 +160,82 @@ int main() { return generated_main(); }
         "",
     );
 });
+
+test("a Web Audio property write the surface does not lower refuses rather than vanishing", () => {
+    for (const [write, refusal] of [
+        ["gain.channelCount = 1", /AudioNode\.channelCount is not lowered/],
+        [
+            'gain.gain.automationRate = "k-rate"',
+            /AudioParam\.automationRate is not lowered/,
+        ],
+        [
+            "context.onstatechange = () => {}",
+            /AudioContext\.onstatechange is not lowered/,
+        ],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(
+                    `const context = new AudioContext(); const gain = context.createGain(); ${write}; gain.connect(context.destination);`,
+                ),
+            refusal,
+        );
+});
+
+test("application panners lower their parameters, attributes and models onto the PAL", () => {
+    const { cpp, manifest } = compileSource(`
+        const context = new AudioContext();
+        const panner = context.createPanner();
+        panner.positionX.value = 3;
+        panner.refDistance = 6;
+        panner.distanceModel = "linear";
+        const reference: number = panner.refDistance;
+        panner.maxDistance = reference * 7;
+        panner.connect(context.destination);
+    `);
+    assert.ok(manifest.features.includes("audio:panner"));
+    assert.match(cpp, /audio_create_panner\(/);
+    assert.match(cpp, /AudioParamName::PositionX/);
+    assert.match(
+        cpp,
+        /audio_set_panner_property\([^;]*PannerProperty::RefDistance, 6\.0\)/,
+    );
+    assert.match(
+        cpp,
+        /audio_set_panner_model\([^;]*PannerModel::Distance, "linear"\)/,
+    );
+    assert.match(
+        cpp,
+        /audio_panner_property\([^;]*PannerProperty::RefDistance\)/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `const context = new AudioContext(); const panner = context.createPanner(); panner.panningModel = "HRTF";`,
+            ),
+        /panningModel "HRTF" is not lowered: it needs an HRTF database/,
+    );
+});
+
+test(
+    "a capture recorder survives an idle context and inputs that all disconnect",
+    { skip: !native },
+    () => {
+        const output = resolve("artifacts/audio-capture-idle-check");
+        mkdirSync(output, { recursive: true });
+        // The stale-bus write is intermittent: repeated runs catch it.
+        for (let run = 0; run < 3; run++)
+            assert.match(
+                runLabSoundFixture(
+                    output,
+                    "test/fixtures/audio-capture-idle-check.cpp",
+                    [
+                        "/DBBLITE_AUDIO_CAPTURE=1",
+                        "/DBBLITE_HAS_AUDIO_STEREO_PANNER=1",
+                    ],
+                    {},
+                ),
+                /audio-capture-idle-check: ok/,
+            );
+    },
+);

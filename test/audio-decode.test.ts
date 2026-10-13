@@ -6,6 +6,7 @@ import test from "node:test";
 import {
     cppFunction,
     cppRecord,
+    nativeFixtureLabSoundRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -13,7 +14,7 @@ import { compileSource } from "../src/compiler.js";
 import { AUDIO_CODECS, audioCodecForBytes } from "../src/audio-codecs.js";
 
 const tools = optionalNativeFixtureTools(false);
-const labSound = resolve("artifacts/tools/labsound");
+const labSound = nativeFixtureLabSoundRoot;
 
 test("audio codec signatures distinguish supported containers with bounded reads", () => {
     const cases = [

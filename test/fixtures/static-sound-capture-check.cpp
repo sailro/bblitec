@@ -53,7 +53,7 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& line
     pal::audio_connect(out, pal::audio_destination(context));
     const auto bus = pal::audio_create_gain(context);
     pal::audio_connect(bus, out);
-    AudioEngineHandle engine{context, bus};
+    AudioEngineHandle engine{context, bus, out};
     pal::register_packaged_responses("http://localhost/", {{"/sounds/tone.wav", wav}});
     StaticSoundOptions options{};
     options.volume = 1.0;
