@@ -4280,20 +4280,21 @@ checkInRealm(
         readonly cx: number;
         readonly halfW?: number;
         readonly materialId?: string;
+        readonly uvMul?: number;
         readonly tint?: readonly [number, number, number];
-        readonly parent?: { readonly x: number; readonly minY: number };
+        readonly parent?: { readonly x: number; readonly minY: number; readonly footprint: { readonly shape: "rect"; readonly halfW: number } | { readonly shape: "circle"; readonly radius: number } };
     }
     const placements: Placement[] = [
-        { key: "house:7", child: "house", cx: 2, materialId: "m", tint: [1, 0.5, 0.25], host: { handle: { id: 3 }, bake: { x: 1, yaw: 0.5 } }, parent: { x: 4, minY: 1 } },
+        { key: "house:7", child: "house", cx: 2, materialId: "m", tint: [1, 0.5, 0.25], uvMul: 2, host: { handle: { id: 3 }, bake: { x: 1, yaw: 0.5 } }, parent: { x: 4, minY: 1, footprint: { shape: "circle", radius: 2 } } },
         { key: "tower:3", child: "tower", cx: 5, halfW: 2 },
     ];
     const copies = placements.map((placement) => {
-        const { materialId: _material, tint: _tint, ...bake } = placement;
+        const { materialId: _material, tint: _tint, uvMul: _uv, ...bake } = placement;
         return { key: placement.key, bake: structuredClone(bake) };
     });
     const house = copies[0]!.bake;
     const tower = copies[1]!.bake;
-    if (house.key !== "house:7" || house.child !== "house" || house.host!.bake.yaw !== 0.5 || house.host === placements[0]!.host || house.parent!.minY !== 1) throw new Error("house");
+    if (house.key !== "house:7" || house.child !== "house" || house.host!.bake.yaw !== 0.5 || house.host === placements[0]!.host || house.parent!.minY !== 1 || house.parent!.footprint.shape !== "circle") throw new Error("house");
     if (tower.host !== undefined || "host" in tower || "materialId" in tower || tower.halfW !== 2) throw new Error("tower");
     const options = structuredClone({ n: 1 }, { transfer: [] });
     const absent = structuredClone([1, 2], undefined);
