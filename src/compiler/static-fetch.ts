@@ -15,6 +15,7 @@ import { deploymentUrl } from "./deployment.js";
 import { assetUrlDomain } from "./asset-url-domain.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import { isStringValue, type CompileAsset, type Value } from "./types.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 
 export interface StaticFetchContext extends Pick<
     LoweringServices,
@@ -538,6 +539,9 @@ export function staticFetchProperty(
     property: string,
 ): Value | undefined {
     if (owner.kind !== "static-fetch-response") return undefined;
+    // An owned packaged response (an application realm's) has headers and a body stream.
+    if (property === "headers" || property === "body")
+        throw new ApplicationRealmRequired();
     if (property === "ok") {
         return { kind: "boolean", cpp: "true" };
     }

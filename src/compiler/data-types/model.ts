@@ -101,8 +101,6 @@ export const DEFERRED_DOM_OBJECTS = [
     "MediaRecorder",
     "BlobEvent",
     "IdleDeadline",
-    "CompressionStream",
-    "DecompressionStream",
 ] as const;
 
 interface DataKinds {
@@ -127,6 +125,8 @@ interface DataKinds {
     "byte-stream-reader": { kind: "byte-stream-reader" };
     /** A byte reader's `read()` result: `{ done, value }`. */
     "byte-read-result": { kind: "byte-read-result" };
+    /** A CompressionStream or DecompressionStream: a byte transform's readable side. */
+    "byte-transform-stream": { kind: "byte-transform-stream" };
     "abort-controller": { kind: "abort-controller" };
     "abort-signal": { kind: "abort-signal" };
     /** A WHATWG URL object. */

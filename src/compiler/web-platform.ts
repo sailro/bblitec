@@ -6,7 +6,12 @@ import {
     compileAbortNew,
     type WebPlatformCallContext,
 } from "./abort-signals.js";
-import { bodyStreamProperty, compileBodyStreamMethod } from "./body-streams.js";
+import {
+    bodyStreamProperty,
+    compileBlobStream,
+    compileBodyStreamMethod,
+    compileBodyStreamNew,
+} from "./body-streams.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import {
@@ -42,15 +47,25 @@ const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["byte-stream-reader", compileBodyStreamMethod],
     ["url", compileUrlMethod],
     ["image-bitmap", compileImageBitmapMethod],
-    // Blob reads; other Blob members keep the browser file bridge.
-    ["blob", compileImageBitmapMethod],
+    // Blob reads and its stream; other Blob members keep the browser file bridge.
+    [
+        "blob",
+        (lowerer, call, owner, method) =>
+            method === "stream"
+                ? compileBlobStream(lowerer, call, owner)
+                : compileImageBitmapMethod(lowerer, call, owner, method),
+    ],
 ]);
 
 export function compileWebPlatformNew(
     lowerer: DataLowerer,
     node: ts.NewExpression,
 ): Value | undefined {
-    return compileAbortNew(lowerer, node) ?? compileUrlNew(lowerer, node);
+    return (
+        compileAbortNew(lowerer, node) ??
+        compileUrlNew(lowerer, node) ??
+        compileBodyStreamNew(lowerer, node)
+    );
 }
 
 /** `object.component = value` (or `+=`) on a web platform value; undefined for other targets. */

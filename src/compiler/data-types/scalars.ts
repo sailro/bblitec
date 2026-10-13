@@ -56,6 +56,7 @@ export const scalarKinds: DataKindOperations<
     | "byte-stream"
     | "byte-stream-reader"
     | "byte-read-result"
+    | "byte-transform-stream"
     | "abort-controller"
     | "abort-signal"
     | "url"
@@ -131,6 +132,10 @@ export const scalarKinds: DataKindOperations<
     "byte-stream-reader": opaqueLeaf("bbl::pal::BodyReader", "byte-reader"),
     // A fresh `{ done, value }` record each read; nothing aliases it.
     "byte-read-result": reseatingLeaf("bbl::pal::BodyReadResult", "byte-read"),
+    "byte-transform-stream": opaqueLeaf(
+        "bbl::pal::ByteTransformStream",
+        "byte-transform",
+    ),
     "abort-controller": opaqueLeaf(
         "bbl::js::AbortController",
         "abort-controller",

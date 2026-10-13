@@ -17,12 +17,6 @@ class DeferredBlobEvent final {
 class DeferredIdleDeadline final {
     DeferredIdleDeadline() = delete;
 };
-class DeferredCompressionStream final {
-    DeferredCompressionStream() = delete;
-};
-class DeferredDecompressionStream final {
-    DeferredDecompressionStream() = delete;
-};
 
 class DeferredCapabilityError final : public std::runtime_error {
 public:

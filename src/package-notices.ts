@@ -118,6 +118,8 @@ export function linkedPortNotices(request: NoticeRequest): PortNotice[] {
         ports.push({ name: "ICU.txt", port: "icu" });
     if (has("platform:http") && unix)
         ports.push({ name: "curl.txt", port: "curl" });
+    if (has("platform:compression"))
+        ports.push({ name: "zlib.txt", port: "zlib" });
     return ports;
 }
 

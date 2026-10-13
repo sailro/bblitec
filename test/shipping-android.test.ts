@@ -168,8 +168,12 @@ test(
         featureFile(scenes[1]!, "physics:world text:layout");
         // Android links vcpkg's SDL: every profile requests it.
         assert.deepEqual(profile(), ["physics", "png", "sdl", "text-layout"]);
-        featureFile(scenes[0]!, "data:locale platform:http");
+        featureFile(
+            scenes[0]!,
+            "data:locale platform:http platform:compression",
+        );
         assert.deepEqual(profile(), [
+            "compression",
             "http",
             "locale",
             "physics",

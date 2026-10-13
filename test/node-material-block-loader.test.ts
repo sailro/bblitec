@@ -509,9 +509,9 @@ test("rejects a compressed JSON decoder with an extra observable statement", () 
                     decoderExtra: 'console.log("decoding", encoded);',
                 }),
             ),
-        // Not the folded idiom: it lowers as ordinary code and stops at the
-        // host stream API (`atob` itself lowers).
-        /Unsupported call target 'new Blob\(\[bytes\]\)/,
+        // Not the folded idiom: it lowers as ordinary code (the decoder's
+        // streams lower natively) and stops at the restorer's untyped record.
+        /Function 'restoreAliases' uses early value returns but its return type is outside the native data model/,
     );
 });
 
@@ -523,9 +523,9 @@ test("rejects a compressed JSON restorer that returns a different value", () => 
                     restorerReturn: "{ ...json }",
                 }),
             ),
-        // Not the folded idiom: it lowers as ordinary code and stops at the
-        // host stream API (`atob` itself lowers).
-        /Unsupported call target 'new Blob\(\[bytes\]\)/,
+        // Not the folded idiom: it lowers as ordinary code (the decoder's
+        // streams lower natively) and stops at the restorer's untyped record.
+        /Function 'restoreAliases' uses early value returns but its return type is outside the native data model/,
     );
 });
 
