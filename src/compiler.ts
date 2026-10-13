@@ -2661,6 +2661,10 @@ class Compiler implements LoweringServices {
         return this.windowProperties.assignLogical(expression);
     }
 
+    public optionalChainStop(node: ts.Expression): Value | undefined {
+        return this.expressions.optionalChainStop(node);
+    }
+
     public compileValue(expression: ts.Expression): Value {
         const assigned = this.dataLowerer.assignedValue(expression);
         if (assigned) return assigned;
@@ -4377,7 +4381,7 @@ class Compiler implements LoweringServices {
         if (this.options.workers)
             this.emit({
                 kind: "expression",
-                code: `bbl::install_surface_resize(*${cppName}, &bblscene::${surfaceResizeFunction(this)});`,
+                code: `bbl::install_surface_resize(*${cppName}, &${surfaceResizeFunction(this)});`,
             });
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers)
@@ -9236,11 +9240,11 @@ class Compiler implements LoweringServices {
                     "        auto resolve_task = bbl::create_copy_to_texture_task(engine, scene, " +
                         'bbl::CopyTaskOptions{"default-resolve", bbl::render_target_texture(target), ' +
                         "bbl::RenderTargetHandle{}, resolve_target, false, bbl::NormalizedViewport{}});",
-                    "        bbl::add_task(scene, resolve_task);",
+                    "        bbl::add_pass_after(*scene.state, resolve_task, render_task);",
                     "        auto present_task = bbl::create_copy_to_texture_task(engine, scene, " +
                         'bbl::CopyTaskOptions{"default-present", bbl::render_target_texture(resolve_target), ' +
                         "bbl::swapchain_render_target(engine), bbl::RenderTargetHandle{}, false, bbl::NormalizedViewport{}});",
-                    "        bbl::add_task(scene, present_task);",
+                    "        bbl::add_pass_after(*scene.state, present_task, render_task);",
                     "        scene.state->default_render_task_created = true;",
                     "    }",
                     "}",

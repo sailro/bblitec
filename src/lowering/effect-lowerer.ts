@@ -147,6 +147,13 @@ export function effectStageStems(index: number): {
     };
 }
 
+/** The reached effect-wrapper features its factory lowers with; each defaults to off. */
+export interface EffectFactoryOptions {
+    readonly disposal?: boolean;
+    readonly taskBuild?: boolean;
+    readonly taskDisposal?: boolean;
+}
+
 export class EffectLowerer {
     /**
      * The pin's own fullscreen-triangle stage, lifted once.
@@ -183,11 +190,11 @@ export class EffectLowerer {
      * wrapper a renderer or task draws, its clear state, and the uniform and
      * texture slots the setters write.
      */
-    public lowerFactory(
+    public lowerFactory({
         disposal = false,
         taskBuild = false,
         taskDisposal = false,
-    ): LoweredSource {
+    }: EffectFactoryOptions = {}): LoweredSource {
         return {
             modulePath: effectModule,
             symbolName: "createEffectWrapper,createEffectRenderer",

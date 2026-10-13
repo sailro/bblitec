@@ -1,3 +1,5 @@
+import { uiCssFunctionEnd } from "./ui-css-syntax.js";
+
 /** Units the native PAL resolves in CSS math once var() is substituted. */
 const variableMathUnits = new Set([
     "px",
@@ -26,9 +28,7 @@ export function unresolvableUiVariableMathUnit(
     for (const match of value.matchAll(
         /(?<![\w-])(?:calc|min|max|clamp)\(/gi,
     )) {
-        let end = match.index + match[0].length;
-        for (let depth = 1; end < value.length && depth > 0; end++)
-            depth += value[end] === "(" ? 1 : value[end] === ")" ? -1 : 0;
+        const end = uiCssFunctionEnd(value, match.index + match[0].length - 1);
         const body = value.slice(match.index, end);
         if (!/var\(/i.test(body)) continue;
         for (const [, unit] of body.matchAll(

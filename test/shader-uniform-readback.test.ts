@@ -213,7 +213,7 @@ bbl::Scene scene;scene.engine=&engine;engine.meshes.emplace_back();engine.meshes
 engine.frame_tasks.emplace_back();engine.frame_tasks[0].source_scene=scene.state;engine.frame_tasks[0].render_meshes.push_back(bbl::RenderTaskMesh{bbl::MeshHandle{0},taskOnly});scene.tasks.push_back(bbl::TaskHandle{0});
 auto taskValues=std::get<bbl::js::F32Array>(bbl::get_shader_uniform(engine,taskOnly,"uVector"));taskValues.store(0,12);
 bbl::register_scene(scene);assert(material.shader_uniform_upload);assert(material.shader_uniform_values[1]==8);
-assert(engine.frame_tasks[0].render_recorded);
+assert(engine.frame_tasks[0].record_state==bbl::FrameTaskRecordState::recorded);
 assert(engine.frame_tasks[0].shader_packet_scene_version == static_cast<double>(scene.state->renderable_version));
 assert(engine.frame_tasks[0].render_meshes[0].shader_packet);
 taskValues.store(0,13);assert(bbl::shader_uniform_render_values(bbl::shader_material(engine,taskOnly))[1]==12);

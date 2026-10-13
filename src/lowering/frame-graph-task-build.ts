@@ -1,30 +1,12 @@
-import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { taskDisposedCpp } from "./frame-graph-task-disposal.js";
+import { pinnedErrorCode } from "./pinned-error.js";
 
 const graphModule = "src/frame-graph/frame-graph.ts";
 const baseModule = "src/frame-graph/render-task-base.ts";
 const effectModule = "src/effect/effect-renderer.ts";
-
-/** The one method `name` of the object literal `owner` initializes `task` with. */
-function taskMethod(
-    context: LoweringContext,
-    owner: ts.FunctionDeclaration,
-    name: string,
-): ts.MethodDeclaration {
-    const method = context
-        .findNodes(owner, (node): node is ts.MethodDeclaration =>
-            ts.isMethodDeclaration(node),
-        )
-        .filter((node) => context.propertyName(node.name) === name);
-    if (method.length !== 1 || !method[0]!.body)
-        return context.contractError(
-            owner,
-            `Expected one task ${name}() method.`,
-        );
-    return method[0]!;
-}
 
 /**
  * `buildFrameGraphTask`: record one task already in a live graph. Native
@@ -77,15 +59,15 @@ export function lowerFrameGraphTaskBuild(
     `,
         "Single task record",
     );
-    const renderRecord = taskMethod(
-        context,
-        context.functionDeclaration(baseModule, "_createAutomaticRenderTask")
-            .declaration,
+    const renderRecord = context.propertyFunction(
+        baseModule,
+        "_createAutomaticRenderTask",
         "record",
-    );
+        { unique: true },
+    ).declaration;
     context.assertStatementShapes(
-        renderRecord.body!,
-        renderRecord.body!.statements,
+        renderRecord.body,
+        renderRecord.body.statements,
         `
         if (task._disposed) {
             throw new Error("RenderTask has been disposed.");
@@ -99,15 +81,15 @@ export function lowerFrameGraphTaskBuild(
         "Render task record",
     );
     if (effectTasks) {
-        const effectRecord = taskMethod(
-            context,
-            context.functionDeclaration(effectModule, "createEffectRenderTask")
-                .declaration,
+        const effectRecord = context.propertyFunction(
+            effectModule,
+            "createEffectRenderTask",
             "record",
-        );
+            { unique: true },
+        ).declaration;
         context.assertStatementShapes(
-            effectRecord.body!,
-            effectRecord.body!.statements,
+            effectRecord.body,
+            effectRecord.body.statements,
             `
             buildRenderTarget(rt, eng);
             task._pipeline = getEffectPipeline(effect, task._targetSignature);
@@ -136,11 +118,11 @@ export function lowerFrameGraphTaskBuild(
             if (node === recordCall)
                 return [
                     `${indent}if (task.kind == FrameTaskKind::render) {`,
-                    `${indent}    if (task.disposed || (task.source_scene && task.source_scene->disposed))`,
+                    `${indent}    if ${taskDisposedCpp("task", true)}`,
                     `${indent}        throw std::runtime_error("RenderTask has been disposed.");`,
                     // Registration records each queued task once; a
                     // recorded task's next draw-list build re-records it.
-                    `${indent}    if (!task.render_recorded) record_render_task(scene, task);`,
+                    `${indent}    if (task.record_state != FrameTaskRecordState::recorded) record_render_task(scene, task);`,
                     ...(effectTasks
                         ? [
                               `${indent}} else if (task.kind == FrameTaskKind::effect) {`,
@@ -155,7 +137,7 @@ export function lowerFrameGraphTaskBuild(
                 ];
             if (node === initialize)
                 return [
-                    `${indent}task.pending_record = false;`,
+                    `${indent}task.record_state = FrameTaskRecordState::recorded;`,
                     `${indent}++engine.draw_list_epoch;`,
                 ];
             return undefined;
@@ -179,5 +161,59 @@ void build_frame_graph_task(Scene& scene, TaskHandle handle) {
     FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "handle")};
 ${body}
 }
+`;
+}
+
+/**
+ * Why an executed task cannot run, as the pin fails. An effect task's
+ * execute throws the pin's code without the pipeline its record builds:
+ * `dispose()` clears it (`disposal`), and a task added to a built graph has
+ * none until `buildFrameGraphTask` (`pendingBuild`). A disposed render task
+ * destroyed its scene uniform buffer; any other task added to a built graph
+ * has not recorded its pass.
+ */
+export function lowerTaskExecutionCheck(
+    context: LoweringContext,
+    { disposal, pendingBuild }: { disposal: boolean; pendingBuild: boolean },
+): string {
+    const execute = context.propertyFunction(
+        effectModule,
+        "createEffectRenderTask",
+        "execute",
+        { unique: true },
+    ).declaration;
+    context.assertExpressionShape(
+        context.variableInitializer(execute, "pipeline"),
+        "task._pipeline",
+        "Effect task execute pipeline",
+    );
+    context.expectShapeCount(execute, "!pipeline", "effect execute guard");
+    const code = pinnedErrorCode(context, execute);
+    const pending = "task.record_state == FrameTaskRecordState::pending_build";
+    const unbuilt = [
+        ...(disposal ? ["task.disposed"] : []),
+        ...(pendingBuild ? [pending] : []),
+    ];
+    if (unbuilt.length === 0)
+        throw new Error(
+            "A task execution check needs disposal or a pending build.",
+        );
+    return `// ${context.provenance(effectModule, "createEffectRenderTask execute", `${graphModule}#buildFrameGraphTask`)}
+void require_executable_task(const FrameTaskRecord& task) {
+    if (task.kind == FrameTaskKind::effect && (${unbuilt.join(" || ")}))
+        throw std::runtime_error("#${code}");
+${
+    disposal
+        ? `    if (task.disposed)
+        throw std::runtime_error("Render task '" + task.render.name + "' executes after dispose() destroyed its scene uniform buffer.");
+`
+        : ""
+}${
+        pendingBuild
+            ? `    if (${pending})
+        throw std::runtime_error("A task added to a live scene executes before buildFrameGraphTask recorded it.");
+`
+            : ""
+    }}
 `;
 }

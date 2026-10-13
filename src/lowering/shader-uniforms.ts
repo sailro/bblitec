@@ -127,7 +127,7 @@ ${
                 ${shaderUniformPublication(context, "record")}
             }
         }
-        for (const auto task_handle : scene.tasks) {
+        for (const auto task_handle : scene.frame_passes()) {
             const auto& task = handle_at(engine.frame_tasks, task_handle);
             if (task.kind != FrameTaskKind::render) continue;
             const auto task_scene = Scene::from_state(task.source_scene ? task.source_scene : scene.state);

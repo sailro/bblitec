@@ -18,9 +18,9 @@ test("thin material bindings retain source captures across overrides, refresh an
     if (!native) return t.skip("Native fixture compiler unavailable.");
     const context = new LoweringContext();
     const publication = lowerMaterialPublication(context, true);
-    const tasks = new GeometryOutputLowerer(context).lowerTaskRecords(
-        true,
-    ).source;
+    const tasks = new GeometryOutputLowerer(context).lowerTaskRecords({
+        thinBindings: true,
+    }).source;
     const renderer = new RendererLowerer(context).lowerRenderPlan({
         gpuInstancing: true,
     });

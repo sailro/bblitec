@@ -2027,7 +2027,7 @@ ${
     // of scene membership. These rows supply native geometry storage only;
     // each task's existing packet owner still supplies its renderable state.
     const std::size_t scene_item_count = result.items.size();
-    for (const auto task_handle : scene.tasks) {
+    for (const auto task_handle : scene.frame_passes()) {
         const auto& task = ${recordAt("engine.frame_tasks", "task_handle")};
         if (task.kind != FrameTaskKind::render) continue;
         for (const auto& entry : task.render_meshes) {

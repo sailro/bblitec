@@ -1560,6 +1560,18 @@ struct PersistentSceneUniforms {
     std::vector<float> drawn{};
 };
 
+/**
+ * A task against the pin's record: registration's build records every
+ * queued task, and one added to a registered scene's built graph waits for
+ * `buildFrameGraphTask` (its execute fails until then). A backend's first
+ * draw-list build records a queued task the build did not.
+ */
+enum class FrameTaskRecordState : std::uint8_t {
+    queued,
+    pending_build,
+    recorded,
+};
+
 struct FrameTaskRecord {
     FrameTaskKind kind = FrameTaskKind::render;
     std::optional<bool> execution_enabled;
@@ -1567,24 +1579,19 @@ struct FrameTaskRecord {
     RenderTaskOptions render;
     std::vector<RenderTaskMesh> render_meshes;
     bool render_mesh_refresh = false;
-    bool render_recorded = false;
+    FrameTaskRecordState record_state = FrameTaskRecordState::queued;
     std::optional<RenderTaskTransmission> transmission;
     bool render_meshes_dirty = false;
     /** A backend built this task's draw lists once: the recorded generation is drawn. */
     bool render_generation_built = false;
     /**
-     * `dispose()` ran. A render task stays disposed; an effect task's
-     * `dispose` only clears its pipeline, which its next record restores.
+     * `dispose()` ran. A render task stays disposed and keeps its record
+     * state; an effect task's `dispose` only clears its pipeline, which its
+     * next record restores.
      */
     bool disposed = false;
     mutable double shader_packet_scene_version = -1;
     mutable bool shader_packet_rebuild_pending = false;
-    /**
-     * Added to a scene's live graph: the pin records it only through
-     * `buildFrameGraphTask` or the next registration's build, and its
-     * execute fails until then.
-     */
-    bool pending_record = false;
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
     /**
@@ -4744,7 +4751,7 @@ inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHand
         record.render.target.value != invalid_handle) {
         auto& target = handle_at(engine.render_targets, record.render.target);
         if (target.has_depth && !target.sampled_depth) {
-            if (record.render_recorded)
+            if (record.record_state == FrameTaskRecordState::recorded)
                 throw std::runtime_error(
                     "enableRenderTaskTransmission's grabDepth must precede the task's recording.");
             target.sampled_depth = true;
@@ -4757,7 +4764,7 @@ inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHand
 inline js::Nullable<StoredTexture> transmission_grab_texture(Engine& engine,
                                                              const TransmissionGrab& grab) {
     const auto& record = handle_at(engine.frame_tasks, grab.task);
-    if (!record.render_recorded)
+    if (record.record_state != FrameTaskRecordState::recorded)
         return {};
     RenderTextureRef reference;
     reference.source = RenderTextureSource::transmission_color;
@@ -4769,7 +4776,7 @@ inline js::Nullable<StoredTexture> transmission_grab_texture(Engine& engine,
 inline js::Nullable<StoredTexture> transmission_grab_depth_texture(Engine& engine,
                                                                    const TransmissionGrab& grab) {
     const auto& record = handle_at(engine.frame_tasks, grab.task);
-    if (!record.render_recorded || !record.transmission ||
+    if (record.record_state != FrameTaskRecordState::recorded || !record.transmission ||
         !record.transmission->grab_depth.value_or(false) ||
         !handle_at(engine.render_targets, record.render.target).has_depth)
         return {};
@@ -5647,6 +5654,13 @@ using SourceMaterialGroups = js::Map<std::uint64_t, std::shared_ptr<SourceMateri
 /** The mutable state shared by every native copy of one SceneContext. */
 using PbrTransmissionTransaction = std::array<js::Callback<void()>, 2>;
 
+/** A pass native rendering schedules beside the pin's tasks. */
+struct SceneInternalPass {
+    TaskHandle task;
+    /** The task it follows; none: it precedes every task. */
+    TaskHandle after{};
+};
+
 struct SceneState {
     bool source_material_publication = false;
     SourceMaterialOutputs material_outputs;
@@ -5671,7 +5685,15 @@ struct SceneState {
     CameraHandle camera{};
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
+    /** The pin's `FrameGraph._tasks`, in its order. */
     std::vector<TaskHandle> tasks;
+    /**
+     * What native rendering adds to those tasks: shadow caster passes ahead
+     * of every task (the pin's one "shadow" task), and the default render
+     * task's resolve and present copies right after it (the pin resolves
+     * inside the task).
+     */
+    std::vector<SceneInternalPass> internal_passes;
     /** Source shadow scheduler identity, including scenes with no caster passes. */
     std::optional<std::string> shadow_task_name;
     /** Shadow generators retired only after a replacement rebuild succeeds. */
@@ -5784,6 +5806,40 @@ struct SceneState {
 };
 
 /**
+ * Every pass a scene's frame graph executes, in order: the internal passes
+ * ahead of every task, then each task followed by the passes it anchors.
+ */
+[[nodiscard]] inline std::vector<TaskHandle> scene_frame_passes(const SceneState& state) {
+    std::vector<TaskHandle> passes;
+    passes.reserve(state.tasks.size() + state.internal_passes.size());
+    for (const SceneInternalPass& pass : state.internal_passes)
+        if (pass.after.value == invalid_handle)
+            passes.push_back(pass.task);
+    for (const TaskHandle task : state.tasks) {
+        passes.push_back(task);
+        for (const SceneInternalPass& pass : state.internal_passes)
+            if (pass.after.value != invalid_handle && pass.after == task)
+                passes.push_back(pass.task);
+    }
+    return passes;
+}
+
+/** Whether a scene executes a frame graph at all. */
+[[nodiscard]] inline bool scene_has_frame_passes(const SceneState& state) noexcept {
+    return !state.tasks.empty() || !state.internal_passes.empty();
+}
+
+/** A pass ahead of every task; the latest added runs first. */
+inline void add_leading_pass(SceneState& state, TaskHandle task) {
+    state.internal_passes.insert(state.internal_passes.begin(), SceneInternalPass{task, {}});
+}
+
+/** A pass right after `after`, behind those already following it. */
+inline void add_pass_after(SceneState& state, TaskHandle task, TaskHandle after) {
+    state.internal_passes.push_back(SceneInternalPass{task, after});
+}
+
+/**
  * A JavaScript SceneContext is an object identity, not a value aggregate.
  *
  * Generated code deliberately uses ordinary C++ value syntax for scene
@@ -5859,6 +5915,12 @@ struct Scene {
     [[nodiscard]] bool shares_identity(const Scene& other) const noexcept {
         return state == other.state;
     }
+
+    /** `scene_frame_passes`: every pass this scene's frame graph executes. */
+    [[nodiscard]] std::vector<TaskHandle> frame_passes() const {
+        return scene_frame_passes(*state);
+    }
+    [[nodiscard]] bool has_frame_passes() const noexcept { return scene_has_frame_passes(*state); }
 
     [[nodiscard]] const SceneState* identity() const noexcept { return state.get(); }
 
@@ -6781,6 +6843,8 @@ void add_task_after(Scene& scene, TaskHandle task, TaskHandle after);
 void build_frame_graph_task(Scene& scene, TaskHandle task);
 /** `addTask`/`addTaskAtStart` where the scene may already be registered. */
 void add_live_task(Scene& scene, TaskHandle task, bool at_start);
+/** Refuses an executed task that is disposed or waits for its build, as the pin fails. */
+void require_executable_task(const FrameTaskRecord& task);
 void add_task(FrameGraphContext& context, TaskHandle task);
 void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 void add_task_after(FrameGraphContext& context, TaskHandle task, TaskHandle after);
@@ -6909,17 +6973,17 @@ ShadowGeneratorHandle create_pcf_directional_shadow_generator(Engine& engine, Li
                                                               PcfDirectionalShadowOptions options);
 ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               CsmDirectionalShadowOptions options);
-/**
- * `enableCsmStaticCache`: the error its promise rejects with, or none when it
- * resolves. `receiver_texture_read` is a prior `getCsmReceiverTexture`.
- */
+/** `enableCsmStaticCache`: the error its promise rejects with, or none when it resolves. */
 std::optional<js::Error> enable_csm_static_cache(Engine& engine, ShadowGeneratorHandle generator,
                                                  double refit_angle,
                                                  std::optional<double> refit_max_interval_ms,
-                                                 std::optional<double> static_cascades_per_frame,
-                                                 bool receiver_texture_read);
-/** A cached CSM generator's caster passes, refilled from the refit gate's split. */
-void refresh_csm_cache_casters(Engine& engine, ShadowGeneratorHandle generator);
+                                                 std::optional<double> static_cascades_per_frame);
+/** `getCsmReceiverTexture`: the generator's receiver texture, which it keeps (`sg._csmReceiverTexture`). */
+inline ShadowGeneratorHandle get_csm_receiver_texture(Engine& engine,
+                                                      ShadowGeneratorHandle generator) {
+    handle_at(engine.shadow_generators, generator).csm_receiver_texture_read = true;
+    return generator;
+}
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);

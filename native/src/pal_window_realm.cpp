@@ -82,7 +82,8 @@ struct WindowEvent final : ExternalEvent {
     std::optional<std::string> form_value;
     std::optional<bool> checked;
     std::optional<UiElementHandle> selected_option;
-    std::optional<bool> open;
+    /** A summary activation: the realm flips its own disclosure, which the display may show stale. */
+    bool toggle_open = false;
 
     void capture_form_state(Engine& engine) {
         if (ui_get_attribute(engine, element, "type") == "checkbox")
@@ -658,13 +659,13 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
     engine.ui_text_selection_revision = snapshot.text_selection_revision;
     if (snapshot.pointer_captures)
         dom_input(engine).pointer_captures = std::move(snapshot.pointer_captures);
-    // A disclosure the display changed (summary activation) opens or closes the realm's details,
-    // whose change queues its toggle event there.
-    engine.ui_details_toggled = [post_input, &engine](UiElementHandle element) {
+    // A summary activation on the display toggles the realm's details, whose change queues its
+    // toggle event there.
+    engine.ui_details_toggled = [post_input](UiElementHandle element) {
         auto event = std::make_unique<WindowEvent>();
         event->element = element;
         event->type = "toggle";
-        event->open = ui_has_attribute(engine, element, "open");
+        event->toggle_open = true;
         post_input(std::move(event));
     };
     if (!snapshot.dom_event_types.empty()) {
@@ -1430,6 +1431,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         ~Reset() { document = nullptr; }
                     } reset;
                     WorkerRealm realm(loop, {}, services);
+                    realm.provide_device_pixel_ratio(window_device_pixel_ratio);
                     ApplicationErrors errors(loop);
                     owner.errors = &errors;
                     realm.on_platform_event([services](std::unique_ptr<ExternalEvent> packet) {
@@ -1479,8 +1481,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             return;
                         if (event->checked)
                             ui_set_checked(engine, event->element, *event->checked);
-                        if (event->open)
-                            ui_set_boolean_attribute(engine, event->element, "open", *event->open);
+                        if (event->toggle_open)
+                            ui_set_boolean_attribute(
+                                engine, event->element, "open",
+                                !ui_has_attribute(engine, event->element, "open"));
                         if (event->selected_option)
                             ui_set_selection(engine, event->element, *event->selected_option);
                         if (event->form_value)

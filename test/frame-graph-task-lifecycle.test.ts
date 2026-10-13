@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
-import { lowerFrameGraphTaskBuild } from "../src/lowering/frame-graph-task-build.js";
+import {
+    lowerFrameGraphTaskBuild,
+    lowerTaskExecutionCheck,
+} from "../src/lowering/frame-graph-task-build.js";
 import { lowerEffectTaskDisposal } from "../src/lowering/frame-graph-task-disposal.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
@@ -262,16 +266,19 @@ test("RenderTask.dispose releases owned targets once and later adds and records 
         return;
     }
     const context = new LoweringContext();
-    const records = new GeometryOutputLowerer(context).lowerTaskRecords(
-        false,
-        true,
-        true,
-        true,
-    );
+    const records = new GeometryOutputLowerer(context).lowerTaskRecords({
+        meshRemoval: true,
+        refreshedOverrides: true,
+        taskDisposal: true,
+    });
     const directory = resolve("artifacts/frame-graph-task-lifecycle/dispose"),
         include = join(directory, "include/bblite/upstream");
     mkdirSync(include, { recursive: true });
     writeFileSync(join(include, "frame_graph_geometry.hpp"), records.header);
+    writeFileSync(
+        join(include, "render_task_removal.hpp"),
+        renderTaskRemovalHeader(context),
+    );
     writeFileSync(
         join(include, "pinned_depth_state.hpp"),
         pinnedDepthStateHeader(context),
@@ -281,7 +288,7 @@ test("RenderTask.dispose releases owned targets once and later adds and records 
         tools,
         "frame-graph-task-lifecycle/dispose",
         `${records.source}
-${new RenderTargetLowerer(context, false, true).lower().source}
+${new RenderTargetLowerer(context, { disposal: true }).lower().source}
 #include <iostream>
 using namespace bbl;
 template <class F> std::string refusal(F function) {
@@ -387,9 +394,10 @@ test("an effect task's dispose clears its pipeline until the next record, as the
     const native = lowerEffectTaskDisposal(new LoweringContext());
     assert.match(native, new RegExp(`execute throws ${message}`));
     assert.ok(
-        readFileSync("native/src/pal_gpu_shared.cpp", "utf8").includes(
-            `throw std::runtime_error(${JSON.stringify(message)});`,
-        ),
+        lowerTaskExecutionCheck(new LoweringContext(), {
+            disposal: true,
+            pendingBuild: false,
+        }).includes(`throw std::runtime_error(${JSON.stringify(message)});`),
     );
     assert.match(
         lowerFrameGraphTaskBuild(new LoweringContext(), "", true),
@@ -432,9 +440,10 @@ test("a task added to a live scene waits for its record, as the pin's unrecorded
         message = (error as Error).message;
     }
     assert.ok(
-        readFileSync("native/src/pal_gpu_shared.cpp", "utf8").includes(
-            `throw std::runtime_error(${JSON.stringify(message)});`,
-        ),
+        lowerTaskExecutionCheck(new LoweringContext(), {
+            disposal: false,
+            pendingBuild: true,
+        }).includes(`throw std::runtime_error(${JSON.stringify(message)});`),
         message,
     );
     const live = compileSource(
@@ -445,7 +454,8 @@ test("a task added to a live scene waits for its record, as the pin's unrecorded
     );
     assert.ok(live.manifest.features.includes("frame-graph:live-task-add"));
     assert.match(live.cpp, /bbl::add_live_task\([^;]*, true\);/);
-    // Before registration the build records every task: no live add.
+    // Before registration too: the native add finds no registered scene,
+    // so registration's build records the task.
     const setup = compileSource(
         prefix.replace(
             "await registerScene(scene);\n",
@@ -454,6 +464,6 @@ test("a task added to a live scene waits for its record, as the pin's unrecorded
             await registerScene(scene);\n`,
         ),
     );
-    assert.ok(!setup.manifest.features.includes("frame-graph:live-task-add"));
-    assert.doesNotMatch(setup.cpp, /add_live_task/);
+    assert.ok(setup.manifest.features.includes("frame-graph:live-task-add"));
+    assert.match(setup.cpp, /bbl::add_live_task\([^;]*, false\);/);
 });

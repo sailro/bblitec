@@ -13,6 +13,7 @@ import {
     isPrimitiveBrowserValue,
 } from "./browser-erasure.js";
 import { CompileError } from "./compile-error.js";
+import { storesAsTexture2D } from "./data-sinks/resources.js";
 import { isNeverResized } from "./data-lowering.js";
 import { isStoringDataCall } from "./receiver-methods.js";
 import { mutatingArrayMethods } from "./receiver-methods.js";
@@ -3005,6 +3006,29 @@ export class DeclarationLowerer {
                 this.context.dataTypes.markStoredObjectReferences(annotated);
         }
         const initializerLiteral = this.context.unwrap(declaration.initializer);
+        // Texture2D's stored variant holds a nullable local only when it
+        // represents the initializer's texture; a sprite render texture keeps
+        // its producer's storage, as a search's handle does.
+        const producerTexture =
+            annotated?.kind === "optional" &&
+            annotated.inner.kind === "handle" &&
+            annotated.inner.handle === "texture" &&
+            this.context.probeEmission(
+                () => {
+                    try {
+                        const value = this.context.compileValue(initializer);
+                        return (
+                            (value.kind === "texture" ||
+                                value.kind === "render-texture") &&
+                            !storesAsTexture2D(value)
+                        );
+                    } catch (error) {
+                        if (error instanceof CompileError) return false;
+                        throw error;
+                    }
+                },
+                () => false,
+            );
         if (
             !annotated ||
             annotated.kind === "number" ||
@@ -3016,7 +3040,7 @@ export class DeclarationLowerer {
             (annotated.kind === "optional" &&
                 annotated.inner.kind === "handle" &&
                 annotated.inner.handle !== "worker-media-query" &&
-                annotated.inner.handle !== "texture") ||
+                (annotated.inner.handle !== "texture" || producerTexture)) ||
             (annotated.kind === "tuple" &&
                 !ts.isArrayLiteralExpression(initializerLiteral) &&
                 !ts.isConditionalExpression(initializerLiteral))

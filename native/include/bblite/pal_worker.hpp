@@ -247,6 +247,21 @@ public:
         require_owner();
         platform_handler_ = std::move(callback);
     }
+    /**
+     * `globalThis.devicePixelRatio` of this realm: a Window host provides
+     * its display scale when the realm starts; a realm without one (a worker
+     * global) has none, which reads as undefined.
+     */
+    void provide_device_pixel_ratio(double (*provider)()) {
+        require_owner();
+        device_pixel_ratio_ = provider;
+    }
+    [[nodiscard]] js::Nullable<double> device_pixel_ratio() const {
+        require_owner();
+        return device_pixel_ratio_ ? js::Nullable<double>(device_pixel_ratio_()) : std::nullopt;
+    }
+    /** The realm this thread runs, if any. */
+    static WorkerRealm* current_if_any() { return current_; }
 
 private:
     WorkerRealm(EventLoop& loop, std::string name, std::optional<worker_detail::Address> parent,
@@ -326,11 +341,18 @@ private:
     std::optional<worker_detail::Address> parent_;
     std::thread::id owner_;
     std::shared_ptr<HostServices> host_services_;
+    double (*device_pixel_ratio_)() = nullptr;
     bool animation_subscribed_ = false;
     std::uint64_t next_worker_ = 1;
     std::map<std::uint64_t, std::shared_ptr<Worker>> workers_;
     PlatformEventListeners<void(const WorkerMessage&)> messages_;
     EventLoop::EventHandler platform_handler_;
 };
+
+/** `globalThis.devicePixelRatio` in the running realm; undefined outside a Window realm. */
+inline js::Nullable<double> realm_device_pixel_ratio() {
+    const WorkerRealm* realm = WorkerRealm::current_if_any();
+    return realm ? realm->device_pixel_ratio() : std::nullopt;
+}
 
 } // namespace bbl::pal

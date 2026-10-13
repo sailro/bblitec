@@ -619,6 +619,29 @@ function markUnreferencedLocals(
 }
 
 /**
+ * The web platform headers a program includes, once each: those its reached
+ * features call into, then those its stored kinds name (`stored`, in table
+ * order). A header both name keeps its stored position.
+ */
+function webPlatformHeaders(
+    features: readonly Feature[],
+    stored: readonly string[],
+): string[] {
+    const headers = [
+        ...(features.includes("platform:media-stream")
+            ? ["pal_media_stream"]
+            : []),
+        ...(features.includes("platform:idle-callbacks")
+            ? ["pal_idle_callbacks"]
+            : []),
+        ...stored,
+    ];
+    return headers.filter(
+        (header, index) => headers.lastIndexOf(header) === index,
+    );
+}
+
+/**
  * What the main.cpp render reads off the finished walk. The two function
  * members keep their calls at the exact point in the render where the
  * orchestrator used to make them: the data-type preamble renders after
@@ -856,16 +879,7 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("platform:compression")
             ? "#include <bblite/pal_compression.hpp>\n"
             : "") +
-        (features.includes("platform:media-stream") &&
-        !projection.webPlatformHeaders?.includes("pal_media_stream")
-            ? "#include <bblite/pal_media_stream.hpp>\n"
-            : "") +
-        // IdleDeadline storage also names the header among the web platform ones.
-        (features.includes("platform:idle-callbacks") &&
-        !projection.webPlatformHeaders?.includes("pal_idle_callbacks")
-            ? "#include <bblite/pal_idle_callbacks.hpp>\n"
-            : "") +
-        (projection.webPlatformHeaders ?? [])
+        webPlatformHeaders(features, projection.webPlatformHeaders ?? [])
             .map((header) => `#include <bblite/${header}.hpp>\n`)
             .join("") +
         (features.includes("storage:local") ||

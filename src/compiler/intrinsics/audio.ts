@@ -11,7 +11,6 @@ import { presenceCpp, type Feature, type Value } from "../types.js";
 import type { DataType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { packagedAudioUrl, refuseAudioName } from "../audio-surface.js";
-import { EmissionWeakMap } from "../emission-transaction.js";
 import { lowerAudioSourceDisposal } from "../../lowering/audio-source-lowerer.js";
 import { isNullable } from "../type-facts.js";
 import {
@@ -55,19 +54,11 @@ export interface AudioIntrinsicContext
             | "sceneManifest"
         > {}
 
-const sourceDisposers = new EmissionWeakMap<object, string>();
 function sourceDisposer(context: AudioIntrinsicContext): string {
-    const existing = sourceDisposers.get(context);
-    if (existing) return existing;
-    const name = context.allocateTemporaryCppName("dispose_audio_source");
-    for (const lowered of lowerAudioSourceDisposal(name))
-        context.nativeEmission.registerNativeFunction(
-            lowered.prototype,
-            lowered.lines,
-        );
-    const cpp = `bblscene::${name}`;
-    sourceDisposers.set(context, cpp);
-    return cpp;
+    return context.nativeEmission.lowerOnce(
+        "dispose_audio_source",
+        lowerAudioSourceDisposal,
+    );
 }
 
 /**

@@ -190,6 +190,8 @@ export interface LoweringServices {
     ): void;
     emitWindowLogicalAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
+    /** The undefined an optional chain link is, when its chain stopped at generation. */
+    optionalChainStop(node: ts.Expression): Value | undefined;
     compileWorkerValue(expression: ts.Expression): Value | undefined;
     withOwnedCallbackBody<T>(body: () => T): T;
     isNativeWorkerExpression(expression: ts.Expression): boolean;

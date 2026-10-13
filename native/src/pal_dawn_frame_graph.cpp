@@ -4,6 +4,7 @@
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_frame_graph_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
+#include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 
 #include <bblite/pal.hpp>
@@ -149,8 +150,8 @@ void release(State& state) {
 }
 
 void build_graph(State& state, const Engine& engine, std::uint32_t width, std::uint32_t height) {
-#if BBLITE_RENDER_TARGET_DISPOSAL
-    require_live_render_targets(engine);
+#if BBLITE_RENDER_TARGET_DISPOSAL || BBLITE_LIVE_TASK_ADD
+    require_executable_frame_tasks(engine);
 #endif
     if (state.render_targets_version == engine.render_targets_version &&
         state.targets.size() == engine.render_targets.size() && state.width == width &&
@@ -215,12 +216,12 @@ void build_graph(State& state, const Engine& engine, std::uint32_t width, std::u
 }
 
 #if BBLITE_HAS_POST_PROCESS
-std::pair<WGPUTexture, WGPUTextureView> source_view(State& state, const Engine& engine,
-                                                    const RenderTextureRef& source) {
+std::pair<WGPUTexture, WGPUTextureView>
+source_view(State& state, const Engine& engine, const RenderTextureRef& source, TargetUser user) {
     if (source.source != RenderTextureSource::render_target) {
         throw std::runtime_error("A standalone frame graph cannot sample a scene geometry task.");
     }
-    const RenderTargetRecord& record = handle_at(engine.render_targets, source.target);
+    const RenderTargetRecord& record = resolve_render_target(engine, source.target, user);
     if (record.swapchain) {
         throw std::runtime_error("A post-process pass cannot sample the swapchain target.");
     }
@@ -253,12 +254,14 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
                          std::size_t pass_index, WGPUCommandEncoder encoder,
                          WGPUTextureView surface_view, std::uint32_t width, std::uint32_t height,
                          const WGPUPassTimestampWrites* timestamps) {
-    PostProcessPassOptions& pass =
-        handle_at(engine.frame_tasks, task_handle).post_process.passes.at(pass_index);
+    FrameTaskRecord& task = handle_at(engine.frame_tasks, task_handle);
+    const TargetUser user = task_target_user(task);
+    PostProcessPassOptions& pass = task.post_process.passes.at(pass_index);
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos.at(pass.shader_index);
     PostProcessPass& gpu = state.post_processes.at(task_handle.value).at(pass_index);
-    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
+    const RenderTargetRecord& output_record =
+        resolve_render_target(engine, pass.output_target, user);
     const Target& output = state.targets.at(pass.output_target.value);
     const std::uint32_t output_width = output_record.swapchain ? width : output.width;
     const std::uint32_t output_height = output_record.swapchain ? height : output.height;
@@ -288,12 +291,12 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
         entries.push_back(sampler);
         WGPUBindGroupEntry source = WGPU_BIND_GROUP_ENTRY_INIT;
         source.binding = 1;
-        source.textureView = source_view(state, engine, pass.source).second;
+        source.textureView = source_view(state, engine, pass.source, user).second;
         entries.push_back(source);
         for (std::size_t index = 0; index < pass.extra_textures.size(); ++index) {
             WGPUBindGroupEntry extra = WGPU_BIND_GROUP_ENTRY_INIT;
             extra.binding = 2u + static_cast<std::uint32_t>(index);
-            extra.textureView = source_view(state, engine, pass.extra_textures[index]).second;
+            extra.textureView = source_view(state, engine, pass.extra_textures[index], user).second;
             entries.push_back(extra);
         }
         if (gpu.uniforms) {
@@ -444,9 +447,10 @@ public:
 #if BBLITE_HAS_EFFECT_TASK
             if (task.kind == FrameTaskKind::effect) {
                 prepare_effect_task(engine, task);
+                const TargetUser user = task_target_user(task);
                 DawnEffectPass& pass = state.effects.at(handle.value);
                 const RenderTargetRecord& record =
-                    handle_at(engine.render_targets, task.effect.target);
+                    resolve_render_target(engine, task.effect.target, user);
                 const Target& output = state.targets.at(task.effect.target.value);
                 if (!pass.pipeline) {
                     pass = create_dawn_effect_pass(state, engine, task.effect.effect, output.format,
@@ -456,7 +460,7 @@ public:
                 bind_dawn_effect_render_textures(
                     state.device, engine, pass, task.effect.effect,
                     [&](const RenderTextureRef& source) -> WGPUTextureView {
-                        if (handle_at(engine.render_targets, source.target).swapchain)
+                        if (resolve_render_target(engine, source.target, user).swapchain)
                             throw std::runtime_error(
                                 "An effect cannot sample the swapchain target.");
                         return state.targets.at(source.target.value).sampled_view;

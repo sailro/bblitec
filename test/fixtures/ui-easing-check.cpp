@@ -101,6 +101,48 @@ int main() try {
         check(opacity("blink", 1), "steps() inside a keyframe segment holds");
         advance(1550);
         check(opacity("blink", 0), "steps() inside a keyframe segment jumps");
+        // RmlUi's parser is the motion grammar: a value it rejects refuses when applied.
+        const auto refuses = [&](const char* name, const char* value) {
+            const auto probe = ui_create_element(engine, "div");
+            ui_append_child(engine, ui_document_root(engine, UiDocumentPart::Body), probe);
+            ui_set_style_property(engine, probe, name, value);
+            bool refused = false;
+            try {
+                pal::update_ui_rml_runtime(runtime, 640, 480);
+            } catch (const std::runtime_error& error) {
+                refused = std::string_view(error.what()).starts_with("Unsupported retained UI");
+            }
+            ui_remove(engine, probe);
+            pal::update_ui_rml_runtime(runtime, 640, 480);
+            if (!refused)
+                std::fprintf(stderr, "%s: %s was not refused\n", name, value);
+            return refused;
+        };
+        check(refuses("transition", "opacity 1s linear(0, 0.5, 1)") &&
+                  refuses("transition", "opacity 1s cubic-bezier(2, 0, 0, 1)") &&
+                  refuses("animation", "spin 1s steps(1, jump-none) infinite") &&
+                  refuses("animation", "spin 1s steps(2.5)") &&
+                  refuses("animation", "spin 1s paused") &&
+                  refuses("animation", "spin 0s forwards") && refuses("animation", "spin 1s 1.5") &&
+                  refuses("animation", "spin 1s 0"),
+              "unrepresented motion values refuse natively");
+        // A sheet's rule refuses as the write does, rather than leaving the sheet.
+        const auto sheet = ui_create_element(engine, "style");
+        ui_append_child(engine, ui_document_root(engine, UiDocumentPart::Head), sheet);
+        ui_add_class_style(engine, sheet, "late", "transition: opacity 1s linear(0, 1)");
+        const auto styled = ui_create_element(engine, "div");
+        ui_set_attribute(engine, styled, "class", "late");
+        ui_append_child(engine, ui_document_root(engine, UiDocumentPart::Body), styled);
+        bool sheet_refused = false;
+        try {
+            pal::update_ui_rml_runtime(runtime, 640, 480);
+        } catch (const std::runtime_error& error) {
+            sheet_refused =
+                std::string_view(error.what()).starts_with("Unsupported retained UI transition");
+        }
+        ui_remove(engine, styled);
+        ui_remove(engine, sheet);
+        check(sheet_refused, "a sheet's unrepresented transition refuses natively");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

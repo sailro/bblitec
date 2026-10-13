@@ -5,7 +5,6 @@ import type { DataType } from "../data-types.js";
 import { argumentAt } from "../syntax.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { ApplicationRealmRequired } from "../worker-modules.js";
-import { EmissionWeakMap } from "../emission-transaction.js";
 import { sharedPinnedContext } from "../../lowering/context.js";
 import { lowerGpuFrameTimer } from "../../lowering/gpu-frame-timer.js";
 
@@ -78,8 +77,6 @@ function timingProjection(
     );
 }
 
-const frameTimers = new EmissionWeakMap<object, string>();
-
 /** `setGpuTimingEnabled` and `isGpuTimingSupported` over the task timing device. */
 function compileGpuFrameTimingIntrinsic(
     context: GpuTaskTimingIntrinsicContext,
@@ -104,19 +101,13 @@ function compileGpuFrameTimingIntrinsic(
     if (!setting) return booleanValue(`${state}->supported`);
     const enabled = context.compileValue(argumentAt(call, 1));
     context.expectKind(enabled, "boolean", call);
-    let timer = frameTimers.get(context);
-    if (!timer) {
-        timer = context.allocateTemporaryCppName("set_gpu_timing_enabled");
-        const lowered = lowerGpuFrameTimer(sharedPinnedContext(), timer);
-        context.nativeEmission.registerNativeFunction(
-            lowered.prototype,
-            lowered.lines,
-        );
-        frameTimers.set(context, timer);
-    }
+    const timer = context.nativeEmission.lowerOnce(
+        "set_gpu_timing_enabled",
+        (helper) => lowerGpuFrameTimer(sharedPinnedContext(), helper),
+    );
     return {
         kind: "void",
-        cpp: `bblscene::${timer}(${state}, ${enabled.cpp})`,
+        cpp: `${timer}(${state}, ${enabled.cpp})`,
     };
 }
 

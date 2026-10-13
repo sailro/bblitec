@@ -285,12 +285,12 @@ public:
         : timer_(active_gpu_task_timer(engine)), scene_(scene) {
         if (!timer_ || !scene || !scene->state->shadow_task_name)
             return;
-        const bool has_casters =
-            std::any_of(scene->tasks.begin(), scene->tasks.end(), [&](TaskHandle handle) {
-                const auto& task = handle_at(engine.frame_tasks, handle);
-                return task.kind == FrameTaskKind::render &&
-                       task.render.shadow_generator.value != invalid_handle;
-            });
+        const std::vector<TaskHandle> passes = scene->frame_passes();
+        const bool has_casters = std::any_of(passes.begin(), passes.end(), [&](TaskHandle handle) {
+            const auto& task = handle_at(engine.frame_tasks, handle);
+            return task.kind == FrameTaskKind::render &&
+                   task.render.shadow_generator.value != invalid_handle;
+        });
         // The source's shadow task still runs; with no generator to render
         // it opens no pass.
         if (!has_casters) {

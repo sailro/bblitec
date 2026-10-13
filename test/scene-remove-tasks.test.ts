@@ -1,5 +1,6 @@
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
@@ -161,6 +162,7 @@ test("removeFromScene keeps queued task requests and empties built entries, as t
 #include <algorithm>
 #include <iostream>
 namespace bbl {
+${cppFunction(renderTaskRemovalHeader(new LoweringContext()), "inline void remove_mesh_from_render_task(")}
 ${remove}
 }
 using namespace bbl;
@@ -176,7 +178,7 @@ int main() {
         FrameTaskRecord record;
         record.render.auto_mirror = mirror;
         record.render_mesh_refresh = refresh;
-        record.render_recorded = recorded;
+        record.record_state = recorded ? FrameTaskRecordState::recorded : FrameTaskRecordState::queued;
         record.render_meshes = std::move(entries);
         if (recorded) record.shader_packet_scene_version = 1;
         engine.frame_tasks.push_back(std::move(record));
@@ -187,7 +189,8 @@ int main() {
     task(true, false, true, {{m1, own}, {m2, own}});
     task(false, true, true, {{m1, own, true}, {m1, view}, {m2, own, true}});
     const auto epoch = engine.draw_list_epoch;
-    if (!remove_mesh_from_scene_tasks(engine, scene, m1) || engine.draw_list_epoch == epoch) return 1;
+    remove_mesh_from_scene_tasks(engine, scene, m1);
+    if (engine.draw_list_epoch == epoch) return 1;
     const char* names[] = {"m1", "m2"};
     const auto list = [&](std::size_t index, int follows) {
         std::string out;

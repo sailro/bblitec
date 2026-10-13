@@ -1164,7 +1164,7 @@ test(
                 case 0: assert(event->checked.has_value() && !*event->checked); break;
                 case 1: assert(event->form_value == "12.5"); break;
                 case 2: assert(event->selected_option == UiElementHandle{4}); break;
-                case 5: assert(event->open.has_value() && *event->open); break;
+                case 5: assert(event->toggle_open); break;
                 default: assert(false);
                 }
                 if (++delivered == 4) loop.close();

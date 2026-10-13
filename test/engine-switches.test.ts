@@ -185,27 +185,32 @@ test("surface pixel ratio writes evaluate their owner first and install the pinn
         native,
         "engine-switches/surface-resize",
         `#include <bblite/pal_async_engine.hpp>
+#include <bblite/pal_worker.hpp>
 #include <cassert>
 #include <cmath>
-namespace bbl::pal { double ratio=1.5; double window_device_pixel_ratio(){return ratio;} }
+namespace { double ratio=1.5; double window_ratio(){return ratio;} }
 namespace bblscene {
 ${lowered.lines.join("\n")}
 }
 struct Device final:bbl::pal::OffscreenDevice{};
 int main(){
-const bbl::js::RealmScope scope;bbl::Engine engine;auto surface=std::make_shared<bbl::pal::OffscreenSurface>(1920,1080);
+const bbl::js::RealmScope scope;bbl::pal::EventLoop loop;bbl::pal::WorkerRealm realm(loop);bbl::Engine engine;auto surface=std::make_shared<bbl::pal::OffscreenSurface>(1920,1080);
 engine.offscreen_run=std::make_shared<bbl::pal::OffscreenRun>(surface,std::make_shared<Device>());
 engine.canvas_client_width=1280;engine.canvas_client_height=720;
 const auto extent=[&](std::uint32_t width,std::uint32_t height){return surface->extent().width==width&&surface->extent().height==height;};
 assert(std::isinf(bbl::surface_max_device_pixel_ratio(engine)));
 bbl::set_surface_max_device_pixel_ratio(engine,0.5,&bblscene::resize);bbl::resize_engine(engine);
 assert(extent(1920,1080)&&bbl::surface_max_device_pixel_ratio(engine)==0.5);
-engine.dom_canvas=true;bbl::resize_engine(engine);
+engine.dom_canvas=true;
+// A realm with no Window host has no devicePixelRatio: the pin's \`|| 1\`.
+bbl::set_surface_max_device_pixel_ratio(engine,2,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1280,720));
+realm.provide_device_pixel_ratio(window_ratio);
+bbl::set_surface_max_device_pixel_ratio(engine,0.5,&bblscene::resize);bbl::resize_engine(engine);
 assert(extent(640,360)&&engine.options.width==640&&engine.options.height==360);
 bbl::set_surface_max_device_pixel_ratio(engine,2,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1920,1080));
 engine.canvas_client_width=1001;engine.canvas_client_height=601;
 bbl::set_surface_max_device_pixel_ratio(engine,0.75,&bblscene::resize);bbl::resize_engine(engine);assert(extent(750,450));
-bbl::pal::ratio=0;bbl::set_surface_max_device_pixel_ratio(engine,1,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));
+ratio=0;bbl::set_surface_max_device_pixel_ratio(engine,1,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));
 for(const double cap:{0.0,-1.0,std::nan("")}){bbl::set_surface_max_device_pixel_ratio(engine,cap,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));}
 engine.canvas_client_width=0;bbl::set_surface_max_device_pixel_ratio(engine,0.5,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));
 }`,

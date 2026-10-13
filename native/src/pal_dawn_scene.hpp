@@ -2210,10 +2210,9 @@ WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state);
                                                              WGPUBindGroupLayout shadow_layout);
 
 #if BBLITE_PBR_VARIANTS > 0
-std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& state,
-                                                                   const Engine& engine,
-                                                                   RenderTargetHandle target_handle,
-                                                                   bool depth_only);
+std::pair<WGPUTexture, WGPUTextureView>
+dawn_render_target_texture(DawnState& state, const Engine& engine, RenderTargetHandle target_handle,
+                           bool depth_only, pal::TargetUser user);
 /**
  * Group 1 for one variant: the mesh block, the material block, then exactly the
  * resources that variant's fragment declares.
@@ -2519,10 +2518,10 @@ void encode_variant_draw(WGPURenderPassEncoder pass, WGPURenderPipeline pipeline
  * Deriving it from whether a depth copy happens to exist would part from
  * that for a target carrying both.
  */
-std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& state,
-                                                                   const Engine& engine,
-                                                                   RenderTargetHandle target_handle,
-                                                                   bool depth_only = false);
+std::pair<WGPUTexture, WGPUTextureView>
+dawn_render_target_texture(DawnState& state, const Engine& engine, RenderTargetHandle target_handle,
+                           bool depth_only = false,
+                           pal::TargetUser user = pal::frame_pass_target_user);
 
 // The receiver's shared machinery: the samplers, the map view, and the two
 // builders that read a composed group-2 row span. Both material families wrap
@@ -3239,11 +3238,13 @@ PreparedDawnPostProcessPass
 prepare_dawn_post_process_pass(DawnState& state, Engine& engine, TaskHandle handle,
                                std::uint32_t width, std::uint32_t height, std::size_t index,
                                SourceTextureView source_texture_view, bool write_uniforms = true) {
-    PostProcessPassOptions& pass = handle_at(engine.frame_tasks, handle).post_process.passes[index];
+    FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+    PostProcessPassOptions& pass = task.post_process.passes[index];
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos[pass.shader_index];
     DawnPostProcessTask& gpu = handle_at(state.post_process_tasks, handle)[index];
-    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
+    const RenderTargetRecord& output_record =
+        pal::resolve_render_target(engine, pass.output_target, pal::task_target_user(task));
     DawnRenderTarget& output = handle_at(state.render_targets, pass.output_target);
     const PostProcessExtent extent =
         resolve_post_process_extent(output_record, state.render_targets, pass, width, height);
@@ -3333,7 +3334,8 @@ std::size_t screen_space_program(DawnState& state, std::uint32_t stage);
  * depth attachment's depth-only view, the lit source colour, or one of the
  * task's owned targets.
  */
-WGPUTextureView screen_space_binding_view(DawnState& state, const ScreenSpaceTaskOptions& task,
+WGPUTextureView screen_space_binding_view(DawnState& state, const Engine& engine,
+                                          const ScreenSpaceTaskOptions& task,
                                           upstream::ScreenSpaceTextureRole role);
 
 /**
@@ -3349,10 +3351,10 @@ WGPURenderPassEncoder begin_screen_space_pass(WGPUCommandEncoder encoder, WGPUTe
  * the frame-graph rebuild answers by resetting the stage), then the pin's
  * clear-and-draw over a fullscreen triangle.
  */
-void record_screen_space_stage(DawnState& state, const ScreenSpaceTaskOptions& task,
-                               DawnScreenSpaceStage& stage, std::uint32_t stage_index,
-                               WGPUCommandEncoder encoder, WGPUTextureView target,
-                               const float* uniforms);
+void record_screen_space_stage(DawnState& state, const Engine& engine,
+                               const ScreenSpaceTaskOptions& task, DawnScreenSpaceStage& stage,
+                               std::uint32_t stage_index, WGPUCommandEncoder encoder,
+                               WGPUTextureView target, const float* uniforms);
 
 /** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
 void clear_screen_space_target(WGPUCommandEncoder encoder, WGPUTextureView view);
@@ -3373,9 +3375,13 @@ void record_screen_space_task(DawnState& state, Engine& engine, TaskHandle handl
     FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
     DawnScreenSpaceTask& gpu = handle_at(state.screen_space_tasks, handle);
-    const DawnRenderTarget& raw = handle_at(state.render_targets, task.raw);
-    const DawnRenderTarget& stable = handle_at(state.render_targets, task.stable);
-    const DawnRenderTarget& history = handle_at(state.render_targets, task.history);
+    const pal::TargetUser user = pal::task_target_user(record);
+    const DawnRenderTarget& raw =
+        pal::resolve_gpu_target(engine, state.render_targets, task.raw, user);
+    const DawnRenderTarget& stable =
+        pal::resolve_gpu_target(engine, state.render_targets, task.stable, user);
+    const DawnRenderTarget& history =
+        pal::resolve_gpu_target(engine, state.render_targets, task.history, user);
     const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
         engine, handle, screen_space_frame_inputs(state.render_targets, task));
     record_screen_space_decision(
@@ -3384,7 +3390,7 @@ void record_screen_space_task(DawnState& state, Engine& engine, TaskHandle handl
             clear_screen_space_target(encoder, previous ? history.color_view : stable.color_view);
         },
         [&](bool producer, const float* uniforms) {
-            record_screen_space_stage(state, task, producer ? gpu.producer : gpu.resolve,
+            record_screen_space_stage(state, engine, task, producer ? gpu.producer : gpu.resolve,
                                       producer ? task.producer_shader : task.resolve_shader,
                                       encoder, producer ? raw.color_view : stable.color_view,
                                       uniforms);

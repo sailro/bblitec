@@ -51,13 +51,13 @@ int main(){
  add_render_task_mesh(engine,task,{0},{0},false);add_render_task_mesh(engine,task,{0},{0},false);
  auto& record=engine.frame_tasks[task.value];assert(record.render_meshes.size()==1);
  assert(shader_snapshots==0 && shader_packets==0);
- record.render_recorded=true;enable_render_task_mesh_refresh(engine,task);
+ record.record_state=FrameTaskRecordState::recorded;enable_render_task_mesh_refresh(engine,task);
  engine.meshes[0].material={1};assert(render_task_mesh_material(engine,record.render_meshes[0]).value==1);
  const auto version=engine.draw_list_epoch;add_render_task_mesh(engine,task,{1},{1},false);assert(engine.draw_list_epoch==version+1);
  assert(shader_snapshots==2 && shader_packets==2 && record.shader_packet_rebuild_pending);
  add_render_task_mesh(engine,task,{1},{1},false);assert(shader_packets==2);
  rejects([&]{add_render_task_mesh(engine,task,{1},{0},true);},"per-task material overrides");
- auto late=create_render_task(engine,scene,options);engine.frame_tasks[late.value].render_recorded=true;
+ auto late=create_render_task(engine,scene,options);engine.frame_tasks[late.value].record_state=FrameTaskRecordState::recorded;
  rejects([&]{enable_render_task_mesh_refresh(engine,late);},"#153");
  add_render_task_mesh(engine,late,{1},{1},true);
  assert(shader_snapshots==3 && shader_packets==3);

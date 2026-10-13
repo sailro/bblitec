@@ -522,8 +522,13 @@ test("innerHTML form controls refuse markup retained elements cannot hold", () =
     refusal("<select><!-- x --><option>a</option></select>", /has comments/);
     refusal("<select>a<option>b</option></select>", /holds only options/);
     refusal('<input onclick="run()">', /attribute 'onclick' is not supported/);
-    refusal("<select><option>a</select>", /mismatched closing tag/);
     refusal("<textarea>text</textarea>", /textarea content is not represented/);
+    // The browser parses the markup: the select's end tag closes its option.
+    assert.doesNotThrow(() =>
+        compileEntry(
+            'const host = document.createElement("div"); host.innerHTML = "<select><option>a</select>";',
+        ),
+    );
     refusal('<img src="a.png"><input type="text">', /not <img>/);
     assert.throws(
         () =>

@@ -462,12 +462,11 @@ export function compileShadowIntrinsic(
                     "A CSM receiver texture requires a generator created in this scene.",
                 );
             }
-            context.admissions.csmReceiverTextureReads.push(
-                generator.shadowGeneratorIndex,
-            );
+            // The generator keeps its receiver texture, which a later
+            // enableCsmStaticCache refuses.
             return {
                 kind: "texture",
-                cpp: generator.cpp,
+                cpp: `bbl::get_csm_receiver_texture(${context.requireEngine(generator, call)}, ${generator.cpp})`,
                 engineCpp: context.requireEngine(generator, call),
                 isDepthTexture: true,
                 csmReceiverGeneratorIndex: generator.shadowGeneratorIndex,
@@ -507,11 +506,6 @@ export function compileShadowIntrinsic(
                     ? `std::optional<double>{${context.compileNumber(value, "double")}}`
                     : "std::nullopt";
             };
-            const read =
-                generator.shadowGeneratorIndex !== undefined &&
-                context.admissions.csmReceiverTextureReads.includes(
-                    generator.shadowGeneratorIndex,
-                );
             context.reachFeature("shadow:csm-static-cache", call);
             const rejection = context.allocateTemporaryCppName(
                 "csm_cache_rejection",
@@ -520,7 +514,7 @@ export function compileShadowIntrinsic(
                 kind: "declaration",
                 type: "const auto",
                 name: rejection,
-                initializer: `bbl::enable_csm_static_cache(${engine.cpp}, ${generator.cpp}, ${context.compileNumber(refitAngle, "double")}, ${optional("refitMaxIntervalMs")}, ${optional("staticCascadesPerFrame")}, ${read})`,
+                initializer: `bbl::enable_csm_static_cache(${engine.cpp}, ${generator.cpp}, ${context.compileNumber(refitAngle, "double")}, ${optional("refitMaxIntervalMs")}, ${optional("staticCascadesPerFrame")})`,
             });
             if (context.options.workers)
                 return {

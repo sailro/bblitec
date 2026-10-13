@@ -8,6 +8,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
 import { renderTaskShaderPacketOwnersCpp } from "../src/lowering/render-task-mesh-refresh.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { lowerThinInstanceBindingCreation } from "../src/lowering/thin-instance-binding-update.js";
@@ -185,6 +186,7 @@ fragmentSource:'@fragment fn mainFragment()->@location(0) vec4f{return vec4f(1.0
 namespace bbl {
 ${lowerThinInstanceBindingCreation(context)}
 ${lowerMeshMaterialSetter(context)}
+${cppFunction(renderTaskRemovalHeader(context), "inline void remove_mesh_from_render_task(")}
 ${["void require_scene_engine(", "void mark_mesh_dirty(", "void erase_first_mesh(", "void clear_mesh_parent(", "bool remove_mesh_from_scene_tasks(", "void remove_from_scene(Scene& scene, MeshHandle"].map((signature) => cppFunction(sceneCore, signature)).join("\n")}
 }
 namespace bbl::upstream {
@@ -235,7 +237,7 @@ int main() {
     for (std::size_t index=0;index<2;++index) {
         auto& task=engine.frame_tasks[index];
         task.kind=FrameTaskKind::render; task.source_scene=scene.state;
-        task.render.auto_mirror=false; task.render_recorded=true;
+        task.render.auto_mirror=false; task.record_state=FrameTaskRecordState::recorded;
         task.render_meshes.push_back({MeshHandle{1},MaterialHandle{static_cast<std::uint32_t>(index+1)}});
         scene.tasks.push_back({static_cast<std::uint32_t>(index)});
     }
