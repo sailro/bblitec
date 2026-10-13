@@ -21,7 +21,10 @@ import {
     visitUiStyleSheetDeclarations,
 } from "../deferred-ui-style.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
-import { unrepresentedUiEasing } from "../ui-easing.js";
+import {
+    unrepresentedUiAnimation,
+    unrepresentedUiEasing,
+} from "../ui-motion.js";
 import { uiGradientBackground } from "../ui-gradient-background.js";
 import { supportedUiGridPlacement, supportedUiGridTracks } from "../ui-grid.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
@@ -2075,7 +2078,11 @@ export class UiProjection {
                 return;
             }
             if (property === "transition" || property === "animation") {
-                const reason = unrepresentedUiEasing(literalValue);
+                const reason =
+                    unrepresentedUiEasing(literalValue) ??
+                    (property === "animation"
+                        ? unrepresentedUiAnimation(literalValue)
+                        : undefined);
                 if (reason) this.uiStyleRefusal(site, property, reason);
             }
             if (property === "scale") {
