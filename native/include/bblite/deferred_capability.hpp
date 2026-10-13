@@ -14,9 +14,6 @@ class DeferredMediaRecorder final {
 class DeferredBlobEvent final {
     DeferredBlobEvent() = delete;
 };
-class DeferredIdleDeadline final {
-    DeferredIdleDeadline() = delete;
-};
 
 class DeferredCapabilityError final : public std::runtime_error {
 public:
