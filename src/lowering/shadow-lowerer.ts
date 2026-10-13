@@ -2213,19 +2213,6 @@ ${features.includes("shadow:csm") ? "#include <bblite/upstream/csm_shadow.hpp>\n
  * scheduler.
  */
 /**
- * One generator factory, as the three pinned families spell it.
- *
- * They differ in the light kind they demand, the options struct they take,
- * the fields they copy across and whether they fit a matrix eagerly. What
- * they share -- the handle check, the kind check, the record, the
- * `push_back` and the handle it returns -- is written once here, because a
- * fourth family should cost a row rather than a fourth copy of the frame.
- *
- * A directional generator writes no matrix at creation: its light matrix is
- * fitted to the CASTERS, which are registered after this returns, so the
- * first fit happens at the task's first frame.
- */
-/**
  * \`enableCsmStaticCache\`: the pin's four rejections in its order, with
  * the messages read from its own \`Promise.reject\` calls, then the cache
  * state. A loaded cache resolves again without taking new options; the
@@ -2302,6 +2289,19 @@ void refresh_csm_cache_casters(Engine& engine, ShadowGeneratorHandle generator) 
 `;
 }
 
+/**
+ * One generator factory, as the three pinned families spell it.
+ *
+ * They differ in the light kind they demand, the options struct they take,
+ * the fields they copy across and whether they fit a matrix eagerly. What
+ * they share -- the handle check, the kind check, the record, the
+ * `push_back` and the handle it returns -- is written once here, because a
+ * fourth family should cost a row rather than a fourth copy of the frame.
+ *
+ * A directional generator writes no matrix at creation: its light matrix is
+ * fitted to the CASTERS, which are registered after this returns, so the
+ * first fit happens at the task's first frame.
+ */
 function shadowGeneratorFactory(spec: {
     name: string;
     options: string;

@@ -3078,10 +3078,6 @@ interface Place {
     readonly store: (value: string) => string;
 }
 
-/**
- * One lowered function body: the record statements and expressions, with
- * JavaScript's arithmetic delegated to `PinnedNumericLowerer`.
- */
 /** `Math`'s constant members, by the dotted name a read spells. */
 const MATH_CONSTANTS: ReadonlyMap<string, number> = new Map(
     (
@@ -3098,6 +3094,10 @@ const MATH_CONSTANTS: ReadonlyMap<string, number> = new Map(
     ).map((name) => [`Math.${name}`, Math[name]]),
 );
 
+/**
+ * One lowered function body: the record statements and expressions, with
+ * JavaScript's arithmetic delegated to `PinnedNumericLowerer`.
+ */
 class RecordBodyLowerer extends PinnedNumericLowerer {
     private readonly locals = new Map<ts.Symbol, Local>();
     private readonly names: Set<string>[] = [new Set()];
@@ -4987,17 +4987,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const collection = local ? stripOptional(local.storage) : undefined;
             if (
                 local &&
-                (collection?.kind === "set" || collection?.kind === "array") &&
-                collection.element.kind === "record" &&
-                !this.model.isLiteralRecord(collection.element.name) &&
+                collection &&
+                this.isRecordCollection(collection) &&
                 !this.containsAny(this.typeAt(node))
             ) {
                 const declared = this.model.shapeOf(this.typeAt(node), node);
                 const iterable = stripOptional(declared);
                 if (
                     iterable.kind === "array" &&
-                    iterable.element.kind === "record" &&
-                    this.model.isLiteralRecord(iterable.element.name)
+                    this.isStructuralRecord(iterable.element)
                 )
                     return declared.kind === "optional"
                         ? local.storage
@@ -5719,6 +5717,32 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         );
     }
 
+    /** Whether a variant `value` holds one of `members`. */
+    private holdsAny(members: readonly RecordShape[], value: string): string {
+        return members.length === 0
+            ? "false"
+            : `(${members.map((member) => `std::holds_alternative<${this.cpp(member)}>(${value})`).join(" || ")})`;
+    }
+
+    /** A record the pin declares structurally (`{ x: number }`) rather than a class. */
+    private isStructuralRecord(shape: RecordShape): boolean {
+        return (
+            shape.kind === "record" && this.model.isLiteralRecord(shape.name)
+        );
+    }
+
+    /**
+     * A Set or Array of the program's own records: what a structural
+     * iterable a call passes one to is specialized to.
+     */
+    private isRecordCollection(shape: RecordShape): boolean {
+        return (
+            (shape.kind === "set" || shape.kind === "array") &&
+            shape.element.kind === "record" &&
+            !this.model.isLiteralRecord(shape.element.name)
+        );
+    }
+
     /** `node`'s value, in the native form of its checked type. */
     public value(node: ts.Expression): string {
         return this.renderExpression(node).text;
@@ -6328,11 +6352,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             this.model.record(shape.name).members().has(key.text);
         const shape = this.shapeAt(node.right);
         if (shape.kind === "variant") {
-            const members = shape.members.filter(declares);
-            const value = this.value(node.right);
-            return members.length === 0
-                ? "false"
-                : `(${members.map((member) => `std::holds_alternative<${this.cpp(member)}>(${value})`).join(" || ")})`;
+            return this.holdsAny(
+                shape.members.filter(declares),
+                this.value(node.right),
+            );
         }
         if (shape.kind !== "record")
             return this.refuse(node, `Pinned \`in\` over ${this.cpp(shape)}.`);
@@ -6389,12 +6412,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             library !== undefined ? this.classShape(library) : undefined;
         if (instances !== undefined) {
             if (shape.kind === "variant") {
-                const held = shape.members.filter((member) =>
-                    this.same(member, instances),
+                return this.holdsAny(
+                    shape.members.filter((member) =>
+                        this.same(member, instances),
+                    ),
+                    value,
                 );
-                return held.length === 0
-                    ? "false"
-                    : `(${held.map((member) => `std::holds_alternative<${this.cpp(member)}>(${value})`).join(" || ")})`;
             }
             return this.same(shape, instances) ? "true" : "false";
         }
@@ -6503,7 +6526,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             );
             return members.length === 0
                 ? "false"
-                : `(${members.map((member) => `std::holds_alternative<${this.cpp(member)}>(${this.value(operand)})`).join(" || ")})`;
+                : this.holdsAny(members, this.value(operand));
         }
         // An optional value is `"undefined"` while absent, its value's type
         // while present (`typeof options?.duration === "number"`).
@@ -7450,16 +7473,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 const iterated = stripOptional(expected);
                 if (
                     iterated.kind === "array" &&
-                    iterated.element.kind === "record" &&
-                    this.model.isLiteralRecord(iterated.element.name)
+                    this.isStructuralRecord(iterated.element)
                 ) {
                     const actual = stripOptional(this.shapeAt(argument));
-                    if (
-                        (actual.kind !== "set" && actual.kind !== "array") ||
-                        actual.element.kind !== "record" ||
-                        this.model.isLiteralRecord(actual.element.name)
-                    )
-                        return undefined;
+                    if (!this.isRecordCollection(actual)) return undefined;
                     return expected.kind === "optional"
                         ? optionalOf(actual)
                         : actual;
@@ -10541,10 +10558,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             // the declaration names a structural one (`shapeAt`).
             const storage =
                 (shape.kind === "set" || shape.kind === "array") &&
-                shape.element.kind === "record" &&
-                declared.kind === "record" &&
-                this.model.isLiteralRecord(declared.name) &&
-                !this.model.isLiteralRecord(shape.element.name)
+                this.isRecordCollection(shape) &&
+                this.isStructuralRecord(declared)
                     ? shape.element
                     : declared;
             return `${this.cpp(storage)} ${this.declare(name, storage)} = ${this.model.representations.snapshot(value, storage)};`;
