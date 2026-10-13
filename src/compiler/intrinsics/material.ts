@@ -1872,8 +1872,6 @@ function compileInstallPbrTracking(
     return { kind: "void", cpp: "" };
 }
 
-const materialTracking = new EmissionWeakMap<object, string>();
-
 /** The pin's async family selection; resolves after its module hop. */
 function compileEnableMaterialTracking(
     context: MaterialIntrinsicContext,
@@ -1882,19 +1880,13 @@ function compileEnableMaterialTracking(
     context.expectArgumentCount(call, 1, 1);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    let name = materialTracking.get(context);
-    if (!name) {
-        name = context.allocateTemporaryCppName("enable_material_tracking");
-        const lowered = lowerMaterialTracking(sharedPinnedContext(), name);
-        context.nativeEmission.registerNativeFunction(
-            lowered.prototype,
-            lowered.lines,
-        );
-        materialTracking.set(context, name);
-    }
+    const tracking = context.nativeEmission.lowerOnce(
+        "enable_material_tracking",
+        (name) => lowerMaterialTracking(sharedPinnedContext(), name),
+    );
     return {
         kind: "promise",
-        cpp: `bblscene::${name}(${context.requireEngine(material, call)}, ${material.cpp})`,
+        cpp: `${tracking}(${context.requireEngine(material, call)}, ${material.cpp})`,
         promiseType: "bbl::js::PromiseVoid",
         promiseResult: { kind: "void", cpp: "" },
     };

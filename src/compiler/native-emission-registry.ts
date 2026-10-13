@@ -11,6 +11,12 @@ import type { CapturedClosure } from "./closure-captures.js";
 import type { Value } from "./types.js";
 import type { LoweringServices } from "./lowering-services.js";
 
+/** A native function a lowering produced: its prototype and its definition. */
+export interface LoweredNativeFunction {
+    readonly prototype: string;
+    readonly lines: string[];
+}
+
 /** What the native emission registry reads of the compiler. */
 interface NativeEmissionContext extends Pick<
     LoweringServices,
@@ -50,6 +56,30 @@ export class NativeEmissionRegistry {
      */
     private readonly staticRecordAccessors = new EmissionMap<string, string>();
     private readonly queryAccessors = new EmissionMap<string, string>();
+    private readonly loweredHelpers = new EmissionMap<string, string>();
+
+    /**
+     * A lowered pinned helper, registered once per compile under `label`
+     * (also the stem of its C++ name): returns its `bblscene::` name.
+     */
+    public lowerOnce(
+        label: string,
+        lower: (
+            name: string,
+        ) => LoweredNativeFunction | readonly LoweredNativeFunction[],
+    ): string {
+        const existing = this.loweredHelpers.get(label);
+        if (existing) return existing;
+        const name = this.context.allocateTemporaryCppName(label);
+        const lowered = lower(name);
+        for (const { prototype, lines } of Array.isArray(lowered)
+            ? (lowered as readonly LoweredNativeFunction[])
+            : [lowered as LoweredNativeFunction])
+            this.registerNativeFunction(prototype, lines);
+        const cpp = `bblscene::${name}`;
+        this.loweredHelpers.set(label, cpp);
+        return cpp;
+    }
 
     /** One immutable deployment bag per realm, shared by every emitting function. */
     public deploymentQuery(

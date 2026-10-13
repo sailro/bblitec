@@ -2558,7 +2558,7 @@ function emitTargetPropertyAssignment(
         const cap = context.compileNumber(expression.right, "double");
         context.emit({
             kind: "expression",
-            code: `bbl::set_surface_max_device_pixel_ratio(${surface}, ${cap}, &bblscene::${surfaceResizeFunction(context)});`,
+            code: `bbl::set_surface_max_device_pixel_ratio(${surface}, ${cap}, &${surfaceResizeFunction(context)});`,
         });
         return true;
     }

@@ -4377,7 +4377,7 @@ class Compiler implements LoweringServices {
         if (this.options.workers)
             this.emit({
                 kind: "expression",
-                code: `bbl::install_surface_resize(*${cppName}, &bblscene::${surfaceResizeFunction(this)});`,
+                code: `bbl::install_surface_resize(*${cppName}, &${surfaceResizeFunction(this)});`,
             });
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers)
