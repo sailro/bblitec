@@ -175,6 +175,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:vat": [],
     "mesh:vat-instances": [],
     "mesh:vat-time": [],
+    "mesh:deformed-position": [],
     "mesh:vat-instance-storage": [],
     "mesh:skeleton": [],
     "mesh:transform-node": [],

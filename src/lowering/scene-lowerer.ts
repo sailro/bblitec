@@ -20,6 +20,7 @@ import { lowerMeshGeometryAccess } from "./mesh-geometry-access.js";
 import { lowerSceneNodeRemoval } from "./scene-node-removal.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 import { lowerFrameGraphTaskBuild } from "./frame-graph-task-build.js";
+import { lowerDeformedVertex } from "./deformed-vertex.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -122,6 +123,8 @@ interface SceneCoreOptions {
     effectTasks?: boolean;
     /** A task may be added to a registered scene. */
     liveTaskAdd?: boolean;
+    /** The program reads a deformed vertex (`computeDeformedPositionToRef`). */
+    deformedPosition?: boolean;
 }
 
 export class SceneLowerer {
@@ -2815,7 +2818,7 @@ ${
         ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false)}
 `
         : ""
-}${options.liveTaskAdd ? this.liveTaskAddSource() : ""}void rebuild_scene_renderables(Scene& scene) {
+}${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${options.deformedPosition ? `${lowerDeformedVertex(this.context)}\n` : ""}void rebuild_scene_renderables(Scene& scene) {
     require_scene_engine(scene);
 ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
 #if BBLITE_HAS_SHADOWS

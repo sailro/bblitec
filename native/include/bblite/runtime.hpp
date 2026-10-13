@@ -6931,6 +6931,13 @@ void enable_skeleton_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void remove_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh);
+/** `computeDeformedPositionToRef`: whether the vertex resolved, and `out` as the pin leaves it. */
+struct DeformedPosition {
+    bool found = false;
+    Vec3d position{};
+};
+DeformedPosition compute_deformed_position(const Engine& engine, MeshHandle mesh,
+                                           double vertex_index, Vec3d out);
 /** `setVatTime`: the settings block's clock lane, apart from the handle's own clock. */
 void set_vat_time(Engine& engine, MeshHandle mesh, double seconds);
 /** `setVatInstanceStorage`. */

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { lowerDeformedVertex } from "../src/lowering/deformed-vertex.js";
 import { VatLowerer } from "../src/lowering/vat-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
@@ -185,6 +186,117 @@ int main() {
             flags: ["/DBBLITE_WORKERS=1"],
             timeoutMs: 10000,
             expectedOutput: expected,
+        },
+    );
+});
+
+test("computeDeformedPositionToRef morphs then skins one vertex with the pin's float stores", async (t) => {
+    const { computeDeformedPositionToRef } = await importPinnedModule<{
+        computeDeformedPositionToRef(
+            this: void,
+            mesh: object,
+            vertexIndex: number,
+            out: { x: number; y: number; z: number },
+        ): boolean;
+    }>("picking/deformed-vertex.js");
+    // Three vertices, two morph targets, two bones; weights split a vertex
+    // across both bones, and the third vertex names a joint past the palette.
+    const positions = [0.1, 0.2, 0.3, 1.25, -2.5, 0.7, 3.3, 0.01, -1.9];
+    const deltas = [
+        [0.5, 0.25, -0.125, 0.3, 0.3, 0.3, 0, 0, 0],
+        [-0.01, 0.02, 0.03, 0.7, -0.1, 0.2, 1, 1, 1],
+    ];
+    const weights = [0.35, 0.6];
+    const bones = [
+        [1, 0, 0, 0, 0, 0.8, 0.6, 0, 0, -0.6, 0.8, 0, 0.5, -1, 2, 1],
+        [0.9, 0.1, 0, 0, -0.1, 0.9, 0, 0, 0, 0, 1.1, 0, -0.3, 0.2, 0.1, 1],
+    ];
+    const joints = [0, 1, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0];
+    const skin = [0.25, 0.75, 0, 0, 1, 0, 0, 0, 0.5, 0.5, 0, 0];
+    const mesh = {
+        _cpuPositions: new Float32Array(positions),
+        morphTargets: {
+            weights: new Float32Array(weights),
+            count: 2,
+            targets: deltas.map((delta) => ({
+                positions: new Float32Array(delta),
+            })),
+        },
+        skeleton: {
+            boneMatrices: new Float32Array(bones.flat()),
+            joints: new Uint16Array(joints),
+            weights: new Float32Array(skin),
+            joints1: null,
+            weights1: null,
+        },
+    };
+    const lines: string[] = [];
+    for (const index of [0, 1, 2, 3, -1, 1 / 3, 0.5]) {
+        const out = { x: 7, y: 8, z: 9 };
+        const found = computeDeformedPositionToRef(mesh, index, out);
+        lines.push(
+            `${found ? 1 : 0} ${[out.x, out.y, out.z].map((v) => (Number.isNaN(v) ? "nan" : String(Number(v.toPrecision(9))))).join(" ")}`,
+        );
+    }
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native compiler unavailable");
+        return;
+    }
+    const list = (values: number[]): string => values.join(", ");
+    runGeneratedProgram(
+        tools,
+        "render-features/deformed-vertex",
+        `#include <bblite/runtime.hpp>
+#include <cmath>
+#include <cstdio>
+#include <iostream>
+#include <limits>
+namespace bbl {
+${lowerDeformedVertex(new LoweringContext())}
+}
+using namespace bbl;
+int main() {
+    Engine engine;
+    engine.geometries.resize(1);
+    ModelGeometry& geometry = engine.geometries[0];
+    const float positions[] = {${list(positions)}};
+    const float deltas[2][9] = {{${list(deltas[0]!)}}, {${list(deltas[1]!)}}};
+    const std::uint16_t joints[] = {${list(joints)}};
+    const float skin[] = {${list(skin)}};
+    geometry.vertices.resize(3);
+    geometry.morph_positions.resize(2);
+    for (std::size_t v = 0; v < 3; ++v) {
+        geometry.vertices[v].position = Vec3{positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]};
+        for (std::size_t j = 0; j < 4; ++j) geometry.vertices[v].joints[j] = joints[v * 4 + j];
+        geometry.vertices[v].weights = Vec4{skin[v * 4], skin[v * 4 + 1], skin[v * 4 + 2], skin[v * 4 + 3]};
+        for (std::size_t t = 0; t < 2; ++t)
+            geometry.morph_positions[t].push_back(Vec3{deltas[t][v * 3], deltas[t][v * 3 + 1], deltas[t][v * 3 + 2]});
+    }
+    engine.meshes.resize(1);
+    MeshRecord& mesh = engine.meshes[0];
+    mesh.geometry = 0;
+    mesh.skinned = true;
+    mesh.morph_storage_weights = {${list(weights)}};
+    mesh.bone_matrices = {{${list(bones[0]!)}}, {${list(bones[1]!)}}};
+    std::string out;
+    for (const double index : {0.0, 1.0, 2.0, 3.0, -1.0, 1.0 / 3.0, 0.5}) {
+        const DeformedPosition result = compute_deformed_position(engine, MeshHandle{0}, index, Vec3d{7.0, 8.0, 9.0});
+        out += std::string(out.empty() ? "" : "|") + (result.found ? "1" : "0");
+        for (const double lane : {result.position.x, result.position.y, result.position.z}) {
+            char text[32];
+            if (std::isnan(lane)) std::snprintf(text, sizeof text, " nan");
+            else std::snprintf(text, sizeof text, " %.9g", lane);
+            out += text;
+        }
+    }
+    std::cout << out;
+}
+`,
+        {
+            flags: ["/DBBLITE_WORKERS=1"],
+            timeoutMs: 10000,
+            expectedOutput: lines.join("|"),
         },
     );
 });

@@ -934,6 +934,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/vat/vat-baker.ts (setInstances)",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "mesh:deformed-position": {
+        provenance:
+            "src/picking/deformed-vertex.ts computeDeformedPositionToRef",
+        consumers: CMAKE,
+    },
     "mesh:vat-time": {
         provenance: "src/vat/vat-baker.ts setVatTime",
         consumers: CMAKE,
