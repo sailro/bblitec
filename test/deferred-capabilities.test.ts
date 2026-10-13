@@ -278,18 +278,16 @@ test("deferred promise methods reject on the realm reaction queue", () => {
 
 test("pinned public missing calls preserve engine arguments and original strict refusal", () => {
     const source = `
-        import {createEngine,setGpuTimingEnabled} from "@babylonjs/lite";
+        import {createEngine,createSphere,setVatTime} from "@babylonjs/lite";
         const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
-        try{setGpuTimingEnabled(engine,true);}catch{}
+        const mesh=createSphere(engine,{diameter:1});
+        try{setVatTime(engine,mesh,1);}catch{}
     `;
-    assert.throws(
-        () => compileSource(source),
-        /setGpuTimingEnabled.*not supported/,
-    );
+    assert.throws(() => compileSource(source), /setVatTime.*not supported/);
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:setGpuTimingEnabled"],
+        ["babylon:setVatTime"],
     );
     assert.match(result.cpp, /deferred_capability<void>/);
 });
@@ -363,11 +361,12 @@ test("deferred result templates never construct successful payloads", () => {
 test("deferred engine arguments retain ordinary checked reads", () => {
     const result = compileSource(
         `
-        import {createEngine,setGpuTimingEnabled} from "@babylonjs/lite";
+        import {createEngine,createBox,setVatTime} from "@babylonjs/lite";
         const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const mesh=createBox(engine,1);
         const engines=[engine];
         let index=0; let caught=0;
-        try{setGpuTimingEnabled(engines[++index]!,true);}catch(error){
+        try{setVatTime(engines[++index]!,mesh,1);}catch(error){
             if(error.message.includes("Deferred native capability"))throw new Error("argument read was dropped");
             ++caught;
         }
@@ -382,7 +381,7 @@ test("deferred engine arguments retain ordinary checked reads", () => {
         "deferred-capabilities/engine-arguments",
         result.cpp +
             `
-        namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+        namespace bbl { Engine create_engine(EngineOptions) { return {}; } MeshHandle create_box(Engine&, BoxOptions) { return {}; } }
     `,
         { expectedOutput: "" },
     );

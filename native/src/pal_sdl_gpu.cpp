@@ -1712,6 +1712,8 @@ public:
             return FramePreparation::restart;
         }
         begin_gpu_task_timing_frame(engine);
+        if (const auto frame_timer = gpu_frame_timer_begin(engine))
+            encode_sdl_gpu_timestamp(command, *frame_timer);
 #if BBLITE_COMPUTE_FRAME_GRAPH
         begin_compute_frame_prefix(engine);
 #endif
@@ -4453,6 +4455,8 @@ public:
                 SDL_BlitGPUTexture(command, &ui_blit);
             }
 #endif
+            if (const auto frame_timer = gpu_frame_timer_end(engine))
+                encode_sdl_gpu_timestamp(command, *frame_timer);
             present_readable_surface();
             if (capture_frame) {
                 if (!capture_texture) {
@@ -4499,6 +4503,8 @@ public:
                                                nullptr, state.sample_count);
             }
 #endif
+            if (const auto frame_timer = gpu_frame_timer_end(engine))
+                encode_sdl_gpu_timestamp(command, *frame_timer);
             present_readable_surface();
             if (capture_frame) {
                 save_texture_png(state.device, command, visible_color, swapchain_format, width,
@@ -4516,6 +4522,7 @@ public:
         }
         flush_frame_gpu_retirements(engine);
         finish_gpu_task_timing_frame(engine);
+        resolve_gpu_frame_timer(engine);
 #if BBLITE_COMPUTE_FRAME_GRAPH
         finish_compute_frame_prefix(engine);
 #endif

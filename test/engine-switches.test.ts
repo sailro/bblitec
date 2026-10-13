@@ -5,6 +5,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { lowerShaderUniformRangeUpdates } from "../src/lowering/shader-uniforms.js";
 import { lowerMaterialTracking } from "../src/lowering/material-tracking.js";
 import { lowerSurfaceResize } from "../src/lowering/surface-resize.js";
+import { lowerGpuFrameTimer } from "../src/lowering/gpu-frame-timer.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -211,6 +212,92 @@ engine.canvas_client_width=0;bbl::set_surface_max_device_pixel_ratio(engine,0.5,
         {
             expectedOutput: "",
             flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
+        },
+    );
+});
+
+test("frame GPU timing installs after its module hop and smooths settled readbacks", (t) => {
+    const compiled = compileSource(`
+        import {createEngine,isGpuTimingSupported} from "@babylonjs/lite";
+        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const setGpuTiming=async(enabled:boolean):Promise<void>=>{
+            const {setGpuTimingEnabled}=await import("@babylonjs/lite");
+            setGpuTimingEnabled(engine,enabled);
+        };
+        await setGpuTiming(isGpuTimingSupported(engine));
+        if(engine.gpuFrameTimeMs!==0) throw new Error("first sample");`);
+    assert.deepEqual(compiled.manifest.deferredCapabilities ?? [], []);
+    assert(compiled.manifest.features.includes("engine:gpu-task-timing"));
+    assert.match(
+        compiled.cpp,
+        /bblscene::v_bblite_set_gpu_timing_enabled_\d+\(bbl::pal::gpu_task_timing_state\(/,
+    );
+    assert.match(compiled.cpp, /->gpu_frame_time_ms/);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const lowered = lowerGpuFrameTimer(new LoweringContext(), "timing");
+    runGeneratedProgram(
+        native,
+        "engine-switches/gpu-frame-timing",
+        `#include <bblite/pal_gpu_task_timing.hpp>
+#include <bblite/pal_event_loop.hpp>
+#include <cassert>
+#include <cmath>
+using namespace bbl::pal;
+namespace bblscene {
+${lowered.lines.join("\n")}
+}
+struct Queries final:GpuTimestampQuerySet{};
+struct Readback final:GpuTimestampReadback{
+    std::optional<std::vector<std::uint64_t>> value;bool failed=false;
+    std::optional<std::vector<std::uint64_t>> poll() override{if(failed)throw std::runtime_error("lost");return value;}
+};
+struct Device final:OffscreenDevice{
+    std::vector<std::shared_ptr<Readback>> issued;std::size_t query_sets=0;
+    bool supports_gpu_timestamps() const override{return true;}
+    std::shared_ptr<GpuTimestampQuerySet> create_gpu_timestamp_query_set(std::uint32_t count) override{assert(count==2);++query_sets;return std::make_shared<Queries>();}
+    std::shared_ptr<GpuTimestampReadback> resolve_gpu_timestamps(const std::shared_ptr<GpuTimestampQuerySet>&,std::uint32_t count) override{assert(count==2);return issued.emplace_back(std::make_shared<Readback>());}
+};
+int main(){
+const bbl::js::RealmScope scope;EventLoop loop;bbl::Engine engine;auto device=std::make_shared<Device>();
+auto state=std::make_shared<GpuTaskTimingState>();state->device=device;state->supported=true;engine.gpu_task_timing=state;
+const auto frame=[&]{const auto begin=gpu_frame_timer_begin(engine);const auto end=gpu_frame_timer_end(engine);
+    assert(begin.has_value()==end.has_value());if(begin)assert(begin->index==0&&begin->beginning&&end->index==1&&!end->beginning);
+    resolve_gpu_frame_timer(engine);return begin.has_value();};
+std::string order;
+loop.run([&]{
+    bblscene::timing(state,true);assert(state->frame_timer_wanted&&!state->frame_timer_begin);
+    bbl::js::Promise<bbl::js::PromiseVoid>::resolved({}).then([&](const bbl::js::PromiseVoid&){assert(state->frame_timer_begin);order+="a";});
+    loop.post([&]{loop.close();});
+});
+assert(order=="a"&&device->query_sets==1);
+assert(frame()&&device->issued.size()==1&&state->gpu_frame_time_ms==0);
+device->issued[0]->value=std::vector<std::uint64_t>{1000000,3000000};
+assert(frame()&&state->gpu_frame_time_ms==2);
+device->issued[1]->value=std::vector<std::uint64_t>{0,4000000};
+assert(frame()&&std::abs(state->gpu_frame_time_ms-2.4)<1e-12);
+device->issued[2]->value=std::vector<std::uint64_t>{5,1};
+assert(frame()&&std::abs(state->gpu_frame_time_ms-2.4)<1e-12&&(*state->frame_timer)->in_flight==1);
+device->issued[3]->failed=true;
+assert(frame()&&std::abs(state->gpu_frame_time_ms-2.4)<1e-12&&(*state->frame_timer)->in_flight==1&&device->issued.size()==5);
+for(int i=0;i<3;++i)frame();
+assert(device->issued.size()==8&&(*state->frame_timer)->in_flight==4);
+frame();assert(device->issued.size()==8);
+bblscene::timing(state,false);assert(state->gpu_frame_time_ms==0&&!frame());
+loop.run([&]{bblscene::timing(state,true);loop.post([&]{loop.close();});});
+assert(device->query_sets==1&&frame());
+auto unsupported=std::make_shared<GpuTaskTimingState>();bblscene::timing(unsupported,true);assert(!unsupported->frame_timer_wanted);
+}`,
+        {
+            expectedOutput: "",
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
+                "/DBBLITE_GPU_TASK_TIMING=1",
+            ],
         },
     );
 });

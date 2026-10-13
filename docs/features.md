@@ -86,6 +86,7 @@ Rules:
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
+- `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer
   storage views with cube sampling need Dawn or patched SDL D3D12/Vulkan/Metal.
 

@@ -131,7 +131,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "enableCsmStaticCache",
         "enableRenderTaskTransmission",
         "playSound",
-        "setGpuTimingEnabled",
         "setSoundVolume",
         "setSpatialListenerPosition",
         "setSpatialPosition",
