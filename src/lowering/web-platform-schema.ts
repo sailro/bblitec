@@ -482,6 +482,55 @@ const param = (name: string): MemberSpec =>
             `${AUDIO}::audio_node_param(${owner}, ${AUDIO}::AudioParamName::${name})`,
     );
 
+/** A panner's numeric attribute: its PAL read and validated write. */
+const pannerProperty = (property: string): MemberSpec => ({
+    shape: number,
+    access: (owner) =>
+        `${AUDIO}::audio_panner_property(${owner}, ${AUDIO}::PannerProperty::${property})`,
+    assign: (owner, value) =>
+        `${AUDIO}::audio_set_panner_property(${owner}, ${AUDIO}::PannerProperty::${property}, ${value})`,
+});
+
+/** `panningModel` / `distanceModel`: Web Audio's spelling both ways. */
+const pannerModel = (which: "Panning" | "Distance"): MemberSpec => ({
+    shape: string,
+    access: (owner) =>
+        `${AUDIO}::audio_panner_model(${owner}, ${AUDIO}::PannerModel::${which})`,
+    assign: (owner, value) =>
+        `${AUDIO}::audio_set_panner_model(${owner}, ${AUDIO}::PannerModel::${which}, ${value})`,
+});
+
+/** The listener's parameters, each `AudioParamName::Listener<Name>`. */
+const LISTENER_PARAMS = [
+    "positionX",
+    "positionY",
+    "positionZ",
+    "forwardX",
+    "forwardY",
+    "forwardZ",
+    "upX",
+    "upY",
+    "upZ",
+] as const;
+
+/** A legacy listener setter: the values its parameters take now. */
+const listenerSetter = (
+    names: readonly (typeof LISTENER_PARAMS)[number][],
+): MemberSpec =>
+    spelled(
+        fn(
+            names.map(() => number),
+            none,
+        ),
+        (owner, args) =>
+            `[&](const ${AUDIO}::AudioContextHandle& listener) { ${names
+                .map(
+                    (name, index) =>
+                        `${AUDIO}::audio_param_set_value(${AUDIO}::audio_listener_param(listener, ${AUDIO}::AudioParamName::Listener${name[0]!.toUpperCase()}${name.slice(1)}), static_cast<float>(${args[index]}));`,
+                )
+                .join(" ")} }(${owner})`,
+    );
+
 /** A buffer source's flag or loop point: its PAL read and write. */
 const sourceProperty = (shape: RecordShape, native: string): MemberSpec => ({
     shape,
@@ -503,6 +552,7 @@ export const webAudioRecords: readonly RecordSpec[] = [
             "GainNode",
             "AudioBufferSourceNode",
             "AudioScheduledSourceNode",
+            "PannerNode",
         ],
         cpp: "pal::AudioNodeHandle",
         reference: false,
@@ -511,6 +561,20 @@ export const webAudioRecords: readonly RecordSpec[] = [
             ["gain", param("Gain")],
             ["detune", param("Detune")],
             ["playbackRate", param("PlaybackRate")],
+            ["positionX", param("PositionX")],
+            ["positionY", param("PositionY")],
+            ["positionZ", param("PositionZ")],
+            ["orientationX", param("OrientationX")],
+            ["orientationY", param("OrientationY")],
+            ["orientationZ", param("OrientationZ")],
+            ["refDistance", pannerProperty("RefDistance")],
+            ["maxDistance", pannerProperty("MaxDistance")],
+            ["rolloffFactor", pannerProperty("RolloffFactor")],
+            ["coneInnerAngle", pannerProperty("ConeInnerAngle")],
+            ["coneOuterAngle", pannerProperty("ConeOuterAngle")],
+            ["coneOuterGain", pannerProperty("ConeOuterGain")],
+            ["panningModel", pannerModel("Panning")],
+            ["distanceModel", pannerModel("Distance")],
             ["loop", sourceProperty(boolean, "loop")],
             ["loopStart", sourceProperty(number, "loop_start")],
             ["loopEnd", sourceProperty(number, "loop_end")],
@@ -635,6 +699,8 @@ export const webAudioRecords: readonly RecordSpec[] = [
                     (owner) => `${AUDIO}::audio_destination(${owner})`,
                 ),
             ],
+            // The context's one listener, seen through the context.
+            ["listener", reads(record("AudioListener"), (owner) => owner)],
             [
                 "decodeAudioData",
                 spelled(
@@ -687,6 +753,38 @@ export const webAudioRecords: readonly RecordSpec[] = [
             ],
         ]),
     },
+    {
+        // `ctx.listener`: its parameters and the legacy setters over them.
+        pinned: ["AudioListener"],
+        cpp: "pal::AudioContextHandle",
+        reference: false,
+        native: true,
+        members: members([
+            ...LISTENER_PARAMS.map(
+                (name) =>
+                    [
+                        name,
+                        reads(
+                            audioParam,
+                            (owner) =>
+                                `${AUDIO}::audio_listener_param(${owner}, ${AUDIO}::AudioParamName::Listener${name[0]!.toUpperCase()}${name.slice(1)})`,
+                        ),
+                    ] as const,
+            ),
+            ["setPosition", listenerSetter(["positionX", "positionY", "positionZ"])],
+            [
+                "setOrientation",
+                listenerSetter([
+                    "forwardX",
+                    "forwardY",
+                    "forwardZ",
+                    "upX",
+                    "upY",
+                    "upZ",
+                ]),
+            ],
+        ]),
+    },
     descriptor("AudioBufferSourceOptions", "pal::AudioBufferSourceInit", [
         ["buffer", field(optional(record("AudioBuffer")))],
     ]),
@@ -721,6 +819,18 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
                 if ((call.arguments?.length ?? 0) > 1)
                     throw new Error("A lowered GainNode takes no options.");
                 return `${AUDIO}::audio_create_gain(${argument(0)})`;
+            },
+            parameters: [record("BaseAudioContext")],
+        },
+    ],
+    [
+        // The pin builds its panner bare and sets each attribute after.
+        "PannerNode",
+        {
+            cpp: (argument, call) => {
+                if ((call.arguments?.length ?? 0) > 1)
+                    throw new Error("A lowered PannerNode takes no options.");
+                return `${AUDIO}::audio_create_panner(${argument(0)})`;
             },
             parameters: [record("BaseAudioContext")],
         },

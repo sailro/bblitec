@@ -62,7 +62,6 @@ test("the Babylon sound families refuse by name rather than no-op", () => {
         "createSoundBufferAsync",
         "createStreamingSoundAsync",
         "createAudioBusAsync",
-        "enableSpatial",
         "enableStereo",
         "enableAnalyzer",
         "createMicrophoneSoundSourceAsync",

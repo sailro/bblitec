@@ -117,7 +117,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "createMicrophoneSoundSourceAsync",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "reject" })),
     ...[
-        "enableSpatial",
         "SurfaceContext.maxDevicePixelRatio",
         "enableStereo",
         "enableAnalyzer",
@@ -133,8 +132,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "enableRenderTaskTransmission",
         "enableShaderUniformRangeUpdates",
         "setGpuTimingEnabled",
-        "setSpatialListenerPosition",
-        "setSpatialPosition",
         "setVatInstanceStorage",
         "setVatTime",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "throw" })),

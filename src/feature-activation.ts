@@ -1339,6 +1339,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the reached Web Audio graph calls AudioContext.createStereoPanner()",
         consumers: CMAKE,
     },
+    "audio:spatial-sound": {
+        provenance:
+            "src/audio/spatial.ts enableSpatial/setSpatialPosition/" +
+            "setSpatialListenerPosition with the panner sub-node and " +
+            "listener they reach, lowered with the static-sound family",
+        consumers: CMAKE,
+    },
+    "audio:panner": {
+        provenance:
+            "the reached Web Audio graph calls AudioContext.createPanner() or " +
+            "constructs a PannerNode (src/audio/spatial.ts createSpatialSubNode)",
+        consumers: CMAKE,
+    },
     "physics:world": {
         provenance:
             "src/physics/havok.ts createHavokWorld + _stepWorld " +

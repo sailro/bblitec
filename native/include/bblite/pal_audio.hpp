@@ -195,6 +195,38 @@ AudioNodeHandle audio_create_oscillator(AudioContextHandle context);
 AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context);
 AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context);
 
+/**
+ * `ctx.createPanner()` / `new PannerNode(ctx)`, with Web Audio's defaults:
+ * equal-power panning, the inverse distance model, refDistance 1,
+ * maxDistance 10000, rolloffFactor 1, a full cone.
+ */
+AudioNodeHandle audio_create_panner(AudioContextHandle context);
+
+/** A PannerNode's numeric attributes. */
+enum class PannerProperty : std::uint8_t {
+    RefDistance,
+    MaxDistance,
+    RolloffFactor,
+    ConeInnerAngle,
+    ConeOuterAngle,
+    ConeOuterGain,
+};
+double audio_panner_property(AudioNodeHandle panner, PannerProperty property);
+/** A write the attribute rejects throws as Web Audio does (RangeError, InvalidStateError). */
+void audio_set_panner_property(AudioNodeHandle panner, PannerProperty property, double value);
+
+/** `panner.panningModel` and `panner.distanceModel`, as Web Audio spells them. */
+enum class PannerModel : std::uint8_t { Panning, Distance };
+std::string audio_panner_model(AudioNodeHandle panner, PannerModel which);
+/**
+ * A value outside the enumeration is ignored, as WebIDL ignores it; `"HRTF"`
+ * throws, since this build packages no HRTF database.
+ */
+void audio_set_panner_model(AudioNodeHandle panner, PannerModel which, const std::string& value);
+
+/** `ctx.listener.<name>`: a listener parameter (the `Listener*` names). */
+AudioParamHandle audio_listener_param(AudioContextHandle context, AudioParamName name);
+
 /** `ctx.createBuffer(channels, frames, sampleRate)`. */
 AudioBufferHandle audio_create_buffer(AudioContextHandle context, std::uint32_t channels,
                                       std::uint32_t frames, double sample_rate);

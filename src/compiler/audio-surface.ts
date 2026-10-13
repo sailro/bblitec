@@ -7,8 +7,13 @@ import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 
-import { readProperty, type PropertyContext } from "./properties.js";
-import type { Feature, Value } from "./types.js";
+import {
+    PANNER_MODELS,
+    PANNER_PROPERTIES,
+    readProperty,
+    type PropertyContext,
+} from "./properties.js";
+import { isStringValue, type Feature, type Value } from "./types.js";
 import { domAudioHandleKind } from "./data-types.js";
 import { listenerOptions } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -140,6 +145,10 @@ const NODE_FACTORIES: Readonly<
         factory: "audio_create_stereo_panner",
         feature: "audio:stereo-panner",
     },
+    createPanner: {
+        factory: "audio_create_panner",
+        feature: "audio:panner",
+    },
     createBufferSource: {
         factory: "audio_create_buffer_source",
         feature: "audio:buffer-source",
@@ -243,7 +252,6 @@ const PARAM_SCHEDULES: Readonly<Record<string, string>> = {
 const REFUSED_METHODS: Readonly<Record<string, string>> = {
     decodeAudioData: "encoded input must be an ArrayBuffer",
     createAnalyser: "the analyzer is not lowered",
-    createPanner: "3D panning is not lowered",
     createDelay: "the delay node is not lowered",
     createConvolver: "the convolver is not lowered",
     createDynamicsCompressor: "the compressor is not lowered",
@@ -947,6 +955,42 @@ export function emitAudioPropertyAssignment(
             code:
                 `bbl::pal::audio_set_${property === "loopStart" ? "loop_start" : "loop_end"}(${owner.cpp}, ` +
                 `${context.compileNumber(right, "double")});`,
+        });
+        return true;
+    }
+
+    const pannerProperty = PANNER_PROPERTIES.find(
+        ([name]) => name === property,
+    );
+    if (pannerProperty) {
+        context.reachFeature("audio:panner", expression);
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::pal::audio_set_panner_property(${owner.cpp}, ` +
+                `bbl::pal::PannerProperty::${pannerProperty[1]}, ` +
+                `${context.compileNumber(right, "double")});`,
+        });
+        return true;
+    }
+
+    const pannerModel = PANNER_MODELS.find(([name]) => name === property);
+    if (pannerModel) {
+        context.reachFeature("audio:panner", expression);
+        const model = context.compileValue(right);
+        if (!isStringValue(model))
+            context.fail(right, `${property} takes a string.`);
+        // A model chosen at run time throws there (`audio_set_panner_model`).
+        if (model.staticString === "HRTF")
+            context.fail(
+                right,
+                'panningModel "HRTF" is not lowered: it needs an HRTF database, which this build does not package.',
+            );
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::pal::audio_set_panner_model(${owner.cpp}, ` +
+                `bbl::pal::PannerModel::${pannerModel[1]}, ${model.cpp});`,
         });
         return true;
     }

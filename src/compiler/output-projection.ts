@@ -292,9 +292,11 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:oscillator": [],
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],
+    "audio:panner": [],
     // The pin's static-sound family, lowered whole; it fetches its sources
     // through the web platform seam.
     "audio:static-sound": ["src/pal_web_platform.cpp"],
+    "audio:spatial-sound": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
     "sprite:billboard-custom-shader": [],
@@ -399,6 +401,8 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "audio:decoded-buffer",
         "platform:http",
     ],
+    // Spatial audio is a static sound's panner sub-node.
+    "audio:spatial-sound": ["audio:static-sound", "audio:panner"],
     // Bindings build pipelines on the engine's WebGPU device; replaced
     // update batches retire behind the GPU.
     "renderer:external-renderables": [
