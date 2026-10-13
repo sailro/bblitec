@@ -102,6 +102,8 @@ std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::strin
 js::Nullable<std::string> ui_dataset_value(Engine& engine, UiElementHandle element,
                                            std::string_view name);
 bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name);
+/** `Element.getAttributeNames()`: the qualified names in attribute-list order. */
+js::Array<std::string> ui_attribute_names(Engine& engine, UiElementHandle element);
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name);
 void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::string name,
                               bool present);

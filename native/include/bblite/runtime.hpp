@@ -4022,6 +4022,8 @@ struct UiElementRecord {
     /** Static markup assigned through the reached element.innerHTML surface. */
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
+    /** The element's attribute list order: first added first, a removal drops its name. */
+    std::vector<std::string> attribute_order;
     /** Current input state after a property write or user activation. */
     std::optional<bool> checked;
     /** Current option selection, independent of its default selected attribute. */
