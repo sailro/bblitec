@@ -15838,26 +15838,29 @@ test("rejects unsupported dynamic engine and scene options", () => {
     `);
     assert.doesNotMatch(pixelRatio.cpp, /maxDevicePixelRatio|MAX_DPR/);
     assert.match(pixelRatio.cpp, /EngineOptions\{[^}]*, 0, 1\}/);
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine } from "@babylonjs/lite";
-                async function main(cap: number) {
-                    await createEngine({}, { maxDevicePixelRatio: cap });
-                }
-            `),
-        /maxDevicePixelRatio must be a static number/,
-    );
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine } from "@babylonjs/lite";
-                async function main() {
-                    await createEngine({}, { maxDevicePixelRatio: 0.5 });
-                }
-            `),
-        /support maxDevicePixelRatio values of 1 or greater/,
-    );
+    // A cap the single surface's devicePixelRatio 1 cannot absorb selects
+    // the application realm and the pinned resize.
+    for (const [cap, realm] of [
+        ["cap", true],
+        ["0.5", true],
+        ["0", false],
+        ["3", false],
+    ] as const) {
+        const compiled = compileSource(`
+            import { createEngine } from "@babylonjs/lite";
+            const cap: number = JSON.parse("0.75");
+            async function main() {
+                const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+                await createEngine(canvas, { maxDevicePixelRatio: ${cap} });
+            }
+            void main();
+        `);
+        assert.equal(
+            compiled.manifest.features.includes("platform:window"),
+            realm,
+        );
+        assert.equal(/bbl::install_surface_resize\(/.test(compiled.cpp), realm);
+    }
     assert.throws(
         () =>
             compileSource(`

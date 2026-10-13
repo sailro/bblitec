@@ -47,7 +47,7 @@ Commands follow `npm run scene --`. `diagnose <id>` runs parity, `diff` and `dif
   go to `artifacts/parity-canvas/`. Canvas-only capture excludes UI filters.
 - Android: `tools/android-smoke.mjs --canvas-only`; capture the browser on the target device and verify client size and
   DPR (Chrome's toolbar shrinks the viewport; use CDP device-metrics emulation). Emulator black screenshots need explicit
-  GPU readback. Debug intents accept `nativeResolution=true` to bypass the pixel-ratio cap.
+  GPU readback.
 - iOS Simulator: `ios-smoke.mjs` supports `--canvas-only`, `--frame`, `--replay`, `--render-state`, `--lifecycle --frame
   1800`, `--max-frames`, `--runtime-trace`; staged bundles need `--build-directory`. iOS 16.2 WebKit has no WebGPU.
 - Fresh drivers can pass `applied-group-pose-v1` as the final `suiteBrowserModule`/`suiteBrowserModuleDigest` argument to

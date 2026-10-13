@@ -82,10 +82,12 @@ Rules:
 
 - One engine per entry setup. Rebinding an engine alias refuses.
 - `msaaSamples`: 1 for numeric 1, else 4; other constants refuse.
-- Native loops own extent refresh; `resizeEngine` only applies `maxDevicePixelRatio` writes.
+- Native loops own extent refresh; `resizeEngine` only applies `maxDevicePixelRatio`.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
-- `maxDevicePixelRatio` writes (application realm) size a DOM canvas backing store at `resizeEngine` and the next frame
-  head; the window composites it scaled. The `createEngine` option keeps the platform rules below.
+- `maxDevicePixelRatio` (`createEngine` option or write) sizes a DOM canvas backing store, on every platform, at
+  `createEngine`, `resizeEngine` and each frame head of an application realm; windows keep their native density and
+  composite the canvas scaled. Without a realm the single surface has devicePixelRatio 1: a static cap of 1 or more
+  (or not positive) changes nothing, any other cap selects a realm.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
@@ -107,9 +109,9 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 [iOS](development.md#ios).
 
 - Android: ARM64/x86_64 APKs, API 28+ (retained UI 29+), landscape immersive fullscreen, Back exits. Multiple native
-  windows unsupported. `maxDevicePixelRatio` caps the render buffer.
-- iOS: 16+, SDL UIKit. Landscape fullscreen at native density or `maxDevicePixelRatio=1`; other caps refuse. Device
-  bundles are unsigned and unqualified; no signing or App Store flow.
+  windows unsupported.
+- iOS: 16+, SDL UIKit. Landscape fullscreen at native density. Device bundles are unsigned and unqualified; no signing
+  or App Store flow.
 
 ## Loading
 

@@ -5,6 +5,7 @@
 #include <bblite/pal_offscreen.hpp>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <SDL3/SDL.h>
 #ifdef __ANDROID__
 #include <jni.h>
@@ -40,7 +41,8 @@ inline void trace_run_window(const char* action, SDL_Window* window) {
     std::fprintf(stderr, " position=%d,%d size=%dx%d\n", x, y, width, height);
 }
 
-inline void configure_run_surface(const EngineOptions& options) {
+// Native windows keep their platform density; `maxDevicePixelRatio` sizes canvases only.
+inline void configure_run_surface([[maybe_unused]] const EngineOptions& options) {
 #ifdef __ANDROID__
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
     auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
@@ -50,7 +52,8 @@ inline void configure_run_surface(const EngineOptions& options) {
     const jclass type = env->GetObjectClass(activity);
     const jmethodID configure = env->GetMethodID(type, "configureSurface", "(D)Z");
     const bool configured =
-        configure && env->CallBooleanMethod(activity, configure, options.max_device_pixel_ratio);
+        configure && env->CallBooleanMethod(activity, configure,
+                                            std::numeric_limits<double>::infinity());
     const bool exception = env->ExceptionCheck();
     if (exception)
         env->ExceptionClear();
@@ -58,22 +61,6 @@ inline void configure_run_surface(const EngineOptions& options) {
     env->DeleteLocalRef(activity);
     if (!configured || exception)
         throw std::runtime_error("Android surface configuration failed.");
-#elif defined(SDL_PLATFORM_IOS)
-    const double cap = options.max_device_pixel_ratio;
-    if (std::isnan(cap) || cap <= 0) {
-        throw std::runtime_error("iOS maxDevicePixelRatio must be positive.");
-    }
-    if (std::isfinite(cap) && cap != 1.0) {
-        const auto* mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-        if (!mode)
-            throw std::runtime_error("iOS display density is unavailable.");
-        if (cap < mode->pixel_density) {
-            throw std::runtime_error(
-                "iOS supports maxDevicePixelRatio=1 or a cap at least the native display density.");
-        }
-    }
-#else
-    (void)options;
 #endif
 }
 
@@ -82,11 +69,7 @@ inline SDL_WindowFlags run_window_flags(SDL_WindowFlags flags,
 #ifdef __ANDROID__
     flags |= SDL_WINDOW_FULLSCREEN | selected_gpu_backend().window_flags;
 #elif defined(SDL_PLATFORM_IOS)
-    flags |= SDL_WINDOW_FULLSCREEN;
-    if (options.max_device_pixel_ratio == 1.0)
-        flags &= ~SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    else
-        flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    flags |= SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #endif
     return flags;
 }
@@ -96,9 +79,6 @@ inline float window_render_density(SDL_Window* window,
     float density = SDL_GetWindowDisplayScale(window);
     if (density <= 0)
         density = 1;
-#ifdef __ANDROID__
-    density = std::min(density, static_cast<float>(options.max_device_pixel_ratio));
-#endif
     return density;
 }
 

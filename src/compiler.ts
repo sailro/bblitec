@@ -99,6 +99,7 @@ import {
 } from "./compiler/text-surface.js";
 import { promoteLiveTextData } from "./compiler/intrinsics/text.js";
 import { emitSplatStreamAssignment } from "./compiler/splat-stream-surface.js";
+import { surfaceResizeFunction } from "./compiler/surface-pixel-ratio.js";
 import { retainedOptions } from "./compiler/intrinsics/retained-options.js";
 import { compileNodeInputMutation } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
@@ -4249,7 +4250,7 @@ class Compiler implements LoweringServices {
         }
         let msaaSamples: 1 | 4 | "runtime" = 4;
         let sampleOverride: string | undefined;
-        let pixelRatioCap: number | undefined;
+        let pixelRatioCap: string | undefined;
         let highPrecisionMatrix = false;
         let floatingOrigin = false;
         let requiredLimits: string | undefined;
@@ -4328,8 +4329,7 @@ class Compiler implements LoweringServices {
         ];
         if (sampleOverride || pixelRatioCap !== undefined)
             engineOptions.push(sampleOverride ?? "0");
-        if (pixelRatioCap !== undefined)
-            engineOptions.push(String(pixelRatioCap));
+        if (pixelRatioCap !== undefined) engineOptions.push(pixelRatioCap);
         let engineOptionsCpp = `bbl::EngineOptions{${engineOptions.join(", ")}}`;
         if (requiredLimits) {
             const named = this.allocateTemporaryCppName("engine_options");
@@ -4357,6 +4357,12 @@ class Compiler implements LoweringServices {
                 ? "std::shared_ptr<bbl::Engine>"
                 : "bbl::Engine",
         );
+        // The pin's createEngine resizes its surface once; the cap writes share this resize.
+        if (pixelRatioCap !== undefined && this.options.workers)
+            this.emit({
+                kind: "expression",
+                code: `bbl::install_surface_resize(*${cppName}, &bblscene::${surfaceResizeFunction(this)});`,
+            });
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers)
             this.engineCreationExecution = {

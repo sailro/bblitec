@@ -18,6 +18,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // by reach order. The intrinsic lowerer in engine.ts calls these
 // through its context.
 import ts from "typescript";
+import { ApplicationRealmRequired } from "../worker-modules.js";
 import { handleCppType } from "../data-types.js";
 import type {
     GeometryOutputTaskManifest,
@@ -726,30 +727,44 @@ interface EnginePrecisionPolicy {
 }
 
 /**
- * Validate the DOM surface's device-pixel-ratio cap for a native surface.
- *
- * Desktop windows retain their requested backing size. Android surfaces use
- * the cap to size their buffers independently of the full-screen view.
+ * `createEngine`'s `maxDevicePixelRatio`, stored as the pin stores it
+ * (`?? Infinity`, unvalidated) for its `resizeSurface` to apply. Without an
+ * application realm the single native surface reports devicePixelRatio 1,
+ * where `Math.min(1, cap)` keeps the extent unless 0 < cap < 1; any other cap
+ * selects the realm, whose DOM canvas runs the lowered resize.
  */
 export function compileEnginePixelRatioCap(
-    context: PositiveIntegerContext & {
-        objectProperty(
-            options: ts.ObjectLiteralExpression,
-            name: string,
-        ): ts.Expression | undefined;
-        fail(node: ts.Node, message: string): never;
-    },
+    context: PositiveIntegerContext &
+        Pick<
+            LoweringServices,
+            | "objectProperty"
+            | "options"
+            | "compileNumber"
+            | "emit"
+            | "allocateTemporaryCppName"
+        >,
     options: ts.ObjectLiteralExpression,
-): number | undefined {
+): string | undefined {
     const expression = context.objectProperty(options, "maxDevicePixelRatio");
     if (!expression) return;
-    const cap = compileStaticNumber(context, expression, "maxDevicePixelRatio");
-    if (cap < 1) {
-        context.fail(
-            expression,
-            "Native surfaces support maxDevicePixelRatio values of 1 or greater: their requested size is already a one-to-one backing-store size.",
-        );
+    if (!context.options.workers) {
+        const cap = staticNumberValue(context, expression);
+        if (cap === undefined) throw new ApplicationRealmRequired();
+        const scale = Math.min(1, cap);
+        if (scale > 0 && scale < 1) throw new ApplicationRealmRequired();
+        return Number.isFinite(cap)
+            ? String(cap)
+            : Number.isNaN(cap)
+              ? "std::numeric_limits<double>::quiet_NaN()"
+              : "std::numeric_limits<double>::infinity()";
     }
+    const cap = context.allocateTemporaryCppName("max_device_pixel_ratio");
+    context.emit({
+        kind: "declaration",
+        type: "const double",
+        name: cap,
+        initializer: context.compileNumber(expression, "double"),
+    });
     return cap;
 }
 

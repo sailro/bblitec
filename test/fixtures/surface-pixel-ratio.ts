@@ -10,10 +10,10 @@ import {
     startEngine,
 } from "@babylonjs/lite";
 
-// Runtime `maxDevicePixelRatio` writes: one followed by `resizeEngine`, and a
-// listener-style one the next frame head applies.
+// `maxDevicePixelRatio` as a createEngine option, a write followed by
+// `resizeEngine`, and a listener-style write the next frame head applies.
 const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-const engine = await createEngine(canvas);
+const engine = await createEngine(canvas, { maxDevicePixelRatio: 0.75 });
 const scene = createSceneContext(engine);
 scene.camera = createFreeCamera({ x: 0, y: 0, z: -4 }, { x: 0, y: 0, z: 0 });
 const box = createBox(engine, 1);
@@ -36,9 +36,11 @@ let renderScale = 0.5;
 const resolvedRenderScale = (): number =>
     Math.min(window.devicePixelRatio || 1, renderScale);
 
-if (engine.maxDevicePixelRatio !== Infinity) throw new Error("default cap");
+if (engine.maxDevicePixelRatio !== 0.75) throw new Error("option cap");
+expect("option", Math.min(window.devicePixelRatio || 1, 0.75));
 await startEngine(engine);
 await frame();
+expect("option frame", Math.min(window.devicePixelRatio || 1, 0.75));
 engine.maxDevicePixelRatio = resolvedRenderScale();
 resizeEngine(engine);
 expect("resize", resolvedRenderScale());
