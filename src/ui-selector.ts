@@ -37,6 +37,8 @@ interface UiSelectorTest {
     kind: UiSelectorTestKind;
     name: string;
     value: string;
+    /** The quote delimiting an attribute value, when parsing asked for it. */
+    quote?: '"' | "'";
     alternatives?: UiSelectorStep[][];
     a?: number;
     b?: number;
@@ -55,7 +57,7 @@ export interface UiSelectorStep {
 
 export function parseUiSelectorSequence(
     source: string,
-    options: { preserveNames?: boolean } = {},
+    options: { preserveNames?: boolean; quotes?: boolean } = {},
     depth = 0,
 ): UiSelectorStep[] | undefined {
     if (depth > 64) return undefined;
@@ -98,14 +100,21 @@ export function parseUiSelectorSequence(
                 rest = rest.slice(simple[0].length);
             } else if (attribute) {
                 const value = attribute[2] ?? attribute[3] ?? attribute[4];
-                if (value !== undefined && /[\r\n\t\0]/.test(value))
+                if (value !== undefined && /[\r\n\f\t\0]/.test(value))
                     return undefined;
+                const quote =
+                    attribute[2] !== undefined
+                        ? '"'
+                        : attribute[3] !== undefined
+                          ? "'"
+                          : undefined;
                 tests.push({
                     kind: value === undefined ? "attribute" : "equals",
                     name: options.preserveNames
                         ? attribute[1]!
                         : attribute[1]!.toLowerCase(),
                     value: value ?? "",
+                    ...(options.quotes && quote ? { quote } : {}),
                 });
                 rest = rest.slice(attribute[0].length);
             } else if (state) {
@@ -205,6 +214,73 @@ export function parseUiSelectorSequence(
         else return undefined;
     }
     return steps.length ? steps : undefined;
+}
+
+/** One quoted attribute value of a selector template, in source order. */
+export interface UiSelectorTemplateValue {
+    /** The value as parsed, its runtime texts marked. */
+    marked: string;
+    quote: '"' | "'";
+    /** Static text, or the index of a runtime text. */
+    parts: Array<string | number>;
+}
+
+/** Private-use marks around a runtime text's index; admitted selectors never spell them. */
+const UI_SELECTOR_MARK = /(\d+)/g;
+
+/**
+ * A selector list with runtime texts between static `texts`, parsed by the
+ * same grammar as a literal selector with each runtime text marked. Each
+ * runtime text must lie inside one quoted attribute value, where its
+ * characters can be checked at runtime without changing the parse. A
+ * string is the refusal.
+ */
+export function parseUiSelectorTemplate(
+    texts: readonly string[],
+):
+    | { sequences: UiSelectorStep[][]; values: UiSelectorTemplateValue[] }
+    | string {
+    if (texts.some((text) => /[]/.test(text)))
+        return "its static text holds private-use characters U+E000/U+E001";
+    const join = (hole: (index: number) => string): string =>
+        texts.reduce((source, text, index) =>
+            index === 0 ? text : source + hole(index - 1) + text,
+        );
+    const parse = (source: string): UiSelectorStep[][] | undefined => {
+        const sequences = splitUiSelectorList(source).map((part) =>
+            parseUiSelectorSequence(part, {
+                preserveNames: true,
+                quotes: true,
+            }),
+        );
+        return sequences.length &&
+            sequences.every((sequence) => sequence !== undefined)
+            ? sequences
+            : undefined;
+    };
+    const sequences = parse(join((index) => `${index}`));
+    if (!sequences)
+        return parse(join(() => "x"))
+            ? "runtime text is admitted only inside a quoted attribute value"
+            : "it is not admitted by the retained selector grammar";
+    const values: UiSelectorTemplateValue[] = [];
+    for (const sequence of sequences)
+        for (const test of uiSelectorSequenceTests(sequence)) {
+            if (/[]/.test(test.name))
+                return "runtime text is admitted only inside a quoted attribute value";
+            if (!/[]/.test(test.value)) continue;
+            if (test.kind !== "equals" || !test.quote)
+                return "runtime text is admitted only inside a quoted attribute value";
+            values.push({
+                marked: test.value,
+                quote: test.quote,
+                parts: test.value
+                    .split(UI_SELECTOR_MARK)
+                    .map((part, index) => (index % 2 ? Number(part) : part))
+                    .filter((part) => part !== ""),
+            });
+        }
+    return { sequences, values };
 }
 
 /** The id a selector names when it is one ID selector (`"#id"`). */
@@ -380,11 +456,13 @@ export function uiSelectorSequenceIsConditional(
 /**
  * A selector sequence as C++. A nested selector list (`:not`, `:is`,
  * `:has`) is its own statement: MSVC's front end is exponential in the
- * nesting depth of one initializer.
+ * nesting depth of one initializer. `capturing` lets those statements read
+ * the enclosing function's locals, which `quote` may name.
  */
 export function uiSelectorSequenceCpp(
     steps: readonly UiSelectorStep[],
     quote: (value: string) => string,
+    capturing = false,
 ): string {
     const locals: string[] = [];
     const sequence = (steps: readonly UiSelectorStep[]): string =>
@@ -408,6 +486,6 @@ export function uiSelectorSequenceCpp(
     };
     const top = sequence(steps);
     return locals.length
-        ? `[] { ${locals.join(" ")} return std::vector<bbl::UiSelectorStep>${top}; }()`
+        ? `[${capturing ? "&" : ""}] { ${locals.join(" ")} return std::vector<bbl::UiSelectorStep>${top}; }()`
         : top;
 }

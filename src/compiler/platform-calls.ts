@@ -36,19 +36,16 @@ import {
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
-import { isPinnedType, type DataType } from "./data-types.js";
+import { isPinnedType } from "./data-types.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
 import { compilePointerCapture } from "./pointer-capture.js";
 import { compileDateParse, compileDateUtc } from "./dates.js";
+import { uiSelectorId } from "../ui-selector.js";
 import {
-    parseUiSelectorSequence,
-    splitUiSelectorList,
-    uiSelectorSequenceCpp,
-    uiSelectorSequenceTests,
-    isUiSelectorState,
-    uiSelectorId,
-} from "../ui-selector.js";
+    classifyUiQuerySelector,
+    uiQuerySelectorCpp,
+} from "./ui-query-selectors.js";
 
 type PlatformEventTarget = "window" | "document" | "canvas";
 
@@ -108,6 +105,7 @@ interface PlatformCallContext
         CharacterIntrinsicContext,
         Pick<
             LoweringServices,
+            | "absenceTags"
             | "assets"
             | "assetOutputs"
             | "assetPayloads"
@@ -1911,6 +1909,7 @@ export class PlatformCalls {
                 this.context.requireEngine(element, call),
                 element.cpp,
                 presenceFlagCpp(element),
+                element,
             );
         }
         if (element && callee.name.text === "querySelector") {
@@ -2695,118 +2694,62 @@ export class PlatformCalls {
         );
     }
 
-    private deferUiQuery(
-        call: ts.CallExpression,
-        method: string,
-        engine: string,
-        root: string,
-        capability: "dynamic-selector" | "interaction-selector",
-    ): Value {
-        // Receiver and argument effects precede the missing selector capability.
-        this.context.emit({
-            kind: "expression",
-            code: `static_cast<void>(${engine});`,
-        });
-        if (root !== "{}")
-            this.context.emit({
-                kind: "expression",
-                code: `static_cast<void>(${root});`,
-            });
-        this.context.emitDiscardedValue({
-            kind: "string",
-            cpp: this.ui.uiStringCpp(argumentAt(call, 0), "DOM selector"),
-        });
-        const type: DataType =
-            method === "matches"
-                ? { kind: "boolean" }
-                : method === "querySelectorAll"
-                  ? {
-                        kind: "vector",
-                        element: { kind: "handle", handle: "ui-element" },
-                    }
-                  : {
-                        kind: "optional",
-                        inner: { kind: "handle", handle: "ui-element" },
-                    };
-        const trap = this.context.deferredCapabilities.emitKnown(
-            call,
-            {
-                id: `dom:${method}.${capability}`,
-                origin: "dom",
-                operation: "call",
-                signature: this.context.checker.signatureToString(
-                    this.context.checker.getResolvedSignature(call) ??
-                        this.context.fail(
-                            call,
-                            "A deferred DOM query requires its declared signature.",
-                        ),
-                    call,
-                ),
-                timing: "throw",
-            },
-            type,
-        );
-        return { ...trap!, engineCpp: engine };
-    }
-
     private compileUiQuery(
         call: ts.CallExpression,
         method: string,
         engine: string,
         root: string,
         found?: string,
+        receiver?: Value,
     ): Value {
         this.context.expectArgumentCount(call, 1, 1);
-        if (
-            this.context.options.deferredCapabilities &&
-            this.ui.tryUiStaticString(argumentAt(call, 0)) === undefined
-        )
-            return this.deferUiQuery(
-                call,
-                method,
-                engine,
-                root,
-                "dynamic-selector",
-            );
-        const source = this.context.compileStringLiteral(argumentAt(call, 0));
-        const sequences = splitUiSelectorList(source).map((part) => {
-            const sequence = parseUiSelectorSequence(part, {
-                preserveNames: true,
-            });
-            if (!sequence)
-                this.context.fail(
-                    call,
-                    `Retained DOM query selector '${part}' is not lowered.`,
-                );
-            return sequence;
-        });
-        const state = sequences
-            .flatMap((sequence) => [...uiSelectorSequenceTests(sequence)])
-            .find((test) => isUiSelectorState(test.kind));
-        if (state) {
-            if (this.context.options.deferredCapabilities)
-                return this.deferUiQuery(
-                    call,
-                    method,
-                    engine,
-                    root,
-                    "interaction-selector",
-                );
-            this.context.fail(
-                call,
-                `Retained DOM query state ':${state.kind}' requires an interaction snapshot.`,
-            );
-        }
-        const selectors = sequences.map((sequence) =>
-            uiSelectorSequenceCpp(sequence, (text) =>
-                this.context.cppString(text),
-            ),
+        const argument = argumentAt(call, 0);
+        const selector = classifyUiQuerySelector(
+            this.context,
+            this.ui,
+            argument,
+            call,
         );
-        if (!selectors.length)
-            this.context.fail(call, "Retained DOM query requires a selector.");
+        if (selector.kind !== "literal" && receiver) {
+            // The selector's runtime text is evaluated after its receiver,
+            // and only when an optional chain finds one.
+            if (found && ts.isOptionalChain(call))
+                return (
+                    this.context.dataLowerer.optionalAccess(
+                        receiver,
+                        call,
+                        (present) =>
+                            this.compileUiQuery(
+                                call,
+                                method,
+                                engine,
+                                present.cpp,
+                                undefined,
+                                present,
+                            ),
+                    ) ??
+                    this.context.fail(
+                        call,
+                        "A retained DOM query through an optional chain requires an element receiver.",
+                    )
+                );
+            root = pinDetached(
+                this.context,
+                receiver,
+                "query_root",
+                ts.isPropertyAccessExpression(call.expression)
+                    ? call.expression.expression
+                    : undefined,
+            ).cpp;
+        }
+        const terms = uiQuerySelectorCpp(
+            this.context,
+            this.ui,
+            selector,
+            argument,
+        );
         this.context.reachFeature("ui:rml", call);
         this.context.reachJsData();
-        const terms = `{${selectors.join(", ")}}`;
         if (method === "matches")
             return this.elementBoolean(
                 found,

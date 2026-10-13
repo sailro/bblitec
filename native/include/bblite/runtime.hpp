@@ -4041,7 +4041,10 @@ struct UiElementRecord {
     bool attached_to_root = false;
     /** The latest scrollIntoView request, kept for Window snapshots. */
     std::optional<UiScrollIntoView> scroll_into_view;
+    /** `ui_pointer_hover`/`ui_pointer_active` as the UI projection's last update applied them. */
+    std::uint8_t pointer_states = 0;
 };
+inline constexpr std::uint8_t ui_pointer_hover = 1, ui_pointer_active = 2;
 
 /**
  * The pixels of a `width` x `height` target that a canvas laid out in a
@@ -4452,6 +4455,8 @@ struct Engine {
     void (*ui_link_navigation)(const std::string& url) = nullptr;
     /** A realm host can synchronously publish pending edits before a source layout read. */
     UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
+    /** A realm host adopts its display's latest `pointer_states` before a selector reads them. */
+    void (*ui_adopt_pointer_states)(Engine&) = nullptr;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
     std::uint64_t ui_revision = 0;
     std::uint64_t ui_text_revision = 0;
