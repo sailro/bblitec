@@ -11,6 +11,7 @@
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_packaged_responses.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -31,22 +32,25 @@ std::string render(pal::AudioContextHandle context, int frames) {
         labsound_fixture::peak(recorded, recorded.size() - frames / 2, recorded.size()));
 }
 
+/** A fixture packages its files where they are. */
+std::string fixture_path(const std::string& path) { return path; }
+
 js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& lines) {
-    // The engine `createAudioEngineAsync` builds, its master output at half.
-    const auto context = pal::audio_create_context();
-    const auto out = pal::audio_create_gain(context);
-    pal::audio_connect(out, pal::audio_destination(context));
-    const auto bus = pal::audio_create_gain(context);
-    pal::audio_connect(bus, out);
-    pal::audio_param_set_value(pal::audio_node_param(out, pal::AudioParamName::Gain), 0.5f);
-    AudioEngineHandle engine{context, bus, out};
+    // The pin's own engine at half master volume, on a context the call site opened.
+    AudioEngineOptions engine_options{};
+    engine_options.audio_context = pal::audio_create_context();
+    engine_options.volume = 0.5;
+    const auto engine = co_await create_audio_engine_async(engine_options);
+    const auto context = engine.context;
 
     const auto tap = create_audio_engine_media_stream(engine);
     lines.push_back("tracks " +
                     std::to_string(pal::media_stream_tracks(tap->stream, "audio").size()) +
                     " disposers " + std::to_string(engine.disposers.size()));
 
-    pal::register_packaged_responses("http://localhost/", {{"/sounds/tone.wav", wav}});
+    const std::array<pal::PackagedFetchEntry, 1> responses{
+        {{"/sounds/tone.wav", "http://localhost/sounds/tone.wav", wav}}};
+    pal::register_packaged_responses("http://localhost/", fixture_path, responses);
     StaticSoundOptions options{};
     options.loop = true;
     const auto sound =

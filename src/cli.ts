@@ -1576,6 +1576,9 @@ async function main(): Promise<void> {
         // the composition/lowering layer can name the scene call site that
         // pulled the owning feature in.
         featureSites: result.manifest.featureSites,
+        ...(result.manifest.audioLibraryRoots
+            ? { audioLibraryRoots: result.manifest.audioLibraryRoots }
+            : {}),
         sourceMeshWalks: (result.manifest.meshWalks?.length ?? 0) > 0,
         ...(assetJoin.assetLightNodes !== undefined
             ? { assetLightNodes: assetJoin.assetLightNodes }

@@ -8,6 +8,10 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import {
+    audioLibraryInclude,
+    ENGINE_PARAMETER_STUBS,
+} from "./static-sound-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
 
@@ -50,6 +54,7 @@ function checkMainBusStorage(declarations: string): void {
             std::vector<std::pair<unsigned int, unsigned int>> edges;
         }
         namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+        ${ENGINE_PARAMETER_STUBS}
         namespace bbl::pal {
             AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&) { return {++contexts}; }
             AudioNodeHandle audio_create_gain(AudioContextHandle context) {
@@ -61,6 +66,7 @@ function checkMainBusStorage(declarations: string): void {
             void audio_disconnect(AudioNodeHandle) {}
         }
         int main() {
+            // The entry realm awaits each lowered engine in place.
             assert(generated_main() == 0);
             const std::vector<std::pair<unsigned int, unsigned int>> expected{
                 {1, 101}, {2, 1}, {4, 2}, {3, 4}, {5, 102}, {6, 5}, {8, 6}, {7, 8}};
@@ -73,6 +79,7 @@ function checkMainBusStorage(declarations: string): void {
         `/Fe:${executable}`,
         "/I",
         output,
+        ...audioLibraryInclude("audio-engine-captures-check", result.manifest),
         file,
     ]);
     assert.equal(execFileSync(executable, { encoding: "utf8" }).trim(), "");
@@ -122,7 +129,7 @@ test(
     },
 );
 
-test("a realm's audio engine opens its device in a native job and builds the pin's output graph on the realm", () => {
+test("a realm's audio engine opens its device in a native job and runs the pin's engine on the realm", () => {
     const output = resolve("artifacts/audio-engine-realm");
     mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "worker.ts"), "self.close();");
@@ -138,20 +145,40 @@ test("a realm's audio engine opens its device in a native job and builds the pin
     `,
         { fileName: join(output, "entry.ts") },
     );
-    const opening = result.cpp.indexOf("bbl::pal::audio_create_context_async(");
-    assert.ok(
-        opening >= 0,
-        "The realm engine does not open its context asynchronously.",
-    );
-    const graph = result.cpp.slice(
-        opening,
-        result.cpp.indexOf("return bbl::AudioEngineHandle{", opening),
-    );
+    // The device opens in a native job; once it is open, the pin's own
+    // `createAudioEngineAsync` builds the engine on the realm.
     assert.match(
-        graph,
-        /\.then\(\[\]\(const bbl::pal::AudioContextHandle& \w+_ctx\)/,
+        result.cpp,
+        /bbl::pal::audio_create_context_async\(\w+\)\.then\(bbl::js::make_closure\(std::tuple\{\w+\}, \[\]\(auto& captured, const bbl::pal::AudioContextHandle& context\) \{ auto options = std::get<0>\(captured\); options\.audio_context = context; return bbl::create_audio_engine_async\(std::move\(options\)\); \}\)\)/,
     );
-    assert.equal(graph.match(/bbl::pal::audio_create_gain\(/g)?.length, 2);
-    assert.equal(graph.match(/bbl::pal::audio_connect\(/g)?.length, 2);
     assert.doesNotMatch(result.cpp, /bbl::pal::audio_create_context\(/);
+    assert.deepEqual(result.manifest.audioLibraryRoots, [
+        "createAudioEngineAsync",
+    ]);
+});
+
+test("one audio library serves every realm: the functions any realm calls", () => {
+    const output = resolve("artifacts/audio-library-realms");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(
+        join(output, "worker.ts"),
+        `import { createAudioEngineAsync, getMasterVolume } from "@babylonjs/lite";
+        const audio = await createAudioEngineAsync();
+        self.postMessage(getMasterVolume(audio));`,
+    );
+    const result = compileSource(
+        `import { createAudioEngineAsync, setMasterVolume } from "@babylonjs/lite";
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+        worker.terminate();
+        async function main(): Promise<void> {
+            setMasterVolume(await createAudioEngineAsync(), 0.5);
+        }
+        void main();`,
+        { fileName: join(output, "entry.ts") },
+    );
+    assert.deepEqual([...(result.manifest.audioLibraryRoots ?? [])].sort(), [
+        "createAudioEngineAsync",
+        "getMasterVolume",
+        "setMasterVolume",
+    ]);
 });

@@ -8,6 +8,10 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import {
+    audioLibraryInclude,
+    ENGINE_PARAMETER_STUBS,
+} from "./static-sound-fixture.js";
 
 const deferredCapabilities = "runtime-throw" as const;
 
@@ -262,6 +266,7 @@ test("deferred promise methods reject on the realm reaction queue", () => {
         tools,
         "deferred-capabilities/promises",
         result.cpp +
+            ENGINE_PARAMETER_STUBS +
             `
         namespace bbl::pal {
             AudioSession::~AudioSession() = default;
@@ -273,26 +278,36 @@ test("deferred promise methods reject on the realm reaction queue", () => {
             void audio_connect(AudioNodeHandle,AudioNodeHandle) {}
         }
     `,
-        { flags: ["/DBBLITE_WORKERS=1"], expectedOutput: "", timeoutMs: 10000 },
+        {
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                ...audioLibraryInclude(
+                    "deferred-capabilities/promises",
+                    result.manifest,
+                ),
+            ],
+            expectedOutput: "",
+            timeoutMs: 10000,
+        },
     );
 });
 
 test("pinned public missing calls preserve engine arguments and original strict refusal", () => {
     const source = `
-        import {createAudioEngineAsync,setMasterVolume} from "@babylonjs/lite";
+        import {createAudioEngineAsync,createAudioBusAsync} from "@babylonjs/lite";
         const audio=await createAudioEngineAsync();
-        try{setMasterVolume(audio,0.5);}catch{}
+        try{await createAudioBusAsync(audio,"bus");}catch{}
     `;
     assert.throws(
         () => compileSource(source),
-        /audio 'setMasterVolume' is not lowered/,
+        /audio 'createAudioBusAsync' is not lowered/,
     );
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:setMasterVolume"],
+        ["babylon:createAudioBusAsync"],
     );
-    assert.match(result.cpp, /deferred_capability<void>/);
+    assert.match(result.cpp, /deferred_capability/);
 });
 
 test("pinned geometry descriptor batch retains declared result shapes", () => {
@@ -301,6 +316,7 @@ test("pinned geometry descriptor batch retains declared result shapes", () => {
         "enableThinInstanceDynamicDrawCount(mesh)",
         "setThinInstanceDrawCount(mesh,2)",
         "getMasterVolume(audio)",
+        "createAudioBusAsync(audio,'bus')",
     ];
     const result = compileSource(
         `
@@ -316,10 +332,9 @@ test("pinned geometry descriptor batch retains declared result shapes", () => {
     );
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:getMasterVolume"],
+        ["babylon:createAudioBusAsync"],
     );
-    // A number-returning capability keeps its declared result shape.
-    assert.match(result.cpp, /deferred_capability<double>/);
+    assert.match(result.cpp, /bbl::get_master_volume\(/);
     assert.match(result.cpp, /bbl::dispose_mesh_gpu\(/);
     assert.match(result.cpp, /bbl::enable_thin_instance_dynamic_draw_count\(/);
     assert.match(result.cpp, /bbl::set_thin_instance_draw_count\(/);
@@ -367,15 +382,19 @@ test("deferred result templates never construct successful payloads", () => {
 test("deferred engine arguments retain ordinary checked reads", () => {
     const result = compileSource(
         `
-        import {createAudioEngineAsync,setMasterVolume} from "@babylonjs/lite";
-        const audio=await createAudioEngineAsync();
-        const engines=[audio];
-        let index=0; let caught=0;
-        try{setMasterVolume(engines[++index]!,0.5);}catch(error){
-            if(error.message.includes("Deferred native capability"))throw new Error("argument read was dropped");
-            ++caught;
+        import {createAudioEngineAsync,createAudioBusAsync} from "@babylonjs/lite";
+        async function main():Promise<void>{
+            const audio=await createAudioEngineAsync();
+            const engines=[audio];
+            let index=0; let caught=0;
+            try{await createAudioBusAsync(engines[++index]!,"bus");}catch(error){
+                if(error.message.includes("Deferred native capability"))throw new Error("argument read was dropped");
+                ++caught;
+            }
+            if(index!==1||caught!==1)throw new Error("argument effects");
+            globalThis.close();
         }
-        if(index!==1||caught!==1)throw new Error("argument effects");
+        void main();
     `,
         { deferredCapabilities },
     );
@@ -385,16 +404,29 @@ test("deferred engine arguments retain ordinary checked reads", () => {
         tools,
         "deferred-capabilities/engine-arguments",
         result.cpp +
+            ENGINE_PARAMETER_STUBS +
             `
         namespace bbl::pal {
-        AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&) { return {}; }
+        AudioSession::~AudioSession() = default;
+        bool audio_begin_context() { return true; }
+        std::shared_ptr<AudioPlaybackDevice> audio_open_device(bool) { return {}; }
+        AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&,std::shared_ptr<AudioPlaybackDevice>) { return {1}; }
         AudioNodeHandle audio_create_gain(AudioContextHandle) { return {}; }
         AudioNodeHandle audio_destination(AudioContextHandle) { return {}; }
         void audio_connect(AudioNodeHandle, AudioNodeHandle) {}
-        AudioSession::~AudioSession() = default;
         }
     `,
-        { expectedOutput: "" },
+        {
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                ...audioLibraryInclude(
+                    "deferred-capabilities/engine-arguments",
+                    result.manifest,
+                ),
+            ],
+            expectedOutput: "",
+            timeoutMs: 10000,
+        },
     );
 });
 

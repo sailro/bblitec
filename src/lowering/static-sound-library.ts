@@ -1,17 +1,19 @@
 /**
- * The pin's static-sound family lowered whole: `static-sound.ts` and the
- * modules it reaches (the sound buffer, sub-graph, ramped parameters,
- * signals, buses), as one `PinnedRecordModel`.
+ * The pin's audio family lowered from its own declarations, as one
+ * `PinnedRecordModel`: the engine (`audio-engine.ts` with its buses, ramped
+ * parameters and signals) and, as a program reaches them, `static-sound.ts`
+ * with the modules it reaches (the sound buffer and sub-graph).
  *
- * Web Audio is the application surface's own (`webAudioRecords`); the
- * engine is the native `bbl::AudioEngineHandle` the engine intrinsic
- * builds (`bblite/audio_types.hpp`), read through views of its fields: its
- * context and clock, its main bus (whose `_in`/`_out` are the bus gain),
- * its shared `_sounds` set (every sound is an `AudioEngineSound`, so
- * `disposeAudioEngine` disposes sounds and sources alike), its ramp
- * duration and format probes. The engine reports no statechange, so
- * subscribing to it -- a looped sound started while the context is not
- * running -- refuses at run time.
+ * Web Audio is the application surface's own (`webAudioRecords`). The
+ * engine is the native `bbl::AudioEngineHandle` (`bblite/audio_types.hpp`)
+ * the pin's own `createAudioEngineAsync` fills: the context its call site
+ * opened, the clock and state read from that context, the main output and
+ * bus records the pin builds, its master volume and ramp duration, its
+ * shared `_sounds` set (every sound is an `AudioEngineSound`, so
+ * `disposeAudioEngine` disposes sounds and sources alike) and its format
+ * probes. The engine reports no statechange, so subscribing to it -- a
+ * looped sound started while the context is not running -- refuses at run
+ * time.
  *
  * Spatial audio (`spatial.ts`) joins the model when a program reaches it,
  * as the pin tree-shakes it: a panner sub-node per sound and the engine's
@@ -23,6 +25,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
     PinnedRecordModel,
+    type CallAdapter,
     type MemberSpec,
     type PinnedCallable,
     type RecordShape,
@@ -49,10 +52,12 @@ import {
 } from "./web-platform-schema.js";
 
 const STATIC_SOUND = "src/audio/static-sound.ts";
+const AUDIO_ENGINE = "src/audio/audio-engine.ts";
 
 /** Every module the static-sound roots reach. */
-export const STATIC_SOUND_MODULES = [
+const STATIC_SOUND_MODULES = [
     STATIC_SOUND,
+    AUDIO_ENGINE,
     "src/audio/sound-buffer.ts",
     "src/audio/sound-sub-graph.ts",
     "src/audio/audio-param.ts",
@@ -60,18 +65,24 @@ export const STATIC_SOUND_MODULES = [
     "src/audio/audio-bus.ts",
     "src/audio/bus.ts",
     "src/audio/audio-fetch.ts",
-    "src/audio/audio-engine.ts",
 ] as const;
 
 /** The modules spatial audio adds, decomposing an attached target's matrix. */
-export const SPATIAL_MODULES = [
+const SPATIAL_MODULES = [
     "src/audio/spatial.ts",
     "src/math/decompose-mat4.ts",
     "src/math/create-quat-from-rotation-mat4.ts",
     "src/math/mat4-determinant3.ts",
 ] as const;
 
-/** The public functions a program calls, each lowered with what it reaches. */
+/** The engine functions a program calls. */
+export const ENGINE_ROOTS = [
+    "createAudioEngineAsync",
+    "setMasterVolume",
+    "getMasterVolume",
+] as const;
+
+/** The static-sound functions a program calls. */
 export const STATIC_SOUND_ROOTS = [
     "createSoundAsync",
     "playSound",
@@ -81,22 +92,39 @@ export const STATIC_SOUND_ROOTS = [
 ] as const;
 
 /** The spatial functions a program calls. */
-export const SPATIAL_ROOTS = [
+const SPATIAL_ROOTS = [
     "enableSpatial",
     "setSpatialPosition",
     "setSpatialListenerPosition",
 ] as const;
 
+/** The media-stream tap a program calls. */
+const MEDIA_STREAM_ROOTS = ["createAudioEngineMediaStream"] as const;
+
+/**
+ * Every public function of the family a program can call, each lowered
+ * with what it reaches; a program's header holds the ones it calls.
+ */
+export const AUDIO_LIBRARY_ROOTS: readonly string[] = [
+    ...ENGINE_ROOTS,
+    ...STATIC_SOUND_ROOTS,
+    ...SPATIAL_ROOTS,
+    ...MEDIA_STREAM_ROOTS,
+];
+
+/** The roots a program calls (its manifest's record), in the family's order. */
+export function audioLibraryRoots(called: readonly string[] = []): string[] {
+    return AUDIO_LIBRARY_ROOTS.filter((root) => called.includes(root));
+}
+
 const { number, string, void: none } = recordScalars;
 const typedF32: RecordShape = { kind: "typed", element: "f32" };
-const node = record("AudioNode");
 const engineRead = (shape: RecordShape, native: string): MemberSpec =>
     reads(shape, (owner) => `${native}(${owner}.context)`);
 
 /**
  * The engine's spatial state: the listener its slot holds (the lowered
- * listener, type-erased in the native handle) and the attached nodes'
- * per-frame updates.
+ * listener, type-erased in the native handle).
  */
 const engineSpatialMembers: readonly (readonly [string, MemberSpec])[] = [
     [
@@ -108,15 +136,69 @@ const engineSpatialMembers: readonly (readonly [string, MemberSpec])[] = [
             assign: (owner, value) => `${owner}.listener->listener = ${value}`,
         },
     ],
-    [
-        "_spatialUpdaters",
-        field({ kind: "set", element: fn([], none) }, "spatial_updaters"),
-    ],
 ];
+
+/** A bus record the native engine holds type-erased, set through its setter. */
+const engineBus = (
+    pinned: "MainOut" | "MainBus",
+    field: string,
+    setter: string,
+): MemberSpec => ({
+    shape: record(pinned),
+    access: (owner) =>
+        `std::static_pointer_cast<bbl::${pinned}>(${owner}.${field})`,
+    assign: (owner, value) => `${owner}.${setter}(${value})`,
+});
+
+/**
+ * Members of the pin's engine literal the native record computes or does not
+ * keep: its getters (views of the context it holds), the signals only the
+ * browser's statechange and click hooks fire, the settled ready promise, the
+ * offline flag (a native context renders in real time), the spatial update
+ * loop's stop, and the listener until spatial audio is reached.
+ */
+const engineOmissions = (spatial: boolean): ReadonlyMap<string, string> =>
+    new Map([
+        ...[
+            "state",
+            "audioContext",
+            "currentTime",
+            "_currentTime",
+            "onStateChanged",
+            "onUserGesture",
+        ].map(
+            (name) =>
+                [
+                    name,
+                    "the native engine computes it from its context",
+                ] as const,
+        ),
+        ...["_onStateChanged", "_onUserGesture"].map(
+            (name) =>
+                [
+                    name,
+                    "the native engine reports no statechange and installs no click hook",
+                ] as const,
+        ),
+        ["_isReady", "the engine is ready when its creation settles"],
+        ...["_mainOut", "_mainBus"].map(
+            (name) =>
+                [
+                    name,
+                    "the pin assigns it once the engine (its ramp clock) exists",
+                ] as const,
+        ),
+        ["_isOffline", "a native context renders in real time"],
+        ["_spatialAutoStop", "no spatial update loop runs on its own"],
+        ...(spatial
+            ? []
+            : [["_listener", "spatial audio is not reached"] as const]),
+    ]);
 
 /** The engine record and the views of it the pin's bodies take. */
 const engineRecords = (
     parts: readonly (readonly [string, MemberSpec])[],
+    spatial: boolean,
 ): readonly RecordSpec[] => [
     {
         // `RampClock` is the engine seen as a clock (`createRampParam`).
@@ -124,9 +206,17 @@ const engineRecords = (
         cpp: "AudioEngineHandle",
         reference: false,
         native: true,
+        omit: engineOmissions(spatial),
         members: members([
             [
                 "_ctx",
+                reads(
+                    record("BaseAudioContext"),
+                    (owner) => `${owner}.context`,
+                ),
+            ],
+            [
+                "audioContext",
                 reads(
                     record("BaseAudioContext"),
                     (owner) => `${owner}.context`,
@@ -139,12 +229,30 @@ const engineRecords = (
             ],
             ["state", engineRead(string, "bbl::pal::audio_state")],
             ["_rampDuration", field(number, "ramp_duration")],
-            ["_mainBus", reads(record("MainBus"), (owner) => owner)],
+            [
+                "_volume",
+                { shape: number, access: (owner) => `(*${owner}.volume)` },
+            ],
+            [
+                "_mainOut",
+                engineBus("MainOut", "main_out_record", "set_main_out"),
+            ],
+            [
+                "_mainBus",
+                engineBus("MainBus", "main_bus_record", "set_main_bus"),
+            ],
             [
                 "_sounds",
                 field(
                     { kind: "set", element: record("AudioEngineSound") },
                     "sources",
+                ),
+            ],
+            [
+                "_buses",
+                field(
+                    { kind: "set", element: record("AudioEngineSound") },
+                    "buses",
                 ),
             ],
             [
@@ -159,39 +267,20 @@ const engineRecords = (
                 "onStateChanged",
                 reads(record("AudioEngineStateSignal"), (owner) => owner),
             ],
-            // `_mainOut._gain` is the master output gain; a native engine
-            // backs a real-time context, so it is never offline.
-            ["_mainOut", reads(record("MainOut"), (owner) => owner)],
             ["_isOffline", reads(recordScalars.boolean, () => "false")],
+            [
+                "_spatialUpdaters",
+                field(
+                    { kind: "set", element: fn([], none) },
+                    "spatial_updaters",
+                ),
+            ],
             [
                 "_disposers",
                 field({ kind: "array", element: fn([], none) }, "disposers"),
             ],
             ...parts,
         ]),
-    },
-    {
-        // `createMainOut`'s output: the engine's master gain.
-        pinned: ["MainOut"],
-        cpp: "AudioEngineHandle",
-        reference: false,
-        native: true,
-        members: members([
-            ["_gain", reads(node, (owner) => `${owner}.main_out`)],
-        ]),
-    },
-    {
-        // `createMainBus`'s bus: its volume gain is its input and output.
-        pinned: ["MainBus"],
-        cpp: "AudioEngineHandle",
-        reference: false,
-        native: true,
-        members: members(
-            ["_in", "_out", "_volume"].map((name) => [
-                name,
-                reads(node, (owner) => `${owner}.main_bus`),
-            ]),
-        ),
     },
     {
         pinned: ["AudioEngineSound"],
@@ -219,7 +308,52 @@ const engineRecords = (
 ];
 
 /**
- * The family's own records, emitted from the pin's declarations: the
+ * The pin's browser hooks a native engine has nothing to install: no
+ * statechange event (so no auto-resume timer) and no autoplay gate (so no
+ * click unlock), the same early returns the pin takes where a context lacks
+ * `addEventListener` or no document exists; and a native context is never
+ * an `OfflineAudioContext`.
+ */
+const ENGINE_ADAPTERS: ReadonlyMap<string, CallAdapter> = new Map([
+    [`${AUDIO_ENGINE}#_wireStateAndResume`, { cpp: () => null }],
+    [`${AUDIO_ENGINE}#_wireUserGesture`, { cpp: () => null }],
+    [`${AUDIO_ENGINE}#isOfflineContext`, { cpp: () => "false" }],
+]);
+
+/**
+ * `options.audioContext ?? new AudioContext()`: the engine's call site opens
+ * the context (a device opening is the PAL's) and always passes it.
+ */
+const engineContextConstructor: CallAdapter = {
+    cpp: () =>
+        `[]() -> bbl::pal::AudioContextHandle { throw std::logic_error("createAudioEngineAsync adopts the context its call site opened."); }()`,
+};
+
+/**
+ * The engine's own records, emitted from the pin's declarations whenever the
+ * library is: its options, the ramp options its volume takes, its two buses
+ * and the ramped parameter each holds, and the signals it creates.
+ */
+const engineFamilyRecords: readonly RecordSpec[] = [
+    {
+        pinned: ["AudioEngineOptions"],
+        cpp: "AudioEngineOptions",
+        reference: false,
+    },
+    { pinned: ["RampOptions"], cpp: "RampOptions", reference: false },
+    { pinned: ["MainOut"], cpp: "MainOut", reference: true },
+    { pinned: ["MainBus"], cpp: "MainBus", reference: true },
+    { pinned: ["RampParam"], cpp: "RampParam", reference: true },
+    {
+        pinned: ["AudioSignalImpl", "AudioSignal"],
+        cpp: "AudioSignal",
+        reference: true,
+    },
+    { pinned: ["Entry"], cpp: "AudioSignalEntry", reference: true },
+];
+
+/**
+ * The static sound's records, emitted from the pin's declarations: the
  * records held by value first, as the structs holding them need them whole.
  */
 const soundRecords: readonly RecordSpec[] = [
@@ -234,7 +368,6 @@ const soundRecords: readonly RecordSpec[] = [
         cpp: "StaticSoundStoredOptions",
         reference: false,
     },
-    { pinned: ["RampOptions"], cpp: "RampOptions", reference: false },
     {
         pinned: ["SoundBufferOptions"],
         cpp: "SoundBufferOptions",
@@ -266,7 +399,6 @@ const soundRecords: readonly RecordSpec[] = [
     },
     { pinned: ["SoundInstance"], cpp: "SoundInstance", reference: true },
     { pinned: ["SoundSubGraph"], cpp: "SoundSubGraph", reference: true },
-    { pinned: ["RampParam"], cpp: "RampParam", reference: true },
     {
         pinned: ["SoundBuffer"],
         cpp: "SoundBuffer",
@@ -281,12 +413,6 @@ const soundRecords: readonly RecordSpec[] = [
     { pinned: ["PreVolumeSlot"], cpp: "SoundPreVolumeSlot", reference: true },
     { pinned: ["AnalyzerSlot"], cpp: "SoundAnalyzerSlot", reference: true },
     { pinned: ["AudioBus"], cpp: "AudioBus", reference: true },
-    {
-        pinned: ["AudioSignalImpl", "AudioSignal"],
-        cpp: "AudioSignal",
-        reference: true,
-    },
-    { pinned: ["Entry"], cpp: "AudioSignalEntry", reference: true },
 ];
 
 /**
@@ -349,19 +475,30 @@ const spatialRecords: readonly RecordSpec[] = [
     },
 ];
 
-/** The media-stream tap a program calls. */
-export const MEDIA_STREAM_ROOTS = ["createAudioEngineMediaStream"] as const;
-
 /** An optional part of the family, lowered when a program reaches one of its roots. */
 interface FamilyPart {
     readonly roots: readonly string[];
     readonly modules: readonly string[];
     readonly records: readonly RecordSpec[];
+    /** The runtime headers its lowered bodies call into. */
+    readonly includes?: readonly string[];
     readonly engineMembers?: readonly (readonly [string, MemberSpec])[];
     readonly values?: readonly (readonly [string, RecordShape])[];
 }
 
 const FAMILY_PARTS: readonly FamilyPart[] = [
+    {
+        // A sound decodes on native jobs, fetches its URL, and probes a
+        // format through `Audio.canPlayType`.
+        roots: STATIC_SOUND_ROOTS,
+        modules: [],
+        records: soundRecords,
+        includes: [
+            "bblite/pal_audio_async.hpp",
+            "bblite/pal_audio_element.hpp",
+            "bblite/web_platform.hpp",
+        ],
+    },
     {
         roots: SPATIAL_ROOTS,
         modules: SPATIAL_MODULES,
@@ -373,6 +510,7 @@ const FAMILY_PARTS: readonly FamilyPart[] = [
     {
         roots: MEDIA_STREAM_ROOTS,
         modules: ["src/audio/media-stream-output.ts"],
+        includes: ["bblite/pal_media_stream.hpp"],
         records: [
             {
                 pinned: ["AudioEngineMediaStream"],
@@ -397,21 +535,19 @@ function familyModules(parts: readonly FamilyPart[]): readonly string[] {
 
 /** The records the library header declares, generic instances aside. */
 function familyRecords(parts: readonly FamilyPart[]): string[] {
-    return [...soundRecords, ...parts.flatMap((part) => part.records)].map(
-        (spec) => spec.pinned[0]!,
-    );
+    return [
+        ...engineFamilyRecords,
+        ...parts.flatMap((part) => part.records),
+    ].map((spec) => spec.pinned[0]!);
 }
-
-/** The records the static-sound header declares with no optional part. */
-export const STATIC_SOUND_RECORDS = familyRecords([]);
 
 /**
  * The static-sound record model over the pinned audio modules, with the
  * modules and records of the parts `roots` reach.
  */
-export function staticSoundLibraryModel(
+function staticSoundLibraryModel(
     context: LoweringContext,
-    roots: readonly string[] = STATIC_SOUND_ROOTS,
+    roots: readonly string[],
 ): PinnedRecordModel {
     const parts = partsOf(roots);
     return new PinnedRecordModel(
@@ -423,18 +559,20 @@ export function staticSoundLibraryModel(
                 ...webAudioRecords,
                 ...engineRecords(
                     parts.flatMap((part) => part.engineMembers ?? []),
+                    parts.some((part) => part.roots === SPATIAL_ROOTS),
                 ),
-                ...soundRecords,
+                ...engineFamilyRecords,
                 ...parts.flatMap((part) => part.records),
             ],
             values: new Map([
                 ...webPlatformValues,
                 ...parts.flatMap((part) => part.values ?? []),
             ]),
-            adapters: new Map(),
+            adapters: ENGINE_ADAPTERS,
             constructors: new Map([
                 ...webPlatformConstructors,
                 ...webAudioConstructors,
+                ["AudioContext", engineContextConstructor],
             ]),
             globals: webPlatformGlobals,
             platformClasses: webAudioClasses,
@@ -448,9 +586,9 @@ export function staticSoundLibraryModel(
 }
 
 /** The declarations of `roots`, each in the first family module declaring it. */
-export function staticSoundRoots(
+function staticSoundRoots(
     model: PinnedRecordModel,
-    roots: readonly string[] = STATIC_SOUND_ROOTS,
+    roots: readonly string[],
 ): PinnedCallable[] {
     const modules = familyModules(partsOf(roots));
     return roots.map((name) => {
@@ -470,19 +608,20 @@ export function staticSoundRoots(
 }
 
 /**
- * The library header: every record the roots reach and the lowered
- * functions over them, in `bbl` (the roots) and the modules' detail
- * namespaces.
+ * The library header: the engine's records, every record the reached parts
+ * declare, and the lowered functions `roots` reach, in `bbl` (the roots)
+ * and the modules' detail namespaces.
  */
 export function staticSoundLibraryHeader(
     context: LoweringContext,
-    roots: readonly string[] = STATIC_SOUND_ROOTS,
+    roots: readonly string[],
 ): string {
     const model = staticSoundLibraryModel(context, roots);
     const { declarations, definitions } = model.lower(
         staticSoundRoots(model, roots),
     );
-    const records = familyRecords(partsOf(roots));
+    const parts = partsOf(roots);
+    const records = familyRecords(parts);
     // Every struct's members, so the generic instances they name exist.
     for (const name of records)
         if (!model.isGenericRecord(name)) model.record(name).members();
@@ -496,19 +635,16 @@ export function staticSoundLibraryHeader(
             !model.record(name).spec.native &&
             !model.isGenericRecord(name),
     );
-    const includes = [
+    const includes = new Set([
         "bblite/pinned_records.hpp",
         "bblite/audio_types.hpp",
         "bblite/pal_audio.hpp",
-        "bblite/pal_audio_async.hpp",
-        "bblite/pal_audio_element.hpp",
-        "bblite/pal_media_stream.hpp",
-        "bblite/web_platform.hpp",
+        ...parts.flatMap((part) => part.includes ?? []),
         ...model.includes,
-    ];
+    ]);
     return `#pragma once
-// ${context.provenance(STATIC_SOUND, "createSoundAsync")}
-${includes.map((header) => `#include <${header}>`).join("\n")}
+// ${context.provenance(AUDIO_ENGINE, "createAudioEngineAsync")}
+${[...includes].map((header) => `#include <${header}>`).join("\n")}
 #include <stdexcept>
 #include <string>
 

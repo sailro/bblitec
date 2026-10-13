@@ -18,7 +18,7 @@ import {
 import { pinCpp } from "./evaluation-order.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { packagedUrlAssets, type StaticFetchContext } from "./static-fetch.js";
-import { deploymentUrl } from "./deployment.js";
+import { deploymentUrl, packagedResponseUrl } from "./deployment.js";
 import {
     webAudioMemberAssign,
     webAudioMemberCall,
@@ -192,14 +192,20 @@ export function audioPrototypeValue(
     };
 }
 
+/** What resolving a packaged audio URL needs beyond the static fetch. */
+export type PackagedAudioContext = StaticFetchContext &
+    Pick<LoweringServices, "emit" | "dataTypes" | "allocateTemporaryCppName">;
+
 /**
  * A URL argument selecting packaged audio a linked decoder reads: each file it
- * may select is packaged, registered with `register_packaged_responses` under
- * `spell(url)`, and its decoder reached. Returns the URL, pinned in source
- * order into a `label` temporary, as a C++ `std::string` expression.
+ * may select is packaged and its decoder reached. The candidates are one
+ * constant `PackagedFetchEntry` table keyed by the URL a fetch of
+ * `spell(url)` requests, resolved at generation; the site registers it with
+ * its realm once. Returns the URL, pinned in source order into a `label`
+ * temporary, as a C++ `std::string` expression.
  */
 export function packagedAudioUrl(
-    context: StaticFetchContext & Pick<LoweringServices, "emit">,
+    context: PackagedAudioContext,
     site: ts.Node,
     argument: ts.Expression,
     refusal: string,
@@ -226,10 +232,15 @@ export function packagedAudioUrl(
         )!;
         context.reachFeature(`audio:decode-${codec}`, site);
     }
-    const base = deploymentUrl(context.options).href;
-    const entries = packaged.assets.map(
-        (asset) =>
-            `{${context.cppString(spell(asset.logicalSource))}, bbl::asset_path(${context.cppString(asset.output)})}`,
+    const table = context.dataTypes.registerSharedConstantArray(
+        "packaged_audio_responses",
+        "bbl::pal::PackagedFetchEntry",
+        packaged.assets.map(({ logicalSource, output }) => {
+            const requested = spell(logicalSource);
+            return `bbl::pal::PackagedFetchEntry{${context.cppString(requested)}, ${context.cppString(packagedResponseUrl(context.options, requested))}, ${context.cppString(output)}}`;
+        }),
+        false,
+        site,
     );
     const url = context.bindings.pinValueToTemporary(
         {
@@ -243,16 +254,18 @@ export function packagedAudioUrl(
         label,
         argument,
     );
+    const registered = context.allocateTemporaryCppName(
+        "packaged_audio_registered",
+    );
     context.emit(
-        `bbl::pal::register_packaged_responses(${context.cppString(base)}, {${entries.join(", ")}});`,
+        `[[maybe_unused]] static thread_local const bool ${registered} = bbl::pal::register_packaged_responses(${context.cppString(deploymentUrl(context.options).href)}, &bbl::asset_path, ${table});`,
     );
     return `std::string(${url.cpp})`;
 }
 
 /** `new Audio([url])`: an element over a packaged source (`pal_audio_element.hpp`). */
 function compileAudioElementConstructor(
-    context: StaticFetchContext &
-        Pick<LoweringServices, "audioSessionCpp" | "emit">,
+    context: PackagedAudioContext & Pick<LoweringServices, "audioSessionCpp">,
     expression: ts.NewExpression,
 ): Value {
     if (!context.options.workers) throw new ApplicationRealmRequired();
@@ -279,8 +292,7 @@ function compileAudioElementConstructor(
 }
 
 export function compileAudioConstructor(
-    context: StaticFetchContext &
-        Pick<LoweringServices, "audioSessionCpp" | "emit">,
+    context: PackagedAudioContext & Pick<LoweringServices, "audioSessionCpp">,
     expression: ts.NewExpression,
 ): Value | undefined {
     if (context.libraryGlobal(expression.expression) === "Audio")

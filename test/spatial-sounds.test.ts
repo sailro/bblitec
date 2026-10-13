@@ -5,25 +5,20 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { sharedPinnedContext } from "../src/lowering/context.js";
 import {
-    MEDIA_STREAM_ROOTS,
-    SPATIAL_ROOTS,
-    STATIC_SOUND_ROOTS,
+    AUDIO_LIBRARY_ROOTS,
     staticSoundLibraryHeader,
 } from "../src/lowering/static-sound-library.js";
 import {
+    audioLibraryInclude,
     FIXTURE_APPLICATION,
     native,
     runAudioProgram,
 } from "./static-sound-fixture.js";
 import { wave } from "./native-fixture.js";
 
-/** The static-sound header a spatial, tapped program's build carries. */
+/** The whole family's header, which the fixtures call into. */
 const spatialHeader = (): string =>
-    staticSoundLibraryHeader(sharedPinnedContext(), [
-        ...STATIC_SOUND_ROOTS,
-        ...SPATIAL_ROOTS,
-        ...MEDIA_STREAM_ROOTS,
-    ]);
+    staticSoundLibraryHeader(sharedPinnedContext(), AUDIO_LIBRARY_ROOTS);
 
 /**
  * The application's shapes: one-shot world effects positioned per play,
@@ -213,9 +208,10 @@ test("the application's spatial sounds compile strictly and run natively", (t) =
         mkdirSync(dirname(destination), { recursive: true });
         copyFileSync(resolve(output, asset.source), destination);
     }
-    const library = join(output, "include/bblite/upstream_static_sound.hpp");
-    mkdirSync(dirname(library), { recursive: true });
-    writeFileSync(library, spatialHeader());
+    const library = audioLibraryInclude(
+        "spatial-sounds-application",
+        result.manifest,
+    );
     writeFileSync(join(output, "program.hpp"), result.cpp);
     writeFileSync(
         join(output, "check.cpp"),
@@ -234,8 +230,7 @@ ${FIXTURE_APPLICATION}`,
             [
                 "/DBBLITE_HAS_AUDIO_PANNER=1",
                 "/DBBLITE_HAS_AUDIO_MEDIA_STREAM=1",
-                "/I",
-                join(output, "include"),
+                ...library,
             ],
             [],
         ),

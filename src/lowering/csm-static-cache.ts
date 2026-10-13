@@ -649,7 +649,7 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
                 ts.isStringLiteral(error.arguments[0]!)
             ) {
                 rejected.push(error.expression.text);
-                return `PromiseRejection{${stringLiteral(error.expression.text)}, ${stringLiteral(error.arguments[0].text)}}`;
+                return `js::make_error(${stringLiteral(error.expression.text)}, ${stringLiteral(error.arguments[0].text)})`;
             }
             return context.contractError(
                 expression ?? declaration,
@@ -676,7 +676,7 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
         );
     return `
 // ${context.provenance(enableModule, "enableCsmStaticCache")}
-std::optional<PromiseRejection> enable_csm_static_cache(
+std::optional<js::Error> enable_csm_static_cache(
     Engine& engine, ShadowGeneratorHandle handle, double refit_angle,
     std::optional<double> refit_max_interval_ms,
     std::optional<double> static_cascades_per_frame) {

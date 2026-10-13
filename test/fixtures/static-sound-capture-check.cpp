@@ -1,7 +1,9 @@
-// The lowered static-sound library (test/static-sounds.test.ts writes it)
-// over the real LabSound PAL, rendered offline between its calls: a packaged
-// WAVE sound is created, played, ramped down, restored, stopped and
-// disposed, and each step's PCM is measured. Prints one line per step.
+// The lowered audio library (test/static-sounds.test.ts writes it) over the
+// real LabSound PAL, rendered offline between its calls: the pin's engine is
+// created, a packaged WAVE sound is created, played, ramped down and
+// restored, the master volume ramped down and restored, and the sound
+// stopped and disposed; each step's PCM is measured. Prints one line per
+// step.
 
 #include "pal_audio_labsound.cpp"
 #include "labsound-fixture.hpp"
@@ -11,6 +13,7 @@
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_packaged_responses.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -34,15 +37,20 @@ std::vector<float> render(pal::AudioContextHandle context, int frames) {
 using labsound_fixture::fixed;
 using labsound_fixture::peak;
 
+/** A fixture packages its files where they are. */
+std::string fixture_path(const std::string& path) { return path; }
+
 js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& lines) {
-    // The engine `createAudioEngineAsync` builds: main out and main bus.
-    const auto context = pal::audio_create_context();
-    const auto out = pal::audio_create_gain(context);
-    pal::audio_connect(out, pal::audio_destination(context));
-    const auto bus = pal::audio_create_gain(context);
-    pal::audio_connect(bus, out);
-    AudioEngineHandle engine{context, bus, out};
-    pal::register_packaged_responses("http://localhost/", {{"/sounds/tone.wav", wav}});
+    // The pin's own engine, on a context the call site opened.
+    AudioEngineOptions engine_options{};
+    engine_options.audio_context = pal::audio_create_context();
+    const auto engine = co_await create_audio_engine_async(engine_options);
+    const auto context = engine.context;
+    lines.push_back("engine " + fixed(static_cast<float>(get_master_volume(engine))) + " " +
+                    fixed(static_cast<float>(engine.ramp_duration)));
+    const std::array<pal::PackagedFetchEntry, 1> responses{
+        {{"/sounds/tone.wav", "http://localhost/sounds/tone.wav", wav}}};
+    pal::register_packaged_responses("http://localhost/", fixture_path, responses);
     StaticSoundOptions options{};
     options.volume = 1.0;
     const auto sound =
@@ -66,6 +74,18 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& line
     set_sound_volume(sound, 1.0, instant);
     const auto restored = render(context, 2400);
     lines.push_back("restored " + fixed(peak(restored, 1200, 2400)));
+
+    // The master volume down to silence over 0.1 s: the main output's ramp.
+    RampOptions fade{};
+    fade.duration = 0.1;
+    set_master_volume(engine, 0.0, fade);
+    const auto fading = render(context, 4800);
+    lines.push_back("master " + fixed(peak(fading, 0, 240)) + " " +
+                    fixed(peak(fading, 2280, 2520)) + " " + fixed(peak(fading, 4680, 4800)) + " " +
+                    fixed(static_cast<float>(get_master_volume(engine))));
+    set_master_volume(engine, 1.0, instant);
+    const auto unmuted = render(context, 2400);
+    lines.push_back("unmuted " + fixed(peak(unmuted, 1200, 2400)));
 
     stop_sound(sound);
     const auto stopped = render(context, 4800);

@@ -12,6 +12,7 @@
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_packaged_responses.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -50,9 +51,12 @@ js::Promise<js::PromiseVoid> run(std::vector<std::string> files, std::vector<std
     const auto context = pal::audio_create_context();
     const auto master = pal::audio_create_gain(context);
     pal::audio_connect(master, pal::audio_destination(context));
+    const std::array<pal::PackagedFetchEntry, 3> responses{
+        {{"/beds/ramp.wav", "http://localhost/beds/ramp.wav", files[0]},
+         {"/beds/high.wav", "http://localhost/beds/high.wav", files[1]},
+         {"/beds/low.wav", "http://localhost/beds/low.wav", files[2]}}};
     pal::register_packaged_responses(
-        "http://localhost/",
-        {{"/beds/ramp.wav", files[0]}, {"/beds/high.wav", files[1]}, {"/beds/low.wav", files[2]}});
+        "http://localhost/", [](const std::string& path) { return path; }, responses);
     std::shared_ptr<pal::AudioSession> session;
     std::size_t identity = 100;
     const auto count = [&](const pal::AudioElement& element, const std::string& prefix) {
