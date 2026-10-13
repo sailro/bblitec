@@ -79,3 +79,7 @@ endif()
 if("platform:http" IN_LIST BBLITE_RUNTIME_FEATURES AND NOT "http" IN_LIST VCPKG_MANIFEST_FEATURES)
     list(APPEND VCPKG_MANIFEST_FEATURES "http")
 endif()
+
+if("platform:compression" IN_LIST BBLITE_RUNTIME_FEATURES AND NOT "compression" IN_LIST VCPKG_MANIFEST_FEATURES)
+    list(APPEND VCPKG_MANIFEST_FEATURES "compression")
+endif()
