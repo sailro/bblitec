@@ -1,5 +1,4 @@
 #include <bblite/features/gpu_retirement.hpp>
-#include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The SDL_GPU scene renderer's driver: the pass helpers, the state's
@@ -2189,17 +2188,17 @@ public:
                     SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, graph_matrix.data(),
                                                              sizeof(graph_matrix));
 
+                    // The task encoding now: every target lookup below
+                    // resolves through `pal::resolve_render_target` naming it.
+                    pal::TargetUser target_user = pal::frame_pass_target_user;
                     const auto target_texture = [&](RenderTargetHandle handle, bool sampled,
                                                     bool depth_only = false) {
                         if (handle.value >= state.render_targets.size()) {
                             pal::refuse_invalid_frame_handle(
                                 "Frame graph render target handle is invalid.");
                         }
-                        const RenderTargetRecord& record = handle_at(engine.render_targets, handle);
-#if BBLITE_RENDER_TARGET_DISPOSAL
-                        if (record.retired)
-                            pal::refuse_disposed_render_target("A frame-graph pass or material");
-#endif
+                        const RenderTargetRecord& record =
+                            pal::resolve_render_target(engine, handle, target_user);
                         if (record.swapchain)
                             return swapchain;
                         const GpuRenderTarget& target = handle_at(state.render_targets, handle);
@@ -2258,6 +2257,14 @@ public:
                             std::distance(task.geometry.attachments.begin(), found));
                         return handle_at(state.geometry_tasks, source.task)
                             .sampled_colors[attachment_index];
+                    };
+                    // A material sampling a render target is no task's own
+                    // target: its refusal names the material, as on Dawn.
+                    const auto material_texture =
+                        [&](const RenderTextureRef& source) -> SDL_GPUTexture* {
+                        const pal::ScopedTargetUser material_user(target_user,
+                                                                  pal::frame_pass_target_user);
+                        return source_texture(source);
                     };
                     const auto gpu_mesh_index = [&](MeshHandle handle) {
                         for (std::size_t index = 0; index < graph_plan.items.size(); ++index) {
@@ -2563,7 +2570,7 @@ public:
                                         pass_scene_block, pass_lights_block, draw, mesh, material,
                                         standard_variant, standard_key.features, bound_pipeline,
                                         geometry_task, geometry_params,
-                                        material_render_textures(material, source_texture),
+                                        material_render_textures(material, material_texture),
                                         geometry_params_buffer, velocity_history,
                                         shadow_generator != nullptr
 #if BBLITE_SHADOWS_ESM
@@ -2802,6 +2809,8 @@ public:
                             handle_at(engine.frame_tasks, handle);
                         if (task.execution_enabled == false)
                             continue;
+                        const pal::ScopedTargetUser task_target_user(target_user,
+                                                                     pal::task_target_user(task));
                         const auto timing_scope = timing_sequence.scoped_task(engine, handle);
 #if BBLITE_COMPUTE_FRAME_GRAPH
                         if (task.kind == FrameTaskKind::compute) {
@@ -2825,9 +2834,9 @@ public:
 #endif
                         if (task.kind == FrameTaskKind::render) {
                             const RenderTargetRecord& target_record =
-                                handle_at(engine.render_targets, task.render.target);
-                            GpuRenderTarget& target =
-                                handle_at(state.render_targets, task.render.target);
+                                pal::resolve_render_target(engine, task.render.target, target_user);
+                            GpuRenderTarget& target = pal::resolve_gpu_target(
+                                engine, state.render_targets, task.render.target, target_user);
 #if BBLITE_HAS_TAA
                             if (task.source_scene != graph_scene.state ||
                                 task.render.scene_stages ||
@@ -2895,8 +2904,9 @@ public:
                                 const pal::ShadowTaskPass caster_plan =
                                     pal::shadow_task_pass(engine, state.shadow_refresh, task);
                                 if (caster_plan.copy_layers) {
-                                    const GpuRenderTarget& cache_target =
-                                        handle_at(state.render_targets, caster_plan.copy_source);
+                                    const GpuRenderTarget& cache_target = pal::resolve_gpu_target(
+                                        engine, state.render_targets, caster_plan.copy_source,
+                                        target_user);
                                     SdlCopyPass layer_copy{SDL_BeginGPUCopyPass(command)};
                                     for (const std::uint32_t layer : *caster_plan.copy_layers) {
                                         SDL_GPUTextureLocation copy_source{};
@@ -3346,7 +3356,8 @@ public:
                             }
                             if (task.geometry.target.value != invalid_handle) {
                                 GpuRenderTarget& output_target =
-                                    handle_at(state.render_targets, task.geometry.target);
+                                    pal::resolve_gpu_target(engine, state.render_targets,
+                                                            task.geometry.target, target_user);
                                 SDL_GPUColorTargetInfo target_info{};
                                 target_info.texture = output_target.color;
                                 target_info.clear_color = SDL_FColor{
@@ -3456,13 +3467,14 @@ public:
                             }
                             EffectPass& pass = handle_at(state.effect_tasks, handle);
                             const RenderTargetRecord& target_record =
-                                handle_at(engine.render_targets, task.effect.target);
+                                pal::resolve_render_target(engine, task.effect.target, target_user);
                             if (!pass.pipeline) {
                                 pass = create_effect_pass(
                                     state.device, engine, task.effect.effect,
                                     target_record.swapchain
                                         ? swapchain_format
-                                        : handle_at(state.render_targets, task.effect.target)
+                                        : pal::resolve_gpu_target(engine, state.render_targets,
+                                                                  task.effect.target, target_user)
                                               .color_format,
                                     // Through the MSAA gate like every other
                                     // task pipeline, so a single-sample run
@@ -3526,8 +3538,8 @@ public:
                                         [&](TaaPostProcessState& value) {
                                             const auto& blend = task.post_process.passes.at(0);
                                             const auto extent = resolve_post_process_extent(
-                                                handle_at(engine.render_targets,
-                                                          blend.output_target),
+                                                pal::resolve_render_target(
+                                                    engine, blend.output_target, target_user),
                                                 state.render_targets, blend, width, height);
                                             advance_temporal_jitter(
                                                 value, *source.scene_uniforms, extent.source_width,
@@ -3590,8 +3602,8 @@ public:
                                 // builds a command list D3D12 refuses to
                                 // close, which is why every geometry-output
                                 // scene failed under BBLITE_MSAA=1.
-                                const GpuRenderTarget& resolve_source =
-                                    handle_at(state.render_targets, copy.source.target);
+                                const GpuRenderTarget& resolve_source = pal::resolve_gpu_target(
+                                    engine, state.render_targets, copy.source.target, target_user);
                                 SDL_GPUTextureLocation copy_source{};
                                 copy_source.texture = target_texture(copy.source.target, false);
                                 SDL_GPUTextureLocation copy_destination{};
@@ -3617,7 +3629,7 @@ public:
                         }
 
                         const RenderTargetRecord& target_record =
-                            handle_at(engine.render_targets, copy.target);
+                            pal::resolve_render_target(engine, copy.target, target_user);
                         const auto blit_timing = sdl_timed_pass(command, timing_sequence.pass());
                         // A copy writing a VIEWPORT of the swapchain composes
                         // with whatever else wrote the rest of it -- scene 187
@@ -3698,8 +3710,8 @@ public:
                                                         : state.blit_msaa_pipeline);
                         if (force_full_viewport || copy.has_viewport) {
 #if BBLITE_HAS_GEOMETRY_OUTPUT
-                            const GpuRenderTarget& target =
-                                handle_at(state.render_targets, copy.target);
+                            const GpuRenderTarget& target = pal::resolve_gpu_target(
+                                engine, state.render_targets, copy.target, target_user);
                             const NormalizedViewport normalized_viewport =
                                 force_full_viewport ? NormalizedViewport{} : copy.viewport;
                             const PixelViewport pixel_viewport = upstream::resolve_copy_viewport(

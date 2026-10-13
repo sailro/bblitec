@@ -1170,7 +1170,7 @@ inline SDL_GPUTexture* sdl_render_texture_color(const GpuState& state, const Eng
     if (reference.source != RenderTextureSource::render_target ||
         reference.target.value >= state.render_targets.size())
         pal::refuse_invalid_frame_handle("A material render texture names no render target.");
-    if (handle_at(engine.render_targets, reference.target).swapchain)
+    if (pal::resolve_render_target(engine, reference.target, pal::frame_pass_target_user).swapchain)
         throw std::runtime_error("A material cannot sample the swapchain target.");
     SDL_GPUTexture* texture = handle_at(state.render_targets, reference.target).sampled_color;
     if (!texture)
@@ -1959,11 +1959,13 @@ prepare_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle,
     PreparedSdlPostProcessPass prepared;
     prepared.task = handle;
     prepared.child = index;
-    PostProcessPassOptions& pass = handle_at(engine.frame_tasks, handle).post_process.passes[index];
+    FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+    PostProcessPassOptions& pass = task.post_process.passes[index];
     const upstream::PostProcessShaderInfo& shader_info =
         upstream::post_process_shader_infos[pass.shader_index];
     GpuPostProcessTask& gpu = handle_at(state.post_process_tasks, handle)[index];
-    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
+    const RenderTargetRecord& output_record =
+        pal::resolve_render_target(engine, pass.output_target, pal::task_target_user(task));
     const PostProcessExtent extent =
         resolve_post_process_extent(output_record, state.render_targets, pass, width, height);
     const std::uint32_t output_width = extent.output_width;
@@ -2096,7 +2098,8 @@ std::size_t screen_space_program(GpuState& state, std::uint32_t stage);
  * depth attachment itself (a depth-only view in the pin, the depth texture's
  * own SRV here), the lit source colour, or one of the task's owned targets.
  */
-SDL_GPUTexture* screen_space_binding_texture(GpuState& state, const ScreenSpaceTaskOptions& task,
+SDL_GPUTexture* screen_space_binding_texture(GpuState& state, const Engine& engine,
+                                             const ScreenSpaceTaskOptions& task,
                                              upstream::ScreenSpaceTextureRole role);
 
 /**
@@ -2112,9 +2115,10 @@ SDL_GPURenderPass* begin_screen_space_pass(SDL_GPUCommandBuffer* command, SDL_GP
  * pin binds one bilinear sampler wherever it samples; each SRV here pairs
  * with it.
  */
-void record_screen_space_stage(GpuState& state, const ScreenSpaceTaskOptions& task,
-                               std::size_t program_index, SDL_GPUCommandBuffer* command,
-                               SDL_GPUTexture* target, const float* uniforms);
+void record_screen_space_stage(GpuState& state, const Engine& engine,
+                               const ScreenSpaceTaskOptions& task, std::size_t program_index,
+                               SDL_GPUCommandBuffer* command, SDL_GPUTexture* target,
+                               const float* uniforms);
 
 /** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
 inline void clear_screen_space_target(SDL_GPUCommandBuffer* command, SDL_GPUTexture* texture) {
@@ -2137,9 +2141,13 @@ void record_screen_space_task(GpuState& state, Engine& engine, TaskHandle handle
                               SourceTexture source_texture, TargetTexture target_texture) {
     FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
-    const GpuRenderTarget& raw = handle_at(state.render_targets, task.raw);
-    const GpuRenderTarget& stable = handle_at(state.render_targets, task.stable);
-    const GpuRenderTarget& history = handle_at(state.render_targets, task.history);
+    const pal::TargetUser user = pal::task_target_user(record);
+    const GpuRenderTarget& raw =
+        pal::resolve_gpu_target(engine, state.render_targets, task.raw, user);
+    const GpuRenderTarget& stable =
+        pal::resolve_gpu_target(engine, state.render_targets, task.stable, user);
+    const GpuRenderTarget& history =
+        pal::resolve_gpu_target(engine, state.render_targets, task.history, user);
     const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
         engine, handle, screen_space_frame_inputs(state.render_targets, task));
     record_screen_space_decision(
@@ -2149,7 +2157,7 @@ void record_screen_space_task(GpuState& state, Engine& engine, TaskHandle handle
         },
         [&](bool producer, const float* uniforms) {
             record_screen_space_stage(
-                state, task,
+                state, engine, task,
                 screen_space_program(state, producer ? task.producer_shader : task.resolve_shader),
                 command, producer ? raw.color : stable.color, uniforms);
         },
