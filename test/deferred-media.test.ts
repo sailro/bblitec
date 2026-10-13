@@ -54,18 +54,6 @@ try {
     catches++;
 }
 try {
-    const audio = new Audio(text());
-    audio.preload = 'auto'; audio.loop = true;
-    audio.addEventListener('timeupdate', () => {
-        callbacksRun++;
-        if (audio.duration < audio.currentTime) throw new Error('clock');
-    });
-    audio.pause(); audio.load(); audio.play().catch(() => { callbacksRun++; });
-} catch (error) {
-    if (!error.message.includes('dom:Audio.constructor')) throw error;
-    catches++;
-}
-try {
     const stream = new MediaStream();
     const contexts: AudioContext[] = [];
     const context = contexts[0]!;
@@ -74,8 +62,6 @@ try {
     source.connect(destination);
     source.disconnect(destination);
     destination.stream.getTracks();
-    const audio = new Audio('sound.wav');
-    context.createMediaElementSource(audio);
 } catch (error) {
     if (!error.message.includes('dom:MediaStream.constructor')) throw error;
     catches++;
@@ -85,7 +71,7 @@ const missingRecorders: Array<MediaRecorder | undefined> = [undefined];
 const events: BlobEvent[] = [];
 missingStreams[0]?.getTracks();
 missingRecorders[0]?.start(++argumentsRun);
-if (catches !== 4 || argumentsRun !== 2 || callbacksRun !== 0 || events.length !== 0)
+if (catches !== 3 || argumentsRun !== 1 || callbacksRun !== 0 || events.length !== 0)
     throw new Error('capability completion, optional evaluation or authored callbacks');
 setTimeout(() => globalThis.close(), 0);
 `;
@@ -108,25 +94,11 @@ test("deferred media preserves typed bodies, optional evaluation and explicit fa
         "MediaRecorder.start",
         "MediaRecorder.state",
         "MediaRecorder.stop",
-        "Audio.constructor",
-        "HTMLMediaElement.preload",
-        "HTMLMediaElement.loop",
-        "HTMLMediaElement.duration",
-        "HTMLMediaElement.currentTime",
-        "HTMLAudioElement.addEventListener",
-        "HTMLMediaElement.pause",
-        "HTMLMediaElement.load",
-        "HTMLMediaElement.play",
         "AudioContext.createMediaStreamSource",
         "AudioContext.createMediaStreamDestination",
         "MediaStreamAudioDestinationNode.stream",
-        "AudioContext.createMediaElementSource",
     ])
         assert.ok(ids.has(`dom:${id}`), id);
-    assert.equal(
-        sites.find((site) => site.id === "dom:HTMLMediaElement.play")?.timing,
-        "reject",
-    );
     assert.equal(
         sites.find((site) => site.id === "dom:MediaRecorder.constructor")
             ?.operation,

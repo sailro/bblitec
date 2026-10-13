@@ -795,6 +795,33 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "audio:engine",
     },
     ...AUDIO_PARAM_RULES,
+    // An HTMLAudioElement's media state: written by the program and advanced
+    // by its context's clock, so two reads are two.
+    ...(
+        [
+            ["duration", "number", "duration"],
+            ["currentTime", "number", "current_time"],
+            ["loop", "boolean", "loop"],
+            ["paused", "boolean", "paused"],
+            ["ended", "boolean", "ended"],
+        ] as const
+    ).map(([property, value, member]): PropertyRead => ({
+        owner: "audio-element",
+        property,
+        value,
+        helper: `bbl::pal::audio_element_${member}`,
+        feature: "audio:media-element",
+        impure: true,
+    })),
+    {
+        owner: "audio-element",
+        property: "preload",
+        value: "data",
+        helper: "bbl::pal::audio_element_preload",
+        dataType: { kind: "string" },
+        feature: "audio:media-element",
+        impure: true,
+    },
     ...(
         [
             ["duration", "Duration"],

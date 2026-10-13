@@ -253,6 +253,8 @@ export interface ExpressionContext
             LoweringServices,
             | "compileWorkerValue"
             | "audioSessionCpp"
+            | "staticAssetUrlCandidates"
+            | "sourceFiles"
             | "checker"
             | "program"
             | "sourceFile"

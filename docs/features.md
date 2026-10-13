@@ -7,7 +7,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
-buffers, buses, spatial/stereo/analyzer and master volume, media streams/recording/streamed audio, script elements,
+buffers, streaming sounds, buses, spatial/stereo/analyzer and master volume, media streams/recording, script elements,
 idle callbacks, application-realm device recovery, and the [UI](ui.md) items
 marked deferred. Unregistered APIs still refuse.
 
@@ -184,6 +184,12 @@ Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `
 family in an application realm. Sources: a URL selecting packaged audio (a runtime URL needs inferable candidates), an
 `ArrayBuffer` or an `AudioBuffer`; URL lists, sound buffers and `outBus` refuse. A looped sound started while its
 context is not running throws (no statechange).
+
+Media elements (application realm): `new Audio(url)` with a URL selecting packaged audio (a runtime URL needs
+inferable candidates), `play`/`pause`/`load`, `removeAttribute("src")`, `loop`, `preload`, `currentTime` (seek),
+`duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause` listeners without payloads.
+`createMediaElementSource` routes an element once (again: InvalidStateError); an element sounds only through it, so
+`play()` of an unrouted element rejects with NotSupportedError. Other members and attributes refuse.
 
 ## Shadows and navigation
 
