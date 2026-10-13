@@ -60,9 +60,14 @@ test("writes through stored retained elements lower inside runtime iteration", (
         };
         fill(output("m0"));
         fill(input("m1"));
+        const left = output("c0");
+        const right = output("c1");
+        let picks = 0;
+        (++picks > 1 ? left : right).value = "chosen";
+        output("picks").value = String(picks);
     `);
     // Each loop body keeps its write; none erases as browser instrumentation.
-    for (const written of ['"Unavailable"', '"slot 1"', '"mixed"'])
+    for (const written of ['"Unavailable"', '"slot 1"', '"mixed"', '"chosen"'])
         assert.match(
             result.cpp,
             new RegExp(`bbl::ui_set_form_value\\([^;]*${written}`),
@@ -89,6 +94,10 @@ test("unrepresented retained element writes refuse instead of erasing", () => {
             `const canvas = document.createElement("canvas"); canvas.tabIndex = 1;`,
             /Retained element property 'tabIndex' assignment is not lowered natively/,
         ],
+        [
+            `const field = output("s"); (field.value ? field : null)!.scrollTop = 5;`,
+            /A write through a DOM element that the retained UI does not represent cannot be erased/,
+        ],
     ] as const)
         assert.throws(() => compile(body), pattern, body);
 });
@@ -109,6 +118,53 @@ test("with retained UI, writes through unprojected DOM elements refuse instead o
         );
     // Without retained UI the page's browser instrumentation still erases.
     assert.doesNotMatch(compile(`${page} page.scrollTop = 4;`).cpp, /scroll/i);
+});
+
+test("outside Worker hosts, dataset writes lower when observable and erase as instrumentation otherwise", () => {
+    const host: NativeHostUi = {
+        sourcePath: "ui/dataset-host.json",
+        elements: [
+            { tag: "canvas", attributes: { id: "renderCanvas" } },
+            { tag: "div", attributes: { id: "panel" } },
+        ],
+        styleSheets: [{ text: "[data-styled] { color: red; }", line: 1 }],
+    };
+    const scene = (body: string): string => `
+        import { createEngine, createSceneContext, startEngine } from "@babylonjs/lite";
+        function mark(element: HTMLElement): void { element.dataset.loadingSize = "1"; }
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            mark(canvas);
+            const engine = await createEngine({ canvas });
+            const scene = createSceneContext(engine);
+            const panel = document.getElementById("panel") as HTMLDivElement;
+            ${body}
+            engine.canvas.width = 4;
+            void scene;
+            await startEngine(engine);
+        }
+        void main();
+    `;
+    const result = compileSource(
+        scene(`
+            panel.dataset.state = "ready";
+            panel.textContent = panel.dataset.state ?? "";
+            panel.dataset.styled = "yes";
+        `),
+        { fileName: join(directory, "scene.ts"), nativeHostUi: host },
+    );
+    // Read back, or selected by a host rule: the retained attribute.
+    assert.match(
+        result.cpp,
+        /bbl::ui_set_attribute\([^;]*"data-state", "ready"\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::ui_set_attribute\([^;]*"data-styled", "yes"\);/,
+    );
+    // Nothing observes the helper's mark, and the engine owns its canvas's
+    // extent: both erase, so no realm activates before the engine exists.
+    assert.doesNotMatch(result.cpp, /data-loading-size|window_document_engine/);
 });
 
 test("inert canvas focus order and packaged image sources lower explicitly", () => {

@@ -84,7 +84,7 @@ import {
 } from "./dom-listeners.js";
 import {
     elementInterfaceTag,
-    isInertCanvasFocusWrite,
+    isCanvasSurfaceWrite,
     eventTargetCpp,
     isDocumentReceiver,
     isDomReceiver,
@@ -97,7 +97,8 @@ import {
     primaryCanvasIds,
 } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredSymbol } from "./symbols.js";
+import { declaredInDomLibrary, declaredSymbol } from "./symbols.js";
+import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
 import { argumentAt } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
@@ -205,6 +206,7 @@ interface UiProjectionContext extends Pick<
     | "compileNumber"
     | "compilePlatformCall"
     | "callbacks"
+    | "canvasSizeProperty"
     | "compileStringLiteral"
     | "compileValue"
     | "cppString"
@@ -214,6 +216,7 @@ interface UiProjectionContext extends Pick<
     | "deferredCapabilities"
     | "emit"
     | "emitDiscardedValue"
+    | "eraseBrowserInstrumentation"
     | "evaluator"
     | "expectKind"
     | "expectSameEngine"
@@ -831,12 +834,28 @@ export class UiProjection {
             return known.engineCpp
                 ? known
                 : { ...known, engineCpp: this.documentEngine(expression) };
-        if (!ts.isCallExpression(this.context.unwrap(expression)))
+        const owner = this.context.unwrap(expression);
+        // The checker types a conditional as the union of its arms, which
+        // no one data type names; each arm answers for itself.
+        const holdsElement = (node: ts.Expression): boolean => {
+            const value = this.context.unwrap(node);
+            if (ts.isConditionalExpression(value))
+                return (
+                    holdsElement(value.whenTrue) &&
+                    holdsElement(value.whenFalse)
+                );
+            const type = this.context.dataLowerer.dataTypeAt(node);
+            const inner = type?.kind === "optional" ? type.inner : type;
+            return inner?.kind === "handle" && inner.handle === "ui-element";
+        };
+        if (
+            !(
+                ts.isCallExpression(owner) || ts.isConditionalExpression(owner)
+            ) ||
+            !holdsElement(expression)
+        )
             return undefined;
-        const type = this.context.dataLowerer.dataTypeAt(expression);
-        const inner = type?.kind === "optional" ? type.inner : type;
-        if (inner?.kind !== "handle" || inner.handle !== "ui-element")
-            return undefined;
+        // A conditional selects between its arms' handles, evaluated once.
         const value = this.context.dataLowerer.narrowOptional(
             this.context.compileValue(expression),
             expression,
@@ -844,16 +863,24 @@ export class UiProjection {
         if (value.kind !== "ui-element")
             this.context.fail(
                 expression,
-                "A DOM helper must return a retained element.",
+                ts.isCallExpression(owner)
+                    ? "A DOM helper must return a retained element."
+                    : "A conditional element receiver must select retained elements.",
             );
-        // Nullable calls keep their safe storage until the admitted operation
-        // enters its presence branch; pinning the payload here dereferences it.
-        if (presenceFlagCpp(value) !== undefined) return value;
-        return this.context.bindings.pinValueToTemporary(
-            value,
-            "ui_receiver",
-            expression,
-        );
+        // Nullable receivers keep their safe storage until the admitted
+        // operation enters its presence branch; pinning the payload here
+        // dereferences it.
+        const receiver =
+            presenceFlagCpp(value) !== undefined
+                ? value
+                : this.context.bindings.pinValueToTemporary(
+                      value,
+                      "ui_receiver",
+                      expression,
+                  );
+        return ts.isCallExpression(owner) || receiver.engineCpp
+            ? receiver
+            : { ...receiver, engineCpp: this.documentEngine(expression) };
     }
 
     /** Whether `uiElementValue` answers a UI element here, and its tag. */
@@ -4883,10 +4910,46 @@ export class UiProjection {
         });
     }
 
+    /**
+     * A DOM write erased by contract: one the engine's drawing surface owns
+     * (`isCanvasSurfaceWrite`), a canvas dataset member the program never
+     * reads back, or, outside Worker hosts, any other dataset member nothing
+     * can observe. Assignments consume these here; a browser-erasure path
+     * that drops a whole statement asks the same question before refusing an
+     * element write it drops.
+     */
+    public erasesByContract(expression: ts.BinaryExpression): boolean {
+        if (isCanvasSurfaceWrite(this.context, expression)) return true;
+        if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+            return false;
+        const canvasDataset = this.canvasDatasetMember(expression.left);
+        return canvasDataset
+            ? !canvasDataset.read
+            : this.unobservedDatasetWrite(expression.left);
+    }
+
     public emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean {
         const globalLeft = this.context.unwrap(expression.left);
+        if (this.erasesByContract(expression)) {
+            this.context.eraseBrowserInstrumentation(expression.pos);
+            return true;
+        }
+        // A canvas's dataset read back is the capture handshake.
+        const canvasDataset = this.canvasDatasetMember(expression.left);
         if (
-            this.context.options.workers &&
+            canvasDataset &&
+            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+            if (canvasDataset.key === "ready")
+                this.primaryCanvasReadyGate = true;
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::set_canvas_dataset(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(canvasDataset.key)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
+            });
+            return true;
+        }
+        // Any other retained element's dataset is its data-* attributes.
+        if (
             (ts.isPropertyAccessExpression(globalLeft) ||
                 ts.isElementAccessExpression(globalLeft)) &&
             ts.isPropertyAccessExpression(globalLeft.expression) &&
@@ -4947,18 +5010,6 @@ export class UiProjection {
             this.context.emit({
                 kind: "expression",
                 code: `bbl::set_global_callback(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(globalLeft.name.text)}, ${this.context.callbacks.compileVoidCallback(expression.right)});`,
-            });
-            return true;
-        }
-        const canvasDataset = this.primaryCanvasDataset(expression.left);
-        if (
-            canvasDataset &&
-            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        ) {
-            if (canvasDataset === "ready") this.primaryCanvasReadyGate = true;
-            this.context.emit({
-                kind: "expression",
-                code: `bbl::set_canvas_dataset(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(canvasDataset)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
             });
             return true;
         }
@@ -5291,7 +5342,6 @@ export class UiProjection {
                 directElement,
                 expression.left.expression,
             );
-            if (isInertCanvasFocusWrite(this.context, expression)) return true;
             if (property === "src" && tag === "img") {
                 // Every source the write can select is packaged; the
                 // selection itself runs as written.
@@ -5564,15 +5614,79 @@ export class UiProjection {
     }
 
     public primaryCanvasDataset(expression: ts.Expression): string | undefined {
+        const member = this.canvasDatasetMember(expression);
+        return member?.read ? member.key : undefined;
+    }
+
+    private readonly observedDatasetFields = new EmissionMap<string, boolean>();
+
+    /**
+     * An element dataset member outside Worker hosts that nothing in the
+     * program or its host can observe (`observesDatasetFields`, other writes
+     * of the field aside): capture instrumentation, as erasable as an
+     * unobserved metadata helper.
+     */
+    private unobservedDatasetWrite(expression: ts.Expression): boolean {
+        if (this.context.options.workers) return false;
+        const member = this.context.unwrap(expression);
+        if (!ts.isPropertyAccessExpression(member)) return false;
+        const dataset = this.context.unwrap(member.expression);
+        if (
+            !ts.isPropertyAccessExpression(dataset) ||
+            dataset.name.text !== "dataset"
+        )
+            return false;
+        const map = this.context.checker.getTypeAtLocation(dataset).getSymbol();
+        if (map?.name !== "DOMStringMap" || !declaredInDomLibrary(map))
+            return false;
+        const field = member.name.text;
+        let observed = this.observedDatasetFields.get(field);
+        if (observed === undefined) {
+            observed = observesDatasetFields(
+                this.context.checker,
+                this.context.sourceFiles(),
+                new Set([field]),
+                this.context.options.nativeHostUi,
+                (node) => {
+                    const write = node.parent;
+                    return ts.isPropertyAccessExpression(node) &&
+                        node.name.text === field &&
+                        ts.isPropertyAccessExpression(node.expression) &&
+                        node.expression.name.text === "dataset" &&
+                        ((ts.isBinaryExpression(write) &&
+                            write.left === node &&
+                            write.operatorToken.kind ===
+                                ts.SyntaxKind.EqualsToken) ||
+                            (ts.isDeleteExpression(write) &&
+                                write.expression === node))
+                        ? "self"
+                        : undefined;
+                },
+            );
+            this.observedDatasetFields.set(field, observed);
+        }
+        return !observed;
+    }
+
+    /**
+     * A canvas's dataset member outside Worker hosts: the capture handshake
+     * the native engine keeps when its program reads the dataset back, and
+     * unobservable instrumentation otherwise.
+     */
+    private canvasDatasetMember(
+        expression: ts.Expression,
+    ): { key: string; read: boolean } | undefined {
         if (this.context.options.workers) return undefined;
         const value = this.context.unwrap(expression);
         if (!ts.isPropertyAccessExpression(value)) return undefined;
         const dataset = this.context.unwrap(value.expression);
         return ts.isPropertyAccessExpression(dataset) &&
             dataset.name.text === "dataset" &&
-            this.context.isCanvasElement(dataset.expression) &&
-            this.readsCanvasDataset(value.getSourceFile())
-            ? value.name.text
+            this.context.isCanvasElement(dataset.expression)
+            ? {
+                  key: value.name.text,
+                  read: this.readsCanvasDataset(value.getSourceFile()),
+              }
             : undefined;
     }
 

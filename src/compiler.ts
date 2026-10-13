@@ -232,7 +232,6 @@ import {
     symbolPropertyKey,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
-import { isInertCanvasFocusWrite } from "./compiler/dom-targets.js";
 import {
     isNullable,
     presentMembers,
@@ -9247,11 +9246,18 @@ class Compiler implements LoweringServices {
         this.erasedBrowserInstrumentation.add(position);
     }
 
+    /**
+     * A browser-erasure path dropped a write through `receiver`. Writes erased
+     * by contract (`UiProjection.erasesByContract`) are consumed before the
+     * assignment fallback; a path dropping a whole statement asks the same
+     * question. With retained UI, any other write through a DOM element is
+     * one no path represents.
+     */
     public noteErasedElementWrite(
         receiver: ts.Expression,
         site: ts.Node,
     ): void {
-        if (ts.isBinaryExpression(site) && isInertCanvasFocusWrite(this, site))
+        if (ts.isBinaryExpression(site) && this.ui.erasesByContract(site))
             return;
         const isElement = (expression: ts.Expression): boolean => {
             const type = this.checker.getNonNullableType(
@@ -9272,15 +9278,6 @@ class Compiler implements LoweringServices {
         let owner: ts.Expression | undefined = receiver;
         while (owner) {
             const value = this.unwrap(owner);
-            // A canvas's dataset carries capture handshakes: written natively
-            // where the program reads it (`primaryCanvasDataset`), and
-            // otherwise unobservable.
-            if (
-                ts.isPropertyAccessExpression(value) &&
-                value.name.text === "dataset" &&
-                this.isCanvasElement(value.expression)
-            )
-                return;
             if (isElement(owner)) {
                 this.erasedElementWrites.set(site.pos, site);
                 return;

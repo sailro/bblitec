@@ -193,6 +193,8 @@ test("the analysis answers retained UI queries exactly as lowering them does", (
         const chosen = stats.count > 0 ? first : root;
         chosen.textContent = "chosen";
         (stats.count > 0 ? first : root).textContent = "conditional";
+        const conditionalText = (stats.count > 0 ? first : root).textContent;
+        if (conditionalText === null) throw new Error("text");
         interface View { label: HTMLElement; optional: HTMLElement | null; }
         const view: View = { label: first, optional: null };
         view.label.textContent = "record";

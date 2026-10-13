@@ -42,6 +42,9 @@ int main() try {
     require(value("a") == "0" && value("b") == "1", "forEach writes");
     require(value("i0") == "slot 0" && value("i1") == "slot 1", "indexed writes");
     require(value("m0") == "mixed" && value("m1") == "mixed", "union element writes");
+    // The conditional receiver evaluated its condition once and wrote its arm.
+    require(value("c0").empty() && value("c1") == "chosen" && value("picks") == "1",
+            "conditional receiver write");
 } catch (const std::exception& error) {
     std::fprintf(stderr, "Element writes: %s\n", error.what());
     return 1;
