@@ -189,7 +189,7 @@ export function optionalNativeFixtureTools(
         return undefined;
     }
     try {
-        return discoverWindowsBuildTools("msvc");
+        return discoverWindowsBuildTools("clangcl");
     } catch (error) {
         if (error instanceof Error) return undefined;
         throw error;

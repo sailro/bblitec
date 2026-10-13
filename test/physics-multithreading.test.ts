@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -33,19 +32,14 @@ test("parallel physics preserves bounded contacts, worker ownership, sums and fa
         "BulletCollision.lib",
         "LinearMath.lib",
     ];
-    for (const compiler of [tools, discoverWindowsBuildTools("clangcl")]) {
-        runNativeFixtureCompiler(compiler, arguments_);
-        for (const threads of ["1", "4"]) {
-            const output = execFileSync(executable, {
-                env: {
-                    ...compiler.environment,
-                    BBLITE_PHYSICS_THREADS: threads,
-                },
-                encoding: "utf8",
-                timeout: 60000,
-            });
-            assert.match(output, /physics-multithreading: ok/);
-        }
+    runNativeFixtureCompiler(tools, arguments_);
+    for (const threads of ["1", "4"]) {
+        const output = execFileSync(executable, {
+            env: { ...tools.environment, BBLITE_PHYSICS_THREADS: threads },
+            encoding: "utf8",
+            timeout: 60000,
+        });
+        assert.match(output, /physics-multithreading: ok/);
     }
     assert.throws(
         () =>

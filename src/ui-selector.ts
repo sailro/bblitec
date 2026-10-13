@@ -377,20 +377,37 @@ export function uiSelectorSequenceIsConditional(
     );
 }
 
+/**
+ * A selector sequence as C++. A nested selector list (`:not`, `:is`,
+ * `:has`) is its own statement: MSVC's front end is exponential in the
+ * nesting depth of one initializer.
+ */
 export function uiSelectorSequenceCpp(
     steps: readonly UiSelectorStep[],
     quote: (value: string) => string,
 ): string {
-    return `{${steps
-        .map(
-            (step) =>
-                `{bbl::UiSelectorRelation::${UI_SELECTOR_RELATIONS[step.relation]}, {${step.tests
-                    .map(
-                        (test) =>
-                            `{bbl::UiSelectorTestKind::${UI_SELECTOR_TESTS[test.kind]}, ${quote(test.name)}, ${quote(test.value)}` +
-                            `${test.alternatives || test.a !== undefined ? `, {${test.alternatives?.map((alternative) => uiSelectorSequenceCpp(alternative, quote)).join(", ") ?? ""}}, ${test.a ?? 0}, ${test.b ?? 0}` : ""}}`,
-                    )
-                    .join(", ")}}}`,
-        )
-        .join(", ")}}`;
+    const locals: string[] = [];
+    const sequence = (steps: readonly UiSelectorStep[]): string =>
+        `{${steps
+            .map(
+                (step) =>
+                    `{bbl::UiSelectorRelation::${UI_SELECTOR_RELATIONS[step.relation]}, {${step.tests
+                        .map(
+                            (test) =>
+                                `{bbl::UiSelectorTestKind::${UI_SELECTOR_TESTS[test.kind]}, ${quote(test.name)}, ${quote(test.value)}` +
+                                `${test.alternatives || test.a !== undefined ? `, {${(test.alternatives ?? []).map(hoisted).join(", ")}}, ${test.a ?? 0}, ${test.b ?? 0}` : ""}}`,
+                        )
+                        .join(", ")}}}`,
+            )
+            .join(", ")}}`;
+    const hoisted = (alternative: readonly UiSelectorStep[]): string => {
+        const cpp = sequence(alternative);
+        const name = `selector_${locals.length}`;
+        locals.push(`std::vector<bbl::UiSelectorStep> ${name} = ${cpp};`);
+        return `std::move(${name})`;
+    };
+    const top = sequence(steps);
+    return locals.length
+        ? `[] { ${locals.join(" ")} return std::vector<bbl::UiSelectorStep>${top}; }()`
+        : top;
 }

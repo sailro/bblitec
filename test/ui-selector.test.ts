@@ -6,6 +6,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     parseUiSelectorSequence,
     splitUiSelectorList,
+    uiSelectorSequenceCpp,
     uiSelectorSequenceCss,
 } from "../src/ui-selector.js";
 import { runRmlUiFixture } from "./native-fixture.js";
@@ -191,4 +192,21 @@ test("conditional grid geometry retains authored selector relationships", () => 
         compile(".grid > .cell{color:red}").cpp,
         /UiSelectorRelation::Child/,
     );
+});
+
+test("nested selector lists are emitted as statements of bounded depth", () => {
+    const steps = parseUiSelectorSequence(
+        ".panel:not(:has(> .entry:not([disabled])))",
+    );
+    assert.ok(steps);
+    const cpp = uiSelectorSequenceCpp(steps, (text) => JSON.stringify(text));
+    let depth = 0;
+    let deepest = 0;
+    for (const character of cpp) {
+        if (character === "{") deepest = Math.max(deepest, ++depth);
+        else if (character === "}") --depth;
+        else if (character === ";") depth = 1;
+    }
+    // One initializer per nested list: MSVC is exponential in its depth.
+    assert.ok(deepest <= 8, `initializer depth ${deepest}`);
 });

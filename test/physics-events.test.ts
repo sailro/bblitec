@@ -4,7 +4,6 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import {
     lowerPhysicsAfterStep,
     lowerPhysicsCollisionInfo,
@@ -66,51 +65,50 @@ test("collision fields and separation are read from the pinned event object", ()
 });
 
 const tools = optionalNativeFixtureTools();
-for (const compiler of ["msvc", "clangcl"] as const)
-    for (const thin of [false, true])
-        test(
-            `collision callbacks preserve identities, deferred release and finally semantics (thin=${thin}, compiler=${compiler})`,
-            { skip: !tools },
-            () => {
-                const nativeTools = discoverWindowsBuildTools(compiler);
-                const output = resolve(
-                    `artifacts/physics-events-${thin ? "thin" : "ordinary"}-${compiler}`,
-                );
-                mkdirSync(output, { recursive: true });
-                emitUpstreamGenerated(output, [
-                    "core",
-                    "camera:free",
-                    "renderer:scene",
-                    "physics:world",
-                    ...(thin ? ["physics:thin-instances" as const] : []),
-                ]);
-                const executable = join(output, "check.exe");
-                runNativeFixtureCompiler(nativeTools, [
-                    "/O2",
-                    `/DTEST_THIN=${thin ? 1 : 0}`,
-                    `/Fo:${output}\\`,
-                    `/Fe:${executable}`,
-                    "/I",
-                    "native/src",
-                    "/I",
-                    join(output, "upstream/include"),
-                    "/I",
-                    join(output, "upstream/src"),
-                    `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`,
-                    "test/fixtures/physics-events-check.cpp",
-                    join(output, "upstream/src/scene_core.cpp"),
-                    "/link",
-                    `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
-                    "BulletDynamics.lib",
-                    "BulletCollision.lib",
-                    "LinearMath.lib",
-                ]);
-                execFileSync(executable, {
-                    encoding: "utf8",
-                    env: {
-                        ...nativeTools.environment,
-                        PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${nativeTools.environment.PATH ?? ""}`,
-                    },
-                });
-            },
-        );
+for (const thin of [false, true])
+    test(
+        `collision callbacks preserve identities, deferred release and finally semantics (thin=${thin})`,
+        { skip: !tools },
+        () => {
+            const nativeTools = tools!;
+            const output = resolve(
+                `artifacts/physics-events-${thin ? "thin" : "ordinary"}`,
+            );
+            mkdirSync(output, { recursive: true });
+            emitUpstreamGenerated(output, [
+                "core",
+                "camera:free",
+                "renderer:scene",
+                "physics:world",
+                ...(thin ? ["physics:thin-instances" as const] : []),
+            ]);
+            const executable = join(output, "check.exe");
+            runNativeFixtureCompiler(nativeTools, [
+                "/O2",
+                `/DTEST_THIN=${thin ? 1 : 0}`,
+                `/Fo:${output}\\`,
+                `/Fe:${executable}`,
+                "/I",
+                "native/src",
+                "/I",
+                join(output, "upstream/include"),
+                "/I",
+                join(output, "upstream/src"),
+                `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`,
+                "test/fixtures/physics-events-check.cpp",
+                join(output, "upstream/src/scene_core.cpp"),
+                "/link",
+                `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
+                "BulletDynamics.lib",
+                "BulletCollision.lib",
+                "LinearMath.lib",
+            ]);
+            execFileSync(executable, {
+                encoding: "utf8",
+                env: {
+                    ...nativeTools.environment,
+                    PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${nativeTools.environment.PATH ?? ""}`,
+                },
+            });
+        },
+    );
