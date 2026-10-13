@@ -2130,6 +2130,8 @@ export interface NullableResourceType {
     kind: ValueKind;
     cppType: string;
     dataType?: DataType<"handle">;
+    /** Facts the declared type proves for every value the name holds. */
+    implied?: Pick<Value, "renderTask">;
 }
 
 /** Storage, capture and expression facts shared by value kinds. */

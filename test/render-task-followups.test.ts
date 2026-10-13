@@ -256,3 +256,97 @@ test("refreshed task overrides lower where refresh and an override are both reac
         /Mesh refresh with per-task material overrides is not supported/,
     );
 });
+
+const nullableTaskPrefix = `import {createEngine,createSceneContext,createFreeCamera,createSphere,addToScene,registerScene,
+createRenderTask,enableRenderTaskMeshRefresh,addTask,addMeshToTask,removeMeshFromTask,createRenderTarget,
+createStandardMaterial,type Mesh,type Material,type RenderTask,type EngineContext,type SceneContext,
+type Camera} from "@babylonjs/lite";
+const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+const scene=createSceneContext(engine);
+const camera=createFreeCamera([0,0,-5],[0,0,0]);
+scene.camera=camera;
+const sphere=createSphere(engine,{diameter:1});
+sphere.material=createStandardMaterial();
+addToScene(scene,sphere);
+`;
+
+// The application's optional visibility capture: a sample count fixed per
+// call site selects the task or null, and every later use is guarded.
+const visibilityCapture = (call: string): string => `
+function setup(engine:EngineContext,scene:SceneContext,camera:Camera,sceneSamples:1|4=1):(mesh:Mesh)=>void{
+  const visibilityTarget=sceneSamples>1?createRenderTarget({lbl:"vis",dFormat:"depth24plus-stencil8",samples:sceneSamples,size:engine}):null;
+  const visibilityCapture=visibilityTarget?createRenderTask({name:"vis",rt:visibilityTarget,cam:camera,autoMirror:false},engine,scene):null;
+  if(visibilityCapture) enableRenderTaskMeshRefresh(visibilityCapture);
+  const depthView:Material|null=visibilityCapture?createStandardMaterial():null;
+  if(depthView) addMeshToTask(visibilityCapture!,sphere,{material:depthView});
+  if(visibilityCapture&&visibilityTarget) addTask(scene,visibilityCapture);
+  return (mesh:Mesh):void=>{ if(visibilityCapture) removeMeshFromTask(visibilityCapture,mesh); };
+}
+const unregister=${call};
+await registerScene(scene);
+unregister(sphere);
+`;
+
+test("nullable render tasks lower through optional resource storage at every guarded use", () => {
+    const shapes: Record<string, string> = {
+        absentSamples: visibilityCapture("setup(engine,scene,camera)"),
+        presentSamples: visibilityCapture("setup(engine,scene,camera,4)"),
+        runtimeSelected: `
+const rt=createRenderTarget({lbl:"x",format:"rgba8unorm",samples:1,size:engine});
+const task=Math.random()<0.5?createRenderTask({name:"x",rt,autoMirror:false},engine,scene):null;
+if(task) enableRenderTaskMeshRefresh(task);
+if(task) addMeshToTask(task,sphere,{material:createStandardMaterial()});
+if(task!==null) addTask(scene,task);
+await registerScene(scene);
+const drop=(mesh:Mesh):void=>{ if(!task) return; removeMeshFromTask(task,mesh); };
+drop(sphere);
+`,
+        assignedLater: `
+let late:RenderTask|null=null;
+const start=():void=>{
+  late=createRenderTask({name:"late",rt:createRenderTarget({lbl:"l",format:"rgba8unorm",samples:1,size:engine}),autoMirror:false},engine,scene);
+  addMeshToTask(late,sphere); addTask(scene,late);
+};
+start();
+await registerScene(scene);
+if(late) removeMeshFromTask(late,sphere);
+late=null;
+`,
+        classField: `
+class Capture {
+  private task: RenderTask | null = null;
+  constructor(private readonly engine: EngineContext, private readonly scene: SceneContext) {}
+  start(): void {
+    this.task=createRenderTask({name:"c",rt:createRenderTarget({lbl:"c",format:"rgba8unorm",samples:1,size:this.engine}),autoMirror:false},this.engine,this.scene);
+    addMeshToTask(this.task,sphere); addTask(this.scene,this.task);
+  }
+  drop(mesh: Mesh): void { if(this.task) removeMeshFromTask(this.task,mesh); }
+}
+const capture=new Capture(engine,scene);
+capture.start();
+await registerScene(scene);
+capture.drop(sphere);
+`,
+    };
+    for (const [name, body] of Object.entries(shapes)) {
+        const result = compileSource(nullableTaskPrefix + body);
+        assert.equal(
+            result.manifest.deferredCapabilities?.length ?? 0,
+            0,
+            name,
+        );
+        assert.match(result.cpp, /std::optional<bbl::TaskHandle>/, name);
+        assert.match(result.cpp, /\.has_value\(\)/, name);
+        assert.match(
+            result.cpp,
+            /bbl::remove_render_task_mesh\(v_engine, \(\*[^;]*v_\w+\)+, v_\w+\);/,
+            name,
+        );
+    }
+    // A sample count of one folds the task away, yet the guarded uses still
+    // name the entry engine and the type's render-task fact.
+    assert.match(
+        compileSource(nullableTaskPrefix + shapes.absentSamples).cpp,
+        /std::optional<bbl::TaskHandle> v_fn\d+_visibilityCapture\{\};\s+if \(v_fn\d+_visibilityCapture\.has_value\(\)\) \{\s+bbl::enable_render_task_mesh_refresh\(v_engine,/,
+    );
+});

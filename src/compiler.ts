@@ -393,7 +393,7 @@ const CANVAS_SIZE_AXES = new EmissionMap<string, CanvasSizeProperty>([
  */
 const NULLABLE_RESOURCE_TYPES = new EmissionMap<
     string,
-    { origin: DeclarationOrigin; kind: ValueKind; cppType: string }
+    { origin: DeclarationOrigin } & NullableResourceType
 >([
     [
         "AudioEngine",
@@ -414,6 +414,17 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
     [
         "AssetContainer",
         { origin: "babylon", kind: "asset", cppType: handleCppType("asset") },
+    ],
+    // Only `createRenderTask` returns the pin's `RenderTask`, so the type
+    // proves its factory's `renderTask` fact even for a name never assigned.
+    [
+        "RenderTask",
+        {
+            origin: "babylon",
+            kind: "task",
+            cppType: "bbl::TaskHandle",
+            implied: { renderTask: true },
+        },
     ],
 ]);
 
@@ -1978,6 +1989,7 @@ class Compiler implements LoweringServices {
                           this.options.workers,
                           this.defaultEngineCpp,
                       )),
+                  ...resource.implied,
                   cpp: `(*${storage})`,
               });
         return {
@@ -1990,7 +2002,7 @@ class Compiler implements LoweringServices {
     private rawNullableResourceKind(
         node: ts.Node,
         allowDirect: boolean,
-    ): { kind: ValueKind; cppType: string } | undefined {
+    ): NullableResourceType | undefined {
         const type = this.checker.getTypeAtLocation(node);
         const present = presentMembers(type);
         if (present.length !== 1 || (!allowDirect && !isNullable(type)))
@@ -2022,7 +2034,11 @@ class Compiler implements LoweringServices {
         const name = member.symbol?.name;
         const named = name ? NULLABLE_RESOURCE_TYPES.get(name) : undefined;
         if (named && declaredIn(member.symbol, named.origin)) {
-            return { kind: named.kind, cppType: named.cppType };
+            return {
+                kind: named.kind,
+                cppType: named.cppType,
+                ...(named.implied ? { implied: named.implied } : {}),
+            };
         }
         // `createRenderTexture2D` returns the pin's ordinary `Texture2D`, so
         // the type cannot tell its offscreen target from a loaded texture;

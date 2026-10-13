@@ -163,7 +163,7 @@ import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandleCpp } from "./properties.js";
 import { absenceKind, nullability } from "./type-facts.js";
-import type { Value } from "./types.js";
+import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import {
     tryResolveFunctionDeclaration,
@@ -339,7 +339,17 @@ export interface ExpressionContext
             | "isInNativeFunctionBody"
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
-        > {}
+        > {
+    nullableResourceKind(
+        node: ts.Node,
+        allowDirect?: boolean,
+    ): NullableResourceType | undefined;
+    nullableResourceValue(
+        resource: NullableResourceType,
+        storage: string,
+        source?: Value,
+    ): Value;
+}
 
 /**
  * Whether an expression's value is an object spread's operand, directly or
@@ -2645,6 +2655,39 @@ export class ExpressionLowerer {
     }
 
     /**
+     * A resource the plain-data model does not carry, selected against
+     * `null`: the nullable name's own optional storage holds it
+     * (`nullableResourceKind`), engaged only by the arm that built it.
+     */
+    private nullSelectedResource(
+        condition: string,
+        whenTrue: Value,
+        whenFalse: Value,
+        node: ts.Node,
+    ): Value | undefined {
+        const absent = (value: Value): boolean =>
+            value.kind === "json-null" && value.cpp.length === 0;
+        const [present, found] = absent(whenFalse)
+            ? [whenTrue, condition]
+            : absent(whenTrue)
+              ? [whenFalse, `!(${condition})`]
+              : [undefined, ""];
+        if (!present || present.cpp.length === 0) return undefined;
+        const resource = this.context.nullableResourceKind(node);
+        if (!resource || resource.dataType || present.kind !== resource.kind)
+            return undefined;
+        const storage =
+            this.context.allocateTemporaryCppName("selected_resource");
+        this.context.emit({
+            kind: "declaration",
+            type: `std::optional<${resource.cppType}>`,
+            name: storage,
+            initializer: `${found} ? std::optional<${resource.cppType}>{${present.cpp}} : std::nullopt`,
+        });
+        return this.context.nullableResourceValue(resource, storage, present);
+    }
+
+    /**
      * `path` names the record member or tuple element of the conditional
      * `node`'s result being selected, for {@link selectedDataType}.
      */
@@ -3122,6 +3165,13 @@ export class ExpressionLowerer {
                 nativeCaptures: guard.nativeCaptures ?? [],
             };
         }
+        const nullSelected = this.nullSelectedResource(
+            condition,
+            whenTrue,
+            whenFalse,
+            node,
+        );
+        if (nullSelected) return nullSelected;
         if (
             whenTrue.kind !== whenFalse.kind ||
             whenTrue.cpp.length === 0 ||
