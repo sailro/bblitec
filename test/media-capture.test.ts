@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureLabSoundPresent,
+    nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
+    runFixtureExecutable,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
-const labsound = resolve("artifacts/tools/labsound");
-const native = Boolean(tools && existsSync(join(labsound, "lib/LabSound.lib")));
+const labsound = nativeFixtureLabSoundRoot;
+const native = Boolean(tools && nativeFixtureLabSoundPresent());
 
 /** Compile one LabSound fixture translation unit with stream nodes and run it. */
 function runLabSoundFixture(
@@ -39,10 +41,9 @@ function runLabSoundFixture(
         "libnyquist.lib",
         "SDL3.lib",
     ]);
-    return execFileSync(executable, {
+    return runFixtureExecutable(executable, {
         cwd: output,
-        encoding: "utf8",
-        timeout: 30000,
+        timeoutMs: 30000,
         env: {
             ...tools!.environment,
             BBLITE_AUDIO_CAPTURE: "",

@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureLabSoundPresent,
+    nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
-const labsound = resolve("artifacts/tools/labsound");
-const native = Boolean(tools && existsSync(join(labsound, "lib/LabSound.lib")));
+const labsound = nativeFixtureLabSoundRoot;
+const native = Boolean(tools && nativeFixtureLabSoundPresent());
 
 /** A mono 16-bit 48 kHz WAVE file whose sample at `t` seconds is `level(t)`. */
 function wave(seconds: number, level: (time: number) => number): Buffer {

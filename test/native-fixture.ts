@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
     existsSync,
@@ -19,9 +19,11 @@ import type { TestContext } from "node:test";
 
 import type { Feature } from "../src/compiler/types.js";
 import {
+    discoverDevelopmentTools,
     discoverWindowsBuildTools,
     type WindowsBuildTools,
 } from "../src/development-tools.js";
+import { artifactPatchState } from "../src/patch-inventory.js";
 import {
     featureMacros,
     featureMacroValue,
@@ -46,6 +48,34 @@ export const nativeFixtureVcpkgRoot = developmentVcpkgRoot();
 export const nativeFixtureLabSoundRoot = resolve(
     process.env.BBLITE_LABSOUND_DIR ?? "artifacts/tools/labsound",
 );
+
+let labSoundRecordVerified = false;
+
+/**
+ * Whether that install is present. A present install not recorded as
+ * built from the pin's source and patch series throws: a fixture would
+ * otherwise test a LabSound no scene links (one without
+ * 0007-output-in-place-bus corrupts the heap intermittently).
+ */
+export function nativeFixtureLabSoundPresent(): boolean {
+    if (!existsSync(join(nativeFixtureLabSoundRoot, "lib/LabSound.lib")))
+        return false;
+    if (labSoundRecordVerified) return true;
+    const cmake = discoverDevelopmentTools().cmake;
+    if (!cmake)
+        throw new Error("CMake is required to verify the LabSound record.");
+    const record = artifactPatchState(
+        cmake,
+        "labsound",
+        nativeFixtureLabSoundRoot,
+    );
+    if (record.state !== "current")
+        throw new Error(
+            `LabSound at ${nativeFixtureLabSoundRoot} ${record.detail}; rebuild it with tools/build-labsound.ps1 or set BBLITE_LABSOUND_DIR to a current build.`,
+        );
+    labSoundRecordVerified = true;
+    return true;
+}
 
 /** Isolate contiguous emitted helpers, refusing a missing or reversed boundary. */
 export function cppSection(
@@ -452,6 +482,41 @@ export function runNativeFixtureCompiler(
 }
 
 /**
+ * Runs a fixture executable and returns its stdout. A nonzero exit, a
+ * signal or a timeout throws with the exit code (NTSTATUS in hex: a crash
+ * prints nothing itself), stderr and stdout, so a failure is diagnosable.
+ */
+export function runFixtureExecutable(
+    executable: string,
+    options: {
+        cwd?: string;
+        env?: NodeJS.ProcessEnv;
+        timeoutMs?: number;
+    } = {},
+): string {
+    const result = spawnSync(executable, {
+        cwd: options.cwd,
+        env: options.env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: options.timeoutMs ?? 0,
+        maxBuffer: 64 * 1024 * 1024,
+    });
+    if (result.error === undefined && result.status === 0) return result.stdout;
+    const status =
+        result.status === null
+            ? `signal ${result.signal ?? "none"}`
+            : `exit ${result.status} (0x${(result.status >>> 0).toString(16).toUpperCase()})`;
+    throw new Error(
+        [
+            `${executable} failed: ${status}${result.error ? `, ${result.error.message}` : ""}`,
+            `stderr:\n${result.stderr || "(empty)"}`,
+            `stdout:\n${result.stdout || "(empty)"}`,
+        ].join("\n"),
+    );
+}
+
+/**
  * Compiles one generated translation unit in `artifacts/<name>` with the
  * fixture's own `flags` and runs it: a failed assertion or an uncaught throw
  * in the program fails the caller. Returns what the program printed.
@@ -477,14 +542,12 @@ export function runGeneratedProgram(
         `/Fe:${executable}`,
         source,
     ]);
-    const output = execFileSync(executable, {
-        stdio: "pipe",
-        windowsHide: true,
-        timeout: options.timeoutMs ?? 0,
+    const output = runFixtureExecutable(executable, {
+        timeoutMs: options.timeoutMs ?? 0,
     });
     if (options.expectedOutput !== undefined)
-        assert.equal(output.toString("utf8"), options.expectedOutput);
-    return output.toString("utf8");
+        assert.equal(output, options.expectedOutput);
+    return output;
 }
 
 /** Preserve object paths when distinct source folders contain equal basenames. */

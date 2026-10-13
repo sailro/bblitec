@@ -79,7 +79,7 @@ test("unlowered media operations remain explicit refusals", () => {
     assert.throws(
         () =>
             compileSource(`
-        const inspect: (stream: MediaStream) => void = stream => { stream.getAudioTracks(); };
+        const inspect: (track: MediaStreamTrack) => void = track => { void track.applyConstraints(); };
     `),
         /not supported|not lowered|Unsupported|unsupported/,
     );

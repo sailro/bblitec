@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureLabSoundPresent,
     nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -95,7 +96,7 @@ test("scheduled audio events retain callbacks through playback and release their
     writeFileSync(join(output, "program.hpp"), result.cpp);
     const tools = optionalNativeFixtureTools(),
         labsound = nativeFixtureLabSoundRoot;
-    if (!tools || !existsSync(join(labsound, "lib/LabSound.lib"))) {
+    if (!tools || !nativeFixtureLabSoundPresent()) {
         t.skip("Native compiler and pinned LabSound required.");
         return;
     }
