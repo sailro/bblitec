@@ -908,6 +908,7 @@ struct BoundingBoxGizmoHandle {
  */
 struct SceneState;
 struct TextRenderableState;
+struct GpuObject;
 struct GpuDevice;
 struct GpuCommandEncoder;
 struct GpuExternalRenderable;
@@ -4166,6 +4167,13 @@ struct Engine {
     std::shared_ptr<GpuDevice> webgpu_device;
     /** `engine._currentEncoder` while a renderer prepares a pass's external renderables. */
     std::shared_ptr<GpuCommandEncoder> current_encoder;
+    /**
+     * `getSceneBindGroupLayout(engine)` and the group a scene pass binds at 0
+     * for its external renderables, made with `webgpu_device`
+     * (`bind_engine_scene_group`, gpu_renderable.hpp).
+     */
+    std::shared_ptr<GpuObject> webgpu_scene_layout;
+    std::shared_ptr<GpuObject> webgpu_scene_group;
     std::shared_ptr<pal::EventLoop> source_gpu_loop;
     bool source_gpu_host_closed = false;
     std::shared_ptr<pal::GpuRetirementState> gpu_retirements;

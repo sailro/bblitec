@@ -4,7 +4,7 @@
 #include <bblite/features/has_effect_renderer.hpp>
 #include <bblite/features/has_frame_graph_renderer.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
-#include <bblite/features/has_splat_stream.hpp>
+#include <bblite/features/engine_webgpu.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text_renderer.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
@@ -67,7 +67,7 @@ struct GpuBackend {
 #else
 #define BBLITE_GPU_WINDOW_ENTRY(entry) nullptr
 #endif
-#if BBLITE_HAS_SPLAT_STREAM
+#if BBLITE_ENGINE_WEBGPU
 #define BBLITE_GPU_WEBGPU_ENTRY(entry) &entry
 #else
 #define BBLITE_GPU_WEBGPU_ENTRY(entry) nullptr

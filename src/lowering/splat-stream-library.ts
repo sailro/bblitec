@@ -522,7 +522,10 @@ const libraryAdapters: readonly (readonly [string, CallAdapter])[] = [
     ],
     [
         "src/render/scene-helpers.ts#getSceneBindGroupLayout",
-        { cpp: () => `${RUNTIME}::scene_bind_group_layout()` },
+        {
+            cpp: (argument) =>
+                `${RUNTIME}::scene_bind_group_layout(${argument(0)})`,
+        },
     ],
     [
         "src/scene/scene-core.ts#addDeferredSceneRenderables",

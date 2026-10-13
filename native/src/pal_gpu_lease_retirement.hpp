@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -12,8 +14,12 @@ namespace bbl::pal {
  */
 class GpuLeaseRetirement {
 public:
+    /** Expired entries are dropped once the list doubles since its last compaction. */
     template <class Resource> void track(const std::shared_ptr<Resource>& resource) {
-        std::erase_if(resources_, [](const Entry& entry) { return entry.resource.expired(); });
+        if (resources_.size() >= compact_at_) {
+            std::erase_if(resources_, [](const Entry& entry) { return entry.resource.expired(); });
+            compact_at_ = std::max<std::size_t>(minimum_compaction, 2 * resources_.size());
+        }
         resources_.push_back({resource, [](const std::shared_ptr<void>& value) {
                                   std::static_pointer_cast<Resource>(value)->retire();
                               }});
@@ -25,6 +31,7 @@ public:
                 entry.release(value);
         }
         resources_.clear();
+        compact_at_ = minimum_compaction;
     }
 
     std::size_t tracked_resource_count() const noexcept { return resources_.size(); }
@@ -34,7 +41,9 @@ private:
         std::weak_ptr<void> resource;
         void (*release)(const std::shared_ptr<void>&);
     };
+    static constexpr std::size_t minimum_compaction = 64;
     std::vector<Entry> resources_;
+    std::size_t compact_at_ = minimum_compaction;
 };
 
 } // namespace bbl::pal

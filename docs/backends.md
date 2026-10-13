@@ -117,16 +117,23 @@ their entries and each dispatch or draw binds the resources its stage's sidecar 
 dynamic offsets; storage buffers bind whole; uniform buffers are CPU bytes pushed when a command is
 encoded; command encoders record and encode at submission (or before a renderer's passes); each dispatch
 is its own compute pass; indirect dispatch reads a copy of its arguments, since D3D12 holds a buffer
-bound as storage in a shader-resource state; `clearBuffer` uploads zeros; `MAP_READ` buffers are
+bound as storage in a shader-resource state (one copy per buffer and offset until a command writes the
+buffer); queue writes and new buffers' zeroes stage in one upload ring, recorded in one copy pass ahead
+of the next encoded or submitted commands; `clearBuffer` uploads zeros; `MAP_READ` buffers are
 download transfer buffers mapped after a fence. Device limits are WebGPU's defaults raised by the
 engine's `requiredLimits`; SDL_GPU admits 32-bit sizes.
 
-In builds reaching GPU retirement, a scene's own pass draws its external renderables
-(`gpu_renderable.hpp`, `pal_external_renderables.hpp`) with render-task-base.ts's protocol: bound per
-target signature and published renderable version, prepared before the pass (batch reset, update,
-batch flush recorded into the frame encoder), drawn after the transparent bucket with group 0 bound
-(the pinned frame group; an empty one without pinned materials). Scenes with render tasks or other
-transparent renderables refuse them, as do opaque ones.
+`engine:webgpu-device` binds the device at `createEngine`, with the engine's scene layout and group
+(empty on both backends; a renderable shader reading group 0 fails). `renderer:external-renderables`
+draws a scene pass's lowered renderables (`gpu_renderable.hpp`, `pal_external_renderables.hpp`) with
+render-task-base.ts's protocol, pinned by `external-renderable-contract.ts`: bound per target signature
+and published renderable version (a failed bind releases its batch generation at once), prepared
+before the pass (batch reset, update, batch flush recorded into the frame encoder), and drawn at their
+place in the transparent bucket (`pal_transparent_order.hpp`): transparent meshes, billboards and
+external bindings sort by the pin's lowered `compareTransparentBindings` and `_sortDistance`
+(`transparent_order.hpp`; distance 0 without `_worldCenter`). Mixed families without a camera, or tied
+in distance and order, refuse; so do external renderables beside text, splat clouds or depth-hosted
+sprite layers, in render tasks, or opaque.
 
 ## Temporal post-process transport
 

@@ -21,6 +21,7 @@
 #include <bblite/runtime.hpp>
 #include <bblite/web_platform.hpp>
 
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -155,15 +156,12 @@ struct DrawContext {
 
 // ── Render tasks ───────────────────────────────────────────────────────
 
-/** The scene's group-0 layout while a renderable binds (`getSceneBindGroupLayout`). */
-inline GpuHandle& bound_scene_layout() {
-    thread_local GpuHandle layout;
-    return layout;
-}
-[[nodiscard]] inline GpuHandle scene_bind_group_layout() {
-    if (!bound_scene_layout())
-        throw std::runtime_error("getSceneBindGroupLayout is called outside a renderable's bind.");
-    return bound_scene_layout();
+/** `getSceneBindGroupLayout(engine)`: the engine's scene layout (`bind_engine_scene_group`). */
+[[nodiscard]] inline GpuHandle scene_bind_group_layout(const StoredEngine& engine) {
+    auto& owner = *engine;
+    if (!owner.webgpu_scene_layout || owner.device_disposed)
+        throw std::runtime_error("The engine has no WebGPU scene layout for the splat stream.");
+    return owner.webgpu_scene_layout;
 }
 
 /** The pin's `DrawUpdateBatch`, whose members are the lowered literal's. */
@@ -226,8 +224,8 @@ struct DrawBinding final : GpuDrawBinding {
 /**
  * The pin's `Renderable`, drawn in the scene's own pass: `bind(engine,
  * signature)` per published version and signature, with one signature object
- * per distinct value (the render task's own signature), and the scene's
- * group-0 layout for `getSceneBindGroupLayout` while it binds.
+ * per distinct value (the render task's own signature). The pin's literal
+ * has no `_worldCenter`, so its binding sorts at distance 0.
  */
 struct Renderable final : GpuExternalRenderable {
     double order_value = 0;
@@ -239,15 +237,10 @@ struct Renderable final : GpuExternalRenderable {
 
     double order() const override { return order_value; }
     bool transparent() const override { return is_transparent; }
-    GpuDrawBindingHandle bind(const GpuHandle& scene_layout,
-                              const GpuRenderTargetSignature& signature) override {
+    std::optional<std::array<double, 3>> world_center() const override { return std::nullopt; }
+    GpuDrawBindingHandle bind(const GpuRenderTargetSignature& signature) override {
         if (!signature_ || *signature_ != signature)
             signature_ = std::make_shared<GpuRenderTargetSignature>(signature);
-        struct Layout {
-            GpuHandle previous = std::exchange(bound_scene_layout(), GpuHandle{});
-            ~Layout() { bound_scene_layout() = std::move(previous); }
-        } scope;
-        bound_scene_layout() = scene_layout;
         auto binding = bind_callback(bound_engine, signature_);
         if (!binding)
             throw std::runtime_error("A splat-stream renderable's bind returned no binding.");

@@ -128,7 +128,7 @@ test("a stream program lowers its loads, attachment, stats, writes and collision
         "/c",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        "/DBBLITE_HAS_SPLAT_STREAM=1",
+        "/DBBLITE_ENGINE_WEBGPU=1",
         "/I",
         join(directory, "upstream/include"),
         `/Fo:${join(directory, "main.obj")}`,

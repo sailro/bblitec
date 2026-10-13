@@ -15,6 +15,7 @@
 #include <vector>
 #include "pal_gpu_lease_retirement.hpp"
 #include "pal_text_capture.hpp"
+#include "pal_webgpu_usage.hpp"
 
 namespace bbl::pal {
 
@@ -34,13 +35,6 @@ inline const char* text_binding_role_name(TextBindingRole role) {
         return "styles";
     }
     throw std::runtime_error("Unknown text resource role.");
-}
-
-/** GPUBufferUsage / GPUTextureUsage bits the text path creates with. */
-inline constexpr std::uint32_t text_buffer_usage_vertex = 0x20, text_buffer_usage_uniform = 0x40,
-                               text_buffer_usage_storage = 0x80, text_texture_usage_binding = 0x04;
-[[nodiscard]] inline bool text_usage_has(double usage, std::uint32_t bit) {
-    return (static_cast<std::uint32_t>(gpu_size(usage)) & bit) != 0;
 }
 
 /**

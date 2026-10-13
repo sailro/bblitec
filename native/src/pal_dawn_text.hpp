@@ -2,6 +2,7 @@
 
 #include <bblite/features/has_text_renderable.hpp>
 
+#include "pal_dawn_formats.hpp"
 #include "pal_dawn_constants.hpp"
 #include "pal_dawn_shared.hpp"
 #include "pal_dawn_text_resources.hpp"
@@ -16,25 +17,6 @@ namespace bbl::pal {
 
 using DawnTextShaderLease = DawnTextLease<WGPUShaderModule, wgpuShaderModuleRelease>;
 using DawnTextPipelineLayoutLease = DawnTextLease<WGPUPipelineLayout, wgpuPipelineLayoutRelease>;
-
-inline const char* dawn_text_format_name(WGPUTextureFormat format) {
-    switch (format) {
-    case WGPUTextureFormat_BGRA8Unorm:
-        return "bgra8unorm";
-    case WGPUTextureFormat_RGBA8Unorm:
-        return "rgba8unorm";
-    case WGPUTextureFormat_Depth24Plus:
-        return "depth24plus";
-    case WGPUTextureFormat_Depth24PlusStencil8:
-        return "depth24plus-stencil8";
-    case WGPUTextureFormat_Depth32Float:
-        return "depth32float";
-    case WGPUTextureFormat_Depth32FloatStencil8:
-        return "depth32float-stencil8";
-    default:
-        throw std::runtime_error("Unmapped Dawn text target format.");
-    }
-}
 
 /**
  * The pin's `GPUDevice` for text on Dawn: WebGPU objects over Dawn's own, and
@@ -113,12 +95,12 @@ struct DawnTextGpuDevice final : DawnTextGpuResources, TextPipelineProvider {
                                   const bbl::js::Nullable<std::string>& depth_stencil_format,
                                   bool depth_write, const std::shared_ptr<const void>& owner_object,
                                   const std::string& depth_compare) override {
-        if (format != dawn_text_format_name(color_format))
+        if (format != dawn_webgpu_format_name(color_format))
             throw std::runtime_error("Text pipeline format differs from the Dawn target: " +
                                      format);
         const auto samples = gpu_u32(gpu_size(sample_count));
         const bool has_depth = depth_stencil_format.has_value();
-        if (has_depth && *depth_stencil_format != dawn_text_format_name(depth_format))
+        if (has_depth && *depth_stencil_format != dawn_webgpu_format_name(depth_format))
             throw std::runtime_error("Text pipeline depth format differs from the Dawn target: " +
                                      *depth_stencil_format);
         if (has_depth && depth_compare != "greater-equal")
@@ -216,8 +198,8 @@ struct DawnTextGpuDevice final : DawnTextGpuResources, TextPipelineProvider {
             owner, wgpuDeviceCreateRenderPipeline(owner->device, &descriptor), "pipeline");
         if (owner->capture.enabled())
             created->capture =
-                text_pipeline_capture(info, dawn_text_format_name(color_format),
-                                      info.has_depth ? dawn_text_format_name(depth_target) : "");
+                text_pipeline_capture(info, dawn_webgpu_format_name(color_format),
+                                      info.has_depth ? dawn_webgpu_format_name(depth_target) : "");
         pipelines.emplace(key, created);
         return created;
     }

@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include <SDL3/SDL_gpu.h>
 
@@ -144,4 +146,29 @@ inline std::uint32_t gpu_sample_count_value(SDL_GPUSampleCount samples) {
     return 1u;
 }
 
+/** The WebGPU names of the formats SDL_GPU render targets use (WebGPU subset, text). */
+inline constexpr std::pair<std::string_view, SDL_GPUTextureFormat> sdl_webgpu_formats[] = {
+    {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM},
+    {"rgba8unorm-srgb", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB},
+    {"bgra8unorm", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM},
+    {"bgra8unorm-srgb", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB},
+    {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT},
+    {"depth16unorm", SDL_GPU_TEXTUREFORMAT_D16_UNORM},
+    {"depth24plus", SDL_GPU_TEXTUREFORMAT_D24_UNORM},
+    {"depth24plus-stencil8", SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT},
+    {"depth32float", SDL_GPU_TEXTUREFORMAT_D32_FLOAT},
+    {"depth32float-stencil8", SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT}};
+inline SDL_GPUTextureFormat sdl_webgpu_format(const std::string& name) {
+    for (const auto& [text, format] : sdl_webgpu_formats)
+        if (text == name)
+            return format;
+    throw std::runtime_error("Texture format '" + name + "' has no SDL_GPU target format.");
+}
+/** A renderer attachment's WebGPU format name, for a target signature. */
+inline std::string sdl_webgpu_format_name(SDL_GPUTextureFormat format) {
+    for (const auto& [text, value] : sdl_webgpu_formats)
+        if (value == format)
+            return std::string(text);
+    throw std::runtime_error("An SDL_GPU target format has no WebGPU name.");
+}
 } // namespace bbl::pal
