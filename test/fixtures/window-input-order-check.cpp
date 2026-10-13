@@ -137,7 +137,7 @@ static void check_host_metrics(UiElementHandle canvas) {
     latest->height = 540;
     latest->pixel_ratio = 2;
     latest->input = {PointerPrecision::Coarse, false};
-    latest->rectangles[canvas.value] = {150, 50, 160, 90};
+    latest->elements[canvas.value].rectangle = {150, 50, 160, 90};
     std::uint64_t requested = 0;
     {
         // The host is awaiting this input transaction. With no pending
