@@ -1,15 +1,13 @@
 # Architecture
 
-## Pipeline
-
 ```text
 TypeScript + reached modules → typed lowering + asset/shader composition
 → C++20 + WGSL + assets + provenance → SDL3 + SDL_GPU/Dawn
 ```
 
-The source pin is [upstream/babylon-lite.json](../upstream/babylon-lite.json).
-`upstream-source.ts` reads package source maps; `pinned-program.ts` checks those sources as one TypeScript
-program, through which lowerers resolve pinned names and types; `pinned-wgsl-build.ts` applies the shader transform.
+Assets, closed producers and shader composition run at generation; state, input, animation and rendering run natively.
+Source pin: [upstream/babylon-lite.json](../upstream/babylon-lite.json). `upstream-source.ts` reads package source maps,
+`pinned-program.ts` type-checks them as one program, `pinned-wgsl-build.ts` applies the shader transform.
 
 ## Ownership
 
@@ -21,165 +19,101 @@ program, through which lowerers resolve pinned names and types; `pinned-wgsl-bui
 | Lowerers | `src/lowering/` | Pinned AST translation |
 | Runtime | `native/include/bblite/` | Handles, JS identities, scene state, scheduling |
 | Shared PAL | `native/src/pal*.hpp` | Platform services and transport |
-| GPU PALs | `pal_sdl_gpu*`, `pal_dawn*` | Resources, bindings, encoding, presentation |
+| GPU PALs | `pal_sdl_gpu*`, `pal_dawn*` | [Backends](backends.md) |
 | Subsystem PALs | UI, audio, physics, navigation | Library adaptation |
 
-Pinned source defines Babylon behavior; PAL owns platform adaptation.
-Semantic substitutions are listed in [fidelity](fidelity.md).
+## Activation
 
-## Compiler architecture
+| Input | Selects |
+| --- | --- |
+| Reached APIs, properties, globals | Generated code, PAL units, native dependencies |
+| Call options, asset loader predicates | Runtime features, codecs, material variants |
+| Pinned composition | Shader arms, layouts, bindings |
+| Registry | Source, title, host UI, reference query, attribution |
+| Build options | Backend, capture, size, PCH |
+
+Reaching a factory activates its module even when an option disables it; only a literal parser opt-out
+(`loadBabylon({ loadCamera: false })`) skips one.
+
+## Generated records
+
+Paths are relative to `generated/<id>/`.
+
+| File | Records |
+| --- | --- |
+| `manifest.json` | Reached graph, features, assets |
+| `fidelity.json` | Adaptations and risks |
+| `upstream/provenance.json` | Pinned modules/symbols |
+| `upstream/feature-activation.json` | Reach sites, asset joins, activation reasons, consumers |
+| `upstream/renderer-fidelity.json` | Renderer formats/invariants |
+| `upstream/shaders/composition.json`, `shader-compiler.json` | Composed modules; compiler/target identity |
+
+## Compiler modules (`src/compiler/`)
 
 | Module | Responsibility |
 | --- | --- |
-| `program.ts`, `symbols.ts`, `type-facts.ts` | TypeScript program, declaration origin and symbol resolution, nullable-union members |
+| `program.ts`, `symbols.ts`, `type-facts.ts` | Program, declaration origin, symbols, nullable-union members |
 | Expressions, statements, assignments, `intrinsics/` | Source lowering |
-| `declarations.ts` | Variable declarations and binding patterns |
-| `properties.ts` | Property rules and property access |
+| `declarations.ts`, `properties.ts` | Declarations and binding patterns; property access |
 | `data-types.ts`, `data-lowering.ts`, `values/` | Storage types, typed sinks, value metadata |
-| `native-functions.ts`, `user-functions.ts`, `classes.ts` | Native functions, specialization, classes |
-| `function-storage-flow.ts` | Checked callback contract connections and refusal of dropped arguments a connected value reads |
-| `class-members.ts` | Class member tables, inheritance chains and the program's class hierarchies |
-| `module-initializers.ts` | Ordered initialization and shared mutable bindings |
-| `scene-manifest.ts`, `scene-materials.ts` | Scene composition records and their `manifest.json` projection |
-| `emission-transaction.ts` | Compiler state's originals per transaction, one per written slot (journaled maps, sets, arrays, records, `@journaled` fields, `writable()` records); a commit folds them into the enclosing transaction, a declined or failed lowering restores them. Fields outside the journal are declared `@unjournaled` with a reason |
-| `binding-scopes.ts` | Lexical scopes, name bindings and capture refusals; pinned temporaries and materialized records |
-| `conditions.ts`, `comparisons.ts` | Condition truth tests, comparison operators and settled folds |
-| `browser-erasure.ts` | Browser-only predicates, deployment folds and erased-expression records |
+| `native-functions.ts`, `user-functions.ts`, `classes.ts`, `class-members.ts` | Functions, specialization, classes and hierarchies |
+| `function-storage-flow.ts` | Callback contract connections; refuses dropped arguments a value reads |
+| `module-initializers.ts` | Ordered initialization, shared mutable bindings |
+| `scene-manifest.ts`, `scene-materials.ts` | Scene records and `manifest.json` |
+| `emission-transaction.ts` | Journaled compiler state; commit folds into the parent, failure restores. Unjournaled fields need `@unjournaled` with a reason |
+| `binding-scopes.ts` | Scopes, bindings, capture refusals |
+| `conditions.ts`, `comparisons.ts` | Truth tests, comparisons, settled folds |
+| `browser-erasure.ts` | Browser-only predicates, deployment folds, erased expressions |
 | `analysis-walk.ts`, `lowering-services.ts` | Shared traversal and compiler interface |
-| `ui-projection.ts`, `platform-calls.ts` | Retained UI and platform calls |
-| `callbacks.ts`, `shared-closure-analysis.ts` | Frame, platform and physics callbacks; which bindings closures share and which are rebound |
-| `engine-lifecycle.ts`, `async-activations.ts` | The `startEngine` mark, hoisted continuation, finally guard, frame yields and device recovery; async activations and worker hooks |
-| `intrinsic-options.ts`, `asset-registry.ts`, `admissions.ts` | Per-intrinsic option objects; asset registration and its recorded facts; capability admissions deferred until the program reaches the capability |
-| `native-emission-registry.ts` | Namespace-level native definitions, shared bodies, environment structs and static tables |
+| `ui-projection.ts`, `platform-calls.ts` | Retained UI, platform calls |
+| `callbacks.ts`, `shared-closure-analysis.ts` | Frame/platform/physics callbacks; shared vs rebound captures |
+| `engine-lifecycle.ts`, `async-activations.ts` | `startEngine` continuation, frame yields, device recovery; async activations, worker hooks |
+| `intrinsic-options.ts`, `asset-registry.ts`, `admissions.ts` | Intrinsic options; assets; deferred capability admissions |
+| `native-emission-registry.ts` | Namespace-level definitions, shared bodies, environment structs, static tables |
+| `native-statements.ts`, `body-outlining.ts` | Emitted control-flow facts; outlining large bodies |
 
-Repeated storage demands trigger a bounded, discarded discovery pass before fresh strict emission, again
-after further demands, to a fixed point. Discovery continues past independent generic calls and
-declaration storage demands (absence tags, tuple and numeric slots, enum elements), losing the
-rolled-back statement's written names, and past record joins, lowered as copies; it stops at ownership
-demands, untracked writes, dependencies on lost names and refusals (a survey's plan rolls these back). Its limits are checked at statement boundaries; coverage
-and surveys retain only strict attempts. Earlier aliases and initializers use the selected representation.
-A record join that only appears once an earlier join reshaped a component still costs one strict attempt:
-layouts are fixed when the compiler is built, so discovery cannot see it. Deciding joins before lowering
-requires comparing each stored expression's record type with its contextual type over memoized layout compatibility.
-Calls rewrite a namespace member (`N.f`) to its declaration once, in `compileCall`; reads of class statics
-and `import * as M` receivers stay with their own lowerers. A rewrite in the shared `unwrap` would also
-reach write targets, turning a refused namespace-member write into a silent one, and would rewrite library
-namespaces (`Intl.*`) that `libraryGlobal` resolves by qualified name.
-Immutable storage-demand and lexical-dependency indexes
-are shared by the checked program. Scoped collection facts use a derived alias graph that observes
-mutations and rollback. Equivalent definitions share code; invocations retain
-distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
-use `lowerPinnedBody`. Pinned modules over plain records (the text family: data, layout, renderable,
-renderer, GPU writers and alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over
-the pinned sources types every value, structs are emitted from the pinned declarations, and
-`pinned-record-transport.ts` rebuilds records the pin built at generation. Both `PinnedRecordModel` and
-`CharacterKernelLowerer` use `record-shapes.ts` for typed shapes, storage, absence and truthiness;
-their storage policies select record ownership. Pinned classes are structs of
-their fields with their accessors, methods and constructor lowered over the instance. A closure is a
-`bbl::js::Callback` over its frame's environment struct, which holds the bindings closures capture and is
-shared by the frame and all of its closures; records and environments that can close a cycle describe
-their edges to cycle collection. A function literal an array iteration method receives is a native
-lambda over its frame's own storage; an object literal's method reading `this` closes over an
-environment holding the object. `unknown` is the runtime's dynamic `JsonValue`, read as the primitive a
-checker narrowing proves (`pinned_json.hpp`); an anonymous object type the schema does not name is a
-struct named by its members' native types, or the schema record with exactly those members. Async
-functions and arrows are C++20 coroutines over `bbl::js::Promise` (`pinned_async.hpp`); an `await` in a
-`catch` handler runs after the handler recorded its exception, and a `finally` block is a guard run once
-on every exit (an `await` or exit inside it refuses). A `class X extends Error` is a record thrown as a
-typed error object and matched by `instanceof`. A captured binding of a nested block or a `for (let ...)`
-header lives in an environment per block execution or per iteration; other loop-header and case-clause
-captures refuse. A generic arrow lowers once per instantiation its calls reach. C++ leaves the order
-of call arguments and operands unspecified; operands of one form (arguments and a receiver spelled as
-one, template substitutions, constructions, binary operands, an assignment's target and value) that the
-entry compiler's `EvaluationOrder` pins (a later operand writes what it touches, or touches what it
-writes) are evaluated first into temporaries in source order, and effect-free operands stay inline. An
-awaited operand leaves any lambda or braced list (a temporary declared before the statement, assigned
-through the comma operator); an `await` a lambda would still hold, and a compound assignment whose value
-may change its target, refuse. A frame's leading guards run before its closure environment is allocated.
-A parameter whose type a type-only module erased takes each call's argument shape (one overload per
-signature). A bundled package's classes and calls bind by `package#name` to native records and
-adapters: text-shaper's font, shaping buffers and `shapeInto` are HarfBuzz (`text_layout.hpp`). The web
-platform a lowered library reaches is one shared schema (`web-platform-schema.ts`) over the runtime's own
-URL, AbortController/AbortSignal, DOMException, TextDecoder, Blob and ImageBitmap (`web_platform.hpp`); only
-fetch, image decoding and the timers and task queue are a seam, which `pal_web_platform.cpp` defines over the
-native services and a test may define deterministically. The splat-stream loader's engine, scene, camera and
-renderable objects are `splat_stream_runtime.hpp`'s. A lazy loader's root is the module function its
-`(await import(...)).name` returns. The pin's WebGPU calls lower one to one onto the device interface in
-`gpu.hpp`, shared by text, storage, uniform and scene uploads; its compute, indirect and buffer-mapping
-subset has a device per backend (`pal_dawn_webgpu.hpp`, `pal_sdl_gpu_webgpu.hpp`). Backend adapters preserve native
-batching and resource ownership; `text_gpu.hpp` owns text pipeline policy. WGSL uses typed IR or
-explicit reflected-source contracts.
+## Lowering invariants
 
-Namespace-scope application functions and constant tables compile in C++ translation units per owning source,
-listed in `manifest.json` as `sourceUnits`; a source whose code exceeds `unitMaximumWeight` compiles as
-several `.part<N>.cpp` units, each grouping the definitions that name the same templates, records and
-runtime functions, so each part compiles those once. `main.cpp` owns entry execution; worker entries have separate units and
-namespaces. `sources/application.hpp` (one per realm) holds the includes; each unit declares only the
-types, functions and tables its code reaches, with the overloads their signatures name, and template
-bodies appear only in units that use them. Paths mirror source folders from their common directory;
-worker realms live under `sources/workers/<module>/`. Single-source programs within the budget retain one file.
-Folded imports emit no unit; specialized inline bodies remain with their caller. Module initialization
-and shared bindings retain their ordered entry execution. An entry or function body larger than
-`outlinedBodyMinimumBytes` uses emitted declaration, scope and control-flow facts (`native-statements.ts`)
-to move compound and expression statements, and large runtime initializers, into functions of its source
-(`body-outlining.ts`) that take the locals they read by reference. Declarations, outward transfers and
-untyped reads stay in place; opaque emission blocks further outlining in its scope. Loops move whole.
+- Storage demands trigger a discarded discovery pass, repeated to a fixed point, before strict emission. Coverage and
+  surveys keep only strict attempts.
+- Namespace member calls (`N.f`) are rewritten only in `compileCall`. Never in the shared `unwrap`: it would silently
+  admit writes and rewrite library namespaces (`Intl.*`).
+- Pinned functions use `lowerPinnedFunction`, selected bodies `lowerPinnedBody`. Plain-record pinned modules (text family)
+  use `PinnedRecordModel`; `pinned-record-transport.ts` rebuilds generation-time records; shapes live in `record-shapes.ts`.
+- A closure is a `bbl::js::Callback` over its frame's environment struct (named structs of numbered captures, one per
+  shape). Array-method callbacks are native lambdas.
+- `unknown` is `JsonValue` (`pinned_json.hpp`). Async functions are C++20 coroutines over `bbl::js::Promise`
+  (`pinned_async.hpp`); `finally` is a guard run once per exit.
+- Operands the entry compiler's `EvaluationOrder` pins are evaluated into temporaries in source order; an `await` a
+  lambda would still hold refuses.
+- Bundled packages bind by `package#name` to native records and adapters. Web platform objects share
+  `src/lowering/web-platform-schema.ts` over `web_platform.hpp`; fetch, image decode, timers and task queue are a seam
+  in `pal_web_platform.cpp`. Splat streaming runtime: `splat_stream_runtime.hpp`. Text pipeline policy: `text_gpu.hpp`.
+- A body is shared across distinct generation-time arguments when every reached effect has a native representation
+  (`canShareFunctionBody`, `reachesOnlyClosedEffects`); otherwise it specializes inline. Ordinary loops stay native;
+  static expansion only for generation-time values or frame yields.
 
-Lowered library modules use the same packing budget and outliner. Generator-owned regions carry explicit
-captures; other bodies remain opaque. Packed modules share declarations, records and variable storage in
-`upstream/include/bblite/upstream/units/`; their implementation parts are listed in `generatedSources`.
+## Emitted units
 
-Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
-composition that needs distinct generation-time values or frame-yield continuations. Shared functions,
-callbacks and coroutines retain separate invocation state. A body is emitted once per distinct
-generation-time argument (callback, record or closed scalar) when every effect it reaches has a native
-representation (`canShareFunctionBody`), including retained DOM/canvas calls, calls through function values
-and scene-node writes; a callback an operation invokes shares only closed effects (`reachesOnlyClosedEffects`).
-A shared body lowers as runtime control flow and records no generation-owned
-construction; a call its separate body cannot represent, or that would lose a static fact of an argument,
-specializes inline. Closure environments are named structs of numbered captures, one per shape. Concrete
-capture types place shared bodies in their owning source unit; unresolved capture types use templates.
-
-Generator calls own initially suspended coroutine frames; iterator aliases share their pull position.
-Asynchronous cleanup carries pending return, exception and loop-exit completions across suspension.
-Explicit iterator close runs source cleanup; abandoning a suspended frame only releases its storage.
-Reached Promise identity uses and escapes into erased storage require the application realm before
-their object representation is lost.
-
-Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
-Parameters retain mutable callers' argument values while object and container mutations preserve shared identity.
-Escaping callbacks capture copyable handles by value, including handles borrowed by local aliases or parameters.
+- Application code compiles per owning source, listed in `manifest.json` `sourceUnits`; sources over
+  `unitMaximumWeight` split into `.part<N>.cpp`. `main.cpp` owns entry execution; workers live under
+  `sources/workers/<module>/`; `sources/application.hpp` holds includes per realm.
+- Bodies over `outlinedBodyMinimumBytes` outline statements into functions taking locals by reference; loops move whole.
+- Lowered library modules share declarations in `upstream/include/bblite/upstream/units/`; parts are in `generatedSources`.
 
 ## Scene orchestration
 
-`scene-command.ts` resolves registry IDs and paths. The registry owns poses, thresholds and diagnostics.
-Executables start with authored live defaults; parity and checks apply the registered query to the same
-executable.
-Scene, sprite, effect and frame-graph drivers run registered contexts in order. Default task graphs
-belong to scene identity. Property and glTF animation retain separate playback contracts.
-Each engine owns one rendering-context list with pinned kind tags; backend views share snapshots of its membership.
+`scene-command.ts` resolves registry IDs and paths; `src/scene-registry.ts` owns poses, thresholds and diagnostics.
+Executables start with authored live defaults; parity and checks apply the registered query to the same executable.
 
 ## Runtime and memory
 
-- Handles reach engine records only through `bbl::handle_at`, which checks the table bound and, for meshes,
-  the slot generation, or `bbl::handle_find` where a missing record is an expected state (null where
-  `handle_at` refuses); resolve them again after storage growth.
-- RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
-- Computed method receivers retain their selected owner through callbacks and cycle collection.
-- Closures retain referenced cells; suspended calls own their live locals.
-- References, shared cells, records, callbacks and containers that can own a traced edge participate in
-  cycle collection at frame boundaries and teardown; other payloads are released by reference counting
-  alone. Only complete payloads enter the registry; they detach before destruction.
-- Managed statics and GC registries are realm-local; teardown clears payloads before releasing registry storage.
-- Non-atomic JS references stay on their owning realm. Borrowed events last one dispatch.
-- Physics, navigation and audio owners are independent of renderer lifetime.
-- GPU resources remain alive through their in-flight submissions.
-- Destructors and noexcept release paths report a broken invariant through `bblite/teardown.hpp`, then
-  terminate. An exception escaping an application entry (generated `main`, the Window application, a
-  platform entry) is reported through `bblite/uncaught_error.hpp` with the realm reporter's wording.
-
-## Renderer
-
-Generated tables own layouts, uniforms and fixed-function state. `pal_frame_conductor.hpp` shares frame
-phases; GPU objects and acquisition order remain backend-specific. The OS window survives renderer
-rebuilds. See [backends](backends.md), including [worker ownership](backends.md#workers-and-offscreen-surfaces).
+- Handles reach engine records only through `bbl::handle_at` (bound and mesh generation checked) or `bbl::handle_find`
+  (null when missing). Resolve again after storage growth.
+- RAII owns locals; shared containers and `bbl::js::Ref<T>` keep JS identity.
+- Payloads that can own a traced edge join cycle collection at frame boundaries and teardown; others are reference
+  counted. Statics and GC registries are realm-local.
+- Non-atomic JS references stay on their realm; borrowed events last one dispatch.
+- Physics, navigation and audio owners outlive renderer rebuilds; GPU resources live through in-flight submissions.
+- Destructors and noexcept paths report broken invariants through `bblite/teardown.hpp`, then terminate. Exceptions
+  escaping an entry are reported through `bblite/uncaught_error.hpp`.

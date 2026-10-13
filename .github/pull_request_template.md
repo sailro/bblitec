@@ -4,11 +4,10 @@
 
 ## Review
 
-- [ ] Read the canonical documentation and relevant pinned upstream source.
-- [ ] Run /simplify over the complete change before the final sweep.
-- [ ] Apply review findings or record a concrete blocker and destination.
-- [ ] Validate affected scene behavior on SDL_GPU and Dawn.
+- [ ] Read the relevant docs and pinned upstream source.
+- [ ] Run /simplify over the complete change before the final sweep; apply findings or name a concrete blocker.
+- [ ] Validate affected scenes on SDL_GPU and Dawn.
 
 ## Validation
 
-Record the verdict of each [validation](../docs/development.md#validation) command and any check not run, with its reason.
+Verdict of each [validation](../docs/development.md#validation) command; for any not run, the reason.

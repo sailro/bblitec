@@ -1,7 +1,16 @@
 # Diagnosing a scene
 
-Compare at the [reference pose](fidelity.md#the-reference-pose) with matching
-[build identity](development.md#build-identity). Backend agreement does not exclude shared defects.
+## Measurement
+
+- Parity compares the full page (canvas plus reached UI) against the pinned browser golden; canvas-only gates are additional.
+- A valid comparison needs matching source/module hashes, query, time/frame, canvas size, UI and
+  [build identity](development.md#build-identity).
+- Reports give full/foreground MAD, byte ratios, bias and spatial attribution. They locate residuals; they do not
+  explain them. Backend agreement does not exclude shared defects: shared residuals point to common inputs,
+  backend-specific ones to translation or transport.
+- Captures wait for the same settles in browser and native: a reached canvas `dataset.ready` write gates capture until a
+  canvas has `data-ready="true"` and publishes a fresh frame, plus any registered `referenceSettle`. A nonempty
+  `data-error` fails the capture.
 
 ## The ladder
 
@@ -19,173 +28,119 @@ Commands follow `npm run scene --`. `diagnose <id>` runs parity, `diff` and `dif
 | diff <id> --uniforms --size N [--module text] | Candidate uniform layouts |
 | diff <id\|all> --compose | Asset material variants |
 | capture <id> [--native] [--skip-draw N] [--seek-bracket] | Browser/native captures; one frame of motion either side |
-| probe <id> --shader <name> --term <text> --with <text> | One deployed Dawn WGSL term's contribution |
+| probe <id> --shader <name> --term <text> --with <text> | One deployed Dawn WGSL term's contribution (restored after) |
 | memory <id\|all> [--replay-file <tape>] | Sustained memory |
 | measure <png> [--background r,g,b] | Image bounds/color |
 
-Browser evidence is reused only at its pose, pin and scene module; stale evidence is recaptured and
---recapture forces it. Only a plain parity run at the registry pose gates or recaptures a golden
-(--recapture-reference); `npm run corpus:manifest -- --adopt-reference <id> --write` then records the new
-golden's digest and capture time as its provenance, refusing when its source, module, query or host
-page moved. --no-fail, suppressed features, seeked poses and single-sample comparisons
-against MSAA goldens are diagnostic. Shared residuals point to common inputs/behavior; backend-specific
-residuals to translation or transport.
+- Browser evidence is reused only at its pose, pin and module; `--recapture` forces it.
+- Only a plain parity run at the registry pose gates or recaptures a golden (`--recapture-reference`); then
+  `npm run corpus:manifest -- --adopt-reference <id> --write` records its provenance (refused if source, module, query or
+  host page moved).
+- `--no-fail`, suppressed features, seeked poses and single-sample runs against MSAA goldens are diagnostic only.
+- SDL_GPU shader changes need offline compilation; `probe` covers Dawn only.
 
-## Same-device rendering comparisons
+## Same-device comparisons
 
-Capture native and WebGPU pixels on the same device, at the same canvas dimensions, query and pose.
-Do not use Windows goldens for Linux, macOS or Android. Retain device/build identity and both images.
-Exclude physics through generated feature reach; keep UI-heavy applications and suppress only their UI pixels.
+- Compare native and WebGPU captures from the same device, canvas size, query and pose. Never use Windows goldens for
+  Linux, macOS or Android. Keep device/build identity and both images.
+- Canvas-only lane: `BBLITE_CAPTURE_UI=0`; run parity with `--recapture-reference` on that host first; browser images
+  go to `artifacts/parity-canvas/`. Canvas-only capture excludes UI filters.
+- Android: `tools/android-smoke.mjs --canvas-only`; capture the browser on the target device and verify client size and
+  DPR (Chrome's toolbar shrinks the viewport; use CDP device-metrics emulation). Emulator black screenshots need explicit
+  GPU readback. Debug intents accept `nativeResolution=true` to bypass the pixel-ratio cap.
+- iOS Simulator: `ios-smoke.mjs` supports `--canvas-only`, `--frame`, `--replay`, `--render-state`, `--lifecycle --frame
+  1800`, `--max-frames`, `--runtime-trace`; staged bundles need `--build-directory`. iOS 16.2 WebKit has no WebGPU.
+- Fresh drivers can pass `applied-group-pose-v1` as the final `suiteBrowserModule`/`suiteBrowserModuleDigest` argument to
+  apply property poses; active groups must share one manager.
+- `BBLITE_TEST_PASS` windows are visible: run Windows captures on an inactive desktop. A `platform:window` scene paces on
+  the compositor clock, which stops while the session is locked: bounded runs fail after 30 s without a heartbeat.
+  Capture runs have a five-minute backstop.
 
-Fresh drivers can pass `applied-group-pose-v1` as the final `suiteBrowserModule`/`suiteBrowserModuleDigest`
-argument to apply property poses and preserve manager blending. Active groups must share one manager,
-or be a single unowned group, so their evaluation order is known.
-Record that protocol and module digest in a new artifact directory. Omitted protocol retains frozen-reference
-bytes; reference capture/adoption stays unchanged.
-
-Desktop canvas-only captures use `BBLITE_CAPTURE_UI=0`. Run parity with `--recapture-reference` on that
-host before comparing either native backend; its browser image stays in `artifacts/parity-canvas/`.
-Android native captures accept `tools/android-smoke.mjs --canvas-only`. Browser captures must run on
-the selected Android device, not the build host. Verify actual client dimensions and DPR: Android Chrome's
-toolbar can reduce the viewport despite Playwright's requested size. Direct CDP device-metrics emulation
-sets the rendering viewport. Emulator presentation failures require explicit GPU render-target readback,
-including worker canvases, rather than treating a black screenshot as a rendering result.
-
-iOS Simulator captures use native GPU readback at the actual drawable size. `ios-smoke.mjs` supports
-`--canvas-only`, `--frame`, `--replay` and `--render-state`. `--lifecycle --frame 1800` verifies
-background/foreground rendering with the same process; increase the frame if capture finishes early.
-`--max-frames` extends replay beyond `--frame`; `--runtime-trace` records lifecycle assertions.
-Staged bundles require `--build-directory` pointing to their producing CMake build.
-Interactive captures require an isolated Simulator.
-iOS 16.2 WebKit has no WebGPU. Same-Mac Chrome comparisons are cross-platform diagnostics, not
-iOS-browser parity. Viewport, DPR and display dimensions must match; authored supersampling uses
-the browser compositor, never offline PNG resizing.
-
-`BBLITE_TEST_PASS` windows stay visible; run Windows regression captures on an inactive desktop when
-they must not appear on the user's desktop. A `platform:window` scene paces on the desktop compositor
-clock, which stops while the console session is locked: a run with a frame budget or capture fails after
-30 s without a heartbeat, naming the clock's last status; an unbounded run waits for the display.
-Screenshot/render-capture runs also have a five-minute execution backstop for initialization failures
-that keep repainting without reaching readiness.
-
-## Captured state and its limits
+## Captured state limits
 
 | Evidence | Boundary |
 | --- | --- |
-| Ordinary native captures | Main-scene draw plan and reconstructed CPU blocks; utility-layer draws and GPU uploads are not recorded |
-| Browser capture | Shaders, buffers, textures, bundles and draws |
-| .slots | SDL's compiled bindings after dead declarations disappear; the module's declared layout for Dawn |
-| diff --compose | Asset materials; excludes scene-created materials/later writes |
-| textGpu | Writes joined to draws; pushedUniformBytes are actual SDL inputs |
-| nodeGpu | Opt-in upload/attribute/per-view/uniform receipts; bytes outside writtenRanges lack evidence |
-| retainedDataFile | CPU splat bytes, not texture uploads |
-| Palette summary | Two matrices; full dumps needed for wider deformation |
+| Native captures | Main-scene draw plan and reconstructed CPU blocks; no utility-layer draws or GPU uploads |
+| Browser capture | Shaders, buffers, textures, bundles, draws |
+| `.slots` | SDL's compiled bindings; the declared layout for Dawn |
+| `diff --compose` | Asset materials only |
+| textGpu | Writes joined to draws; `pushedUniformBytes` are actual SDL inputs |
+| nodeGpu | Opt-in receipts (`BBLITE_NODE_GPU_CAPTURE` with `BBLITE_RENDER_CAPTURE`); bytes outside `writtenRanges` lack evidence |
+| retainedDataFile | CPU splat bytes, not uploads |
+| Palette summary | Two matrices; dump fully for wider deformation |
 
-Enable BBLITE_NODE_GPU_CAPTURE with BBLITE_RENDER_CAPTURE for node receipts. The scene149-transport and
-node-local-transport checks join those receipts to the browser buffers checks/plugins/webgpu-recorder.init.js
-records and check stamps, bindings and numeric worlds; signed zero is separate.
-`probe` temporarily changes and restores the deployed Dawn WGSL; SDL_GPU changes need offline compilation.
-Bounds and mesh-handle generations are checked in every build; set BBLITE_CHECKED_HANDLES=1 before building
-(CMake: BBLITE_CHECKED_HANDLES=ON) to name the call site in a handle refusal.
+The scene149-transport and node-local-transport checks join node receipts to `checks/plugins/webgpu-recorder.init.js`
+buffers. `BBLITE_CHECKED_HANDLES=1` before building (CMake `BBLITE_CHECKED_HANDLES=ON`) names the call site of a handle refusal.
 
-## Before calling a scene done
-
-[Integration](development.md#integrating-a-curated-parity-scene) includes the declared interaction checks:
+## Checks
 
 ```powershell
 npm run scene -- check <check-id> --observe
 npm run scene -- check <check-id> [--backend sdl_gpu|dawn] [--phase <id>] [--keep]
 ```
 
-Checks live in `checks/<id>.json` (scope in `notes`); plugins hold scene-specific arithmetic. Phases
-define frames/input/env; expectations compare captures, state, images and logs. A twin builds the
-unchanged no-query source. `observe.captureReady` selects the canvas dataset flag awaited for
-`captureFrames`. Results are in artifacts/check/<id>/. Use numeric checks where small missing objects
-could pass image gates.
+- `checks/<id>.json` defines phases (frames, input, env) and expectations (captures, state, images, logs); plugins in
+  `checks/plugins/`. A twin builds the unchanged no-query source. `observe.captureReady` selects the awaited dataset flag.
+- Prefer numeric checks where small missing objects could pass image gates.
+- Input tape: `-` or `UiIdle@0:0` idles; `UiWheelUp/Down` are SDL packets, `WheelUp/Down` a browser notch; `<entry>*<n>`
+  repeats; recovery tapes include `Dataset`, `GlobalCall`, `DeviceLoss`.
+- Scene149 resized reference uses unchanged-module startup at 960x600 (live resize throws in the pin).
 
-Scene149 browser live resize throws from the pin's buildResolvePath; its resized reference uses
-unchanged-module startup at 960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelUp/Down uses SDL
-packets, WheelUp/Down a browser notch. `<entry>*<n>` repeats entries. Recovery tapes include Dataset,
-GlobalCall and DeviceLoss.
+## Memory
 
-`memory` runs 6,000 frames, or the `frames` a demo's tape declares when its content grows for longer than a
-warm-up third (minecraft's streamed world), and judges the samples after the warm-up third. It fails a working-set trend
-above `--max-slope-mb` (MB per 1,000 frames, default 2; Theil–Sen, over the whole window and over its
-later half, so one allocation step or a rise that settles does not fail), occupied mesh records the scene does not draw
-or geometry records without vertices that pile up, and GC nodes that rise steadily; missing samples fail. The report
-also states the occupied transform-node records. Each engine prints its own numbered stream (a Window host runs one
-per canvas) and every stream is judged. `all` selects
-the application demos. A demo with `checks/memory/<id>.json` plays that gameplay tape by default;
-`--replay`/`--replay-file` supply another and `--replay -` idles.
+`memory` runs 6,000 frames (or a demo tape's `frames`) and judges samples after the warm-up third. It fails on a
+working-set slope above `--max-slope-mb` (MB per 1,000 frames, default 2, Theil–Sen over the window and its later half),
+accumulating undrawn mesh records or vertex-less geometry, rising GC nodes, or missing samples. Every engine stream is
+judged. `all` selects application demos; `checks/memory/<id>.json` supplies the default tape; `--replay -` idles.
 
 ## Artifacts
 
 | Directory | Contents |
 | --- | --- |
-| artifacts/parity/<id>/ | Backend reports/images/diffs; `seek-<t>/`, `geometry/`, `stability/` |
-| artifacts/parity-attribution/<id>/ | Instrumented attribution |
-| artifacts/parity-canvas/<id>/ | Canvas-only lane and UI-free attribution |
-| artifacts/capture/<id>/ | Captures, bytes, shaders, diff/composition, probe |
-| artifacts/check/<id>/ | Check phases, browser observations, report |
-| artifacts/memory/ | Verdicts, samples, logs |
-| artifacts/status/ | `status --run` frames |
-| artifacts/survey/<directory>-<stem>/ | Survey census and API readiness |
+| `artifacts/parity/<id>/` | Reports, images, diffs; `seek-<t>/`, `geometry/`, `stability/` |
+| `artifacts/parity-attribution/<id>/` | Instrumented attribution |
+| `artifacts/parity-canvas/<id>/` | Canvas-only lane |
+| `artifacts/capture/<id>/` | Captures, shaders, diff/composition, probe |
+| `artifacts/check/<id>/` | Check phases, observations, report |
+| `artifacts/memory/` | Verdicts, samples, logs |
+| `artifacts/status/` | `status --run` frames |
+| `artifacts/survey/<directory>-<stem>/` | Survey census and API readiness |
 
-Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
+Artifact suffix `gpu` means SDL_GPU; CLI values are `sdl_gpu`/`dawn`.
 
 ## Runtime switches
 
 | Variable | Purpose |
 | --- | --- |
-| `BBLITE_GPU_BACKEND` | Runtime backend in dual builds: exactly `sdl_gpu` or `dawn` |
-| `BBLITE_RENDER_CAPTURE`, `BBLITE_NODE_GPU_CAPTURE` | Capture path; optional node GPU receipts |
+| `BBLITE_GPU_BACKEND` | `sdl_gpu` or `dawn` in dual builds (also Android debug intents) |
+| `BBLITE_RENDER_CAPTURE`, `BBLITE_NODE_GPU_CAPTURE` | Capture path; node GPU receipts |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | Image path, frame, run limit |
-| `BBLITE_SCREENSHOT_FRAMES` | Window only: ascending comma-separated frames before the final screenshot, counted as it counts them (presented frames, or at least that many engine frames under `BBLITE_CAPTURE_ENGINE_FRAME`), written as `<stem>.frame-<n>.png` with build stamps |
-| `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing; engine-less Window entries start with the fixed RAF clock. Engine startup selects it for subsequent timers; pre-start timers retain wall time |
-| `BBLITE_MSAA=1`, `BBLITE_CAPTURE_UI=0` | Single-sample/canvas-only diagnosis |
-| `BBLITE_INPUT_REPLAY`, `BBLITE_RUNTIME_TRACE`, `BBLITE_RUNTIME_TRACE_INTERVAL` | Event tape/state trace |
-| `BBLITE_WINDOW_TRACE`, `BBLITE_CAPTURE_ENGINE_FRAME` | Worker presentation trace/per-engine frame |
-| `BBLITE_UI_STYLE_TRACE`, `BBLITE_PHYSICS_TRACE`, `BBLITE_TRACE_PHYSICS_RAYS` | UI boxes/display after tree changes, body positions/quaternions per step, and ray queries |
-| `BBLITE_CPU_PROFILE`, `BBLITE_MEM_PROFILE` | CPU stages and memory every 30 frames; CPU also records renderer frames ≥10 ms, Window frames ≥4 ms, UI updates, font shaping and SDL presentation/resource costs |
-| `BBLITE_PHYSICS_PAIR_PROFILE=1` | With CPU profiling: narrow-phase timings grouped by collision-shape pair; adds per-pair timing overhead |
-| `BBLITE_SOURCE_PROFILE` | Timing scopes in named source functions and allocation counters (below) |
-| `BBLITE_PHYSICS_THREADS` | Bullet worker count including its controller; defaults to at most eight available hardware threads. `1` selects serial collision detection and solving |
-| `BBLITE_FPS_PROFILE` | Scene FPS over one-second windows, with p99 and maximum frame intervals |
-| `BBLITE_TIMER_PROFILE=1` | Actual realm-timer scheduling (`[cpu][timer-set]`), callback (`[cpu][timer]`) and clearing (`[cpu][timer-clear]`) timestamps and requested delays; group by realm and timer ID to measure callback gaps, including before the first callback and before clearing, independently of capture clocks |
-| `BBLITE_AUDIO_CAPTURE`, `BBLITE_AUDIO_CAPTURE_SECONDS` | WAV path/duration in enabled builds |
+| `BBLITE_SCREENSHOT_FRAMES` | Window: ascending extra frames, written as `<stem>.frame-<n>.png` |
+| `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing; pre-start timers keep wall time |
+| `BBLITE_MSAA=1`, `BBLITE_CAPTURE_UI=0` | Single-sample; canvas-only |
+| `BBLITE_INPUT_REPLAY`, `BBLITE_RUNTIME_TRACE`, `BBLITE_RUNTIME_TRACE_INTERVAL` | Input tape; state trace |
+| `BBLITE_WINDOW_TRACE`, `BBLITE_CAPTURE_ENGINE_FRAME` | Worker presentation trace; per-engine frame counting |
+| `BBLITE_UI_STYLE_TRACE`, `BBLITE_PHYSICS_TRACE`, `BBLITE_TRACE_PHYSICS_RAYS` | UI boxes, body poses per step, ray queries |
+| `BBLITE_CPU_PROFILE`, `BBLITE_MEM_PROFILE` | CPU stages and memory every 30 frames |
+| `BBLITE_PHYSICS_PAIR_PROFILE=1` | With CPU profile: narrow-phase time per shape pair |
+| `BBLITE_SOURCE_PROFILE` | Timing scopes in named source functions (below) |
+| `BBLITE_PHYSICS_THREADS` | Bullet workers incl. controller (default ≤ 8; `1` = serial) |
+| `BBLITE_FPS_PROFILE` | FPS per second with p99/max frame intervals |
+| `BBLITE_TIMER_PROFILE=1` | `[cpu][timer-set]`, `[cpu][timer]`, `[cpu][timer-clear]` timestamps |
+| `BBLITE_AUDIO_CAPTURE`, `BBLITE_AUDIO_CAPTURE_SECONDS`, `BBLITE_AUDIO_LOG` | WAV capture; LabSound log level |
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated storage |
-| `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialog paths |
-| `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Diagnostic overrides; `BBLITE_NATIVE_EXE` reaches every measuring command (`parity`, `memory`, `check`, `diff`, `capture --native`, `probe`, `status`) |
-| `BBLITE_GPU_DEBUG` | SDL_GPU validation layer (Dawn validation is always on) |
-| `BBLITE_TEST_PASS` | Nonfocusable test pass: camera controls disabled (set by the harness) |
-| `BBLITE_GROUND`, `BBLITE_BACKGROUND` | Suppress ground/background (set by `parity --without`) |
-| `BBLITE_ID_BUFFER`, `BBLITE_CLUSTER_BUFFER`, `BBLITE_COPY_TASK` | Attribution outputs and copy-task filter (set by `parity` for id-diagnostic scenes) |
-| `BBLITE_BENCHMARK_FRAMES`, `BBLITE_BUILD_STAMP_OUT` | Frame count and stamp path of a measured run; `BBLITE_BENCHMARK_FRAMES=0` disables VSync without a frame limit for direct renderers; Window hosts remain display-paced |
-| `BBLITE_AUDIO_LOG` | LabSound log level (`trace`, `debug`, ...) |
+| `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialogs |
+| `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Overrides; `BBLITE_NATIVE_EXE` reaches every measuring command |
+| `BBLITE_GPU_DEBUG` | SDL_GPU validation (Dawn always validates); prefer `--gpu-debug`, which also stops SDL assertion prompts |
+| `BBLITE_TEST_PASS` | Harness: nonfocusable, camera controls off |
+| `BBLITE_GROUND`, `BBLITE_BACKGROUND` | Set by `parity --without` |
+| `BBLITE_ID_BUFFER`, `BBLITE_CLUSTER_BUFFER`, `BBLITE_COPY_TASK` | Set by `parity` for attribution |
+| `BBLITE_BENCHMARK_FRAMES`, `BBLITE_BUILD_STAMP_OUT` | Measured run length and stamp; `0` disables VSync for direct renderers |
 
-Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL assertion prompts.
+`BBLITE_SOURCE_PROFILE=<name>,...` is read by `process`/`compile`, which regenerate with `--source-profile`: a timing scope
+in each named function (`name`, `Class.method`, or the binding of an unnamed function). Generation fails for names that
+time nothing (misspelled, async, generator or inlined; select the caller). Output: `[cpu][source-startup]`,
+`[cpu][alloc-startup]`, and with `BBLITE_CPU_PROFILE=1` per frame `[cpu][source]` (`self_ms` excludes selected callees)
+and `[cpu][alloc]`. Unset it and `process` again to restore the normal build.
 
-CPU physics output separates world phases from solver setup, contacts, split impulses, iterations
-and finish. Solver values sum the participating islands' CPU times, so parallel phases overlap;
-contacts are included in setup and split impulses in iterations.
-
-`BBLITE_SOURCE_PROFILE=<name>,...` attributes startup and frame CPU to scene source functions. It is read
-by `process` and `compile`, which pass it to bblitec as `--source-profile` and regenerate the scene
-with a timing scope in each named function: its own name, `Class.method` for a class member, or the
-variable or property an unnamed function is bound to. Generation fails naming every name that times no
-function: a misspelling, an async function or generator, or a function lowered inline at its calls
-(select its caller). Before its first frame, each thread reports completed startup scopes as
-`[cpu][source-startup]` and allocation counters as `[cpu][alloc-startup]`. Select coarse startup
-functions that return before the first frame; scopes spanning startup and rendering are not partitioned.
-With `BBLITE_CPU_PROFILE=1`, each
-`[cpu][frame]` line of a direct renderer is followed by
-`[cpu][source] frame= function= calls= self_ms= total_ms=` for every selected function that ran in
-that frame, and by `[cpu][alloc] frame= allocations= bytes= frees= allocation_ms= collection_ms=`:
-the frame's global `operator new`/`delete` calls, requested bytes and time inside them, and the
-frame-boundary cycle collection. `self_ms` excludes time in other selected functions it called;
-`total_ms` includes it. Only a regenerated build carries the scopes and the counters, and their own
-cost falls inside what they time; selecting a function called hundreds of thousands of times a frame
-inflates its figures. Unset the variable and `process` again to return to the ordinary build.
-
-Android debug intents accept `nativeResolution=true` to bypass the source pixel-ratio cap for
-profiling. Automated captures also bypass it to retain the requested golden dimensions.
+CPU physics output sums island times, so parallel phases overlap; contacts count in setup, split impulses in iterations.
