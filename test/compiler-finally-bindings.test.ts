@@ -64,6 +64,38 @@ test("hoisted finally refuses a generation record containing a try-local native 
     );
 });
 
+test("hoisted finally refuses a try-local native handle held by a binding whatever typed it", () => {
+    // An explicitly typed runtime record holding the try-local mesh.
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createEngine, createBox } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        let saved: { box: ReturnType<typeof createBox> } | undefined;
+        try {
+            const box = createBox(engine);
+            saved = { box };
+        } finally {
+            if (saved) saved.box.position.x = 1;
+        }
+    `),
+        /input\.ts:\d+:\d+: A hoisted finally guard cannot reference native local 'v_\w+_box'/,
+    );
+    // An inferred record of values computed in the try holds no native local.
+    const result = compileSource(`
+        function poseOf(x: number): { x: string; y: string } {
+            return { x: x.toFixed(1), y: String(x * 2) };
+        }
+        let pose;
+        try {
+            pose = poseOf(2);
+        } finally {
+            console.log(pose.x);
+        }
+    `);
+    assert.match(result.cpp, /v_pose/);
+});
+
 test("hoisted finally accepts a pure CSG plan produced from a try-local native mesh", () => {
     const result = compileSource(`
         import { createEngine, createBox, createCsgFromMesh, createMeshFromCsg } from "@babylonjs/lite";

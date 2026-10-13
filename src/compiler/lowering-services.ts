@@ -161,6 +161,11 @@ export interface LoweringServices {
     promoteTextData(node: ts.Node): void;
     emitDiscardedValue(value: Value): void;
     emitAssignment(expression: ts.BinaryExpression): void;
+    /**
+     * Record the native bindings a store places inside its target's value
+     * (`saved = { box }`), which a hoisted finally reading the target reaches.
+     */
+    noteHeldNativeBindings(expression: ts.BinaryExpression): void;
     /** `delete object[key]` / `delete object.field` over the data model. */
     emitDelete(expression: ts.DeleteExpression): void;
     recordDataAssignmentMetadata(
