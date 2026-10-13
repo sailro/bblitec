@@ -103,12 +103,12 @@ int main(){using namespace bbl;Engine engine;Json expected;std::ifstream("cases.
         update_animation_manager(manager,engine,250);Json a=events;events.clear();update_animation_manager(manager,engine,250);actual.push_back(Json::array({a,events}));
     }
     if(actual!=expected){std::ofstream("actual.json")<<actual;return 1;}
-    const auto absent=create_animation_manager();const auto inferred=create_animation_manager(engine,{.source_engine_present=false});const auto explicit_engine=create_animation_manager(engine);
+    const auto absent=create_animation_manager();const auto inferred=create_animation_manager(engine,{.on_update={},.source_engine_present=false});const auto explicit_engine=create_animation_manager(engine);
     if(absent->source_engine_present||inferred->source_engine_present||!explicit_engine->source_engine_present)return 2;
     engine.assets.emplace_back();std::vector<bool> engine_flags;
     engine.assets[0].animation_tick_group=[&](std::size_t,double,bool with_engine){engine_flags.push_back(with_engine);};
     for(const auto& manager:{absent,inferred,explicit_engine}){
-        const auto index=static_cast<std::uint32_t>(engine.animation_groups.size());engine.animation_groups.push_back({"gltf",0,index,1,{}});
+        const auto index=static_cast<std::uint32_t>(engine.animation_groups.size());engine.animation_groups.push_back({.name="gltf",.asset=0,.clip=index,.weight=1,.animation_owner={},.animation_order={}});
         add_animation_groups(manager,engine,{{index}});add_animation_groups(manager,engine,{{index}});
         update_animation_manager(manager,engine,1);
         if(manager->ordered_groups.size()!=1)return 3;

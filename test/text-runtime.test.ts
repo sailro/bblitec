@@ -381,7 +381,7 @@ int main() {
         state.write(reinterpret_cast<const char*>(values),sizeof(values));
         for (std::size_t index = 0; index < world.size(); ++index) { const double wide=world.load(index); state.write(reinterpret_cast<const char*>(&wide),sizeof(wide)); }
     };
-    TextCameraInput camera{js::TypedArray<float>{${Array.from(vp, (value) => `${Number.isInteger(value) ? value.toFixed(1) : value}f`).join(",")}},4,1.25};
+    TextCameraInput camera{js::TypedArray<float>{${Array.from(vp, (value) => `${Number.isInteger(value) ? value.toFixed(1) : value}f`).join(",")}},4,1.25,{}};
     if(camera.get_view_projection().load(0)!=camera.view_projection->load(0)) return 5;
     TextCameraInput empty_camera;
     try { static_cast<void>(empty_camera.get_view_projection()); return 6; }

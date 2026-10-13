@@ -149,17 +149,18 @@ export function compileAnimationIntrinsic(
             // Capturing a Canvas2D callback establishes its platform owner
             // before the callback's retained captures are compiled.
             if (onUpdate) engineCpp ??= context.requirePresentationHost(call);
+            // A designated list names every member without a default
+            // initializer once it names any.
             const fields: string[] = [];
             if (fixedDelta)
                 fields.push(
                     `.fixed_delta_ms = ${context.compileNumber(fixedDelta, "double")}`,
                 );
-            if (onUpdate)
+            if (fixedDelta || onUpdate)
                 fields.push(
-                    `.on_update = ${context.callbacks.compileFrameCallback(onUpdate, "timestamp", true)}`,
+                    `.on_update = ${onUpdate ? context.callbacks.compileFrameCallback(onUpdate, "timestamp", true) : "{}"}`,
+                    `.source_engine_present = ${onUpdate && !engineExpression ? "false" : "std::nullopt"}`,
                 );
-            if (onUpdate && !engineExpression)
-                fields.push(".source_engine_present = false");
             const nativeOptions = `bbl::PropertyAnimationManagerOptions{${fields.join(", ")}}`;
             return {
                 kind: "animation-manager",

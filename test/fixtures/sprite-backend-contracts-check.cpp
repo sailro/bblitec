@@ -301,7 +301,7 @@ struct DawnSampledTexture {
 };
 struct PinnedStageSlots {
     std::vector<std::string> textures;
-    std::vector<std::string> uniforms;
+    std::vector<std::string> uniforms{};
 };
 struct PinnedStageBlock {
     const void* data = nullptr;

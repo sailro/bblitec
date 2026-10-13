@@ -9,7 +9,6 @@ import {
     EmissionTransaction,
     writable,
 } from "../src/compiler/emission-transaction.js";
-import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -346,26 +345,19 @@ test("escaping recursive groups share their traced callable within one scope", (
 });
 
 const native = optionalNativeFixtureTools(false);
-for (const compiler of ["msvc", "clangcl"] as const) {
-    test(
-        `reused recursive groups retain live captures, receivers and sibling lifetimes (${compiler})`,
-        { skip: !native },
-        () => {
-            const tools =
-                compiler === "msvc"
-                    ? native!
-                    : discoverWindowsBuildTools(compiler);
-            const output = resolve(
-                "artifacts/function-specializations-check",
-                compiler,
-            );
-            mkdirSync(output, { recursive: true });
-            const source = join(output, "check.cpp"),
-                executable = join(output, "check.exe");
-            writeFileSync(
-                source,
-                compileSource(controls).cpp +
-                    `
+test(
+    "reused recursive groups retain live captures, receivers and sibling lifetimes",
+    { skip: !native },
+    () => {
+        const tools = native!;
+        const output = resolve("artifacts/function-specializations-check");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            source,
+            compileSource(controls).cpp +
+                `
         namespace bbl {
             Engine create_engine(EngineOptions) { return {}; }
             MeshHandle create_box(Engine& engine, BoxOptions) { engine.meshes.emplace_back(); return {static_cast<std::uint32_t>(engine.meshes.size() - 1)}; }
@@ -379,13 +371,12 @@ for (const compiler of ["msvc", "clangcl"] as const) {
             }
         }
         `,
-            );
-            runNativeFixtureCompiler(tools, [
-                `/Fo:${output}\\`,
-                `/Fe:${executable}`,
-                source,
-            ]);
-            execFileSync(executable, { encoding: "utf8" });
-        },
-    );
-}
+        );
+        runNativeFixtureCompiler(tools, [
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            source,
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);

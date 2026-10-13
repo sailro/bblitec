@@ -49,8 +49,8 @@ struct Scene {
     Engine* engine;
     Scene* state = this;
     std::vector<LightHandle> lights{{0}};
-    std::vector<TaskHandle> tasks;
-    std::optional<std::string> shadow_task_name;
+    std::vector<TaskHandle> tasks{};
+    std::optional<std::string> shadow_task_name{};
 };
 unsigned registrations = 0;
 void build_shadow_task(Scene&, ShadowGeneratorHandle) {

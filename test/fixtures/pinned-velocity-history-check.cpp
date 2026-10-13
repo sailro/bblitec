@@ -26,12 +26,14 @@ void check(bool condition, const char* what) {
     }
 }
 
+#if FIXTURE_VELOCITY
 std::array<float, 16> world_at(float x) {
     std::array<float, 16> world{};
     world[0] = world[5] = world[10] = world[15] = 1.0f;
     world[12] = x;
     return world;
 }
+#endif
 
 bbl::upstream::MeshUniforms draw(const bbl::pal::PinnedVelocityHistory& history,
                                  bbl::MeshHandle mesh) {

@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { cppIdentifierPattern } from "../cpp-literals.js";
+import { cppIdentifierPattern, isCppPath } from "../cpp-literals.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
 import { numericSlotKind } from "./numeric-slot-storage.js";
 import { unwrapExpression } from "./syntax.js";
@@ -147,6 +147,20 @@ export function absentAwareIdentity(
     return negated ? `!${equal}` : equal;
 }
 
+/**
+ * Identity of two reference reads spelled as one native path: the same
+ * reference, identical to itself (C++ diagnoses the self-comparison).
+ * Undefined for any other pair.
+ */
+export function selfIdentity(
+    leftCpp: string,
+    rightCpp: string,
+    negated: boolean,
+): string | undefined {
+    if (leftCpp !== rightCpp || !isCppPath(leftCpp)) return undefined;
+    return negated ? "false" : "true";
+}
+
 /** A borrowed view (a span, a table) reads another array's storage. */
 function hasBorrowedArrayIdentity(type: DataType | undefined): boolean {
     if (type?.kind === "optional") return hasBorrowedArrayIdentity(type.inner);
@@ -227,6 +241,8 @@ export function strictEqualsCpp(
         context.dataTypes.slotPresentCpp(value.dataType, value.cpp) !==
             undefined;
     if (!nullable(left) || !nullable(right)) return undefined;
+    const self = selfIdentity(left.cpp, right.cpp, negated);
+    if (self !== undefined) return self;
     const same = sameAbsenceCpp(
         lowerer,
         { node: expression.left, value: left },

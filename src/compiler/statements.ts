@@ -2152,10 +2152,10 @@ export class StatementLowerer {
         context.increaseIndent();
         for (const line of body) context.emit(line);
         context.decreaseIndent();
+        const generator = context.activeGeneratorType();
+        const coroutine = context.activeNativeCoroutine();
         if (region.returns) {
             const type = context.activeNativeReturnType();
-            const generator = context.activeGeneratorType();
-            const coroutine = context.activeNativeCoroutine();
             if (type === undefined && !generator)
                 context.fail(
                     statement,
@@ -2167,11 +2167,16 @@ export class StatementLowerer {
                         ? "bbl::js::PromiseVoid"
                         : "void"
                     : context.dataTypes.cppType(type);
-            const result = context.allocateTemporaryCppName("cleanup_return");
+            const completion = `bbl::js::${coroutine ? "AsyncReturn" : "ReturnCompletion"}<${cpp}>`;
+            const result = coroutine
+                ? undefined
+                : context.allocateTemporaryCppName("cleanup_return");
             context.emit(
                 generator
                     ? "} catch (const bbl::js::GeneratorClose&) {"
-                    : `} catch ([[maybe_unused]] const bbl::js::${coroutine ? "AsyncReturn" : "ReturnCompletion"}<${cpp}>& ${result}) {`,
+                    : result
+                      ? `} catch ([[maybe_unused]] const ${completion}& ${result}) {`
+                      : `} catch (const ${completion}&) {`,
             );
             context.increaseIndent();
             const parent = this.innermostCleanup(
@@ -2184,8 +2189,8 @@ export class StatementLowerer {
                 context.emit(
                     generator
                         ? "co_return;"
-                        : coroutine
-                          ? `co_return ${result};`
+                        : result === undefined
+                          ? `co_return ${handledCompletion(completion)};`
                           : type === "void"
                             ? "return;"
                             : `return ${result}.value;`,
@@ -2194,12 +2199,21 @@ export class StatementLowerer {
         }
         if (region.jumps.size) {
             const jump = context.allocateTemporaryCppName("cleanup_jump");
-            context.emit(`} catch (const bbl::js::LoopCompletion& ${jump}) {`);
+            const suspends = coroutine || generator !== undefined;
+            context.emit(
+                suspends
+                    ? "} catch (const bbl::js::LoopCompletion&) {"
+                    : `} catch (const bbl::js::LoopCompletion& ${jump}) {`,
+            );
             context.increaseIndent();
+            if (suspends)
+                context.emit(
+                    `const unsigned ${jump} = ${handledCompletion("bbl::js::LoopCompletion", "unsigned", ".target")};`,
+                );
             for (const source of region.jumps) {
                 context.emit({
                     kind: "open",
-                    code: `if (${jump}.target == ${source.pos + 1}u) {`,
+                    code: `if (${jump}${suspends ? "" : ".target"} == ${source.pos + 1}u) {`,
                 });
                 context.increaseIndent();
                 this.inRuntimeControlFlow(context, () =>
@@ -2265,6 +2279,13 @@ export class StatementLowerer {
             // A protected block that lowers to nothing cannot throw, so its
             // handler is unreachable.
             if (protectedBody.length === 0) return;
+            // A protected block that cannot complete normally reaches a
+            // suspended handler only through the catch: the handler runs
+            // unguarded, which keeps that fact for C++ return analysis.
+            const abruptBody =
+                context.activeNativeReturnType() !== undefined &&
+                !this.staticIterationCompleted() &&
+                this.terminatesAfterLowering(statement.tryBlock);
             if (suspendedCatch)
                 context.emit(`std::exception_ptr ${suspendedCatch};`);
             context.emit({ kind: "open", code: "try {" });
@@ -2286,7 +2307,7 @@ export class StatementLowerer {
                 );
             context.emit(
                 suspendedCatch
-                    ? `} catch (...) { ${suspendedCatch} = std::current_exception(); }\nif (${suspendedCatch}) {`
+                    ? `} catch (...) { ${suspendedCatch} = std::current_exception(); }\n${abruptBody ? "{" : `if (${suspendedCatch}) {`}`
                     : catchCpp
                       ? `} catch (const std::exception& ${catchCpp}) {`
                       : "} catch (...) {",
@@ -5633,6 +5654,21 @@ export class StatementLowerer {
         });
         return true;
     }
+}
+
+/**
+ * The completion a coroutine's handler is handling, read by a nested
+ * function: a coroutine handler binds no catch object. clang-cl's
+ * unoptimized coroutine lowering moves a catch object that a loop keeps
+ * across a suspension into the coroutine frame, where the C++ runtime never
+ * stores it.
+ */
+function handledCompletion(
+    completion: string,
+    type = completion,
+    member = "",
+): string {
+    return `[]() -> ${type} { try { throw; } catch (const ${completion}& completion) { return completion${member}; } }()`;
 }
 
 /** Whether a case clause leaves the switch at its end instead of falling on. */

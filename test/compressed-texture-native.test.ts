@@ -115,11 +115,18 @@ test(
                 `namespace case${index} { using namespace bbl; using namespace bbl::upstream;`,
             )}\n}`;
         });
+        const directory = resolve("artifacts/compressed-copy-plans");
+        const headers = join(directory, "bblite/upstream");
+        mkdirSync(headers, { recursive: true });
+        writeFileSync(
+            join(headers, "compressed_texture.hpp"),
+            base.lower().header,
+        );
         runGeneratedProgram(
             native!,
             "compressed-copy-plans",
             `
-${base.lower().header}
+#include <bblite/upstream/compressed_texture.hpp>
 #include <cassert>
 ${bodies.join("\n")}
 int main() {
@@ -148,7 +155,7 @@ ${variants
     assert((texture.mips[0].copy == bbl::CompressedMipCopy{16, 4, 4}));
 }
 `,
-            { expectedOutput: "" },
+            { flags: [`/I${directory}`], expectedOutput: "" },
         );
         assert.throws(
             () =>
