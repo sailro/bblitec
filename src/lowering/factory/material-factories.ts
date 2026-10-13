@@ -312,7 +312,9 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
         };
     }
 
-    public lowerShaderMaterialFactory(rangeUpdates = false): LoweredSource {
+    public lowerShaderMaterialFactory({
+        rangeUpdates = false,
+    }: { rangeUpdates?: boolean } = {}): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
         const { declaration } = this.context.functionDeclaration(
             modulePath,
@@ -691,7 +693,9 @@ void set_alpha_to_coverage(
      * same text it always did, because the defaults ride the signature.
      * `writes` adds the lowered `updateTexture2DFromPixels`.
      */
-    public lowerPixelsTextureFactory(writes = false): LoweredSource {
+    public lowerPixelsTextureFactory({
+        writes = false,
+    }: { writes?: boolean } = {}): LoweredSource {
         const module = "src/texture/pixels-texture.ts";
         const { declaration } = this.context.functionDeclaration(
             module,

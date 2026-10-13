@@ -7,25 +7,6 @@ const baseModule = "src/frame-graph/render-task-base.ts";
 const refreshModule = "src/frame-graph/render-task-mesh-refresh.ts";
 const effectModule = "src/effect/effect-renderer.ts";
 
-/** The task method `name` of the object literal `owner` builds. */
-function taskMethod(
-    context: LoweringContext,
-    owner: ts.FunctionDeclaration,
-    name: string,
-): ts.MethodDeclaration {
-    const methods = context
-        .findNodes(owner, (node): node is ts.MethodDeclaration =>
-            ts.isMethodDeclaration(node),
-        )
-        .filter((node) => context.propertyName(node.name) === name);
-    if (methods.length !== 1 || !methods[0]!.body)
-        return context.contractError(
-            owner,
-            `Expected one task ${name}() method.`,
-        );
-    return methods[0]!;
-}
-
 /**
  * The pin's `task._disposed` for the task record `record`: its own
  * `dispose()` when a program reaches it, else its scene's disposal.
@@ -44,14 +25,15 @@ export function taskDisposedCpp(record: string, taskDisposal: boolean): string {
  * `dirty`) clears the same list.
  */
 export function lowerRenderTaskDisposal(context: LoweringContext): string {
-    const automatic = context.functionDeclaration(
+    const dispose = context.propertyFunction(
         baseModule,
         "_createAutomaticRenderTask",
+        "dispose",
+        { unique: true },
     ).declaration;
-    const dispose = taskMethod(context, automatic, "dispose");
     context.assertStatementShapes(
-        dispose.body!,
-        dispose.body!.statements,
+        dispose.body,
+        dispose.body.statements,
         `
         if (task._disposed) {
             return;
@@ -80,6 +62,10 @@ export function lowerRenderTaskDisposal(context: LoweringContext): string {
     `,
         "Render task disposal",
     );
+    const automatic = context.functionDeclaration(
+        baseModule,
+        "_createAutomaticRenderTask",
+    ).declaration;
     const owns = context.findNodes(
         automatic,
         (node): node is ts.PropertyAssignment =>
@@ -153,14 +139,14 @@ void dispose_render_task(Engine& engine, TaskHandle handle) {
  * makes the next execute throw the pin's #37 until a record restores it.
  */
 export function lowerEffectTaskDisposal(context: LoweringContext): string {
-    const create = context.functionDeclaration(
-        effectModule,
-        "createEffectRenderTask",
-    ).declaration;
-    const dispose = taskMethod(context, create, "dispose");
+    const method = (name: string) =>
+        context.propertyFunction(effectModule, "createEffectRenderTask", name, {
+            unique: true,
+        }).declaration;
+    const dispose = method("dispose");
     context.assertStatementShapes(
-        dispose.body!,
-        dispose.body!.statements,
+        dispose.body,
+        dispose.body.statements,
         `
         task._passes.length = 0;
         disposeRenderTarget(task._rt);
@@ -169,7 +155,7 @@ export function lowerEffectTaskDisposal(context: LoweringContext): string {
     `,
         "Effect render task disposal",
     );
-    const execute = taskMethod(context, create, "execute");
+    const execute = method("execute");
     const code = pinnedErrorCode(context, execute);
     return `// ${context.provenance(effectModule, "createEffectRenderTask dispose")}
 void dispose_effect_render_task(Engine& engine, TaskHandle handle) {

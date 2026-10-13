@@ -295,11 +295,8 @@ SDL_GPUTextureFormat depth_texture_format(const GpuState& state, const RenderTar
 void create_frame_graph_textures(GpuState& state, const Engine& engine,
                                  SDL_GPUTextureFormat surface_format, std::uint32_t width,
                                  std::uint32_t height) {
-#if BBLITE_RENDER_TARGET_DISPOSAL
-    require_live_render_targets(engine);
-#endif
-#if BBLITE_LIVE_TASK_ADD
-    require_recorded_tasks(engine);
+#if BBLITE_RENDER_TARGET_DISPOSAL || BBLITE_LIVE_TASK_ADD
+    require_executable_frame_tasks(engine);
 #endif
     if (state.render_targets_version == engine.render_targets_version &&
         state.render_targets.size() == engine.render_targets.size() &&

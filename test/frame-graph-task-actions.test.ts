@@ -148,7 +148,7 @@ int main() {
     graph.engine = &engine;
     ${checks.join("\n")}
     assert(engine.frame_tasks.size() == 5);
-    for (const auto& task : engine.frame_tasks) assert(!task.render_recorded);
+    for (const auto& task : engine.frame_tasks) assert(task.record_state == bbl::FrameTaskRecordState::queued);
     graph.tasks = {bbl::TaskHandle{0}, bbl::TaskHandle{1}};
     bbl::changed::add_task_after(graph, bbl::TaskHandle{2}, bbl::TaskHandle{0});
     assert(graph.tasks == std::vector<bbl::TaskHandle>({bbl::TaskHandle{2}, bbl::TaskHandle{0}, bbl::TaskHandle{1}}));

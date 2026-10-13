@@ -19,9 +19,11 @@ import { recordAt } from "../compiler/record-access.js";
 import { lowerMeshGeometryAccess } from "./mesh-geometry-access.js";
 import { lowerSceneNodeRemoval } from "./scene-node-removal.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
-import { lowerFrameGraphTaskBuild } from "./frame-graph-task-build.js";
+import {
+    lowerFrameGraphTaskBuild,
+    lowerTaskExecutionCheck,
+} from "./frame-graph-task-build.js";
 import { lowerDeformedVertex } from "./deformed-vertex.js";
-import { refreshedRemovalCpp } from "./render-task-removal.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -124,6 +126,8 @@ interface SceneCoreOptions {
     effectTasks?: boolean;
     /** A task may be added to a registered scene. */
     liveTaskAdd?: boolean;
+    /** A render or effect task may be disposed. */
+    taskDisposal?: boolean;
     /** The program reads a deformed vertex (`computeDeformedPositionToRef`). */
     deformedPosition?: boolean;
     /** A CSM generator keeps a static cache target (`enableCsmStaticCache`). */
@@ -810,6 +814,7 @@ ${options.geometryAccess ? "#include <bblite/mesh_cpu_streams.hpp>" : ""}
 #include <bblite/features/has_sprites.hpp>
 ${options.text ? "#include <bblite/upstream_text_records.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
+#include <bblite/upstream/render_task_removal.hpp>
 #include <bblite/upstream/thin_instance_sync.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
@@ -2109,7 +2114,7 @@ void clear_mesh_parent(Engine& engine, MeshHandle mesh) {
 // material-family mask stays monotonic: it gates which pipelines the
 // backend created, and a removal never invalidates one.
 namespace {
-/** Every scene task's share of removeMeshFromScene; whether an entry went. */
+/** Every scene task's share of removeMeshFromScene; whether a non-render entry went. */
 bool remove_mesh_from_scene_tasks(Engine& engine, Scene& scene, MeshHandle mesh) {
     bool task_mesh_removed = false;
     for (const TaskHandle task_handle : scene.tasks) {
@@ -2120,21 +2125,7 @@ bool remove_mesh_from_scene_tasks(Engine& engine, Scene& scene, MeshHandle mesh)
             }) != 0;
             continue;
         }
-        if (task.render_recorded && !task.render_meshes.empty()) task.render.auto_mirror = false;
-        // \`task._removeMesh\`: a refreshed task's tracked entries, queued or built.
-${refreshedRemovalCpp(this.context).replace(/^ {4}/gm, "        ")}
-        if (task.render_mesh_refresh && !task.render_recorded) {
-            task_mesh_removed |= std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {
-                return entry.mesh == mesh && entry.follows_material;
-            }) != 0;
-        }
-        // The built entries; queued requests stay.
-        if (task.render_recorded && std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {
-                return entry.mesh == mesh;
-            }) != 0) {
-            task_mesh_removed = true;
-            task.shader_packet_scene_version = -1;
-        }
+        remove_mesh_from_render_task(engine, task, mesh);
     }
     return task_mesh_removed;
 }
@@ -2615,11 +2606,13 @@ void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
         add_task_at_start(scene, task);
     else
         add_task(scene, task);
+    auto& record = ${recordAt("scene.engine->frame_tasks", "task")};
     const auto& scenes = scene.engine->scenes();
-    if (std::any_of(scenes.begin(), scenes.end(), [&scene](const std::shared_ptr<Scene>& registered) {
+    if (record.record_state == FrameTaskRecordState::queued &&
+        std::any_of(scenes.begin(), scenes.end(), [&scene](const std::shared_ptr<Scene>& registered) {
             return registered && registered->shares_identity(scene);
         }))
-        ${recordAt("scene.engine->frame_tasks", "task")}.pending_record = true;
+        record.record_state = FrameTaskRecordState::pending_build;
 }
 
 `;
@@ -2642,7 +2635,7 @@ void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
 ${options.thinBindings ? "            entry.thin_binding = create_thin_material_binding(*scene.engine, entry.mesh, material);" : ""}
         }
         task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
-        task.render_recorded = true;`;
+        task.record_state = FrameTaskRecordState::recorded;`;
     }
 
     private sceneLifecycleSource(
@@ -2746,8 +2739,11 @@ ${
     options.liveTaskAdd
         ? `    // \`ctx._frameGraph.build()\` records every task, including those
     // added while the scene was registered before.
-    for (const auto task_handle : scene.tasks)
-        ${recordAt("scene.engine->frame_tasks", "task_handle")}.pending_record = false;
+    for (const auto task_handle : scene.tasks) {
+        auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
+        if (task.record_state == FrameTaskRecordState::pending_build)
+            task.record_state = FrameTaskRecordState::queued;
+    }
 `
         : ""
 }\
@@ -2755,7 +2751,7 @@ ${
     // resolvePendingTaskMeshes constructs the queued explicit task renderables there.
     for (const auto task_handle : scene.tasks) {
         auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
-        if (task.kind != FrameTaskKind::render || task.render_recorded) continue;
+        if (task.kind != FrameTaskKind::render || task.record_state == FrameTaskRecordState::recorded) continue;
 ${this.renderTaskRecordSource(options)}
     }
 ${
@@ -2901,7 +2897,14 @@ ${
         ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false)}
 `
         : ""
-}${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${options.deformedPosition ? `${lowerDeformedVertex(this.context)}\n` : ""}void rebuild_scene_renderables(Scene& scene) {
+}${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${
+            options.liveTaskAdd || options.taskDisposal
+                ? lowerTaskExecutionCheck(this.context, {
+                      disposal: options.taskDisposal ?? false,
+                      pendingBuild: options.liveTaskAdd ?? false,
+                  })
+                : ""
+        }${options.deformedPosition ? `${lowerDeformedVertex(this.context)}\n` : ""}void rebuild_scene_renderables(Scene& scene) {
     require_scene_engine(scene);
 ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
 #if BBLITE_HAS_SHADOWS

@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { lowerTaskExecutionCheck } from "../src/lowering/frame-graph-task-build.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { lowerGpuRetirement } from "../src/lowering/gpu-retirement-lowerer.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { EffectLowerer } from "../src/lowering/effect-lowerer.js";
 import { pinnedEffectVariantsHeader } from "../src/pinned-effect-cpp.js";
-import { lowerRenderTaskMeshRemoval } from "../src/lowering/render-task-removal.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { lowerMeshGpuDisposal } from "../src/lowering/mesh-gpu-disposal.js";
 import {
     lowerThinInstanceDisposal,
@@ -19,7 +20,6 @@ import {
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
-    cppSection,
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
@@ -173,12 +173,12 @@ test("each disposal lowering is emitted only where its API is reached", () => {
         /remove_render_task_mesh/,
     );
     assert.match(
-        geometry.lowerTaskRecords(false, true).source,
+        geometry.lowerTaskRecords({ meshRemoval: true }).source,
         /void remove_render_task_mesh\(/,
     );
     assert.throws(
         () =>
-            lowerRenderTaskMeshRemoval(
+            renderTaskRemovalHeader(
                 doctoredContext(
                     "src/frame-graph/render-task-base.ts",
                     "        task._ob.length = 0;",
@@ -189,7 +189,7 @@ test("each disposal lowering is emitted only where its API is reached", () => {
     );
     assert.throws(
         () =>
-            lowerRenderTaskMeshRemoval(
+            renderTaskRemovalHeader(
                 doctoredContext(
                     "src/frame-graph/render-task-transaction.ts",
                     "task._config.autoMirror = false;",
@@ -322,14 +322,17 @@ test("render-task mesh removal matches the pin's queued, built and refreshed rem
         return;
     }
     const context = new LoweringContext();
-    const lowered = new GeometryOutputLowerer(context).lowerTaskRecords(
-        false,
-        true,
-    );
+    const lowered = new GeometryOutputLowerer(context).lowerTaskRecords({
+        meshRemoval: true,
+    });
     const directory = resolve("artifacts/engine-resource-lifetimes/removal"),
         include = join(directory, "include/bblite/upstream");
     mkdirSync(include, { recursive: true });
     writeFileSync(join(include, "frame_graph_geometry.hpp"), lowered.header);
+    writeFileSync(
+        join(include, "render_task_removal.hpp"),
+        renderTaskRemovalHeader(context),
+    );
     writeFileSync(
         join(include, "pinned_depth_state.hpp"),
         pinnedDepthStateHeader(context),
@@ -357,7 +360,7 @@ int main() {
     assert(record.render_meshes.size() == 1 && record.render_meshes[0].mesh == b);
     assert(engine.draw_list_epoch == epoch && record.shader_packet_scene_version == -1);
     // The same task once built: the draw lists rebuild without the mesh.
-    record.render_recorded = true; record.shader_packet_scene_version = 7;
+    record.record_state = FrameTaskRecordState::recorded; record.shader_packet_scene_version = 7;
     add_render_task_mesh(engine, queued, a, {0}, false);
     const auto built = engine.draw_list_epoch;
     remove_render_task_mesh(engine, queued, a);
@@ -370,7 +373,7 @@ int main() {
     RenderTaskOptions mirrored = options; mirrored.auto_mirror = true;
     const auto published = create_render_task(engine, scene, mirrored);
     add_render_task_mesh(engine, published, a, {0}, false);
-    engine.frame_tasks[published.value].render_recorded = true;
+    engine.frame_tasks[published.value].record_state = FrameTaskRecordState::recorded;
     remove_render_task_mesh(engine, published, a);
     assert(engine.frame_tasks[published.value].render_meshes.empty());
     assert(!engine.frame_tasks[published.value].render.auto_mirror);
@@ -390,7 +393,7 @@ int main() {
     remove_render_task_mesh(engine, refreshed, c);
     assert(tracked.render_meshes.empty() && tracked.render_meshes_dirty && engine.draw_list_epoch == before);
     add_render_task_mesh(engine, refreshed, c, {1}, false);
-    tracked.render_recorded = true; tracked.render_meshes_dirty = false;
+    tracked.record_state = FrameTaskRecordState::recorded; tracked.render_meshes_dirty = false;
     const auto recorded = engine.draw_list_epoch;
     remove_render_task_mesh(engine, refreshed, c);
     assert(tracked.render_meshes.empty() && tracked.render_meshes_dirty && engine.draw_list_epoch > recorded);
@@ -711,7 +714,7 @@ test("effect wrapper disposal empties the pin's slots and the next bind-group bu
         "engine-resource-lifetimes/effect",
         `#include <bblite/upstream/effect_variants.hpp>
 ${variants.definitions}
-${new EffectLowerer(new LoweringContext()).lowerFactory(true).source}
+${new EffectLowerer(new LoweringContext()).lowerFactory({ disposal: true }).source}
 #include <cassert>
 using namespace bbl;
 template <class F> std::string refusal(F function) {
@@ -859,7 +862,10 @@ test("render-target texture disposal releases the attachments once and later bui
         tools,
         "engine-resource-lifetimes/target",
         lowerGpuRetirement(context).source +
-            new RenderTargetLowerer(context, true, true).lower().source +
+            new RenderTargetLowerer(context, {
+                surface: true,
+                disposal: true,
+            }).lower().source +
             `
 #include <bblite/js_realm_state.hpp>
 #include <cassert>
@@ -912,17 +918,15 @@ test("both backends' shared target code skips disposed targets and refuses sched
         t.skip("Native compiler unavailable");
         return;
     }
-    const shared = readFileSync("native/src/pal_gpu_shared.cpp", "utf8");
     runGeneratedProgram(
         tools,
         "engine-resource-lifetimes/shared-targets",
         `
-#include <bblite/runtime.hpp>
 #include <cassert>
 #include <string>
-#include <string_view>
-namespace bbl::pal {
-${cppSection(shared, "void synchronize_render_target_lifecycles(", "TextureFormatClass geometry_format_class(")}
+#include "pal_gpu_target_lifetimes.hpp"
+namespace bbl {
+${lowerTaskExecutionCheck(new LoweringContext(), { disposal: true, pendingBuild: true })}
 }
 using namespace bbl;
 struct CountingLifecycle final : RenderTargetLifecycle {
@@ -946,6 +950,7 @@ int main() {
     engine.render_targets[1].retired = true;
     pal::synchronize_render_target_lifecycles(engine);
     assert(live->synchronized == 1 && disposed->synchronized == 0);
+    const auto require = [&] { return refusal([&] { pal::require_executable_frame_tasks(engine); }); };
     // A disposed target nothing schedules is no frame's concern.
     Scene scene;
     scene.engine = &engine;
@@ -966,22 +971,49 @@ int main() {
     post.post_process.passes.emplace_back().source.target = {1};
     engine.frame_tasks.push_back(post);
     scene.tasks = {{0}, {1}};
-    pal::require_live_render_targets(engine);
+    assert(require().empty());
     // An executed task naming it refuses, whether it renders into or samples it.
     engine.frame_tasks[1].execution_enabled = true;
-    assert(refusal([&] { pal::require_live_render_targets(engine); }) ==
+    assert(require() ==
            "Effect task 'outline' uses a render-target texture that disposeRenderTargetTexture released.");
     engine.frame_tasks[1].execution_enabled = false;
     scene.tasks.push_back({2});
-    assert(refusal([&] { pal::require_live_render_targets(engine); }).starts_with("Post-process task 'blur'"));
+    assert(require().starts_with("Post-process task 'blur'"));
     scene.tasks.pop_back();
     FrameGraphContext graph;
     graph.engine = &engine;
     graph.tasks = {{2}};
     engine.rendering_contexts.push_back("frame-graph", &graph);
-    assert(refusal([&] { pal::require_live_render_targets(engine); }).starts_with("Post-process task 'blur'"));
+    assert(require().starts_with("Post-process task 'blur'"));
+    graph.tasks.clear();
+    // The pin's execute failures, before any target: an effect task without
+    // its pipeline, a disposed render task, any other task waiting for its build.
+    engine.render_targets[1].retired = false;
+    engine.frame_tasks[1].execution_enabled = true;
+    engine.frame_tasks[1].disposed = true;
+    assert(require() == "#37");
+    engine.frame_tasks[1].disposed = false;
+    engine.frame_tasks[1].record_state = FrameTaskRecordState::pending_build;
+    assert(require() == "#37");
+    engine.frame_tasks[1].execution_enabled = false;
+    engine.frame_tasks[0].record_state = FrameTaskRecordState::pending_build;
+    assert(require() == "A task added to a live scene executes before buildFrameGraphTask recorded it.");
+    engine.frame_tasks[0].record_state = FrameTaskRecordState::recorded;
+    engine.frame_tasks[0].disposed = true;
+    assert(require() == "Render task 'pass' executes after dispose() destroyed its scene uniform buffer.");
+    engine.frame_tasks[0].execution_enabled = false;
+    assert(require().empty());
 }
 `,
-        { flags: ["/DBBLITE_RENDER_TARGET_DISPOSAL=1"], timeoutMs: 10000 },
+        {
+            flags: [
+                "/DBBLITE_RENDER_TARGET_DISPOSAL=1",
+                "/DBBLITE_TASK_DISPOSAL=1",
+                "/DBBLITE_LIVE_TASK_ADD=1",
+                "/I",
+                resolve("native/src"),
+            ],
+            timeoutMs: 10000,
+        },
     );
 });

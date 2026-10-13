@@ -5,6 +5,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
@@ -37,6 +38,10 @@ function taskRecordsFixture(
         include = join(directory, "include/bblite/upstream");
     mkdirSync(include, { recursive: true });
     writeFileSync(join(include, "frame_graph_geometry.hpp"), lowered.header);
+    writeFileSync(
+        join(include, "render_task_removal.hpp"),
+        renderTaskRemovalHeader(new LoweringContext()),
+    );
     writeFileSync(
         join(include, "pinned_depth_state.hpp"),
         pinnedDepthStateHeader(new LoweringContext()),
@@ -152,7 +157,7 @@ test("refreshed render tasks queue per-task overrides in the pin's renderable or
     }
     const lowered = new GeometryOutputLowerer(
         new LoweringContext(),
-    ).lowerTaskRecords(false, true, true);
+    ).lowerTaskRecords({ meshRemoval: true, refreshedOverrides: true });
     const include = taskRecordsFixture(
         "render-task-followups/refreshed-overrides",
         lowered,
@@ -184,7 +189,7 @@ int main() {
     // What a backend's draw-list build publishes after drawing.
     const auto build = [&] {
         order_refreshed_render_task(task);
-        task.render_recorded = true;
+        task.record_state = FrameTaskRecordState::recorded;
         task.render_meshes_dirty = false;
         task.shader_packet_rebuild_pending = false;
         task.shader_packet_scene_version = static_cast<double>(scene.state->renderable_version);
@@ -194,7 +199,7 @@ int main() {
     add_render_task_mesh(engine, handle, t2, {0}, false);
     add_render_task_mesh(engine, handle, o2, view, true);
     // Registration records the task.
-    task.render_recorded = true;
+    task.record_state = FrameTaskRecordState::recorded;
     task.shader_packet_scene_version = static_cast<double>(scene.state->renderable_version);
     build(); order();
     const auto epoch = engine.draw_list_epoch;
@@ -248,7 +253,7 @@ test("refreshed task overrides lower where refresh and an override are both reac
     const context = new LoweringContext();
     const geometry = new GeometryOutputLowerer(context);
     assert.match(
-        geometry.lowerTaskRecords(false, false, true).source,
+        geometry.lowerTaskRecords({ refreshedOverrides: true }).source,
         /queue_refreshed_render_task_mesh\(engine, record, mesh, material\)/,
     );
     assert.match(

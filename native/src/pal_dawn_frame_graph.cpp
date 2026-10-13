@@ -4,6 +4,7 @@
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_frame_graph_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
+#include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 
 #include <bblite/pal.hpp>
@@ -149,8 +150,8 @@ void release(State& state) {
 }
 
 void build_graph(State& state, const Engine& engine, std::uint32_t width, std::uint32_t height) {
-#if BBLITE_RENDER_TARGET_DISPOSAL
-    require_live_render_targets(engine);
+#if BBLITE_RENDER_TARGET_DISPOSAL || BBLITE_LIVE_TASK_ADD
+    require_executable_frame_tasks(engine);
 #endif
     if (state.render_targets_version == engine.render_targets_version &&
         state.targets.size() == engine.render_targets.size() && state.width == width &&

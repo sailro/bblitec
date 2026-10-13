@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
+import { renderTaskRemovalHeader } from "../src/lowering/render-task-removal.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import {
     cppFunction,
@@ -131,6 +132,7 @@ test(
 #include <cassert>
 #include <cstdio>
 namespace bbl { ${lowerMeshMaterialSetter(new LoweringContext())}
+${cppFunction(renderTaskRemovalHeader(new LoweringContext()), "inline void remove_mesh_from_render_task(")}
 ${functions.map((signature) => cppFunction(core, signature)).join("\n")} }
 int main() {
     bbl::Engine engine;
@@ -154,7 +156,7 @@ int main() {
     engine.frame_tasks.emplace_back();
     engine.frame_tasks[0].render_meshes = {bbl::RenderTaskMesh{parent, {}}, bbl::RenderTaskMesh{follower, {}}};
     // A recorded task: removal drops built entries, never queued ones.
-    engine.frame_tasks[0].render_recorded = true;
+    engine.frame_tasks[0].record_state = bbl::FrameTaskRecordState::recorded;
     scene.tasks.push_back(bbl::TaskHandle{0});
     auto group = std::make_shared<bbl::SourceMaterialGroupState>();
     group->meshes = {parent, child, follower};
