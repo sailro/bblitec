@@ -49,3 +49,32 @@ test("effect textures refuse a render target's depth", () => {
         /depth textures are not lowered/,
     );
 });
+
+test("shader materials sample render-target colour textures", () => {
+    const source = (texture: string): string => `
+import {createEngine,createRenderTargetTexture,createShaderMaterial,setShaderTexture} from "@babylonjs/lite";
+async function main(){
+    const engine=await createEngine({});
+    const target=createRenderTargetTexture(engine,{lbl:"source",format:"rgba8unorm",dFormat:"depth24plus",samples:1,size:{width:4,height:4}});
+    const material=createShaderMaterial({vertexSource:"struct VertexOutput{@builtin(position) position:vec4f};@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=vec4f(input.position,1.0);return out;}",
+        fragmentSource:"@fragment fn mainFragment()->@location(0) vec4f{return textureSample(picture,pictureSampler,vec2f(0.5));}",
+        attributes:["position"],samplers:["picture"]});
+    ${texture}
+}
+main();`;
+    assert.match(
+        compileSource(
+            source(`setShaderTexture(material,"picture",target.texture);`),
+        ).cpp,
+        /bbl::set_shader_render_texture\(v_engine, v_material, 0u, v_target\.texture\)/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    `if(target.depthTexture)setShaderTexture(material,"picture",target.depthTexture);`,
+                ),
+            ),
+        /depth textures are not lowered/,
+    );
+});

@@ -142,9 +142,10 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
 - Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions, except Standard
   `diffuseColor` after `enableMaterialTracking` (re-read each frame).
-- Shader materials: 2D/array samplers, storage buffers, `get/setShaderUniform` by runtime name,
-  `enableShaderUniformRangeUpdates`. Template text and plugin `getCustomCode` functions run at generation; reaching
-  host/engine APIs, `this`, module `let`, clock or random refuses. Alpha-to-coverage only on shader materials.
+- Shader materials: 2D/array samplers (render-target colour textures rebind per draw), storage buffers,
+  `get/setShaderUniform` by runtime name, `enableShaderUniformRangeUpdates`. Template text and plugin `getCustomCode`
+  functions run at generation; reaching host/engine APIs, `this`, module `let`, clock or random refuses.
+  Alpha-to-coverage only on shader materials.
 - External video textures come from a closed zero-parameter producer before engine start.
 - Node materials: closed NME graphs; scalar inputs writable live; vector writes and topology changes refuse. Geometry MRTs
   need static packed FLOAT attributes.

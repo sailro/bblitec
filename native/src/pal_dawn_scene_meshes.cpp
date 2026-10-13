@@ -178,9 +178,23 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         material_handle.value,
         vertex_uniforms,
     };
+    // A render target's slot binds the target's current view: a rebuilt target
+    // rebuilds the groups that named the old one.
+    std::vector<WGPUTextureView> render_views(material.shader_render_textures.size(), nullptr);
+    for (std::size_t slot = 0; slot < render_views.size(); ++slot) {
+        if (const auto& reference = material.shader_render_textures[slot]) {
+            if (reference->source != RenderTextureSource::render_target || reference->depth_only)
+                throw std::runtime_error("A shader slot samples a render target's colour.");
+            render_views[slot] =
+                dawn_render_target_texture(state, engine, reference->target, false).second;
+        }
+    }
     const auto existing = mesh.shader_bindings.find(key);
-    if (existing != mesh.shader_bindings.end())
-        return existing->second;
+    if (existing != mesh.shader_bindings.end()) {
+        if (existing->second.render_views == render_views)
+            return existing->second;
+        mesh.shader_bindings.erase(existing);
+    }
 
     shader_pipeline_layout_for(state, variant);
     const std::array<WGPUBindGroupLayout, 4> layouts{
@@ -271,7 +285,10 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
 #endif
         } else
 #endif
-        {
+        if (slot < render_views.size() && render_views[slot]) {
+            view = render_views[slot];
+            sampler = state.ground_sampler;
+        } else {
             if (slot >= textures.size()) {
                 dawn_error(shader_sampler_shortfall(info, textures.size()));
             }
@@ -329,6 +346,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
             dawn_error("Shader fragment bind group creation failed.");
         }
     }
+    bindings.render_views = std::move(render_views);
     return mesh.shader_bindings.emplace(key, std::move(bindings)).first->second;
 }
 #endif

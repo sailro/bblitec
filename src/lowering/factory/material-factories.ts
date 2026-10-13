@@ -561,6 +561,28 @@ void set_shader_texture(
         record.shader_textures.resize(slot + 1);
     }
     record.shader_textures[slot] = std::move(texture);
+    if (slot < record.shader_render_textures.size())
+        record.shader_render_textures[slot].reset();
+}
+
+// A render target's colour texture in the same slot: each draw binds the
+// target's current texture, so a rebuilt target or a later write is what the
+// next frame samples.
+void set_shader_render_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    RenderTextureRef texture) {
+    MaterialRecord& record = shader_material(engine, material);
+    if (texture.source != RenderTextureSource::render_target || texture.depth_only)
+        throw std::runtime_error("setShaderTexture samples a render target's colour texture.");
+    if (record.shader_textures.size() <= slot) {
+        record.shader_textures.resize(slot + 1);
+    }
+    if (record.shader_render_textures.size() <= slot) {
+        record.shader_render_textures.resize(slot + 1);
+    }
+    record.shader_render_textures[slot] = texture;
 }
 
 void set_shader_storage_buffer(

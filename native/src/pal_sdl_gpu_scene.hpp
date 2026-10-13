@@ -1099,6 +1099,20 @@ struct GpuState : SdlGpuDevice {
 #endif
 };
 
+/** A render target's sampled colour, as a material slot reads it. */
+inline SDL_GPUTexture* sdl_render_texture_color(const GpuState& state, const Engine& engine,
+                                                const RenderTextureRef& reference) {
+    if (reference.source != RenderTextureSource::render_target ||
+        reference.target.value >= state.render_targets.size())
+        pal::refuse_invalid_frame_handle("A material render texture names no render target.");
+    if (handle_at(engine.render_targets, reference.target).swapchain)
+        throw std::runtime_error("A material cannot sample the swapchain target.");
+    SDL_GPUTexture* texture = handle_at(state.render_targets, reference.target).sampled_color;
+    if (!texture)
+        pal::fail_render_target_has_no_texture();
+    return texture;
+}
+
 void sync_shader_storage_buffers(GpuState& state, const Engine& engine,
                                  GpuBufferUploadBatch& uploads);
 
