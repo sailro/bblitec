@@ -12,6 +12,7 @@
 #include <bblite/features/has_sprites.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadow_skeleton_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
@@ -1941,11 +1942,110 @@ ScaledExtents scaled_target_extents(const RenderTargetRecord& record, std::uint3
 void synchronize_render_target_lifecycles(const Engine& engine) {
     const auto count = engine.render_targets.size();
     for (std::size_t index = 0; index < count; ++index) {
+        // A disposed target is built no more; its lifecycle refuses a build.
+        if (engine.render_targets[index].retired)
+            continue;
         const auto lifecycle = engine.render_targets[index].lifecycle;
         if (lifecycle)
             lifecycle->synchronize();
     }
 }
+
+#if BBLITE_RENDER_TARGET_DISPOSAL
+void refuse_disposed_render_target(std::string_view user) {
+    throw std::runtime_error(std::string(user) +
+                             " uses a render-target texture that disposeRenderTargetTexture "
+                             "released.");
+}
+
+namespace {
+/** The executed task naming a disposed target, spelled only when it refuses. */
+struct TargetUser {
+    std::string_view kind;
+    const std::string& name;
+};
+
+void require_live_target(const Engine& engine, RenderTargetHandle handle, TargetUser user) {
+    const RenderTargetRecord* record = handle_find(engine.render_targets, handle);
+    if (record && record->retired)
+        refuse_disposed_render_target(std::string(user.kind) + " '" + user.name + "'");
+}
+
+void require_live_texture(const Engine& engine, const RenderTextureRef& reference,
+                          TargetUser user) {
+    if (reference.source == RenderTextureSource::render_target)
+        require_live_target(engine, reference.target, user);
+}
+
+void require_live_passes(const Engine& engine, const PostProcessTaskOptions& options,
+                         TargetUser user) {
+    for (const PostProcessPassOptions& pass : options.passes) {
+        require_live_texture(engine, pass.source, user);
+        require_live_target(engine, pass.target, user);
+        require_live_target(engine, pass.output_target, user);
+        for (const RenderTextureRef& texture : pass.extra_textures)
+            require_live_texture(engine, texture, user);
+    }
+    require_live_target(engine, options.output_target, user);
+}
+
+/** Every target an executed task renders into or samples, by its kind's own record. */
+void require_live_task_targets(const Engine& engine, TaskHandle handle) {
+    const FrameTaskRecord* task = handle_find(engine.frame_tasks, handle);
+    if (!task || task->execution_enabled == false)
+        return;
+    switch (task->kind) {
+    case FrameTaskKind::render: {
+        const TargetUser user{"Render task", task->render.name};
+        require_live_target(engine, task->render.target, user);
+        require_live_target(engine, task->render.resolve_target, user);
+        require_live_texture(engine, task->render.depth, user);
+        return;
+    }
+    case FrameTaskKind::geometry:
+        require_live_target(engine, task->geometry.target, {"Geometry task", task->geometry.name});
+        return;
+    case FrameTaskKind::copy: {
+        const TargetUser user{"Copy task", task->copy.name};
+        require_live_texture(engine, task->copy.source, user);
+        require_live_target(engine, task->copy.target, user);
+        require_live_target(engine, task->copy.resolve_target, user);
+        return;
+    }
+    case FrameTaskKind::post_process:
+        require_live_passes(engine, task->post_process,
+                            {"Post-process task", task->post_process.name});
+        return;
+    case FrameTaskKind::screen_space: {
+        const TargetUser user{"Screen-space task", task->screen_space.name};
+        for (const RenderTargetHandle target :
+             {task->screen_space.source, task->screen_space.depth, task->screen_space.target,
+              task->screen_space.raw, task->screen_space.stable, task->screen_space.history,
+              task->screen_space.output_target})
+            require_live_target(engine, target, user);
+        require_live_passes(engine, task->post_process, user);
+        return;
+    }
+    case FrameTaskKind::effect:
+        require_live_target(engine, task->effect.target, {"Effect task", task->effect.name});
+        return;
+    case FrameTaskKind::compute:
+        return;
+    }
+}
+} // namespace
+
+void require_live_render_targets(const Engine& engine) {
+    for (const auto& scene : engine.scenes())
+        if (scene)
+            for (const TaskHandle task : scene->tasks)
+                require_live_task_targets(engine, task);
+    for (const FrameGraphContext* graph : engine.frame_graph_contexts())
+        if (graph)
+            for (const TaskHandle task : graph->tasks)
+                require_live_task_targets(engine, task);
+}
+#endif
 
 TextureFormatClass geometry_format_class(const GeometryTextureDescription& description) {
     if (description.format == GeometryTextureFormat::r16_float) {

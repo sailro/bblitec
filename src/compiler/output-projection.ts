@@ -160,6 +160,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:csg2": [],
     "mesh:from-data": [],
     "mesh:update-attributes": [],
+    "mesh:dispose-gpu": [],
     "mesh:update-geometry": [],
     "mesh:resize-geometry": [],
     "mesh:render-bundle-invalidation": [],
@@ -305,10 +306,13 @@ export const featureSources: Record<Feature, string[]> = {
     // the implementation is generated and therefore adds no PAL source.
     "frame-graph:resources": [],
     "frame-graph:surface-target": [],
+    "frame-graph:target-disposal": [],
+    "frame-graph:task-mesh-removal": [],
     // A standalone FrameGraphContext has its own task-only driver. It does
     // not pull the scene renderer, camera math, mesh upload, or image loader.
     "renderer:frame-graph": ["src/pal_sdl_gpu_frame_graph.cpp"],
     "effect:wrapper": [],
+    "effect:wrapper-disposal": [],
     "effect:task": [],
     "renderer:scene": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],

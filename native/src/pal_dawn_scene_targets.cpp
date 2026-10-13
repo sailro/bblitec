@@ -10,6 +10,7 @@
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/render_target_disposal.hpp>
 
 #include "pal_dawn_scene.hpp"
 
@@ -33,6 +34,9 @@ WGPUTexture create_frame_texture(DawnState& state, WGPUTextureFormat format, std
 
 void create_frame_graph_textures(DawnState& state, const Engine& engine, std::uint32_t width,
                                  std::uint32_t height) {
+#if BBLITE_RENDER_TARGET_DISPOSAL
+    require_live_render_targets(engine);
+#endif
     if (state.render_targets_version == engine.render_targets_version &&
         state.render_targets.size() == engine.render_targets.size() &&
         state.frame_graph_width == width && state.frame_graph_height == height &&
@@ -254,6 +258,10 @@ std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& st
         pal::refuse_invalid_frame_handle("Frame graph render target handle is invalid.");
     }
     const RenderTargetRecord& record = handle_at(engine.render_targets, target_handle);
+#if BBLITE_RENDER_TARGET_DISPOSAL
+    if (record.retired)
+        pal::refuse_disposed_render_target("A frame-graph pass or material");
+#endif
     DawnRenderTarget& target = handle_at(state.render_targets, target_handle);
     if (depth_only) {
         if (!record.sampled_depth || !target.depth_sampled_view) {

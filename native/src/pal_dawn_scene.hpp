@@ -1259,7 +1259,8 @@ struct DawnState : DawnDevice {
 #endif
         for (std::size_t index = 0; index < render_targets.size(); ++index) {
             if (preserve && index < preserve->render_targets.size() &&
-                preserve->render_targets[index].lifecycle)
+                preserve->render_targets[index].lifecycle &&
+                !preserve->render_targets[index].retired)
                 continue;
             render_targets[index] = {};
         }

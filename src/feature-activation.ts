@@ -812,6 +812,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/mesh/mesh-factories.ts (updateMeshPositions, updateMeshUvs, updateMeshNormals, updateMeshColors, updateMeshTangents, updateMeshUv2)",
         consumers: CMAKE,
     },
+    "mesh:dispose-gpu": {
+        provenance: "src/mesh/mesh-dispose.ts disposeMeshGpu",
+        consumers: CMAKE,
+    },
     "mesh:update-geometry": {
         provenance:
             "src/mesh/mesh-factories.ts (updateMeshGeometry, updateMeshGeometryCapacity)",
@@ -1427,6 +1431,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/texture/rtt-surface.ts createSurfaceRenderTargetTexture/onRenderTargetTextureResize",
         consumers: CMAKE,
     },
+    "frame-graph:target-disposal": {
+        provenance:
+            "src/texture/rtt.ts disposeRenderTargetTexture " +
+            "(src/engine/render-target.ts disposeRenderTarget)",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-mesh-removal": {
+        provenance:
+            "src/frame-graph/render-task.ts removeMeshFromTask " +
+            "(src/frame-graph/render-task-base.ts _removeMeshFromRenderTask)",
+        consumers: CMAKE,
+    },
     "frame-graph:resources": {
         provenance:
             "src/engine/render-target.ts createRenderTarget + " +
@@ -1443,6 +1459,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/effect/effect-renderer.ts createEffectWrapper " +
             "(DEFAULT_VERTEX_WGSL plus the caller's fragment)",
+        consumers: CMAKE,
+    },
+    "effect:wrapper-disposal": {
+        provenance: "src/effect/effect-renderer.ts disposeEffectWrapper",
         consumers: CMAKE,
     },
     "effect:task": {

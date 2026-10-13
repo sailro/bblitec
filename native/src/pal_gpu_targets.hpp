@@ -5,6 +5,7 @@
 #include "pal_gpu_surface.hpp"
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/render_target_disposal.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -73,6 +74,19 @@ inline std::uint32_t render_target_requested_samples(const RenderTargetRecord& r
 [[noreturn]] inline void refuse_invalid_frame_handle(const char* message) {
     throw std::out_of_range(message);
 }
+
+#if BBLITE_RENDER_TARGET_DISPOSAL
+/**
+ * The refusal a frame owes a target `disposeRenderTargetTexture` released:
+ * the pin keeps encoding a recorded pass or bind group over the released
+ * attachments until its next build refuses the target, and drawing into or
+ * sampling those attachments is not represented.
+ */
+[[noreturn]] void refuse_disposed_render_target(std::string_view user);
+
+/** Every registered scene's and frame-graph context's executed tasks name only live targets. */
+void require_live_render_targets(const Engine& engine);
+#endif
 
 /**
  * The texture `setEffectTexture` stored for one declared binding name.

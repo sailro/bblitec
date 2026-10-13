@@ -1,4 +1,5 @@
 #include <bblite/features/gpu_retirement.hpp>
+#include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The SDL_GPU scene renderer's driver: the pass helpers, the state's
 // release and the frame run. The feature families it draws through are
@@ -22,6 +23,7 @@
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
+#include <bblite/features/effect_wrapper_disposal.hpp>
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_geometry_output.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
@@ -2210,6 +2212,10 @@ public:
                                 "Frame graph render target handle is invalid.");
                         }
                         const RenderTargetRecord& record = handle_at(engine.render_targets, handle);
+#if BBLITE_RENDER_TARGET_DISPOSAL
+                        if (record.retired)
+                            pal::refuse_disposed_render_target("A frame-graph pass or material");
+#endif
                         if (record.swapchain)
                             return swapchain;
                         const GpuRenderTarget& target = handle_at(state.render_targets, handle);
@@ -3398,6 +3404,10 @@ public:
 
 #if BBLITE_HAS_EFFECT_TASK
                         if (task.kind == FrameTaskKind::effect) {
+#if BBLITE_EFFECT_WRAPPER_DISPOSAL
+                            // `execute` rebuilds the wrapper's dirty bind group before drawing.
+                            require_effect_bind_group(engine, task.effect.effect);
+#endif
                             // The same two halves the swapchain renderer draws
                             // through, recorded into the frame graph's command
                             // buffer instead: the pin ships two entry points

@@ -2871,6 +2871,13 @@ struct EffectWrapperRecord {
      */
     bool uniforms_dirty = false;
     std::vector<EffectTextureSlot> textures;
+    /**
+     * `disposeEffectWrapper` emptied the pin's `_uniforms`; the texture
+     * slots it emptied are `textures`. Creation fills every slot the
+     * descriptor declares and nothing else removes one, so this is the
+     * whole uniform-slot state.
+     */
+    bool uniform_slots_released = false;
 };
 
 /** An `EffectRenderer`: one wrapper drawn to the swapchain each frame. */
@@ -6697,6 +6704,7 @@ std::array<double, 2> resolve_surface_render_target_size(double width, double he
                                                          double surface_scale);
 js::Callback<void()> on_render_target_texture_resize(Engine& engine, RenderTargetTexture result,
                                                      std::function<void()> callback);
+void dispose_render_target_texture(Engine& engine, RenderTargetTexture result);
 RenderTargetHandle swapchain_render_target(Engine& engine);
 TaskHandle create_render_task(Engine& engine, Scene& scene, RenderTaskOptions options);
 TaskHandle create_geometry_renderer_task(Engine& engine, Scene& scene, GeometryTaskOptions options);
@@ -6851,6 +6859,7 @@ void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator
 void enable_skeleton_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
+void remove_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);
 
 void add_to_scene(Scene& scene, MeshHandle mesh);
@@ -6943,6 +6952,7 @@ void set_scene_node_rotation_quaternion_component(Engine& engine, const SceneNod
                                                   std::size_t component, float value);
 void remove_from_scene(Scene& scene, MeshHandle mesh);
 void remove_from_scene(Scene& scene, LightHandle light);
+void dispose_mesh_gpu(Engine& engine, MeshHandle mesh);
 void remove_from_scene(Scene& scene, const SceneNodeHandle& node);
 void on_before_render(Scene& scene, js::Callback<void(double)> callback);
 void run_scene_before_render(Scene& scene, double delta_ms);
@@ -7165,6 +7175,11 @@ void set_effect_uniforms(Engine& engine, EffectWrapperHandle effect,
                          const std::vector<float>& values);
 void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const std::string& name,
                         SolidTexture texture);
+void dispose_effect_wrapper(Engine& engine, EffectWrapperHandle effect);
+/** The pin's bind-group build for the wrapper's declared bindings; refuses a released slot. */
+void require_effect_bind_group(const Engine& engine, EffectWrapperHandle effect);
+/** A registered renderer's kept bind group must not name uniform storage disposal destroyed. */
+void require_effect_renderer_storage(const Engine& engine, EffectWrapperHandle effect);
 EffectRendererHandle create_effect_renderer(Engine& engine, EffectWrapperHandle effect,
                                             EffectRendererOptions options);
 void register_effect_renderer(Engine& engine, EffectRendererHandle renderer);
