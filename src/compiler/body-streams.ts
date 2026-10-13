@@ -118,7 +118,6 @@ export function compileBodyStreamNew(
     if (arguments_.length !== 1)
         return context.fail(node, `new ${name} takes one format.`);
     // Its readable side is read on the realm's microtask queue.
-    if (!context.options.workers) throw new ApplicationRealmRequired();
     context.reachFeature("platform:compression", node);
     const format = lowerer.compileForSink(arguments_[0]!, { kind: "string" });
     return {

@@ -4,8 +4,6 @@ import { isDomReceiver } from "./dom-targets.js";
 import { pinDetached } from "./dom-listeners.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { requireWindowHost } from "./window-events.js";
-import { ApplicationRealmRequired } from "./worker-modules.js";
 
 /**
  * A call of the Window method `names` names: the global function, a member of
@@ -64,13 +62,4 @@ export function isWindowReceiver(
         global === "globalThis" ||
         isDomReceiver(context, receiver, "Window")
     );
-}
-
-/** A Window service of the application realm: its Window host, and the realm itself. */
-export function requireApplicationWindow(
-    context: Pick<LoweringServices, "options" | "reachFeature" | "fail">,
-    node: ts.Node,
-): void {
-    if (!context.options.workers) throw new ApplicationRealmRequired();
-    requireWindowHost(context, node);
 }

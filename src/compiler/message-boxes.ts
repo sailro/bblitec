@@ -5,10 +5,8 @@ import { stringConcatPart } from "./expressions.js";
 import { isUndefinedDataType } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { optionalPresentCpp, type Value } from "./types.js";
-import {
-    compileWindowMemberCall,
-    requireApplicationWindow,
-} from "./window-members.js";
+import { requireWindowHost } from "./window-events.js";
+import { compileWindowMemberCall } from "./window-members.js";
 
 /**
  * `alert(message)` and `confirm(message)`: a modal message box the Window
@@ -67,7 +65,7 @@ export function compileMessageBoxCall(
         call,
         MESSAGE_BOX_FUNCTIONS,
         (name) => {
-            requireApplicationWindow(context, call);
+            requireWindowHost(context, call);
             context.expectArgumentCount(call, 0, 1);
             const confirm = name === "confirm";
             const message = messageText(lowerer, call.arguments[0], confirm);

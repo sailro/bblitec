@@ -114,7 +114,8 @@ export function compileCanvasValue(
             global === "matchMedia" ||
             isWindowObserver(global)
         )
-            throw new ApplicationRealmRequired();
+            // The Window's: its host replays the program in the application realm.
+            requireWindowHost(context, node);
         return undefined;
     }
     if (global === "ResizeObserver" || global === "MutationObserver") {

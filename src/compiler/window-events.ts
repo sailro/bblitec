@@ -4,7 +4,6 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { RuntimeSearchParamsRequired } from "./search-params.js";
-import { ApplicationRealmRequired } from "./worker-modules.js";
 import { deploymentUrl } from "./deployment.js";
 
 type WindowContext = Pick<
@@ -54,7 +53,6 @@ export function emitWindowLocationAssignment(
             expression,
             `Location ${left.name.text} supports direct assignment only.`,
         );
-    if (!context.options.workers) throw new ApplicationRealmRequired();
     requireWindowHost(context, expression);
     if (!context.options.runtimeLocationSearch)
         throw new RuntimeSearchParamsRequired(true);
@@ -82,7 +80,6 @@ export function linkNavigationCpp(
     engine: string,
     site: ts.Node,
 ): string {
-    if (!context.options.workers) throw new ApplicationRealmRequired();
     requireWindowHost(context, site);
     if (!context.options.runtimeLocationSearch)
         throw new RuntimeSearchParamsRequired(true);

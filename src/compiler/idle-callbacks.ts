@@ -8,11 +8,8 @@ import { nativeFunctionValue } from "./native-function-values.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 import { optionalPresentCpp, type Value } from "./types.js";
-import {
-    compileWindowMemberCall,
-    isWindowReceiver,
-    requireApplicationWindow,
-} from "./window-members.js";
+import { compileWindowMemberCall, isWindowReceiver } from "./window-members.js";
+import { requireWindowHost } from "./window-events.js";
 import { nativeWindowMember } from "./window-properties.js";
 import { timerCancellation } from "./workers.js";
 
@@ -34,12 +31,12 @@ function isIdleFunction(name: string | undefined): name is IdleFunction {
     return IDLE_FUNCTIONS.some((candidate) => candidate === name);
 }
 
-/** Idle callbacks are a Window's: they need the application realm and its Window host. */
+/** Idle callbacks are a Window's: they need its Window host. */
 function requireIdleRealm(
     context: Pick<LoweringServices, "options" | "reachFeature" | "fail">,
     node: ts.Node,
 ): void {
-    requireApplicationWindow(context, node);
+    requireWindowHost(context, node);
     context.reachFeature("platform:idle-callbacks", node);
 }
 

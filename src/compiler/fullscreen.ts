@@ -6,7 +6,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { resolvedDomApi } from "./symbols.js";
 import { presenceFlagCpp, type Value } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
-import { requireApplicationWindow } from "./window-members.js";
+import { requireWindowHost } from "./window-events.js";
 
 /**
  * The Fullscreen API of a Window application (`bbl::pal::window_*fullscreen*`):
@@ -38,7 +38,7 @@ export function compileFullscreenCall(
     const callee = context.unwrap(
         call.expression,
     ) as ts.PropertyAccessExpression;
-    requireApplicationWindow(context, call);
+    requireWindowHost(context, call);
     if (method === "exitFullscreen") {
         if (context.libraryGlobal(callee.expression) !== "document")
             return context.fail(
@@ -89,7 +89,7 @@ export function fullscreenElementValue(
             expression.expression,
             "fullscreenElement is admitted on the Window application's document.",
         );
-    requireApplicationWindow(context, expression);
+    requireWindowHost(context, expression);
     return lowerer.narrowOptional(
         {
             kind: "data",
