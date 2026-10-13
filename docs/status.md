@@ -293,6 +293,7 @@ Unchanged pinned applications, including their reached source and asset graphs.
 | Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.139/0.169 | 0.139/0.169 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only: pixel-perfect on both backends. |
 | Mosquito in Amber | <img src="images/scenes/mosquito-amber.png" alt="Mosquito in Amber rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Transmissive glTF (scene 176) as a demo; studio HDR IBL; retained chrome. |
 | Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | 0.020/0.089 | 0.020/0.089 | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only: pixel-perfect on both backends. |
+| Trogir Streaming | <img src="images/scenes/trogir-streaming.png" alt="Trogir Gaussian splat streaming rendering" width="160"> | 0.285/0.286 | 0.284/0.285 | Gaussian splats streamed at run time (LOD manifest, SOG WebP sources, GPU gather, radix sort, indirect draw); voxel collision; retained HUD. Measured once the stream settles (phase idle). UI residual; canvas-only MAD: SDL_GPU 0.000/0.000, Dawn 0.001/0.001. |
 
 ## Project-owned differential gates
 

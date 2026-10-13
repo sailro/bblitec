@@ -5229,9 +5229,12 @@ const sceneInputs: readonly SceneInput[] = [
                 values: ["idle"],
                 settleMilliseconds: 3000,
             },
-            maxFullMad: 0.5,
-            maxForegroundMad: 0.5,
-            canvasThresholds: { maxFullMad: 0.5, maxForegroundMad: 0.5 },
+            // The canvas matches the settled browser frame (0.000 / 0.001); the
+            // full-page residual is the retained HUD over it (text
+            // rasterization and the live first-frame timing).
+            maxFullMad: 0.3,
+            maxForegroundMad: 0.3,
+            canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
             backgroundColor: [8, 11, 14],
             backgroundThreshold: 30,
         },
