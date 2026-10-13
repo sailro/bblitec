@@ -19,7 +19,10 @@ import {
 } from "./symbols.js";
 import type { Value } from "./types.js";
 import { MEDIA_STREAM_TRACK_LISTS } from "./web-audio-members.js";
-import { webAudioMemberCall } from "../lowering/web-platform-schema.js";
+import {
+    webAudioMemberAssign,
+    webAudioMemberCall,
+} from "../lowering/web-platform-schema.js";
 
 /**
  * MediaStream and MediaStreamTrack objects (`bblite/pal_media_stream.hpp`):
@@ -161,7 +164,7 @@ function streamMethod(
         const track = lowerer.compileForSink(call.arguments[0]!, TRACK);
         return {
             kind: "void",
-            cpp: `bbl::pal::media_stream_${method === "addTrack" ? "add" : "remove"}_track(${receiver}, ${track})`,
+            cpp: webAudioMemberCall("MediaStream", method)(receiver, [track]),
         };
     }
     if (method === "getTrackById") {
@@ -171,7 +174,7 @@ function streamMethod(
         });
         return {
             ...lowerer.leafValue(
-                `bbl::pal::media_stream_track_by_id(${receiver}, ${id})`,
+                webAudioMemberCall("MediaStream", method)(receiver, [id]),
                 { kind: "optional", inner: TRACK },
             ),
             impure: true,
@@ -179,7 +182,9 @@ function streamMethod(
     }
     if (method === "clone") {
         context.expectArgumentCount(call, 0, 0);
-        return mediaStreamValue(`bbl::pal::media_stream_clone(${receiver})`);
+        return mediaStreamValue(
+            webAudioMemberCall("MediaStream", method)(receiver, []),
+        );
     }
     return undefined;
 }
@@ -200,7 +205,9 @@ function trackMethod(
     }
     if (method === "clone") {
         context.expectArgumentCount(call, 0, 0);
-        return trackValue(`bbl::pal::media_stream_track_clone(${receiver})`);
+        return trackValue(
+            webAudioMemberCall("MediaStreamTrack", method)(receiver, []),
+        );
     }
     return undefined;
 }
@@ -262,7 +269,7 @@ export function emitMediaStreamAssignment(
     );
     context.emit({
         kind: "expression",
-        code: `bbl::pal::media_stream_track_set_enabled(${track}, ${lowerer.compileForSink(expression.right, { kind: "boolean" })});`,
+        code: `${webAudioMemberAssign("MediaStreamTrack", "enabled")(track, lowerer.compileForSink(expression.right, { kind: "boolean" }))};`,
     });
     return true;
 }

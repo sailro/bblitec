@@ -263,6 +263,7 @@ export interface ExpressionContext
         UserFunctionContext,
         Pick<
             LoweringServices,
+            | "noteImpureRead"
             | "compileWorkerValue"
             | "audioSessionCpp"
             | "staticAssetUrlCandidates"

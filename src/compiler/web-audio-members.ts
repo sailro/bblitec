@@ -120,3 +120,40 @@ export const MEDIA_STREAM_TRACK_LISTS = [
     ["getAudioTracks", "audio"],
     ["getVideoTracks", "video"],
 ] as const;
+
+/** `ctx.create<Node>()`: each factory's PAL entry point and the feature its node needs. */
+export const AUDIO_NODE_FACTORIES = [
+    ["createGain", "audio_create_gain", undefined],
+    ["createOscillator", "audio_create_oscillator", "audio:oscillator"],
+    ["createBiquadFilter", "audio_create_biquad_filter", "audio:biquad-filter"],
+    ["createStereoPanner", "audio_create_stereo_panner", "audio:stereo-panner"],
+    ["createPanner", "audio_create_panner", "audio:panner"],
+    ["createBufferSource", "audio_create_buffer_source", "audio:buffer-source"],
+] as const;
+
+/** `oscillator.type`: each Web Audio spelling's `OscillatorWave` enumerator. */
+export const OSCILLATOR_WAVES = [
+    ["sine", "Sine"],
+    ["square", "Square"],
+    ["sawtooth", "Sawtooth"],
+    ["triangle", "Triangle"],
+] as const;
+
+/** `filter.type`: each Web Audio spelling's `BiquadFilterKind` enumerator. */
+export const BIQUAD_FILTER_KINDS = [
+    ["lowpass", "Lowpass"],
+    ["highpass", "Highpass"],
+    ["bandpass", "Bandpass"],
+    ["lowshelf", "Lowshelf"],
+    ["highshelf", "Highshelf"],
+    ["peaking", "Peaking"],
+    ["notch", "Notch"],
+    ["allpass", "Allpass"],
+] as const;
+
+/** `context.resume()`, `suspend()`, `close()`: each transition's `AudioContextAction`. */
+export const AUDIO_CONTEXT_TRANSITIONS = [
+    ["resume", "Resume"],
+    ["suspend", "Suspend"],
+    ["close", "Close"],
+] as const;
