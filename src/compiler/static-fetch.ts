@@ -11,7 +11,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
-import { deploymentUrl } from "./deployment.js";
+import { packagedResponseUrl } from "./deployment.js";
 import { assetUrlDomain } from "./asset-url-domain.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import { isStringValue, type CompileAsset, type Value } from "./types.js";
@@ -565,11 +565,10 @@ function ownedPackagedResponse(
 ): Value {
     context.reachFeature("platform:packaged-fetch", node);
     context.reachJsData();
-    const entries = assets.map(({ key, logicalSource, output }) => {
-        const url = new URL(logicalSource, deploymentUrl(context.options));
-        url.hash = "";
-        return `{${context.cppString(key)}, ${context.cppString(url.href)}, ${context.cppString(output)}}`;
-    });
+    const entries = assets.map(
+        ({ key, logicalSource, output }) =>
+            `{${context.cppString(key)}, ${context.cppString(packagedResponseUrl(context.options, logicalSource))}, ${context.cppString(output)}}`,
+    );
     const response = context.dataLowerer.leafValue(
         `bbl::pal::fetch_packaged(${selected.cpp}, std::array<bbl::pal::PackagedFetchEntry, ${entries.length}>{{${entries.join(", ")}}})`,
         { kind: "promise", result: { kind: "http-response" } },

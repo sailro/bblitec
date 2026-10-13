@@ -9,6 +9,7 @@
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_packaged_responses.hpp>
 
+#include <array>
 #include <cassert>
 #include <iostream>
 #include <string>
@@ -23,8 +24,10 @@ namespace {
 
 js::Promise<js::PromiseVoid> run(std::string base, std::string packaged,
                                  std::vector<std::string>& lines) {
-    pal::register_packaged_responses("http://localhost/app/",
-                                     {{"http://localhost/app/sounds/a%23b.wav", packaged}});
+    const std::array<pal::PackagedFetchEntry, 1> responses{
+        {{"sounds/a%23b.wav", "http://localhost/app/sounds/a%23b.wav", packaged}}};
+    pal::register_packaged_responses(
+        "http://localhost/app/", [](const std::string& path) { return path; }, responses);
     // A relative request resolves against the deployment base; `#` is the
     // pin's own escape (`cleanAudioUrl`).
     const auto bytes = co_await load_audio_array_buffer("sounds/a#b.wav");

@@ -4425,7 +4425,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     /**
      * A closure's native parameters, one per shape its callers pass, and
      * the statements that bind what they declare: a default where the
-     * argument is absent, a destructuring pattern's names.
+     * argument is absent, a destructuring pattern's names. A `void`
+     * parameter (a generic instantiated at `void`) takes nothing: its
+     * callers pass nothing (`functionValueCall`).
      */
     private closureParameters(
         node: ts.FunctionLikeDeclaration,
@@ -4433,8 +4435,22 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         indent: string,
     ): { signature: string[]; prolog: string[] } {
         const prolog: string[] = [];
-        const signature = shapes.map((shape, index) => {
+        const signature = shapes.flatMap((shape, index): string | [] => {
             const parameter = node.parameters[index];
+            if (shape.kind === "void") {
+                if (!parameter) return [];
+                if (
+                    !ts.isIdentifier(parameter.name) ||
+                    parameter.initializer ||
+                    parameter.dotDotDotToken
+                )
+                    return this.refuse(
+                        parameter,
+                        "Pinned void parameter pattern.",
+                    );
+                this.declare(parameter.name, shape);
+                return [];
+            }
             if (!parameter)
                 return `[[maybe_unused]] ${this.cpp(shape)} ${this.temporary("unused")}`;
             if (parameter.dotDotDotToken)
@@ -7442,13 +7458,27 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.refuse(node, "Pinned call of a non-function value.");
         if (node.arguments.length > shape.parameters.length)
             return this.refuse(node, "Pinned call passes extra arguments.");
-        const args = shape.parameters.map((parameter, index) => {
+        const args = shape.parameters.flatMap((parameter, index) => {
             const argument = node.arguments[index];
+            if (parameter.kind === "void") return this.voidArgument(argument);
             return argument
                 ? this.convert(argument, parameter)
                 : this.model.absent(parameter, node);
         });
         return `${callee}(${args.join(", ")})`;
+    }
+
+    /**
+     * A `void` parameter takes nothing (`closureParameters`): an argument
+     * that evaluates nothing is dropped with it.
+     */
+    private voidArgument(argument: ts.Expression | undefined): [] {
+        if (argument && !this.inert(argument))
+            return this.refuse(
+                argument,
+                "Pinned void argument that evaluates something.",
+            );
+        return [];
     }
 
     /**
@@ -7558,11 +7588,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             this.substitutions.get(receiverNode) ??
             this.presentValue(receiverNode);
         const args = (shapes?: readonly RecordShape[]): string[] =>
-            node.arguments.map((argument, index) =>
-                shapes?.[index]
-                    ? this.convert(argument, shapes[index])
-                    : this.value(argument),
-            );
+            node.arguments.flatMap((argument, index) => {
+                const parameter = shapes?.[index];
+                if (parameter?.kind === "void")
+                    return this.voidArgument(argument);
+                return parameter
+                    ? this.convert(argument, parameter)
+                    : this.value(argument);
+            });
         switch (shape.kind) {
             case "array": {
                 const element = shape.element;
@@ -8827,7 +8860,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 : ts.isPropertyAssignment(property)
                   ? property.initializer
                   : this.refuse(property, "Pinned record literal member.");
-            return `${member.access(owner)} = ${this.convert(initializer, member.shape)};`;
+            const value = this.convert(initializer, member.shape);
+            // A member a native record stores through a setter.
+            return member.set
+                ? `${member.set(owner, value)};`
+                : `${member.access(owner)} = ${value};`;
         });
     }
 
@@ -8893,28 +8930,29 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         } }`;
     }
 
-    /** A literal, or a module constant bound to one: dropping it drops nothing. */
+    /** A literal, a placeholder or a binding's read: dropping it drops nothing. */
     private inert(node: ts.Expression): boolean {
         const unwrapped = this.skipParentheses(node);
         if (
             ts.isStringLiteral(unwrapped) ||
             ts.isNumericLiteral(unwrapped) ||
             unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
-            unwrapped.kind === ts.SyntaxKind.FalseKeyword
+            unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
+            unwrapped.kind === ts.SyntaxKind.NullKeyword
         )
             return true;
+        // `undefined as unknown as T`: a placeholder the pin fills later.
+        if (ts.isAsExpression(unwrapped))
+            return this.inert(unwrapped.expression);
         if (!ts.isIdentifier(unwrapped)) return false;
+        if (unwrapped.text === "undefined") return true;
+        // Reading a local binding evaluates nothing: what produced its value
+        // ran at its own declaration.
         const declaration = this.model.declarationOf(unwrapped);
         return (
             declaration !== undefined &&
-            ts.isVariableDeclaration(declaration) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
-            declaration.initializer !== undefined &&
-            this.inert(
-                ts.isAsExpression(declaration.initializer)
-                    ? declaration.initializer.expression
-                    : declaration.initializer,
-            )
+            (ts.isVariableDeclaration(declaration) ||
+                ts.isParameter(declaration))
         );
     }
 

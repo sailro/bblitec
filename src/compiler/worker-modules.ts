@@ -181,6 +181,14 @@ export function compileWorkerApplication(
     const featureSites: CompileManifest["featureSites"] = {};
     for (const result of results)
         Object.assign(featureSites, result.manifest.featureSites);
+    // One audio library serves every realm: the functions any realm calls.
+    const audioLibraryRoots = [
+        ...new EmissionSet(
+            results.flatMap(
+                (result) => result.manifest.audioLibraryRoots ?? [],
+            ),
+        ),
+    ];
     const root = commonSourceDirectory(
         frontend.sourceFile.fileName,
         modules.keys(),
@@ -245,6 +253,7 @@ export function compileWorkerApplication(
                       ),
                   }
                 : {}),
+            ...(audioLibraryRoots.length > 0 ? { audioLibraryRoots } : {}),
             assets: [...assets.values()],
             adaptations: results.flatMap(
                 (result) => result.manifest.adaptations,
@@ -277,6 +286,7 @@ function renderingProduct(manifest: CompileManifest): string {
         assetDecoders,
         canvasReadyGate,
         deferredCapabilities,
+        audioLibraryRoots,
         ...products
     } = manifest;
     void source;
@@ -291,5 +301,6 @@ function renderingProduct(manifest: CompileManifest): string {
     void assetDecoders;
     void canvasReadyGate;
     void deferredCapabilities;
+    void audioLibraryRoots;
     return JSON.stringify(products);
 }

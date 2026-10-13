@@ -9,6 +9,10 @@ import {
     runNativeFixtureCompiler,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import {
+    audioLibraryInclude,
+    ENGINE_RAMP_STUBS,
+} from "./static-sound-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
 
@@ -54,6 +58,7 @@ test(
         #include <cassert>
         namespace { unsigned int nodes = 0, reads = 0; }
         namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+        ${ENGINE_RAMP_STUBS}
         namespace bbl::pal {
             struct AudioNodeRecord {};
             AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&) { return {1}; }
@@ -61,6 +66,8 @@ test(
             AudioNodeHandle audio_destination(AudioContextHandle) { return {100, {}}; }
             void audio_connect(AudioNodeHandle, AudioNodeHandle) {}
             AudioParamHandle audio_node_param(AudioNodeHandle node, AudioParamName name) {
+                // The engine's own main out and main bus gains (nodes 1, 2).
+                if (node.value <= 2) return {std::move(node), name};
                 ++reads;
                 assert(node.value == (reads <= 3 ? 3u : 4u));
                 // The second node has its factory temporary, stored member, and this parameter.
@@ -68,9 +75,16 @@ test(
                 return {std::move(node), name};
             }
             float audio_param_value(AudioParamHandle) { return 7; }
+            void audio_param_set_value(AudioParamHandle, float) {}
         }
         int main() { assert(generated_main() == 0 && reads == 6); }
     `,
+            {
+                flags: audioLibraryInclude(
+                    "audio-temporary-ownership",
+                    result.manifest,
+                ),
+            },
         );
     },
 );
@@ -122,6 +136,7 @@ test(
         #include <cassert>
         namespace { unsigned int nodes = 0; float gain = 1; }
         namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+        ${ENGINE_RAMP_STUBS}
         namespace bbl::pal {
             AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&) { return {1}; }
             AudioNodeHandle audio_create_gain(AudioContextHandle) { return {++nodes, {}}; }
@@ -129,7 +144,8 @@ test(
             void audio_connect(AudioNodeHandle, AudioNodeHandle) {}
             AudioParamHandle audio_node_param(AudioNodeHandle node, AudioParamName name) { return {node, name}; }
             void audio_param_set_value(AudioParamHandle param, float value) { assert(param.node.value == 3); gain = value; }
-            float audio_param_value(AudioParamHandle param) { assert(param.node.value == 3); return gain; }
+            // The engine's own main out and main bus gains (nodes 1, 2) read their default.
+            float audio_param_value(AudioParamHandle param) { if (param.node.value <= 2) return 1; assert(param.node.value == 3); return gain; }
         }
         int main() { assert(generated_main() == 0); assert(nodes == 3 && gain == 7); }
     `,
@@ -139,6 +155,7 @@ test(
             `/Fe:${executable}`,
             "/I",
             output,
+            ...audioLibraryInclude("audio-resource-storage", result.manifest),
             file,
         ]);
         assert.equal(execFileSync(executable, { encoding: "utf8" }).trim(), "");

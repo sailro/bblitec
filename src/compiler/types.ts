@@ -225,6 +225,8 @@ export interface CompileManifest {
     geometryOutputTasks: GeometryOutputTaskManifest[];
     /** Every copy task's name, in the order the scene creates them. */
     copyTasks?: string[];
+    /** The pinned audio functions the program calls, in reach order. */
+    audioLibraryRoots?: string[];
     postProcessTasks: PostProcessTaskManifest[];
     postProcessComposites: PostProcessCompositeManifest[];
     screenSpaceTasks: ScreenSpaceTaskManifest[];
@@ -3115,6 +3117,7 @@ export type Feature =
     | "audio:stereo-panner"
     | "audio:panner"
     | "audio:media-stream"
+    | "audio:pinned-engine"
     | "audio:static-sound"
     | "audio:spatial-sound"
     | "audio:engine-media-stream"

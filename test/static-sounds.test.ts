@@ -4,8 +4,13 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { sharedPinnedContext } from "../src/lowering/context.js";
-import { staticSoundLibraryHeader } from "../src/lowering/static-sound-library.js";
 import {
+    ENGINE_ROOTS,
+    STATIC_SOUND_ROOTS,
+    staticSoundLibraryHeader,
+} from "../src/lowering/static-sound-library.js";
+import {
+    audioLibraryInclude,
     FIXTURE_APPLICATION,
     native,
     runAudioProgram,
@@ -127,17 +132,24 @@ test("the application's static sounds compile strictly and run natively over pac
     assert.equal(result.manifest.deferredCapabilities, undefined);
     assert.ok(result.manifest.features.includes("audio:static-sound"));
     assert.ok(result.manifest.features.includes("audio:decode-wav"));
-    // Each site registers the one file its caller's path selects, keyed as
-    // the library requests it.
+    // Each site's candidate is the one file its caller's path selects, in a
+    // constant table keyed at generation by the URL the library requests;
+    // the site registers the table with its realm once.
     const registered = [
         ...result.cpp.matchAll(
-            /register_packaged_responses\("http:\/\/localhost\/", \{\{"([^"]+)"/g,
+            /PackagedFetchEntry\{"([^"]+)", "http:\/\/localhost([^"]+)"/g,
         ),
-    ].map((match) => match[1]);
+    ].map((match) => `${match[1]} ${match[2]}`);
     assert.deepEqual(registered.sort(), [
-        "/assets/sfx/hum.wav",
-        "/assets/sfx/tone.wav",
+        "/assets/sfx/hum.wav /assets/sfx/hum.wav",
+        "/assets/sfx/tone.wav /assets/sfx/tone.wav",
     ]);
+    assert.equal(
+        result.cpp.match(
+            /static thread_local const bool \w+ = bbl::pal::register_packaged_responses\("http:\/\/localhost\/", &bbl::asset_path, bblscene::packaged_audio_responses\w*\);/g,
+        )?.length,
+        2,
+    );
     if (!native) {
         t.skip("The native compiler and pinned LabSound library are required.");
         return;
@@ -148,9 +160,10 @@ test("the application's static sounds compile strictly and run natively over pac
         copyFileSync(resolve(output, asset.source), destination);
     }
     // The library header where a build's upstream tree carries it.
-    const library = join(output, "include/bblite/upstream_static_sound.hpp");
-    mkdirSync(dirname(library), { recursive: true });
-    writeFileSync(library, staticSoundLibraryHeader(sharedPinnedContext()));
+    const library = audioLibraryInclude(
+        "static-sounds-application",
+        result.manifest,
+    );
     writeFileSync(join(output, "program.hpp"), result.cpp);
     writeFileSync(
         join(output, "check.cpp"),
@@ -164,12 +177,7 @@ const char* bbl::pal::bblite_build_stamp() { return "static-sounds-application";
 ${FIXTURE_APPLICATION}`,
     );
     assert.equal(
-        runAudioProgram(
-            output,
-            join(output, "check.cpp"),
-            ["/I", join(output, "include")],
-            [],
-        ),
+        runAudioProgram(output, join(output, "check.cpp"), library, []),
         "",
     );
 });
@@ -183,7 +191,10 @@ test("a packaged static sound plays, ramps, stops and disposes in a LabSound cap
     mkdirSync(output, { recursive: true });
     writeFileSync(
         join(output, "library.hpp"),
-        staticSoundLibraryHeader(sharedPinnedContext()),
+        staticSoundLibraryHeader(sharedPinnedContext(), [
+            ...ENGINE_ROOTS,
+            ...STATIC_SOUND_ROOTS,
+        ]),
     );
     const wav = join(output, "tone.wav");
     writeFileSync(wav, wave(0.5, 1));
@@ -196,7 +207,19 @@ test("a packaged static sound plays, ramps, stops and disposes in a LabSound cap
         .replaceAll("\r\n", "\n")
         .trimEnd()
         .split("\n");
-    const [created, playing, ramp, restored, stopped, disposed] = lines;
+    const [
+        engine,
+        created,
+        playing,
+        ramp,
+        restored,
+        master,
+        unmuted,
+        stopped,
+        disposed,
+    ] = lines;
+    // The pin's engine: full master volume, its default 0.01 s ramp.
+    assert.equal(engine, "engine 1.000 0.010");
     assert.equal(created, "created 1");
     assert.equal(playing, "playing 0.500");
     // Across the 0.1 s linear ramp to silence: full at its start, half at
@@ -206,6 +229,17 @@ test("a packaged static sound plays, ramps, stops and disposes in a LabSound cap
     assert.ok(Math.abs(middle! - 0.25 - 0.0125) < 0.015, ramp);
     assert.ok(end! < 0.02, ramp);
     assert.equal(restored, "restored 0.500");
+    // The master volume's 0.1 s linear ramp to silence on the main output,
+    // measured like the sound's, then restored at once.
+    const [masterStart, masterMiddle, masterEnd, masterVolume] = master!
+        .split(" ")
+        .slice(1)
+        .map(Number);
+    assert.ok(Math.abs(masterStart! - 0.5) < 0.01, master);
+    assert.ok(Math.abs(masterMiddle! - 0.25 - 0.0125) < 0.015, master);
+    assert.ok(masterEnd! < 0.02, master);
+    assert.equal(masterVolume, 0);
+    assert.equal(unmuted, "unmuted 0.500");
     assert.equal(stopped, "stopped 0.000");
     assert.equal(disposed, "disposed 0");
     assert.ok(readFileSync(wav).length > 44);

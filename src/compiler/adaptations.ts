@@ -704,10 +704,10 @@ export function compileAdaptations(
                 "and their siblings, implemented by whatever engine the " +
                 "page runs on -- Blink's for the reference captures.",
             nativeSemantics:
-                "The pinned engine's own output graph is folded from " +
-                "`bus.ts`'s declarations (and `src/lowering/" +
-                "audio-lowerer.ts` refuses generation if any of them " +
-                "moves), but the Web Audio API under it is LabSound's, " +
+                "The pinned engine, its buses and ramped parameters " +
+                "are lowered from their own declarations " +
+                "(`audio-engine.ts`, `bus.ts`, `audio-param.ts`), but " +
+                "the Web Audio API under them is LabSound's, " +
                 "reached through `bblite/pal_audio.hpp` over an SDL3 " +
                 "device. LabSound is a fork of WebKit's own WebAudio " +
                 "implementation with the copyleft code removed, so the " +

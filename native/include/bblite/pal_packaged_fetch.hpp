@@ -9,12 +9,6 @@
 
 namespace bbl::pal {
 
-struct PackagedFetchEntry {
-    std::string_view key;
-    std::string_view url;
-    std::string_view output;
-};
-
 template <std::size_t Count>
 js::Promise<HttpResponse> fetch_packaged(const std::string& key,
                                          const std::array<PackagedFetchEntry, Count>& entries) {

@@ -5,7 +5,10 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { sharedPinnedContext } from "../src/lowering/context.js";
-import { staticSoundLibraryHeader } from "../src/lowering/static-sound-library.js";
+import {
+    STATIC_SOUND_ROOTS,
+    staticSoundLibraryHeader,
+} from "../src/lowering/static-sound-library.js";
 import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -14,7 +17,10 @@ import {
 } from "./native-fixture.js";
 
 test("the pinned static-sound functions lower whole over the Web Audio records and the engine views", (t) => {
-    const header = staticSoundLibraryHeader(sharedPinnedContext());
+    const header = staticSoundLibraryHeader(
+        sharedPinnedContext(),
+        STATIC_SOUND_ROOTS,
+    );
     // A sound is an engine sound; signals are monomorphized per element.
     assert.match(header, /struct StaticSound : bbl::AudioEngineSound \{/);
     assert.match(header, /struct AudioSignalOfStaticSound\b/);
@@ -63,7 +69,9 @@ void use(std::shared_ptr<bbl::StaticSound> sound) {
 });
 
 test("the pinned format probe runs over its dictionary, the linked decoders and the engine's caches", (t) => {
+    // With the static-sound part, whose sounds probe formats.
     const header = staticSoundLibraryHeader(sharedPinnedContext(), [
+        ...STATIC_SOUND_ROOTS,
         "isAudioFormatValid",
     ]);
     assert.match(header, /bbl::pal::audio_can_play_type\(/);
@@ -115,7 +123,9 @@ int main() {
 });
 
 test("the pinned audio fetch reads packaged responses and rejects a failed status with the pin's message", async (t) => {
+    // With the static-sound part, whose sounds fetch their URLs.
     const header = staticSoundLibraryHeader(sharedPinnedContext(), [
+        ...STATIC_SOUND_ROOTS,
         "loadAudioArrayBuffer",
     ]);
     assert.match(header, /bbl::web_platform::fetch\(/);

@@ -1370,6 +1370,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "AudioContext.createMediaElementSource",
         consumers: CMAKE,
     },
+    "audio:pinned-engine": {
+        provenance:
+            "src/audio/audio-engine.ts createAudioEngineAsync/setMasterVolume/" +
+            "getMasterVolume with the main output and bus, ramped parameters " +
+            "and signals they reach, lowered from the pin over the engine's " +
+            "native handle",
+        consumers: CMAKE,
+    },
     "audio:static-sound": {
         provenance:
             "src/audio/static-sound.ts createSoundAsync/playSound/stopSound/" +
@@ -1392,14 +1400,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/audio/media-stream-output.ts createAudioEngineMediaStream, " +
             "lowered with the static-sound family over the engine's main output",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "audio:spatial-sound": {
         provenance:
             "src/audio/spatial.ts enableSpatial/setSpatialPosition/" +
             "setSpatialListenerPosition with the panner sub-node and " +
             "listener they reach, lowered with the static-sound family",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "audio:panner": {
         provenance:

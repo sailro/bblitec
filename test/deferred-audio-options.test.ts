@@ -5,6 +5,10 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import {
+    audioLibraryInclude,
+    ENGINE_PARAMETER_STUBS,
+} from "./static-sound-fixture.js";
 
 const deferredCapabilities = "runtime-throw" as const;
 
@@ -13,9 +17,9 @@ test("audio option capabilities retain strict refusals and supported defaults", 
     assert.throws(
         () =>
             compileSource(
-                `${imports}void createAudioEngineAsync({volume:0.5});`,
+                `${imports}void createAudioEngineAsync({resumeOnPause:false});`,
             ),
-        /options are not lowered/,
+        /Audio engine option 'resumeOnPause' is not lowered/,
     );
     for (const options of ["", "undefined"]) {
         const source = `${imports}void createAudioEngineAsync(${options});`;
@@ -28,12 +32,12 @@ test("audio option capabilities retain strict refusals and supported defaults", 
     assert.throws(
         () =>
             compileSource(
-                `${imports}void createAudioEngineAsync({volume:0.5});`,
+                `${imports}void createAudioEngineAsync({resumeOnPause:false});`,
                 {
                     deferredCapabilities,
                 },
             ),
-        /options are not lowered: 'volume'/,
+        /Audio engine option 'resumeOnPause' is not lowered/,
     );
     assert.throws(
         () =>
@@ -56,9 +60,9 @@ test("audio engine options adopt a context and refuse other present members once
         import {createAudioEngineAsync,createSoundSourceAsync,type AudioEngineOptions,type SoundSourceOptions} from "@babylonjs/lite";
         async function run():Promise<void>{
             let argumentsRun=0;let accepted=0;let rejected=0;let synchronous=true;
-            function options():AudioEngineOptions {++argumentsRun;return {volume:0.5};}
+            function options():AudioEngineOptions {++argumentsRun;return {volume:0.5,resumeOnInteraction:false};}
             const pending=createAudioEngineAsync(options()).then(()=>{}).catch(error=>{
-                if(synchronous||!error.message.includes("options are not lowered: 'volume'"))throw new Error("timing or identity");
+                if(synchronous||!error.message.includes("option 'resumeOnInteraction' is not lowered"))throw new Error("timing or identity");
                 ++rejected;
             });
             synchronous=false;
@@ -83,7 +87,7 @@ test("audio engine options adopt a context and refuse other present members once
                         }
                     }
                 } catch(error) {
-                    if(!error.message.includes("options are not lowered: 'resumeOnPause'"))throw error;
+                    if(!error.message.includes("option 'resumeOnPause' is not lowered"))throw error;
                     ++rejected;
                 }
             }
@@ -104,6 +108,7 @@ test("audio engine options adopt a context and refuse other present members once
         tools,
         "deferred-audio-options/branches",
         result.cpp +
+            ENGINE_PARAMETER_STUBS +
             `
         namespace bbl::pal {
             AudioSession::~AudioSession() = default;
@@ -118,14 +123,23 @@ test("audio engine options adopt a context and refuse other present members once
             void audio_disconnect(AudioNodeHandle) {}
         }
     `,
-        { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000 },
+        {
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                ...audioLibraryInclude(
+                    "deferred-audio-options/branches",
+                    result.manifest,
+                ),
+            ],
+            timeoutMs: 10000,
+        },
     );
 });
 
 test("missing audio graph operations retain declared results and later authored bodies", () => {
     const result = compileSource(
         `
-        import {createAudioEngineAsync,createSoundBufferAsync,createStreamingSoundAsync,createAudioBusAsync,createMicrophoneSoundSourceAsync,enableStereo,enableAnalyzer,setMasterVolume,getMasterVolume,type StaticSound} from "@babylonjs/lite";
+        import {createAudioEngineAsync,createSoundBufferAsync,createStreamingSoundAsync,createAudioBusAsync,createMicrophoneSoundSourceAsync,enableStereo,enableAnalyzer,type StaticSound} from "@babylonjs/lite";
         async function run(){
             try {
                 const engine=await createAudioEngineAsync();
@@ -138,8 +152,6 @@ test("missing audio graph operations retain declared results and later authored 
                     enableStereo(sound,{pan:0.5});
                     enableAnalyzer(sound);
                 }
-                setMasterVolume(engine,0.5);
-                getMasterVolume(engine);
             }catch(error){if(!error.message.includes("babylon:createSoundBufferAsync"))throw error;}
             globalThis.close();
         }
@@ -147,13 +159,14 @@ test("missing audio graph operations retain declared results and later authored 
     `,
         { deferredCapabilities },
     );
-    assert.equal(result.manifest.deferredCapabilities?.length, 8);
+    assert.equal(result.manifest.deferredCapabilities?.length, 6);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(
         tools,
         "deferred-audio-options/family",
         result.cpp +
+            ENGINE_PARAMETER_STUBS +
             `
         namespace bbl::pal {
             AudioSession::~AudioSession() = default;
@@ -165,6 +178,15 @@ test("missing audio graph operations retain declared results and later authored 
             void audio_connect(AudioNodeHandle,AudioNodeHandle) {}
         }
     `,
-        { flags: ["/DBBLITE_WORKERS=1"], timeoutMs: 10000 },
+        {
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                ...audioLibraryInclude(
+                    "deferred-audio-options/family",
+                    result.manifest,
+                ),
+            ],
+            timeoutMs: 10000,
+        },
     );
 });
