@@ -400,7 +400,8 @@ struct DawnWebGpuDevice : GpuDevice {
             webgpu_refuse("Dawn device limits are unavailable.");
         return {static_cast<double>(limits.maxBufferSize),
                 static_cast<double>(limits.maxStorageBufferBindingSize),
-                static_cast<double>(limits.maxComputeWorkgroupsPerDimension)};
+                static_cast<double>(limits.maxComputeWorkgroupsPerDimension),
+                static_cast<double>(limits.maxColorAttachmentBytesPerSample)};
     }
 
     GpuHandle create_buffer(const GpuBufferDescriptor& descriptor) override {

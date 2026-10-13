@@ -830,9 +830,14 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
         required_limits.maxVertexAttributes = options.max_vertex_attributes;
         needs_limits = true;
     }
+    // The scene's own attachments and the program's requiredLimits both
+    // raise this one; the device takes the larger.
     if (options.max_color_attachment_bytes_per_sample > 0) {
+        const auto requested = required_limits.maxColorAttachmentBytesPerSample;
         required_limits.maxColorAttachmentBytesPerSample =
-            options.max_color_attachment_bytes_per_sample;
+            requested == WGPU_LIMIT_U32_UNDEFINED
+                ? options.max_color_attachment_bytes_per_sample
+                : std::max(requested, options.max_color_attachment_bytes_per_sample);
         needs_limits = true;
     }
     if (needs_limits) {

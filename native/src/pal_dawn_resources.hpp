@@ -197,6 +197,12 @@ inline bool request_dawn_limits(WGPULimits& limits, const GpuSupportedLimits& re
             gpu_u32(static_cast<std::size_t>(required.max_compute_workgroups_per_dimension));
         raised = true;
     }
+    if (required.max_color_attachment_bytes_per_sample >
+        gpu_default_limits.max_color_attachment_bytes_per_sample) {
+        limits.maxColorAttachmentBytesPerSample =
+            gpu_u32(static_cast<std::size_t>(required.max_color_attachment_bytes_per_sample));
+        raised = true;
+    }
     return raised;
 }
 
@@ -206,7 +212,9 @@ inline bool dawn_limits_satisfy(const WGPULimits& limits, const GpuSupportedLimi
            static_cast<double>(limits.maxStorageBufferBindingSize) >=
                required.max_storage_buffer_binding_size &&
            static_cast<double>(limits.maxComputeWorkgroupsPerDimension) >=
-               required.max_compute_workgroups_per_dimension;
+               required.max_compute_workgroups_per_dimension &&
+           static_cast<double>(limits.maxColorAttachmentBytesPerSample) >=
+               required.max_color_attachment_bytes_per_sample;
 }
 
 inline void submit_dawn_command(WGPUQueue queue, WGPUCommandBuffer command) {

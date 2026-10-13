@@ -81,9 +81,10 @@ struct GpuSupportedLimits {
     double max_buffer_size = 0;
     double max_storage_buffer_binding_size = 0;
     double max_compute_workgroups_per_dimension = 0;
+    double max_color_attachment_bytes_per_sample = 0;
 };
 /** WebGPU's default limits: a device requested without `requiredLimits` reports these. */
-inline constexpr GpuSupportedLimits gpu_default_limits{268435456, 134217728, 65535};
+inline constexpr GpuSupportedLimits gpu_default_limits{268435456, 134217728, 65535, 32};
 /**
  * An engine's `requiredLimits` (`EngineOptions::required_limits`) over the
  * defaults, refusing a limit this port does not raise. A value below the
@@ -98,6 +99,8 @@ gpu_required_limits(const std::vector<std::pair<std::string, double>>& required)
                             ? &result.max_storage_buffer_binding_size
                         : name == "maxComputeWorkgroupsPerDimension"
                             ? &result.max_compute_workgroups_per_dimension
+                        : name == "maxColorAttachmentBytesPerSample"
+                            ? &result.max_color_attachment_bytes_per_sample
                             : nullptr;
         if (!limit)
             throw std::runtime_error("requestDevice: required limit '" + name +
