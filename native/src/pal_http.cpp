@@ -273,10 +273,11 @@ void perform_http_transfer(const std::string& url, HttpRequest request, HttpExch
     const ConnectHandle connection{WinHttpConnect(winhttp_session(), host.c_str(), parts.nPort, 0)};
     if (!connection.value)
         transport_failure(GetLastError());
-    // A pending WinHttpReadData writes into `chunk` until its completion or the handle's
+    // A pending WinHttpReadData writes into `buffer` until its completion or the handle's
     // HANDLE_CLOSING; declared before `state`, it outlives the close that a cancel or a
-    // failure performs in ~AsyncRequest.
-    std::vector<std::uint8_t> chunk;
+    // failure performs in ~AsyncRequest. One uninitialized buffer serves every read; each
+    // chunk is an exact-size copy of what a read returned.
+    const std::unique_ptr<std::uint8_t[]> buffer(new std::uint8_t[read_size]);
     AsyncRequest state;
     exchange.set_wake([event = state.canceled] { SetEvent(event->value); });
     // A cancellation before the wake was installed still stops the transfer here.
@@ -329,15 +330,13 @@ void perform_http_transfer(const std::string& url, HttpRequest request, HttpExch
     head.headers = raw_headers(state.handle);
     exchange.deliver_head(std::move(head));
     for (;;) {
-        chunk = std::vector<std::uint8_t>(read_size);
         require(
-            WinHttpReadData(state.handle, chunk.data(), static_cast<DWORD>(chunk.size()), nullptr));
+            WinHttpReadData(state.handle, buffer.get(), static_cast<DWORD>(read_size), nullptr));
         if (!state.wait(WINHTTP_CALLBACK_STATUS_READ_COMPLETE))
             return;
         if (state.bytes == 0)
             break;
-        chunk.resize(state.bytes);
-        if (!exchange.push(std::move(chunk)))
+        if (!exchange.push(std::vector<std::uint8_t>(buffer.get(), buffer.get() + state.bytes)))
             return;
     }
     exchange.finish();
@@ -375,6 +374,28 @@ void perform_http_transfer(const std::string& url, HttpRequest request, HttpExch
         }
     };
     static CurlShare shared;
+    /**
+     * The transfer's own multi handle: `curl_multi_poll` waits on its sockets, and a
+     * cancellation wakes that wait at once (`curl_multi_wakeup`, thread-safe). The exchange's
+     * wake keeps the handle alive past the transfer.
+     */
+    struct CurlMulti {
+        CURLM* value = curl_multi_init();
+        CurlMulti() = default;
+        CurlMulti(const CurlMulti&) = delete;
+        CurlMulti& operator=(const CurlMulti&) = delete;
+        ~CurlMulti() {
+            if (value)
+                curl_multi_cleanup(value);
+        }
+    };
+    const auto multi = std::make_shared<CurlMulti>();
+    if (!multi->value)
+        throw std::runtime_error("HTTP transfer allocation failed.");
+    exchange.set_wake([multi] { curl_multi_wakeup(multi->value); });
+    // A cancellation before the wake was installed still stops the transfer here.
+    if (exchange.canceled())
+        return;
     const std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> client(curl_easy_init(),
                                                                      curl_easy_cleanup);
     if (!client)
@@ -471,15 +492,31 @@ void perform_http_transfer(const std::string& url, HttpRequest request, HttpExch
             return 0;
         });
     option(CURLOPT_WRITEDATA, &transfer);
-    option(CURLOPT_NOPROGRESS, 0L);
-    option(
-        CURLOPT_XFERINFOFUNCTION, +[](void* data, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
-            return static_cast<Transfer*>(data)->exchange.canceled() ? 1 : 0;
-        });
-    option(CURLOPT_XFERINFODATA, &transfer);
-    const auto performed = curl_easy_perform(client.get());
-    if (exchange.canceled())
-        return;
+    if (curl_multi_add_handle(multi->value, client.get()) != CURLM_OK)
+        throw std::runtime_error("HTTP transfer start failed.");
+    /** Removes the easy handle from the multi handle before either is released. */
+    struct Attached {
+        CURLM* multi;
+        CURL* easy;
+        ~Attached() { curl_multi_remove_handle(multi, easy); }
+    } attached{multi->value, client.get()};
+    for (int running = 1;;) {
+        if (curl_multi_perform(multi->value, &running) != CURLM_OK)
+            throw std::runtime_error("HTTP transfer failed.");
+        if (exchange.canceled())
+            return;
+        if (!running)
+            break;
+        if (curl_multi_poll(multi->value, nullptr, 0, 1000, nullptr) != CURLM_OK)
+            throw std::runtime_error("HTTP transfer wait failed.");
+        if (exchange.canceled())
+            return;
+    }
+    CURLcode performed = CURLE_OK;
+    int queued = 0;
+    while (const CURLMsg* message = curl_multi_info_read(multi->value, &queued))
+        if (message->msg == CURLMSG_DONE && message->easy_handle == client.get())
+            performed = message->data.result;
     if (transfer.failure)
         throw std::runtime_error(*transfer.failure);
     if (performed != CURLE_OK)

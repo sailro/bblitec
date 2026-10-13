@@ -75,7 +75,7 @@ import {
 import { nativeHostUiElements } from "../native-host-ui.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
-import { documentEngine } from "./window-events.js";
+import { documentEngine, linkNavigationCpp } from "./window-events.js";
 import {
     elementDomHandlerFamily,
     emitDomEventHandler,
@@ -266,6 +266,17 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
             ],
         ),
     ]);
+
+/** A link's `target` names this browsing context: absent, empty, `_self`, `_parent` or `_top`. */
+function linksThisContext(
+    attributes: Readonly<Record<string, string>>,
+): boolean {
+    const target = attributes.target?.toLowerCase();
+    return (
+        target === undefined ||
+        ["", "_self", "_parent", "_top"].includes(target)
+    );
+}
 
 export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
@@ -4711,9 +4722,8 @@ export class UiProjection {
         if (element.uiTag !== "a") return undefined;
         if (name === "href") {
             const url = this.context.compileValue(value);
-            // A document URL is the link's `href` attribute: the native UI
-            // draws the link and does not navigate when it is activated
-            // (docs/ui.md); a download and a programmatic click refuse it.
+            // A document URL is the link's `href` attribute; activating the
+            // link navigates as `location.assign` does (docs/ui.md).
             if (
                 url.kind === "string" ||
                 (url.kind === "data" && url.dataType?.kind === "string")
@@ -4724,7 +4734,7 @@ export class UiProjection {
                         "A native download anchor's href requires an object URL.",
                     );
                 writable(element).uiLinkHref = true;
-                return `bbl::ui_set_attribute(${engine}, ${element.cpp}, "href", ${url.cpp})`;
+                return `(${linkNavigationCpp(this.context, engine, site)}, bbl::ui_set_attribute(${engine}, ${element.cpp}, "href", ${url.cpp}))`;
             }
             if (element.uiLinkHref)
                 this.context.fail(
@@ -5789,6 +5799,7 @@ export class UiProjection {
                 );
         }
 
+        let linkNavigation = false;
         const appendElement = (element: NativeHostUiNode, parent?: string) => {
             if (element.tag === undefined) {
                 emitted.push(
@@ -5833,6 +5844,17 @@ export class UiProjection {
                 const value = this.lowerUiAttributeLiteral(name, sourceValue);
                 if (element.tag === "img" && name === "src")
                     this.registerImageSource(value);
+                if (
+                    normalizedTag === "a" &&
+                    name === "href" &&
+                    linksThisContext(element.attributes ?? {}) &&
+                    !linkNavigation
+                ) {
+                    linkNavigation = true;
+                    emitted.push(
+                        `${indent}${linkNavigationCpp(this.context, engine, this.context.sourceFile)};`,
+                    );
+                }
                 emitted.push(
                     `${indent}bbl::ui_set_attribute(${engine}, ${handle}, ` +
                         `${this.context.cppString(name)}, ${this.context.cppString(value)});`,

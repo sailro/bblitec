@@ -568,7 +568,7 @@ inline void click_download_anchor(Engine& engine, UiElementHandle handle) {
         const UiElementRecord& element = browser_file_ui_element(engine, handle);
         if (element.tag != "a" || element.download_name.empty()) {
             throw std::runtime_error(
-                "Native anchor navigation is unsupported; download requires an object URL and suggested name.");
+                "A native download anchor requires an object URL and a suggested name.");
         }
         url = element.download_url;
         download_name = element.download_name;

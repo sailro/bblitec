@@ -1690,8 +1690,43 @@ bool ui_activation_disabled(const UiElementRecord& record) {
 } // namespace
 
 namespace {
+/** A link: an anchor with a string href (a download anchor's object URL is no attribute). */
+bool ui_is_link(const UiElementRecord& record) {
+    return record.tag == "a" && record.attributes.contains("href");
+}
+
+/** The link's `target` names this browsing context, the native host's only one. */
+bool ui_link_targets_this_context(const UiElementRecord& record) {
+    const auto target = record.attributes.find("target");
+    if (target == record.attributes.end())
+        return true;
+    const std::string name = js::string_lower(target->second);
+    return name.empty() || name == "_self" || name == "_parent" || name == "_top";
+}
+
+/**
+ * A link's default action: `location.assign(href)` through the program's link navigation. A link
+ * opening another browsing context is inert: the native host has one.
+ */
+void activate_ui_link(const UiElementRecord& record, void (*navigate)(const std::string& url)) {
+    if (!ui_link_targets_this_context(record))
+        return;
+    if (!navigate)
+        throw std::logic_error(
+            "A link was activated in a program compiled without link navigation.");
+    // Navigation runs application code that may grow the element arena: pass a copy.
+    const std::string href = record.attributes.at("href");
+    navigate(href);
+}
+
+/** A link this browsing context activates: clicks reach it as they reach a listener. */
+bool ui_activates_link(const UiElementRecord& record) {
+    return ui_is_link(record) && ui_link_targets_this_context(record);
+}
+
 bool ui_needs_click_listener(const Engine& engine, const UiElementRecord& record) {
     return record.tag == "summary" || !record.click_callbacks.empty() ||
+           ui_activates_link(record) ||
            (engine.dom_input && engine.dom_input->event_types.contains("click"));
 }
 
@@ -1725,10 +1760,14 @@ bool dispatch_ui_click(Engine& engine, UiElementHandle element, bool trusted, bo
                                      !ui_has_attribute(engine, parent, "open"));
         }
     }
-#if BBLITE_HAS_BROWSER_FILE
     // Default actions carry the stable handle because opening a dialog can
     // synchronously release pointer lock and run callbacks that grow this arena.
     const std::string tag = ui_element(engine, element).tag;
+    if (tag == "a" && ui_is_link(ui_element(engine, element))) {
+        activate_ui_link(ui_element(engine, element), engine.ui_link_navigation);
+        return true;
+    }
+#if BBLITE_HAS_BROWSER_FILE
     if (tag == "a") {
         js::click_download_anchor(engine, element);
     } else if (tag == "input") {
@@ -1741,6 +1780,10 @@ bool dispatch_ui_click(Engine& engine, UiElementHandle element, bool trusted, bo
 
 void ui_click(Engine& engine, UiElementHandle element, bool trusted) {
     static_cast<void>(dispatch_ui_click(engine, element, trusted, true));
+}
+
+void ui_set_link_navigation(Engine& engine, void (*navigate)(const std::string& url)) {
+    engine.ui_link_navigation = navigate;
 }
 
 namespace {
@@ -5061,6 +5104,7 @@ struct UiRmlRuntime {
             source_declares_pointer_events;
         if (!has_pointer_events &&
             (!record.click_callbacks.empty() || !record.event_callbacks.empty() ||
+             ui_activates_link(record) ||
              (engine.dom_input && engine.dom_input->pointer_elements.contains(handle.value)))) {
             append("pointer-events:auto;");
         }

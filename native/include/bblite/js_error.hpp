@@ -52,6 +52,12 @@ public:
     return error;
 }
 
+/** A DOMException as an Error value: what platform operations reject and abort with. */
+[[nodiscard]] inline std::exception_ptr dom_exception_error(std::string message,
+                                                            std::string name = "Error") {
+    return std::make_exception_ptr(make_dom_exception(std::move(message), std::move(name)));
+}
+
 /** Whether `error` is a DOMException, which only the DOMException constructor and platform
  * operations create. */
 [[nodiscard]] inline bool is_dom_exception(const std::exception_ptr& error) {

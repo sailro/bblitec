@@ -125,7 +125,10 @@ test("fetch streams bodies, reads headers, honours abort and reuses connections"
             const head = await slowReader.read();
             if (head.done || head.value.byteLength !== 10) throw new Error("slow head");
             const next = slowReader.read();
+            // Abort cancels the transfer without waiting for its thread.
+            const aborting = Date.now();
             middle.abort(new RangeError("stop"));
+            if (Date.now() - aborting > 100) throw new Error("abort waited for the transport");
             let abortedRead = false;
             try { await next; } catch (error) { abortedRead = error instanceof RangeError && error.message === "stop"; }
             if (!abortedRead) throw new Error("abort mid-stream");

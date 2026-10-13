@@ -147,6 +147,8 @@ void ui_remove(Engine& engine, UiElementHandle element);
 void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> callback);
 /** Programmatic HTMLElement.click(), including reached default actions. */
 void ui_click(Engine& engine, UiElementHandle element, bool trusted = false);
+/** A link's default action: the realm's `location.assign` of its href. */
+void ui_set_link_navigation(Engine& engine, void (*navigate)(const std::string& url));
 void ui_focus(Engine& engine, UiElementHandle element, bool visible = true);
 /** HTMLElement.blur(): unfocuses the element only while it is the focused element. */
 void ui_blur(Engine& engine, UiElementHandle element);

@@ -1046,13 +1046,8 @@ if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQ
     if(BBLITE_NATIVE_CACHE_ACTIVE)
         target_compile_options(bblite_core INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
     endif()
-    # Clang on the Microsoft C++ ABI records a thrown class's copy constructor
-    # (its CatchableType's copy function) only in the unit whose Sema checked
-    # the throw or std::make_exception_ptr; a precompiled header does not carry
-    # that record, so a unit reading one copies every exception a C++ header of
-    # the PCH throws bitwise (std::current_exception, make_exception_ptr,
-    # rethrow_exception), double-freeing its members. That PCH holds C headers
-    # only (test/pch-exception-copies.test.ts).
+    # clang-cl's PCH holds C headers only: test/pch-exception-copies.test.ts
+    # owns why.
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
         set(BBLITE_PCH_HEADERS <SDL3/SDL.h>)
     else()
