@@ -1225,6 +1225,10 @@ enum class RenderTextureSource {
     /** A geometry task's own depth attachment, aliased by the pin's eager
      *  wrapper target: a later pass binds and loads it rather than owning it. */
     geometry_depth,
+    /** A render task's transmission grab of its opaque colour (`enableRenderTaskTransmission`). */
+    transmission_color,
+    /** The same grab's single-sample `r32float` depth snapshot (`grabDepth`). */
+    transmission_depth,
 };
 
 struct RenderTextureRef {
@@ -1234,6 +1238,23 @@ struct RenderTextureRef {
     GeometryTextureType geometry_type = GeometryTextureType::irradiance;
     /** Explicit depth facade of a color/depth render target. */
     bool depth_only = false;
+};
+
+/** `enableRenderTaskTransmission`'s raw-mode settings, stored on the render task. */
+struct RenderTaskTransmission {
+    /** The pin's square grab extent (`createRenderTaskTransmission`). */
+    std::uint32_t grab_size = 0;
+    /** Each option the pin's `applyTransmissionOptions` sets only when given. */
+    std::optional<double> copy_count;
+    std::optional<bool> generate_mipmaps;
+    std::optional<double> mip_level_count;
+    std::optional<bool> grab_depth;
+};
+
+/** A render task's `SceneColorGrab`: its texture reads resolve live. */
+struct TransmissionGrab {
+    TaskHandle task{};
+    [[nodiscard]] bool operator==(const TransmissionGrab&) const = default;
 };
 
 struct RenderTaskOptions {
@@ -1703,6 +1724,7 @@ struct FrameTaskRecord {
     std::vector<RenderTaskMesh> render_meshes;
     bool render_mesh_refresh = false;
     bool render_recorded = false;
+    std::optional<RenderTaskTransmission> transmission;
     bool render_meshes_dirty = false;
     /** A backend built this task's draw lists once: the recorded generation is drawn. */
     bool render_generation_built = false;
@@ -3278,6 +3300,8 @@ struct MaterialRecord {
     std::vector<FileTexture> shader_textures;
     /** Shader slots a render target fills, resolved where each draw binds them. */
     std::vector<std::optional<RenderTextureRef>> shader_render_textures;
+    /** A shader material's `transmissive` option: its draws wait for a transmission grab. */
+    bool shader_transmissive = false;
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;
     // The pin's 2D reflection slot: the non-cube arm of the same
@@ -3291,6 +3315,9 @@ struct MaterialRecord {
     // 2 only for coordinatesMode === 2 (planar), load-babylon.ts.
     float reflection_coord_mode = 1.0f;
 };
+
+/** createShaderMaterial's `transmissive: true`. */
+inline MaterialHandle mark_shader_material_transmissive(Engine& engine, MaterialHandle material);
 
 inline std::uint32_t material_family_bit(const MaterialRecord& record) {
     if (record.shader_material)
@@ -4802,14 +4829,23 @@ inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget targe
 
 /** Preserve the Texture2D identity when a render-target facade enters plain data. */
 inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef reference) {
-    if (reference.source != RenderTextureSource::render_target)
+    const bool transmission = reference.source == RenderTextureSource::transmission_color ||
+                              reference.source == RenderTextureSource::transmission_depth;
+    if (reference.source != RenderTextureSource::render_target && !transmission)
         throw std::runtime_error("Stored render textures require a render-target owner.");
+    if (transmission) {
+        const auto& task = handle_at(engine.frame_tasks, reference.task);
+        if (!task.transmission)
+            throw std::runtime_error("A transmission texture names a task without transmission.");
+        reference.target = task.render.target;
+    }
     const auto& target = handle_at(engine.render_targets, reference.target);
-    if (!target.has_color)
+    if (!transmission && !target.has_color)
         reference.depth_only = true;
     for (const auto& facade : engine.render_texture_facades) {
         const auto& previous = facade.data.render_source->reference;
-        if (previous.target.value == reference.target.value &&
+        if (previous.source == reference.source && previous.task.value == reference.task.value &&
+            previous.target.value == reference.target.value &&
             previous.depth_only == reference.depth_only)
             return facade;
     }
@@ -4817,11 +4853,76 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
     facade.identity = engine.next_file_texture_identity++;
     facade.width = target.width;
     facade.height = target.height;
-    facade.data.uv_invert_y = target.has_color && !reference.depth_only;
+    if (reference.source == RenderTextureSource::transmission_color) {
+        // createRenderTaskTransmission's square grab, sampled without a Y flip.
+        const auto size = handle_at(engine.frame_tasks, reference.task).transmission->grab_size;
+        facade.width = size;
+        facade.height = size;
+    }
+    facade.data.uv_invert_y = !transmission && target.has_color && !reference.depth_only;
     facade.data.render_source = std::make_shared<RenderTextureData>(
         RenderTextureData{&engine, engine.lifetime.token(), reference, target.lifecycle});
     engine.render_texture_facades.push_back(facade);
     return facade;
+}
+
+/** `enableRenderTaskTransmission`: the settings a later call merges, as the pin's `applyTransmissionOptions`. */
+inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHandle task,
+                                                        RenderTaskTransmission options) {
+    auto& record = handle_at(engine.frame_tasks, task);
+    if (record.kind != FrameTaskKind::render)
+        throw std::runtime_error("enableRenderTaskTransmission requires a render task.");
+    if (!record.transmission) {
+        record.transmission = options;
+    } else {
+        auto& merged = *record.transmission;
+        if (options.copy_count)
+            merged.copy_count = options.copy_count;
+        if (options.generate_mipmaps)
+            merged.generate_mipmaps = options.generate_mipmaps;
+        if (options.mip_level_count)
+            merged.mip_level_count = options.mip_level_count;
+        if (options.grab_depth)
+            merged.grab_depth = options.grab_depth;
+    }
+    // grabDepth samples the task's depth attachment at the pass break.
+    if (record.transmission->grab_depth.value_or(false) &&
+        record.render.target.value != invalid_handle) {
+        auto& target = handle_at(engine.render_targets, record.render.target);
+        if (target.has_depth && !target.sampled_depth) {
+            if (record.render_recorded)
+                throw std::runtime_error(
+                    "enableRenderTaskTransmission's grabDepth must precede the task's recording.");
+            target.sampled_depth = true;
+        }
+    }
+    return TransmissionGrab{task};
+}
+
+/** `SceneColorGrab.texture`: null until the task's frame graph built it (registration). */
+inline js::Nullable<StoredTexture> transmission_grab_texture(Engine& engine,
+                                                             const TransmissionGrab& grab) {
+    const auto& record = handle_at(engine.frame_tasks, grab.task);
+    if (!record.render_recorded)
+        return {};
+    RenderTextureRef reference;
+    reference.source = RenderTextureSource::transmission_color;
+    reference.task = grab.task;
+    return StoredTexture{retained_render_texture(engine, reference)};
+}
+
+/** `SceneColorGrab.depthTexture`: null as well when `grabDepth` is off or the target has no depth. */
+inline js::Nullable<StoredTexture> transmission_grab_depth_texture(Engine& engine,
+                                                                   const TransmissionGrab& grab) {
+    const auto& record = handle_at(engine.frame_tasks, grab.task);
+    if (!record.render_recorded || !record.transmission ||
+        !record.transmission->grab_depth.value_or(false) ||
+        !handle_at(engine.render_targets, record.render.target).has_depth)
+        return {};
+    RenderTextureRef reference;
+    reference.source = RenderTextureSource::transmission_depth;
+    reference.task = grab.task;
+    return StoredTexture{retained_render_texture(engine, reference)};
 }
 
 /** A `loadTexture2D` record before its image is read: sampler, upload flags and identity. */
@@ -5437,6 +5538,11 @@ inline void install_surface_resize(Engine& engine, void (*resize_surface)(Engine
 inline void resize_engine(Engine& engine) {
     if (engine.resize_surface)
         engine.resize_surface(engine);
+}
+
+inline MaterialHandle mark_shader_material_transmissive(Engine& engine, MaterialHandle material) {
+    handle_at(engine.materials, material).shader_transmissive = true;
+    return material;
 }
 
 /** A tracked color element write marks the source UBO dirty; the next draw reads the array. */

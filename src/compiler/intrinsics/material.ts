@@ -1038,7 +1038,12 @@ function compileCreateShaderMaterial(
     ) {
         context.reachFeature("material:shader-external-texture", call);
     }
-    const creation = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
+    const created = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
+    // The pin's `transmissive` option marks the renderables it builds, which a
+    // transmission grab then waits for.
+    const creation = variant.transmissive
+        ? `bbl::mark_shader_material_transmissive(${engine}, ${created})`
+        : created;
     let materialCpp = runtimeProfile
         ? creation
         : `bbl::remember_scene_material(${engine}, ${materialSlot}u, ${creation})`;

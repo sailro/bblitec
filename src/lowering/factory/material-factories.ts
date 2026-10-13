@@ -556,6 +556,11 @@ void set_shader_texture(
     MaterialHandle material,
     std::uint32_t slot,
     FileTexture texture) {
+    // A stored render texture keeps its target: the slot binds it per draw.
+    if (texture.data.render_source) {
+        set_shader_render_texture(engine, material, slot, texture.data.render_source->reference);
+        return;
+    }
     MaterialRecord& record = shader_material(engine, material);
     if (record.shader_textures.size() <= slot) {
         record.shader_textures.resize(slot + 1);
@@ -574,7 +579,9 @@ void set_shader_render_texture(
     std::uint32_t slot,
     RenderTextureRef texture) {
     MaterialRecord& record = shader_material(engine, material);
-    if (texture.source != RenderTextureSource::render_target || texture.depth_only)
+    const bool transmission = texture.source == RenderTextureSource::transmission_color ||
+                              texture.source == RenderTextureSource::transmission_depth;
+    if ((texture.source != RenderTextureSource::render_target && !transmission) || texture.depth_only)
         throw std::runtime_error("setShaderTexture samples a render target's colour texture.");
     if (record.shader_textures.size() <= slot) {
         record.shader_textures.resize(slot + 1);

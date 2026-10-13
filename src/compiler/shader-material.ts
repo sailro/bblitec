@@ -106,6 +106,8 @@ export function compileShaderMaterialOptions(
 ): {
     name: string;
     id: number;
+    /** `transmissive`: the renderable that triggers a transmission grab. */
+    transmissive: boolean;
     dynamicUniforms?: Array<{
         offset: number;
         components: string[];
@@ -131,8 +133,9 @@ export function compileShaderMaterialOptions(
             "backFaceCulling",
             "depthWrite",
             "depthCompare",
+            "transmissive",
         ],
-        "Reached shader materials support source, attributes, uniforms, samplers, external textures, storage buffers, defines, alpha state and blend mode, culling, depthWrite and depthCompare only.",
+        "Reached shader materials support source, attributes, uniforms, samplers, external textures, storage buffers, defines, alpha state and blend mode, culling, depthWrite, depthCompare and transmissive only.",
     );
 
     const vertexExpression = context.objectProperty(object, "vertexSource");
@@ -351,8 +354,14 @@ export function compileShaderMaterialOptions(
     }
     const reached = reachShaderProgram(context, sceneProgram);
     const valueLayout = shaderUniformValueLayout(uniforms);
+    const transmissive = compileOptionalStaticBoolean(
+        context,
+        context.objectProperty(object, "transmissive"),
+        false,
+    );
     return {
         ...reached,
+        transmissive,
         ...(dynamicInitializers.length > 0
             ? {
                   dynamicUniforms: dynamicInitializers.map(

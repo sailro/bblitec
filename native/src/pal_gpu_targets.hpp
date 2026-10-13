@@ -7,6 +7,7 @@
 #include <bblite/features/has_screen_space.hpp>
 #include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -18,6 +19,9 @@
 #include <string_view>
 #include <vector>
 #include <bblite/upstream/pinned_texture.hpp>
+#if BBLITE_RENDER_TASK_TRANSMISSION
+#include <bblite/upstream/pinned_task_transmission.hpp>
+#endif
 #if BBLITE_HAS_SCREEN_SPACE
 #include <bblite/upstream/frame_graph_screen_space.hpp>
 #include <bblite/upstream/screen_space_shaders.hpp>
@@ -127,8 +131,50 @@ inline std::uint32_t transmission_grab_mip_count() {
  */
 inline bool transmissive_draw_material(const MaterialRecord* material) {
     return material != nullptr &&
-           (material->transmission_factor > 0.0f || !material->transmission_texture.bytes.empty());
+           (material->transmission_factor > 0.0f || !material->transmission_texture.bytes.empty() ||
+            material->shader_transmissive);
 }
+
+#if BBLITE_RENDER_TASK_TRANSMISSION
+/** A render task's grab mip chain: `transmissionMipLevelCount` over its stored options. */
+inline std::uint32_t task_transmission_mip_count(const RenderTaskTransmission& settings) {
+    return static_cast<std::uint32_t>(upstream::task_transmission_mip_level_count(
+        settings.grab_size, settings.grab_size, settings.generate_mipmaps,
+        settings.mip_level_count));
+}
+
+/**
+ * `executePassWithTransmission`'s per-execution latch: a task grabs before
+ * its first `copyCount` transmissive transparent draws, or before every one
+ * when the count normalizes to zero (`canUpdateTransmission`).
+ */
+struct TaskTransmissionCopies {
+    std::uint32_t limit = 1;
+    std::uint32_t copies = 0;
+    explicit TaskTransmissionCopies(const RenderTaskTransmission& settings)
+        : limit(static_cast<std::uint32_t>(
+              upstream::task_transmission_copy_count(settings.copy_count))) {}
+    [[nodiscard]] bool can_update() const { return limit == 0 || copies < limit; }
+};
+
+/**
+ * The grab settings a render task's colour pass splits for, or null for a
+ * task without one. The pin's multisampled arms (the averaging blit and the
+ * sample-0 depth resolve) are not lowered, and a swapchain colour cannot be
+ * sampled.
+ */
+inline const RenderTaskTransmission* task_transmission(const FrameTaskRecord& task,
+                                                       bool multisampled, bool swapchain) {
+    if (!task.transmission)
+        return nullptr;
+    if (multisampled)
+        throw std::runtime_error(
+            "Render-task transmission of a multisampled target is not lowered.");
+    if (swapchain)
+        throw std::runtime_error("Render-task transmission cannot grab the swapchain target.");
+    return &*task.transmission;
+}
+#endif
 
 /**
  * The pixels a target scaled from another occupies, by the pin's own rule:

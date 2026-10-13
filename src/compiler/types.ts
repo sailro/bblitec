@@ -1590,6 +1590,8 @@ export type ValueKind =
     | "render-target"
     | "render-target-texture"
     | "render-texture"
+    /** `enableRenderTaskTransmission`'s `SceneColorGrab`, held as its render task. */
+    | "transmission-grab"
     | "record"
     | "scene"
     | "surface"
@@ -3236,6 +3238,7 @@ export type Feature =
     | "frame-graph:target-disposal"
     | "frame-graph:task-mesh-removal"
     | "frame-graph:task-mesh-refresh"
+    | "frame-graph:render-task-transmission"
     | "frame-graph:task-material-override"
     | "frame-graph:task-build"
     | "frame-graph:task-disposal"

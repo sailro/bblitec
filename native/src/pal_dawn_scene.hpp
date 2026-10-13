@@ -7,6 +7,7 @@
 
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
 #include <bblite/features/has_effect_task.hpp>
@@ -893,6 +894,28 @@ struct DawnState : DawnDevice {
     // loads its texels and binds none.
     WGPUSampler transmission_grab_sampler = nullptr;
     WGPURenderPipeline transmission_grab_pipeline = nullptr;
+#if BBLITE_RENDER_TASK_TRANSMISSION
+    /** Each render task's own grab (`enableRenderTaskTransmission`), by task handle. */
+    struct TaskTransmission {
+        DawnTexture color;
+        DawnTextureView color_view;
+        /** Mip 0, which the grab renders into before the chain is built. */
+        DawnTextureView level_view;
+        std::uint32_t mip_count = 0;
+        /** The `grabDepth` snapshot, sized to the target it was taken from. */
+        DawnTexture depth;
+        DawnTextureView depth_view;
+        std::uint32_t depth_width = 0;
+        std::uint32_t depth_height = 0;
+    };
+    std::vector<TaskTransmission> task_transmissions;
+    /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
+    DawnRenderPipeline task_grab_pipeline;
+    DawnRenderPipeline task_depth_grab_pipeline;
+    /** The blit's bilinear source sampler and the grab's `getTrilinearAnisotropicSampler`. */
+    DawnSampler task_blit_sampler;
+    DawnSampler task_grab_sampler;
+#endif
     WGPUShaderModule image_processing_module = nullptr;
     WGPURenderPipeline image_processing_pipeline = nullptr;
     WGPUBuffer image_processing_params = nullptr;
@@ -3030,6 +3053,23 @@ WGPURenderPipeline depth_only_pipeline_for(DawnState& state, bool double_sided,
 // Encodes the pinned mid-pass scene-color grab: the fullscreen blit into
 // transmission mip 0 followed by the standard blit mip chain.
 void encode_transmission_grab(DawnState& state, WGPUCommandEncoder encoder);
+
+#if BBLITE_RENDER_TASK_TRANSMISSION
+/** Create or resize a render task's grab textures for its target, before its pass or a bind. */
+DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const Engine& engine,
+                                                       TaskHandle task);
+/**
+ * `updateTransmissionTexture` at a pass break: blit the target's colour into
+ * the grab's top level, build its mip chain when it has one, and snapshot the
+ * depth attachment when `grabDepth` asked for it.
+ */
+void encode_task_transmission_grab(DawnState& state, const Engine& engine,
+                                   WGPUCommandEncoder encoder, TaskHandle task);
+/** A material slot's view and sampler of a task grab's colour or depth. */
+std::pair<WGPUTextureView, WGPUSampler>
+task_transmission_binding(DawnState& state, const Engine& engine,
+                          const RenderTextureRef& reference);
+#endif
 
 // The pinned final pass: per-sample image processing of the linear
 // multisampled frame straight into the surface.

@@ -12,6 +12,7 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_dawn_scene.hpp"
@@ -181,8 +182,22 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     // A render target's slot binds the target's current view: a rebuilt target
     // rebuilds the groups that named the old one.
     std::vector<WGPUTextureView> render_views(material.shader_render_textures.size(), nullptr);
+    std::vector<WGPUSampler> render_samplers(render_views.size(), nullptr);
     for (std::size_t slot = 0; slot < render_views.size(); ++slot) {
         if (const auto& reference = material.shader_render_textures[slot]) {
+#if BBLITE_RENDER_TASK_TRANSMISSION
+            if (reference->source == RenderTextureSource::transmission_color ||
+                reference->source == RenderTextureSource::transmission_depth) {
+                const auto [view, sampler] = task_transmission_binding(state, engine, *reference);
+                // A slot declared unfilterable takes a non-filtering sampler.
+                const bool unfilterable = slot < info.sampler_shapes.size() &&
+                                          info.sampler_shapes[slot].sample_type ==
+                                              upstream::ShaderSamplerSampleType::unfilterable_float;
+                render_views[slot] = view;
+                render_samplers[slot] = unfilterable ? state.nearest_sampler : sampler;
+                continue;
+            }
+#endif
             if (reference->source != RenderTextureSource::render_target || reference->depth_only)
                 throw std::runtime_error("A shader slot samples a render target's colour.");
             render_views[slot] =
@@ -287,7 +302,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
 #endif
         if (slot < render_views.size() && render_views[slot]) {
             view = render_views[slot];
-            sampler = state.ground_sampler;
+            sampler = render_samplers[slot] ? render_samplers[slot] : state.ground_sampler;
         } else {
             if (slot >= textures.size()) {
                 dawn_error(shader_sampler_shortfall(info, textures.size()));

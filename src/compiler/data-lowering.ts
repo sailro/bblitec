@@ -4695,10 +4695,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                           fallbackLines,
                       )
                     : undefined;
+            // A Texture2D has several native storages; a stored texture's
+            // fallback is stored the same way, whichever factory made it.
+            const storedTexture =
+                left.dataType?.kind === "handle" &&
+                left.dataType.handle === "texture"
+                    ? left.dataType
+                    : undefined;
             return valueForKind(left.kind, {
                 cpp: pair
                     ? `${pair.name}.first`
-                    : `(${leftFound} ? ${left.cpp} : ${fallbackArm(left.dataType, () => fallback.cpp)})`,
+                    : `(${leftFound} ? ${left.cpp} : ${fallbackArm(
+                          left.dataType,
+                          () =>
+                              storedTexture
+                                  ? this.compileKnownValueForSink(
+                                        fallback,
+                                        storedTexture,
+                                        expression.right,
+                                    )
+                                  : fallback.cpp,
+                      )})`,
                 ...(pair
                     ? { nativeBinding: true, nativeCaptures: [pair.binding] }
                     : {}),

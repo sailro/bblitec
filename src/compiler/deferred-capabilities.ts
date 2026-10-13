@@ -66,7 +66,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "createAudioVisualizer",
         "setMasterVolume",
         "getMasterVolume",
-        "enableRenderTaskTransmission",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "throw" })),
 ];
 

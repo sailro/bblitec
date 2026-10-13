@@ -2,6 +2,7 @@
 #include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/refreshed_task_overrides.hpp>
 #include <bblite/features/render_target_disposal.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The SDL_GPU scene renderer's driver: the pass helpers, the state's
 // release and the frame run. The feature families it draws through are
@@ -137,6 +138,9 @@ void release(GpuState& state) {
     state.ui_readable_surface.release(state.device);
 #endif
     release_frame_graph_textures(state);
+#if BBLITE_RENDER_TASK_TRANSMISSION
+    release_task_transmissions(state);
+#endif
 #if BBLITE_HAS_SCREEN_SPACE
     // The screen-space programs key only the generated stage table's
     // formats, so they outlive every frame-graph rebuild and go with the
@@ -2389,8 +2393,21 @@ public:
                                                     {}
 #endif
                                                 ,
-                                                std::optional<ShaderTaskTarget> shader_target =
-                                                    {}) {
+                                                std::optional<ShaderTaskTarget> shader_target = {}
+#if BBLITE_RENDER_TASK_TRANSMISSION
+                                                ,
+                                                // A transmission task's pass break: the
+                                                // resumed pass, or null to keep drawing.
+                                                const std::function<SDL_GPURenderPass*(
+                                                    const MaterialRecord*)>* transmission_split =
+                                                    nullptr
+#endif
+                                            ) {
+#if BBLITE_RENDER_TASK_TRANSMISSION && BBLITE_HAS_BILLBOARDS
+                        if (transmission_split && draw_scene_billboard_stages)
+                            throw std::runtime_error(
+                                "Render-task transmission with billboard scene stages is not lowered.");
+#endif
                         update_material_bindings(draw_context, engine, draw_lists.opaque,
                                                  draw_pass_matrices, draw_meshes,
                                                  bind_thin_buffers);
@@ -2781,6 +2798,22 @@ public:
                                     draw_list(BorrowedDrawList{
                                         draw_lists.transparent.commands[item.index]});
                                 }
+                            }
+                        } else
+#endif
+#if BBLITE_RENDER_TASK_TRANSMISSION
+                            if (transmission_split) {
+                            // executePassWithTransmission: the transparent list
+                            // breaks the pass before each transmissive draw the
+                            // copy latch still allows, then resumes with load.
+                            for (const upstream::RenderDrawCommand& draw :
+                                 draw_lists.transparent.commands) {
+                                if (SDL_GPURenderPass* resumed = (*transmission_split)(
+                                        handle_find(engine.materials, draw.item.material))) {
+                                    task_pass = resumed;
+                                    bound_pipeline = nullptr;
+                                }
+                                draw_list(BorrowedDrawList{draw});
                             }
                         } else
 #endif
@@ -3189,6 +3222,11 @@ public:
 #if BBLITE_HAS_TAA
                             // The temporal source's pass is encoded after its
                             // post-process writes, outside this task.
+#if BBLITE_RENDER_TASK_TRANSMISSION
+                            if (task.transmission)
+                                throw std::runtime_error(
+                                    "Render-task transmission with temporal anti-aliasing is not lowered.");
+#endif
                             timing_sequence.refuse("temporal anti-aliasing sources");
                             PreparedSdlScenePass prepared;
                             prepared.target = target_info;
@@ -3225,6 +3263,37 @@ public:
                                                                            task_depth_pointer)};
                             set_task_camera_viewport(task_pass, task_camera, target.width,
                                                      target.height);
+#if BBLITE_RENDER_TASK_TRANSMISSION
+                            // The task's grab latch (`_copies`), reset per execution.
+                            std::optional<TaskTransmissionCopies> transmission_copies;
+                            if (const RenderTaskTransmission* settings =
+                                    task_transmission(task,
+                                                      target_sample_count(state, target_record) !=
+                                                          SDL_GPU_SAMPLECOUNT_1,
+                                                      target_record.swapchain))
+                                transmission_copies.emplace(*settings);
+                            const std::function<SDL_GPURenderPass*(const MaterialRecord*)>
+                                transmission_split =
+                                    [&](const MaterialRecord* material) -> SDL_GPURenderPass* {
+                                if (!transmissive_draw_material(material) ||
+                                    !transmission_copies->can_update())
+                                    return nullptr;
+                                task_pass.end();
+                                encode_task_transmission_grab(state, engine, command, handle);
+                                ++transmission_copies->copies;
+                                // The resumed segment loads what the first stored.
+                                target_info.load_op = SDL_GPU_LOADOP_LOAD;
+                                if (task_depth_pointer) {
+                                    task_depth.load_op = SDL_GPU_LOADOP_LOAD;
+                                    task_depth.stencil_load_op = SDL_GPU_LOADOP_LOAD;
+                                }
+                                task_pass = SDL_BeginGPURenderPass(command, &target_info, 1,
+                                                                   task_depth_pointer);
+                                set_task_camera_viewport(task_pass, task_camera, target.width,
+                                                         target.height);
+                                return task_pass;
+                            };
+#endif
                             upstream::sort_transparent_draws(
                                 handle_at(task_draw_lists, handle).transparent, engine,
                                 task_camera);
@@ -3261,7 +3330,12 @@ public:
                                                             ? state.depth_format
                                                             : target.depth_format)
                                                      : SDL_GPU_TEXTUREFORMAT_INVALID,
-                                                 target_sample_count(state, target_record)});
+                                                 target_sample_count(state, target_record)}
+#if BBLITE_RENDER_TASK_TRANSMISSION
+                                ,
+                                transmission_copies ? &transmission_split : nullptr
+#endif
+                            );
                             if (task.render.scene_stages) {
 #if BBLITE_HAS_TEXT
                                 // The scene's text, bound for this pass's

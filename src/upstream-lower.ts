@@ -128,7 +128,10 @@ import {
 import { csmStaticCacheHeader } from "./lowering/csm-static-cache.js";
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
 import { pinnedWorldTransformHeader } from "./lowering/pinned-world-transform.js";
-import { pinnedTextureHeader } from "./lowering/pinned-texture.js";
+import {
+    pinnedTaskTransmissionHeader,
+    pinnedTextureHeader,
+} from "./lowering/pinned-texture.js";
 import { pinnedRgbdHeader } from "./lowering/pinned-rgbd.js";
 import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
@@ -345,6 +348,7 @@ import type {
 import { blitVertexWgsl } from "./shader-builtins-utility.js";
 import {
     pinnedMipBlitModule,
+    pinnedTaskTransmissionModules,
     pinnedTransmissionModules,
     type PinnedUtilityModule,
 } from "./pinned-utility-passes.js";
@@ -1049,6 +1053,11 @@ class GeneratedSourceWriter {
             "upstream/include/bblite/upstream/pinned_texture.hpp",
             pinnedTextureHeader(context),
         );
+        if (features.includes("frame-graph:render-task-transmission"))
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_task_transmission.hpp",
+                pinnedTaskTransmissionHeader(context),
+            );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_rgbd.hpp",
             pinnedRgbdHeader(context),
@@ -3015,6 +3024,9 @@ ${wgsl}`,
                 for (const module of pinnedTransmissionModules())
                     deployUtility(module);
             }
+            if (features.includes("frame-graph:render-task-transmission"))
+                for (const module of pinnedTaskTransmissionModules())
+                    deployUtility(module);
             if (options.shaderPrograms.length > 0) {
                 this.tree.write(
                     "upstream/shaders/shader-material-reflection.json",
