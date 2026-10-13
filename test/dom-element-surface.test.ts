@@ -306,3 +306,132 @@ test("focus options refuse unrepresented getters and non-record values", () => {
         /Focus options require a represented options record/,
     );
 });
+
+test("tab order, sibling insertion, replacement, scroll requests and event paths run natively", (t) => {
+    const output = resolve("artifacts/dom-element-order");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `${realm}
+        const log = document.createElement("div");
+        log.id = "log";
+        document.body.appendChild(log);
+        let steps = "";
+        function record(value: string): void { steps += value; log.textContent = steps; }
+        function item(id: string): HTMLElement {
+            const node = document.createElement("span");
+            node.id = id;
+            return node;
+        }
+        const list = document.createElement("div");
+        list.id = "list";
+        document.body.appendChild(list);
+        const a = item("a"), b = item("b"), c = item("c"), x = item("x");
+        list.append(a, b, c);
+        b.replaceWith(x);
+        x.replaceWith(c, x);
+        const kept = item("kept");
+        list.append(kept);
+        const detached = item("detached");
+        detached.replaceWith(kept);
+        record(kept.parentElement === list ? "R" : "r");
+        a.insertAdjacentElement("beforebegin", item("d"));
+        const e = item("e");
+        record(a.insertAdjacentElement("afterend", e) === e ? "A" : "a");
+        list.insertAdjacentElement("afterBegin", item("f"));
+        list.insertAdjacentElement("beforeend", item("g"));
+        const orphan = item("orphan");
+        record(orphan.insertAdjacentElement("afterend", item("h")) === null ? "N" : "n");
+        try { a.insertAdjacentElement("middle", item("i")); } catch { record("S"); }
+        try { list.insertAdjacentElement("afterbegin", list); } catch { record("H"); }
+        const first = document.createElement("button");
+        first.id = "first";
+        first.textContent = "1";
+        const panel = document.createElement("div");
+        panel.id = "panel";
+        panel.textContent = "2";
+        const skipped = document.createElement("button");
+        skipped.id = "skipped";
+        skipped.textContent = "3";
+        const last = document.createElement("div");
+        last.id = "last";
+        last.textContent = "4";
+        document.body.append(first, panel, skipped, last);
+        record(first.tabIndex === 0 && panel.tabIndex === -1 ? "D" : "d");
+        panel.tabIndex = 0;
+        skipped.tabIndex = 4294967295;
+        record(skipped.tabIndex === -1 && skipped.getAttribute("tabindex") === "-1" ? "W" : "w");
+        let order = "";
+        function selected(): HTMLElement { order += "r"; return last; }
+        function index(): number { order += "v"; return 0; }
+        selected().tabIndex = index();
+        try { last.tabIndex = steps.length; } catch { record("Q"); }
+        record(order === "rv" && last.getAttribute("tabindex") === "0" ? "O" : "o");
+        window.addEventListener("keydown", (event) => {
+            if (event.key === "Tab") record(event.composedPath().includes(panel) ? "P" : "p");
+        }, { capture: true });
+        first.focus();
+        const scroller = document.createElement("div");
+        scroller.id = "scroller";
+        scroller.style.cssText = "position:absolute;left:300px;top:0;width:100px;height:40px;overflow-y:scroll;";
+        const rows: HTMLElement[] = [];
+        for (const id of ["row0", "row1", "row2", "row3", "row4"]) {
+            const row = document.createElement("div");
+            row.id = id;
+            row.style.cssText = "height:30px;";
+            scroller.append(row);
+            rows.push(row);
+        }
+        document.body.append(scroller);
+        function motion(): boolean { return steps.length < 0; }
+        rows[2]!.scrollIntoView?.({ block: "center", behavior: motion() ? "smooth" : "auto" });
+        rows[3]!.scrollIntoView({ block: "end" });
+        log.scrollIntoView(false);
+        function bad(): ScrollLogicalPosition { return (steps.length > 0 ? "middle" : "start") as ScrollLogicalPosition; }
+        try { rows[0]!.scrollIntoView({ inline: bad() }); } catch { record("T"); }
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    assert.equal(result.manifest.deferredCapabilities, undefined);
+    assert.ok(result.manifest.features.includes("input:dom"));
+    for (const call of [
+        "ui_replace_with",
+        "ui_insert_adjacent_element",
+        "ui_scroll_into_view",
+        "ui_set_tab_index",
+        "ui_tab_index",
+        "dom_event_composed_path",
+    ])
+        assert.ok(result.cpp.includes(`bbl::${call}(`), call);
+    writeFileSync(join(output, "program.hpp"), result.cpp);
+    runRmlUiFixture(t, "dom-element-order", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+        },
+    });
+});
+
+test("element surface writes refuse forms native order cannot hold", () => {
+    const refusal = (body: string, pattern: RegExp): void =>
+        assert.throws(() => compileEntry(body), pattern, body);
+    refusal(
+        `const panel = document.createElement("div"); panel.tabIndex = 2;`,
+        /Positive tabIndex values are not supported/,
+    );
+    refusal(
+        `const canvas = document.createElement("canvas"); canvas.tabIndex = -1;`,
+        /A native canvas keeps tabIndex 0/,
+    );
+    refusal(
+        `const panel = document.createElement("div"); const where = panel.id as InsertPosition;
+         panel.insertAdjacentElement(where, document.createElement("span"));`,
+        /insertAdjacentElement requires a literal position/,
+    );
+    refusal(
+        `const panel = document.createElement("div"); panel.replaceWith("text");`,
+        /replaceWith text arguments are not represented/,
+    );
+});

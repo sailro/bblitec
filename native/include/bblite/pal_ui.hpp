@@ -144,6 +144,22 @@ void ui_insert_text(Engine& engine, UiElementHandle parent, std::string text,
 UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle child);
 void ui_replace_children(Engine& engine, UiElementHandle parent);
 void ui_remove(Engine& engine, UiElementHandle element);
+/** ChildNode.replaceWith(nodes...): a parentless node is left unchanged. */
+void ui_replace_with(Engine& engine, UiElementHandle node,
+                     std::initializer_list<UiElementHandle> nodes);
+/** Element.insertAdjacentElement: null when beforebegin/afterend find no parent. */
+js::Nullable<UiElementHandle> ui_insert_adjacent_element(Engine& engine, UiElementHandle target,
+                                                         std::string_view where,
+                                                         UiElementHandle element);
+/** Element.scrollIntoView(options); invalid enum values throw TypeError. */
+void ui_scroll_into_view(Engine& engine, UiElementHandle element, std::string_view block,
+                         std::string_view inline_axis, std::string_view behavior);
+/** Element.scrollIntoView(alignToTop). */
+void ui_scroll_into_view(Engine& engine, UiElementHandle element, bool align_to_top);
+/** HTMLElement.tabIndex: the parsed tabindex attribute, else 0 for controls and -1 otherwise. */
+double ui_tab_index(Engine& engine, UiElementHandle element);
+/** Writes the tabindex attribute; positive values throw (navigation follows tree order). */
+void ui_set_tab_index(Engine& engine, UiElementHandle element, double value);
 void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> callback);
 /** Programmatic HTMLElement.click(), including reached default actions. */
 void ui_click(Engine& engine, UiElementHandle element, bool trusted = false);

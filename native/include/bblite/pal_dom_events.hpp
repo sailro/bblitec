@@ -523,6 +523,22 @@ inline DomEventTargetValue dom_window_document(DomEventTargetValue value) {
     return dom_target_value(dom_window_owner(value), DomEventTarget::document());
 }
 
+/** Event.composedPath(): the dispatch path while listeners run, else empty. */
+template <typename Event>
+[[nodiscard]] js::Array<DomEventTargetValue> dom_event_composed_path(const Event& event) {
+    const auto& state = dom_event_state(event);
+    Engine* owner = state.dispatch_engine;
+    if constexpr (requires { event.payload->owner; })
+        if (!owner && !event.payload->owner_lifetime.expired())
+            owner = event.payload->owner;
+    js::Array<DomEventTargetValue> path;
+    if (!state.dispatching || !owner)
+        return path;
+    for (const auto& target : state.path)
+        path.push_back(dom_target_value(*owner, target));
+    return path;
+}
+
 /** The retained element a target names, invalid for Document, Window and text targets. */
 inline UiElementHandle dom_target_retained_element(DomEventTargetValue value) {
     const auto& engine = dom_target_owner(value);

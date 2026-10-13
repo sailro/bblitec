@@ -2005,6 +2005,16 @@ export class PropertyAccessLowerer {
         );
     }
 
+    /** Whether the checker types an owner as a canvas. */
+    private declaresCanvas(ownerExpression: ts.Expression): boolean {
+        const type = this.context.checker.getTypeAtLocation(ownerExpression);
+        return (type.isUnion() ? type.types : [type]).some(
+            (member) =>
+                member.getSymbol()?.getName() === "HTMLCanvasElement" ||
+                member.getSymbol()?.getName() === "OffscreenCanvas",
+        );
+    }
+
     /** Element state, tree, form and layout reads. */
     private elementProperty(
         owner: Value,
@@ -2102,6 +2112,20 @@ export class PropertyAccessLowerer {
                     dataType: { kind: "string" },
                     freshData: true,
                 };
+            if (property === "tabIndex") {
+                // Native keyboard input targets the always-focusable SDL surface.
+                if (
+                    owner.uiTag === "canvas" ||
+                    this.declaresCanvas(ownerExpression)
+                )
+                    return numberConstantValue(0);
+                return {
+                    kind: "number",
+                    cpp: `bbl::ui_tab_index(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    dataType: { kind: "number" },
+                    impure: true,
+                };
+            }
             if (property === "isConnected")
                 return {
                     kind: "boolean",
@@ -2808,25 +2832,7 @@ export class PropertyAccessLowerer {
         if (browserFileProperty) {
             return browserFileProperty;
         }
-        const ownerTsType =
-            this.context.checker.getTypeAtLocation(ownerExpression);
-        const ownerTsMembers =
-            (ownerTsType.flags & ts.TypeFlags.Union) !== 0
-                ? (ownerTsType as ts.UnionType).types
-                : [ownerTsType];
-        const sourceIsCanvas = ownerTsMembers.some(
-            (member) =>
-                member.getSymbol()?.getName() === "HTMLCanvasElement" ||
-                member.getSymbol()?.getName() === "OffscreenCanvas",
-        );
-        if (
-            owner.kind === "ui-element" &&
-            (owner.uiTag === "canvas" || sourceIsCanvas) &&
-            property === "tabIndex"
-        ) {
-            // Native keyboard input targets the always-focusable SDL surface.
-            return numberConstantValue(0);
-        }
+        const sourceIsCanvas = this.declaresCanvas(ownerExpression);
         const deferredProperty = this.context.deferredCapabilities.property(
             expression,
             owner,

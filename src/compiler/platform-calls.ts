@@ -226,6 +226,97 @@ export class PlatformCalls {
     }
 
     /**
+     * `element.scrollIntoView(alignToTop | options)`: the options' string
+     * members are read once in source order; the native call converts them
+     * as WebIDL enums, throwing TypeError for other values.
+     */
+    private compileScrollIntoView(
+        call: ts.CallExpression,
+        element: Value,
+    ): Value {
+        const target = pinDetached(
+            this.context,
+            element,
+            "scroll_target",
+            ts.isPropertyAccessExpression(call.expression)
+                ? call.expression.expression
+                : undefined,
+        );
+        const engine = this.context.requireEngine(target, call);
+        const argument = call.arguments[0];
+        const type = argument
+            ? this.context.checker.getTypeAtLocation(argument)
+            : undefined;
+        if (!argument || (type && type.flags & ts.TypeFlags.BooleanLike)) {
+            const top = argument
+                ? this.context.compileBoolean(argument)
+                : "true";
+            return {
+                kind: "void",
+                cpp: `bbl::ui_scroll_into_view(${engine}, ${target.cpp}, ${top})`,
+            };
+        }
+        const defaults = {
+            block: "start",
+            inline: "nearest",
+            behavior: "auto",
+        };
+        const members: Partial<Record<keyof typeof defaults, string>> = {};
+        const consume =
+            (name: keyof typeof defaults) =>
+            (value: Value, present?: string): void => {
+                const fallback = this.context.cppString(defaults[name]);
+                const optional =
+                    value.dataType?.kind === "optional" ||
+                    value.dataType?.kind === "undefined";
+                const text =
+                    value.dataType?.kind === "undefined"
+                        ? fallback
+                        : optional
+                          ? `${this.context.dataLowerer.compileKnownValueForSink(value, { kind: "optional", inner: { kind: "string" } }, argument)}.value_or(${fallback})`
+                          : this.context.dataLowerer.compileKnownValueForSink(
+                                value,
+                                { kind: "string" },
+                                argument,
+                            );
+                const cpp =
+                    this.context.allocateTemporaryCppName("scroll_option");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const std::string",
+                    name: cpp,
+                    initializer: present
+                        ? `(${present} ? std::string(${text}) : std::string(${fallback}))`
+                        : text,
+                });
+                members[name] = cpp;
+            };
+        compileBooleanOptions(
+            this.context,
+            this.context.dataLowerer,
+            argument,
+            [] as const,
+            {
+                subject: "scrollIntoView options",
+                member: "scrollIntoView option",
+                forms: "a represented options record",
+                temporary: "scroll_options",
+                consume: {
+                    block: consume("block"),
+                    inline: consume("inline"),
+                    behavior: consume("behavior"),
+                },
+            },
+        );
+        const member = (name: keyof typeof defaults): string =>
+            members[name] ?? this.context.cppString(defaults[name]);
+        return {
+            kind: "void",
+            cpp: `bbl::ui_scroll_into_view(${engine}, ${target.cpp}, ${member("block")}, ${member("inline")}, ${member("behavior")})`,
+        };
+    }
+
+    /**
      * `scene._beforeRender.push(callback)`, `.indexOf(callback)` and
      * `.splice(index, count)`: the scene's before-render list
      * (`SceneState::before_render`), its entries keyed by callback identity,
@@ -534,7 +625,8 @@ export class PlatformCalls {
         if (
             callee.name.text === "preventDefault" ||
             callee.name.text === "stopPropagation" ||
-            callee.name.text === "stopImmediatePropagation"
+            callee.name.text === "stopImmediatePropagation" ||
+            callee.name.text === "composedPath"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
                 ? this.context.bindings.lookupOptional(receiver)
@@ -542,6 +634,26 @@ export class PlatformCalls {
                     ts.isElementAccessExpression(receiver)
                   ? this.context.compileValue(receiver)
                   : undefined;
+            if (
+                callee.name.text === "composedPath" &&
+                (platformEvent?.kind === "platform-keyboard-event" ||
+                    platformEvent?.kind === "platform-mouse-event" ||
+                    platformEvent?.kind === "custom-event" ||
+                    platformEvent?.kind === "dom-event")
+            ) {
+                this.context.expectArgumentCount(call, 0, 0);
+                this.context.reachFeature("input:dom", call);
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: `bbl::dom_event_composed_path(${platformEvent.cpp})`,
+                    dataType: {
+                        kind: "vector",
+                        element: { kind: "event-target" },
+                    },
+                    impure: true,
+                };
+            }
             if (
                 platformEvent?.kind === "platform-keyboard-event" ||
                 platformEvent?.kind === "platform-mouse-event" ||
@@ -2095,6 +2207,96 @@ export class PlatformCalls {
                 ...child,
                 cpp: `bbl::ui_insert_child(${engine}, ${receiver.cpp}, ${child.cpp}, ${reference.kind === "json-null" ? "bbl::UiElementHandle{}" : optional ? `${reference.cpp}.value_or(bbl::UiElementHandle{})` : reference.cpp})`,
             };
+        }
+        if (element && callee.name.text === "replaceWith") {
+            const node = pinDetached(
+                this.context,
+                element,
+                "replace_node",
+                callee.expression,
+            );
+            const nodes = call.arguments.map((argument) => {
+                if (ts.isSpreadElement(argument))
+                    return this.context.fail(
+                        argument,
+                        "replaceWith requires individual element arguments; spread lists are not represented.",
+                    );
+                const value = this.context.compileValue(argument);
+                if (isStringValue(value))
+                    this.context.fail(
+                        argument,
+                        "replaceWith text arguments are not represented; pass elements.",
+                    );
+                this.context.expectKind(value, "ui-element", argument);
+                return pinDetached(
+                    this.context,
+                    value,
+                    "replace_argument",
+                    argument,
+                );
+            });
+            const engine = this.context.requireEngine(node, call);
+            for (const value of nodes) {
+                this.context.expectSameEngine(node, value, call);
+                this.ui.recordUiStaticSiblingInsertion(node, value);
+            }
+            if (!nodes.some((value) => value.uiStaticId === node.uiStaticId))
+                this.ui.recordUiStaticRemoval(node);
+            return {
+                kind: "void",
+                cpp: `bbl::ui_replace_with(${engine}, ${node.cpp}, {${nodes.map((value) => value.cpp).join(", ")}})`,
+            };
+        }
+        if (element && callee.name.text === "insertAdjacentElement") {
+            this.context.expectArgumentCount(call, 2, 2);
+            const target = pinDetached(
+                this.context,
+                element,
+                "adjacent_target",
+                callee.expression,
+            );
+            const where = this.ui.tryUiStaticString(argumentAt(call, 0));
+            if (where === undefined)
+                this.context.fail(
+                    argumentAt(call, 0),
+                    "insertAdjacentElement requires a literal position.",
+                );
+            const inserted = pinDetached(
+                this.context,
+                this.context.compileValue(argumentAt(call, 1)),
+                "adjacent_element",
+                argumentAt(call, 1),
+            );
+            this.context.expectKind(
+                inserted,
+                "ui-element",
+                argumentAt(call, 1),
+            );
+            this.context.expectSameEngine(target, inserted, call);
+            const engine = this.context.requireEngine(target, call);
+            const position = where.toLowerCase();
+            if (position === "afterbegin" || position === "beforeend")
+                this.ui.recordUiStaticAppend(
+                    target,
+                    inserted,
+                    position === "beforeend",
+                );
+            else if (position === "beforebegin" || position === "afterend")
+                this.ui.recordUiStaticSiblingInsertion(target, inserted);
+            return {
+                kind: "data",
+                cpp: `bbl::ui_insert_adjacent_element(${engine}, ${target.cpp}, ${this.context.cppString(where)}, ${inserted.cpp})`,
+                dataType: {
+                    kind: "optional",
+                    inner: { kind: "handle", handle: "ui-element" },
+                },
+                engineCpp: engine,
+                impure: true,
+            };
+        }
+        if (element && callee.name.text === "scrollIntoView") {
+            this.context.expectArgumentCount(call, 0, 1);
+            return this.compileScrollIntoView(call, element);
         }
         if (element && callee.name.text === "appendChild") {
             this.context.expectArgumentCount(call, 1, 1);

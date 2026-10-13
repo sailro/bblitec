@@ -1434,6 +1434,30 @@ export class UiProjection {
         parentElement.children.add(child.uiStaticId);
     }
 
+    /**
+     * A child joining `reference`'s parent beside it. A reference without a
+     * recorded parent leaves the model unchanged, as an unknown receiver's
+     * insertBefore does.
+     */
+    public recordUiStaticSiblingInsertion(
+        reference: Value,
+        child: Value,
+    ): void {
+        const id = reference.uiStaticId;
+        if (id === undefined) return;
+        if (this.uiStaticRootOrder.includes(id)) {
+            this.recordUiStaticRootAppend(child);
+            return;
+        }
+        for (const [parentId, parent] of [...this.uiStaticElements])
+            if (parent.children.has(id))
+                this.recordUiStaticAppend(
+                    { kind: "ui-element", cpp: "", uiStaticId: parentId },
+                    child,
+                    false,
+                );
+    }
+
     public recordUiStaticReplaceChildren(parent: Value): void {
         const element = this.uiStaticElement(parent);
         if (!element) return;
@@ -5057,6 +5081,38 @@ export class UiProjection {
                 this.context.emit({
                     kind: "expression",
                     code: `bbl::ui_set_checked(${engine}, ${directElement.cpp}, ${this.uiBooleanCpp(expression.right, "UI checked")});`,
+                });
+                return true;
+            }
+            if (property === "tabIndex") {
+                if (
+                    directElement.uiCanvas ||
+                    directElement.uiTag === "canvas" ||
+                    this.context.isCanvasElement(expression.left.expression)
+                )
+                    this.context.fail(
+                        expression.left,
+                        "A native canvas keeps tabIndex 0: keyboard focus targets the SDL surface.",
+                    );
+                const receiver = pinDetached(
+                    this.context,
+                    directElement,
+                    "tab_index_receiver",
+                    expression.left.expression,
+                );
+                const order = this.context.compileValue(expression.right);
+                if (
+                    order.staticNumber !== undefined &&
+                    order.staticNumber > 0 &&
+                    order.staticNumber < 2 ** 31
+                )
+                    this.context.fail(
+                        expression.right,
+                        "Positive tabIndex values are not supported: native sequential focus navigation follows tree order.",
+                    );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_set_tab_index(${engine}, ${receiver.cpp}, ${this.context.dataLowerer.compileKnownValueForSink(order, { kind: "number" }, expression.right)});`,
                 });
                 return true;
             }

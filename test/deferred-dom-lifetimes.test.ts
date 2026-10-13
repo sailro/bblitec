@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
-    runRmlUiFixture,
 } from "./native-fixture.js";
 
 const deferredCapabilities = "runtime-throw" as const;
@@ -148,45 +145,4 @@ test("signal dictionaries preserve optional receivers, eager options and lazy or
             timeoutMs: 10000,
         },
     );
-});
-
-test("tabIndex bridge failures evaluate receiver and RHS once without changing attributes", (t) => {
-    const directory = resolve("artifacts/deferred-dom-lifetimes");
-    mkdirSync(directory, { recursive: true });
-    const source =
-        realm +
-        `
-        let order="";let caught=0;
-        const panel=document.createElement("button");
-        function selected():HTMLButtonElement {order+="r";return panel;}
-        function index():number {order+="v";return -1;}
-        try {selected().tabIndex=index();}catch{++caught;}
-        try {const value=selected().tabIndex;if(value>0)throw new Error("unexpected");}catch{++caught;}
-        if(order!=="rvr"||caught!==2)throw new Error("property effects");
-        if(panel.getAttribute("tabindex")!==null)throw new Error("deferred write changed state");
-    `;
-    // Strict generation refuses the numeric focus order it cannot represent.
-    assert.throws(
-        () => compileSource(source),
-        /Retained element property 'tabIndex' assignment is not lowered natively/,
-    );
-    const result = compileSource(source, { deferredCapabilities });
-    assert.deepEqual(
-        result.manifest.deferredCapabilities?.map((site) => site.operation),
-        ["write", "read"],
-    );
-    writeFileSync(resolve(directory, "program.hpp"), result.cpp);
-    assert.ok(optionalNativeFixtureTools(), "Native fixture compiler required");
-    assert.ok(
-        existsSync(
-            resolve(
-                process.env.BBLITE_RMLUI_DIR ?? "artifacts/tools/rmlui",
-                "lib/rmlui.lib",
-            ),
-        ),
-        "Pinned RmlUi library required",
-    );
-    runRmlUiFixture(t, "deferred-dom-lifetimes", {
-        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
-    });
 });
