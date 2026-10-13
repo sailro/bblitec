@@ -1590,6 +1590,8 @@ export type ValueKind =
     | "render-target"
     | "render-target-texture"
     | "render-texture"
+    /** `enableRenderTaskTransmission`'s `SceneColorGrab`, held as its render task. */
+    | "transmission-grab"
     | "record"
     | "scene"
     | "surface"

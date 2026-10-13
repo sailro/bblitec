@@ -2,11 +2,10 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 
-/** Texture allocation facts and mip arithmetic, read/lowered from the pin. */
-export function pinnedTextureHeader(context: LoweringContext): string {
-    const module = "src/frame-graph/transmission.ts";
+/** `createRenderTaskTransmission`'s square grab extent. */
+export function pinnedTransmissionGrabSize(context: LoweringContext): number {
     const { file, declaration } = context.functionDeclaration(
-        module,
+        "src/frame-graph/transmission.ts",
         "createRenderTaskTransmission",
     );
     const extent = (name: string): number =>
@@ -22,6 +21,13 @@ export function pinnedTextureHeader(context: LoweringContext): string {
             "Native transmission requires a positive square pinned extent.",
         );
     }
+    return width;
+}
+
+/** Texture allocation facts and mip arithmetic, read/lowered from the pin. */
+export function pinnedTextureHeader(context: LoweringContext): string {
+    const module = "src/frame-graph/transmission.ts";
+    const width = pinnedTransmissionGrabSize(context);
     const samplerFile = context.sourceFile(
         "src/resource/trilinear-anisotropic-sampler.ts",
     );

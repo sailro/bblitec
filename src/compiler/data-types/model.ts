@@ -43,6 +43,7 @@ export type HandleKind =
     | "gamepad-button"
     | "scene"
     | "render-target"
+    | "transmission-grab"
     | "scene-node"
     | "light"
     | "shadow-generator"

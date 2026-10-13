@@ -127,7 +127,8 @@ inline std::uint32_t transmission_grab_mip_count() {
  */
 inline bool transmissive_draw_material(const MaterialRecord* material) {
     return material != nullptr &&
-           (material->transmission_factor > 0.0f || !material->transmission_texture.bytes.empty());
+           (material->transmission_factor > 0.0f || !material->transmission_texture.bytes.empty() ||
+            material->shader_transmissive);
 }
 
 /**

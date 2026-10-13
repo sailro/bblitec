@@ -97,7 +97,11 @@ function assertPinnedAsyncShaderPipelines(): void {
     );
     asyncShaderPipelinesAnchored = true;
 }
-import { validateObjectProperties } from "../option-helpers.js";
+import {
+    compileOptionalStaticBoolean,
+    validateObjectProperties,
+} from "../option-helpers.js";
+import { pinnedTransmissionGrabSize } from "../../lowering/pinned-texture.js";
 import {
     compileGpuTaskTimingIntrinsic,
     type GpuTaskTimingIntrinsicContext,
@@ -179,6 +183,80 @@ function reachRenderer(
 ): void {
     context.reachFeature("renderer:scene", call);
     context.reachFeature("renderer:geometry-output", call);
+}
+
+/**
+ * `enableRenderTaskTransmission(task, engine, options)` in the pin's raw
+ * mode: `applyTransmissionOptions` stores each given option on the task and
+ * the grab reads stay live. The linear arm retargets the task to an
+ * offscreen HDR target with a trailing tone-map pass, which is not lowered.
+ */
+function compileRenderTaskTransmission(
+    context: EngineIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 3);
+    const task = context.compileValue(argumentAt(call, 0));
+    context.expectKind(task, "task", argumentAt(call, 0));
+    if (!task.renderTask)
+        context.fail(
+            argumentAt(call, 0),
+            "enableRenderTaskTransmission requires a render task.",
+        );
+    const engine = context.compileValue(argumentAt(call, 1));
+    context.expectKind(engine, "engine", argumentAt(call, 1));
+    context.expectSameEngine(task, engine, call);
+    const optionsExpression = call.arguments[2];
+    const object = optionsExpression
+        ? context.expectObjectLiteral(optionsExpression)
+        : undefined;
+    if (object)
+        validateObjectProperties(
+            context,
+            object,
+            [
+                "linear",
+                "copyCount",
+                "generateMipmaps",
+                "mipLevelCount",
+                "grabDepth",
+            ],
+            "Render-task transmission supports linear, copyCount, generateMipmaps, mipLevelCount, and grabDepth.",
+        );
+    const linear = object && context.objectProperty(object, "linear");
+    if (
+        compileOptionalStaticBoolean(
+            context,
+            linear,
+            true,
+            "Render-task transmission's linear option",
+        )
+    )
+        context.fail(
+            linear ?? call,
+            "Render-task transmission requires linear: false; the linear offscreen retarget and its tone-map pass are not lowered.",
+        );
+    const optional = (
+        name: string,
+        compile: (expression: ts.Expression) => string,
+    ): string => {
+        const expression = object && context.objectProperty(object, name);
+        return expression ? compile(expression) : "std::nullopt";
+    };
+    const engineCpp = context.requireEngine(task, call);
+    reachRenderer(context, call);
+    return {
+        kind: "transmission-grab",
+        cpp:
+            `bbl::enable_render_task_transmission(${engineCpp}, ${task.cpp}, ` +
+            `bbl::RenderTaskTransmission{` +
+            `${pinnedTransmissionGrabSize(sharedPinnedContext())}u, ` +
+            `${optional("copyCount", (e) => context.compileNumber(e, "double"))}, ` +
+            `${optional("generateMipmaps", (e) => context.compileBoolean(e))}, ` +
+            `${optional("mipLevelCount", (e) => context.compileNumber(e, "double"))}, ` +
+            `${optional("grabDepth", (e) => context.compileBoolean(e))}})`,
+        engineCpp,
+    };
 }
 
 export function compileEngineIntrinsic(
@@ -534,6 +612,9 @@ export function compileEngineIntrinsic(
                 cpp: `bbl::enable_render_task_mesh_refresh(${context.requireEngine(task, call)}, ${task.cpp})`,
             };
         }
+
+        case "enableRenderTaskTransmission":
+            return compileRenderTaskTransmission(context, call);
 
         case "removeMeshFromTask": {
             context.expectArgumentCount(call, 2, 2);

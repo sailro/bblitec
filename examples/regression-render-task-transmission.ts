@@ -1,31 +1,35 @@
 // Regression gate: per-task scene-colour transmission in its raw mode.
 //
-// Scene 30's volume/transmission glb, with `enableRenderTaskTransmission` on
-// the scene task (`linear: false`, no mips, `grabDepth`) instead of the
-// structural `_config.transmission` write. A transmissive ShaderMaterial quad
-// in front of the model refracts the grab's colour and shades by its depth
-// snapshot, re-binding both whenever their identity changes, as an
-// application's water surface does.
+// An explicit render task draws three opaque spheres with
+// `enableRenderTaskTransmission` (`linear: false`, no mips, `grabDepth`),
+// then a copy task presents it. A transmissive ShaderMaterial quad in front
+// refracts the grab's colour and shades by its depth snapshot, re-binding
+// both whenever their identity changes, as an application's water surface
+// does. No material is a PBR transmission one: that would also enable the
+// pin's linear scene transmission on every task.
 
 import {
+    addTask,
     addToScene,
     attachControl,
     createArcRotateCamera,
+    createCopyToTextureTask,
     createEngine,
+    createHemisphericLight,
     createPlane,
+    createRenderTarget,
+    createRenderTask,
     createSceneContext,
     createShaderMaterial,
-    createSolidTexture2D,
+    createSphere,
+    createStandardMaterial,
+    createTexture2DFromPixels,
     enableRenderTaskTransmission,
-    getFrameGraph,
-    loadEnvironment,
-    loadGltf,
     onBeforeRender,
     registerScene,
     setShaderTexture,
     setShaderUniform,
     startEngine,
-    type RenderTask,
     type Texture2D,
 } from "babylon-lite";
 
@@ -45,22 +49,42 @@ async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
 
     const engine = await createEngine(canvas);
-    const scene = createSceneContext(engine);
-    const grab = enableRenderTaskTransmission(getFrameGraph(scene)._tasks[0] as RenderTask, engine, {
+    const scene = createSceneContext(engine, { defaultRenderTask: false });
+    const target = createRenderTarget({
+        lbl: "regression-render-task-transmission",
+        format: engine.format,
+        dFormat: "depth24plus-stencil8",
+        samples: 1,
+        size: engine,
+    });
+    const task = createRenderTask({ name: "scene", rt: target, clr: true, clrColor: { r: 0.2, g: 0.2, b: 0.3, a: 1 } }, engine, scene);
+    addTask(scene, task);
+    addTask(scene, createCopyToTextureTask({ name: "present", sourceTexture: target, targetTexture: engine.scRT }, engine, scene));
+    const grab = enableRenderTaskTransmission(task, engine, {
         linear: false,
         generateMipmaps: false,
         grabDepth: true,
     });
 
-    // Exact camera values captured from the playground scene.
-    const cam = createArcRotateCamera(Math.PI / 2, Math.PI / 2, 1.1856086997830126, { x: -0.2914360649171073, y: 0.4, z: 0.3975263311541397 });
-    cam.fov = 0.8;
-    cam.nearPlane = 0.0697417;
-    cam.farPlane = 6974.17;
-    scene.camera = cam;
-    attachControl(cam, canvas, scene);
+    const camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2.4, 5, { x: 0, y: 0, z: 0 });
+    scene.camera = camera;
+    attachControl(camera, canvas, scene);
+    addToScene(scene, createHemisphericLight([0, 1, 0], 1.0));
 
-    const placeholder = createSolidTexture2D(engine, 0, 0, 0, 1);
+    const addSphere = (x: number, z: number, r: number, g: number, b: number): void => {
+        const sphere = createSphere(engine, { diameter: 1.2 });
+        sphere.position.x = x;
+        sphere.position.z = z;
+        const material = createStandardMaterial();
+        material.diffuseColor = [r, g, b];
+        sphere.material = material;
+        addToScene(scene, sphere);
+    };
+    addSphere(-1.4, 0, 0.9, 0.2, 0.2);
+    addSphere(0, 0.8, 0.2, 0.9, 0.3);
+    addSphere(1.4, 1.6, 0.2, 0.4, 0.9);
+
+    const placeholder = createTexture2DFromPixels(engine, new Uint8Array([0, 0, 0, 255]), 1, 1);
     const surface = createShaderMaterial({
         name: "regression-render-task-transmission",
         vertexSource,
@@ -74,10 +98,8 @@ async function main(): Promise<void> {
     });
     setShaderTexture(surface, "uScene", placeholder);
     setShaderTexture(surface, "uDepth", placeholder);
-    const quad = createPlane(engine, { width: 0.35, height: 0.35 });
-    quad.position.x = -0.2914360649171073;
-    quad.position.y = 0.4;
-    quad.position.z = 0.1;
+    const quad = createPlane(engine, { width: 2.4, height: 1.2 });
+    quad.position.z = -1.2;
     quad.material = surface;
     addToScene(scene, quad);
 
@@ -94,15 +116,6 @@ async function main(): Promise<void> {
             setShaderTexture(surface, "uDepth", boundDepth ?? placeholder);
         }
     });
-
-    await Promise.all([
-        loadGltf(engine, "https://assets.babylonjs.com/meshes/KHR_materials_volume_testing.glb").then((asset) => addToScene(scene, asset)),
-        loadEnvironment(scene, "https://assets.babylonjs.com/core/environments/environmentSpecular.env", {
-            skipSkybox: true,
-            skipGround: true,
-            brdfUrl: "/brdf-lut.png",
-        }),
-    ]);
 
     await registerScene(scene);
     await startEngine(engine);

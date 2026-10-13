@@ -1569,6 +1569,25 @@ export const propertyRules: readonly PropertyRule[] = [
         optionalFound: (owner) =>
             `${owner}.depth_texture.target.value != bbl::invalid_handle`,
     },
+    // SceneColorGrab's live getters: null until the task's frame graph
+    // built it, and a new identity whenever the task rebuilds.
+    ...(
+        [
+            ["texture", "bbl::transmission_grab_texture"],
+            ["depthTexture", "bbl::transmission_grab_depth_texture"],
+        ] as const
+    ).map(([property, helper]): PropertyRead => ({
+        owner: "transmission-grab",
+        property,
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "handle", handle: "texture" },
+        },
+        helper,
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+    })),
 ];
 
 /**
