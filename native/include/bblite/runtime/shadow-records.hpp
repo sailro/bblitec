@@ -40,6 +40,13 @@ struct ShadowCascade {
     double frustum_length = 0.0;
 };
 
+/** The options `sg._csmCache` keeps (`enableCsmStaticCache`). */
+struct CsmStaticCacheOptions {
+    double refit_angle = 0.0;
+    double refit_max_interval_ms = 0.0;
+    std::uint32_t static_cascades_per_frame = 0;
+};
+
 /**
  * `enableCsmStaticCache`: the options `sg._csmCache` keeps, and the cached
  * task state's CPU side (`ensureCsmShadowCacheState`): the refit gate and
@@ -49,9 +56,7 @@ struct ShadowCascade {
  * generator's `caster_tasks` ahead of the dynamic ones.
  */
 struct CsmStaticCacheState {
-    double refit_angle = 0.0;
-    double refit_max_interval_ms = 0.0;
-    std::uint32_t static_cascades_per_frame = 0;
+    CsmStaticCacheOptions options;
     RenderTargetHandle cache_target{};
     /** `_gate` and `_staticScheduler`: the generated `CsmRefitRuntime`. */
     std::shared_ptr<void> refit;
@@ -167,6 +172,8 @@ struct ShadowGeneratorRecord {
     std::shared_ptr<PlatformEventListeners<void(const js::F32Array&)>> csm_receiver_callbacks;
     /** `sg._csmCache`, set by `enableCsmStaticCache`. */
     std::shared_ptr<CsmStaticCacheState> csm_cache;
+    /** `sg._csmReceiverTexture`: `getCsmReceiverTexture` ran for this generator. */
+    bool csm_receiver_texture_read = false;
     /**
      * ESM only: this generator's ordinal among the ESM ones, which is the
      * row generation emitted its recorded resources under.

@@ -202,15 +202,15 @@ inline void csm_refit_start(const Engine& engine, CsmStaticCacheState& cache,
                             const ShadowGeneratorRecord& generator, std::uint32_t cascades) {
     auto runtime = std::make_shared<CsmRefitRuntime>();
     CsmRefitGateOptions options;
-    options.refit_angle = cache.refit_angle;
-    options.refit_max_interval_ms = cache.refit_max_interval_ms;
+    options.refit_angle = cache.options.refit_angle;
+    options.refit_max_interval_ms = cache.options.refit_max_interval_ms;
     runtime->casters_list_version = generator.caster_list_version;
     for (const MeshHandle mesh : generator.caster_meshes)
         runtime->casters.push_back(CsmRefitCasterView{&engine, mesh});
     runtime->gate = create_csm_refit_gate_of_caster(options);
     runtime->gate->sync_casters(runtime->casters);
     runtime->scheduler = create_csm_static_refit_scheduler(
-        static_cast<double>(cascades), static_cast<double>(cache.static_cascades_per_frame));
+        static_cast<double>(cascades), static_cast<double>(cache.options.static_cascades_per_frame));
     runtime->on_move = js::Callback<void(CsmRefitCasterView)>(
         [moved = &runtime->moved](CsmRefitCasterView) { *moved = true; });
     cache.refit = std::move(runtime);
@@ -313,6 +313,11 @@ ${library.includes.map((header) => `#include <${header}>`).join("\n")}
 #include <vector>
 
 ${library.source}
+namespace bbl {
+/** The generated shadow surface's caster refresh, through which a cached frame refills its passes. */
+void refresh_shadow_task_meshes(Engine& engine, ShadowGeneratorHandle generator);
+} // namespace bbl
+
 namespace bbl::upstream {
 
 /**

@@ -167,9 +167,7 @@ ${frames.map((frame) => `        {{${cpp(frame.moved)}}, ${frame.light.map((v) =
     };
     ShadowGeneratorRecord generator;
     CsmStaticCacheState cache;
-    cache.refit_angle = 0.01;
-    cache.refit_max_interval_ms = 1000;
-    cache.static_cascades_per_frame = 1;
+    cache.options = {0.01, 1000, 1};
     upstream::csm_refit_start(engine, cache, generator, 4);
     CsmRefitRuntime& refit = *upstream::csm_refit_runtime(cache);
     std::string key, out;
@@ -231,7 +229,19 @@ await registerSceneWithShadowSupport(scene);`,
     assert.ok(result.manifest.features.includes("shadow:csm-static-cache"));
     assert.match(
         result.cpp,
-        /bbl::enable_csm_static_cache\(v_engine, v_sg, 0\.01, std::nullopt, std::optional<double>\{1\.0\}, false\)/,
+        /bbl::enable_csm_static_cache\(v_engine, v_sg, 0\.01, std::nullopt, std::optional<double>\{1\.0\}\)/,
+    );
+    // The receiver texture is the generator's own record, kept where the
+    // call runs: enableCsmStaticCache reads it at run time.
+    const read = compileSource(
+        `${prefix.replace("createStandardMaterial}", "createStandardMaterial,getCsmReceiverTexture}")}const receiver=getCsmReceiverTexture(sg);
+await enableCsmStaticCache(engine,sg,{refitAngle:0.01});
+await registerSceneWithShadowSupport(scene);
+void receiver;`,
+    ).cpp;
+    const taken = read.indexOf("bbl::get_csm_receiver_texture(v_engine, v_sg)");
+    assert.ok(
+        taken >= 0 && taken < read.indexOf("bbl::enable_csm_static_cache("),
     );
     assert.throws(
         () =>
