@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { sharedPinnedContext } from "../src/lowering/context.js";
 import { staticSoundLibraryHeader } from "../src/lowering/static-sound-library.js";
 import {
+    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    serveHttpFixture,
 } from "./native-fixture.js";
 
 test("the pinned sound playback functions lower over the Web Audio records and the engine views", (t) => {
@@ -109,4 +112,56 @@ int main() {
         ]);
         execFileSync(join(output, "check.exe"), { stdio: "pipe" });
     }
+});
+
+test("the pinned audio fetch reads packaged responses and rejects a failed status with the pin's message", async (t) => {
+    const header = staticSoundLibraryHeader(sharedPinnedContext(), [
+        "loadAudioArrayBuffer",
+    ]);
+    assert.match(header, /bbl::web_platform::fetch\(/);
+    assert.match(header, /response_array_buffer\(/);
+    const tools = optionalNativeFixtureTools();
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const base = await serveHttpFixture(t, (_request, response) => {
+        response.writeHead(404);
+        response.end("no");
+    });
+    const output = resolve("artifacts/static-sound-fetch-check");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "library.hpp"), header);
+    const packaged = join(output, "sound.bin");
+    writeFileSync(packaged, Uint8Array.of(82, 73, 70, 70, 1, 2));
+    const executable = join(output, "check.exe");
+    runNativeFixtureCompiler(tools, [
+        "/DBBLITE_WORKERS=1",
+        "/DBBLITE_HAS_IMAGE_DECODER=1",
+        "/DBBLITE_HAS_WEBP_DECODER=1",
+        resolve("test/fixtures/static-sound-fetch-check.cpp"),
+        "native/src/pal_web_platform.cpp",
+        "native/src/pal_http.cpp",
+        "native/src/pal_image.cpp",
+        "native/src/pal.cpp",
+        `/Fo${output}/`,
+        `/Fe${executable}`,
+        join(nativeFixtureVcpkgRoot, "lib/libwebp.lib"),
+        join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
+        join(nativeFixtureVcpkgRoot, "lib/SDL3_image.lib"),
+        "/link",
+        "winhttp.lib",
+    ]);
+    const { stdout } = await promisify(execFile)(executable, [base, packaged], {
+        timeout: 60000,
+        env: {
+            ...process.env,
+            PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${process.env.PATH ?? ""}`,
+        },
+    });
+    // Each line whole (the empty statusText leaves the message's last space).
+    assert.deepEqual(stdout.replaceAll("\r\n", "\n").split("\n").slice(0, -1), [
+        "packaged 6 82",
+        `missing HTTP 404 loading '${base}/missing.wav': `,
+    ]);
 });

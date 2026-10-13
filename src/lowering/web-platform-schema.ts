@@ -225,6 +225,14 @@ export const webPlatformRecords: readonly RecordSpec[] = [
         members: members([
             ["ok", seamRead(boolean, "response_ok")],
             ["status", seamRead(number, "response_status")],
+            ["statusText", seamRead(string, "response_status_text")],
+            [
+                "arrayBuffer",
+                seamCall(
+                    fn([], promise({ kind: "buffer" })),
+                    "response_array_buffer",
+                ),
+            ],
             ["url", seamRead(string, "response_url")],
             // The headers are the response's own.
             ["headers", reads(record("Headers"), (owner) => owner)],
@@ -409,11 +417,11 @@ export const webPlatformGlobals: ReadonlyMap<string, CallAdapter> = new Map<
     ],
     ["performance.now", { cpp: () => `${PLATFORM}::performance_now()` }],
     [
-        // `fetch(url, init)` with a string or a URL object.
+        // `fetch(url, init?)` with a string or a URL object.
         "fetch",
         {
-            cpp: (argument) =>
-                `${PLATFORM}::fetch(${argument(0)}, ${argument(1)})`,
+            cpp: (argument, call) =>
+                `${PLATFORM}::fetch(${argument(0)}, ${(call.arguments?.length ?? 0) > 1 ? argument(1) : `${PLATFORM}::RequestInit{}`})`,
             parameters: [undefined, record("RequestInit")],
         },
     ],

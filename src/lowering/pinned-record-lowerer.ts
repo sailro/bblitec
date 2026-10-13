@@ -341,6 +341,30 @@ interface ModuleVariable {
 const nullishFlags =
     ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
 
+/** Whether a pattern has a `^` or `$` assertion (outside classes and escapes). */
+function hasLineAnchor(source: string): boolean {
+    let inClass = false;
+    for (let index = 0; index < source.length; index++) {
+        const unit = source[index]!;
+        if (unit === "\\") {
+            index++;
+            continue;
+        }
+        if (inClass) {
+            if (unit === "]") inClass = false;
+            continue;
+        }
+        if (unit === "[") {
+            inClass = true;
+            // A leading `^` negates the class.
+            if (source[index + 1] === "^") index++;
+            continue;
+        }
+        if (unit === "^" || unit === "$") return true;
+    }
+    return false;
+}
+
 /**
  * A `RegExp`: the entry compiler's own runtime regular expression
  * (`bbl::js::RegExp`), empty while absent.
@@ -8480,7 +8504,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const source = text.slice(1, slash);
         const flags = text.slice(slash + 1);
         for (const flag of flags)
-            if (flag !== "g" && flag !== "i")
+            if (
+                flag !== "g" &&
+                flag !== "i" &&
+                // `m` changes only what `^` and `$` match.
+                !(flag === "m" && !hasLineAnchor(source))
+            )
                 return this.refuse(
                     node,
                     `Pinned regular expression flag '${flag}'.`,
