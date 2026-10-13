@@ -174,6 +174,8 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:pickable": [],
     "mesh:vat": [],
     "mesh:vat-instances": [],
+    "mesh:vat-time": [],
+    "mesh:vat-instance-storage": [],
     "mesh:skeleton": [],
     "mesh:transform-node": [],
     "mesh:mirrored": [],

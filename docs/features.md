@@ -154,6 +154,8 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 - Property tracks: numeric leaves, linear/step; easing callbacks refuse. Autonomous managers cannot share a program with
   a persistent application RAF loop.
 - GPU skinning, storage morphs, VAT, thin instances. Direct morphs: one pre-start attachment per mesh.
+- `setVatTime` writes the VAT clock lane until the handle's next `play`/`update`. `setVatInstanceStorage` validates and
+  stores the buffer; only VAT picking reads it, and that is not lowered.
 
 ## Sprites, picking, flow graphs, gizmos
 

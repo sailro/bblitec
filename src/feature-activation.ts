@@ -934,6 +934,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/vat/vat-baker.ts (setInstances)",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "mesh:vat-time": {
+        provenance: "src/vat/vat-baker.ts setVatTime",
+        consumers: CMAKE,
+    },
+    "mesh:vat-instance-storage": {
+        provenance: "src/vat/vat-baker.ts setVatInstanceStorage",
+        consumers: CMAKE,
+    },
     "mesh:skeleton": {
         provenance:
             "src/skeleton/create-skeleton.ts and " +

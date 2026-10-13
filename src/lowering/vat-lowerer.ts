@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { pinnedErrorCode } from "./pinned-error.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerGltfVatBinding } from "./gltf/vat-binding.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -22,7 +23,11 @@ const VAT_MODULE = "src/vat/vat-baker.ts";
 export class VatLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lower(options: { instances: boolean }): LoweredSource {
+    public lower(options: {
+        instances: boolean;
+        time?: boolean;
+        instanceStorage?: boolean;
+    }): LoweredSource {
         const file = this.context.sourceFile(VAT_MODULE);
         const defaultFrameRate = this.pinnedDefaultFrameRate(file);
         // `clipFrameCount(group) = max(1, round(duration * fps) + 1)`, the
@@ -333,6 +338,14 @@ void vat_play(
         static_cast<float>(row->from_row + row->frame_count - 1.0);
     vat.settings[2] = static_cast<float>(offset.value_or(0.0));
     vat.settings[3] = static_cast<float>(fps ? *fps : row->fps);
+${
+    options.time
+        ? `    // writeUbo uploads the whole block, whose clock lane is the handle's
+    // own clock: a setVatTime write does not survive it.
+    vat.settings[4] = vat.time;
+`
+        : ""
+}\
     vat.settings_version += 1;
 }
 
@@ -345,7 +358,7 @@ void vat_update(
     vat.settings[4] = vat.time;
     vat.settings_version += 1;
 }
-${options.instances ? this.lowerSetInstances() : ""}
+${options.instances ? this.lowerSetInstances() : ""}${options.time ? this.lowerSetTime() : ""}${options.instanceStorage ? this.lowerSetInstanceStorage() : ""}
 VatClipRow vat_clip_row(
     Engine& engine,
     VatBake baked,
@@ -400,6 +413,97 @@ void seek_vat(Engine& engine, double seconds) {
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * `setVatTime`: one Float32 write at byte 16 of the settings block, the
+     * lane the handle's update fills from its own clock, which stays as it
+     * was. The handle's whole-block writes put that clock back.
+     */
+    private lowerSetTime(): string {
+        const declaration = this.context.functionDeclaration(
+            VAT_MODULE,
+            "setVatTime",
+        ).declaration;
+        this.context.assertStatementShapes(
+            declaration.body!,
+            declaration.body!.statements,
+            `
+            const vat = mesh.vat;
+            if (!vat) {
+                ThrowLiteError(899);
+            }
+            const time = (_vatTime ??= new Float32Array(1));
+            time[0] = seconds;
+            engine._device.queue.writeBuffer(vat.settingsBuffer, 16, time);
+        `,
+            "VAT clock write",
+        );
+        const attach = this.context.functionDeclaration(
+            VAT_MODULE,
+            "attachVat",
+        ).declaration;
+        for (const shape of [
+            "device.queue.writeBuffer(settingsBuffer, 0, ubo.buffer, ubo.byteOffset, 32)",
+            "ubo[4] = time",
+        ])
+            this.context.expectShapeCount(
+                attach,
+                shape,
+                "VAT settings block write",
+            );
+        const code = pinnedErrorCode(this.context, declaration);
+        return `
+// ${this.context.provenance(VAT_MODULE, "setVatTime")}
+void set_vat_time(Engine& engine, MeshHandle mesh, double seconds) {
+    MeshRecord& record = vat_mesh(engine, mesh);
+    if (!record.has_vat) throw std::runtime_error("#${code}");
+    record.vat.settings[4] = static_cast<float>(seconds);
+    record.vat.settings_version += 1;
+}
+`;
+    }
+
+    /**
+     * \`setVatInstanceStorage\`: the pin's checks, then the buffer the VAT
+     * picking projection binds for thin instances; native picking does not
+     * lower that projection, so nothing else reads it.
+     */
+    private lowerSetInstanceStorage(): string {
+        const declaration = this.context.functionDeclaration(
+            VAT_MODULE,
+            "setVatInstanceStorage",
+        ).declaration;
+        this.context.assertStatementShapes(
+            declaration.body!,
+            declaration.body!.statements,
+            `
+            const vat = mesh.vat;
+            if (!vat) {
+                ThrowLiteError(897);
+            }
+            if (buffer && (buffer._destroyed || buffer._engine !== engine || !engine._storageBuffers?.has(buffer))) {
+                ThrowLiteError(898);
+            }
+            vat._instanceStorage = buffer;
+        `,
+            "VAT instance storage",
+        );
+        const [, missing, invalid] = declaration.body!.statements;
+        return `
+// ${this.context.provenance(VAT_MODULE, "setVatInstanceStorage")}
+void set_vat_instance_storage(Engine& engine, MeshHandle mesh,
+                              std::optional<StorageBufferHandle> buffer) {
+    MeshRecord& record = vat_mesh(engine, mesh);
+    if (!record.has_vat) throw std::runtime_error("#${pinnedErrorCode(this.context, missing!)}");
+    // \`buffer._engine !== engine\` is settled at generation.
+    if (buffer && (buffer->value >= engine.storage_buffers.size() ||
+                   engine.storage_buffers[buffer->value].disposed ||
+                   !engine.storage_buffers[buffer->value].registered))
+        throw std::runtime_error("#${pinnedErrorCode(this.context, invalid!)}");
+    record.vat.instance_storage = buffer;
+}
+`;
     }
 
     /**

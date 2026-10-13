@@ -121,8 +121,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "enableRenderTaskTransmission",
         "setSpatialListenerPosition",
         "setSpatialPosition",
-        "setVatInstanceStorage",
-        "setVatTime",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "throw" })),
 ];
 

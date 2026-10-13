@@ -806,6 +806,8 @@ struct VatData {
     std::vector<float> instance_params;
     std::uint32_t instance_texels = 0;
     std::uint64_t instance_version = 0;
+    /** `setVatInstanceStorage`: the published dual-clip params buffer, or none. */
+    std::optional<StorageBufferHandle> instance_storage;
 };
 
 struct BillboardSpriteHandle {
@@ -6929,6 +6931,11 @@ void enable_skeleton_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void remove_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh);
+/** `setVatTime`: the settings block's clock lane, apart from the handle's own clock. */
+void set_vat_time(Engine& engine, MeshHandle mesh, double seconds);
+/** `setVatInstanceStorage`. */
+void set_vat_instance_storage(Engine& engine, MeshHandle mesh,
+                              std::optional<StorageBufferHandle> buffer);
 /** `RenderTask.dispose()`. */
 void dispose_render_task(Engine& engine, TaskHandle task);
 /** `EffectRenderTask.dispose()`. */
