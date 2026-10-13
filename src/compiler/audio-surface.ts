@@ -7,18 +7,21 @@ import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 
-import {
-    PANNER_MODELS,
-    PANNER_PROPERTIES,
-    readProperty,
-    type PropertyContext,
-} from "./properties.js";
+import { readProperty, type PropertyContext } from "./properties.js";
 import { isStringValue, type Feature, type Value } from "./types.js";
 import { domAudioHandleKind } from "./data-types.js";
 import { listenerOptions } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { packagedUrlAssets, type StaticFetchContext } from "./static-fetch.js";
 import { deploymentUrl } from "./deployment.js";
+import { webAudioMemberCall } from "../lowering/web-platform-schema.js";
+import {
+    AUDIO_ELEMENT_PROPERTIES,
+    AUDIO_PARAM_SCHEDULES,
+    PANNER_MODELS,
+    PANNER_PROPERTIES,
+    SOURCE_LOOP_MEMBERS,
+} from "./web-audio-members.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -332,11 +335,9 @@ export function compileAudioConstructor(
 }
 
 /** `param.<method>(value, time)`. */
-const PARAM_SCHEDULES: Readonly<Record<string, string>> = {
-    setValueAtTime: "audio_param_set_value_at_time",
-    linearRampToValueAtTime: "audio_param_linear_ramp",
-    exponentialRampToValueAtTime: "audio_param_exponential_ramp",
-};
+const PARAM_SCHEDULES: ReadonlyMap<string, string> = new Map(
+    AUDIO_PARAM_SCHEDULES,
+);
 
 /**
  * Web Audio the reached slice does not lower, each refusing by name
@@ -429,6 +430,19 @@ function resolveAudioReceiver(
 }
 
 // -- method calls --------------------------------------------------------
+
+/** A node a factory call makes, held in a temporary the call returns. */
+function emitAudioNode(context: AudioCallContext, initializer: string): Value {
+    const node = context.allocateTemporaryCppName("audio_node");
+    context.emit({
+        kind: "declaration",
+        type: "bbl::pal::AudioNodeHandle",
+        name: node,
+        initializer,
+    });
+    context.registerNativeTemporary(node);
+    return { kind: "audio-node", cpp: node };
+}
 
 /** An audio call's operand, evaluated into a temporary in source order. */
 function pinnedAudioOperand(
@@ -657,16 +671,13 @@ function compileAudioElementMethod(
     }
     if (method === "play" || method === "pause" || method === "load") {
         context.expectArgumentCount(call, 0, 0);
-        if (method !== "play")
-            return {
-                kind: "void",
-                cpp: `bbl::pal::audio_element_${method}(${receiver.cpp})`,
-            };
+        const cpp = webAudioMemberCall("HTMLAudioElement", method)(
+            receiver.cpp,
+            [],
+        );
+        if (method !== "play") return { kind: "void", cpp };
         return {
-            ...context.dataLowerer.leafValue(
-                `bbl::pal::audio_element_play(${receiver.cpp})`,
-                { kind: "promise" },
-            ),
+            ...context.dataLowerer.leafValue(cpp, { kind: "promise" }),
             impure: true,
         };
     }
@@ -765,15 +776,10 @@ function compileAudioReceiverMethod(
                 "createMediaElementSource takes an Audio element.",
             );
         context.reachFeature("audio:media-element", call);
-        const node = context.allocateTemporaryCppName("audio_node");
-        context.emit({
-            kind: "declaration",
-            type: "bbl::pal::AudioNodeHandle",
-            name: node,
-            initializer: `bbl::pal::audio_create_media_element_source(${audioContext}, ${element.cpp})`,
-        });
-        context.registerNativeTemporary(node);
-        return { kind: "audio-node", cpp: node };
+        return emitAudioNode(
+            context,
+            `bbl::pal::audio_create_media_element_source(${audioContext}, ${element.cpp})`,
+        );
     }
 
     if (receiver.kind === "audio-context") {
@@ -836,15 +842,10 @@ function compileAudioReceiverMethod(
                       handle: "media-stream",
                   })}`
                 : "";
-            const node = context.allocateTemporaryCppName("audio_node");
-            context.emit({
-                kind: "declaration",
-                type: "bbl::pal::AudioNodeHandle",
-                name: node,
-                initializer: `bbl::pal::audio_create_media_stream_${source ? "source" : "destination"}(${owner}${stream})`,
-            });
-            context.registerNativeTemporary(node);
-            return { kind: "audio-node", cpp: node };
+            return emitAudioNode(
+                context,
+                `bbl::pal::audio_create_media_stream_${source ? "source" : "destination"}(${owner}${stream})`,
+            );
         }
         const factory = NODE_FACTORIES[method];
         if (!factory) {
@@ -859,18 +860,10 @@ function compileAudioReceiverMethod(
         if (factory.feature) {
             context.reachFeature(factory.feature, call);
         }
-        const node = context.allocateTemporaryCppName("audio_node");
-        context.emit({
-            kind: "declaration",
-            type: "bbl::pal::AudioNodeHandle",
-            name: node,
-            initializer: `bbl::pal::${factory.factory}(${receiver.cpp})`,
-        });
-        context.registerNativeTemporary(node);
-        return {
-            kind: "audio-node",
-            cpp: node,
-        };
+        return emitAudioNode(
+            context,
+            `bbl::pal::${factory.factory}(${receiver.cpp})`,
+        );
     }
 
     if (receiver.kind === "audio-buffer" && method === "getChannelData") {
@@ -1054,9 +1047,10 @@ function compileAudioReceiverMethod(
                     );
                 return {
                     kind: "void",
-                    cpp:
-                        `bbl::pal::audio_node_${method}(` +
-                        `${receiver.cpp}, ${[when, ...trailing].join(", ")})`,
+                    cpp: webAudioMemberCall("AudioNode", method)(receiver.cpp, [
+                        when,
+                        ...trailing,
+                    ]),
                 };
             }
             default:
@@ -1065,7 +1059,7 @@ function compileAudioReceiverMethod(
     }
 
     if (receiver.kind === "audio-param") {
-        const schedule = PARAM_SCHEDULES[method];
+        const schedule = PARAM_SCHEDULES.get(method);
         if (schedule) {
             if (call.arguments.length !== 2) {
                 context.fail(
@@ -1110,7 +1104,11 @@ function compileAudioReceiverMethod(
             );
             return {
                 kind: "void",
-                cpp: `bbl::pal::audio_param_set_value_curve(${param}, ${curve}, ${start}, ${duration})`,
+                cpp: webAudioMemberCall("AudioParam", method)(param, [
+                    curve,
+                    start,
+                    duration,
+                ]),
             };
         }
         if (method === "cancelScheduledValues") {
@@ -1120,9 +1118,9 @@ function compileAudioReceiverMethod(
                     : "0.0";
             return {
                 kind: "void",
-                cpp:
-                    `bbl::pal::audio_param_cancel_scheduled_values(` +
-                    `${receiver.cpp}, ${time})`,
+                cpp: webAudioMemberCall("AudioParam", method)(receiver.cpp, [
+                    time,
+                ]),
             };
         }
         return undefined;
@@ -1140,6 +1138,21 @@ const AUDIO_INTERFACES: Readonly<Record<string, string>> = {
     "audio-node": "AudioNode",
     "audio-param": "AudioParam",
 };
+
+/** A written value, compiled to the native type a member table names. */
+function compileAudioScalar(
+    context: AudioWriteContext,
+    shape: "boolean" | "number" | "string",
+    right: ts.Expression,
+): string {
+    if (shape === "boolean") return context.compileBoolean(right);
+    if (shape === "number") return context.compileNumber(right, "double");
+    return context.dataLowerer.compileKnownValueForSink(
+        context.compileValue(right),
+        { kind: "string" },
+        right,
+    );
+}
 
 /** A Web Audio property write this surface does not lower, refused by name. */
 function refuseAudioWrite(
@@ -1194,25 +1207,21 @@ export function emitAudioPropertyAssignment(
             "audio_element",
             left.expression,
         ).cpp;
-        const value =
-            property === "loop"
-                ? context.compileBoolean(right)
-                : property === "currentTime"
-                  ? context.compileNumber(right, "double")
-                  : property === "preload"
-                    ? context.dataLowerer.compileKnownValueForSink(
-                          context.compileValue(right),
-                          { kind: "string" },
-                          right,
-                      )
-                    : context.fail(
-                          left.name,
-                          `HTMLAudioElement.${property} writes are not lowered: an Audio element writes loop, preload and currentTime.`,
-                      );
-        const setter = property === "currentTime" ? "current_time" : property;
+        const member = AUDIO_ELEMENT_PROPERTIES.find(
+            ([name, , , writable]) => writable && name === property,
+        );
+        if (!member)
+            return context.fail(
+                left.name,
+                `HTMLAudioElement.${property} writes are not lowered: an Audio element writes ${AUDIO_ELEMENT_PROPERTIES.filter(
+                    ([, , , writable]) => writable,
+                )
+                    .map(([name]) => name)
+                    .join(", ")}.`,
+            );
         context.emit({
             kind: "expression",
-            code: `bbl::pal::audio_element_set_${setter}(${element}, ${value});`,
+            code: `bbl::pal::audio_element_set_${member[2]}(${element}, ${compileAudioScalar(context, member[1], right)});`,
         });
         return true;
     }
@@ -1240,24 +1249,12 @@ export function emitAudioPropertyAssignment(
         return true;
     }
 
-    if (property === "loop") {
+    const loopMember = SOURCE_LOOP_MEMBERS.find(([name]) => name === property);
+    if (loopMember) {
         context.reachFeature("audio:buffer-source", expression);
         context.emit({
             kind: "expression",
-            code:
-                `bbl::pal::audio_set_loop(${owner.cpp}, ` +
-                `${context.compileBoolean(right)});`,
-        });
-        return true;
-    }
-
-    if (property === "loopStart" || property === "loopEnd") {
-        context.reachFeature("audio:buffer-source", expression);
-        context.emit({
-            kind: "expression",
-            code:
-                `bbl::pal::audio_set_${property === "loopStart" ? "loop_start" : "loop_end"}(${owner.cpp}, ` +
-                `${context.compileNumber(right, "double")});`,
+            code: `bbl::pal::audio_set_${loopMember[2]}(${owner.cpp}, ${compileAudioScalar(context, loopMember[1], right)});`,
         });
         return true;
     }

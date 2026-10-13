@@ -5,6 +5,8 @@ import type { LoweringServices } from "./lowering-services.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 import { optionalPresentCpp, type Value } from "./types.js";
+import { MEDIA_STREAM_TRACK_LISTS } from "./web-audio-members.js";
+import { webAudioMemberCall } from "../lowering/web-platform-schema.js";
 
 /**
  * MediaStream and MediaStreamTrack objects (`bblite/pal_media_stream.hpp`):
@@ -143,11 +145,9 @@ function mediaReceiverKind(
         : undefined;
 }
 
-const TRACK_LISTS: Readonly<Record<string, string>> = {
-    getTracks: "",
-    getAudioTracks: "audio",
-    getVideoTracks: "video",
-};
+const TRACK_LISTS: ReadonlySet<string> = new Set(
+    MEDIA_STREAM_TRACK_LISTS.map(([name]) => name),
+);
 
 function streamMethod(
     lowerer: DataLowerer,
@@ -156,12 +156,11 @@ function streamMethod(
     method: string,
 ): Value | undefined {
     const context = lowerer.context;
-    const list = TRACK_LISTS[method];
-    if (list !== undefined) {
+    if (TRACK_LISTS.has(method)) {
         context.expectArgumentCount(call, 0, 0);
         return {
             ...lowerer.leafValue(
-                `bbl::pal::media_stream_tracks(${receiver}, ${context.cppString(list)})`,
+                webAudioMemberCall("MediaStream", method)(receiver, []),
                 TRACKS,
             ),
             freshData: true,
@@ -207,7 +206,7 @@ function trackMethod(
         context.expectArgumentCount(call, 0, 0);
         return {
             kind: "void",
-            cpp: `bbl::pal::media_stream_track_stop(${receiver})`,
+            cpp: webAudioMemberCall("MediaStreamTrack", method)(receiver, []),
         };
     }
     if (method === "clone") {

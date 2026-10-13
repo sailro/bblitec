@@ -54,6 +54,16 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { webPlatformProperty } from "./web-platform.js";
+import {
+    AUDIO_BUFFER_PROPERTIES,
+    AUDIO_ELEMENT_PROPERTIES,
+    AUDIO_PARAM_NAMES,
+    MEDIA_STREAM_PROPERTIES,
+    MEDIA_STREAM_TRACK_PROPERTIES,
+    PANNER_MODELS,
+    PANNER_PROPERTIES,
+    SOURCE_LOOP_MEMBERS,
+} from "./web-audio-members.js";
 import { fullscreenElementValue } from "./fullscreen.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
@@ -352,45 +362,7 @@ export function isHandleCollectionProperty(property: string): boolean {
     );
 }
 
-/**
- * `node.<name>` for every automatable parameter the PAL serves. A node
- * and a source both carry them, so each name yields two rows -- the
- * enumerator is spelled once.
- */
-const AUDIO_PARAM_NAMES: readonly (readonly [
-    property: string,
-    enumerator: string,
-])[] = [
-    ["gain", "Gain"],
-    ["frequency", "Frequency"],
-    ["detune", "Detune"],
-    ["Q", "Q"],
-    ["pan", "Pan"],
-    ["playbackRate", "PlaybackRate"],
-    ["positionX", "PositionX"],
-    ["positionY", "PositionY"],
-    ["positionZ", "PositionZ"],
-    ["orientationX", "OrientationX"],
-    ["orientationY", "OrientationY"],
-    ["orientationZ", "OrientationZ"],
-];
-
-/** A panner's numeric attributes, each its `PannerProperty` enumerator. */
-export const PANNER_PROPERTIES = [
-    ["refDistance", "RefDistance"],
-    ["maxDistance", "MaxDistance"],
-    ["rolloffFactor", "RolloffFactor"],
-    ["coneInnerAngle", "ConeInnerAngle"],
-    ["coneOuterAngle", "ConeOuterAngle"],
-    ["coneOuterGain", "ConeOuterGain"],
-] as const;
-
-/** A panner's string models, each its `PannerModel` enumerator. */
-export const PANNER_MODELS = [
-    ["panningModel", "Panning"],
-    ["distanceModel", "Distance"],
-] as const;
-
+/** `node.<name>`: every automatable parameter the PAL serves (`web-audio-members.ts`). */
 const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
     ([property, enumerator]) => ({
         owner: "audio-node" as const,
@@ -820,39 +792,19 @@ export const propertyRules: readonly PropertyRule[] = [
     ...AUDIO_PARAM_RULES,
     // An HTMLAudioElement's media state: written by the program and advanced
     // by its context's clock, so two reads are two.
-    ...(
-        [
-            ["duration", "number", "duration"],
-            ["currentTime", "number", "current_time"],
-            ["loop", "boolean", "loop"],
-            ["paused", "boolean", "paused"],
-            ["ended", "boolean", "ended"],
-        ] as const
-    ).map(([property, value, member]): PropertyRead => ({
-        owner: "audio-element",
-        property,
-        value,
-        helper: `bbl::pal::audio_element_${member}`,
-        feature: "audio:media-element",
-        impure: true,
-    })),
-    {
-        owner: "audio-element",
-        property: "preload",
-        value: "data",
-        helper: "bbl::pal::audio_element_preload",
-        dataType: { kind: "string" },
-        feature: "audio:media-element",
-        impure: true,
-    },
-    ...(
-        [
-            ["duration", "Duration"],
-            ["length", "Length"],
-            ["sampleRate", "SampleRate"],
-            ["numberOfChannels", "NumberOfChannels"],
-        ] as const
-    ).map(([property, member]): PropertyRead => ({
+    ...AUDIO_ELEMENT_PROPERTIES.map(
+        ([property, shape, member]): PropertyRead => ({
+            owner: "audio-element",
+            property,
+            ...(shape === "string"
+                ? { value: "data", dataType: { kind: "string" } }
+                : { value: shape }),
+            helper: `bbl::pal::audio_element_${member}`,
+            feature: "audio:media-element",
+            impure: true,
+        }),
+    ),
+    ...AUDIO_BUFFER_PROPERTIES.map(([property, member]): PropertyRead => ({
         owner: "audio-buffer",
         property,
         value: "number",
@@ -862,43 +814,33 @@ export const propertyRules: readonly PropertyRule[] = [
     })),
     // A buffer source's loop flag and points: written by the program, so
     // two reads are two.
-    ...(
-        [
-            ["loop", "boolean", "bbl::pal::audio_loop"],
-            ["loopStart", "number", "bbl::pal::audio_loop_start"],
-            ["loopEnd", "number", "bbl::pal::audio_loop_end"],
-        ] as const
-    ).map(([property, value, helper]): PropertyRead => ({
+    ...SOURCE_LOOP_MEMBERS.map(([property, value, native]): PropertyRead => ({
         owner: "audio-node",
         property,
         value,
-        helper,
+        helper: `bbl::pal::audio_${native}`,
         feature: "audio:buffer-source",
         impure: true,
     })),
     // A panner's attributes and models, as the program last wrote them.
-    ...PANNER_PROPERTIES.map(
-        ([property, member]): PropertyRead => ({
-            owner: "audio-node",
-            property,
-            value: "number",
-            helper: "bbl::pal::audio_panner_property",
-            helperArgument: `bbl::pal::PannerProperty::${member}`,
-            feature: "audio:panner",
-            impure: true,
-        }),
-    ),
-    ...PANNER_MODELS.map(
-        ([property, which]): PropertyRead => ({
-            owner: "audio-node",
-            property,
-            value: "string",
-            helper: "bbl::pal::audio_panner_model",
-            helperArgument: `bbl::pal::PannerModel::${which}`,
-            feature: "audio:panner",
-            impure: true,
-        }),
-    ),
+    ...PANNER_PROPERTIES.map(([property, member]): PropertyRead => ({
+        owner: "audio-node",
+        property,
+        value: "number",
+        helper: "bbl::pal::audio_panner_property",
+        helperArgument: `bbl::pal::PannerProperty::${member}`,
+        feature: "audio:panner",
+        impure: true,
+    })),
+    ...PANNER_MODELS.map(([property, which]): PropertyRead => ({
+        owner: "audio-node",
+        property,
+        value: "string",
+        helper: "bbl::pal::audio_panner_model",
+        helperArgument: `bbl::pal::PannerModel::${which}`,
+        feature: "audio:panner",
+        impure: true,
+    })),
     {
         owner: "audio-node",
         property: "buffer",
@@ -928,44 +870,26 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "audio:media-stream",
     },
     // MediaStream and MediaStreamTrack (`bblite/pal_media_stream.hpp`).
-    {
-        owner: "media-stream",
-        property: "id",
-        value: "string",
-        helper: "bbl::pal::media_stream_id",
-        feature: "platform:media-stream",
-    },
-    {
-        owner: "media-stream",
-        property: "active",
-        value: "boolean",
-        helper: "bbl::pal::media_stream_active",
-        feature: "platform:media-stream",
-        impure: true,
-    },
-    ...(["kind", "id", "label"] as const).map((property): PropertyRead => ({
-        owner: "media-stream-track",
-        property,
-        value: "string",
-        helper: `bbl::pal::media_stream_track_${property}`,
-        feature: "platform:media-stream",
-    })),
-    {
-        owner: "media-stream-track",
-        property: "readyState",
-        value: "string",
-        helper: "bbl::pal::media_stream_track_ready_state",
-        feature: "platform:media-stream",
-        impure: true,
-    },
-    {
-        owner: "media-stream-track",
-        property: "enabled",
-        value: "boolean",
-        helper: "bbl::pal::media_stream_track_enabled",
-        feature: "platform:media-stream",
-        impure: true,
-    },
+    ...MEDIA_STREAM_PROPERTIES.map(
+        ([property, value, native, impure]): PropertyRead => ({
+            owner: "media-stream",
+            property,
+            value,
+            helper: `bbl::pal::media_stream_${native}`,
+            feature: "platform:media-stream",
+            ...(impure ? { impure: true as const } : {}),
+        }),
+    ),
+    ...MEDIA_STREAM_TRACK_PROPERTIES.map(
+        ([property, value, native, impure]): PropertyRead => ({
+            owner: "media-stream-track",
+            property,
+            value,
+            helper: `bbl::pal::media_stream_track_${native}`,
+            feature: "platform:media-stream",
+            ...(impure ? { impure: true as const } : {}),
+        }),
+    ),
 
     {
         // Device generation is observable by recovery. Queue uploads still
