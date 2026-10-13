@@ -1674,26 +1674,30 @@ js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
     return result;
 }
 
-UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child) {
-    UiElementRecord& parent_record = ui_element(engine, parent);
-    UiElementRecord& child_record = ui_element(engine, child);
-    if (child_record.markup_owner.value != invalid_handle ||
-        parent_record.markup_owner.value != invalid_handle)
+namespace {
+/** Pre-insertion validity, checked before any node moves. */
+void require_insertable(Engine& engine, UiElementHandle parent, UiElementHandle node) {
+    const UiElementRecord& record = ui_element(engine, node);
+    if (record.markup_owner.value != invalid_handle)
         throw std::runtime_error(
             "Reparenting queried innerHTML nodes requires an authored markup tree.");
-    if (parent.value == child.value) {
-        throw std::runtime_error("A native UI element cannot contain itself.");
-    }
-    for (UiElementHandle ancestor = parent; ancestor.value != invalid_handle;
-         ancestor = ui_element(engine, ancestor).parent) {
-        if (ancestor.value == child.value) {
-            throw std::runtime_error("A native UI element cannot contain one of its ancestors.");
-        }
-    }
+    if (ui_contains(engine, node, parent))
+        throw js::make_dom_exception("The new child element contains the parent.",
+                                     "HierarchyRequestError");
     if (engine.ui_document_roots.active() &&
-        (child == engine.ui_document_roots.html || child == engine.ui_document_roots.head ||
-         child == engine.ui_document_roots.body))
+        (node == engine.ui_document_roots.html || node == engine.ui_document_roots.head ||
+         node == engine.ui_document_roots.body))
         throw std::runtime_error("Reparenting document roots is not supported.");
+}
+} // namespace
+
+UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child) {
+    if (ui_element(engine, parent).markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Reparenting queried innerHTML nodes requires an authored markup tree.");
+    require_insertable(engine, parent, child);
+    UiElementRecord& parent_record = ui_element(engine, parent);
+    UiElementRecord& child_record = ui_element(engine, child);
     if (child_record.parent.value != invalid_handle) {
         const auto previous_parent = child_record.parent;
         std::erase(ui_element(engine, previous_parent).children, child);
@@ -1867,20 +1871,6 @@ UiElementHandle ui_sibling_parent(Engine& engine, UiElementHandle node) {
     return record.parent;
 }
 
-/** Pre-insertion validity, checked before any node moves. */
-void require_insertable(Engine& engine, UiElementHandle parent, UiElementHandle node) {
-    const UiElementRecord& record = ui_element(engine, node);
-    if (record.markup_owner.value != invalid_handle)
-        throw std::runtime_error(
-            "Reparenting queried innerHTML nodes requires an authored markup tree.");
-    if (ui_contains(engine, node, parent))
-        throw js::make_dom_exception("The new child element contains the parent.",
-                                     "HierarchyRequestError");
-    if (engine.ui_document_roots.active() &&
-        (node == engine.ui_document_roots.html || node == engine.ui_document_roots.head ||
-         node == engine.ui_document_roots.body))
-        throw std::runtime_error("Reparenting document roots is not supported.");
-}
 } // namespace
 
 void ui_replace_with(Engine& engine, UiElementHandle node,
