@@ -340,7 +340,6 @@ export interface LoweringServices {
     constructsLocalClass(expression: ts.NewExpression): boolean;
     reachJson(): void;
     reachFileReader(): void;
-    reachLocalStorage(): void;
     reachImageDecode(): void;
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;

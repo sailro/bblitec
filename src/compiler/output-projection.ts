@@ -345,6 +345,8 @@ export const featureSources: Record<Feature, string[]> = {
     // executable carries neither the filesystem code nor the preference
     // directory it would create.
     "storage:local": ["src/pal_storage.cpp"],
+    // Session storage is process memory: header-only.
+    "storage:session": [],
 };
 
 export const featureOrder = Object.keys(featureSources) as Feature[];
@@ -797,7 +799,8 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (projection.webPlatformHeaders ?? [])
             .map((header) => `#include <bblite/${header}.hpp>\n`)
             .join("") +
-        (features.includes("storage:local")
+        (features.includes("storage:local") ||
+        features.includes("storage:session")
             ? "#include <bblite/js_storage.hpp>\n"
             : "") +
         (features.includes("browser:file")

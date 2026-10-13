@@ -2696,12 +2696,13 @@ template <typename K, typename V> [[nodiscard]] inline Array<V> map_values(const
 }
 
 using Date = Ref<double>;
-struct StorageTag {};
-using Storage = Ref<StorageTag>;
-[[nodiscard]] inline Storage local_storage_object() {
-    static thread_local const auto instance = make_ref<StorageTag>();
-    return instance;
-}
+/** A Web Storage area object; js_storage.hpp creates `localStorage` and `sessionStorage`. */
+struct StorageArea {
+    Nullable<std::string> (*get_item)(const std::string&) = nullptr;
+    void (*set_item)(const std::string&, const std::string&) = nullptr;
+    void (*remove_item)(const std::string&) = nullptr;
+};
+using Storage = Ref<StorageArea>;
 using DateTimeFormat = Ref<std::string>;
 #ifdef __ANDROID__
 std::string android_time_zone();

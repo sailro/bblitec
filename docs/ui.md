@@ -27,6 +27,8 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   ResizeObserver entries are unavailable.
 - Location: deployment query reads fold to constants. Reload, `location.search` writes and same-document
   `assign`/`href` recreate realms, keeping durable storage; another document throws NotSupportedError.
+- Web Storage: getItem/setItem/removeItem. `localStorage` lives in the host preference directory; `sessionStorage` in
+  process memory (kept across realm recreation, never on disk, no quota) and is absent in worker realms.
 - Clipboard: text writes only. `visibilitychange` follows window hide/show.
 - `beforeunload` then `pagehide` (persisted=false, no prompt) run before realm cleanup; worker realms refuse them.
 - Error/unhandledrejection listeners are supported; `rejectionhandled` is not.

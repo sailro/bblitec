@@ -324,7 +324,6 @@ export interface ExpressionContext
             | "compileStaticFetchMethod"
             | "compilePlatformCall"
             | "reachJson"
-            | "reachLocalStorage"
             | "reachFileReader"
             | "compileAnimationFrameCall"
             | "compileBrowserGeneratedString"

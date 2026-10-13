@@ -29,7 +29,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { storageValue } from "./web-storage.js";
+import { STORAGE_METHODS, storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import {
     belongsToEntryEngine,
@@ -4935,12 +4935,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (platform) return platform;
         const gpu = gpuAdapterProperty(this, owner, property);
         if (gpu) return gpu;
-        if (owner.dataType?.kind === "storage") {
-            const method = storageValue(owner.cpp).recordProperties?.[property];
-            if (method) {
-                this.context.emitDiscardedValue(owner);
-                return method;
-            }
+        if (
+            owner.dataType?.kind === "storage" &&
+            STORAGE_METHODS.has(property)
+        ) {
+            // The method reads its operation from the area, evaluated once.
+            const area = this.context.bindings.pinValueToTemporary(
+                owner,
+                "storage_area",
+                access.expression,
+            );
+            return storageValue(area.cpp).recordProperties?.[property];
         }
         const deferred = this.context.deferredCapabilities.property(
             access,

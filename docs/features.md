@@ -7,7 +7,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: audio graph
-operations, media streams/recording/streamed audio, script elements, session storage, idle callbacks, dynamic
+operations, media streams/recording/streamed audio, script elements, idle callbacks, dynamic
 pixel ratio, application-realm device recovery, Blob streams/piping/compression, `{ signal }` listeners, and the
 [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
 
