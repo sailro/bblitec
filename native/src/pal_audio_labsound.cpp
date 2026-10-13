@@ -541,11 +541,8 @@ void retain_audio_completion(const AudioNodeHandle& node) {
             auto& owner = EventLoop::current();
             // Listener snapshots and removals use the shared DOM registry rules.
             // Delivery is a queued task, outside all audio graph locks/iteration.
-            for (auto& listeners : source.ownership->ended) {
-                listeners.dispatch_with([&](auto& listener) {
-                    owner.dispatch_callback([callback = listener] { callback(); });
-                });
-            }
+            for (auto& listeners : source.ownership->ended)
+                dispatch_platform_event(owner, listeners);
         });
     state->inbox = loop.inbox();
     state->completion =
@@ -2104,9 +2101,7 @@ double current_position(const AudioElementPlayback& playback) {
 void dispatch_element_event(AudioElementPlayback& playback, AudioElementEvent type) {
     auto& owner = EventLoop::current();
     for (auto& listeners : playback.listeners[static_cast<std::size_t>(type)])
-        listeners.dispatch_with([&](auto& listener) {
-            owner.dispatch_callback([callback = listener] { callback(); });
-        });
+        dispatch_platform_event(owner, listeners);
 }
 
 /** One media element task firing `types` in order. */
