@@ -3,9 +3,11 @@ import {
     GLB_JSON_CHUNK as JSON_CHUNK,
     GLB_MAGIC,
 } from "./gltf-document.js";
+import { ownedBytes } from "./glb-binary-builder.js";
 import { type JsonRecord } from "./json-fields.js";
 export interface GlbChunks {
     json: JsonRecord;
+    /** Owns its whole ArrayBuffer (`ownedBytes`). */
     binary: Buffer;
 }
 /** Splits a GLB into its JSON and binary chunks, or undefined if not a GLB. */
@@ -28,7 +30,7 @@ export function readGlb(bytes: Uint8Array): GlbChunks | undefined {
         if (type === JSON_CHUNK) {
             json = JSON.parse(data.toString("utf8")) as JsonRecord;
         } else if (type === BINARY_CHUNK) {
-            binary = Buffer.from(data);
+            binary = ownedBytes(data);
         }
         offset += 8 + length;
     }

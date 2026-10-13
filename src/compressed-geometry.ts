@@ -1,4 +1,4 @@
-import { BinaryBuilder } from "./glb-binary-builder.js";
+import { BinaryBuilder, ownedBytes } from "./glb-binary-builder.js";
 import { createHash } from "node:crypto";
 import type { AssetDecoders, DracoDecoderAssets } from "./asset-decoders.js";
 // Compressed and quantized glTF geometry, resolved at generation time.
@@ -627,10 +627,12 @@ async function runPinnedPreParse(
                 "neither side would resolve.",
         );
     }
-    glb.binary = Buffer.from(
-        rewritten.buffer,
-        rewritten.byteOffset,
-        rewritten.byteLength,
+    glb.binary = ownedBytes(
+        new Uint8Array(
+            rewritten.buffer,
+            rewritten.byteOffset,
+            rewritten.byteLength,
+        ),
     );
     glb.json.buffers = [{ byteLength: glb.binary.length }];
     pass.after?.(glb.json);
