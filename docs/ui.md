@@ -157,8 +157,10 @@ Pixel ratio, viewport size and input capabilities read host state without flushi
 ### File transfer controls
 
 Window object URLs share the document's lifetime, including before rendering-engine creation and in deferred callbacks.
-An anchor `href` is an object URL (a download anchor) or a string (a link: the attribute is set and the link drawn;
-activating it does not navigate). A string `href` beside `download`, and `click()` on a link, refuse.
+An anchor `href` is an object URL (a download anchor) or a string, a link: clicked or `click()`, it activates as
+`location.assign(href)` (another document throws a NotSupportedError DOMException). A link whose `target` is not
+`_self`, `_parent` or `_top` is drawn and inert: the native host has one browsing context. A string `href` beside
+`download` refuses.
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
 snapshot bytes/name before change dispatch; cancellation dispatches `cancel` and preserves the selection.
 File, Blob and FileList aliases retain identity through owned containers, callbacks and promise results.
