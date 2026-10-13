@@ -13,6 +13,12 @@ test("Window beforeunload and pagehide preserve targets, flags, callback orderin
     const source = readFileSync(entry, "utf8");
     const generated = compileSource(source, { fileName: entry });
     assert.ok(generated.manifest.features.includes("platform:window"));
+    // localStorage links the durable store's unit, which the fixture below
+    // replaces with an in-memory store of the same three operations.
+    assert.ok(generated.manifest.features.includes("storage:local"));
+    assert.ok(
+        generated.manifest.runtimeSources.includes("src/pal_storage.cpp"),
+    );
     // A synchronous scene registers them on its own engine; its frame loop
     // dispatches them when the window closes.
     for (const type of ["pagehide", "beforeunload"]) {
@@ -58,14 +64,20 @@ test("Window beforeunload and pagehide preserve targets, flags, callback orderin
         #include "program.hpp"
         #undef main
         #include <cassert>
+        #include <map>
         namespace bbl::pal {
             Engine document;
-            std::string stored;
+            std::map<std::string, std::string> stored;
             Engine& window_document_engine() { return document; }
             const void* window_document_identity() { return &document; }
-            void write_local_storage(const std::string& key, const std::string& value) {
-                assert(key == "pagehide-result"); stored = value;
+            std::optional<std::string> read_local_storage(const std::string& key) {
+                const auto found = stored.find(key);
+                return found == stored.end() ? std::nullopt : std::optional{found->second};
             }
+            void write_local_storage(const std::string& key, const std::string& value) {
+                stored.insert_or_assign(key, value);
+            }
+            void remove_local_storage(const std::string& key) { stored.erase(key); }
             int run_window_application(WorkerEntry initialize, EngineOptions) {
                 const js::RealmScope scope;
                 EventLoop loop;
@@ -93,7 +105,8 @@ test("Window beforeunload and pagehide preserve targets, flags, callback orderin
             assert(!bbl::dom_event_persisted(ordinary).has_value());
             const int result = generated_main();
             assert(result == 0);
-            assert(bbl::pal::stored == "beforeunload;capture;target;microtask;");
+            assert(bbl::pal::stored.size() == 1);
+            assert(bbl::pal::stored.at("pagehide-result") == "beforeunload;capture;target;microtask;");
             bbl::pal::document.dom_input.reset();
         }
     `,
