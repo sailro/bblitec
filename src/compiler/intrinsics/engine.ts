@@ -111,6 +111,7 @@ export interface EngineIntrinsicContext
         Pick<
             LoweringServices,
             | "admissions"
+            | "options"
             | "emit"
             | "emitDiscardedValue"
             | "fail"
@@ -269,13 +270,17 @@ export function compileEngineIntrinsic(
         case "resizeEngine": {
             // The pin's render loop runs this at the head of every frame;
             // native frame loops already refresh every surface's extent from
-            // its window, so the call only evaluates its engine.
+            // its window. A cap write (application realm only) installs the
+            // lowered `resizeSurface`, which this call also runs.
             assertPinnedResizeEngine();
             context.expectArgumentCount(call, 1, 1);
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));
-            context.emitDiscardedValue(engine);
-            return { kind: "void", cpp: "" };
+            if (!context.options.workers) {
+                context.emitDiscardedValue(engine);
+                return { kind: "void", cpp: "" };
+            }
+            return { kind: "void", cpp: `bbl::resize_engine(${engine.cpp})` };
         }
 
         case "enableAsyncShaderPipelineCompilation": {

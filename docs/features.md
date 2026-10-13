@@ -7,8 +7,8 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: audio graph
-operations, media streams/recording/streamed audio, script elements, idle callbacks, dynamic
-pixel ratio, application-realm device recovery, Blob streams/piping/compression, and the [UI](ui.md)
+operations, media streams/recording/streamed audio, script elements, idle callbacks,
+application-realm device recovery, Blob streams/piping/compression, and the [UI](ui.md)
 items marked deferred. Unregistered APIs still refuse.
 
 ## Language
@@ -79,8 +79,10 @@ Rules:
 
 - One engine per entry setup. Rebinding an engine alias refuses.
 - `msaaSamples`: 1 for numeric 1, else 4; other constants refuse.
-- `resizeEngine` is a no-op; native loops own extent refresh.
+- Native loops own extent refresh; `resizeEngine` only applies `maxDevicePixelRatio` writes.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
+- `maxDevicePixelRatio` writes (application realm) size a DOM canvas backing store at `resizeEngine` and the next frame
+  head; the window composites it scaled. The `createEngine` option keeps the platform rules below.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.

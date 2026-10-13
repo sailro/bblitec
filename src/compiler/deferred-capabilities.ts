@@ -119,7 +119,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "reject" })),
     ...[
         "enableSpatial",
-        "SurfaceContext.maxDevicePixelRatio",
         "enableStereo",
         "enableAnalyzer",
         "createUnmuteUI",

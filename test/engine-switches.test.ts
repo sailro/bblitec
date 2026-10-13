@@ -4,6 +4,7 @@ import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerShaderUniformRangeUpdates } from "../src/lowering/shader-uniforms.js";
 import { lowerMaterialTracking } from "../src/lowering/material-tracking.js";
+import { lowerSurfaceResize } from "../src/lowering/surface-resize.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -154,5 +155,62 @@ assert(record.diffuse_color.r==0.75f&&record.ubo_version==1);
 bbl::project_tracked_material_colors(engine);assert(record.ubo_version==1);
 }`,
         { expectedOutput: "", flags: ["/DBBLITE_WORKERS=1"] },
+    );
+});
+
+test("surface pixel ratio writes evaluate their owner first and install the pinned resize", (t) => {
+    const compiled = compileSource(`
+        import {createEngine,resizeEngine} from "@babylonjs/lite";
+        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        let effects=0;
+        function owner(){effects++; return engine;}
+        if(owner().maxDevicePixelRatio!==Infinity) throw new Error("default cap");
+        owner().maxDevicePixelRatio=++effects*0.25;
+        resizeEngine(engine);
+        if(owner().maxDevicePixelRatio!==0.75 || effects!==4) throw new Error("surface cap");`);
+    assert.deepEqual(compiled.manifest.deferredCapabilities ?? [], []);
+    assert(compiled.manifest.features.includes("platform:window"));
+    assert.match(
+        compiled.cpp,
+        /auto& (v_bblite_surface_owner_\d+) = [^;]+;\s*bbl::set_surface_max_device_pixel_ratio\(\1, \(\(\+\+v_fn0_effects\) \* 0\.25\), &bblscene::v_bblite_resize_surface_\d+\);[\s\S]*?bbl::resize_engine\(/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const lowered = lowerSurfaceResize(new LoweringContext(), "resize");
+    runGeneratedProgram(
+        native,
+        "engine-switches/surface-resize",
+        `#include <bblite/pal_async_engine.hpp>
+#include <cassert>
+#include <cmath>
+namespace bbl::pal { double ratio=1.5; double window_device_pixel_ratio(){return ratio;} }
+namespace bblscene {
+${lowered.lines.join("\n")}
+}
+struct Device final:bbl::pal::OffscreenDevice{};
+int main(){
+const bbl::js::RealmScope scope;bbl::Engine engine;auto surface=std::make_shared<bbl::pal::OffscreenSurface>(1920,1080);
+engine.offscreen_run=std::make_shared<bbl::pal::OffscreenRun>(surface,std::make_shared<Device>());
+engine.canvas_client_width=1280;engine.canvas_client_height=720;
+const auto extent=[&](std::uint32_t width,std::uint32_t height){return surface->extent().width==width&&surface->extent().height==height;};
+assert(std::isinf(bbl::surface_max_device_pixel_ratio(engine)));
+bbl::set_surface_max_device_pixel_ratio(engine,0.5,&bblscene::resize);bbl::resize_engine(engine);
+assert(extent(1920,1080)&&bbl::surface_max_device_pixel_ratio(engine)==0.5);
+engine.dom_canvas=true;bbl::resize_engine(engine);
+assert(extent(640,360)&&engine.options.width==640&&engine.options.height==360);
+bbl::set_surface_max_device_pixel_ratio(engine,2,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1920,1080));
+engine.canvas_client_width=1001;engine.canvas_client_height=601;
+bbl::set_surface_max_device_pixel_ratio(engine,0.75,&bblscene::resize);bbl::resize_engine(engine);assert(extent(750,450));
+bbl::pal::ratio=0;bbl::set_surface_max_device_pixel_ratio(engine,1,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));
+for(const double cap:{0.0,-1.0,std::nan("")}){bbl::set_surface_max_device_pixel_ratio(engine,cap,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));}
+engine.canvas_client_width=0;bbl::set_surface_max_device_pixel_ratio(engine,0.5,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));
+}`,
+        {
+            expectedOutput: "",
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
+        },
     );
 });

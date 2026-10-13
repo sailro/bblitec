@@ -2766,6 +2766,13 @@ export class PropertyAccessLowerer {
                 },
             };
         }
+        if (owner.kind === "engine" && property === "maxDevicePixelRatio") {
+            return {
+                kind: "number",
+                cpp: `bbl::surface_max_device_pixel_ratio(${owner.cpp})`,
+                impure: true,
+            };
+        }
         if (owner.kind === "engine" && property === "drawCallCount") {
             // A JavaScript number read of the native counter.
             return {

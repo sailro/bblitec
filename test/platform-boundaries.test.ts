@@ -149,35 +149,6 @@ void remove_local_storage(const std::string&) { throw std::runtime_error("unexpe
     );
 });
 
-test("surface pixel ratio boundaries retain owner and RHS effects", () => {
-    const source = `
-        import {createEngine} from '@babylonjs/lite';
-        const engine=await createEngine(document.getElementById('renderCanvas') as HTMLCanvasElement);
-        let effects=0; let caught=0;
-        function owner(){effects++; return engine;}
-        try { owner().maxDevicePixelRatio=++effects; } catch(error) {
-            if(!error.message.includes('babylon:SurfaceContext.maxDevicePixelRatio')) throw error;
-            caught++;
-        }
-        try { if(owner().maxDevicePixelRatio>0) effects++; } catch {caught++;}
-        if(caught!==2 || effects!==3) throw new Error('surface boundary');
-    `;
-    const result = compileSource(source, { deferredCapabilities });
-    assert.deepEqual(
-        result.manifest.deferredCapabilities!.map((site) => site.operation),
-        ["write", "read"],
-    );
-    const tools = optionalNativeFixtureTools(false);
-    assert.ok(tools);
-    runGeneratedProgram(
-        tools,
-        "platform-boundaries/surface",
-        result.cpp +
-            `namespace bbl { Engine create_engine(EngineOptions) { return {}; } }`,
-        { expectedOutput: "" },
-    );
-});
-
 test("application recovery keeps callback bodies and defers only the missing realm contract", () => {
     const source = `
         import {createEngine,enableDeviceLostSceneRecovery,forceWebGpuDeviceLossForTesting} from '@babylonjs/lite';
