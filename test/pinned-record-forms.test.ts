@@ -22,7 +22,8 @@ const MODULE = "src/fixture/record-forms.ts";
  * empty string, a record whose member is an anonymous type literal, and a
  * union narrowed to fewer of its members (`typeof`, `in`, `Array.isArray`,
  * `instanceof` the language's or a platform class),
- * and members of an `as const` object read as their literals.
+ * members of an `as const` object read as their literals, and a module
+ * `RegExp | null` built once and matched (non-global and global).
  * `run` prints what it computed.
  */
 const SOURCE = `export interface Bus {
@@ -61,6 +62,19 @@ function describe(source: Source): string {
 }
 
 export const Mode = { Idle: 0, Busy: 3, Label: "busy" } as const;
+
+let extension: RegExp | null = null;
+
+function fileExtension(url: string): string | undefined {
+    extension ??= new RegExp("\\\\.(\\\\w{3,4})($|\\\\?)");
+    return url.match(extension)?.[1];
+}
+
+function digits(text: string): string {
+    const found = text.match(new RegExp("\\\\d+", "g"));
+    const first = text.match(/(\\d)(x)?/);
+    return (found ? found.join("+") : "none") + "/" + (first ? first.length + ":" + first[0] : "none");
+}
 
 let warned = false;
 let warnings = 0;
@@ -104,7 +118,9 @@ export function run(): string {
     warnOnce("first");
     warnOnce("second");
     const flags = (plain ? "in " : "out ") + (warned ? "warned" : "quiet");
-    return \`\${snapshot.join(",")} \${sounds.size} \${offset} \${tail} \${mirrored.join(",")} \${input(main)} \${input(bus)} \${flags} \${warnings} \${lastWarning} \${described} \${mode} \${modeName}\`;
+    const extensions = ["a.wav", "b.ogg?v=2", "c", "d.webm#t"].map((url) => fileExtension(url) ?? "-").join(",");
+    const numbers = digits("a1b22c333") + " " + digits("none");
+    return \`\${snapshot.join(",")} \${sounds.size} \${offset} \${tail} \${mirrored.join(",")} \${input(main)} \${input(bus)} \${flags} \${warnings} \${lastWarning} \${described} \${mode} \${modeName} \${extensions} \${numbers}\`;
 }
 `;
 
@@ -218,5 +234,9 @@ test("the record model refuses structural tests it cannot decide", () => {
     assert.throws(
         () => lowered(SOURCE.replace("let warnings = 0;", "let warnings = 1;")),
         /Pinned module state starts from null, undefined, false, 0 or an empty string only/,
+    );
+    assert.throws(
+        () => lowered(SOURCE.replace('"g")', '"gu")')),
+        /Pinned RegExp constructors support the g and i flags, not 'u'/,
     );
 });

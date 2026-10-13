@@ -341,6 +341,16 @@ interface ModuleVariable {
 const nullishFlags =
     ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
 
+/**
+ * A `RegExp`: the entry compiler's own runtime regular expression
+ * (`bbl::js::RegExp`), empty while absent.
+ */
+const regExpShape: RecordShape = {
+    kind: "native",
+    cpp: "bbl::js::RegExp",
+    nullable: true,
+};
+
 /** The native namespace of a module's internal functions. */
 function detailNamespace(module: string): string {
     // `_matrix-allocator.ts` is internal by its underscore; the native
@@ -959,6 +969,14 @@ export class PinnedRecordModel {
             if (library && name === "Float64Array")
                 return { kind: "typed", element: "f64" };
             if (library && name === "DataView") return { kind: "dataview" };
+            if (library && name === "RegExp") return regExpShape;
+            // A match's captures: unmatched groups read as empty strings,
+            // as the runtime's RegExp reports them.
+            if (
+                library &&
+                (name === "RegExpMatchArray" || name === "RegExpExecArray")
+            )
+                return { kind: "array", element: { kind: "string" } };
             if (library && name === "ArrayLike") {
                 const [element] = argumentsOf();
                 if (!element || !(element.flags & ts.TypeFlags.NumberLike))
@@ -8281,6 +8299,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "repeat":
                 arity(1);
                 return `bbl::js::string_repeat(${receiver()}, ${this.value(first!)})`;
+            case "match": {
+                // String.prototype.match over the runtime's RegExp: the first
+                // match's captures, or every match under `g` (lastIndex
+                // reset first); null when nothing matches.
+                arity(1);
+                const pattern = this.skipParentheses(first!);
+                const expression = ts.isRegularExpressionLiteral(pattern)
+                    ? this.regularExpression(pattern)
+                    : stripOptional(this.shapeAt(pattern)).kind === "native" &&
+                        this.cpp(stripOptional(this.shapeAt(pattern))) ===
+                            this.cpp(regExpShape)
+                      ? this.value(pattern)
+                      : this.refuse(first!, "Pinned match takes a RegExp.");
+                return `[&](const std::string& subject) { return (${expression}).match(subject); }(${receiver()})`;
+            }
             case "trim":
                 arity(0);
                 return `bbl::js::string_trim(${receiver()})`;
@@ -8362,6 +8395,45 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             default:
                 return this.refuse(node, `Pinned string method '${name}'.`);
         }
+    }
+
+    /**
+     * `new RegExp(pattern, flags?)` over the runtime's RegExp: a pattern
+     * computed at run time, flags known at generation (`g` and `i`; a `u`
+     * pattern is translated at generation, which a computed one cannot be).
+     */
+    private regExpConstruction(
+        node: ts.NewExpression,
+        to: RecordShape,
+    ): string {
+        const [pattern, flagsNode] = node.arguments ?? [];
+        if (!pattern || (node.arguments?.length ?? 0) > 2)
+            return this.refuse(
+                node,
+                "Pinned RegExp takes a pattern and optional flags.",
+            );
+        const flags =
+            flagsNode === undefined
+                ? ""
+                : ts.isStringLiteralLike(this.skipParentheses(flagsNode))
+                  ? (this.skipParentheses(flagsNode) as ts.StringLiteralLike)
+                        .text
+                  : this.refuse(
+                        flagsNode,
+                        "Pinned RegExp flags must be a string literal.",
+                    );
+        for (const flag of flags)
+            if (flag !== "g" && flag !== "i")
+                return this.refuse(
+                    flagsNode ?? node,
+                    `Pinned RegExp constructors support the g and i flags, not '${flag}'.`,
+                );
+        return this.coerce(
+            `bbl::js::RegExp(${this.convert(pattern, { kind: "string" })}, ${flags.includes("g")}, ${flags.includes("i")})`,
+            regExpShape,
+            to,
+            node,
+        );
     }
 
     /**
@@ -8868,6 +8940,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         }
         // A platform class the schema constructs (`new URL(a, base)`).
         const library = this.libraryName(node.expression);
+        if (library === "RegExp") return this.regExpConstruction(node, to);
         const constructed =
             library !== undefined
                 ? this.model.schema.constructors?.get(library)
