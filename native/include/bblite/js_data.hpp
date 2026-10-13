@@ -5450,6 +5450,11 @@ template <typename Lane>
     return lane.bits;
 }
 
+/** An absent number is `undefined`, which converts as NaN: `~~undefined` is 0. */
+[[nodiscard]] inline std::uint32_t to_uint32(const Nullable<double>& value) {
+    return value ? to_uint32(*value) : 0u;
+}
+
 // ECMAScript Math.imul: multiply the two ToUint32 values modulo 2^32,
 // then expose the low word as a signed 32-bit JavaScript number. Unsigned
 // multiplication gives the specified wrap without relying on signed overflow.

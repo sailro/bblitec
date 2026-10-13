@@ -40,47 +40,26 @@ struct ShadowCascade {
     double frustum_length = 0.0;
 };
 
-/** One caster's slot in the CSM refit gate (`createCsmRefitGate`). */
-struct CsmRefitSlot {
-    MeshHandle mesh{};
-    double last = 0.0;
-    bool dynamic = true;
-    double quiet = 0.0;
+/** The options `sg._csmCache` keeps (`enableCsmStaticCache`). */
+struct CsmStaticCacheOptions {
+    double refit_angle = 0.0;
+    double refit_max_interval_ms = 0.0;
+    std::uint32_t static_cascades_per_frame = 0;
 };
 
 /**
  * `enableCsmStaticCache`: the options `sg._csmCache` keeps, and the cached
- * task state's CPU side (`ensureCsmShadowCacheState`): the refit gate, the
- * static refit scheduler, the cascades fitted at the last refit and this
- * frame's plan. The cache texture is a render target; the static caster
- * passes ride the generator's `caster_tasks` ahead of the dynamic ones.
+ * task state's CPU side (`ensureCsmShadowCacheState`): the refit gate and
+ * static refit scheduler lowered from the pin (`csm_static_cache.hpp`), the
+ * cascades fitted at the last refit and this frame's plan. The cache
+ * texture is a render target; the static caster passes ride the
+ * generator's `caster_tasks` ahead of the dynamic ones.
  */
 struct CsmStaticCacheState {
-    double refit_angle = 0.0;
-    double refit_max_interval_ms = 0.0;
-    std::uint32_t static_cascades_per_frame = 0;
+    CsmStaticCacheOptions options;
     RenderTargetHandle cache_target{};
-    // createCsmRefitGate
-    std::vector<CsmRefitSlot> slots;
-    std::vector<MeshHandle> casters;
-    bool casters_synced = false;
-    std::uint64_t casters_list_version = 0;
-    double last_static_sum = 0.0;
-    double last_dynamic_sum = 0.0;
-    bool caster_set_changed = false;
-    bool has_refit = false;
-    std::array<double, 3> refit_direction{};
-    double last_refit_ms = 0.0;
-    double frames_since_refit = 0.0;
-    bool last_drift_only = false;
-    bool last_dynamic_changed = false;
-    // createCsmStaticRefitScheduler
-    std::uint32_t scheduler_count = 0;
-    std::uint32_t scheduler_budget = 0;
-    std::vector<bool> waiting;
-    std::uint32_t waiting_count = 0;
-    bool immediate = false;
-    std::uint32_t cursor = 0;
+    /** `_gate` and `_staticScheduler`: the generated `CsmRefitRuntime`. */
+    std::shared_ptr<void> refit;
     // renderCsmShadowMapCached
     double last_camera_version = -1.0;
     double last_camera_aspect = -1.0;
@@ -193,6 +172,8 @@ struct ShadowGeneratorRecord {
     std::shared_ptr<PlatformEventListeners<void(const js::F32Array&)>> csm_receiver_callbacks;
     /** `sg._csmCache`, set by `enableCsmStaticCache`. */
     std::shared_ptr<CsmStaticCacheState> csm_cache;
+    /** `sg._csmReceiverTexture`: `getCsmReceiverTexture` ran for this generator. */
+    bool csm_receiver_texture_read = false;
     /**
      * ESM only: this generator's ordinal among the ESM ones, which is the
      * row generation emitted its recorded resources under.

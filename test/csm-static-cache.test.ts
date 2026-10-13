@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { csmRefitGateCpp } from "../src/lowering/csm-static-cache.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { csmRefitLibrary } from "../src/lowering/csm-static-cache.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
@@ -142,17 +143,17 @@ test("the CSM refit gate and static refit scheduler match the pin frame by frame
                 typeof value === "boolean" ? String(value) : String(value),
             )
             .join(", ");
+    const library = csmRefitLibrary(new LoweringContext());
     runGeneratedProgram(
         tools,
         "csm-static-cache/refit-gate",
         `#include <bblite/runtime.hpp>
+${library.includes.map((header) => `#include <${header}>`).join("\n")}
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <string>
-namespace bbl::upstream {
-${csmRefitGateCpp()}
-}
+${library.source}
 using namespace bbl;
 struct Frame { std::vector<int> moved; double x, y, z, now; bool camera, force; std::vector<int> casters; };
 int main() {
@@ -166,9 +167,9 @@ ${frames.map((frame) => `        {{${cpp(frame.moved)}}, ${frame.light.map((v) =
     };
     ShadowGeneratorRecord generator;
     CsmStaticCacheState cache;
-    cache.refit_angle = 0.01;
-    cache.refit_max_interval_ms = 1000;
-    upstream::csm_scheduler_create(cache, 4, 1);
+    cache.options = {0.01, 1000, 1};
+    upstream::csm_refit_start(engine, cache, generator, 4);
+    CsmRefitRuntime& refit = *upstream::csm_refit_runtime(cache);
     std::string key, out;
     for (const Frame& frame : frames) {
         for (const int index : frame.moved) ++engine.meshes[index].transform_version;
@@ -180,20 +181,18 @@ ${frames.map((frame) => `        {{${cpp(frame.moved)}}, ${frame.light.map((v) =
             ++generator.caster_list_version;
             key = next;
         }
-        upstream::csm_refit_sync_casters(engine, cache, generator);
-        const auto decision = upstream::csm_refit_update(engine, cache, frame.x, frame.y, frame.z, frame.now, frame.camera, frame.force);
-        if (decision.refit) upstream::csm_scheduler_arm(cache, cache.last_drift_only && !upstream::csm_scheduler_pending(cache));
+        upstream::csm_refit_sync(engine, refit, generator);
+        const auto decision = refit.gate->update(frame.x, frame.y, frame.z, frame.now, frame.camera, frame.force, refit.on_move, refit.on_move);
+        if (decision.refit) refit.scheduler->arm(refit.gate->last_refit_drift_only() && !refit.scheduler->pending());
         std::string taken = "-";
-        if (upstream::csm_scheduler_pending(cache)) {
-            std::vector<std::uint32_t> cascades;
-            upstream::csm_scheduler_take(cache, cascades);
+        if (refit.scheduler->pending()) {
             taken.clear();
-            for (const auto cascade : cascades) taken += std::to_string(cascade);
+            for (const double cascade : refit.scheduler->take()) taken += std::to_string(static_cast<int>(cascade));
         }
         std::string dynamic;
-        for (std::uint32_t index = 0; index < 4; ++index) dynamic += upstream::csm_refit_is_dynamic(cache, MeshHandle{index}) ? "1" : "0";
+        for (std::uint32_t index = 0; index < 4; ++index) dynamic += upstream::csm_refit_is_dynamic(engine, cache, MeshHandle{index}) ? "1" : "0";
         out += std::string(out.empty() ? "" : "|") + (decision.refit ? "1" : "0") + (decision.render_dynamic ? "1" : "0") +
-               (cache.last_drift_only ? "1" : "0") + (cache.last_dynamic_changed ? "1" : "0") + ":" + dynamic + ":" + taken;
+               (refit.gate->last_refit_drift_only() ? "1" : "0") + (refit.gate->last_dynamic_changed() ? "1" : "0") + ":" + dynamic + ":" + taken;
     }
     std::cout << out;
 }
@@ -230,7 +229,19 @@ await registerSceneWithShadowSupport(scene);`,
     assert.ok(result.manifest.features.includes("shadow:csm-static-cache"));
     assert.match(
         result.cpp,
-        /bbl::enable_csm_static_cache\(v_engine, v_sg, 0\.01, std::nullopt, std::optional<double>\{1\.0\}, false\)/,
+        /bbl::enable_csm_static_cache\(v_engine, v_sg, 0\.01, std::nullopt, std::optional<double>\{1\.0\}\)/,
+    );
+    // The receiver texture is the generator's own record, kept where the
+    // call runs: enableCsmStaticCache reads it at run time.
+    const read = compileSource(
+        `${prefix.replace("createStandardMaterial}", "createStandardMaterial,getCsmReceiverTexture}")}const receiver=getCsmReceiverTexture(sg);
+await enableCsmStaticCache(engine,sg,{refitAngle:0.01});
+await registerSceneWithShadowSupport(scene);
+void receiver;`,
+    ).cpp;
+    const taken = read.indexOf("bbl::get_csm_receiver_texture(v_engine, v_sg)");
+    assert.ok(
+        taken >= 0 && taken < read.indexOf("bbl::enable_csm_static_cache("),
     );
     assert.throws(
         () =>

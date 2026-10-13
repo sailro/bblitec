@@ -161,8 +161,8 @@ ShadowCasterMatrices shadow_caster_matrices(const Engine& engine, const FrameTas
 /** The refresh's own carriers, kept by each backend across frames. */
 struct ShadowRefreshState {
 #if BBLITE_CSM_STATIC_CACHE
-    /** A cached CSM generator refilled its caster passes during the refresh. */
-    bool task_lists_moved = false;
+    /** The caster passes cached CSM generators refilled during the refresh. */
+    std::vector<TaskHandle> moved_tasks;
 #endif
     /** Refilled per generator by the ESM caster fold, never reallocated. */
     std::vector<upstream::ShadowCaster> casters;
@@ -216,8 +216,8 @@ struct ShadowTaskPass {
 ShadowTaskPass shadow_task_pass(const Engine& engine, const ShadowRefreshState& refresh,
                                 const FrameTaskRecord& task);
 
-/** Whether the refresh refilled a cached generator's caster passes; it is consumed. */
-bool take_moved_task_lists(ShadowRefreshState& refresh);
+/** The caster passes the refresh refilled, whose draw lists are rebuilt; they are consumed. */
+std::vector<TaskHandle> take_moved_task_lists(ShadowRefreshState& refresh);
 
 /**
  * Refresh every generator the scene's lights name, then hand each to the
@@ -385,7 +385,9 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
                 // The pin applies a frame's transfers before its passes run:
                 // the backend rebuilds the task draw lists the refill moved.
                 if (generator.csm_cache->refilled) {
-                    refresh.task_lists_moved = true;
+                    refresh.moved_tasks.insert(refresh.moved_tasks.end(),
+                                               generator.caster_tasks.begin(),
+                                               generator.caster_tasks.end());
                     generator.csm_cache->refilled = false;
                 }
                 // Whether any pass of this generator runs this frame: the
