@@ -190,6 +190,10 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_AUDIO_STEREO_PANNER", anyOf: ["audio:stereo-panner"] },
     { macro: "BBLITE_HAS_AUDIO_MEDIA_STREAM", anyOf: ["audio:media-stream"] },
     {
+        macro: "BBLITE_HAS_AUDIO_MEDIA_ELEMENT",
+        anyOf: ["audio:media-element"],
+    },
+    {
         macro: "BBLITE_HAS_GEOMETRY_OUTPUT",
         anyOf: ["renderer:geometry-output"],
     },

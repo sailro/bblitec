@@ -101,9 +101,17 @@ public:
 
 private:
     std::vector<AudioContextHandle> contexts_;
+    /** The default output unrouted media elements share, once one plays. */
+    AudioContextHandle media_output_{};
+    /** A silent input keeping that output's capture recorder fed once elements leave it. */
+    AudioNodeHandle media_output_feed_{};
     friend AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session,
                                                    std::shared_ptr<AudioPlaybackDevice> device);
+    friend AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session);
 };
+
+/** The session's media element output context, created on first use. */
+AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session);
 
 /** `OscillatorNode.type`. */
 enum class OscillatorWave : std::uint8_t {

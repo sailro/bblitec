@@ -1344,6 +1344,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the reached Web Audio graph calls AudioContext.createBiquadFilter()",
         consumers: CMAKE,
     },
+    "audio:media-element": {
+        provenance:
+            "new Audio(url) plays a packaged source through " +
+            "AudioContext.createMediaElementSource",
+        consumers: CMAKE,
+    },
     "audio:static-sound": {
         provenance:
             "src/audio/static-sound.ts createSoundAsync/playSound/stopSound/" +

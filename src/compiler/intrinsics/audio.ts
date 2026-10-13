@@ -13,7 +13,7 @@ import {
 } from "../types.js";
 import type { DataType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { refuseAudioName } from "../audio-surface.js";
+import { packagedAudioUrl, refuseAudioName } from "../audio-surface.js";
 import { EmissionWeakMap } from "../emission-transaction.js";
 import {
     nativeStatementCode,
@@ -26,10 +26,8 @@ import {
     emitScalarOption,
     retainedOptions,
 } from "./retained-options.js";
-import { packagedUrlAssets, type StaticFetchContext } from "../static-fetch.js";
-import { deploymentUrl } from "../deployment.js";
-import { AUDIO_CODECS, audioCodecForBytes } from "../../audio-codecs.js";
-import { readAssetBytesSync } from "../asset-bytes-sync.js";
+import type { StaticFetchContext } from "../static-fetch.js";
+import { AUDIO_CODECS } from "../../audio-codecs.js";
 import { cppIdentifier, snakeCase } from "../../cpp-literals.js";
 import { ApplicationRealmRequired } from "../worker-modules.js";
 
@@ -422,57 +420,15 @@ function soundSource(
 ): string {
     const argument = argumentAt(call, 1);
     const type = context.checker.getTypeAtLocation(argument);
-    if (type.flags & ts.TypeFlags.StringLike) {
-        const decodable = (source: string): boolean => {
-            try {
-                return (
-                    audioCodecForBytes(
-                        readAssetBytesSync(source, context.options.fileName),
-                    ) !== undefined
-                );
-            } catch {
-                return false;
-            }
-        };
-        const packaged = packagedUrlAssets(
+    if (type.flags & ts.TypeFlags.StringLike)
+        return packagedAudioUrl(
             context,
+            call,
             argument,
-            "binary",
-            decodable,
-        );
-        if (!packaged || packaged.assets.length === 0)
-            context.fail(
-                argument,
-                "A createSoundAsync URL must select packaged audio a linked decoder reads: a literal, or a runtime string whose candidates generation can find.",
-            );
-        for (const asset of packaged.assets) {
-            const codec = audioCodecForBytes(
-                readAssetBytesSync(asset.file, context.options.fileName),
-            )!;
-            context.reachFeature(`audio:decode-${codec}`, call);
-        }
-        const base = deploymentUrl(context.options).href;
-        const entries = packaged.assets.map(
-            (asset) =>
-                `{${context.cppString(cleanAudioUrl(asset.logicalSource))}, bbl::asset_path(${context.cppString(asset.output)})}`,
-        );
-        const url = context.bindings.pinValueToTemporary(
-            {
-                kind: "string",
-                cpp: context.dataLowerer.compileKnownValueForSink(
-                    packaged.selected,
-                    { kind: "string" },
-                    argument,
-                ),
-            },
+            "A createSoundAsync URL must select packaged audio a linked decoder reads: a literal, or a runtime string whose candidates generation can find.",
+            cleanAudioUrl,
             "sound_url",
-            argument,
         );
-        context.emit(
-            `bbl::pal::register_packaged_responses(${context.cppString(base)}, {${entries.join(", ")}});`,
-        );
-        return `std::string(${url.cpp})`;
-    }
     const value = context.compileValue(argument);
     if (value.kind === "audio-buffer")
         return context.bindings.pinValueToTemporary(

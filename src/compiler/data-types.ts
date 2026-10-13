@@ -705,6 +705,8 @@ export function domAudioHandleKind(type: ts.Type): HandleKind | undefined {
             return "audio-context";
         case "AudioNode":
             return "audio-node";
+        case "HTMLAudioElement":
+            return "audio-element";
     }
     return (type.getBaseTypes() ?? []).some(
         (base) => domAudioHandleKind(base) === "audio-node",
