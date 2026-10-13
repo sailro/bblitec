@@ -1,16 +1,11 @@
 # Current status
 
-Published full-image / foreground MAD against pinned browser references. `pixel-perfect` marks a
-backend whose capture matches its reference exactly; a MAD below 0.0005 that is not zero still reads
-0.000. Registry poses/gates and repeatability exceptions remain authoritative.
-Values describe saved reports, not the current working tree. Verify with `npm run status:verify`.
+Full-image/foreground MAD from saved reports against pinned browser references
+([verification](development.md#validation)). `pixel-perfect` is an exact match; a nonzero MAD below 0.0005 reads
+0.000. Colors: below 0.5 green, 0.5–1 yellow, 1+ red. Coverage cells start with the registry name. Physics rows
+include Bullet/Havok solver differences ([contract](fidelity.md#physics-contract)).
 
 ## Curated parity scenes
-
-Numbered scene coverage starts with its registry name. Colors: below 0.5 green,
-0.5–1 yellow, 1+ red. Repeatability-exempt rows retain their published values.
-Physics rows measure Bullet against Havok: their residuals include solver differences and do not isolate renderer fidelity
-([contract](fidelity.md#physics-contract)).
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
@@ -269,7 +264,7 @@ Physics rows measure Bullet against Havok: their residuals include solver differ
 
 ## Upstream application gates
 
-Unchanged pinned applications, including their reached source and asset graphs.
+Unchanged pinned applications.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
@@ -297,7 +292,7 @@ Unchanged pinned applications, including their reached source and asset graphs.
 
 ## Project-owned differential gates
 
-Repository fixtures running against pinned Babylon Lite. These measure contracts outside current corpus coverage.
+Repository fixtures against pinned Babylon Lite.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |

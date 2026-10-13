@@ -1,6 +1,6 @@
 # Native render backends
 
-Both backends consume generated plans, state, layouts and uniform writers.
+Both backends consume the same generated plans, layouts and uniform writers.
 
 ## Backend comparison
 
@@ -16,200 +16,100 @@ Both backends consume generated plans, state, layouts and uniform writers.
 | Lifetime                | SDL objects and fences                  | WebGPU objects and submission retention          |
 | GPU task timestamps     | D3D12; other drivers report unsupported | Enabled when the device supports timestamp-query |
 
-Runtime selection prefers SDL_GPU when compiled, otherwise Dawn. Explicit invalid or uncompiled
-backend requests fail.
+- Runtime prefers SDL_GPU when compiled, else Dawn. Invalid or uncompiled requests fail; GPU initialization and
+  recovery failures never fall back to the other backend.
+- Interactive desktop runs use SDL main callbacks (iterating during Win32 move/resize); capture, benchmark and mobile
+  runs iterate explicitly.
 
-## Shared frame conductor
+## Code layout
 
-`pal_frame_conductor.hpp` coordinates scene, sprite, effect and frame-graph drivers. `pal_gpu_dispatch.hpp`
-holds each compiled backend's entry points and Window presenter; `RendererRun` (`pal_frame_session.hpp`)
-shares the standalone hosts' input, clock, capture and benchmark phases.
-GPU units include their shared concerns directly: the scene-invariant
-`pal_gpu_frame.hpp` (run options, clocks, frame boundaries, capture gates, profiles) and `pal_gpu_images.hpp`
-(texel packing, decoded uploads, readback rows), then the scene-shaped surface, texture, sprite, vertex,
-material, shadow, scene-block, picking, target, pipeline and shader-pass headers. Their non-template
-bodies compile once per build, whenever a renderer unit or the window realm is built: the scene-invariant
-ones in `pal_gpu_frame.cpp` and `pal_gpu_images.cpp`, beside the other activation-macro-only PAL units, and
-the scene-shaped ones in `pal_gpu_shared.cpp`. `pal_gpu_variants.hpp` orders the generated material
-families whose uniform declarations are shared.
-Each backend's scene renderer is a driver (`pal_sdl_gpu.cpp`, `pal_dawn.cpp`: pass helpers and the frame run),
-a state header (`pal_sdl_gpu_scene.hpp`, `pal_dawn_scene.hpp`) and one file per feature family, paired across
-the backends as `pal_sdl_gpu_scene_<family>.cpp` / `pal_dawn_scene_<family>.cpp`: meshes, variants, shadows,
-textures, targets, post_process and picking. Wherever the feature table selects the driver, CMake compiles the
-backend's scene renderer as one translation unit (`pal_sdl_gpu_scene_all.cpp`, `pal_dawn_scene_all.cpp`,
-which include the family files and the driver by name), so a tree parses the state header once per backend.
-`pal_scene_synchronize.hpp` owns a scene frame's synchronization order, which both scene backends
-instantiate with their own GPU operations. `pal_pass_camera.hpp` resolves every pass's camera and clear
-colour through the lowered `cfg.cam ?? scene.camera` and `cfg.clrColor ?? sc.clearColor`: a layer renders
-through its own camera, every render and geometry task pass applies its camera's viewport, and a
-camera-less pass keeps the scene block and view-projection it last wrote (its view, projection and eye are zero). Renderable clocks
-(sprite-renderer hooks, sprite and billboard FX) step by the engine's delta, not a scene's `fixedDeltaMs`.
-Canvas metrics update before callbacks; RAF retains its registration phase and timers drain at frame boundaries.
-`pal_window.hpp` owns the OS window independently of renderer rebuilds.
+| File | Owns |
+| --- | --- |
+| `pal_frame_conductor.hpp` | Frame phases for scene, sprite, effect and frame-graph drivers |
+| `pal_gpu_dispatch.hpp` | Per-backend entry points and Window presenter |
+| `pal_frame_session.hpp` (`RendererRun`) | Standalone input, clock, capture and benchmark phases |
+| `pal_gpu_frame.*`, `pal_gpu_images.*` | Scene-invariant run options, clocks, capture gates, texel packing, readback |
+| `pal_gpu_*.hpp` + `pal_gpu_shared.cpp` | Scene-shaped shared concerns, compiled once per build |
+| `pal_<backend>.cpp`, `pal_<backend>_scene.hpp` | Scene driver and state, `<backend>` = `sdl_gpu` or `dawn` |
+| `pal_<backend>_scene_<family>.cpp` | meshes, variants, shadows, textures, targets, post_process, picking; built as one unit via `pal_<backend>_scene_all.cpp` |
+| `pal_scene_synchronize.hpp` | Scene frame synchronization order, instantiated per backend |
+| `pal_pass_camera.hpp` | Pass camera and clear colour (`cfg.cam ?? scene.camera`); camera-less passes keep the last scene block |
+| `pal_window.hpp` | OS window; survives renderer rebuilds |
 
-GPU completion posts native events to the owning realm. Dawn waits for mapping/submission futures
-on a worker thread; SDL waits for submission fences. Promise reactions stay on the realm thread.
+Renderable clocks (sprite hooks, sprite/billboard FX) step by engine delta, not `fixedDeltaMs`. GPU completion posts
+native events to the owning realm; promise reactions stay on the realm thread.
 
 ## Compiled binding contract
 
-- bblite-tint (`tools/tint-sdl`) drives the pinned Tint's HLSL, MSL and SPIR-V writers with SDL's
-  slots as their binding options and writes the `.slots` sidecar from the same assignment; DXC
-  compiles the HLSL to DXIL with the arguments Dawn passes for a default pipeline, IEEE
-  strictness included. Slots cover the resources the lowered entry point reaches.
-  Sidecars specify stage visibility, resource kind, slot order and uniform size. Large uniform
-  blocks may use read-only storage.
-- Each render stage's `.slots` sidecar opens with `@entry <entry point>` and ends with
-  `@binding <group> <binding> <name> <resource>` lines Tint reflects from every binding its
-  module declares (the module Dawn compiles, before any SDL uniform adaptation). Dawn lays
-  sprite, billboard, picking, splat, post-process, ID-diagnostic and retained-UI groups out
-  from them, adding only the site's binding model: dynamic offsets and formats that do not
-  filter. Sprite and billboard groups bind each resource by the name the pin's module declares.
-  The per-pass scene group follows the pin's `getSceneBindGroupLayout`, recorded at generation.
-  Composed material, effect, text, screen-space and compute layouts come from generated pin
-  descriptor tables; single-pipeline runtime modules use Dawn's reflected layout.
-- Sprite and billboard programs are the pin's own modules, deployed whole per reached
-  permutation; SDL binds their blocks at the slots each stage's sidecar names, and billboards
-  bind the pin's per-pass scene block at group 0 on both backends.
-- SDL integer texture loads occupy storage-texture slots. Vulkan binds a sampled texture and its
-  sampler as one combined image sampler, which Tint's image and sampler both address at the
-  texture's binding; integer and multisampled loads are sampled images after them.
-- A native module's interstage structures place the position first (a maintained Tint patch), so
-  its separately compiled D3D12 stages link when a fragment reads a prefix of the vertex outputs;
-  pinned stages keep Tint's order, whose fragments that omit the position read a prefix of it.
-- SPIR-V is version 1.3 and preserves varying locations; SDL_GPU devices request Vulkan 1.1.
-  Tint compacts vertex inputs at build time; shader-owned sidecar metadata maps pipeline attributes to those locations.
-  Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
-- Tint's SPIR-V keeps floating-point-dependent branches; the Vulkan driver optimizes the arithmetic.
-- Metal uses `main0`, flattened sidecar bindings and buffer lengths at reserved index 30 for robust access.
-- Dawn pipeline keys include format, samples, depth, blend, cull, topology and compare. Reached layouts
-  determine device limits. Vulkan teardown releases the presentation surface before the device.
-- Material pipelines use each task's sample count. Shared uploads retain per-binding sampler/UV state;
-  image identity includes bytes and upload flags. Last-owner release retires cached images.
-- Android prefers Vulkan 1.3 helper-invocation discard to preserve masked edges under MSAA;
-  older devices retain the Vulkan 1.1 shader path.
-- Local probe sets own their cube arrays and uniform data. SDL stores the 64 KiB probe block in a buffer.
-- Node geometry retains original attribute/index streams and separate per-view uniforms.
+- bblite-tint (`tools/tint-sdl`) drives the pinned Tint's HLSL/MSL/SPIR-V writers with SDL's slots and writes the
+  `.slots` sidecar from the same assignment. DXC compiles HLSL with Dawn's default-pipeline arguments (IEEE strict).
+- A `.slots` sidecar starts with `@entry <entry point>` and lists `@binding <group> <binding> <name> <resource>` for
+  every declared binding: stage visibility, kind, slot order, uniform size. Large uniform blocks may use read-only storage.
+- Dawn layouts: sprite, billboard, picking, splat, post-process, ID-diagnostic and UI groups from `.slots` lines; the
+  per-pass scene group from the pin's `getSceneBindGroupLayout`; composed material/effect/text/screen-space/compute
+  layouts from generated descriptor tables; single-pipeline runtime modules from Dawn reflection.
+- Sprite and billboard programs deploy the pin's modules whole per reached permutation; billboards bind the scene block
+  at group 0 on both backends.
+- SDL integer texture loads use storage-texture slots. Vulkan binds a sampled texture and its sampler as one combined
+  image sampler.
+- Native interstage structs put the position first (Tint patch) so separately compiled D3D12 stages link.
+- SPIR-V 1.3; SDL_GPU requests Vulkan 1.1. Vertex inputs are compacted; the sidecar maps attributes to locations.
+- Metal: `main0`, flattened bindings, buffer lengths at index 30.
+- Dawn pipeline keys: format, samples, depth, blend, cull, topology, compare. Reached layouts set device limits.
+- Android prefers Vulkan 1.3 helper-invocation discard; older devices use the 1.1 path.
+- SDL stores the 64 KiB local-probe block in a buffer.
 
-SDL and Dawn carry maintained patches; [`native/patches/manifest.json`](../native/patches/manifest.json)
-lists each with the builds that apply it, its purpose and upstream state.
-Dawn disables texture swizzling on iOS Simulator and uses its non-swizzle depth/stencil path.
-Dawn uses SDL's Android native window and selects a supported BGRA8/RGBA8 surface format;
-worker images retain that format. Resume replaces the presentation surface when SDL's native
-window changes, retaining device resources. Unavailable immediate presentation uses FIFO with a diagnostic.
-The Android Dawn patch reports Vulkan presentation surface loss at the next acquisition without
-losing the device; repeated acquisition loss and other GPU errors still fail.
+## Platform details
 
-SDL Metal generates mips with per-level linear blits, preserving sRGB decode/filter/encode.
-Color-less depth sampled by material slots uses an R32 copy with `(depth, 0, 0, 1)` semantics.
-Standalone sprite/text UNORM clears round to the nearest byte; floating-point and sRGB targets are unchanged.
-Linux Canvas2D texture bakes use the reference capture's Vulkan rasterizer; Windows/macOS bake flags are unchanged.
-
-Interactive desktop runs use SDL main callbacks, including iteration during Win32 move/resize.
-Suspended frame state owns renderer resources until shutdown. Capture, benchmark and mobile runs
-use explicit iteration; Worker renderers retain their realm RAF scheduling.
+- Dawn on iOS Simulator disables texture swizzling.
+- Android Dawn uses SDL's native window with a BGRA8/RGBA8 surface; resume replaces the surface and keeps device
+  resources; surface loss is reported at the next acquisition (patched).
+- Unavailable immediate presentation falls back to FIFO with a diagnostic.
+- SDL Metal builds mips with per-level linear blits.
+- Colour-less depth sampled by materials uses an R32 copy `(depth, 0, 0, 1)`.
+- Standalone sprite/text UNORM clears round to the nearest byte.
+- Linux Canvas2D texture bakes use the reference capture's Vulkan rasterizer.
+- Transmission uses the pin's grab modules; cube mips build one face at a time over 2D levels.
 
 ## WebGPU subset devices
 
-`DawnWebGpuDevice` maps `gpu.hpp`'s WebGPU subset one to one. `SdlWebGpuDevice` emulates it: a runtime
-WGSL module resolves to the stages generation compiled under `wgsl-<text digest>.<entry>.<stage>`
-(`src/wgsl-artifacts.ts`); bind groups keep
-their entries and each dispatch or draw binds the resources its stage's sidecar names, at the group's
-dynamic offsets; storage buffers bind whole; uniform buffers are CPU bytes pushed when a command is
-encoded; command encoders record and encode at submission (or before a renderer's passes); each dispatch
-is its own compute pass; indirect dispatch reads a copy of its arguments, since D3D12 holds a buffer
-bound as storage in a shader-resource state (one copy per buffer and offset until a command writes the
-buffer); queue writes and new buffers' zeroes stage in one upload ring, recorded in one copy pass ahead
-of the next encoded or submitted commands; `clearBuffer` uploads zeros; `MAP_READ` buffers are
-download transfer buffers mapped after a fence. Device limits are WebGPU's defaults raised by the
-engine's `requiredLimits`; SDL_GPU admits 32-bit sizes.
+`gpu.hpp` is the WebGPU subset the pin's compute, indirect and mapping calls lower to.
 
-`engine:webgpu-device` binds the device at `createEngine`, with the engine's scene layout and group
-(empty on both backends; a renderable shader reading group 0 fails). `renderer:external-renderables`
-draws a scene pass's lowered renderables (`gpu_renderable.hpp`, `pal_external_renderables.hpp`) with
-render-task-base.ts's protocol, pinned by `external-renderable-contract.ts`: bound per target signature
-and published renderable version (a failed bind releases its batch generation at once), prepared
-before the pass (batch reset, update, batch flush recorded into the frame encoder), and drawn at their
-place in the transparent bucket (`pal_transparent_order.hpp`): transparent meshes, billboards and
-external bindings sort by the pin's lowered `compareTransparentBindings` and `_sortDistance`
-(`transparent_order.hpp`; distance 0 without `_worldCenter`). Mixed families without a camera, or tied
-in distance and order, refuse; so do external renderables beside text, splat clouds or depth-hosted
-sprite layers, in render tasks, or opaque. Text keeps its own instance of the protocol (`TextScenePass`)
-and its own devices: its generated bindings draw into a text surface with the live view-projection, also
-run inside render tasks, and need render bundles, vertex buffers and samplers outside the subset.
+- `DawnWebGpuDevice` maps it one to one.
+- `SdlWebGpuDevice` emulates it: runtime WGSL resolves to stages compiled at generation as
+  `wgsl-<text digest>.<entry>.<stage>` (`src/wgsl-artifacts.ts`); uniform buffers are CPU bytes pushed at encode;
+  encoders record and encode at submission; each dispatch is its own compute pass; indirect dispatch reads a copy of its
+  arguments; queue writes stage in one upload ring; `MAP_READ` buffers map after a fence; sizes are 32-bit.
+- Device limits are WebGPU defaults raised by the engine's `requiredLimits`.
+- `engine:webgpu-device` binds the device at `createEngine` with an empty scene layout; a renderable shader reading
+  group 0 fails.
+- `renderer:external-renderables` (`gpu_renderable.hpp`, `pal_external_renderables.hpp`, contract in
+  `src/lowering/external-renderable-contract.ts`) draws lowered renderables in the transparent bucket, sorted by the
+  pin's `compareTransparentBindings`. External renderables beside text, splats or depth-hosted sprites, in render
+  tasks, or opaque refuse.
+- Text keeps its own protocol (`TextScenePass`) and devices.
 
 ## Temporal post-process transport
 
-Each TAA source task owns scratch, uniforms and history. Hooks run once in source order.
-Dawn retains the final source buffer; SDL delays draw encoding until final writes are available.
-Encoding does not rerun callbacks. Resize recreates targets and applies source reset rules.
-Stopped presentation scales the retained image without advancing history.
+Each TAA source task owns scratch, uniforms and history; hooks run once in source order. Dawn keeps the final source
+buffer; SDL delays draw encoding until final writes exist. Resize recreates targets with source reset rules.
 
 ## Workers and offscreen surfaces
 
-| Owner       | State                                                                          |
-| ----------- | ------------------------------------------------------------------------------ |
-| Realm       | Module bindings, JS identities, tasks, microtasks, timers, promises, callbacks |
-| OS thread   | Window, layout, presentation                                                   |
-| Window host | Shared physical device and queue                                               |
-| Producer    | Engine, scene, encoders, resources, image publication                          |
+| Owner | State |
+| --- | --- |
+| Realm | Module bindings, JS identities, tasks, microtasks, timers, promises, callbacks |
+| OS thread | Window, layout, presentation |
+| Window host | Shared physical device and queue |
+| Producer | Engine, scene, encoders, resources, image publication |
 
-Typed messages, document snapshots, dimensions and fenced image leases cross threads; JS references
-and engine records do not. Canvas transfer validates before detachment.
-
-`close` completes the active callback and microtasks. `terminate` wakes waits and uses compiled
-cancellation points; arbitrary native calls are not preemptible. RAF notifications coalesce per realm.
-Computation workers need no GPU; worker-free builds omit worker scheduling.
-
-Window engines use the supplied RAF timestamp. Windows hosts with the compositor clock API pace
-repaint from its heartbeat and prefer supported mailbox presentation, with FIFO fallback. Other hosts
-use presentation completion. Mouse motion stays ordered in the realm mailbox without blocking worker
-presentation. Other input transactions, including callbacks and events posted by native defaults,
-finish before the next input event and before repaint. The host services
-input and layout while awaiting RAF callback submissions, bounded by the next heartbeat, then selects
-the latest canvas frames. Completion receipts contain weak native inbox references, never JS values.
-
-`platform:window` selects the host and presenters. A three-image mailbox retains the latest frame;
-consumer fences prevent overwriting sampled images. Normal presentation uses GPU textures; captures
-use readback. SDL submits on the acquiring thread; Dawn synchronizes the shared device.
-
-The first document snapshot follows initialization microtasks. Later periodic snapshots publish
-without waiting for the display, one at a time; layout reads still wait for it. Source callbacks
-and UI image `decode()` settlement remain on the application realm; a realm's `loadTexture2D` image
-decoding, `loadGltf` file reading, parsing, primitive decoding, embedded-image extraction, ORM
-composition and IBL BRDF-table reads (the realm writes its engine records as it settles; a
-synchronous load decodes as it goes), packaged `fetch` file reads and the
-[audio contract](fidelity.md#audio-contract)'s jobs run as native jobs (`pal_native_job.hpp`) that
-settle on the realm in start order, each in its own task: the order is the same in every run, and a
-slow job delays the settlements started after it. Native jobs and scene preparation share the
-process's bounded native workers (`pal_native_workers.hpp`), which serve work in submission order;
-native work never waits on other native work.
-Window scene preparation runs texture decoding/uploads, environment, background and Dawn billboard
-preparation and ordinary material-pipeline and copy-blit compilation on the native workers, yielding to
-realm timers until they finish. The environment finishes before mesh uploads, which bind its reflection
-cubes; the background builds beside pipeline compilation. Jobs carry immutable texture, environment
-and record snapshots and GPU data, not application callbacks. Dawn requires implicit device
-synchronization; geometry-output pipelines and worker-free builds prepare on the renderer thread.
-Dawn also creates each drawn material's per-draw blocks during preparation; their groups bind
-resources the first frame creates (bone and VAT textures, shadow maps, frame-graph textures) and
-build there.
-`loadTexture2D` decodes its image at load, applying the upload's `invertY` and `premultiplyAlpha`;
-sprite atlases and the first upload share those texels, which the first frame boundary after the load
-settles drops unless an atlas keeps them.
-Readiness still requires the first complete published canvas frame. SDL batches each startup mesh's
-buffer writes into one copy submission.
-Material families share immutable image uploads while retaining their own samplers; SDL_image codec
-calls are serialized across native jobs and UI.
-
-## Retained UI
-
-Canvases keep their retained CSS rectangles; host canvases without a projected rectangle share equal
-horizontal panes. RmlUi supplies geometry, textures, scissors,
-transforms and effects; the backends own uploads, layers and premultiplied composition. See [UI](ui.md).
-
-## Render-target boundaries
-
-Attachments and pipelines must agree on formats, samples and depth state. Single-sample resolves are
-copies; target changes invalidate dependent state. Both backends capture transmission through the
-pin's grab modules (per-sample loads of a multisampled source) and build a cube's mip chain one face
-at a time over 2D levels, as `recordMipmaps` does. GPU initialization/recovery failures are errors,
-not backend fallback.
+- Only typed messages, document snapshots, dimensions and fenced image leases cross threads.
+- `close` finishes the active callback and microtasks; `terminate` stops at compiled cancellation points only.
+- Window pacing: compositor-clock heartbeat on Windows (mailbox, FIFO fallback), presentation completion elsewhere.
+  A three-image mailbox keeps the latest frame; captures use readback.
+- Native jobs (`pal_native_job.hpp`) settle on the realm in start order, one task each, on the shared bounded workers
+  (`pal_native_workers.hpp`); native work never waits on native work. Jobs: `loadTexture2D` decode, `loadGltf`
+  reads/parsing/decoding, IBL BRDF reads, packaged `fetch` reads, audio device opens and decodes.
+- Window scene preparation (texture uploads, environment, background, pipeline compilation) runs on native workers;
+  Dawn needs implicit device synchronization. Geometry-output pipelines and worker-free builds prepare on the renderer thread.
+- Readiness requires the first complete published canvas frame. SDL_image calls are serialized across jobs and UI.

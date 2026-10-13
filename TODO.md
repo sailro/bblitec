@@ -1,9 +1,5 @@
 # Unfinished work
 
-Internal work, qualification, performance and refusal defects. Capability gaps are the Limits in
-[features](docs/features.md) and [UI](docs/ui.md);
-[status](docs/status.md) owns measurements.
-
 ## Qualification
 
 - [ ] Extend sanitizer coverage beyond allocator/ownership fixtures to native fixture families and representative scenes, including GPU/library lifetimes.
