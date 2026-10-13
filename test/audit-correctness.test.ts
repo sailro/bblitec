@@ -1292,11 +1292,58 @@ test(
                 first.reset();
                 collect_cycles();
                 assert(managed_node_count() == initial_nodes + 1);
-                assert(gc::registry.allocations == 0);
+                assert(gc::registry.nodes_after_collection == managed_node_count());
                 assert(gc::registry.total_allocations == initial_allocations + 2);
             }
             assert(managed_node_count() == initial_nodes);
             assert(gc::registry.total_allocations == initial_allocations + 2);
+        }
+    `,
+        );
+    },
+);
+
+test(
+    "the frame cadence collects on net registry growth, not on freed temporaries",
+    { skip: !nativeTools },
+    () => {
+        runCpp(
+            "gc-cadence",
+            `
+        #include <bblite/js_gc.hpp>
+        #include <algorithm>
+        #include <cassert>
+        struct Cell {
+            std::shared_ptr<Cell> next;
+            void gc_trace(const bbl::js::TraceVisitor& visitor) const { visitor(next); }
+        };
+        int main() {
+            using namespace bbl::js;
+            // A long-lived root keeps the registry nonempty, as a running program's does.
+            const auto root = make_gc_shared<Cell>();
+            // Per-frame temporaries reference counting frees: the bounded 60-frame cadence.
+            for (int index = 0; index < 120; ++index) {
+                for (int temporary = 0; temporary < 2000; ++temporary)
+                    static_cast<void>(make_gc_shared<Cell>());
+                collect_at_frame_boundary();
+            }
+            assert(gc::registry.collections == 2);
+            // Garbage cycles grow the registry: collected every 8 frames, so it stays bounded.
+            std::size_t peak = 0;
+            for (int index = 0; index < 120; ++index) {
+                for (int pair = 0; pair < 200; ++pair) {
+                    auto first = make_gc_shared<Cell>();
+                    auto second = make_gc_shared<Cell>();
+                    first->next = second;
+                    second->next = first;
+                }
+                peak = std::max(peak, managed_node_count());
+                collect_at_frame_boundary();
+            }
+            assert(gc::registry.collections == 2 + 15);
+            assert(peak <= 1 + 8 * 400);
+            collect_cycles();
+            assert(managed_node_count() == 1 && gc::registry.nodes_after_collection == 1);
         }
     `,
         );

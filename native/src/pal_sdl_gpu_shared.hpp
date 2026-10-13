@@ -10,6 +10,7 @@
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 #include "pal_gpu_common.hpp"
+#include "pal_gpu_shader_path.hpp"
 #include "pal_sdl_gpu_formats.hpp"
 #include "pal_sdl_gpu_texture_ops.hpp"
 #include "pal_sdl_gpu_canvas.hpp"
@@ -152,6 +153,12 @@ inline void save_texture_png(SDL_GPUDevice*, SdlGpuCommand& command, SDL_GPUText
  * layer block and the `fx` block, and which of them survives is the caller's
  * own WGSL to decide.
  */
+/** A runtime WGSL stage's `@binding <group> <binding> <name> ...` sidecar row. */
+struct PinnedStageBinding {
+    std::uint32_t group = 0;
+    std::uint32_t binding = 0;
+    std::string name;
+};
 struct PinnedStageSlots {
     /** Original locations ordered by the SPIR-V module's compacted locations. */
     std::optional<std::vector<Uint32>> spirv_inputs;
@@ -165,17 +172,14 @@ struct PinnedStageSlots {
     std::vector<std::string> storage;
     /** Integer texture loads, after sampled textures and before buffers. */
     std::vector<std::string> storage_textures;
+    /** The WGSL group and binding of each resource name, for runtime WGSL stages. */
+    std::vector<PinnedStageBinding> bindings;
 };
 
 inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
     if (base_name.empty())
         throw std::runtime_error("A compiled shader stage must have a name.");
-    const std::string shader_override = environment_variable("BBLITE_GPU_SHADER_DIR");
-    const std::string shader_root = shader_override.empty()
-                                        ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
-                                        : shader_override;
-    const std::vector<std::uint8_t> bytes =
-        read_binary_file(join_path(shader_root, base_name + ".slots"));
+    const std::vector<std::uint8_t> bytes = read_binary_file(gpu_shader_path(base_name + ".slots"));
     PinnedStageSlots slots;
     const auto take = [&](std::string_view line) {
         constexpr std::string_view input_tag = "@spirv-inputs";
@@ -193,6 +197,15 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
                 inputs.push_back(*location);
                 line.remove_prefix(end);
             }
+            return;
+        }
+        if (line.starts_with("@binding ")) {
+            const auto words = sidecar_words(line);
+            const auto group = words.size() > 3 ? parse_sidecar_index(words[1]) : std::nullopt;
+            const auto binding = words.size() > 3 ? parse_sidecar_index(words[2]) : std::nullopt;
+            if (!group || !binding)
+                throw std::runtime_error(base_name + ".slots has a malformed binding line.");
+            slots.bindings.push_back({*group, *binding, std::string(words[3])});
             return;
         }
         const std::size_t space = line.find(' ');
@@ -536,12 +549,8 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
     if (entrypoint_override && format != SDL_GPU_SHADERFORMAT_MSL) {
         entrypoint = entrypoint_override;
     }
-    const std::string shader_override = environment_variable("BBLITE_GPU_SHADER_DIR");
-    const std::string shader_root = shader_override.empty()
-                                        ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
-                                        : shader_override;
     std::vector<std::uint8_t> code =
-        read_binary_file(join_path(shader_root, std::string(base_name) + extension));
+        read_binary_file(gpu_shader_path(std::string(base_name) + extension));
     std::optional<std::vector<Uint32>> inputs;
     const bool compact_inputs =
         format == SDL_GPU_SHADERFORMAT_SPIRV && stage == SDL_GPU_SHADERSTAGE_VERTEX;

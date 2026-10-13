@@ -1748,12 +1748,8 @@ export class PlatformCalls {
                     );
                 }
                 this.context.reachFeature("browser:file", call);
-            } else if (element.uiTag === "a") {
-                if (element.uiLinkHref)
-                    this.context.fail(
-                        call,
-                        "Native anchor navigation is unsupported; a programmatic click activates a download anchor.",
-                    );
+            } else if (element.uiTag === "a" && !element.uiLinkHref) {
+                // A link's activation is the navigation its href write installed.
                 this.context.reachFeature("browser:file", call);
             }
             const engine = this.context.requireEngine(element, call);

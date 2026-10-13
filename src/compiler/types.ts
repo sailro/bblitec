@@ -2918,6 +2918,8 @@ export type Feature =
     | "text:weight"
     | "text:renderable"
     | "renderer:text"
+    // Lowered renderables a scene pass draws through gpu_renderable.hpp.
+    | "renderer:external-renderables"
     | "animation:gltf-groups"
     | "animation:property"
     | "animation:property-blending"
@@ -2936,6 +2938,8 @@ export type Feature =
     | "engine:device-recovery"
     | "engine:dispose"
     | "engine:gpu-retirement"
+    // The WebGPU-subset device on the engine from createEngine (gpu.hpp).
+    | "engine:webgpu-device"
     | "engine:gpu-task-timing"
     // Per-source-function CPU scopes and allocation counters, reached only by
     // the `--source-profile` generation option (docs/debugging.md).

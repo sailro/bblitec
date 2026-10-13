@@ -1,4 +1,5 @@
 #include "pal_dawn_text_resources.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <string>
@@ -130,16 +131,16 @@ int main() {
     };
     Renderable first, second;
     for (auto* gpu : {&first, &second}) {
-        gpu->uniform = buffer("text-renderable-ubo", 96, text_buffer_usage_uniform);
-        gpu->instances = buffer("text-instance", 96, text_buffer_usage_vertex);
-        gpu->styles = buffer("text-styles", 32, text_buffer_usage_storage);
+        gpu->uniform = buffer("text-renderable-ubo", 96, webgpu_buffer_usage::uniform);
+        gpu->instances = buffer("text-instance", 96, webgpu_buffer_usage::vertex);
+        gpu->styles = buffer("text-styles", 32, webgpu_buffer_usage::storage);
     }
     const auto texture = [&](const char* label, double rows) {
         return device->create_texture(GpuTextureDescriptor{
             std::string(label), "rgba32float", {4, rows, 1}, 0x04 | 0x02 | 0x01});
     };
     const auto curves = texture("text-slug-curves", 2), bands = texture("text-slug-bands", 1);
-    const auto metadata = buffer("text-glyph-metadata", 64, text_buffer_usage_storage);
+    const auto metadata = buffer("text-glyph-metadata", 64, webgpu_buffer_usage::storage);
     auto layout = std::make_shared<DawnTextGpuLayout>();
     layout->layout = retain_dawn_text_resource<DawnTextLayoutLease>(
         owner, make_resource<WGPUBindGroupLayoutImpl>());
@@ -184,7 +185,7 @@ int main() {
     pipeline->pipeline = retain_dawn_text_resource<DawnTextPipelineLease>(
         owner, make_resource<WGPURenderPipelineImpl>(), "pipeline");
     pipeline->capture.samples = 4;
-    const auto quad = buffer("text-instance", 48, text_buffer_usage_vertex);
+    const auto quad = buffer("text-instance", 48, webgpu_buffer_usage::vertex);
     auto pass = std::make_shared<DawnTextPassEncoder>();
     pass->owner = owner;
     pass->set_vertex_buffer(0, quad);
@@ -211,7 +212,7 @@ int main() {
     first.styles->destroy();
     assert(original->destroyed == 1 && original->released == 0);
     const auto retained_styles = lease(first.styles);
-    first.styles = buffer("text-styles", 64, text_buffer_usage_storage);
+    first.styles = buffer("text-styles", 64, webgpu_buffer_usage::storage);
     auto replacement = group_of(first);
     assert(replacement->group->get()->entries[4].buffer == lease(first.styles)->get());
     bool refused = false;
@@ -224,8 +225,10 @@ int main() {
 
     const auto retained_count = owner->resources.tracked_resource_count();
     for (unsigned i = 0; i < 200; ++i) {
-        auto temporary = buffer("text-instance", 48, text_buffer_usage_vertex);
-        assert(owner->resources.tracked_resource_count() == retained_count + 1);
+        auto temporary = buffer("text-instance", 48, webgpu_buffer_usage::vertex);
+        // Expired leases compact once the list doubles: the list stays bounded.
+        assert(owner->resources.tracked_resource_count() <=
+               std::max<std::size_t>(64, 2 * (retained_count + 1)));
     }
 
     // The renderer ends while source GPU records and data groups are still alive.

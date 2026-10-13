@@ -127,7 +127,7 @@ test("a stream program lowers its loads, attachment, stats, writes and collision
         "/c",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        "/DBBLITE_HAS_SPLAT_STREAM=1",
+        "/DBBLITE_ENGINE_WEBGPU=1",
         "/I",
         join(directory, "upstream/include"),
         `/Fo:${join(directory, "main.obj")}`,
@@ -159,47 +159,6 @@ test("stream members without a native form refuse", () => {
         "await stream.firstFrameReady;\n    canvas.dataset.children = String(stream.children.length);",
         /GaussianSplatStream\.children is not a public stream member read natively/,
     );
-});
-
-test("a retained anchor's document URL renders a link; a download or a click refuses it", () => {
-    const program = (body: string): string => `
-        import { createEngine, startEngine } from "@babylonjs/lite";
-        async function main(): Promise<void> {
-            const engine = await createEngine({});
-            const link = document.createElement("a");
-            ${body}
-            await startEngine(engine);
-        }
-        void main();
-    `;
-    const link = compileSource(
-        program(`
-            const url = new URL(location.href);
-            url.searchParams.set("quality", "low");
-            link.href = url.href;
-            link.hidden = false;
-        `),
-    );
-    assert.match(link.cpp, /bbl::ui_set_attribute\([^;]*"href", /);
-    for (const [body, message] of [
-        [
-            'link.href = "https://example.invalid/"; link.download = "map.json";',
-            /A native download anchor's href requires an object URL/,
-        ],
-        [
-            'link.download = "map.json"; link.href = "https://example.invalid/";',
-            /A native download anchor's href requires an object URL/,
-        ],
-        [
-            'link.href = "https://example.invalid/"; link.click();',
-            /Native anchor navigation is unsupported/,
-        ],
-    ] as const)
-        assert.throws(
-            () => compileSource(program(body)),
-            (error: unknown) =>
-                error instanceof CompileError && message.test(error.message),
-        );
 });
 
 test("a generic awaited resource, rejection-only and fulfillment-only thens and an inferred record let run as JavaScript does", () => {

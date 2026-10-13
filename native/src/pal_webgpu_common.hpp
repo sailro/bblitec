@@ -2,10 +2,12 @@
 
 #include <bblite/byte_hash.hpp>
 #include <bblite/gpu.hpp>
+#include <bblite/gpu_renderable.hpp>
 #include <bblite/js_promise.hpp>
 #include <bblite/pal_offscreen.hpp>
 
 #include "pal_gpu_lease_retirement.hpp"
+#include "pal_webgpu_usage.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -24,24 +26,6 @@
 
 namespace bbl::pal {
 
-/** `GPUBufferUsage` bits. */
-namespace webgpu_buffer_usage {
-inline constexpr std::uint32_t map_read = 0x1, map_write = 0x2, copy_src = 0x4, copy_dst = 0x8,
-                               index = 0x10, vertex = 0x20, uniform = 0x40, storage = 0x80,
-                               indirect = 0x100, query_resolve = 0x200;
-} // namespace webgpu_buffer_usage
-/** `GPUTextureUsage` bits. */
-namespace webgpu_texture_usage {
-inline constexpr std::uint32_t copy_src = 0x1, copy_dst = 0x2, texture_binding = 0x4,
-                               storage_binding = 0x8, render_attachment = 0x10;
-} // namespace webgpu_texture_usage
-/** `GPUShaderStage` bits. */
-namespace webgpu_shader_stage {
-inline constexpr std::uint32_t vertex = 0x1, fragment = 0x2, compute = 0x4;
-} // namespace webgpu_shader_stage
-
-inline std::uint32_t webgpu_flags(double value) { return gpu_u32(gpu_size(value)); }
-
 /**
  * The compiled stage a runtime WGSL module's entry point deploys as, when a
  * backend consumes offline-compiled stages: `wgsl-<digest>.<entry>.<stage>`,
@@ -58,6 +42,24 @@ inline std::string wgsl_stage_stem(const std::string& code, const std::string& e
 
 [[noreturn]] inline void webgpu_refuse(const std::string& message) {
     throw std::runtime_error("WebGPU subset: " + message);
+}
+
+/** A handle as the backend object `Object` its device created; anything else refuses. */
+template <class Object>
+std::shared_ptr<Object> webgpu_object(const GpuHandle& handle, const char* what) {
+    auto object = std::dynamic_pointer_cast<Object>(handle);
+    if (!object)
+        webgpu_refuse(std::string("expected a ") + what + " this device created.");
+    return object;
+}
+
+/** `setBindGroup`'s dynamic offsets. */
+inline std::vector<std::uint32_t> webgpu_offsets(const js::Array<double>& offsets) {
+    std::vector<std::uint32_t> result;
+    result.reserve(offsets.size());
+    for (const double offset : offsets)
+        result.push_back(webgpu_flags(offset));
+    return result;
 }
 
 /** `GPUBufferBindingLayout.type` with its default. */

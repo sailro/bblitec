@@ -22,9 +22,6 @@ inline bool ascii_digit(char c) { return c >= '0' && c <= '9'; }
 inline bool ascii_hex(char c) {
     return ascii_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
-inline char ascii_lower(char c) {
-    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-}
 
 /** The default port of a special scheme; -1 for `file`, -2 for a scheme that is not special. */
 inline int special_port(std::string_view scheme) {
@@ -533,7 +530,7 @@ private:
                 switch (state) {
                 case State::scheme_start:
                     if (!eof && url_detail::ascii_alpha(c)) {
-                        buffer.push_back(url_detail::ascii_lower(c));
+                        buffer.push_back(ascii_lower(c));
                         state = State::scheme;
                     } else {
                         state = State::no_scheme;
@@ -543,7 +540,7 @@ private:
                 case State::scheme:
                     if (!eof && (url_detail::ascii_alpha(c) || url_detail::ascii_digit(c) ||
                                  c == '+' || c == '-' || c == '.')) {
-                        buffer.push_back(url_detail::ascii_lower(c));
+                        buffer.push_back(ascii_lower(c));
                     } else if (!eof && c == ':') {
                         url_.scheme = buffer;
                         buffer.clear();

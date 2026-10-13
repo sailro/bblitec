@@ -38,6 +38,10 @@ void retire_gpu_resources(std::shared_ptr<pal::GpuRetirementState>, pal::GpuReti
     retirement();
 }
 void dispose_gpu_resource_retirements(std::shared_ptr<pal::GpuRetirementState>) {}
+void run_gpu_resource_callbacks(pal::GpuRetirementBatch disposers) {
+    for (const auto& dispose : *disposers)
+        dispose();
+}
 } // namespace bbl
 
 namespace {
@@ -67,8 +71,9 @@ struct SdlTarget final : stream_check::RenderTarget {
                            ? SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT
                            : SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
         signature = {"rgba8unorm", bbl::pal::sdl_webgpu_format_name(depth_format), {}, 1};
-        scene_layout = bbl::pal::SdlWebGpuDevice::renderer_bind_group_layout();
-        scene_group = bbl::pal::SdlWebGpuDevice::renderer_bind_group(scene_layout);
+        // The engine's empty scene group (`bind_engine_scene_group`).
+        scene_layout = device.create_bind_group_layout({});
+        scene_group = device.create_bind_group({{}, scene_layout, {}});
         SDL_GPUTransferBufferCreateInfo info{};
         info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
         info.size = width * height * 4;

@@ -371,9 +371,8 @@ cache (`sources/<module>-<digest>.cpp`, the name their diagnostics carry). clang
 header from a source under the cache named by its text. Record layouts and PCH inputs are independent of
 scene features; trees with the same build options share it. Its entry keys on the checkout's absolute paths, which the PCH
 records. Like `/Yc`, it instantiates the templates its headers use (`-fpch-instantiate-templates`), so units
-do not repeat them. It holds the C headers only: Clang on the Microsoft ABI does not carry a thrown class's copy
-constructor across a PCH, so a unit would copy exceptions a C++ header of the PCH throws bitwise
-(`test/pch-exception-copies.test.ts`). Debug keys retain directory identity.
+do not repeat them. It holds the C headers only (`test/pch-exception-copies.test.ts` owns why). Debug keys
+retain directory identity.
 
 `clean --orphans`, `--all` and `--artifacts` prune `headers/`, `sources/` and `pch/` inputs unused by
 CMake configure for 30 days (`--cache-days <days>`). Reuse timestamps live in retained lock files;

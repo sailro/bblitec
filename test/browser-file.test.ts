@@ -136,8 +136,8 @@ test("lowers object URLs and retained anchor downloads without navigation", () =
         () =>
             compileFileBody(`
                 const anchor = document.createElement("a");
-                anchor.href = "https://example.invalid/";
                 anchor.download = "map.json";
+                anchor.href = "https://example.invalid/";
                 anchor.click();
             `),
         (error: unknown) =>

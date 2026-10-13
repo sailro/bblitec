@@ -69,6 +69,26 @@ export function emitWindowLocationAssignment(
     return true;
 }
 
+/**
+ * A link's activation, clicked or `click()`: `location.assign(href)` in this
+ * realm, installed as the engine's link navigation; a link opening another
+ * browsing context stays inert natively.
+ */
+export function linkNavigationCpp(
+    context: Pick<
+        LoweringServices,
+        "options" | "reachFeature" | "fail" | "cppString"
+    >,
+    engine: string,
+    site: ts.Node,
+): string {
+    if (!context.options.workers) throw new ApplicationRealmRequired();
+    requireWindowHost(context, site);
+    if (!context.options.runtimeLocationSearch)
+        throw new RuntimeSearchParamsRequired(true);
+    return `bbl::ui_set_link_navigation(${engine}, [](const std::string& url) { bbl::pal::window_location_assign(url, ${runtimeLocationHrefCpp(context)}); })`;
+}
+
 /** Retained host method aliases use the same operation as a direct call. */
 export function compileWindowServiceCall(
     lowerer: DataLowerer,
