@@ -49,6 +49,17 @@ template <class Call> std::string thrown(Call call) {
     return {};
 }
 
+/** What a lowered `catch (error)` reads off any thrown value: its name and message. */
+template <class Call> std::string caught(Call call) {
+    try {
+        call();
+    } catch (...) {
+        const bbl::js::Error error(std::current_exception());
+        return bbl::js::error_name(error) + ": " + bbl::js::error_message(error);
+    }
+    return {};
+}
+
 /** The smallest and largest sample of both channels in [first, last). */
 std::pair<float, float> range_between(const lab::AudioBus& bus, int first, int last) {
     float low = 1e9f, high = -1e9f;
@@ -154,6 +165,18 @@ void check_sources_need_audio_tracks() {
     audio_close_context(context);
 }
 
+/** An absent stream or track is a TypeError a script's catch observes. */
+void check_absent_operands_are_type_errors() {
+    const auto context = audio_create_context();
+    assert(caught([&] { audio_create_media_stream_source(context, nullptr); }) ==
+           "TypeError: createMediaStreamSource requires a MediaStream.");
+    assert(caught([] {
+               create_media_stream(
+                   bbl::js::Array<MediaStreamTrackHandle>{MediaStreamTrackHandle{}});
+           }) == "TypeError: MediaStream requires MediaStreamTrack values.");
+    audio_close_context(context);
+}
+
 void check_stream_objects() {
     const auto context = audio_create_context();
     const auto audio = audio_destination_stream(audio_create_media_stream_destination(context));
@@ -197,6 +220,7 @@ int main() {
     check_same_context_routing();
     check_cross_context_routing();
     check_sources_need_audio_tracks();
+    check_absent_operands_are_type_errors();
     check_stream_objects();
     check_media_recorder();
     std::cout << "media-stream-audio-check: ok\n";

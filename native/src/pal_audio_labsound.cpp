@@ -1264,7 +1264,7 @@ AudioNodeHandle audio_create_media_stream_source(AudioContextHandle context,
 #if BBLITE_HAS_AUDIO_MEDIA_STREAM
     ContextRecord& record = require_context(context.value);
     if (!stream)
-        throw js::make_error("TypeError", "createMediaStreamSource requires a MediaStream.");
+        throw js::NamedError("TypeError", "createMediaStreamSource requires a MediaStream.");
     // The audio track whose id sorts first.
     MediaStreamTrackHandle selected;
     for (const auto& track : stream->tracks)

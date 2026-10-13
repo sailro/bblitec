@@ -83,7 +83,7 @@ inline MediaStreamHandle create_media_stream(const js::Array<MediaStreamTrackHan
     stream->id = media_stream_identifier();
     for (const auto& track : tracks) {
         if (!track)
-            throw js::make_error("TypeError", "MediaStream requires MediaStreamTrack values.");
+            throw js::NamedError("TypeError", "MediaStream requires MediaStreamTrack values.");
         if (std::find(stream->tracks.begin(), stream->tracks.end(), track) == stream->tracks.end())
             stream->tracks.push_back(track);
     }
