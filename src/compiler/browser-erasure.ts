@@ -124,6 +124,8 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
 
 /** DOM-declared classes with native runtime values (`web-platform.ts`). */
 const NATIVE_PLATFORM_CLASSES: ReadonlySet<string> = new Set([
+    "MediaRecorder",
+    "MediaStream",
     "AbortController",
     "AbortSignal",
     "DOMException",
@@ -1742,10 +1744,14 @@ export class BrowserErasure {
             if (this.isAbsentGlobalMember(unwrapped.expression))
                 return { kind: "string", value: "undefined" };
             const global = this.context.libraryGlobal(unwrapped.expression);
-            // Native has no browser recording pipeline; authored capability
-            // guards can select their own unavailable-recording path.
-            if (global === "MediaRecorder")
-                return { kind: "string", value: "undefined" };
+            // Window interfaces with native values (`media-streams.ts`).
+            if (global === "MediaRecorder" || global === "MediaStream")
+                return {
+                    kind: "string",
+                    value: this.context.options.workers?.namespace
+                        ? "undefined"
+                        : "function",
+                };
             const windowInterface = windowInterfaceTypeof(
                 global,
                 this.context.options.workers,

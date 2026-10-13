@@ -89,15 +89,15 @@ test("retained native service views preserve represented structural identity", (
     );
 });
 
-test("optional browser recording detection preserves native absence and lexical shadows", () => {
+test("browser recording detection finds the native MediaRecorder and keeps lexical shadows", () => {
     const guarded = compileSource(`
-        if (typeof MediaRecorder !== "undefined") throw new Error("recording present");
-        if (typeof window.MediaRecorder !== "undefined") throw new Error("recording present");
-        if (typeof globalThis.MediaRecorder !== "undefined") throw new Error("recording present");
+        if (typeof MediaRecorder !== "function") throw new Error("recording absent");
+        if (typeof window.MediaRecorder !== "function") throw new Error("recording absent");
+        if (typeof globalThis.MediaRecorder !== "function") throw new Error("recording absent");
     `);
     assert.doesNotMatch(
         guarded.cpp,
-        /throw std::runtime_error\("recording present"\)/,
+        /throw std::runtime_error\("recording absent"\)/,
     );
     const local = compileSource(`
         const MediaRecorder = 4;

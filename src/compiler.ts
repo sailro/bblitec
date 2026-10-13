@@ -2031,6 +2031,8 @@ class Compiler implements LoweringServices {
             case "audio-context":
             case "audio-param":
             case "audio-buffer":
+            case "media-stream":
+            case "media-stream-track":
                 return { kind: audio, cppType: handleCppType(audio) };
         }
         const name = member.symbol?.name;
@@ -9509,8 +9511,7 @@ class Compiler implements LoweringServices {
             features,
             jsDataReached: this.jsDataReached,
             deferredCapabilitiesReached:
-                this.deferredCapabilities.sites.length > 0 ||
-                this.dataTypes.usesDeferredPlatformStorage(),
+                this.deferredCapabilities.sites.length > 0,
             windowStorageReached: this.dataTypes.usesWindowStorage(),
             responseStorageReached: this.dataTypes.usesResponseStorage(),
             webPlatformHeaders: this.dataTypes.webPlatformHeaders(),

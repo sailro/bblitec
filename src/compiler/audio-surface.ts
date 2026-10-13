@@ -150,8 +150,6 @@ const NODE_FACTORIES: Readonly<
  * their feature-detection answer and unguarded-call diagnostic together. */
 const UNAVAILABLE_CONTEXT_METHODS: Readonly<Record<string, string>> = {
     setSinkId: "native output-device selection is unavailable",
-    createMediaStreamDestination: "native recording streams are unavailable",
-    createMediaStreamSource: "native recording streams are unavailable",
     createMediaElementSource:
         "an HTMLAudioElement has no native audio producer",
 };
@@ -173,7 +171,13 @@ export function audioTypeof(
     const result = UNAVAILABLE_CONTEXT_METHODS[property.name.text]
         ? "undefined"
         : NODE_FACTORIES[property.name.text] ||
-            ["resume", "suspend", "close"].includes(property.name.text)
+            [
+                "resume",
+                "suspend",
+                "close",
+                "createMediaStreamDestination",
+                "createMediaStreamSource",
+            ].includes(property.name.text)
           ? "function"
           : undefined;
     if (result && receiver.cpp)
@@ -522,6 +526,36 @@ function compileAudioReceiverMethod(
                     `${context.compileNumber(argumentAt(call, 2), "double")})`,
                 dataType: { kind: "handle", handle: "audio-buffer" },
             };
+        }
+        if (
+            method === "createMediaStreamDestination" ||
+            method === "createMediaStreamSource"
+        ) {
+            const source = method === "createMediaStreamSource";
+            context.expectArgumentCount(call, source ? 1 : 0, source ? 1 : 0);
+            context.reachFeature("audio:media-stream", call);
+            context.reachFeature("platform:media-stream", call);
+            context.reachJsData();
+            const owner = pinnedAudioOperand(
+                context,
+                receiver,
+                "audio_stream_context",
+            );
+            const stream = source
+                ? `, ${context.dataLowerer.compileForSink(argumentAt(call, 0), {
+                      kind: "handle",
+                      handle: "media-stream",
+                  })}`
+                : "";
+            const node = context.allocateTemporaryCppName("audio_node");
+            context.emit({
+                kind: "declaration",
+                type: "bbl::pal::AudioNodeHandle",
+                name: node,
+                initializer: `bbl::pal::audio_create_media_stream_${source ? "source" : "destination"}(${owner}${stream})`,
+            });
+            context.registerNativeTemporary(node);
+            return { kind: "audio-node", cpp: node };
         }
         const factory = NODE_FACTORIES[method];
         if (!factory) {

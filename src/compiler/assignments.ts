@@ -1210,6 +1210,9 @@ export function emitPropertyAssignment(
     if (emitAudioPropertyAssignment(context, expression, left)) {
         return;
     }
+    if (emitMediaStreamAssignment(context.dataLowerer, expression, left)) {
+        return;
+    }
     if (context.emitUiPropertyAssignment(expression)) {
         return;
     }
@@ -2306,6 +2309,7 @@ function requireSimpleAssignment(
 import ts from "typescript";
 import { argumentAt, expressionHasEffects } from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
+import { emitMediaStreamAssignment } from "./media-streams.js";
 import { emitBrowserFileAssignment } from "./browser-file.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";

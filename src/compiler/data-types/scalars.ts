@@ -88,7 +88,7 @@ export const scalarKinds: DataKindOperations<
     | "numberindex"
     | "json"
     | "event-target"
-    | "deferred-platform-object"
+    | "uninhabited-object"
     | "borrowed-platform-event"
     | "handle"
     | TypedArrayKind
@@ -117,9 +117,9 @@ export const scalarKinds: DataKindOperations<
         opaqueReference: true,
     },
     "event-target": reseatingLeaf("bbl::DomEventTargetValue", "event-target"),
-    "deferred-platform-object": {
-        cpp: (type) => `std::shared_ptr<bbl::Deferred${type.name}>`,
-        key: (type) => `deferred-platform(${type.name})`,
+    "uninhabited-object": {
+        cpp: (type) => `std::shared_ptr<bbl::pal::Uninhabited${type.name}>`,
+        key: (type) => `uninhabited(${type.name})`,
         equal: (left, right) => left.name === right.name,
         children: () => [],
         byReference: true,

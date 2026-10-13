@@ -30,29 +30,6 @@ let catches = 0;
 let argumentsRun = 0;
 let callbacksRun = 0;
 function text(): string { ++argumentsRun; return 'video/mp4'; }
-try { MediaRecorder.isTypeSupported(text()); } catch (error) {
-    if (!error.message.includes('dom:MediaRecorder.isTypeSupported')) throw error;
-    catches++;
-}
-try {
-    const stream = new MediaStream();
-    const tracks = stream.getTracks();
-    stream.getAudioTracks();
-    for (const track of tracks) { const clone = track.clone(); stream.addTrack(clone); clone.stop(); }
-    const recorder = new MediaRecorder(stream, { mimeType: text() });
-    recorder.addEventListener('dataavailable', event => {
-        callbacksRun++;
-        const blob = event.data;
-        blob.text().then(value => { if (value === 'bad') throw new Error(value); });
-    });
-    recorder.addEventListener('error', () => { callbacksRun++; });
-    recorder.addEventListener('stop', () => { callbacksRun++; });
-    recorder.start(1000);
-    if (recorder.state !== 'inactive') recorder.stop();
-} catch (error) {
-    if (!error.message.includes('dom:MediaStream.constructor')) throw error;
-    catches++;
-}
 try {
     const audio = new Audio(text());
     audio.preload = 'auto'; audio.loop = true;
@@ -66,26 +43,16 @@ try {
     catches++;
 }
 try {
-    const stream = new MediaStream();
-    const contexts: AudioContext[] = [];
-    const context = contexts[0]!;
-    const source = context.createMediaStreamSource(stream);
-    const destination = context.createMediaStreamDestination();
-    source.connect(destination);
-    source.disconnect(destination);
-    destination.stream.getTracks();
     const audio = new Audio('sound.wav');
-    context.createMediaElementSource(audio);
+    const contexts: AudioContext[] = [];
+    contexts[0]!.createMediaElementSource(audio);
 } catch (error) {
-    if (!error.message.includes('dom:MediaStream.constructor')) throw error;
+    if (!error.message.includes('dom:Audio.constructor')) throw error;
     catches++;
 }
-const missingStreams: Array<MediaStream | undefined> = [undefined];
-const missingRecorders: Array<MediaRecorder | undefined> = [undefined];
-const events: BlobEvent[] = [];
-missingStreams[0]?.getTracks();
-missingRecorders[0]?.start(++argumentsRun);
-if (catches !== 4 || argumentsRun !== 2 || callbacksRun !== 0 || events.length !== 0)
+const missingAudio: Array<HTMLAudioElement | undefined> = [undefined];
+missingAudio[0]?.pause();
+if (catches !== 2 || argumentsRun !== 1 || callbacksRun !== 0)
     throw new Error('capability completion, optional evaluation or authored callbacks');
 setTimeout(() => globalThis.close(), 0);
 `;
@@ -95,19 +62,6 @@ test("deferred media preserves typed bodies, optional evaluation and explicit fa
     const sites = result.manifest.deferredCapabilities ?? [];
     const ids = new Set(sites.map((site) => site.id));
     for (const id of [
-        "MediaRecorder.isTypeSupported",
-        "MediaStream.constructor",
-        "MediaStream.getTracks",
-        "MediaStream.getAudioTracks",
-        "MediaStreamTrack.clone",
-        "MediaStream.addTrack",
-        "MediaStreamTrack.stop",
-        "MediaRecorder.constructor",
-        "MediaRecorder.addEventListener",
-        "BlobEvent.data",
-        "MediaRecorder.start",
-        "MediaRecorder.state",
-        "MediaRecorder.stop",
         "Audio.constructor",
         "HTMLMediaElement.preload",
         "HTMLMediaElement.loop",
@@ -117,9 +71,6 @@ test("deferred media preserves typed bodies, optional evaluation and explicit fa
         "HTMLMediaElement.pause",
         "HTMLMediaElement.load",
         "HTMLMediaElement.play",
-        "AudioContext.createMediaStreamSource",
-        "AudioContext.createMediaStreamDestination",
-        "MediaStreamAudioDestinationNode.stream",
         "AudioContext.createMediaElementSource",
     ])
         assert.ok(ids.has(`dom:${id}`), id);
@@ -128,16 +79,15 @@ test("deferred media preserves typed bodies, optional evaluation and explicit fa
         "reject",
     );
     assert.equal(
-        sites.find((site) => site.id === "dom:MediaRecorder.constructor")
-            ?.operation,
+        sites.find((site) => site.id === "dom:Audio.constructor")?.operation,
         "construct",
     );
     assert.throws(
         () =>
             compileSource(
                 family.replace(
-                    "callbacksRun++;\n        const blob",
-                    "new FinalizationRegistry(() => {});\n        const blob",
+                    "callbacksRun++;\n        if (audio.duration",
+                    "new FinalizationRegistry(() => {});\n        if (audio.duration",
                 ),
                 { deferredCapabilities },
             ),
@@ -154,7 +104,7 @@ test("deferred media preserves typed bodies, optional evaluation and explicit fa
 
 test("media capability registration preserves strict and authored behavior", () => {
     assert.throws(
-        () => compileSource("new MediaStream();"),
+        () => compileSource("new Audio('sound.wav');"),
         /Unsupported constructor/,
     );
     const authored = compileSource(
@@ -178,11 +128,9 @@ test("media capability registration preserves strict and authored behavior", () 
     });
 });
 
-test("deferred script members and canvas capture retain exact typed sites", () => {
+test("deferred script members retain exact typed sites", () => {
     const result = compileSource(
         `
-        const canvas = document.createElement('canvas');
-        canvas.captureStream(30);
         const script = document.createElement('script');
         script.src = 'module.js';script.async = true;
         const listener = () => { atob(script.src); };
@@ -195,7 +143,6 @@ test("deferred script members and canvas capture retain exact typed sites", () =
         result.manifest.deferredCapabilities?.map((site) => site.id),
     );
     for (const id of [
-        "HTMLCanvasElement.captureStream",
         "HTMLScriptElement.src",
         "HTMLScriptElement.async",
         "HTMLScriptElement.addEventListener",

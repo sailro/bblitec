@@ -7,14 +7,6 @@
 
 namespace bbl {
 
-// Nominal storage for deferred platform APIs. There is no successful producer.
-class DeferredMediaRecorder final {
-    DeferredMediaRecorder() = delete;
-};
-class DeferredBlobEvent final {
-    DeferredBlobEvent() = delete;
-};
-
 class DeferredCapabilityError final : public std::runtime_error {
 public:
     DeferredCapabilityError(std::string_view capability, std::string_view site)

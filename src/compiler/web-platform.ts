@@ -23,6 +23,11 @@ import {
     compileIdleDeadlineMethod,
     idleDeadlineProperty,
 } from "./idle-callbacks.js";
+import {
+    compileMediaStreamNew,
+    compileUninhabitedMethod,
+    uninhabitedProperty,
+} from "./media-streams.js";
 import type { Value } from "./types.js";
 import {
     compileUrlAssignment,
@@ -52,6 +57,7 @@ const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["url", compileUrlMethod],
     ["image-bitmap", compileImageBitmapMethod],
     ["idle-deadline", compileIdleDeadlineMethod],
+    ["uninhabited-object", compileUninhabitedMethod],
     // Blob reads and its stream; other Blob members keep the browser file bridge.
     [
         "blob",
@@ -69,7 +75,8 @@ export function compileWebPlatformNew(
     return (
         compileAbortNew(lowerer, node) ??
         compileUrlNew(lowerer, node) ??
-        compileBodyStreamNew(lowerer, node)
+        compileBodyStreamNew(lowerer, node) ??
+        compileMediaStreamNew(lowerer, node)
     );
 }
 
@@ -93,6 +100,7 @@ export function webPlatformProperty(
         urlProperty(lowerer, owner, property) ??
         imageBitmapProperty(lowerer, owner, property) ??
         idleDeadlineProperty(lowerer, owner, property) ??
+        uninhabitedProperty(lowerer, owner, property, access) ??
         bodyStreamProperty(lowerer, owner, property, access)
     );
 }

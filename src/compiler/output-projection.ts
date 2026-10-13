@@ -45,6 +45,7 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:packaged-fetch": [],
     "platform:compression": ["src/pal_compression.cpp"],
     "platform:idle-callbacks": [],
+    "platform:media-stream": [],
     "image:runtime-decode": [],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
@@ -298,6 +299,7 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:oscillator": [],
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],
+    "audio:media-stream": [],
     // The pin's static-sound family, lowered whole; it fetches its sources
     // through the web platform seam.
     "audio:static-sound": ["src/pal_web_platform.cpp"],
@@ -827,6 +829,10 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("platform:compression")
             ? "#include <bblite/pal_compression.hpp>\n"
+            : "") +
+        (features.includes("platform:media-stream") &&
+        !projection.webPlatformHeaders?.includes("pal_media_stream")
+            ? "#include <bblite/pal_media_stream.hpp>\n"
             : "") +
         // IdleDeadline storage also names the header among the web platform ones.
         (features.includes("platform:idle-callbacks") &&

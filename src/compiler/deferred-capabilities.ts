@@ -4,7 +4,6 @@ import { sceneRelativeSourceLabel } from "../source-location.js";
 import { SourceSiteRegistry } from "./source-coverage.js";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataType } from "./data-types.js";
-import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declarationOrigin, resolvedSymbol } from "./symbols.js";
 import { presenceCpp, type Value } from "./types.js";
@@ -48,24 +47,7 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "Window.prompt",
         "Element.getAttributeNames",
         "Element.innerHTML.svg-image",
-        "MediaStream.constructor",
-        "MediaStream.getTracks",
-        "MediaStream.getAudioTracks",
-        "MediaStream.addTrack",
-        "MediaStreamTrack.stop",
-        "MediaStreamTrack.clone",
-        "MediaRecorder.constructor",
-        "MediaRecorder.isTypeSupported",
-        "MediaRecorder.start",
-        "MediaRecorder.stop",
-        "MediaRecorder.state",
-        "MediaRecorder.addEventListener",
-        "BlobEvent.data",
-        "HTMLCanvasElement.captureStream",
-        "AudioContext.createMediaStreamSource",
-        "AudioContext.createMediaStreamDestination",
         "AudioContext.createMediaElementSource",
-        "MediaStreamAudioDestinationNode.stream",
         "Audio.constructor",
         "HTMLMediaElement.pause",
         "HTMLMediaElement.load",
@@ -337,21 +319,10 @@ export class DeferredCapabilities {
             : api.split(".")[0];
         if (owner === "Window") return this.windowReceiver(value, node);
         const type = value.dataType;
-        if (DEFERRED_DOM_OBJECTS.some((name) => name === owner))
-            return (
-                type?.kind === "deferred-platform-object" && type.name === owner
-            );
         const handle = type?.kind === "handle" ? type.handle : value.kind;
         if (owner === "SurfaceContext") return value.kind === "engine";
-        if (owner === "MediaStream") return handle === "media-stream";
-        if (owner === "MediaStreamTrack")
-            return handle === "media-stream-track";
         if (owner === "AudioContext") return handle === "audio-context";
-        if (
-            owner === "AudioNode" ||
-            owner === "MediaStreamAudioDestinationNode"
-        )
-            return handle === "audio-node";
+        if (owner === "AudioNode") return handle === "audio-node";
         return value.kind === "ui-element" || type?.kind === "event-target";
     }
 

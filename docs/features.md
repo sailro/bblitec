@@ -7,7 +7,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
-buffers, buses, spatial/stereo/analyzer and master volume, media streams/recording/streamed audio, script elements,
+buffers, buses, spatial/stereo/analyzer and master volume, the engine media-stream tap, streamed audio, script elements,
 `prompt`, application-realm device recovery, and the [UI](ui.md) items
 marked deferred. Unregistered APIs still refuse.
 
@@ -182,8 +182,14 @@ Heightfields need square ground grids. Contract: [physics](fidelity.md#physics-c
 LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling (value curves included), decoding, ended
 listeners, `disconnect(destination[, output[, input]])`. A buffer source loops its whole buffer only: a
 `loopStart`/`loopEnd` region inside it, or a loop started with a duration, throws at `start`. Event payloads,
-ended-listener `signal`, context options, statechange, output selection, media streams and recording refuse or are
-absent. `createAudioEngineAsync` adopts `audioContext`; its other options refuse.
+ended-listener `signal`, context options, statechange and output selection refuse or are absent.
+`createAudioEngineAsync` adopts `audioContext`; its other options refuse.
+
+Media streams: `MediaStream`/`MediaStreamTrack` objects (track sets, `addTrack`/`removeTrack`, `clone`, `stop`,
+`enabled`, `readyState`), `canvas.captureStream(fps)` (one live video track), `createMediaStreamDestination()` (a sink
+rendering its input into its stream's audio track every quantum) and `createMediaStreamSource(stream)` (the first
+audio track by id, from any context at the same sample rate; InvalidStateError without one). No recording encoder
+exists: `MediaRecorder.isTypeSupported` is false and `new MediaRecorder` throws NotSupportedError.
 
 Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `disposeSound`) run the pin's lowered
 family in an application realm. Sources: a URL selecting packaged audio (a runtime URL needs inferable candidates), an
