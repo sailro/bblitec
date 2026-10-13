@@ -1,9 +1,22 @@
 #pragma once
 
 #include <bblite/pal_audio_types.hpp>
+#include <bblite/js_callback.hpp>
 #include <bblite/js_data.hpp>
 
+#include <string>
+
 namespace bbl {
+
+/**
+ * What an engine disposes with itself: the pin's `{ _dispose(): void }`
+ * (`AudioEngine._sounds`), the base of every sound and source it holds.
+ */
+struct AudioEngineSound {
+    js::Callback<void()> dispose;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(dispose); }
+};
+using AudioEngineSoundHandle = std::shared_ptr<AudioEngineSound>;
 
 struct AudioSourceState;
 using AudioSourceHandle = std::shared_ptr<AudioSourceState>;
@@ -12,7 +25,13 @@ using AudioSourceHandle = std::shared_ptr<AudioSourceState>;
 struct AudioEngineHandle {
     pal::AudioContextHandle context;
     pal::AudioNodeHandle main_bus;
-    js::Set<AudioSourceHandle> sources{};
+    /** `_sounds`: the sounds and sources `disposeAudioEngine` disposes. */
+    js::Set<AudioEngineSoundHandle> sources{};
+    /** `_rampDuration`: the default parameter ramp, in seconds. */
+    double ramp_duration = 0.01;
+    /** `_validFormats` / `_invalidFormats`: the format probes' answers, by extension. */
+    js::Set<std::string> valid_formats{};
+    js::Set<std::string> invalid_formats{};
     bool operator==(const AudioEngineHandle& other) const { return context == other.context; }
     [[nodiscard]] std::uint32_t identity() const { return context.value; }
     void gc_trace(const js::TraceVisitor& visitor) const {
@@ -21,11 +40,13 @@ struct AudioEngineHandle {
     }
 };
 
-struct AudioSourceState {
+/** A caller-built node routed through the engine (`createSoundSourceAsync`). */
+struct AudioSourceState : AudioEngineSound {
     pal::AudioNodeHandle input;
     pal::AudioNodeHandle volume;
     AudioEngineHandle engine;
     void gc_trace(const js::TraceVisitor& visitor) const {
+        AudioEngineSound::gc_trace(visitor);
         visitor(input);
         visitor(volume);
         visitor(engine);

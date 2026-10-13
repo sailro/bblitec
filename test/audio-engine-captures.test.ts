@@ -58,6 +58,7 @@ function checkMainBusStorage(declarations: string): void {
             }
             AudioNodeHandle audio_destination(AudioContextHandle context) { return {100 + context.value, {}}; }
             void audio_connect(AudioNodeHandle source, AudioNodeHandle target) { edges.emplace_back(source.value, target.value); }
+            void audio_disconnect(AudioNodeHandle) {}
         }
         int main() {
             assert(generated_main() == 0);

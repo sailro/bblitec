@@ -249,9 +249,6 @@ const REFUSED_METHODS: Readonly<Record<string, string>> = {
     createDynamicsCompressor: "the compressor is not lowered",
     createWaveShaper: "the wave shaper is not lowered",
     ...UNAVAILABLE_CONTEXT_METHODS,
-    setValueCurveAtTime:
-        "a value curve needs the array to reach the PAL as a span, and " +
-        "the pinned `audio-param.ts` curve component lowered with it",
     setTargetAtTime: "setTargetAtTime is unreached by the corpus and unlowered",
 };
 
@@ -331,6 +328,38 @@ function resolveAudioReceiver(
 }
 
 // -- method calls --------------------------------------------------------
+
+/** An audio call's operand, evaluated into a temporary in source order. */
+function pinnedAudioOperand(
+    context: AudioCallContext,
+    value: Value,
+    label: string,
+): string {
+    const name = context.allocateTemporaryCppName(label);
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name,
+        initializer: value.cpp,
+    });
+    return name;
+}
+
+/** A numeric operand, evaluated into a temporary in source order. */
+function numberOperand(
+    context: AudioCallContext,
+    argument: ts.Expression,
+    label: string,
+): string {
+    const name = context.allocateTemporaryCppName(label);
+    context.emit({
+        kind: "declaration",
+        type: "const double",
+        name,
+        initializer: context.compileNumber(argument, "double"),
+    });
+    return name;
+}
 
 export function compileAudioMethodCall(
     context: AudioCallContext,
@@ -705,16 +734,44 @@ function compileAudioReceiverMethod(
                 };
             }
             case "disconnect": {
-                if (call.arguments.length !== 0) {
+                if (call.arguments.length === 0)
+                    return {
+                        kind: "void",
+                        cpp: `bbl::pal::audio_disconnect(${receiver.cpp})`,
+                    };
+                // `disconnect(destination[, output[, input]])`: the
+                // operands in order, then the edge.
+                context.expectArgumentCount(call, 1, 3);
+                const node = pinnedAudioOperand(
+                    context,
+                    receiver,
+                    "audio_disconnect_source",
+                );
+                const destination = context.compileValue(argumentAt(call, 0));
+                if (destination.kind !== "audio-node")
                     context.fail(
-                        call,
-                        "disconnect() with a target is not lowered; the " +
-                            "reached form drops every outgoing edge.",
+                        argumentAt(call, 0),
+                        destination.kind === "audio-param"
+                            ? "disconnect(AudioParam) is not lowered; disconnect a node destination."
+                            : "disconnect expects an audio node destination.",
                     );
-                }
+                const target = pinnedAudioOperand(
+                    context,
+                    destination,
+                    "audio_disconnect_destination",
+                );
+                const indices = call.arguments
+                    .slice(1)
+                    .map((argument) =>
+                        numberOperand(
+                            context,
+                            argument,
+                            "audio_disconnect_index",
+                        ),
+                    );
                 return {
                     kind: "void",
-                    cpp: `bbl::pal::audio_disconnect(${receiver.cpp})`,
+                    cpp: `bbl::pal::audio_disconnect(${[node, target, ...indices].join(", ")})`,
                 };
             }
             case "start":
@@ -763,6 +820,39 @@ function compileAudioReceiverMethod(
             return {
                 kind: "void",
                 cpp: `bbl::pal::${schedule}(${receiver.cpp}, ${value}, ${time})`,
+            };
+        }
+        if (method === "setValueCurveAtTime") {
+            context.expectArgumentCount(call, 3, 3);
+            const param = pinnedAudioOperand(
+                context,
+                receiver,
+                "audio_curve_param",
+            );
+            const values = context.compileValue(argumentAt(call, 0));
+            if (values.dataType?.kind !== "f32array")
+                context.fail(
+                    argumentAt(call, 0),
+                    "setValueCurveAtTime requires a Float32Array.",
+                );
+            const curve = pinnedAudioOperand(
+                context,
+                values,
+                "audio_curve_values",
+            );
+            const start = numberOperand(
+                context,
+                argumentAt(call, 1),
+                "audio_curve_start",
+            );
+            const duration = numberOperand(
+                context,
+                argumentAt(call, 2),
+                "audio_curve_duration",
+            );
+            return {
+                kind: "void",
+                cpp: `bbl::pal::audio_param_set_value_curve(${param}, ${curve}, ${start}, ${duration})`,
             };
         }
         if (method === "cancelScheduledValues") {
@@ -846,6 +936,17 @@ export function emitAudioPropertyAssignment(
             code:
                 `bbl::pal::audio_set_loop(${owner.cpp}, ` +
                 `${context.compileBoolean(right)});`,
+        });
+        return true;
+    }
+
+    if (property === "loopStart" || property === "loopEnd") {
+        context.reachFeature("audio:buffer-source", expression);
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::pal::audio_set_${property === "loopStart" ? "loop_start" : "loop_end"}(${owner.cpp}, ` +
+                `${context.compileNumber(right, "double")});`,
         });
         return true;
     }

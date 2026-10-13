@@ -158,7 +158,8 @@ struct IsAlternative<T, std::variant<Members...>>
  * A narrowing's excluded members are the ones the checker proved absent, so
  * holding one is a broken invariant.
  */
-template <class To, class... From> [[nodiscard]] To variant_cast(const std::variant<From...>& value) {
+template <class To, class... From>
+[[nodiscard]] To variant_cast(const std::variant<From...>& value) {
     return std::visit(
         [](const auto& held) -> To {
             using Held = std::decay_t<decltype(held)>;

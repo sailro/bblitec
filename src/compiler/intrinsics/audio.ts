@@ -149,7 +149,7 @@ function mainOutputGraph(engine: string, ctx: string): NativeStatement[] {
 const ENGINE_OPTION_REFUSALS: Readonly<Record<string, string>> = {
     volume:
         "the master volume is applied through `setMainOutVolume`'s ramp, " +
-        "whose `setValueCurveAtTime` component is not lowered",
+        "and the pinned `audio-param.ts` ramp is not lowered",
     parameterRampDuration:
         "no lowered parameter ramp reads the engine's ramp duration",
     resumeOnInteraction:
@@ -440,8 +440,13 @@ export function compileAudioIntrinsic(
                     kind: "declaration",
                     type: "auto",
                     name: stored,
-                    initializer: `bbl::js::make_gc_shared<bbl::AudioSourceState>(bbl::AudioSourceState{${node.cpp}, ${source}, ${engine.cpp}})`,
+                    initializer: `bbl::js::make_gc_shared<bbl::AudioSourceState>(bbl::AudioSourceState{{}, ${node.cpp}, ${source}, ${engine.cpp}})`,
                 });
+                // `_dispose: () => disposeSoundSource(source)`, which the
+                // engine's own disposal calls for every sound it holds.
+                context.emit(
+                    `${stored}->dispose = bbl::js::Callback<void()>(bbl::js::make_closure(std::tuple{${stored}}, [](auto& captured) -> void { ${sourceDisposer(context)}(std::get<0>(captured)); }));`,
+                );
                 context.emit(`(${engine.cpp}).sources.add(${stored});`);
                 return {
                     kind: "audio-source",

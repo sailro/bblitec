@@ -91,7 +91,6 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "AudioContext.createMediaStreamDestination",
         "AudioContext.createMediaElementSource",
         "MediaStreamAudioDestinationNode.stream",
-        "AudioNode.disconnect",
         "Audio.constructor",
         "HTMLMediaElement.pause",
         "HTMLMediaElement.load",
@@ -691,11 +690,6 @@ export class DeferredCapabilities {
         if (!context.options.deferredCapabilities) return undefined;
         const descriptor = deferredCapabilityDescriptor(context.checker, call);
         if (!descriptor) return undefined;
-        if (
-            descriptor.api === "AudioNode.disconnect" &&
-            call.arguments.length === 0
-        )
-            return undefined;
         const target = context.unwrap(call.expression);
         if (
             descriptor.origin !== "babylon" &&

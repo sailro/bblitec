@@ -147,13 +147,13 @@ export function lowerAudioSourceDisposal(name: string): Array<{
             [
                 "Array.from",
                 (args) =>
-                    `bbl::js::array_from_iterable<bbl::AudioSourceHandle>(${args[0]})`,
+                    `bbl::js::array_from_iterable<bbl::AudioEngineSoundHandle>(${args[0]})`,
             ],
-            ["sound._dispose", () => `${name}(sound)`],
+            ["sound._dispose", () => "sound->dispose()"],
             ["engine._sounds.clear", () => "engine.sources.clear()"],
         ]),
         forOf: (_iterated, element) => ({
-            range: "bbl::js::array_from_iterable<bbl::AudioSourceHandle>(engine.sources)",
+            range: "bbl::js::array_from_iterable<bbl::AudioEngineSoundHandle>(engine.sources)",
             bindings: new Map([[element, { cpp: element, type: "opaque" }]]),
         }),
     });
