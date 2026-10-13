@@ -1320,6 +1320,33 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // An explicit render task's raw transmission grab (colour and
+        // depth) sampled by a transmissive shader-material quad.
+        id: "regression-render-task-transmission",
+        name: "Regression - Render Task Transmission",
+        source: "examples/regression-render-task-transmission.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Render Task Transmission",
+        buildDirectory:
+            "native/build-regression-render-task-transmission-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-render-task-transmission/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-render-task-transmission",
+            // The grab textures exist once the task has run, and the frame
+            // callback re-binds them: one fixed frame pins both sides.
+            referenceFrame: 12,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "scene168",
         name: "Scene 168 - Mirrored Double-Sided Winding",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene168.ts",
