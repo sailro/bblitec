@@ -4519,10 +4519,6 @@ test("u-flag RegExp forms the runtime engine cannot express refuse", () => {
             /A word boundary under the i and u flags/,
         ],
         [
-            String.raw`const t = ["a,b"]; const r = t[0]!.split(/(,)/u);`,
-            /String\.split by a u-flag RegExp with capture groups/,
-        ],
-        [
             String.raw`const p = ["a"]; const r = new RegExp(p[0]!, "u");`,
             /A u-flag RegExp constructor needs a pattern known at generation/,
         ],

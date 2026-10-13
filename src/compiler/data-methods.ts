@@ -65,7 +65,11 @@ import {
 } from "./types.js";
 import { libraryGlobal, resolvedSymbol } from "./symbols.js";
 import { callsFreshArrayBuiltin } from "./fresh-records.js";
-import { replacementCallback } from "./string-replacement.js";
+import {
+    regexpCaptureFacts,
+    regexpGroupsType,
+    replacementCallback,
+} from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import { representedResultType } from "./represented-result.js";
@@ -1865,10 +1869,15 @@ function compileArrayFlat({
 function compileArrayJoin(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
+    // null and undefined join as empty strings (an unmatched capture among them).
+    const absentString =
+        dataType.element.kind === "optional" &&
+        dataType.element.inner.kind === "string";
     if (
-        !["string", "enum", "number", "boolean", "json"].includes(
-            dataType.element.kind,
-        ) ||
+        (!absentString &&
+            !["string", "enum", "number", "boolean", "json"].includes(
+                dataType.element.kind,
+            )) ||
         call.arguments.length > 1
     ) {
         lowerer.context.fail(
@@ -1890,15 +1899,17 @@ function compileArrayJoin(state: ArrayMethodState): Value {
         cpp: `bbl::js::array_join(${narrowed.cpp}, ${
             separator ? separator.cpp : lowerer.context.cppString(",")
         }${
-            dataType.element.kind === "json"
-                ? ", [](const auto& value) { return value.is_null() || value.is_undefined() ? std::string{} : value.to_string(); }"
-                : dataType.element.kind === "enum"
-                  ? `, [](const auto& value) { return ${lowerer.context.dataTypes.enumToStringCpp(dataType.element, "value", call)}; }`
-                  : dataType.element.kind === "number"
-                    ? ", [](double value) { return bbl::js::number_to_string(value); }"
-                    : dataType.element.kind === "boolean"
-                      ? ', [](bool value) { return value ? "true" : "false"; }'
-                      : ""
+            absentString
+                ? ", [](const auto& value) { return value.has_value() ? std::string(*value) : std::string{}; }"
+                : dataType.element.kind === "json"
+                  ? ", [](const auto& value) { return value.is_null() || value.is_undefined() ? std::string{} : value.to_string(); }"
+                  : dataType.element.kind === "enum"
+                    ? `, [](const auto& value) { return ${lowerer.context.dataTypes.enumToStringCpp(dataType.element, "value", call)}; }`
+                    : dataType.element.kind === "number"
+                      ? ", [](double value) { return bbl::js::number_to_string(value); }"
+                      : dataType.element.kind === "boolean"
+                        ? ', [](bool value) { return value ? "true" : "false"; }'
+                        : ""
         })`,
         dataType: { kind: "string" },
     };
@@ -3878,21 +3889,33 @@ function compileStringDataMethod(
                 `String.${method} expects one RegExp argument.`,
             );
         }
-        const pattern = lowerer.context.compileValue(argumentAt(call, 0));
+        const pattern = regexpCaptureFacts(
+            lowerer.context.checker,
+            lowerer.context.compileValue(argumentAt(call, 0)),
+            argumentAt(call, 0),
+        );
         if (pattern.dataType?.kind !== "regexp") {
             lowerer.context.fail(
                 argumentAt(call, 0),
                 `Reached String.${method} uses a RegExp pattern.`,
             );
         }
-        const matches = {
+        // A global match lists whole matches; other lists hold captures,
+        // an unmatched one undefined wherever the pattern allows it.
+        const groups = regexpGroupsType(
+            method === "match" && pattern.regexpGlobal
+                ? { ...pattern, regexpOptionalCaptures: false }
+                : pattern,
+            (type) => lowerer.context.dataTypes.cppType(type),
+        );
+        const matches: DataType = {
             kind: "vector",
-            element: { kind: "string" },
-        } as const;
+            element: groups.element,
+        };
         return method === "match"
             ? {
                   kind: "data",
-                  cpp: `${pattern.cpp}.match(${narrowed.cpp})`,
+                  cpp: `${pattern.cpp}.match${groups.template}(${narrowed.cpp})`,
                   dataType: {
                       kind: "optional",
                       inner: matches,
@@ -3900,7 +3923,7 @@ function compileStringDataMethod(
               }
             : {
                   kind: "data",
-                  cpp: `${pattern.cpp}.match_all(${narrowed.cpp})`,
+                  cpp: `${pattern.cpp}.match_all${groups.template}(${narrowed.cpp})`,
                   dataType: {
                       kind: "vector",
                       element: matches,
@@ -3999,7 +4022,9 @@ function compileStringDataMethod(
         if (call.arguments.length !== 1) {
             lowerer.context.fail(call, "String.split expects one separator.");
         }
-        const separatorValue = lowerer.context.compileValue(
+        const separatorValue = regexpCaptureFacts(
+            lowerer.context.checker,
+            lowerer.context.compileValue(argumentAt(call, 0)),
             argumentAt(call, 0),
         );
         if (separatorValue.dataType?.kind === "regexp") {
@@ -4011,23 +4036,18 @@ function compileStringDataMethod(
                     argumentAt(call, 0),
                     "String.split by a stored RegExp requires a known capture layout.",
                 );
-            // Split pushes each capture, an unmatched one as undefined, which
-            // a string list cannot hold; the code point split takes none.
-            if (
-                separatorValue.regexpUnicode &&
-                separatorValue.regexpCaptureCount !== 0
-            )
-                lowerer.context.fail(
-                    argumentAt(call, 0),
-                    "String.split by a u-flag RegExp with capture groups is not lowered.",
-                );
+            // Split pushes each capture after its piece, an unmatched one
+            // undefined wherever the pattern allows it.
+            const groups = regexpGroupsType(
+                separatorValue.regexpCaptureCount === 0
+                    ? { ...separatorValue, regexpOptionalCaptures: false }
+                    : separatorValue,
+                (type) => lowerer.context.dataTypes.cppType(type),
+            );
             return {
                 kind: "data",
-                cpp: `${separatorValue.cpp}.split(${narrowed.cpp})`,
-                dataType: {
-                    kind: "vector",
-                    element: { kind: "string" },
-                },
+                cpp: `${separatorValue.cpp}.split${groups.template}(${narrowed.cpp})`,
+                dataType: { kind: "vector", element: groups.element },
             };
         }
         const separator = lowerer.compileForSink(argumentAt(call, 0), {

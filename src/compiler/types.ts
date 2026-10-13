@@ -2318,6 +2318,10 @@ export interface ValueFields {
     regexpCaptureCount?: number;
     /** Known `u` flag; absent when storage erased the pattern's grammar. */
     regexpUnicode?: boolean;
+    /** Known `g` flag; absent when storage erased the pattern's grammar. */
+    regexpGlobal?: boolean;
+    /** Whether a match can leave a capture undefined; absent when unknown. */
+    regexpOptionalCaptures?: boolean;
     callbackDeclaration?:
         | ts.Identifier
         | ts.FunctionDeclaration

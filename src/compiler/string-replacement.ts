@@ -1,8 +1,8 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
-import type { Value } from "./types.js";
-import { argumentAt } from "./syntax.js";
+import { valueForKind, type Value } from "./types.js";
+import { argumentAt, regularExpressionParts } from "./syntax.js";
 
 /** The empty first alternative exposes every capture without needing a matching input. */
 export function regexpCaptureCount(pattern: string): number {
@@ -155,4 +155,138 @@ export function replacementCallback(
     }
     context.emit("};");
     return adapter;
+}
+
+/**
+ * Whether a match can leave a capture group unmatched (undefined): a capture
+ * inside an alternative, under a quantifier that admits zero repetitions, or
+ * inside a negative lookahead. A capture whose own content alternates still
+ * participates.
+ */
+export function regexpCapturesMayBeUnmatched(pattern: string): boolean {
+    interface Frame {
+        capturing: boolean;
+        negative: boolean;
+        alternation: boolean;
+        captures: number;
+    }
+    const stack: Frame[] = [
+        { capturing: false, negative: false, alternation: false, captures: 0 },
+    ];
+    let unmatched = false;
+    for (let index = 0; index < pattern.length; index++) {
+        const character = pattern[index]!;
+        const frame = stack.at(-1)!;
+        if (character === "\\") {
+            index++;
+        } else if (character === "[") {
+            for (
+                index++;
+                index < pattern.length && pattern[index] !== "]";
+                index++
+            )
+                if (pattern[index] === "\\") index++;
+        } else if (character === "|") {
+            frame.alternation = true;
+        } else if (character === "(") {
+            const head = pattern.slice(index + 1, index + 4);
+            const capturing = !head.startsWith("?") || /^\?<[^=!]/.test(head);
+            stack.push({
+                capturing,
+                negative: head.startsWith("?!") || head.startsWith("?<!"),
+                alternation: false,
+                captures: 0,
+            });
+        } else if (character === ")" && stack.length > 1) {
+            const group = stack.pop()!;
+            const quantifier = pattern.slice(index + 1);
+            const optional = /^[?*]|^\{0+(?:,\d*)?\}/.test(quantifier);
+            const inner = group.captures;
+            const own = group.capturing ? 1 : 0;
+            if (
+                (group.alternation && inner > 0) ||
+                ((optional || group.negative) && inner + own > 0)
+            )
+                unmatched = true;
+            stack.at(-1)!.captures += inner + own;
+        }
+    }
+    return unmatched || (stack[0]!.alternation && stack[0]!.captures > 0);
+}
+
+/**
+ * A RegExp's capture lists: strings when no capture can be unmatched,
+ * else `string | undefined`, with the runtime's matching template argument.
+ */
+export function regexpGroupsType(
+    pattern: Value,
+    cppType: (type: DataType) => string,
+): { element: DataType; template: string } {
+    if (pattern.regexpOptionalCaptures === false)
+        return { element: { kind: "string" }, template: "" };
+    const element: DataType = {
+        kind: "optional",
+        inner: { kind: "string" },
+        undefinedOnly: true,
+    };
+    return { element, template: `<${cppType(element)}>` };
+}
+
+/**
+ * The pattern and flags a RegExp expression has at generation: a literal,
+ * `new RegExp` of literal text, or a `const` bound to one.
+ */
+function staticRegExpSource(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+    depth = 0,
+): { pattern: string; flags: string } | undefined {
+    let node = expression;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (ts.isRegularExpressionLiteral(node))
+        return regularExpressionParts(node);
+    if (
+        ts.isNewExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "RegExp" &&
+        node.arguments?.[0] &&
+        ts.isStringLiteralLike(node.arguments[0]) &&
+        (!node.arguments[1] || ts.isStringLiteralLike(node.arguments[1]))
+    )
+        return {
+            pattern: node.arguments[0].text,
+            flags: node.arguments[1]?.text ?? "",
+        };
+    if (!ts.isIdentifier(node) || depth > 4) return undefined;
+    const declaration = checker.getSymbolAtLocation(node)?.valueDeclaration;
+    return declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        ts.isVariableDeclarationList(declaration.parent) &&
+        (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+        ? staticRegExpSource(checker, declaration.initializer, depth + 1)
+        : undefined;
+}
+
+/**
+ * A RegExp value's capture facts: its own metadata, else the generation-known
+ * source of the expression that produced it.
+ */
+export function regexpCaptureFacts(
+    checker: ts.TypeChecker,
+    value: Value,
+    expression: ts.Expression,
+): Value {
+    if (value.regexpOptionalCaptures !== undefined) return value;
+    const source = staticRegExpSource(checker, expression);
+    return source
+        ? valueForKind(value.kind, {
+              ...value,
+              regexpGlobal: source.flags.includes("g"),
+              regexpCaptureCount: regexpCaptureCount(source.pattern),
+              regexpOptionalCaptures: regexpCapturesMayBeUnmatched(
+                  source.pattern,
+              ),
+          })
+        : value;
 }

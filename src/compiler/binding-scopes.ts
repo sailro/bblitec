@@ -977,6 +977,8 @@ export class BindingScopes {
             value = { ...value };
             delete writable(value).regexpCaptureCount;
             delete writable(value).regexpUnicode;
+            delete writable(value).regexpGlobal;
+            delete writable(value).regexpOptionalCaptures;
         }
         if (
             value.engineOwnerIdentity &&
