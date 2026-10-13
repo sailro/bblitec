@@ -1,8 +1,8 @@
 /** Shared by the static and spatial sound tests: WAVE input and LabSound programs. */
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
+    nativeFixtureLabSoundPresent,
     nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -13,9 +13,7 @@ const tools = optionalNativeFixtureTools();
 const labsound = nativeFixtureLabSoundRoot;
 
 /** Whether the native compiler and the pinned LabSound library are present. */
-export const native = Boolean(
-    tools && existsSync(join(labsound, "lib/LabSound.lib")),
-);
+export const native = Boolean(tools && nativeFixtureLabSoundPresent());
 
 /** A mono 16-bit 48 kHz WAVE file holding `level` for `seconds`. */
 export function wave(level: number, seconds: number): Buffer {

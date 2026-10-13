@@ -19,9 +19,11 @@ import type { TestContext } from "node:test";
 
 import type { Feature } from "../src/compiler/types.js";
 import {
+    discoverDevelopmentTools,
     discoverWindowsBuildTools,
     type WindowsBuildTools,
 } from "../src/development-tools.js";
+import { artifactPatchState } from "../src/patch-inventory.js";
 import {
     featureMacros,
     featureMacroValue,
@@ -46,6 +48,34 @@ export const nativeFixtureVcpkgRoot = developmentVcpkgRoot();
 export const nativeFixtureLabSoundRoot = resolve(
     process.env.BBLITE_LABSOUND_DIR ?? "artifacts/tools/labsound",
 );
+
+let labSoundRecordVerified = false;
+
+/**
+ * Whether that install is present. A present install not recorded as
+ * built from the pin's source and patch series throws: a fixture would
+ * otherwise test a LabSound no scene links (one without
+ * 0007-output-in-place-bus corrupts the heap intermittently).
+ */
+export function nativeFixtureLabSoundPresent(): boolean {
+    if (!existsSync(join(nativeFixtureLabSoundRoot, "lib/LabSound.lib")))
+        return false;
+    if (labSoundRecordVerified) return true;
+    const cmake = discoverDevelopmentTools().cmake;
+    if (!cmake)
+        throw new Error("CMake is required to verify the LabSound record.");
+    const record = artifactPatchState(
+        cmake,
+        "labsound",
+        nativeFixtureLabSoundRoot,
+    );
+    if (record.state !== "current")
+        throw new Error(
+            `LabSound at ${nativeFixtureLabSoundRoot} ${record.detail}; rebuild it with tools/build-labsound.ps1 or set BBLITE_LABSOUND_DIR to a current build.`,
+        );
+    labSoundRecordVerified = true;
+    return true;
+}
 
 /** Isolate contiguous emitted helpers, refusing a missing or reversed boundary. */
 export function cppSection(

@@ -18,7 +18,7 @@ npm run scene -- parity scene1
 - Patches: [native/patches/manifest.json](../native/patches/manifest.json) lists each patch series, its builds, purpose and
   upstream state; only `native/patch-identity.cmake` reads it. `npm run patches:check` verifies manifest, files and consumers.
 - Built Dawn, LabSound, RmlUi and trimmed-SDL artifacts record source, patches and variants: configure refuses a mismatch,
-  warns on an unrecorded artifact; `dev:setup` rebuilds stale ones.
+  warns on an unrecorded artifact; `dev:setup` rebuilds stale ones. LabSound test fixtures also refuse an unrecorded one.
 
 ### Linux prerequisites
 

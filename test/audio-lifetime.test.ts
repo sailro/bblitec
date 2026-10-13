@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
+    nativeFixtureLabSoundPresent,
     nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -16,7 +17,7 @@ const labsound = nativeFixtureLabSoundRoot;
 test(
     "audio playback preserves loops, rates and graph ownership",
     {
-        skip: !tools || !existsSync(join(labsound, "lib/LabSound.lib")),
+        skip: !tools || !nativeFixtureLabSoundPresent(),
     },
     () => {
         const output = resolve("artifacts/audio-lifetime-check");

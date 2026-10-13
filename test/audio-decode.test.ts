@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
     cppFunction,
     cppRecord,
+    nativeFixtureLabSoundPresent,
     nativeFixtureLabSoundRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -105,7 +106,7 @@ function writeWave(output: string): string {
 test(
     "WAVE and Vorbis byte decoding match file PCM and read current ArrayBuffer contents",
     {
-        skip: !tools || !existsSync(resolve(labSound, "lib/LabSound.lib")),
+        skip: !tools || !nativeFixtureLabSoundPresent(),
     },
     () => {
         const output = resolve("artifacts/audio-decode-check");
@@ -205,7 +206,7 @@ test(
 test(
     "a WAVE-only native decoder omits other decoder entry points and registries",
     {
-        skip: !tools || !existsSync(resolve(labSound, "lib/LabSound.lib")),
+        skip: !tools || !nativeFixtureLabSoundPresent(),
     },
     () => {
         const output = resolve("artifacts/audio-decode-check");

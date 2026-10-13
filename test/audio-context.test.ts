@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureLabSoundPresent,
     nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -230,7 +231,7 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", (t) 
     writeFileSync(join(output, "program.hpp"), result.cpp);
     const tools = optionalNativeFixtureTools();
     const labsound = nativeFixtureLabSoundRoot;
-    if (!tools || !existsSync(join(labsound, "lib/LabSound.lib"))) {
+    if (!tools || !nativeFixtureLabSoundPresent()) {
         t.skip("The native compiler and pinned LabSound library are required.");
         return;
     }

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureLabSoundPresent,
     nativeFixtureLabSoundRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -13,7 +14,7 @@ import {
 
 const tools = optionalNativeFixtureTools();
 const labsound = nativeFixtureLabSoundRoot;
-const native = Boolean(tools && existsSync(join(labsound, "lib/LabSound.lib")));
+const native = Boolean(tools && nativeFixtureLabSoundPresent());
 
 /** Compile one LabSound fixture translation unit and run it. */
 function runLabSoundFixture(
