@@ -217,6 +217,13 @@ export interface RecordSchema {
      */
     readonly instanceOf?: ReadonlyMap<string, (error: string) => string>;
     /**
+     * Platform classes the native platform provides, keyed by the library
+     * global (`AudioBuffer`), with the shape their instances lower to:
+     * `typeof AudioBuffer` is `"function"`, and `value instanceof
+     * AudioBuffer` tests whether a union holds that shape.
+     */
+    readonly platformClasses?: ReadonlyMap<string, RecordShape>;
+    /**
      * Platform globals read as values (`globalThis.fetch` stored as a
      * function), keyed by the global's name.
      */
@@ -287,6 +294,20 @@ interface LoweredFunction {
      * is lowered once per distinct signature (a native overload).
      */
     readonly parameters?: readonly (RecordShape | undefined)[];
+    /**
+     * A generic function's instantiation: what its type parameters stand
+     * for while its signature and body lower (`PinnedRecordModel.typeBindings`).
+     */
+    readonly typeBindings?: readonly Map<ts.Type, ts.Type>[];
+}
+
+/** A generic function's instantiation at one call. */
+export interface GenericInstance {
+    /** The instantiation's identity: its type arguments' native shapes. */
+    readonly key: string;
+    /** The stem the native name carries (`of_voice`). */
+    readonly stem: string;
+    readonly bindings: readonly Map<ts.Type, ts.Type>[];
 }
 
 /** One parameter of a lowered function's native signature. */
@@ -758,6 +779,89 @@ export class PinnedRecordModel {
      */
     public readonly typeBindings: Map<ts.Type, ts.Type>[] = [];
 
+    /** `run` with `bindings` innermost in {@link typeBindings}. */
+    public withTypeBindings<R>(
+        bindings: readonly Map<ts.Type, ts.Type>[] | undefined,
+        run: () => R,
+    ): R {
+        if (!bindings?.length) return run();
+        const depth = this.typeBindings.length;
+        this.typeBindings.push(...bindings);
+        try {
+            return run();
+        } finally {
+            this.typeBindings.length = depth;
+        }
+    }
+
+    /** A type parameter's bound type, through every binding in scope. */
+    private boundType(type: ts.Type): ts.Type {
+        for (let depth = 0; type.flags & ts.TypeFlags.TypeParameter; depth++) {
+            let bound: ts.Type | undefined;
+            for (
+                let index = this.typeBindings.length - 1;
+                index >= 0;
+                index--
+            ) {
+                bound = this.typeBindings[index]!.get(type);
+                if (bound) break;
+            }
+            if (!bound || depth > 64) return type;
+            type = bound;
+        }
+        return type;
+    }
+
+    /**
+     * Bindings that stay valid after the scope that made them: each type
+     * argument resolved through the bindings in scope, over a snapshot of
+     * them for type arguments that still name a type parameter.
+     */
+    public closedBindings(
+        parameters: readonly ts.Type[],
+        typeArguments: readonly ts.Type[],
+    ): Map<ts.Type, ts.Type>[] {
+        const snapshot = new Map<ts.Type, ts.Type>();
+        for (const bindings of this.typeBindings)
+            for (const [from, to] of bindings) snapshot.set(from, to);
+        const own = new Map<ts.Type, ts.Type>(
+            parameters.map((parameter, index) => [
+                parameter,
+                this.boundType(typeArguments[index]!),
+            ]),
+        );
+        return snapshot.size ? [snapshot, own] : [own];
+    }
+
+    /** A native-name stem for type arguments (`of_voice_and_number`). */
+    public instanceStem(shapes: readonly RecordShape[]): string {
+        const stem = (shape: RecordShape): string => {
+            switch (shape.kind) {
+                case "record": {
+                    const cpp = this.record(shape.name).spec.cpp;
+                    return snakeCase(cpp.slice(cpp.lastIndexOf(":") + 1));
+                }
+                case "optional":
+                    return `optional_${stem(shape.value)}`;
+                case "array":
+                case "set":
+                    return `${stem(shape.element)}_${shape.kind}`;
+                case "native":
+                case "function":
+                case "tuple":
+                case "map":
+                case "weakmap":
+                case "typed":
+                case "promise":
+                case "variant":
+                    return `${shape.kind}_${createHash("sha256").update(this.cppType(shape)).digest("hex").slice(0, 8)}`;
+                default:
+                    return shape.kind;
+            }
+        };
+        return `of_${shapes.map(stem).join("_and_")}`;
+    }
+
     /** The native form of a checked pinned type. */
     public shapeOf(type: ts.Type, site: ts.Node): RecordShape {
         if (type.flags & ts.TypeFlags.TypeParameter) {
@@ -923,7 +1027,19 @@ export class PinnedRecordModel {
                 if (value) return value;
                 const record = this.records.get(name);
                 if (record)
-                    return { kind: "record", name: record.spec.pinned[0]! };
+                    return {
+                        kind: "record",
+                        name:
+                            (type as ts.ObjectType).objectFlags &
+                                ts.ObjectFlags.Reference &&
+                            this.genericParameters(record.spec)
+                                ? this.instantiatedRecord(
+                                      record.spec,
+                                      type,
+                                      site,
+                                  )
+                                : record.spec.pinned[0]!,
+                    };
             }
             const signatures = type.getCallSignatures();
             if (signatures.length === 1 && type.getProperties().length === 0) {
@@ -1059,7 +1175,8 @@ export class PinnedRecordModel {
             if (
                 spec.native ||
                 this.literalTypes.has(spec.pinned[0]!) ||
-                this.resolvingMembers.has(spec.pinned[0]!)
+                this.resolvingMembers.has(spec.pinned[0]!) ||
+                this.genericParameters(spec)
             )
                 return false;
             const declared = this.record(spec.pinned[0]!).members();
@@ -1283,6 +1400,94 @@ export class PinnedRecordModel {
     /** Records whose members are being resolved, by key. */
     private readonly resolvingMembers = new Set<string>();
 
+    /** Instantiated generic records by key, with the generic they instantiate. */
+    private readonly instances = new Map<
+        string,
+        { generic: RecordSpec; bindings: readonly Map<ts.Type, ts.Type>[] }
+    >();
+
+    /** A generic record's declared type parameters; undefined when it has none. */
+    private genericParameters(spec: RecordSpec): ts.Type[] | undefined {
+        if (spec.native || spec.returnOf || spec.typeOf) return undefined;
+        const key = spec.pinned[0]!;
+        if (this.literalTypes.has(key) || this.instances.has(key))
+            return undefined;
+        if (!this.genericRecords.has(key)) {
+            const { site } = this.recordSource(spec);
+            // A generic class keeps one struct; shaping its type
+            // parameter refuses.
+            const parameters =
+                ts.isInterfaceDeclaration(site) ||
+                ts.isTypeAliasDeclaration(site)
+                    ? site.typeParameters
+                    : undefined;
+            this.genericRecords.set(
+                key,
+                parameters?.length
+                    ? parameters.map((parameter) =>
+                          this.checker.getTypeAtLocation(parameter),
+                      )
+                    : undefined,
+            );
+        }
+        return this.genericRecords.get(key);
+    }
+
+    /** {@link genericParameters} by record key. */
+    private readonly genericRecords = new Map<string, ts.Type[] | undefined>();
+
+    /**
+     * A generic record at one instantiation: one struct per distinct list of
+     * type-argument shapes (`SignalImpl<Voice>` is `SignalOfVoice`), its
+     * members resolved with the type parameters bound. A narrower view
+     * (`Signal<Voice>`) of the same record is the same instantiation.
+     */
+    private instantiatedRecord(
+        spec: RecordSpec,
+        type: ts.Type,
+        site: ts.Node,
+    ): string {
+        const parameters = this.genericParameters(spec)!;
+        const typeArguments =
+            type.flags & ts.TypeFlags.Object &&
+            (type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference
+                ? this.checker
+                      .getTypeArguments(type as ts.TypeReference)
+                      .slice(0, parameters.length)
+                : [];
+        if (typeArguments.length !== parameters.length)
+            return this.fail(
+                site,
+                `Pinned generic record '${spec.pinned[0]!}' is used without its type arguments.`,
+            );
+        const shapes = typeArguments.map((argument) =>
+            this.shapeOf(argument, site),
+        );
+        const key = `${spec.pinned[0]!}<${shapes.map((shape) => this.cppType(shape)).join(", ")}>`;
+        if (!this.records.has(key)) {
+            const { handle: _handle, ...generic } = spec;
+            const instance: RecordSpec = {
+                ...generic,
+                pinned: [key],
+                cpp: `${spec.cpp}${this.instanceStem(shapes)
+                    .split("_")
+                    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+                    .join("")}`,
+            };
+            this.instances.set(key, {
+                generic: spec,
+                bindings: this.closedBindings(parameters, typeArguments),
+            });
+            this.records.set(key, this.resolveRecord(instance));
+        }
+        return key;
+    }
+
+    /** The instantiated generic records the lowered bodies reached, for `structs`. */
+    public instantiatedRecords(): string[] {
+        return [...this.instances.keys()];
+    }
+
     private resolveRecord(spec: RecordSpec): ResolvedRecord {
         let members: Map<string, ResolvedMember> | undefined;
         return {
@@ -1292,7 +1497,10 @@ export class PinnedRecordModel {
                 const key = spec.pinned[0]!;
                 this.resolvingMembers.add(key);
                 try {
-                    members = this.recordMembers(spec);
+                    members = this.withTypeBindings(
+                        this.instances.get(key)?.bindings,
+                        () => this.recordMembers(spec),
+                    );
                 } finally {
                     this.resolvingMembers.delete(key);
                 }
@@ -1348,6 +1556,8 @@ export class PinnedRecordModel {
         const name = spec.pinned[0]!;
         const literal = this.literalTypes.get(name);
         if (literal) return literal;
+        const instance = this.instances.get(name);
+        if (instance) return this.recordSource(instance.generic);
         const declared = (
             statement: ts.Node,
         ): { type: ts.Type; site: ts.Node } | undefined => {
@@ -2246,15 +2456,19 @@ export class PinnedRecordModel {
     public lowered(
         declaration: PinnedCallable,
         parameters?: readonly (RecordShape | undefined)[],
+        instance?: GenericInstance,
     ): LoweredFunction {
         const module = modulePathOf(declaration.getSourceFile());
         const named = this.callableName(declaration);
         const specialized = parameters?.some((shape) => shape !== undefined)
             ? parameters
             : undefined;
-        const name = specialized
-            ? `${named.name}(${specialized.map((shape) => (shape ? this.cppType(shape) : "_")).join(", ")})`
+        const instantiated = instance
+            ? `${named.name}<${instance.key}>`
             : named.name;
+        const name = specialized
+            ? `${instantiated}(${specialized.map((shape) => (shape ? this.cppType(shape) : "_")).join(", ")})`
+            : instantiated;
         const key = `${module}#${name}`;
         const existing = this.functions.get(key);
         if (existing) return existing;
@@ -2262,7 +2476,7 @@ export class PinnedRecordModel {
             module,
             name,
             declaration,
-            cpp: named.cpp,
+            cpp: instance ? `${named.cpp}_${instance.stem}` : named.cpp,
             namespace: (
                 this.schema.exported
                     ? this.schema.exported.has(`${module}#${named.exported}`)
@@ -2272,6 +2486,7 @@ export class PinnedRecordModel {
                 : detailNamespace(module),
             ...(named.owner !== undefined ? { owner: named.owner } : {}),
             ...(specialized ? { parameters: specialized } : {}),
+            ...(instance ? { typeBindings: instance.bindings } : {}),
         };
         this.functions.set(key, entry);
         this.order.push(entry);
@@ -2483,6 +2698,12 @@ export class PinnedRecordModel {
 
     /** A lowered function's pinned parameters with their native shapes. */
     public parametersOf(entry: LoweredFunction): NativeParameter[] {
+        return this.withTypeBindings(entry.typeBindings, () =>
+            this.boundParametersOf(entry),
+        );
+    }
+
+    private boundParametersOf(entry: LoweredFunction): NativeParameter[] {
         const declaration = entry.declaration;
         if (ts.isClassDeclaration(declaration))
             return this.extendsError(declaration)
@@ -2555,6 +2776,12 @@ export class PinnedRecordModel {
 
     /** What a lowered function returns: a constructor returns its instance. */
     public returnShapeOf(entry: LoweredFunction): RecordShape {
+        return this.withTypeBindings(entry.typeBindings, () =>
+            this.boundReturnShapeOf(entry),
+        );
+    }
+
+    private boundReturnShapeOf(entry: LoweredFunction): RecordShape {
         const declaration = entry.declaration;
         if (
             ts.isClassDeclaration(declaration) ||
@@ -2592,12 +2819,17 @@ export class PinnedRecordModel {
         >();
         for (let index = 0; index < this.order.length; index += 1) {
             const entry = this.order[index]!;
-            const lowerer = new RecordBodyLowerer(this, entry);
-            const body = lowerer.body();
-            bodies.set(entry, {
-                environments: lowerer.environmentStructs(),
-                body,
-            });
+            bodies.set(
+                entry,
+                this.withTypeBindings(entry.typeBindings, () => {
+                    const lowerer = new RecordBodyLowerer(this, entry);
+                    const body = lowerer.body();
+                    return {
+                        environments: lowerer.environmentStructs(),
+                        body,
+                    };
+                }),
+            );
         }
         const selected = this.order.filter((entry) => emit(entry));
         const grouped = <T>(
@@ -5127,6 +5359,22 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             );
             if (member) return `${this.cpp(to)}(${value})`;
         }
+        // A union narrowed to fewer of its members (`typeof source ===
+        // "object"`), or widened to more: the held member, kept.
+        if (from.kind === "variant" && to.kind === "variant") {
+            const within = (
+                members: readonly RecordShape[],
+                union: readonly RecordShape[],
+            ): boolean =>
+                members.every((member) =>
+                    union.some((candidate) => this.same(candidate, member)),
+                );
+            if (
+                within(to.members, from.members) ||
+                within(from.members, to.members)
+            )
+                return `bbl::pinned::variant_cast<${this.cpp(to)}>(${value})`;
+        }
         // A function passed where callers pass more arguments ignores the
         // rest, as JavaScript's does (`then(resolve)` of a void promise).
         // The function receives each argument as its own parameter type (a
@@ -5647,6 +5895,66 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return undefined;
     }
 
+    /**
+     * A member of a module constant frozen by `as const` (`SoundState.Stopped`
+     * over `const SoundState = { Stopped: 1, ... } as const`) whose value is
+     * a literal: that literal, read without building the object.
+     */
+    private frozenMember(
+        node: ts.PropertyAccessExpression,
+    ): ts.Expression | undefined {
+        const owner = this.skipParentheses(node.expression);
+        if (!ts.isIdentifier(owner)) return undefined;
+        const declaration = this.model.declarationOf(owner);
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !(declaration.parent.flags & ts.NodeFlags.Const) ||
+            !ts.isSourceFile(declaration.parent.parent.parent) ||
+            declaration.getSourceFile().isDeclarationFile ||
+            !declaration.initializer
+        )
+            return undefined;
+        let initializer = this.skipParentheses(declaration.initializer);
+        if (
+            !ts.isAsExpression(initializer) ||
+            !ts.isConstTypeReference(initializer.type)
+        )
+            return undefined;
+        initializer = this.skipParentheses(initializer.expression);
+        if (!ts.isObjectLiteralExpression(initializer)) return undefined;
+        const property = [...initializer.properties]
+            .reverse()
+            .find(
+                (candidate) =>
+                    ts.isPropertyAssignment(candidate) &&
+                    (ts.isIdentifier(candidate.name) ||
+                        ts.isStringLiteral(candidate.name)) &&
+                    candidate.name.text === node.name.text,
+            );
+        if (!property || !ts.isPropertyAssignment(property)) return undefined;
+        const value = this.skipParentheses(property.initializer);
+        const literal = (expression: ts.Expression): boolean =>
+            ts.isNumericLiteral(expression) ||
+            ts.isStringLiteral(expression) ||
+            ts.isNoSubstitutionTemplateLiteral(expression) ||
+            expression.kind === ts.SyntaxKind.TrueKeyword ||
+            expression.kind === ts.SyntaxKind.FalseKeyword ||
+            (ts.isPrefixUnaryExpression(expression) &&
+                expression.operator === ts.SyntaxKind.MinusToken &&
+                ts.isNumericLiteral(expression.operand));
+        // A spread after the member could replace it.
+        const index = initializer.properties.indexOf(property);
+        if (
+            !literal(value) ||
+            initializer.properties
+                .slice(index + 1)
+                .some((later) => !ts.isPropertyAssignment(later))
+        )
+            return undefined;
+        return value;
+    }
+
     /** The C++ spelling of a pinned local or parameter an adapter names. */
     private localNamed(name: string, site: ts.Node): string {
         const found = [...this.locals].filter(
@@ -5685,6 +5993,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.refuse(
                 node,
                 `Pinned platform function '${key}' is referenced as a value.`,
+            );
+        if (declaration.typeParameters?.length)
+            return this.refuse(
+                node,
+                `Pinned generic function '${node.text}' is referenced as a value.`,
             );
         return this.model.qualified(this.model.lowered(declaration));
     }
@@ -5925,6 +6238,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     /**
+     * The shape instances of a class global lower to: the language's
+     * `ArrayBuffer`, or a class the schema's platform provides.
+     */
+    private classShape(library: string): RecordShape | undefined {
+        if (library === "ArrayBuffer") return { kind: "buffer" };
+        return this.model.schema.platformClasses?.get(library);
+    }
+
+    /**
      * `value instanceof C` over a thrown value: the library's Error
      * classes by their name, an authored `class extends Error` by its
      * native record, a platform class (`DOMException`) by its schema test.
@@ -5961,6 +6283,19 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return "false";
         };
         const library = this.libraryName(target);
+        const instances =
+            library !== undefined ? this.classShape(library) : undefined;
+        if (instances !== undefined) {
+            if (shape.kind === "variant") {
+                const held = shape.members.filter((member) =>
+                    this.same(member, instances),
+                );
+                return held.length === 0
+                    ? "false"
+                    : `(${held.map((member) => `std::holds_alternative<${this.cpp(member)}>(${value})`).join(" || ")})`;
+            }
+            return this.same(shape, instances) ? "true" : "false";
+        }
         const platform =
             library !== undefined
                 ? this.model.schema.instanceOf?.get(library)
@@ -6037,6 +6372,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     private typeofTest(operand: ts.Expression, expected: string): string {
+        // Feature detection of a class the platform provides (`typeof
+        // AudioBuffer !== "undefined"`), or of the language's own buffer.
+        const library = this.libraryName(operand);
+        if (library !== undefined && this.classShape(library) !== undefined)
+            return expected === "function" ? "true" : "false";
         const shape = this.shapeAt(operand);
         if (shape.kind === "json") {
             this.model.include("bblite/pinned_json.hpp");
@@ -6120,6 +6460,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (typeof member === "number") return doubleCpp(member);
         if (typeof member === "string")
             return `std::string(${stringLiteral(member)})`;
+        const frozen = this.frozenMember(node);
+        if (frozen !== undefined)
+            return this.convert(frozen, this.shapeAt(node));
         const numericConstant = numberConstant(node, (expression) =>
             libraryGlobal(this.checker, expression),
         );
@@ -6869,9 +7212,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ts.isSourceFile(declaration.parent) &&
             declaration.body
         ) {
+            const instance = this.genericInstance(node, declaration);
             const entry = this.model.lowered(
                 declaration,
-                this.specialization(node, declaration),
+                this.model.withTypeBindings(instance?.bindings, () =>
+                    this.specialization(node, declaration),
+                ),
+                instance,
             );
             return `${this.model.qualified(entry)}(${this.arguments(node, entry)})`;
         }
@@ -6886,6 +7233,42 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             node,
             `Pinned call '${callee.getText(this.source)}' has no native lowering.`,
         );
+    }
+
+    /**
+     * A generic module function's instantiation at a call: each declared
+     * type parameter bound to what the checker resolved the call to (an
+     * explicit or inferred type argument), keyed by the bound shapes.
+     */
+    private genericInstance(
+        node: ts.CallExpression,
+        declaration: ts.FunctionDeclaration,
+    ): GenericInstance | undefined {
+        const parameters = (declaration.typeParameters ?? []).map((parameter) =>
+            this.checker.getTypeAtLocation(parameter),
+        );
+        if (!parameters.length) return undefined;
+        const declared = this.checker.getSignatureFromDeclaration(declaration);
+        if (!declared)
+            return this.refuse(node, "Pinned generic call has no signature.");
+        const { bindings } = this.instantiation(node, declared);
+        // A type parameter the call does not determine (one only a
+        // conditional parameter type mentions) is never shaped; the
+        // function lowers once, and shaping it refuses.
+        const typeArguments: ts.Type[] = [];
+        for (const parameter of parameters) {
+            const bound = bindings.get(parameter);
+            if (!bound) return undefined;
+            typeArguments.push(bound);
+        }
+        const shapes = typeArguments.map((argument) =>
+            this.model.shapeOf(argument, node),
+        );
+        return {
+            key: shapes.map((shape) => this.cpp(shape)).join(", "),
+            stem: this.model.instanceStem(shapes),
+            bindings: this.model.closedBindings(parameters, typeArguments),
+        };
     }
 
     /** A call of a function value: its arguments as its parameters. */
@@ -7493,6 +7876,19 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     if (shape.kind === "json") {
                         this.model.include("bblite/pinned_json.hpp");
                         return `${this.value(first)}.is_array()`;
+                    }
+                    // A union holding an array is one while it holds it.
+                    if (shape.kind === "variant") {
+                        const arrays = shape.members.filter(
+                            (member) =>
+                                member.kind === "array" ||
+                                member.kind === "tuple",
+                        );
+                        const tests = arrays.map(
+                            (member) =>
+                                `std::holds_alternative<${this.cpp(member)}>(held)`,
+                        );
+                        return `[](const auto& held) { return ${tests.length ? tests.join(" || ") : "static_cast<void>(held), false"}; }(${this.value(first)})`;
                     }
                     const isArray =
                         shape.kind === "array" || shape.kind === "tuple";
