@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
 test("details, select options and output values retain their source properties", () => {
@@ -95,4 +98,59 @@ test("details toggle listeners join shared DOM dispatch with removal", () => {
         details.open = toggles === 0;`);
     assert.match(result.cpp, /on_dom_pointer\([^;]+"toggle"/);
     assert.match(result.cpp, /off_dom_pointer\([^;]+"toggle"/);
+});
+
+test("a summary click on the Window display toggles the realm's details once per click", (t) => {
+    // test/fixtures/window-details-toggle-check.cpp clicks the summary three
+    // times through the Window display; the realm's toggle listener reads the
+    // disclosure and writes an output, a status text and its hidden flag.
+    const result = compileSource(`
+        let trace = "";
+        const log = document.createElement("div");
+        log.id = "log";
+        document.body.append(log);
+        const details = document.createElement("details");
+        details.style.cssText = "position:absolute;left:0px;top:0px;width:400px;margin:0;";
+        const summary = document.createElement("summary");
+        summary.textContent = "Pose";
+        summary.style.cssText = "display:block;height:200px;";
+        const value = document.createElement("output");
+        value.value = "0.00";
+        const status = document.createElement("p");
+        status.hidden = true;
+        status.textContent = "Unavailable";
+        details.append(summary, value, status);
+        document.body.append(details);
+        let toggles = 0;
+        const update = (): void => {
+            toggles++;
+            if (details.open) {
+                value.value = \`\${toggles}.00\`;
+                status.textContent = \`toggle \${toggles}\`;
+                status.hidden = toggles > 1;
+                trace += "o" + value.value + (status.hidden ? "h" : "s");
+            } else trace += "c";
+            log.textContent = trace;
+            if (toggles === 3) setTimeout(() => globalThis.close(), 0);
+        };
+        details.addEventListener("toggle", update);
+        document.addEventListener("toggle", () => { trace += "!"; });
+    `);
+    assert.equal(result.manifest.deferredCapabilities, undefined);
+    assert.match(result.cpp, /run_window_application/);
+    const output = resolve("artifacts/window-details-toggle");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "program.hpp"), result.cpp);
+    emitUpstreamGenerated(output, ["core", "backend:sdl"]);
+    runRmlUiFixture(t, "window-details-toggle", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+            BBLITE_HAS_PBR_RENDERER: 0,
+            BBLITE_HAS_SDL_GPU: 1,
+            BBLITE_HAS_DAWN: 0,
+        },
+        includeDirectories: [join(output, "upstream/include")],
+    });
 });

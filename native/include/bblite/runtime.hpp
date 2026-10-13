@@ -4516,6 +4516,8 @@ struct Engine {
     /** Audited host-page rules, preceding scene-created sheets in cascade. */
     std::vector<UiStyleRule> ui_host_style_rules;
     std::function<void(UiElementHandle, const std::string&)> ui_attribute_changed;
+    /** A Window display's details `open` change goes to the realm, whose change fires `toggle`. */
+    std::function<void(UiElementHandle)> ui_details_toggled;
     /** A link's default action (`ui_set_link_navigation`); set by a program with links. */
     void (*ui_link_navigation)(const std::string& url) = nullptr;
     /** A realm host can synchronously publish pending edits before a source layout read. */
