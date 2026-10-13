@@ -66,8 +66,10 @@
 #include <bblite/features/workers.hpp>
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <bblite/js_data.hpp>
 #include <bblite/pal_audio_types.hpp>
@@ -95,6 +97,8 @@ class AudioDeviceSdl3;
 /** A real-time context's open playback device (`audio_open_device`); native data only. */
 using AudioPlaybackDevice = detail::AudioDeviceSdl3;
 
+struct DecodedAudio;
+
 /** Context ownership follows the generated engine, including failed startup. */
 class AudioSession {
 public:
@@ -110,6 +114,14 @@ private:
     AudioContextHandle media_output_{};
     /** A silent input keeping that output's capture recorder fed once elements leave it. */
     AudioNodeHandle media_output_feed_{};
+    /**
+     * Packaged sources decoded for media elements, by file and sample rate: the
+     * elements playing one share its decode, which lives while one holds it.
+     */
+    std::map<std::pair<std::string, double>, std::weak_ptr<const DecodedAudio>> decoded_;
+    /** Unrouted elements playing to the default output: its device runs while one does. */
+    std::size_t media_playing_ = 0;
+    friend struct AudioSessionMedia;
     friend AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session,
                                                    std::shared_ptr<AudioPlaybackDevice> device);
     friend AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session);

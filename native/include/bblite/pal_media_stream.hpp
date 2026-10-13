@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bblite/deferred_capability.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/js_error.hpp>
 
@@ -77,15 +78,20 @@ create_media_stream_track(std::string kind, std::shared_ptr<MediaStreamAudioTap>
     return track;
 }
 
+inline void media_stream_add_track(const MediaStreamHandle& stream,
+                                   const MediaStreamTrackHandle& track) {
+    if (std::find(stream->tracks.begin(), stream->tracks.end(), track) == stream->tracks.end())
+        stream->tracks.push_back(track);
+}
+
 /** `new MediaStream()`, `new MediaStream(tracks)`: each track once, in order. */
 inline MediaStreamHandle create_media_stream(const js::Array<MediaStreamTrackHandle>& tracks = {}) {
     auto stream = std::make_shared<MediaStream>();
     stream->id = media_stream_identifier();
     for (const auto& track : tracks) {
         if (!track)
-            throw js::make_error("TypeError", "MediaStream requires MediaStreamTrack values.");
-        if (std::find(stream->tracks.begin(), stream->tracks.end(), track) == stream->tracks.end())
-            stream->tracks.push_back(track);
+            throw js::NamedError("TypeError", "MediaStream requires MediaStreamTrack values.");
+        media_stream_add_track(stream, track);
     }
     return stream;
 }
@@ -106,12 +112,6 @@ inline js::Array<MediaStreamTrackHandle> media_stream_tracks(const MediaStreamHa
                 if (track->kind == selected)
                     result.push_back(track);
     return result;
-}
-
-inline void media_stream_add_track(const MediaStreamHandle& stream,
-                                   const MediaStreamTrackHandle& track) {
-    if (std::find(stream->tracks.begin(), stream->tracks.end(), track) == stream->tracks.end())
-        stream->tracks.push_back(track);
 }
 
 inline void media_stream_remove_track(const MediaStreamHandle& stream,
@@ -197,23 +197,17 @@ inline bool media_recorder_type_supported(const std::string&) { return false; }
  * included. T is the never-constructed recorder.
  */
 template <typename T> T media_recorder_unsupported(const std::string& mime_type) {
-    // Opaque, so later statements are not diagnosed as unreachable.
-    T (*volatile refuse)(const std::string&) = [](const std::string& type) -> T {
-        throw js::make_dom_exception(
-            type.empty() ? "Failed to construct 'MediaRecorder': no media recording encoder "
-                           "is available."
-                         : "Failed to construct 'MediaRecorder': Unsupported mimeType: " + type,
-            "NotSupportedError");
-    };
-    return refuse(mime_type);
+    return opaque_throw<T>(std::make_exception_ptr(js::make_dom_exception(
+        mime_type.empty()
+            ? "Failed to construct 'MediaRecorder': no media recording encoder is available."
+            : "Failed to construct 'MediaRecorder': Unsupported mimeType: " + mime_type,
+        "NotSupportedError")));
 }
 
 /** A member of a never-constructed recorder or recording event: unreachable by construction. */
 template <typename T> T uninhabited_member(std::string_view member) {
-    T (*volatile refuse)(std::string_view) = [](std::string_view name) -> T {
-        throw std::logic_error(std::string(name) + " has no native instance to read.");
-    };
-    return refuse(member);
+    return opaque_throw<T>(std::make_exception_ptr(
+        std::logic_error(std::string(member) + " has no native instance to read.")));
 }
 
 } // namespace bbl::pal
