@@ -1151,10 +1151,20 @@ export class UiProjection {
         }
     }
 
-    private collectUiStringParts(
+    /**
+     * The static texts and operands of a template or `+` concatenation, in
+     * order, or undefined for any other expression. Template spans are
+     * operands; with `runtimeOperands`, a string `+` admits runtime operands
+     * too, and nested templates and concatenations in operands are collected.
+     */
+    public collectUiStringParts(
         expression: ts.Expression,
+        runtimeOperands = false,
     ): Array<string | ts.Expression> | undefined {
         const parts: Array<string | ts.Expression> = [];
+        const operand = (node: ts.Expression): void => {
+            if (!collect(node)) parts.push(node);
+        };
         const collect = (node: ts.Expression): boolean => {
             const value = this.tryUiStaticString(node);
             if (value !== undefined) {
@@ -1165,16 +1175,28 @@ export class UiProjection {
             if (ts.isTemplateExpression(current)) {
                 parts.push(current.head.text);
                 for (const span of current.templateSpans) {
-                    parts.push(span.expression, span.literal.text);
+                    if (runtimeOperands) operand(span.expression);
+                    else parts.push(span.expression);
+                    parts.push(span.literal.text);
                 }
                 return true;
             }
-            return (
-                ts.isBinaryExpression(current) &&
-                current.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-                collect(current.left) &&
-                collect(current.right)
-            );
+            if (
+                !ts.isBinaryExpression(current) ||
+                current.operatorToken.kind !== ts.SyntaxKind.PlusToken
+            )
+                return false;
+            if (!runtimeOperands)
+                return collect(current.left) && collect(current.right);
+            if (
+                (this.context.checker.getTypeAtLocation(current).flags &
+                    ts.TypeFlags.StringLike) ===
+                0
+            )
+                return false;
+            operand(current.left);
+            operand(current.right);
+            return true;
         };
         return collect(expression) ? parts : undefined;
     }

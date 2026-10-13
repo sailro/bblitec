@@ -66,54 +66,34 @@ function literalSequences(
 
 /** Static texts and runtime operands of a template or string concatenation. */
 function selectorTemplateParts(
-    context: Pick<
-        Context,
-        "checker" | "evaluator" | "probeEmission" | "unwrap"
-    >,
+    context: Pick<Context, "evaluator" | "probeEmission">,
+    ui: Pick<UiProjection, "collectUiStringParts">,
     expression: ts.Expression,
 ): { texts: string[]; holes: ts.Expression[] } | undefined {
+    const parts = ui.collectUiStringParts(expression, true);
+    if (!parts) return undefined;
     const texts = [""];
     const holes: ts.Expression[] = [];
-    const operand = (node: ts.Expression): void => {
+    for (const part of parts) {
+        if (typeof part === "string") {
+            texts[texts.length - 1] += part;
+            continue;
+        }
         const text = context.probeEmission(() =>
-            context.evaluator.staticTextValue(node),
+            context.evaluator.staticTextValue(part),
         );
         if (text !== undefined) texts[texts.length - 1] += text;
-        else if (!collect(node)) {
-            holes.push(node);
+        else {
+            holes.push(part);
             texts.push("");
         }
-    };
-    const collect = (node: ts.Expression): boolean => {
-        const current = context.unwrap(node);
-        if (ts.isTemplateExpression(current)) {
-            texts[texts.length - 1] += current.head.text;
-            for (const span of current.templateSpans) {
-                operand(span.expression);
-                texts[texts.length - 1] += span.literal.text;
-            }
-            return true;
-        }
-        // A nested `+` joins the text only when its own result is a string.
-        if (
-            ts.isBinaryExpression(current) &&
-            current.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            (context.checker.getTypeAtLocation(current).flags &
-                ts.TypeFlags.StringLike) !==
-                0
-        ) {
-            operand(current.left);
-            operand(current.right);
-            return true;
-        }
-        return false;
-    };
-    return collect(expression) ? { texts, holes } : undefined;
+    }
+    return { texts, holes };
 }
 
 export function classifyUiQuerySelector(
     context: Context,
-    ui: Pick<UiProjection, "tryUiStaticString">,
+    ui: Pick<UiProjection, "tryUiStaticString" | "collectUiStringParts">,
     argument: ts.Expression,
     site: ts.Node,
 ): UiQuerySelector {
@@ -123,7 +103,7 @@ export function classifyUiQuerySelector(
             kind: "literal",
             sequences: literalSequences(context, site, literal),
         };
-    const template = selectorTemplateParts(context, argument);
+    const template = selectorTemplateParts(context, ui, argument);
     if (template && !template.holes.length)
         return {
             kind: "literal",
