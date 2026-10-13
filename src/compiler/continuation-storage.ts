@@ -69,15 +69,23 @@ export function persistContinuationLocals(
     for (const name of retained) {
         const declaration = declarations.get(name)!;
         const { part, line, type, initializer, indent } = declaration;
+        // A const value's binding is const: a cv-qualified return type is
+        // ignored for a scalar, so the retained value is never declared one.
+        // A leading const of a pointer or reference qualifies what it refers to.
+        const constant =
+            type.startsWith("const ") &&
+            !type.endsWith("&") &&
+            !type.endsWith("*");
+        const valueType = constant ? type.slice("const ".length) : type;
         const resultType =
-            type === "auto" || type === "const auto"
+            valueType === "auto"
                 ? ""
-                : type.includes("auto")
+                : valueType.includes("auto")
                   ? " -> decltype(auto)"
-                  : ` -> ${type}`;
+                  : ` -> ${valueType}`;
         const result = type.endsWith("&") ? `(${initializer})` : initializer;
         parts[part]!.lines[line] =
-            `${indent}auto& ${name} = ${storage}->retain([&]()${resultType} { return ${result}; });`;
+            `${indent}${constant ? "const " : ""}auto& ${name} = ${storage}->retain([&]()${resultType} { return ${result}; });`;
     }
     return retained.size > 0;
 }

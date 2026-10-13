@@ -9505,7 +9505,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     ...handler(`${body}    `, "std::current_exception()"),
                     `${body}}`,
                 ];
-            // A handler that awaits runs once the C++ handler has ended.
+            // A handler that awaits runs once the C++ handler has ended. A
+            // try block that cannot complete normally reaches it only through
+            // the catch: it runs unguarded, which keeps that fact for C++
+            // return analysis.
             const caught = this.temporary("caught");
             return [
                 `${body}std::exception_ptr ${caught};`,
@@ -9513,7 +9516,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 `${body}} catch (...) {`,
                 `${body}    ${caught} = std::current_exception();`,
                 `${body}}`,
-                `${body}if (${caught}) {`,
+                this.terminates(statement.tryBlock)
+                    ? `${body}{`
+                    : `${body}if (${caught}) {`,
                 ...handler(`${body}    `, caught),
                 `${body}}`,
             ];
