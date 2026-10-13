@@ -17736,7 +17736,7 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     assert.match(result.cpp, /bbl::create_geometry_renderer_task/);
     assert.match(result.cpp, /bbl::geometry_task_texture/);
     assert.match(result.cpp, /bbl::create_copy_to_texture_task/);
-    assert.match(result.cpp, /bbl::add_task_at_start/);
+    assert.match(result.cpp, /bbl::add_live_task\([^;]*, true\)/);
     assert.match(result.cpp, /scene146-impostor-worldPosition/);
     // The loop-built names are folded, so the manifest carries every copy
     // task in the order the scene adds them.

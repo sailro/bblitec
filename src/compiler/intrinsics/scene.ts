@@ -38,8 +38,6 @@ export interface SceneIntrinsicContext
             | "ensureDefaultRenderTask"
             | "compileSceneRegistration"
             | "fail"
-            | "isRuntimeCallback"
-            | "isInNativeFunctionBody"
         > {}
 
 export function compileSceneIntrinsic(
