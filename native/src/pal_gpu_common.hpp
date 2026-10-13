@@ -12,6 +12,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -89,6 +90,18 @@ template <typename Visit> inline void for_each_sidecar_line(std::string_view tex
         visit(line);
         start = end + 1;
     }
+}
+
+/** One sidecar line's space-separated words. */
+inline std::vector<std::string_view> sidecar_words(std::string_view line) {
+    std::vector<std::string_view> words;
+    for (std::size_t start = 0; start < line.size();) {
+        const std::size_t end = std::min(line.find(' ', start), line.size());
+        if (end > start)
+            words.push_back(line.substr(start, end - start));
+        start = end + 1;
+    }
+    return words;
 }
 
 /**

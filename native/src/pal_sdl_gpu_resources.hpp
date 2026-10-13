@@ -2,12 +2,45 @@
 
 #include "pal_sdl_gpu_commands.hpp"
 #include <SDL3/SDL_gpu.h>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace bbl::pal {
+
+/**
+ * One SDL_GPU object a device owner tracks (`GpuLeaseRetirement`): `retire()`
+ * releases it once through the owner's device (SDL defers past in-flight
+ * work), with the owner's capture record of it when `capture_id` names
+ * one, and later use refuses.
+ */
+template <class Owner, class Resource, auto Release> struct SdlGpuLease {
+    std::shared_ptr<Owner> owner;
+    Resource* handle = nullptr;
+    std::uint64_t capture_id = 0;
+    SdlGpuLease() = default;
+    SdlGpuLease(const SdlGpuLease&) = delete;
+    SdlGpuLease& operator=(const SdlGpuLease&) = delete;
+    ~SdlGpuLease() { retire(); }
+    void retire() noexcept {
+        if (!handle)
+            return;
+        Release(owner->device, std::exchange(handle, nullptr));
+        if constexpr (requires { owner->capture; }) {
+            if (capture_id)
+                owner->capture.release(capture_id);
+        }
+    }
+    bool live() const noexcept { return handle != nullptr; }
+    Resource* get() const {
+        if (!handle)
+            throw std::runtime_error("A GPU object was destroyed or retired with its device.");
+        return handle;
+    }
+};
 
 template <typename Resource, auto Release> struct SdlGpuDeleter {
     SDL_GPUDevice* device = nullptr;

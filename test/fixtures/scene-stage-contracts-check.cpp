@@ -130,17 +130,25 @@ struct BorrowedDrawList {
 struct FixtureBillboardPass {
     int frame_scene = 0;
 };
-struct OrderedStageItem {
-    bool billboard;
+// The transparent bucket's merge (pal_transparent_order.hpp) orders the
+// stage's one transparent list before its one billboard system.
+enum class TransparentDrawKind { mesh, billboard, external };
+struct TransparentDraw {
     std::size_t index;
+    TransparentDrawKind kind;
 };
-std::array<OrderedStageItem, 2>
-ordered_scene_billboards(const StageDrawList&, const auto&,
-                         const std::vector<FixtureBillboardPass>& passes, const auto&,
-                         const auto&) {
-    assert(passes.size() == 1);
-    return {{{false, 0}, {true, 0}}};
-}
+template <class View> struct TransparentOrder {
+    std::vector<TransparentDraw> draws;
+    TransparentOrder(const auto&, const View&) {}
+    void add_meshes(const StageDrawList&, const auto&) {
+        draws.push_back({0, TransparentDrawKind::mesh});
+    }
+    void add_billboards(const auto&, const std::vector<FixtureBillboardPass>& passes) {
+        assert(passes.size() == 1);
+        draws.push_back({0, TransparentDrawKind::billboard});
+    }
+    const std::vector<TransparentDraw>& sorted() const { return draws; }
+};
 void record_billboard_pass(SDL_GPUCommandBuffer*, const auto&, const auto&,
                            const FixtureBillboardPass&, int) {
     draws.push_back("billboard-transparent");

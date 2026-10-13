@@ -1,6 +1,7 @@
 #pragma once
 #include "pal_sdl_gpu_storage_buffer.hpp"
 #include "pal_sdl_gpu_compute_texture.hpp"
+#include "pal_gpu_shader_path.hpp"
 #include <bblite/pal_compute_pipeline.hpp>
 #include <sstream>
 #include <algorithm>
@@ -61,9 +62,6 @@ const Native& sdl_compute_resource(const std::shared_ptr<Base>& value) {
 inline std::shared_ptr<SdlComputePipeline>
 load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact,
                               const std::string& entry_point) {
-    const std::string override = environment_variable("BBLITE_GPU_SHADER_DIR");
-    const std::string root =
-        override.empty() ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR) : override;
     auto result = std::make_shared<SdlComputePipeline>();
     result->device = device;
     const auto supported = SDL_GetGPUShaderFormats(device);
@@ -80,8 +78,8 @@ load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact
         entry = "main0";
     } else
         throw std::runtime_error("SDL compute has no supported shader format.");
-    const auto code = read_binary_file(join_path(root, artifact + extension));
-    const auto metadata = read_binary_file(join_path(root, artifact + ".slots"));
+    const auto code = read_binary_file(gpu_shader_path(artifact + extension));
+    const auto metadata = read_binary_file(gpu_shader_path(artifact + ".slots"));
     std::istringstream input(std::string(metadata.begin(), metadata.end()));
     SDL_GPUComputePipelineCreateInfo info{};
     std::string line;

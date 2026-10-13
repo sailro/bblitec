@@ -109,7 +109,11 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_TEXT_RENDERER", anyOf: ["renderer:text"] },
     { macro: "BBLITE_HAS_BILLBOARDS", anyOf: ["sprite:billboard"] },
     { macro: "BBLITE_HAS_SPLATS", anyOf: ["loader:splat"] },
-    { macro: "BBLITE_HAS_SPLAT_STREAM", anyOf: ["loader:splat-stream"] },
+    { macro: "BBLITE_ENGINE_WEBGPU", anyOf: ["engine:webgpu-device"] },
+    {
+        macro: "BBLITE_EXTERNAL_RENDERABLES",
+        anyOf: ["renderer:external-renderables"],
+    },
     { macro: "BBLITE_HAS_PICKING", anyOf: ["picking:gpu"] },
     { macro: "BBLITE_HAS_DETAILED_PICKING", anyOf: ["picking:detailed"] },
     { macro: "BBLITE_HAS_CLUSTERED_LIGHTS", anyOf: ["light:clustered"] },

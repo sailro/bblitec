@@ -14,7 +14,7 @@ int main() {
     auto device = std::make_shared<Device>(nullptr, false);
     const auto uniform = [](Device& owner) {
         return owner.create_buffer(GpuBufferDescriptor{std::string("text-renderable-ubo"), 96,
-                                                       text_buffer_usage_uniform | 0x08});
+                                                       webgpu_buffer_usage::uniform | 0x08});
     };
     auto layout = std::make_shared<SdlTextGpuLayout>();
     layout->bindings = {{0u, TextBindingRole::uniform}};

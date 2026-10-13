@@ -1,6 +1,6 @@
 #pragma once
 
-#include <bblite/features/has_splat_stream.hpp>
+#include <bblite/features/engine_webgpu.hpp>
 
 #include <bblite/js_promise.hpp>
 #include <bblite/runtime.hpp>
@@ -50,7 +50,7 @@ std::shared_ptr<Engine> create_realm_engine(EngineOptions options,
     engine->offscreen_run = std::move(context);
     engine->source_gpu_device =
         std::shared_ptr<OffscreenDevice>(engine->offscreen_run, &engine->offscreen_run->device());
-#if BBLITE_HAS_SPLAT_STREAM
+#if BBLITE_ENGINE_WEBGPU
     // The pin creates buffers and pipelines on `engine._device` as soon as
     // createEngine resolves, before any renderer runs.
     bind_engine_webgpu_device(*engine);

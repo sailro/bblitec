@@ -30,25 +30,10 @@
 
 namespace bbl::pal {
 
-/** One SDL object; WebGPU's `destroy()` releases it (SDL defers past in-flight work). */
-template <class Handle, auto Release> struct SdlWebGpuLease {
-    SDL_GPUDevice* device = nullptr;
-    Handle* handle = nullptr;
-    SdlWebGpuLease() = default;
-    SdlWebGpuLease(const SdlWebGpuLease&) = delete;
-    SdlWebGpuLease& operator=(const SdlWebGpuLease&) = delete;
-    ~SdlWebGpuLease() { retire(); }
-    void retire() noexcept {
-        if (handle)
-            Release(device, std::exchange(handle, nullptr));
-    }
-    bool live() const noexcept { return handle != nullptr; }
-    Handle* get() const {
-        if (!handle)
-            webgpu_refuse("a GPU object was destroyed or retired with its device.");
-        return handle;
-    }
-};
+struct SdlWebGpuOwner;
+/** One SDL object (`SdlGpuLease`); WebGPU's `destroy()` releases it. */
+template <class Resource, auto Release>
+using SdlWebGpuLease = SdlGpuLease<SdlWebGpuOwner, Resource, Release>;
 using SdlWebGpuBufferLease = SdlWebGpuLease<SDL_GPUBuffer, SDL_ReleaseGPUBuffer>;
 using SdlWebGpuTransferLease = SdlWebGpuLease<SDL_GPUTransferBuffer, SDL_ReleaseGPUTransferBuffer>;
 using SdlWebGpuTextureLease = SdlWebGpuLease<SDL_GPUTexture, SDL_ReleaseGPUTexture>;
@@ -65,16 +50,38 @@ struct SdlWebGpuComputeLease {
     }
 };
 
+/** A staged queue write (`SdlWebGpuOwner::uploads`): ring bytes, or zeroes. */
+struct SdlWebGpuUpload {
+    std::shared_ptr<SdlWebGpuBufferLease> buffer;
+    std::shared_ptr<SdlWebGpuTextureLease> texture;
+    /** The bytes' offset in the upload ring; unused for zeroes. */
+    std::uint32_t source = 0;
+    /** The buffer range, or the texture extent. */
+    std::uint32_t offset = 0, size = 0, width = 0, height = 0;
+    bool zeros = false;
+};
+
 /** The device a WebGPU object belongs to; it outlives no lease it created. */
-struct SdlWebGpuOwner {
+struct SdlWebGpuOwner : std::enable_shared_from_this<SdlWebGpuOwner> {
     SDL_GPUDevice* device = nullptr;
     GpuSupportedLimits limits;
     GpuLeaseRetirement leases;
-    /** Zeroed upload bytes `clearBuffer` copies from. */
+    /** Zeroed upload bytes `clearBuffer` and new buffers copy from. */
     std::shared_ptr<SdlWebGpuTransferLease> zeros;
     std::uint32_t zero_bytes = 0;
-    /** Indirect dispatch arguments, copied apart from a buffer a dispatch also binds. */
+    /**
+     * Queue writes and new buffers' zeroes, staged in one growing transfer
+     * ring and recorded, in order, into one copy pass ahead of the next
+     * commands the device encodes or submits (`record_sdl_webgpu_uploads`).
+     */
+    std::shared_ptr<SdlWebGpuTransferLease> upload_ring;
+    std::uint32_t upload_capacity = 0, upload_used = 0;
+    /** The ring was submitted: the next staging maps a fresh backing. */
+    bool upload_cycle = false;
+    std::vector<SdlWebGpuUpload> uploads;
+    /** Indirect dispatch arguments, copied apart from buffers dispatches bind: 16-byte slots. */
     std::shared_ptr<SdlWebGpuBufferLease> dispatch_arguments;
+    std::uint32_t dispatch_argument_slots = 0;
 
     SDL_GPUDevice* live_device() const {
         if (!device)
@@ -85,19 +92,163 @@ struct SdlWebGpuOwner {
     std::shared_ptr<Lease> adopt(Handle* handle, const char* what) {
         if (!handle)
             gpu_error(what);
+        static_cast<void>(live_device());
         auto lease = std::make_shared<Lease>();
-        lease->device = live_device();
+        lease->owner = shared_from_this();
         lease->handle = handle;
         leases.track(lease);
         return lease;
     }
     void retire() noexcept {
+        uploads.clear();
         leases.retire();
         zeros.reset();
+        upload_ring.reset();
+        upload_capacity = upload_used = 0;
         dispatch_arguments.reset();
+        dispatch_argument_slots = 0;
         device = nullptr;
     }
 };
+
+/** The owner's zero bytes, at least `size` of them up to 1 MiB, which zero fills repeat. */
+inline void ensure_sdl_webgpu_zeros(SdlWebGpuOwner& owner, std::uint32_t size) {
+    const std::uint32_t capacity =
+        std::min<std::uint32_t>(std::max<std::uint32_t>(size, 4096), 1u << 20);
+    if (owner.zeros && owner.zero_bytes >= capacity)
+        return;
+    auto* device = owner.live_device();
+    SDL_GPUTransferBufferCreateInfo info{};
+    info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    info.size = capacity;
+    auto zeros = owner.adopt<SdlWebGpuTransferLease>(SDL_CreateGPUTransferBuffer(device, &info),
+                                                     "SDL_CreateGPUTransferBuffer zeroes");
+    auto* mapped = SDL_MapGPUTransferBuffer(device, zeros->get(), false);
+    if (!mapped)
+        gpu_error("SDL_MapGPUTransferBuffer zeroes");
+    std::memset(mapped, 0, info.size);
+    SDL_UnmapGPUTransferBuffer(device, zeros->get());
+    owner.zeros = std::move(zeros);
+    owner.zero_bytes = info.size;
+}
+/** Zeroes `size` bytes from `offset` in an open copy pass (`ensure_sdl_webgpu_zeros` first). */
+inline void record_sdl_webgpu_zeros(SdlWebGpuOwner& owner, SDL_GPUCopyPass* pass,
+                                    SDL_GPUBuffer* buffer, std::uint32_t offset,
+                                    std::uint32_t size) {
+    const SDL_GPUTransferBufferLocation from{owner.zeros->get(), 0};
+    for (std::uint32_t done = 0; done < size;) {
+        const auto count = std::min(owner.zero_bytes, size - done);
+        const SDL_GPUBufferRegion to{buffer, offset + done, count};
+        SDL_UploadToGPUBuffer(pass, &from, &to, false);
+        done += count;
+    }
+}
+
+/**
+ * Records the staged uploads, in order, into one copy pass on `command`,
+ * ahead of the commands encoded after it. An upload whose destination was
+ * destroyed since is dropped, as WebGPU's write to it would be moot.
+ */
+inline void record_sdl_webgpu_uploads(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command) {
+    if (owner.uploads.empty())
+        return;
+    std::uint32_t zeros = 0;
+    for (const auto& upload : owner.uploads)
+        if (upload.zeros)
+            zeros = std::max(zeros, upload.size);
+    if (zeros)
+        ensure_sdl_webgpu_zeros(owner, zeros);
+    {
+        SdlCopyPass pass{SDL_BeginGPUCopyPass(command)};
+        if (!pass)
+            gpu_error("SDL_BeginGPUCopyPass uploads");
+        for (const auto& upload : owner.uploads) {
+            if (upload.texture) {
+                if (!upload.texture->live())
+                    continue;
+                const SDL_GPUTextureTransferInfo source{owner.upload_ring->get(), upload.source,
+                                                        upload.width, upload.height};
+                const SDL_GPUTextureRegion destination{
+                    upload.texture->get(), 0, 0, 0, 0, 0, upload.width, upload.height, 1};
+                SDL_UploadToGPUTexture(pass, &source, &destination, false);
+            } else if (upload.buffer->live()) {
+                if (upload.zeros) {
+                    record_sdl_webgpu_zeros(owner, pass, upload.buffer->get(), upload.offset,
+                                            upload.size);
+                } else {
+                    const SDL_GPUTransferBufferLocation source{owner.upload_ring->get(),
+                                                               upload.source};
+                    const SDL_GPUBufferRegion destination{upload.buffer->get(), upload.offset,
+                                                          upload.size};
+                    SDL_UploadToGPUBuffer(pass, &source, &destination, false);
+                }
+            }
+        }
+    }
+    owner.uploads.clear();
+    owner.upload_used = 0;
+    owner.upload_cycle = true;
+}
+/** Submits the staged uploads on a command buffer of their own. */
+inline void submit_sdl_webgpu_uploads(SdlWebGpuOwner& owner) {
+    if (owner.uploads.empty())
+        return;
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(owner.live_device())};
+    if (!command)
+        gpu_error("SDL_AcquireGPUCommandBuffer uploads");
+    record_sdl_webgpu_uploads(owner, command);
+    if (!command.submit())
+        gpu_error("SDL_SubmitGPUCommandBuffer uploads");
+}
+/**
+ * Copies `bytes` into the upload ring at an `alignment`-aligned offset and
+ * returns it. A full ring submits what it holds first; a write larger than
+ * the ring grows it.
+ */
+inline std::uint32_t stage_sdl_webgpu_upload(SdlWebGpuOwner& owner,
+                                             std::span<const std::uint8_t> bytes,
+                                             std::uint32_t alignment) {
+    auto* device = owner.live_device();
+    const std::uint64_t count = bytes.size();
+    const auto aligned = [&] {
+        return (std::uint64_t{owner.upload_used} + alignment - 1) / alignment * alignment;
+    };
+    if (owner.upload_ring && aligned() + count > owner.upload_capacity && !owner.uploads.empty())
+        submit_sdl_webgpu_uploads(owner);
+    if (!owner.upload_ring || aligned() + count > owner.upload_capacity) {
+        const std::uint64_t capacity = std::max<std::uint64_t>(
+            {std::uint64_t{4} << 20, std::uint64_t{owner.upload_capacity} * 2, count});
+        SDL_GPUTransferBufferCreateInfo info{};
+        info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        info.size = gpu_u32(static_cast<std::size_t>(capacity));
+        owner.upload_ring = owner.adopt<SdlWebGpuTransferLease>(
+            SDL_CreateGPUTransferBuffer(device, &info), "SDL_CreateGPUTransferBuffer uploads");
+        owner.upload_capacity = info.size;
+        owner.upload_used = 0;
+        owner.upload_cycle = false;
+    }
+    const auto start = static_cast<std::uint32_t>(aligned());
+    auto* mapped = static_cast<std::uint8_t*>(
+        SDL_MapGPUTransferBuffer(device, owner.upload_ring->get(), owner.upload_cycle));
+    if (!mapped)
+        gpu_error("SDL_MapGPUTransferBuffer uploads");
+    owner.upload_cycle = false;
+    std::memcpy(mapped + start, bytes.data(), bytes.size());
+    SDL_UnmapGPUTransferBuffer(device, owner.upload_ring->get());
+    owner.upload_used = start + static_cast<std::uint32_t>(count);
+    return start;
+}
+/** `queue.writeBuffer` into an SDL buffer, staged until the next encoded commands. */
+inline void stage_sdl_webgpu_buffer_write(SdlWebGpuOwner& owner,
+                                          const std::shared_ptr<SdlWebGpuBufferLease>& buffer,
+                                          std::size_t offset, std::span<const std::uint8_t> bytes) {
+    if (bytes.empty())
+        return;
+    static_cast<void>(buffer->get());
+    const auto source = stage_sdl_webgpu_upload(owner, bytes, 16);
+    owner.uploads.push_back(
+        {buffer, {}, source, gpu_u32(offset), gpu_u32(bytes.size()), 0, 0, false});
+}
 
 /** Loads a generation-compiled stage, refusing an entry point generation did not compile. */
 template <class Load> auto load_sdl_webgpu_stage(const std::string& stem, Load load) {
@@ -107,14 +258,6 @@ template <class Load> auto load_sdl_webgpu_stage(const std::string& stem, Load l
         webgpu_refuse("the WGSL stage '" + stem + "' was not compiled at generation for SDL_GPU (" +
                       error.what() + ").");
     }
-}
-
-template <class Object>
-std::shared_ptr<Object> sdl_webgpu_object(const GpuHandle& handle, const char* what) {
-    auto object = std::dynamic_pointer_cast<Object>(handle);
-    if (!object)
-        webgpu_refuse(std::string("expected a ") + what + " this SDL_GPU device created.");
-    return object;
 }
 
 /** How SDL_GPU holds a WebGPU buffer. */
@@ -158,7 +301,7 @@ struct SdlWebGpuBuffer final : GpuObject,
     void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> source) override {
         require_webgpu_buffer_write(usage, mapping, byte_size(), offset, source.size());
         if (kind == SdlWebGpuBufferKind::gpu)
-            write_sdl_gpu_buffer(owner->live_device(), buffer->get(), offset, source);
+            stage_sdl_webgpu_buffer_write(*owner, buffer, offset, source);
         else if (kind == SdlWebGpuBufferKind::uniform)
             std::copy(source.begin(), source.end(),
                       uniform_bytes_mutable().begin() + static_cast<std::ptrdiff_t>(offset));
@@ -194,7 +337,7 @@ struct SdlWebGpuBuffer final : GpuObject,
             const std::span<const std::uint8_t> source{range.bytes.data(),
                                                        range.bytes.byte_length()};
             if (kind == SdlWebGpuBufferKind::gpu)
-                write_sdl_gpu_buffer(owner->live_device(), buffer->get(), range.offset, source);
+                stage_sdl_webgpu_buffer_write(*owner, buffer, range.offset, source);
             else if (kind == SdlWebGpuBufferKind::uniform)
                 std::copy(source.begin(), source.end(),
                           uniform_bytes_mutable().begin() +
@@ -259,9 +402,13 @@ struct SdlWebGpuTexture final : GpuObject {
             webgpu_refuse("SDL_GPU uploads tightly packed rgba8 rows.");
         if (layout.offset > data.size() || row * extent.height > data.size() - layout.offset)
             webgpu_refuse("writeTexture exceeds its source bytes.");
-        write_sdl_gpu_texture(owner->live_device(), lease->get(),
-                              data.subspan(layout.offset, row * extent.height),
-                              {0, {}, extent.height}, extent);
+        if (!extent.width || !extent.height)
+            return;
+        static_cast<void>(lease->get());
+        // Texture copies read 512-byte aligned placements on D3D12.
+        const auto source =
+            stage_sdl_webgpu_upload(*owner, data.subspan(layout.offset, row * extent.height), 512);
+        owner->uploads.push_back({{}, lease, source, 0, 0, extent.width, extent.height, false});
     }
     void destroy() override { lease->retire(); }
     GpuHandle create_view() override {
@@ -296,51 +443,46 @@ struct SdlWebGpuRenderPipeline final : GpuObject {
     GpuHandle layout;
     SdlWebGpuRenderStage vertex, fragment;
 };
-/** `GPUBindGroup`: its layout and entries; SDL_GPU binds them per command. */
-struct SdlWebGpuBindGroup final : GpuObject {
-    std::shared_ptr<SdlWebGpuBindGroupLayout> layout;
-    std::vector<GpuBindGroupEntry> entries;
-    /** A renderer's own group (the scene's group 0), whose resources it binds itself. */
-    bool renderer_owned = false;
-};
-
-/** The resource at `binding` of a bound group, at its dynamic offset. */
-struct SdlWebGpuResolved {
+/** A bind group entry, resolved to its SDL object when the group is created. */
+struct SdlWebGpuGroupEntry {
+    std::uint32_t binding = 0;
     std::shared_ptr<SdlWebGpuBuffer> buffer;
     std::size_t offset = 0;
     std::optional<std::size_t> size;
     std::shared_ptr<SdlWebGpuView> view;
+    /** Its place among the layout's dynamic offsets, for a dynamic binding. */
+    std::optional<std::size_t> dynamic;
+};
+/** `GPUBindGroup`: its layout and entries; SDL_GPU binds them per command. */
+struct SdlWebGpuBindGroup final : GpuObject {
+    std::shared_ptr<SdlWebGpuBindGroupLayout> layout;
+    std::vector<SdlWebGpuGroupEntry> entries;
+};
+
+/** The resource at `binding` of a bound group, at its dynamic offset, while the group is bound. */
+struct SdlWebGpuResolved {
+    const SdlWebGpuBuffer* buffer = nullptr;
+    std::size_t offset = 0;
+    std::optional<std::size_t> size;
+    const SdlWebGpuView* view = nullptr;
 };
 struct SdlWebGpuBoundGroup {
     std::shared_ptr<SdlWebGpuBindGroup> group;
     std::vector<std::uint32_t> offsets;
 };
+/** A pass's bound groups, shared by the commands recorded until a group changes. */
+using SdlWebGpuBoundGroups = std::shared_ptr<const std::vector<SdlWebGpuBoundGroup>>;
 inline SdlWebGpuResolved resolve_sdl_webgpu_binding(const std::vector<SdlWebGpuBoundGroup>& groups,
                                                     std::uint32_t index, std::uint32_t binding) {
     if (index >= groups.size() || !groups[index].group)
         webgpu_refuse("a stage reads bind group " + std::to_string(index) + ", which is unset.");
     const auto& bound = groups[index];
-    if (bound.group->renderer_owned)
-        webgpu_refuse("a stage reads the renderer's group; its resources are the renderer's.");
-    const auto found =
-        std::find_if(bound.group->entries.begin(), bound.group->entries.end(),
-                     [&](const auto& entry) { return webgpu_flags(entry.binding) == binding; });
-    if (found == bound.group->entries.end())
-        webgpu_refuse("a stage reads binding " + std::to_string(binding) + ", which is unbound.");
-    SdlWebGpuResolved result;
-    if (const auto* buffer = std::get_if<GpuBufferBinding>(&found->resource)) {
-        result.buffer = sdl_webgpu_object<SdlWebGpuBuffer>(buffer->buffer, "buffer");
-        result.offset = gpu_size(buffer->offset.value_or(0));
-        if (buffer->size)
-            result.size = gpu_size(*buffer->size);
-        const auto& dynamic = bound.group->layout->dynamic_bindings;
-        if (const auto at = std::find(dynamic.begin(), dynamic.end(), binding); at != dynamic.end())
-            result.offset += bound.offsets.at(static_cast<std::size_t>(at - dynamic.begin()));
-    } else {
-        result.view =
-            sdl_webgpu_object<SdlWebGpuView>(std::get<GpuHandle>(found->resource), "texture view");
-    }
-    return result;
+    for (const auto& entry : bound.group->entries)
+        if (entry.binding == binding)
+            return {entry.buffer.get(),
+                    entry.offset + (entry.dynamic ? bound.offsets[*entry.dynamic] : 0), entry.size,
+                    entry.view.get()};
+    webgpu_refuse("a stage reads binding " + std::to_string(binding) + ", which is unbound.");
 }
 /** A whole storage buffer, as SDL_GPU binds them. */
 inline SDL_GPUBuffer* sdl_webgpu_storage(const SdlWebGpuResolved& resolved) {
@@ -367,7 +509,7 @@ inline std::span<const std::uint8_t> sdl_webgpu_uniform(const SdlWebGpuResolved&
 /** One recorded command, encoded in order into an SDL command buffer. */
 struct SdlWebGpuDispatch {
     std::shared_ptr<SdlWebGpuComputePipeline> pipeline;
-    std::vector<SdlWebGpuBoundGroup> groups;
+    SdlWebGpuBoundGroups groups;
     std::array<std::uint32_t, 3> workgroups{1, 1, 1};
     std::shared_ptr<SdlWebGpuBuffer> indirect;
     std::uint32_t indirect_offset = 0;
@@ -402,48 +544,79 @@ inline void encode_sdl_webgpu_copy(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* 
     static_cast<void>(owner);
 }
 
-/** Zeroes `size` bytes from `offset`, uploading from the owner's zero bytes (at most 1 MiB). */
-inline void encode_sdl_webgpu_zeros(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
-                                    SDL_GPUBuffer* buffer, std::uint32_t offset,
-                                    std::uint32_t size) {
-    if (!size)
+inline void encode_sdl_webgpu_clear(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
+                                    const SdlWebGpuClear& clear) {
+    if (!clear.size)
         return;
-    auto* device = owner.live_device();
-    const std::uint32_t capacity =
-        std::min<std::uint32_t>(std::max<std::uint32_t>(size, 4096), 1u << 20);
-    if (!owner.zeros || owner.zero_bytes < capacity) {
-        SDL_GPUTransferBufferCreateInfo info{};
-        info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        info.size = capacity;
-        auto zeros = owner.adopt<SdlWebGpuTransferLease>(SDL_CreateGPUTransferBuffer(device, &info),
-                                                         "SDL_CreateGPUTransferBuffer clear");
-        auto* mapped = SDL_MapGPUTransferBuffer(device, zeros->get(), false);
-        if (!mapped)
-            gpu_error("SDL_MapGPUTransferBuffer clear");
-        std::memset(mapped, 0, info.size);
-        SDL_UnmapGPUTransferBuffer(device, zeros->get());
-        owner.zeros = std::move(zeros);
-        owner.zero_bytes = info.size;
-    }
+    ensure_sdl_webgpu_zeros(owner, clear.size);
     SdlCopyPass pass{SDL_BeginGPUCopyPass(command)};
     if (!pass)
         gpu_error("SDL_BeginGPUCopyPass clear");
-    const SDL_GPUTransferBufferLocation from{owner.zeros->get(), 0};
-    for (std::uint32_t done = 0; done < size;) {
-        const auto count = std::min(owner.zero_bytes, size - done);
-        const SDL_GPUBufferRegion to{buffer, offset + done, count};
-        SDL_UploadToGPUBuffer(pass, &from, &to, false);
-        done += count;
-    }
+    record_sdl_webgpu_zeros(owner, pass, clear.buffer->gpu_buffer(), clear.offset, clear.size);
 }
-inline void encode_sdl_webgpu_clear(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
-                                    const SdlWebGpuClear& clear) {
-    encode_sdl_webgpu_zeros(owner, command, clear.buffer->gpu_buffer(), clear.offset, clear.size);
+
+/**
+ * Indirect dispatch arguments copied while one command buffer encodes: a
+ * dispatch may bind its argument buffer as storage, and SDL_GPU then holds it
+ * in a shader-resource state, so the arguments are read from a copy in a slot
+ * of the owner's argument buffer. Each (buffer, offset) is copied once and
+ * reused until a later command writes that buffer.
+ */
+struct SdlWebGpuArgumentCopies {
+    struct Copy {
+        SDL_GPUBuffer* source = nullptr;
+        std::uint32_t offset = 0;
+        SDL_GPUBuffer* arguments = nullptr;
+        /** The byte offset of its slot in `arguments`. */
+        std::uint32_t slot = 0;
+    };
+    std::vector<Copy> copies;
+    std::uint32_t next = 0;
+    /** Argument buffers outgrown while this command buffer encodes. */
+    std::vector<std::shared_ptr<SdlWebGpuBufferLease>> outgrown;
+    void written(SDL_GPUBuffer* buffer) {
+        std::erase_if(copies, [&](const Copy& copy) { return copy.source == buffer; });
+    }
+};
+inline constexpr std::uint32_t sdl_webgpu_argument_stride = 16;
+/** The copy of the arguments at `offset` in `source`, made once per write of `source`. */
+inline const SdlWebGpuArgumentCopies::Copy&
+copy_sdl_webgpu_arguments(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
+                          SdlWebGpuArgumentCopies& copies, SDL_GPUBuffer* source,
+                          std::uint32_t offset) {
+    for (const auto& copy : copies.copies)
+        if (copy.source == source && copy.offset == offset)
+            return copy;
+    if (copies.next >= owner.dispatch_argument_slots) {
+        const auto slots = std::max<std::uint32_t>(8, owner.dispatch_argument_slots * 2);
+        SDL_GPUBufferCreateInfo info{};
+        info.usage = SDL_GPU_BUFFERUSAGE_INDIRECT;
+        info.size = slots * sdl_webgpu_argument_stride;
+        auto grown =
+            owner.adopt<SdlWebGpuBufferLease>(SDL_CreateGPUBuffer(owner.live_device(), &info),
+                                              "SDL_CreateGPUBuffer dispatch arguments");
+        if (owner.dispatch_arguments)
+            copies.outgrown.push_back(std::move(owner.dispatch_arguments));
+        owner.dispatch_arguments = std::move(grown);
+        owner.dispatch_argument_slots = slots;
+        copies.next = 0;
+    }
+    SdlWebGpuArgumentCopies::Copy copy{source, offset, owner.dispatch_arguments->get(),
+                                       copies.next++ * sdl_webgpu_argument_stride};
+    SdlCopyPass pass{SDL_BeginGPUCopyPass(command)};
+    if (!pass)
+        gpu_error("SDL_BeginGPUCopyPass dispatch arguments");
+    const SDL_GPUBufferLocation from{source, offset};
+    const SDL_GPUBufferLocation to{copy.arguments, copy.slot};
+    SDL_CopyGPUBufferToBuffer(pass, &from, &to, 12, false);
+    copies.copies.push_back(copy);
+    return copies.copies.back();
 }
 
 inline void encode_sdl_webgpu_dispatch(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
                                        const SdlWebGpuDispatch& dispatch,
-                                       SdlComputeBindingScratch& scratch) {
+                                       SdlComputeBindingScratch& scratch,
+                                       SdlWebGpuArgumentCopies& copies) {
     const auto& pipeline = dispatch.pipeline->lease->get();
     auto& [sampled, readonly_textures, readonly_buffers, writable_textures, writable_buffers] =
         scratch;
@@ -455,7 +628,8 @@ inline void encode_sdl_webgpu_dispatch(SdlWebGpuOwner& owner, SDL_GPUCommandBuff
     if (pipeline.counts[1] || pipeline.counts[3])
         webgpu_refuse("storage textures are not in the subset.");
     for (const auto& slot : pipeline.slots) {
-        const auto resolved = resolve_sdl_webgpu_binding(dispatch.groups, slot.group, slot.binding);
+        const auto resolved =
+            resolve_sdl_webgpu_binding(*dispatch.groups, slot.group, slot.binding);
         if (slot.kind == 'b') {
             const auto bytes = sdl_webgpu_uniform(resolved);
             SDL_PushGPUComputeUniformData(command, slot.index, bytes.data(),
@@ -472,67 +646,56 @@ inline void encode_sdl_webgpu_dispatch(SdlWebGpuOwner& owner, SDL_GPUCommandBuff
             webgpu_refuse("samplers and storage textures are not in the subset.");
         }
     }
-    SDL_GPUBuffer* arguments = nullptr;
-    if (dispatch.indirect) {
-        // A dispatch may bind its argument buffer as storage; SDL_GPU then holds it in a
-        // shader-resource state, so the arguments are read from a copy of their own.
-        auto* device = owner.live_device();
-        if (!owner.dispatch_arguments) {
-            SDL_GPUBufferCreateInfo info{};
-            info.usage = SDL_GPU_BUFFERUSAGE_INDIRECT;
-            info.size = 12;
-            owner.dispatch_arguments = owner.adopt<SdlWebGpuBufferLease>(
-                SDL_CreateGPUBuffer(device, &info), "SDL_CreateGPUBuffer dispatch arguments");
-        }
-        arguments = owner.dispatch_arguments->get();
-        SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-        if (!copy)
-            gpu_error("SDL_BeginGPUCopyPass dispatch arguments");
-        const SDL_GPUBufferLocation from{dispatch.indirect->gpu_buffer(), dispatch.indirect_offset};
-        const SDL_GPUBufferLocation to{arguments, 0};
-        SDL_CopyGPUBufferToBuffer(copy, &from, &to, 12, false);
+    const SdlWebGpuArgumentCopies::Copy* arguments =
+        dispatch.indirect
+            ? &copy_sdl_webgpu_arguments(owner, command, copies, dispatch.indirect->gpu_buffer(),
+                                         dispatch.indirect_offset)
+            : nullptr;
+    {
+        SdlComputePass pass{SDL_BeginGPUComputePass(command, nullptr, 0, writable_buffers.data(),
+                                                    static_cast<Uint32>(writable_buffers.size()))};
+        if (!pass)
+            gpu_error("SDL_BeginGPUComputePass");
+        SDL_BindGPUComputePipeline(pass, pipeline.handle);
+        if (!sampled.empty())
+            SDL_BindGPUComputeSamplers(pass, 0, sampled.data(),
+                                       static_cast<Uint32>(sampled.size()));
+        if (!readonly_buffers.empty())
+            SDL_BindGPUComputeStorageBuffers(pass, 0, readonly_buffers.data(),
+                                             static_cast<Uint32>(readonly_buffers.size()));
+        if (arguments)
+            SDL_DispatchGPUComputeIndirect(pass, arguments->arguments, arguments->slot);
+        else
+            SDL_DispatchGPUCompute(pass, dispatch.workgroups[0], dispatch.workgroups[1],
+                                   dispatch.workgroups[2]);
     }
-    SdlComputePass pass{SDL_BeginGPUComputePass(command, nullptr, 0, writable_buffers.data(),
-                                                static_cast<Uint32>(writable_buffers.size()))};
-    if (!pass)
-        gpu_error("SDL_BeginGPUComputePass");
-    SDL_BindGPUComputePipeline(pass, pipeline.handle);
-    if (!sampled.empty())
-        SDL_BindGPUComputeSamplers(pass, 0, sampled.data(), static_cast<Uint32>(sampled.size()));
-    if (!readonly_buffers.empty())
-        SDL_BindGPUComputeStorageBuffers(pass, 0, readonly_buffers.data(),
-                                         static_cast<Uint32>(readonly_buffers.size()));
-    if (arguments)
-        SDL_DispatchGPUComputeIndirect(pass, arguments, 0);
-    else
-        SDL_DispatchGPUCompute(pass, dispatch.workgroups[0], dispatch.workgroups[1],
-                               dispatch.workgroups[2]);
+    for (const auto& writable : writable_buffers)
+        copies.written(writable.buffer);
 }
 
 /** Encodes recorded commands, in order, into `command`. */
 inline void encode_sdl_webgpu_commands(SdlWebGpuOwner& owner, SDL_GPUCommandBuffer* command,
                                        const std::vector<SdlWebGpuCommand>& commands) {
     SdlComputeBindingScratch scratch;
+    SdlWebGpuArgumentCopies copies;
     for (const auto& recorded : commands) {
-        if (const auto* dispatch = std::get_if<SdlWebGpuDispatch>(&recorded))
-            encode_sdl_webgpu_dispatch(owner, command, *dispatch, scratch);
-        else if (const auto* copy = std::get_if<SdlWebGpuCopy>(&recorded))
+        if (const auto* dispatch = std::get_if<SdlWebGpuDispatch>(&recorded)) {
+            encode_sdl_webgpu_dispatch(owner, command, *dispatch, scratch, copies);
+        } else if (const auto* copy = std::get_if<SdlWebGpuCopy>(&recorded)) {
             encode_sdl_webgpu_copy(owner, command, *copy);
-        else
-            encode_sdl_webgpu_clear(owner, command, std::get<SdlWebGpuClear>(recorded));
+            if (copy->destination->kind == SdlWebGpuBufferKind::gpu)
+                copies.written(copy->destination->gpu_buffer());
+        } else {
+            const auto& clear = std::get<SdlWebGpuClear>(recorded);
+            encode_sdl_webgpu_clear(owner, command, clear);
+            copies.written(clear.buffer->gpu_buffer());
+        }
     }
 }
 
-inline std::vector<std::uint32_t> sdl_webgpu_offsets(const js::Array<double>& offsets) {
-    std::vector<std::uint32_t> result;
-    result.reserve(offsets.size());
-    for (const double offset : offsets)
-        result.push_back(webgpu_flags(offset));
-    return result;
-}
 inline void bind_sdl_webgpu_group(std::vector<SdlWebGpuBoundGroup>& groups, double index,
                                   const GpuHandle& handle, std::vector<std::uint32_t> offsets) {
-    auto group = sdl_webgpu_object<SdlWebGpuBindGroup>(handle, "bind group");
+    auto group = webgpu_object<SdlWebGpuBindGroup>(handle, "bind group");
     if (offsets.size() != (group->layout ? group->layout->dynamic_bindings.size() : 0))
         webgpu_refuse("setBindGroup passes one offset per dynamic binding.");
     const auto at = webgpu_flags(index);
@@ -545,7 +708,7 @@ inline void bind_sdl_webgpu_group(std::vector<SdlWebGpuBoundGroup>& groups, doub
 struct SdlWebGpuComputePass final : GpuComputePassEncoder {
     std::vector<SdlWebGpuCommand>* commands = nullptr;
     std::shared_ptr<SdlWebGpuComputePipeline> pipeline;
-    std::vector<SdlWebGpuBoundGroup> groups;
+    SdlWebGpuBoundGroups groups = std::make_shared<const std::vector<SdlWebGpuBoundGroup>>();
     std::vector<SdlWebGpuCommand>& live() const {
         if (!commands)
             webgpu_refuse("the compute pass has ended.");
@@ -553,12 +716,14 @@ struct SdlWebGpuComputePass final : GpuComputePassEncoder {
     }
     void set_pipeline(const GpuHandle& handle) override {
         static_cast<void>(live());
-        pipeline = sdl_webgpu_object<SdlWebGpuComputePipeline>(handle, "compute pipeline");
+        pipeline = webgpu_object<SdlWebGpuComputePipeline>(handle, "compute pipeline");
     }
     void set_bind_group(double index, const GpuHandle& group,
                         const js::Array<double>& dynamic_offsets) override {
         static_cast<void>(live());
-        bind_sdl_webgpu_group(groups, index, group, sdl_webgpu_offsets(dynamic_offsets));
+        auto next = std::make_shared<std::vector<SdlWebGpuBoundGroup>>(*groups);
+        bind_sdl_webgpu_group(*next, index, group, webgpu_offsets(dynamic_offsets));
+        groups = std::move(next);
     }
     SdlWebGpuDispatch dispatch() const {
         if (!pipeline)
@@ -572,7 +737,7 @@ struct SdlWebGpuComputePass final : GpuComputePassEncoder {
     }
     void dispatch_workgroups_indirect(const GpuHandle& buffer, double offset) override {
         auto recorded = dispatch();
-        recorded.indirect = sdl_webgpu_object<SdlWebGpuBuffer>(buffer, "buffer");
+        recorded.indirect = webgpu_object<SdlWebGpuBuffer>(buffer, "buffer");
         if (!(recorded.indirect->usage & webgpu_buffer_usage::indirect))
             webgpu_refuse("an indirect dispatch needs a buffer created with INDIRECT.");
         recorded.indirect_offset = webgpu_flags(offset);
@@ -619,8 +784,8 @@ struct SdlWebGpuCommandEncoder final : GpuCommandEncoder {
                                const GpuHandle& destination, double destination_offset,
                                double size) override {
         require_recording();
-        SdlWebGpuCopy copy{sdl_webgpu_object<SdlWebGpuBuffer>(source, "buffer"),
-                           sdl_webgpu_object<SdlWebGpuBuffer>(destination, "buffer"),
+        SdlWebGpuCopy copy{webgpu_object<SdlWebGpuBuffer>(source, "buffer"),
+                           webgpu_object<SdlWebGpuBuffer>(destination, "buffer"),
                            webgpu_flags(source_offset), webgpu_flags(destination_offset),
                            webgpu_flags(size)};
         if (!(copy.source->usage & webgpu_buffer_usage::copy_src) ||
@@ -636,7 +801,7 @@ struct SdlWebGpuCommandEncoder final : GpuCommandEncoder {
     void clear_buffer(const GpuHandle& buffer, bbl::js::Nullable<double> offset,
                       bbl::js::Nullable<double> size) override {
         require_recording();
-        SdlWebGpuClear clear{sdl_webgpu_object<SdlWebGpuBuffer>(buffer, "buffer"), 0, 0};
+        SdlWebGpuClear clear{webgpu_object<SdlWebGpuBuffer>(buffer, "buffer"), 0, 0};
         if (!(clear.buffer->usage & webgpu_buffer_usage::copy_dst))
             webgpu_refuse("clearBuffer needs a COPY_DST buffer.");
         clear.offset = webgpu_flags(offset.value_or(0));
@@ -657,36 +822,12 @@ struct SdlWebGpuCommandEncoder final : GpuCommandEncoder {
     /** A borrowed frame encoder's commands, encoded before the renderer's passes. */
     void encode(SDL_GPUCommandBuffer* command) {
         require_recording();
+        record_sdl_webgpu_uploads(*owner, command);
         encode_sdl_webgpu_commands(*owner, command, commands);
         commands.clear();
     }
 };
 
-/** WebGPU format names the subset's render targets use. */
-inline constexpr std::pair<std::string_view, SDL_GPUTextureFormat> sdl_webgpu_formats[] = {
-    {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM},
-    {"rgba8unorm-srgb", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB},
-    {"bgra8unorm", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM},
-    {"bgra8unorm-srgb", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB},
-    {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT},
-    {"depth16unorm", SDL_GPU_TEXTUREFORMAT_D16_UNORM},
-    {"depth24plus", SDL_GPU_TEXTUREFORMAT_D24_UNORM},
-    {"depth24plus-stencil8", SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT},
-    {"depth32float", SDL_GPU_TEXTUREFORMAT_D32_FLOAT},
-    {"depth32float-stencil8", SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT}};
-inline SDL_GPUTextureFormat sdl_webgpu_format(const std::string& name) {
-    for (const auto& [text, format] : sdl_webgpu_formats)
-        if (text == name)
-            return format;
-    webgpu_refuse("texture format '" + name + "' is not admitted.");
-}
-/** A renderer attachment's WebGPU format name, for a target signature. */
-inline std::string sdl_webgpu_format_name(SDL_GPUTextureFormat format) {
-    for (const auto& [text, value] : sdl_webgpu_formats)
-        if (value == format)
-            return std::string(text);
-    webgpu_refuse("a renderer attachment format has no admitted WebGPU name.");
-}
 inline SDL_GPUCompareOp sdl_webgpu_compare(const std::string& name) {
     static constexpr std::pair<std::string_view, SDL_GPUCompareOp> operations[] = {
         {"never", SDL_GPU_COMPAREOP_NEVER},
@@ -723,32 +864,12 @@ inline SDL_GPUCullMode sdl_webgpu_cull(const std::string& name) {
     webgpu_refuse("cull mode '" + name + "' is not admitted.");
 }
 
-/** A render stage's `@binding <group> <binding> <name> ...` sidecar lines, by name. */
+/** A render stage's resource names to their WGSL group and binding (its sidecar rows). */
 inline std::map<std::string, std::pair<std::uint32_t, std::uint32_t>>
-sdl_webgpu_stage_bindings(const std::string& stem) {
-    const std::string override = environment_variable("BBLITE_GPU_SHADER_DIR");
-    const std::string root =
-        override.empty() ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR) : override;
-    const auto bytes = read_binary_file(join_path(root, stem + ".slots"));
+sdl_webgpu_stage_bindings(const PinnedStageSlots& slots) {
     std::map<std::string, std::pair<std::uint32_t, std::uint32_t>> result;
-    for_each_sidecar_line(
-        std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
-        [&](std::string_view line) {
-            if (!line.starts_with("@binding "))
-                return;
-            std::vector<std::string_view> words;
-            for (std::size_t start = 0; start < line.size();) {
-                const std::size_t end = std::min(line.find(' ', start), line.size());
-                if (end > start)
-                    words.push_back(line.substr(start, end - start));
-                start = end + 1;
-            }
-            const auto group = words.size() > 3 ? parse_sidecar_index(words[1]) : std::nullopt;
-            const auto binding = words.size() > 3 ? parse_sidecar_index(words[2]) : std::nullopt;
-            if (!group || !binding)
-                webgpu_refuse(stem + ".slots has a malformed binding line.");
-            result[std::string(words[3])] = {*group, *binding};
-        });
+    for (const auto& row : slots.bindings)
+        result[row.name] = {row.group, row.binding};
     return result;
 }
 
@@ -761,7 +882,7 @@ struct SdlWebGpuRenderPass final : GpuEncoder {
     std::vector<SDL_GPUBuffer*> storage_scratch;
 
     void set_pipeline(const GpuHandle& handle) override {
-        pipeline = sdl_webgpu_object<SdlWebGpuRenderPipeline>(handle, "render pipeline");
+        pipeline = webgpu_object<SdlWebGpuRenderPipeline>(handle, "render pipeline");
         SDL_BindGPUGraphicsPipeline(pass, pipeline->lease->get());
     }
     void set_vertex_buffer(double, const GpuHandle&) override {
@@ -801,7 +922,7 @@ struct SdlWebGpuRenderPass final : GpuEncoder {
                               webgpu_flags(first_vertex), webgpu_flags(first_instance));
     }
     void draw_indirect(const GpuHandle& buffer, double offset) override {
-        const auto arguments = sdl_webgpu_object<SdlWebGpuBuffer>(buffer, "buffer");
+        const auto arguments = webgpu_object<SdlWebGpuBuffer>(buffer, "buffer");
         if (!(arguments->usage & webgpu_buffer_usage::indirect))
             webgpu_refuse("drawIndirect needs a buffer created with INDIRECT.");
         require_webgpu_copy_range(arguments->byte_size(), gpu_size(offset), 16);
@@ -880,13 +1001,9 @@ struct SdlWebGpuDevice : GpuDevice {
             if (descriptor.label)
                 SDL_SetGPUBufferName(device, buffer->buffer->get(), descriptor.label->c_str());
             // WebGPU buffers start zeroed, mapped ones included: unmap writes only the
-            // ranges getMappedRange returned.
-            SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
-            if (!command)
-                gpu_error("SDL_AcquireGPUCommandBuffer buffer zeroes");
-            encode_sdl_webgpu_zeros(*owner, command, buffer->buffer->get(), 0, info.size);
-            if (!command.submit())
-                gpu_error("SDL_SubmitGPUCommandBuffer buffer zeroes");
+            // ranges getMappedRange returned. The zeroes precede every later upload.
+            if (info.size)
+                owner->uploads.push_back({buffer->buffer, {}, 0, 0, info.size, 0, 0, true});
         }
         if (descriptor.mapped_at_creation)
             buffer->mapping.map_at_creation(bytes);
@@ -942,8 +1059,7 @@ struct SdlWebGpuDevice : GpuDevice {
     GpuHandle create_pipeline_layout(const GpuPipelineLayoutDescriptor& descriptor) override {
         auto layout = std::make_shared<SdlWebGpuPipelineLayout>();
         for (const auto& group : descriptor.bind_group_layouts) {
-            static_cast<void>(
-                sdl_webgpu_object<SdlWebGpuBindGroupLayout>(group, "bind group layout"));
+            static_cast<void>(webgpu_object<SdlWebGpuBindGroupLayout>(group, "bind group layout"));
             layout->groups.push_back(group);
         }
         return layout;
@@ -951,9 +1067,9 @@ struct SdlWebGpuDevice : GpuDevice {
 
     GpuHandle create_compute_pipeline(const GpuComputePipelineDescriptor& descriptor) override {
         static_cast<void>(
-            sdl_webgpu_object<SdlWebGpuPipelineLayout>(descriptor.layout, "pipeline layout"));
+            webgpu_object<SdlWebGpuPipelineLayout>(descriptor.layout, "pipeline layout"));
         const auto module =
-            sdl_webgpu_object<SdlWebGpuShaderModule>(descriptor.compute.module, "shader module");
+            webgpu_object<SdlWebGpuShaderModule>(descriptor.compute.module, "shader module");
         if (!descriptor.compute.entry_point)
             webgpu_refuse("SDL_GPU compute stages are found by their named entry point.");
         const auto& entry = *descriptor.compute.entry_point;
@@ -969,17 +1085,16 @@ struct SdlWebGpuDevice : GpuDevice {
 
     GpuHandle create_render_pipeline(const GpuRenderPipelineDescriptor& descriptor) override {
         static_cast<void>(
-            sdl_webgpu_object<SdlWebGpuPipelineLayout>(descriptor.layout, "pipeline layout"));
+            webgpu_object<SdlWebGpuPipelineLayout>(descriptor.layout, "pipeline layout"));
         if (!descriptor.fragment || descriptor.fragment->targets.size() != 1)
             webgpu_refuse("render pipelines have a fragment stage with one target.");
         if (!descriptor.vertex.entry_point || !descriptor.fragment->entry_point)
             webgpu_refuse("SDL_GPU render stages are found by their named entry points.");
         const auto vertex_stem = wgsl_stage_stem(
-            sdl_webgpu_object<SdlWebGpuShaderModule>(descriptor.vertex.module, "shader module")
-                ->code,
+            webgpu_object<SdlWebGpuShaderModule>(descriptor.vertex.module, "shader module")->code,
             *descriptor.vertex.entry_point, "vert");
         const auto fragment_stem = wgsl_stage_stem(
-            sdl_webgpu_object<SdlWebGpuShaderModule>(descriptor.fragment->module, "shader module")
+            webgpu_object<SdlWebGpuShaderModule>(descriptor.fragment->module, "shader module")
                 ->code,
             *descriptor.fragment->entry_point, "frag");
         auto* device = owner->live_device();
@@ -1041,15 +1156,17 @@ struct SdlWebGpuDevice : GpuDevice {
         pipeline->lease = owner->adopt<SdlWebGpuGraphicsLease>(
             create_sdl_gpu_graphics_pipeline(device, vertex.shader, &info),
             "SDL_CreateGPUGraphicsPipeline");
-        pipeline->vertex = {std::move(vertex.slots), sdl_webgpu_stage_bindings(vertex_stem)};
-        pipeline->fragment = {std::move(fragment.slots), sdl_webgpu_stage_bindings(fragment_stem)};
+        auto vertex_bindings = sdl_webgpu_stage_bindings(vertex.slots);
+        auto fragment_bindings = sdl_webgpu_stage_bindings(fragment.slots);
+        pipeline->vertex = {std::move(vertex.slots), std::move(vertex_bindings)};
+        pipeline->fragment = {std::move(fragment.slots), std::move(fragment_bindings)};
         return pipeline;
     }
 
     GpuHandle create_bind_group(const GpuBindGroupDescriptor& descriptor) override {
         auto group = std::make_shared<SdlWebGpuBindGroup>();
         group->layout =
-            sdl_webgpu_object<SdlWebGpuBindGroupLayout>(descriptor.layout, "bind group layout");
+            webgpu_object<SdlWebGpuBindGroupLayout>(descriptor.layout, "bind group layout");
         for (const auto& entry : descriptor.entries) {
             const auto binding = webgpu_flags(entry.binding);
             const auto layout_entry =
@@ -1058,21 +1175,31 @@ struct SdlWebGpuDevice : GpuDevice {
             if (layout_entry == group->layout->entries.end())
                 webgpu_refuse("bind group entry " + std::to_string(binding) +
                               " is absent from its layout.");
+            SdlWebGpuGroupEntry resolved;
+            resolved.binding = binding;
             if (const auto* buffer = std::get_if<GpuBufferBinding>(&entry.resource)) {
-                const auto native = sdl_webgpu_object<SdlWebGpuBuffer>(buffer->buffer, "buffer");
+                resolved.buffer = webgpu_object<SdlWebGpuBuffer>(buffer->buffer, "buffer");
                 const bool uniform = layout_entry->buffer == WebGpuBufferBinding::uniform;
-                if (layout_entry->texture || (uniform ? native->kind != SdlWebGpuBufferKind::uniform
-                                                      : native->kind != SdlWebGpuBufferKind::gpu))
+                if (layout_entry->texture ||
+                    (uniform ? resolved.buffer->kind != SdlWebGpuBufferKind::uniform
+                             : resolved.buffer->kind != SdlWebGpuBufferKind::gpu))
                     webgpu_refuse("bind group entry " + std::to_string(binding) +
                                   " does not match its layout's resource.");
+                resolved.offset = gpu_size(buffer->offset.value_or(0));
+                if (buffer->size)
+                    resolved.size = gpu_size(*buffer->size);
+                const auto& dynamic = group->layout->dynamic_bindings;
+                if (const auto at = std::find(dynamic.begin(), dynamic.end(), binding);
+                    at != dynamic.end())
+                    resolved.dynamic = static_cast<std::size_t>(at - dynamic.begin());
             } else if (!layout_entry->texture) {
                 webgpu_refuse("bind group entry " + std::to_string(binding) +
                               " binds a view where its layout declares a buffer.");
             } else {
-                static_cast<void>(
-                    sdl_webgpu_object<SdlWebGpuView>(std::get<GpuHandle>(entry.resource), "view"));
+                resolved.view =
+                    webgpu_object<SdlWebGpuView>(std::get<GpuHandle>(entry.resource), "view");
             }
-            group->entries.push_back(entry);
+            group->entries.push_back(std::move(resolved));
         }
         return group;
     }
@@ -1086,14 +1213,14 @@ struct SdlWebGpuDevice : GpuDevice {
     void submit(const js::Array<GpuHandle>& command_buffers) override {
         auto* device = owner->live_device();
         for (const auto& handle : command_buffers) {
-            const auto commands =
-                sdl_webgpu_object<SdlWebGpuCommandBuffer>(handle, "command buffer");
+            const auto commands = webgpu_object<SdlWebGpuCommandBuffer>(handle, "command buffer");
             if (commands->submitted)
                 webgpu_refuse("a command buffer is submitted once.");
             commands->submitted = true;
             SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
             if (!command)
                 gpu_error("SDL_AcquireGPUCommandBuffer submit");
+            record_sdl_webgpu_uploads(*owner, command);
             encode_sdl_webgpu_commands(*owner, command, commands->commands);
             if (!command.submit())
                 gpu_error("SDL_SubmitGPUCommandBuffer submit");
@@ -1105,6 +1232,12 @@ struct SdlWebGpuDevice : GpuDevice {
         if (!owner->device)
             return js::Promise<js::PromiseVoid>::rejected(std::make_exception_ptr(
                 std::runtime_error("WebGPU subset: the GPU device was retired.")));
+        // Staged queue writes are submitted work.
+        try {
+            submit_sdl_webgpu_uploads(*owner);
+        } catch (...) {
+            return js::Promise<js::PromiseVoid>::rejected(std::current_exception());
+        }
         return settle_webgpu_operation(
             [device = owner->device](std::function<void(std::exception_ptr)> complete) {
                 return std::make_unique<SdlSubmissionCompletion>(device, std::move(complete));
@@ -1127,23 +1260,15 @@ struct SdlWebGpuDevice : GpuDevice {
         result->pass = pass;
         return result;
     }
-    /** The renderer's group 0 layout and group: SDL_GPU binds their resources per pass. */
-    static GpuHandle renderer_bind_group_layout() {
-        return std::make_shared<SdlWebGpuBindGroupLayout>();
-    }
-    static GpuHandle renderer_bind_group(const GpuHandle& layout) {
-        auto group = std::make_shared<SdlWebGpuBindGroup>();
-        group->layout = sdl_webgpu_object<SdlWebGpuBindGroupLayout>(layout, "bind group layout");
-        group->renderer_owned = true;
-        return group;
-    }
 };
 
-/** `Engine::webgpu_device` over the engine's SDL_GPU device, created on first use. */
+/** `Engine::webgpu_device` over the engine's SDL_GPU device and its scene group, created on first use. */
 inline SdlWebGpuDevice& sdl_engine_webgpu_device(Engine& engine, SDL_GPUDevice* device) {
-    if (!engine.webgpu_device)
+    if (!engine.webgpu_device) {
         engine.webgpu_device = std::make_shared<SdlWebGpuDevice>(
             device, gpu_required_limits(engine.options.required_limits));
+        bind_engine_scene_group(engine);
+    }
     auto* result = dynamic_cast<SdlWebGpuDevice*>(engine.webgpu_device.get());
     if (!result || result->device_identity() != device)
         webgpu_refuse("the engine's WebGPU device belongs to another GPU device.");

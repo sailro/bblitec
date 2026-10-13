@@ -28,6 +28,7 @@ export const featureSources: Record<Feature, string[]> = {
     "text:weight": [],
     "text:renderable": [],
     "renderer:text": ["src/pal_sdl_gpu_sprite.cpp"],
+    "renderer:external-renderables": [],
     "animation:gltf-groups": [],
     "animation:property": [],
     "animation:property-blending": [],
@@ -48,6 +49,8 @@ export const featureSources: Record<Feature, string[]> = {
     "engine:device-recovery": [],
     "engine:dispose": [],
     "engine:gpu-retirement": [],
+    // Each backend binds the device at createEngine; CMake derives the Dawn twin.
+    "engine:webgpu-device": ["src/pal_sdl_gpu_webgpu_device.cpp"],
     "engine:gpu-task-timing": [],
     "profile:source": ["src/pal_source_profile.cpp"],
     "compute:storage-texture": [],
@@ -108,13 +111,9 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:splat-sh": [],
     "loader:splat-sog": [],
     "loader:splat-spz": [],
-    // The pin's splat-stream library, lowered whole, and the engine's
-    // WebGPU-subset device it runs on from createEngine (each backend's
-    // unit; CMake derives the Dawn twin).
-    "loader:splat-stream": [
-        "src/pal_sdl_gpu_webgpu_device.cpp",
-        "src/pal_splat_stream_platform.cpp",
-    ],
+    // The pin's splat-stream library, lowered whole; its renderable draws
+    // through renderer:external-renderables.
+    "loader:splat-stream": ["src/pal_splat_stream_platform.cpp"],
     "material:pbr": [],
     "material:source-texture-read": [],
     "material:clearcoat": [],
@@ -377,6 +376,14 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "data:locale",
         // The library reads the pass camera's view and projection matrices.
         "camera:view-projection",
+        // Its renderable binds and draws in the scene's own pass.
+        "renderer:external-renderables",
+    ],
+    // Bindings build pipelines on the engine's WebGPU device; replaced
+    // update batches retire behind the GPU.
+    "renderer:external-renderables": [
+        "engine:webgpu-device",
+        "engine:gpu-retirement",
     ],
     "mesh:thin-instance-colors": ["mesh:thin-instances"],
     "mesh:thin-instances-dynamic": ["mesh:thin-instances"],
