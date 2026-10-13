@@ -555,6 +555,15 @@ struct UiComputedStyle {
     [[nodiscard]] bool operator==(const UiComputedStyle&) const = default;
 };
 
+/** An Element.scrollIntoView request; the projection applies each sequence once, in order. */
+struct UiScrollIntoView {
+    enum class Alignment : std::uint8_t { Start, Center, End, Nearest };
+    Alignment block = Alignment::Start;
+    Alignment inline_axis = Alignment::Nearest;
+    bool smooth = false;
+    std::uint64_t sequence = 0;
+};
+
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
     /**
@@ -3924,6 +3933,8 @@ struct UiElementRecord {
     std::optional<CanvasState> canvas;
     bool external_gpu_canvas = false;
     bool attached_to_root = false;
+    /** The latest scrollIntoView request, kept for Window snapshots. */
+    std::optional<UiScrollIntoView> scroll_into_view;
 };
 
 /**

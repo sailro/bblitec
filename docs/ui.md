@@ -36,17 +36,20 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 
 | Area | Admitted | Refuses |
 | --- | --- | --- |
-| Tree | Static tags, text nodes, append/insert/prepend/replaceChildren, remove, parent/child/sibling reads | Stored child collections, prepend spreads, tree reads inside innerHTML |
+| Tree | Static tags, text nodes, append/insert/prepend/replaceChildren, remove, `replaceWith`, `insertAdjacentElement`, parent/child/sibling reads | Stored child collections, prepend spreads, tree reads inside innerHTML, `replaceWith` text/spreads, dynamic adjacent positions |
 | Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties, dataset, packaged img `src` choices | Compound text/dataset writes, dynamic dataset keys, other property writes; `title` tooltips not rendered |
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
 | Queries | Literal selectors, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements; dynamic selectors (deferred: throw) |
 | Pointer/keyboard | Mouse, multi-touch, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events, pointer capture (deferred: throw) |
-| Events | transitionend, storage, file drags (first file), CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent | Element CustomEvent dispatch, authored drags, cross-document redispatch |
-| Forms | Focus/blur, activeElement, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
+| Events | transitionend, storage, file drags (first file), CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent, `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
+| Forms | Focus/blur, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
 
 - Listener options: `capture`, `once`, `passive`, `signal`; abort removes the listener its add created.
 - UI handles input before cameras; `preventDefault` suppresses camera propagation. Only the primary touch emits mouse events.
-- Native canvas `tabIndex` reads 0; keyboard focus targets the SDL surface. Other `tabIndex` writes refuse (deferred: throw).
+- `tabIndex` reflects `tabindex`: 0 joins Tab navigation in tree order, negative leaves it; positive values throw
+  NotSupportedError. Canvas `tabIndex` reads 0 (keyboard focus targets the SDL surface); other canvas writes refuse.
+- `scrollIntoView` (boolean or block/inline/behavior) applies at the next layout; smooth scrolls only the nearest
+  scroll container, outer ones jump.
 - Erased writes: canvas `tabIndex = 0`, engine-canvas `width`/`height` (the window owns size), dataset members nothing reads.
 - Color inputs use an RGB/hex popup (preview emits input, Apply emits change). Select keyboard navigation needs the menu open.
 - Canvas backing size is drawable pixels; client sizes and rects are CSS pixels; rect/size reads flush layout.
@@ -63,7 +66,10 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 ## Markup and SVG
 
 - innerHTML admits text/div/span/label, comments, packaged img, reviewed SVG path/rect, role/aria-*/data-*; runtime text
-  is escaped. Scripts, event attributes and malformed nesting refuse; markup-created controls throw in deferred mode.
+  is escaped. Scripts, event attributes and malformed nesting refuse.
+- Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
+  ones do: div/span/p/h1/h2/b/strong/label/button and reviewed control attributes. Comments, other tags, textarea
+  content and dynamic markup with controls refuse; whitespace between options is not kept.
 - ARIA has no native accessibility bridge.
 - `createElementNS`: SVG svg/path/rect/circle/line/ellipse/polyline/polygon, rasterized at CSS size by RmlUi's SVG
   plugin. Shape styles, listeners, nested SVG and paint servers refuse.

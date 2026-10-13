@@ -71,6 +71,7 @@
 #include <cstring>
 #include <cstdio>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -104,6 +105,45 @@ bool ascii_iequals(std::string_view left, std::string_view right) {
     return left.size() == right.size() &&
            std::equal(left.begin(), left.end(), right.begin(),
                       [](char lhs, char rhs) { return ascii_lower(lhs) == ascii_lower(rhs); });
+}
+
+/** HTML's rules for parsing integers within a WebIDL long; nothing when the text is invalid. */
+std::optional<std::int32_t> html_integer(std::string_view text) {
+    std::size_t cursor = text.find_first_not_of(" \t\n\f\r");
+    if (cursor == std::string_view::npos)
+        return std::nullopt;
+    const bool negative = text[cursor] == '-';
+    if (negative || text[cursor] == '+')
+        ++cursor;
+    const std::size_t digits = cursor;
+    std::int64_t value = 0;
+    for (; cursor < text.size() && text[cursor] >= '0' && text[cursor] <= '9'; ++cursor) {
+        value = value * 10 + (text[cursor] - '0');
+        if (value > (std::int64_t{1} << 31))
+            return std::nullopt;
+    }
+    if (cursor == digits)
+        return std::nullopt;
+    value = negative ? -value : value;
+    if (value > std::numeric_limits<std::int32_t>::max())
+        return std::nullopt;
+    return static_cast<std::int32_t>(value);
+}
+
+/** A retained HTML element's tabindex attribute, when it holds a valid integer. */
+std::optional<std::int32_t> ui_tab_order(const UiElementRecord& record) {
+    if (record.svg_namespace)
+        return std::nullopt;
+    const auto found = record.attributes.find("tabindex");
+    return found == record.attributes.end() ? std::nullopt : html_integer(found->second);
+}
+
+/** RmlUi's sequential navigation is tree order only: a positive order cannot be honoured. */
+void require_tree_tab_order(std::optional<std::int32_t> order) {
+    if (order && *order > 0)
+        throw js::make_dom_exception("Positive tabIndex values are not supported: native "
+                                     "sequential focus navigation follows tree order.",
+                                     "NotSupportedError");
 }
 
 std::string_view trim_css_token(std::string_view value) {
@@ -1203,6 +1243,8 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     if (name == "hidden" && ascii_iequals(value, "until-found")) {
         throw std::runtime_error("Native UI hidden='until-found' requires find-in-page support.");
     }
+    if (name == "tabindex" && !record.svg_namespace)
+        require_tree_tab_order(html_integer(value));
     const auto existing = record.attributes.find(name);
 #if BBLITE_HAS_BROWSER_FILE
     if (name == "type" && record.file_input && !ascii_iequals(value, "file"))
@@ -1671,6 +1713,179 @@ void ui_remove(Engine& engine, UiElementHandle element) {
     }
     ++engine.ui_style_revision;
     mark_ui_changed(engine, record);
+}
+
+namespace {
+/** The parent a sibling insertion uses: a document child belongs to the body, html to none. */
+UiElementHandle ui_sibling_parent(Engine& engine, UiElementHandle node) {
+    const UiElementRecord& record = ui_element(engine, node);
+    if (record.markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Inserting beside queried innerHTML nodes requires an authored markup tree.");
+    if (engine.ui_document_roots.active() && node == engine.ui_document_roots.html)
+        throw js::make_dom_exception("The document element cannot have siblings.",
+                                     "HierarchyRequestError");
+    if (record.attached_to_root)
+        return ui_document_root(engine, UiDocumentPart::Body);
+    return record.parent;
+}
+
+/** Pre-insertion validity, checked before any node moves. */
+void require_insertable(Engine& engine, UiElementHandle parent, UiElementHandle node) {
+    const UiElementRecord& record = ui_element(engine, node);
+    if (record.markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Reparenting queried innerHTML nodes requires an authored markup tree.");
+    if (ui_contains(engine, node, parent))
+        throw js::make_dom_exception("The new child element contains the parent.",
+                                     "HierarchyRequestError");
+    if (engine.ui_document_roots.active() &&
+        (node == engine.ui_document_roots.html || node == engine.ui_document_roots.head ||
+         node == engine.ui_document_roots.body))
+        throw std::runtime_error("Reparenting document roots is not supported.");
+}
+} // namespace
+
+void ui_replace_with(Engine& engine, UiElementHandle node,
+                     std::initializer_list<UiElementHandle> nodes) {
+    const auto parent = ui_sibling_parent(engine, node);
+    if (parent.value == invalid_handle)
+        return;
+    for (const auto inserted : nodes)
+        require_insertable(engine, parent, inserted);
+    const auto listed = [&](UiElementHandle candidate) {
+        return std::find(nodes.begin(), nodes.end(), candidate) != nodes.end();
+    };
+    // The viable next sibling: the first following sibling that is not itself inserted.
+    UiElementHandle next{};
+    const auto& siblings = ui_element(engine, parent).children;
+    for (auto cursor = std::next(std::find(siblings.begin(), siblings.end(), node));
+         cursor != siblings.end(); ++cursor)
+        if (!listed(*cursor)) {
+            next = *cursor;
+            break;
+        }
+    if (!listed(node))
+        ui_remove(engine, node);
+    for (const auto inserted : nodes)
+        static_cast<void>(ui_insert_child(engine, parent, inserted, next));
+}
+
+js::Nullable<UiElementHandle> ui_insert_adjacent_element(Engine& engine, UiElementHandle target,
+                                                         std::string_view where,
+                                                         UiElementHandle element) {
+    if (ascii_iequals(where, "beforebegin") || ascii_iequals(where, "afterend")) {
+        const auto parent = ui_sibling_parent(engine, target);
+        if (parent.value == invalid_handle)
+            return std::nullopt;
+        require_insertable(engine, parent, element);
+        UiElementHandle reference = target;
+        if (ascii_iequals(where, "afterend")) {
+            const auto& siblings = ui_element(engine, parent).children;
+            const auto after = std::next(std::find(siblings.begin(), siblings.end(), target));
+            reference = after == siblings.end() ? UiElementHandle{} : *after;
+        }
+        return ui_insert_child(engine, parent, element, reference);
+    }
+    if (ascii_iequals(where, "afterbegin")) {
+        require_insertable(engine, target, element);
+        return ui_insert_child(engine, target, element,
+                               ui_first_child_node(engine, target, {element}));
+    }
+    if (ascii_iequals(where, "beforeend")) {
+        require_insertable(engine, target, element);
+        return ui_append_child(engine, target, element);
+    }
+    throw js::make_dom_exception("The value provided ('" + std::string(where) +
+                                     "') is not one of 'beforeBegin', 'afterBegin', "
+                                     "'beforeEnd', or 'afterEnd'.",
+                                 "SyntaxError");
+}
+
+namespace {
+UiScrollIntoView::Alignment scroll_alignment(std::string_view value) {
+    using Alignment = UiScrollIntoView::Alignment;
+    if (value == "start")
+        return Alignment::Start;
+    if (value == "center")
+        return Alignment::Center;
+    if (value == "end")
+        return Alignment::End;
+    if (value == "nearest")
+        return Alignment::Nearest;
+    throw js::NamedError("TypeError", "The provided value '" + std::string(value) +
+                                          "' is not a valid enum value of type "
+                                          "ScrollLogicalPosition.");
+}
+
+void request_scroll_into_view(Engine& engine, UiElementHandle element, UiScrollIntoView request) {
+    UiElementRecord& record = ui_element(engine, element);
+    mark_ui_changed(engine, record);
+    request.sequence = engine.ui_revision;
+    record.scroll_into_view = request;
+}
+} // namespace
+
+void ui_scroll_into_view(Engine& engine, UiElementHandle element, std::string_view block,
+                         std::string_view inline_axis, std::string_view behavior) {
+    // WebIDL converts dictionary members in lexicographic order.
+    if (behavior != "auto" && behavior != "instant" && behavior != "smooth")
+        throw js::NamedError("TypeError", "The provided value '" + std::string(behavior) +
+                                              "' is not a valid enum value of type "
+                                              "ScrollBehavior.");
+    UiScrollIntoView request;
+    request.block = scroll_alignment(block);
+    request.inline_axis = scroll_alignment(inline_axis);
+    // `auto` follows the scrolling box's scroll-behavior, which the projection never sets.
+    request.smooth = behavior == "smooth";
+    request_scroll_into_view(engine, element, request);
+}
+
+void ui_scroll_into_view(Engine& engine, UiElementHandle element, bool align_to_top) {
+    UiScrollIntoView request;
+    request.block =
+        align_to_top ? UiScrollIntoView::Alignment::Start : UiScrollIntoView::Alignment::End;
+    request_scroll_into_view(engine, element, request);
+}
+
+double ui_tab_index(Engine& engine, UiElementHandle element) {
+    const UiElementRecord& record = ui_element(engine, element);
+    // The canvas keeps the SDL surface's focus order.
+    if (record.tag == "canvas")
+        return 0;
+    if (const auto order = ui_tab_order(record))
+        return *order;
+    static constexpr std::string_view controls[] = {
+        "a", "area", "button", "frame", "iframe", "input", "object", "select", "textarea"};
+    if (!record.svg_namespace &&
+        std::find(std::begin(controls), std::end(controls), record.tag) != std::end(controls))
+        return 0;
+    // A summary is focusable as its details' first summary.
+    if (record.tag == "summary" && record.parent.value != invalid_handle &&
+        ui_element(engine, record.parent).tag == "details") {
+        const auto& siblings = ui_element(engine, record.parent).children;
+        const auto first = std::find_if(siblings.begin(), siblings.end(), [&](auto child) {
+            return ui_element(engine, child).tag == "summary";
+        });
+        if (first != siblings.end() && *first == element)
+            return 0;
+    }
+    return -1;
+}
+
+void ui_set_tab_index(Engine& engine, UiElementHandle element, double value) {
+    const std::int32_t order = js::to_int32(value);
+    const UiElementRecord& record = ui_element(engine, element);
+    if (record.svg_namespace)
+        throw std::runtime_error("SVG tabIndex focus navigation is not represented.");
+    if (record.tag == "canvas") {
+        if (order != 0)
+            throw std::runtime_error(
+                "A native canvas keeps tabIndex 0: keyboard focus targets the SDL surface.");
+        return;
+    }
+    require_tree_tab_order(order);
+    ui_set_attribute(engine, element, "tabindex", std::to_string(order));
 }
 
 void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> callback) {
@@ -5126,6 +5341,9 @@ struct UiRmlRuntime {
              (engine.dom_input && engine.dom_input->pointer_elements.contains(handle.value)))) {
             append("pointer-events:auto;");
         }
+        // A negative tabindex keeps an element focusable but out of Tab navigation.
+        if (const auto order = ui_tab_order(record); order && record.tag != "canvas")
+            append(*order < 0 ? "tab-index:none;" : "tab-index:auto;");
         return projected_attribute_value("style", style);
     }
 
@@ -6119,6 +6337,49 @@ struct UiRmlRuntime {
         return true;
     }
 
+    /** Applies scrollIntoView requests newer than the last applied, in request order. */
+    bool sync_scroll_requests() {
+        if (scroll_search_revision == engine.ui_revision)
+            return false;
+        scroll_search_revision = engine.ui_revision;
+        std::vector<std::pair<std::uint64_t, std::uint32_t>> pending;
+        for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index)
+            if (const auto& request = engine.ui_elements[index].scroll_into_view;
+                request && request->sequence > projected_scroll_sequence)
+                pending.emplace_back(request->sequence, index);
+        if (pending.empty())
+            return false;
+        std::sort(pending.begin(), pending.end());
+        projected_scroll_sequence = pending.back().first;
+        const auto alignment = [](UiScrollIntoView::Alignment value) {
+            switch (value) {
+            case UiScrollIntoView::Alignment::Start:
+                return Rml::ScrollAlignment::Start;
+            case UiScrollIntoView::Alignment::Center:
+                return Rml::ScrollAlignment::Center;
+            case UiScrollIntoView::Alignment::End:
+                return Rml::ScrollAlignment::End;
+            case UiScrollIntoView::Alignment::Nearest:
+                return Rml::ScrollAlignment::Nearest;
+            }
+            throw std::logic_error("Unknown scrollIntoView alignment.");
+        };
+        bool scrolled = false;
+        for (const auto& [sequence, index] : pending) {
+            static_cast<void>(sequence);
+            auto* element =
+                index < projected_elements.size() ? projected_elements[index].element : nullptr;
+            if (!element)
+                continue;
+            const auto& request = *engine.ui_elements[index].scroll_into_view;
+            element->ScrollIntoView(Rml::ScrollIntoViewOptions(
+                alignment(request.block), alignment(request.inline_axis),
+                request.smooth ? Rml::ScrollBehavior::Smooth : Rml::ScrollBehavior::Instant));
+            scrolled = true;
+        }
+        return scrolled;
+    }
+
     bool sync_focus_within() {
         if (!observes_focus_within)
             return false;
@@ -6759,6 +7020,9 @@ struct UiRmlRuntime {
     std::uint64_t projected_focus_revision = ~std::uint64_t{0};
     UiElementHandle projected_focused{};
     std::uint64_t projected_text_selection_revision = 0;
+    /** The newest scrollIntoView request already applied, and the revision last searched. */
+    std::uint64_t projected_scroll_sequence = 0;
+    std::uint64_t scroll_search_revision = 0;
     std::vector<std::pair<DomEventTarget, std::string>> ended_transitions;
     std::unique_ptr<UiTransitionListener> transition_listener;
     std::string css_font_family;
@@ -7086,7 +7350,11 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     if (layout_changed)
         runtime.update_intrinsic_widths();
     cpu.split(cpu.sample.intrinsic, checkpoint);
-    runtime.sync_client_rects(layout_changed);
+    // Scrolling needs the settled layout; client rectangles then report the scrolled boxes.
+    const bool scrolled = runtime.sync_scroll_requests();
+    if (scrolled)
+        runtime.context->Update();
+    runtime.sync_client_rects(layout_changed || scrolled);
     cpu.split(cpu.sample.rectangles, checkpoint);
     if (layout_changed || focus_changed) {
         runtime.sync_outlines(!text_only || focus_changed || hover_changed || containers_changed ||

@@ -1869,8 +1869,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "tabIndex" &&
-            (!this.context.options.deferredCapabilities ||
-                this.context.isCanvasElement(unwrapped.expression)) &&
+            this.context.isCanvasElement(unwrapped.expression) &&
             this.isBrowserDomValue(unwrapped.expression)
         ) {
             // Native keyboard events target the SDL surface directly. Treat

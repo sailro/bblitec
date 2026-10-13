@@ -71,17 +71,11 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "WindowOrWorkerGlobalScope.atob",
         "WindowOrWorkerGlobalScope.btoa",
         "WindowOrWorkerGlobalScope.structuredClone",
-        "Element.scrollIntoView",
-        "Element.insertAdjacentElement",
         "Element.getAttributeNames",
-        "Event.composedPath",
         "Element.setPointerCapture",
         "Element.releasePointerCapture",
         "Element.hasPointerCapture",
         "Element.innerHTML.svg-image",
-        "Element.innerHTML.form-controls",
-        "ChildNode.replaceWith",
-        "HTMLOrSVGElement.tabIndex",
         "MediaStream.constructor",
         "MediaStream.getTracks",
         "MediaStream.getAudioTracks",
@@ -538,14 +532,6 @@ export class DeferredCapabilities {
         if (owner === "Blob")
             return [value.kind, type?.kind].some(
                 (kind) => kind === "blob" || kind === "file",
-            );
-        if (owner === "Event")
-            return (
-                value.kind === "platform-mouse-event" ||
-                value.kind === "platform-keyboard-event" ||
-                type?.kind === "borrowed-platform-event" ||
-                (type?.kind === "handle" &&
-                    ["dom-event", "custom-event"].includes(type.handle))
             );
         return value.kind === "ui-element" || type?.kind === "event-target";
     }
