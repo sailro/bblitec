@@ -49,7 +49,9 @@ void register_scene_with_shadow_support(Scene& scene) {
     if (mesh_registrations)
         assert(scene.meshes.size() == 1 && scene.meshes[0].value == 7);
     if (scene.state->default_render_task) {
-        assert(scene.state->default_render_task_created && scene.tasks.size() == 3);
+        // The resolve and present copies follow the pin's one default task.
+        assert(scene.state->default_render_task_created && scene.tasks.size() == 1 &&
+               scene.state->internal_passes.size() == 2 && scene.frame_passes().size() == 3);
         ++enabled_registrations;
     } else {
         assert(!scene.state->default_render_task_created && scene.tasks.empty());

@@ -522,7 +522,7 @@ class SdlSceneRun {
             const Scene& task_scene = *data_.active_registered_scenes[layer];
             const upstream::RenderPlan& task_plan =
                 layer == 0 ? render_plan : overlay_plans[layer - 1];
-            for (const TaskHandle handle : task_scene.tasks) {
+            for (const TaskHandle handle : task_scene.frame_passes()) {
                 if (handle.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error("Scene frame task handle is invalid.");
                 }
@@ -782,7 +782,7 @@ public:
         // The frame-graph path takes the main pass's else arm, where the
         // mid-pass scene-colour grab never runs — refuse, exactly as the
         // Dawn backend does, rather than render transmission-less.
-        if (transmission_enabled && !scene.tasks.empty()) {
+        if (transmission_enabled && scene.has_frame_passes()) {
             throw std::runtime_error("transmission combined with frame-graph tasks is not "
                                      "implemented yet.");
         }
@@ -1204,7 +1204,7 @@ public:
                 if (!state.shader_a2c_pipelines[variant]) {
                     gpu_error("SDL_CreateGPUGraphicsPipeline alpha to coverage");
                 }
-                if (!scene.tasks.empty()) {
+                if (scene.has_frame_passes()) {
                     state.shader_task_pipelines[variant] = ShaderTaskPipeline{
                         std::move(shader_vertex_shaders[variant]),
                         std::move(shader_fragment_shaders[variant]), shader_pipeline_info};
@@ -1212,7 +1212,7 @@ public:
             }
         }
         state.geometry_tasks.resize(engine.frame_tasks.size());
-        if (!scene.tasks.empty()) {
+        if (scene.has_frame_passes()) {
             auto blit_vertex_shader = load_shader(state.device, "blit.vert",
                                                   SDL_GPU_SHADERSTAGE_VERTEX, 0, 0, "mainVertex");
             auto blit_fragment_shader = load_shader(
@@ -2123,7 +2123,7 @@ public:
                 gpu_error("SDL_AcquireGPUCommandBuffer shadow prefix");
         }
 #endif
-        current_frame().graph = !scene.tasks.empty();
+        current_frame().graph = scene.has_frame_passes();
 #if BBLITE_EXTERNAL_RENDERABLES
         if (current_frame().graph && !scene.state->external_renderables.empty())
             throw std::runtime_error("External renderables draw in the scene's own pass; a scene "
@@ -2783,7 +2783,7 @@ public:
 #if BBLITE_HAS_TAA
                     if (graph_layer == 0) {
                         for (const auto& registered : engine.scenes()) {
-                            for (const TaskHandle recorded_handle : registered->tasks) {
+                            for (const TaskHandle recorded_handle : registered->frame_passes()) {
                                 auto& recorded = handle_at(engine.frame_tasks, recorded_handle);
                                 if (!recorded.post_process.taa)
                                     continue;
@@ -2806,7 +2806,7 @@ public:
                     }
 #endif
                     GpuTaskTimingSequence timing_sequence(engine, &graph_scene);
-                    for (const TaskHandle handle : graph_scene.tasks) {
+                    for (const TaskHandle handle : graph_scene.frame_passes()) {
                         [[maybe_unused]] FrameTaskRecord& task =
                             handle_at(engine.frame_tasks, handle);
                         if (task.execution_enabled == false)
@@ -3292,7 +3292,7 @@ public:
                                 for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
                                     const Scene& utility =
                                         *data_.active_registered_scenes[layer + 1];
-                                    if (utility.surface_canvas || !utility.tasks.empty())
+                                    if (utility.surface_canvas || utility.has_frame_passes())
                                         continue;
                                     // The layer's own scene pass: its camera,
                                     // with no fallback to the base scene's.

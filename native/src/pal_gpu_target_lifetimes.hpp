@@ -193,7 +193,7 @@ inline void require_executable_frame_tasks(const Engine& engine) {
     };
     for (const auto& scene : engine.scenes())
         if (scene)
-            for (const TaskHandle task : scene->tasks)
+            for (const TaskHandle task : scene->frame_passes())
                 require(task);
     for (const FrameGraphContext* graph : engine.frame_graph_contexts())
         if (graph)

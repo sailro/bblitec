@@ -25,7 +25,7 @@ inline bool text_in_default_scene_pass(const Scene& scene) {
     if (!scene.state->default_render_task)
         return false;
     std::size_t scene_passes = 0;
-    for (const TaskHandle handle : scene.tasks) {
+    for (const TaskHandle handle : scene.frame_passes()) {
         const FrameTaskRecord& task = handle_at(scene.engine->frame_tasks, handle);
         if (task.kind == FrameTaskKind::geometry ||
             (task.kind == FrameTaskKind::render && !task.render.scene_stages))
@@ -33,7 +33,7 @@ inline bool text_in_default_scene_pass(const Scene& scene) {
         if (task.kind == FrameTaskKind::render)
             ++scene_passes;
     }
-    return scene.tasks.empty() || scene_passes == 1;
+    return !scene.has_frame_passes() || scene_passes == 1;
 }
 
 /** Validate the scene that actually owns the retained text bindings. */

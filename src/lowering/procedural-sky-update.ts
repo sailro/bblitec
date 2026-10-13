@@ -349,7 +349,7 @@ export function lowerProceduralSkyUpdate(
                         "Sky uniform task ownership",
                     );
                     return [
-                        `${indent}for(const auto handle:scene.tasks){`,
+                        `${indent}for(const auto handle:scene.frame_passes()){`,
                         `${indent}    auto& task=${recordAt("scene.engine->frame_tasks", "handle")};`,
                         ...lowerer.statements(
                             ts.isBlock(node.statement)

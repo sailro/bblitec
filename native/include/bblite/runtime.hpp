@@ -5654,6 +5654,13 @@ using SourceMaterialGroups = js::Map<std::uint64_t, std::shared_ptr<SourceMateri
 /** The mutable state shared by every native copy of one SceneContext. */
 using PbrTransmissionTransaction = std::array<js::Callback<void()>, 2>;
 
+/** A pass native rendering schedules beside the pin's tasks. */
+struct SceneInternalPass {
+    TaskHandle task;
+    /** The task it follows; none: it precedes every task. */
+    TaskHandle after{};
+};
+
 struct SceneState {
     bool source_material_publication = false;
     SourceMaterialOutputs material_outputs;
@@ -5678,7 +5685,15 @@ struct SceneState {
     CameraHandle camera{};
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
+    /** The pin's `FrameGraph._tasks`, in its order. */
     std::vector<TaskHandle> tasks;
+    /**
+     * What native rendering adds to those tasks: shadow caster passes ahead
+     * of every task (the pin's one "shadow" task), and the default render
+     * task's resolve and present copies right after it (the pin resolves
+     * inside the task).
+     */
+    std::vector<SceneInternalPass> internal_passes;
     /** Source shadow scheduler identity, including scenes with no caster passes. */
     std::optional<std::string> shadow_task_name;
     /** Shadow generators retired only after a replacement rebuild succeeds. */
@@ -5791,6 +5806,40 @@ struct SceneState {
 };
 
 /**
+ * Every pass a scene's frame graph executes, in order: the internal passes
+ * ahead of every task, then each task followed by the passes it anchors.
+ */
+[[nodiscard]] inline std::vector<TaskHandle> scene_frame_passes(const SceneState& state) {
+    std::vector<TaskHandle> passes;
+    passes.reserve(state.tasks.size() + state.internal_passes.size());
+    for (const SceneInternalPass& pass : state.internal_passes)
+        if (pass.after.value == invalid_handle)
+            passes.push_back(pass.task);
+    for (const TaskHandle task : state.tasks) {
+        passes.push_back(task);
+        for (const SceneInternalPass& pass : state.internal_passes)
+            if (pass.after.value != invalid_handle && pass.after == task)
+                passes.push_back(pass.task);
+    }
+    return passes;
+}
+
+/** Whether a scene executes a frame graph at all. */
+[[nodiscard]] inline bool scene_has_frame_passes(const SceneState& state) noexcept {
+    return !state.tasks.empty() || !state.internal_passes.empty();
+}
+
+/** A pass ahead of every task; the latest added runs first. */
+inline void add_leading_pass(SceneState& state, TaskHandle task) {
+    state.internal_passes.insert(state.internal_passes.begin(), SceneInternalPass{task, {}});
+}
+
+/** A pass right after `after`, behind those already following it. */
+inline void add_pass_after(SceneState& state, TaskHandle task, TaskHandle after) {
+    state.internal_passes.push_back(SceneInternalPass{task, after});
+}
+
+/**
  * A JavaScript SceneContext is an object identity, not a value aggregate.
  *
  * Generated code deliberately uses ordinary C++ value syntax for scene
@@ -5866,6 +5915,12 @@ struct Scene {
     [[nodiscard]] bool shares_identity(const Scene& other) const noexcept {
         return state == other.state;
     }
+
+    /** `scene_frame_passes`: every pass this scene's frame graph executes. */
+    [[nodiscard]] std::vector<TaskHandle> frame_passes() const {
+        return scene_frame_passes(*state);
+    }
+    [[nodiscard]] bool has_frame_passes() const noexcept { return scene_has_frame_passes(*state); }
 
     [[nodiscard]] const SceneState* identity() const noexcept { return state.get(); }
 

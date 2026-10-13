@@ -707,7 +707,7 @@ class DawnSceneRun {
         for (std::size_t layer = 0; layer < data_.active_registered_scenes.size(); ++layer) {
             const Scene& task_scene = *data_.active_registered_scenes[layer];
             const auto& task_plan = layer == 0 ? render_plan : overlay_plans[layer - 1];
-            for (const TaskHandle handle : task_scene.tasks) {
+            for (const TaskHandle handle : task_scene.frame_passes()) {
                 if (handle.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error("Scene frame task handle is invalid.");
                 }
@@ -1109,7 +1109,7 @@ public:
         // may replace the root or finish registering an awaited auxiliary scene;
         // either change rebuilds the backend before stale plans are used again.
 
-        if (scene.transmission_enabled && !scene.tasks.empty()) {
+        if (scene.transmission_enabled && scene.has_frame_passes()) {
             dawn_error("transmission combined with frame-graph tasks is not "
                        "implemented yet.");
         }
@@ -1351,7 +1351,7 @@ public:
         const auto initialize_render_tasks = [&] {
             state.release_render_tasks();
             state.render_tasks.resize(engine.frame_tasks.size());
-            for (const TaskHandle handle : scene.tasks) {
+            for (const TaskHandle handle : scene.frame_passes()) {
                 const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                 if (task.kind == FrameTaskKind::render) {
                     DawnRenderTask& render_task = handle_at(state.render_tasks, handle);
@@ -1410,7 +1410,7 @@ public:
             // the surface format and the target's sample count.
             std::vector<std::function<void()>> blit_jobs;
             for (const auto& layer_scene : active_registered_scenes) {
-                for (const TaskHandle handle : layer_scene->tasks) {
+                for (const TaskHandle handle : layer_scene->frame_passes()) {
                     const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                     if (task.kind != FrameTaskKind::copy ||
                         task.copy.target.value == invalid_handle ||
@@ -2041,7 +2041,7 @@ public:
         pass_scene = &scene;
         pass_meshes = &state.meshes;
 
-        if (!scene.tasks.empty()) {
+        if (scene.has_frame_passes()) {
 #if !BBLITE_HAS_TAA
             for (std::size_t graph_layer = 0; graph_layer < data_.active_registered_scenes.size();
                  ++graph_layer) {
@@ -2055,7 +2055,7 @@ public:
                 if (graph_layer > 0)
                     graph_lights = state.overlay_frames[graph_layer - 1].lights_uniforms;
 #endif
-                for (const TaskHandle handle : graph_scene.tasks) {
+                for (const TaskHandle handle : graph_scene.frame_passes()) {
                     const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                     if (task.execution_enabled == false)
                         continue;
@@ -2562,11 +2562,11 @@ public:
             }
         };
 #if BBLITE_EXTERNAL_RENDERABLES
-        if (!scene.tasks.empty() && !scene.state->external_renderables.empty())
+        if (scene.has_frame_passes() && !scene.state->external_renderables.empty())
             dawn_error("External renderables draw in the scene's own pass; a scene with render "
                        "tasks refuses them.");
 #endif
-        if (scene.tasks.empty()) {
+        if (!scene.has_frame_passes()) {
             write_material_uniforms(render_plan.draw_lists.opaque,
                                     current_frame().frame_pass_matrices);
             write_material_uniforms(render_plan.draw_lists.transparent,
@@ -2956,7 +2956,7 @@ public:
 #if BBLITE_HAS_TAA
             if (!engine.stopped) {
                 for (const auto& registered : engine.scenes()) {
-                    for (const TaskHandle handle : registered->tasks) {
+                    for (const TaskHandle handle : registered->frame_passes()) {
                         auto& task = handle_at(engine.frame_tasks, handle);
                         if (!task.post_process.taa)
                             continue;
@@ -2985,7 +2985,7 @@ public:
                     pass_scene = &graph_scene;
                     pass_meshes = &graph_meshes;
                     GpuTaskTimingSequence timing_sequence(engine, &graph_scene);
-                    for (const TaskHandle handle : graph_scene.tasks) {
+                    for (const TaskHandle handle : graph_scene.frame_passes()) {
                         FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                         if (task.execution_enabled == false)
                             continue;
@@ -3635,7 +3635,7 @@ public:
                                 for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
                                     const Scene& utility =
                                         *data_.active_registered_scenes[layer + 1];
-                                    if (utility.surface_canvas || !utility.tasks.empty())
+                                    if (utility.surface_canvas || utility.has_frame_passes())
                                         continue;
                                     color_attachment.loadOp = WGPULoadOp_Load;
                                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
@@ -4308,7 +4308,7 @@ public:
 #endif
         DawnSurfaceCapture capture;
         if (capture_frame) {
-            if (!scene.tasks.empty() && !frame_graph_presented) {
+            if (scene.has_frame_passes() && !frame_graph_presented) {
                 throw std::runtime_error("Frame graph did not present a capture source.");
             }
             capture =

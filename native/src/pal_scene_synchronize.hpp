@@ -242,7 +242,7 @@ Iteration<bool> prepare_scene_pipeline_draws(Engine& engine, const Scene& scene,
                                              const upstream::RenderPlan& plan, TaskLists task_lists,
                                              Prepare prepare) {
     StartupWorkBudget budget;
-    auto tasks = scene.tasks;
+    auto tasks = scene.frame_passes();
     if (tasks.empty())
         tasks.push_back({});
     for (const TaskHandle handle : tasks) {
