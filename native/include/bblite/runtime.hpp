@@ -5411,6 +5411,13 @@ inline void set_surface_max_device_pixel_ratio(Engine& engine, double cap,
         engine.resize_surface = resize_surface;
 }
 
+/** createEngine's cap option: the same resize, which the pin's createEngine runs once. */
+inline void install_surface_resize(Engine& engine, void (*resize_surface)(Engine&)) {
+    if (!engine.resize_surface)
+        engine.resize_surface = resize_surface;
+    engine.resize_surface(engine);
+}
+
 /** `resizeEngine`: native frame heads refresh extents; an installed resize runs here too. */
 inline void resize_engine(Engine& engine) {
     if (engine.resize_surface)
