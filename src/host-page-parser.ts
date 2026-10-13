@@ -7,7 +7,12 @@
  * The bake is keyed on this module alone, so editing the page reader or
  * the compiler replays the parse.
  */
-import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
+import {
+    cachedBakeBatchSync,
+    cachedBakeSync,
+    moduleIdentity,
+    type BakeKey,
+} from "./bake-cache.js";
 import { evaluateInSharedPage } from "./compiler/generation-child.js";
 
 export interface HostPageElement {
@@ -83,9 +88,8 @@ export interface HtmlFragmentElement {
 export type HtmlFragmentNode =
     HtmlFragmentElement | HostPageText | HtmlFragmentComment;
 
-const fragmentWalker = `(markup) => {
-    const template = document.createElement("template");
-    template.innerHTML = markup;
+// Each markup of a JSON list as its fragment's node list, in one page.
+const fragmentWalker = `(input) => {
     const walk = (node) => {
         if (node.nodeType === Node.TEXT_NODE) return { text: node.data };
         if (node.nodeType === Node.COMMENT_NODE) return { comment: node.data };
@@ -103,45 +107,87 @@ const fragmentWalker = `(markup) => {
         return element;
     };
     return JSON.stringify(
-        Array.from(template.content.childNodes, walk).filter((node) => node !== undefined),
+        JSON.parse(input).map((markup) => {
+            const template = document.createElement("template");
+            template.innerHTML = markup;
+            return JSON.stringify(
+                Array.from(template.content.childNodes, walk).filter((node) => node !== undefined),
+            );
+        }),
     );
 }`;
 
 const fragments = new Map<string, HtmlFragmentNode[]>();
 
+function fragmentKey(markup: string): BakeKey {
+    return {
+        kind: "html-fragment",
+        version: "1",
+        module: moduleIdentity(import.meta.url),
+        browser: true,
+        parameters: {},
+        inputs: [Buffer.from(markup, "utf8")],
+    };
+}
+
 /**
- * `markup` parsed as innerHTML is (a template's contents, so an option or a
- * table part stands alone): the browser's tree, entity decoding, implied
- * end tags and attribute forms, with comments. Replayed from the bake cache.
+ * Each `markup` parsed as innerHTML is (a template's contents, so an option
+ * or a table part stands alone): the browser's tree, entity decoding,
+ * implied end tags and attribute forms, with comments. The fragments the
+ * memo and the bake cache lack parse together, in one Chromium page.
  */
-export function parseHtmlFragment(markup: string): readonly HtmlFragmentNode[] {
-    const known = fragments.get(markup);
-    if (known) return known;
-    const bytes = cachedBakeSync(
-        {
-            kind: "html-fragment",
-            version: "1",
-            module: moduleIdentity(import.meta.url),
-            browser: true,
-            parameters: {},
-            inputs: [Buffer.from(markup, "utf8")],
-        },
-        () =>
-            Buffer.from(
-                evaluateInSharedPage({
-                    label: "Reading static innerHTML",
-                    serverName: "innerHTML parser server",
-                    requirement: "Reading static innerHTML requires Chromium.",
-                    evaluate: fragmentWalker,
-                    input: markup,
-                }),
-                "utf8",
-            ),
+export function parseHtmlFragments(
+    markups: readonly string[],
+): ReadonlyArray<readonly HtmlFragmentNode[]> {
+    const unknown = [...new Set(markups)].filter(
+        (markup) => !fragments.has(markup),
     );
-    const nodes: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
-    if (!Array.isArray(nodes) || !nodes.every(isHtmlFragmentNode))
-        throw new Error("The innerHTML parser returned no node list.");
-    fragments.set(markup, nodes);
+    if (unknown.length) {
+        const baked = cachedBakeBatchSync(
+            unknown.map(fragmentKey),
+            (missing) => {
+                const parsed: unknown = JSON.parse(
+                    evaluateInSharedPage({
+                        label: "Reading static innerHTML",
+                        serverName: "innerHTML parser server",
+                        requirement:
+                            "Reading static innerHTML requires Chromium.",
+                        evaluate: fragmentWalker,
+                        input: JSON.stringify(
+                            missing.map((index) => unknown[index]!),
+                        ),
+                    }),
+                );
+                if (
+                    !Array.isArray(parsed) ||
+                    !parsed.every((item) => typeof item === "string")
+                )
+                    throw new Error(
+                        "The innerHTML parser returned no fragment list.",
+                    );
+                return parsed.map((item) => Buffer.from(item, "utf8"));
+            },
+        );
+        unknown.forEach((markup, index) => {
+            const nodes: unknown = JSON.parse(
+                Buffer.from(baked[index]!).toString("utf8"),
+            );
+            if (!Array.isArray(nodes) || !nodes.every(isHtmlFragmentNode))
+                throw new Error("The innerHTML parser returned no node list.");
+            fragments.set(markup, nodes);
+        });
+    }
+    return markups.map((markup) => {
+        const nodes = fragments.get(markup);
+        if (!nodes) throw new Error("An innerHTML fragment was not parsed.");
+        return nodes;
+    });
+}
+
+/** `markup` parsed as innerHTML is (`parseHtmlFragments`). */
+export function parseHtmlFragment(markup: string): readonly HtmlFragmentNode[] {
+    const [nodes] = parseHtmlFragments([markup]);
+    if (!nodes) throw new Error("An innerHTML fragment was not parsed.");
     return nodes;
 }
 

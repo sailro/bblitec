@@ -29,6 +29,7 @@ import { uiGradientBackground } from "../ui-gradient-background.js";
 import { unresolvableUiVariableMathUnit } from "../ui-variable-math.js";
 import {
     parseHtmlFragment,
+    parseHtmlFragments,
     type HtmlFragmentNode,
 } from "../host-page-parser.js";
 import { supportedUiGridPlacement, supportedUiGridTracks } from "../ui-grid.js";
@@ -301,6 +302,8 @@ export class UiProjection {
 
     private readonly uiMarkupAlternativeOwners = new EmissionSet<number>();
     private readonly uiMarkupNodeIds = new EmissionMap<number, number>();
+    /** The program's candidate markup parsed together (`prefetchUiMarkup`). */
+    private uiMarkupPrefetched = false;
 
     private uiRuleSuffix(
         rule: Pick<
@@ -4009,11 +4012,45 @@ export class UiProjection {
         return true;
     }
 
+    /**
+     * Parse, in one browser session per compile, every source text that
+     * may become innerHTML: string literals and templates (their runtime
+     * spans as markup holes) that open a tag or comment. A markup assembled
+     * otherwise still parses on its own.
+     */
+    private prefetchUiMarkup(): void {
+        if (this.uiMarkupPrefetched) return;
+        this.uiMarkupPrefetched = true;
+        const opensMarkup = /<[A-Za-z!/]/;
+        const candidates: string[] = [];
+        const visit = (node: ts.Node): void => {
+            const text =
+                ts.isStringLiteral(node) ||
+                ts.isNoSubstitutionTemplateLiteral(node)
+                    ? node.text
+                    : ts.isTemplateExpression(node)
+                      ? node.head.text +
+                        node.templateSpans
+                            .map(
+                                (span, index) =>
+                                    `__BBLITE_UI_MARKUP_${index}__${span.literal.text}`,
+                            )
+                            .join("")
+                      : undefined;
+            if (text !== undefined && opensMarkup.test(text))
+                candidates.push(text);
+            ts.forEachChild(node, visit);
+        };
+        for (const source of this.context.sourceFiles()) visit(source);
+        parseHtmlFragments(candidates);
+    }
+
     private lowerUiMarkupLiteral(
         value: string,
         site?: ts.Node,
         ownerId?: number,
     ): string {
+        this.prefetchUiMarkup();
         const fail = (message: string): never => {
             if (site) this.context.fail(site, `Native UI innerHTML ${message}`);
             this.context.failAtFile(`Native UI innerHTML ${message}`);
@@ -4508,8 +4545,9 @@ export class UiProjection {
         expression: ts.Expression,
     ): UiAuthoredMarkupNode[] | undefined {
         const source = this.tryUiStaticString(expression);
-        if (source === undefined || !createsFormControls(source))
-            return undefined;
+        if (source === undefined) return undefined;
+        this.prefetchUiMarkup();
+        if (!createsFormControls(source)) return undefined;
         return parseAuthoredMarkup(source, (message) =>
             this.context.fail(expression, `Native UI innerHTML ${message}`),
         );
