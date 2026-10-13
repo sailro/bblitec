@@ -289,6 +289,41 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0036-css-time-delays.patch",
+      "purpose": "Millisecond times, transition-delay/animation-delay longhands and negative delays",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0037-css-easing-functions.patch",
+      "purpose": "Exact CSS easing functions and keywords in transition and animation lists",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0038-css-important.patch",
+      "purpose": "CSS !important in stylesheets and inline styles",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0039-animation-shorthand.patch",
+      "purpose": "CSS animation shorthand grammar, directions and fill modes",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0040-substitution-filter.patch",
+      "purpose": "Client filter over values after var() substitution",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

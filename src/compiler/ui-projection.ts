@@ -21,7 +21,12 @@ import {
     visitUiStyleSheetDeclarations,
 } from "../deferred-ui-style.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
+import {
+    unrepresentedUiAnimation,
+    unrepresentedUiEasing,
+} from "../ui-motion.js";
 import { uiGradientBackground } from "../ui-gradient-background.js";
+import { unresolvableUiVariableMathUnit } from "../ui-variable-math.js";
 import { supportedUiGridPlacement, supportedUiGridTracks } from "../ui-grid.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
 import {
@@ -1549,6 +1554,7 @@ export class UiProjection {
             "align-items",
             "align-self",
             "animation",
+            "animation-delay",
             "background",
             "background-color",
             "background-clip",
@@ -1658,6 +1664,7 @@ export class UiProjection {
             "transform",
             "transform-origin",
             "transition",
+            "transition-delay",
             "vertical-align",
             "visibility",
             "white-space",
@@ -1981,6 +1988,21 @@ export class UiProjection {
         return { uiCanvas: true, uiCanvasId: this.retainedCanvasId(id) };
     }
 
+    /** Math over var() resolves natively after substitution only in the units the PAL math reads. */
+    private refuseUnresolvableVariableMath(
+        property: string,
+        value: string,
+        site: ts.Node | undefined,
+    ): void {
+        const unit = unresolvableUiVariableMathUnit(value);
+        if (unit !== undefined)
+            this.uiStyleRefusal(
+                site,
+                property,
+                `CSS math over var() resolves px/rem/viewport lengths, times and angles; '${unit}' is not represented`,
+            );
+    }
+
     private uiStyleRefusal(
         site: ts.Node | undefined,
         property: string,
@@ -2029,6 +2051,7 @@ export class UiProjection {
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            this.refuseUnresolvableVariableMath(property, literalValue, site);
             if (UiProjection.isCustomStyleProperty(property)) return;
             if (
                 property === "place-items" &&
@@ -2071,6 +2094,14 @@ export class UiProjection {
                         "only auto or an opaque literal hex, rgb() or named color is represented",
                     );
                 return;
+            }
+            if (property === "transition" || property === "animation") {
+                const reason =
+                    unrepresentedUiEasing(literalValue) ??
+                    (property === "animation"
+                        ? unrepresentedUiAnimation(literalValue)
+                        : undefined);
+                if (reason) this.uiStyleRefusal(site, property, reason);
             }
             if (property === "scale") {
                 if (
@@ -2713,6 +2744,39 @@ export class UiProjection {
             );
         }
         if (name !== "style") return value;
+        // Importance outranks order, so important declarations lower as a
+        // group after the normal ones, each native declaration keeping the
+        // mark (private PAL metadata excepted).
+        const normal: string[] = [];
+        const important: string[] = [];
+        UiProjection.forEachUiStyleDeclaration(value, (declaration) => {
+            const unmarked = declaration.replace(/\s*!\s*important\s*$/i, "");
+            (unmarked === declaration ? normal : important).push(unmarked);
+        });
+        if (important.length > 0) {
+            const marked: string[] = [];
+            UiProjection.forEachUiStyleDeclaration(
+                this.lowerUiAttributeLiteral(
+                    "style",
+                    important.join(";"),
+                    site,
+                ),
+                (declaration) => {
+                    if (!declaration.trim()) return;
+                    marked.push(
+                        declaration.trim().startsWith("--bbl-")
+                            ? declaration
+                            : `${declaration} !important`,
+                    );
+                },
+            );
+            return [
+                this.lowerUiAttributeLiteral("style", normal.join(";"), site),
+                ...marked,
+            ]
+                .filter((declarations) => declarations.trim())
+                .join(";");
+        }
         const customDeclarations: string[] = [];
         const authoredDeclarations: string[] = [];
         UiProjection.forEachUiStyleDeclaration(value, (declaration) => {
@@ -2727,6 +2791,14 @@ export class UiProjection {
             );
         });
         value = authoredDeclarations.join(";");
+        for (const declaration of customDeclarations) {
+            const colon = declaration.indexOf(":");
+            this.refuseUnresolvableVariableMath(
+                declaration.slice(0, colon).trim(),
+                declaration.slice(colon + 1).toLowerCase(),
+                site,
+            );
+        }
         const authoredDisplay = /(?:^|;)\s*display\s*:/i.test(value);
         this.auditUiStyleDeclarations(value, site);
         {
@@ -5638,6 +5710,8 @@ export class UiProjection {
                 "overflow-wrap",
                 "word-break",
                 "transform-origin",
+                "transition",
+                "animation",
             ].includes(nativeProperty) ||
             isUiLayoutProperty(nativeProperty)
         ) {

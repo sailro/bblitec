@@ -1,0 +1,374 @@
+Parse CSS easing functions exactly in transition and animation lists: the
+cubic-bezier() and steps() functions, and the linear, ease, ease-in, ease-out,
+ease-in-out, step-start and step-end keywords, with ease as the initial easing.
+Commas and spaces inside a function no longer split the list, which rejected a
+whole list naming cubic-bezier().
+
+diff --git a/Include/RmlUi/Core/Tween.h b/Include/RmlUi/Core/Tween.h
+index ba75415..83b5343 100644
+--- a/Include/RmlUi/Core/Tween.h
++++ b/Include/RmlUi/Core/Tween.h
+@@ -7,14 +7,20 @@ namespace Rml {
+ 
+ class RMLUICORE_API Tween {
+ public:
+-	enum Type { None, Back, Bounce, Circular, Cubic, Elastic, Exponential, Linear, Quadratic, Quartic, Quintic, Sine, Callback, Count };
++	enum Type { None, Back, Bounce, Circular, Cubic, Elastic, Exponential, Linear, Quadratic, Quartic, Quintic, Sine, Callback, CubicBezier, Steps, Count };
+ 	enum Direction { In = 1, Out = 2, InOut = 3 };
++	enum class StepPosition { JumpStart, JumpEnd, JumpNone, JumpBoth };
+ 	using CallbackFnc = float (*)(float);
+ 
+ 	Tween(Type type = Linear, Direction direction = Out);
+ 	Tween(Type type_in, Type type_out);
+ 	Tween(CallbackFnc callback, Direction direction = In);
+ 
++	/// The CSS cubic-bezier() easing function; x1 and x2 lie in [0, 1].
++	static Tween CubicBezierCurve(float x1, float y1, float x2, float y2);
++	/// The CSS steps() easing function; a JumpNone count is at least 2, others at least 1.
++	static Tween StepFunction(int count, StepPosition position);
++
+ 	// Evaluate the Tweening function at point t in [0, 1].
+ 	float operator()(float t) const;
+ 
+@@ -35,6 +41,8 @@ private:
+ 	Type type_in = None;
+ 	Type type_out = None;
+ 	CallbackFnc callback = nullptr;
++	// The cubic-bezier() control points, or the steps() count and position.
++	float parameters[4] = {};
+ };
+ 
+ } // namespace Rml
+diff --git a/Source/Core/PropertyParserAnimation.cpp b/Source/Core/PropertyParserAnimation.cpp
+index f301ea0..ac81bd3 100644
+--- a/Source/Core/PropertyParserAnimation.cpp
++++ b/Source/Core/PropertyParserAnimation.cpp
+@@ -10,27 +10,95 @@
+ 
+ namespace Rml {
+ 
+-// A CSS <time>: a number with an 's' or 'ms' unit (ASCII case-insensitive), in seconds.
+-static bool ParseTime(const String& argument, float& seconds)
++// The finite CSS number starting `text` (an optional '+'), and the lower-case unit text after it.
++static bool ParseNumberAndUnit(const String& text, float& number, String& unit)
+ {
+-	const char* begin = argument.data();
+-	const char* const end = begin + argument.size();
++	const char* begin = text.data();
++	const char* const end = begin + text.size();
+ 	if (begin != end && *begin == '+' && begin + 1 != end && (begin[1] == '.' || (begin[1] >= '0' && begin[1] <= '9')))
+ 		++begin;
+-	float number = 0.0f;
+-	const auto [unit, error] = number_parsing::from_chars(begin, end, number);
++	const auto [last, error] = number_parsing::from_chars(begin, end, number);
+ 	if (error != std::errc() || !std::isfinite(number))
+ 		return false;
+-	const String suffix = StringUtilities::ToLower(String(unit, end));
+-	if (suffix == "s")
++	unit = StringUtilities::ToLower(String(last, end));
++	return true;
++}
++
++// A CSS <time>: a number with an 's' or 'ms' unit (ASCII case-insensitive), in seconds.
++static bool ParseTime(const String& argument, float& seconds)
++{
++	float number = 0.0f;
++	String unit;
++	if (!ParseNumberAndUnit(argument, number, unit))
++		return false;
++	if (unit == "s")
+ 		seconds = number;
+-	else if (suffix == "ms")
++	else if (unit == "ms")
+ 		seconds = number / 1000.0f;
+ 	else
+ 		return false;
+ 	return true;
+ }
+ 
++// A CSS cubic-bezier() or steps() easing function: false when `argument` is neither, else `valid`
++// reports whether its arguments are.
++static bool ParseEasingFunction(const String& argument, Tween& tween, bool& valid)
++{
++	const String lower = StringUtilities::ToLower(argument);
++	const size_t open = lower.find('(');
++	if (open == String::npos || lower.back() != ')')
++		return false;
++	const String name = lower.substr(0, open);
++	if (name != "cubic-bezier" && name != "steps")
++		return false;
++	valid = false;
++	StringList arguments;
++	StringUtilities::ExpandString(arguments, lower.substr(open + 1, lower.size() - open - 2), ',');
++	String unit;
++	if (name == "cubic-bezier")
++	{
++		float points[4] = {};
++		if (arguments.size() != 4)
++			return true;
++		for (size_t i = 0; i < 4; ++i)
++			if (!ParseNumberAndUnit(arguments[i], points[i], unit) || !unit.empty())
++				return true;
++		if (points[0] < 0.f || points[0] > 1.f || points[2] < 0.f || points[2] > 1.f)
++			return true;
++		tween = Tween::CubicBezierCurve(points[0], points[1], points[2], points[3]);
++		valid = true;
++		return true;
++	}
++	// steps(<integer> [, <step-position>]?)
++	float count = 0.f;
++	if (arguments.empty() || arguments.size() > 2 || arguments[0].find_first_of(".e") != String::npos ||
++		!ParseNumberAndUnit(arguments[0], count, unit) || !unit.empty() || count > 1e6f)
++		return true;
++	Tween::StepPosition position = Tween::StepPosition::JumpEnd;
++	if (arguments.size() == 2)
++	{
++		if (arguments[1] == "jump-start" || arguments[1] == "start")
++			position = Tween::StepPosition::JumpStart;
++		else if (arguments[1] == "jump-none")
++			position = Tween::StepPosition::JumpNone;
++		else if (arguments[1] == "jump-both")
++			position = Tween::StepPosition::JumpBoth;
++		else if (arguments[1] != "jump-end" && arguments[1] != "end")
++			return true;
++	}
++	if (count < (position == Tween::StepPosition::JumpNone ? 2.f : 1.f))
++		return true;
++	tween = Tween::StepFunction(int(count), position);
++	valid = true;
++	return true;
++}
++
++// The initial CSS easing function.
++static Tween Ease()
++{
++	return Tween::CubicBezierCurve(0.25f, 0.1f, 0.25f, 1.f);
++}
++
+ enum class KeywordType { None, Tween, All, Alternate, Infinite, Paused };
+ 
+ struct Keyword {
+@@ -55,6 +123,15 @@ struct PropertyParserAnimationData {
+ 		{"infinite", {KeywordType::Infinite}},
+ 		{"paused", {KeywordType::Paused}},
+ 
++		// CSS easing keywords.
++		{"linear", {Tween{}}},
++		{"ease", {Ease()}},
++		{"ease-in", {Tween::CubicBezierCurve(0.42f, 0.f, 1.f, 1.f)}},
++		{"ease-out", {Tween::CubicBezierCurve(0.f, 0.f, 0.58f, 1.f)}},
++		{"ease-in-out", {Tween::CubicBezierCurve(0.42f, 0.f, 0.58f, 1.f)}},
++		{"step-start", {Tween::StepFunction(1, Tween::StepPosition::JumpStart)}},
++		{"step-end", {Tween::StepFunction(1, Tween::StepPosition::JumpEnd)}},
++
+ 		{"back-in", {Tween{Tween::Back, Tween::In}}},
+ 		{"back-out", {Tween{Tween::Back, Tween::Out}}},
+ 		{"back-in-out", {Tween{Tween::Back, Tween::InOut}}},
+@@ -117,8 +194,13 @@ PropertyParserAnimation::PropertyParserAnimation(Type type) : type(type) {}
+ 
+ bool PropertyParserAnimation::ParseValue(Property& property, const String& value, const ParameterMap& /*parameters*/) const
+ {
++	// Commas inside functions such as cubic-bezier() do not separate items.
++	String spaced = value;
++	for (char& character : spaced)
++		if (StringUtilities::IsWhitespace(character))
++			character = ' ';
+ 	StringList list_of_values;
+-	StringUtilities::ExpandString(list_of_values, value, ',');
++	StringUtilities::ExpandString(list_of_values, spaced, ',', '(', ')');
+ 
+ 	bool result = false;
+ 	if (type == ANIMATION_PARSER)
+@@ -187,9 +269,10 @@ bool PropertyParserAnimation::ParseAnimation(Property& property, const StringLis
+ 	for (const String& single_animation_value : animation_values)
+ 	{
+ 		Animation animation;
++		animation.tween = Ease();
+ 
+ 		StringList arguments;
+-		StringUtilities::ExpandString(arguments, single_animation_value, ' ');
++		StringUtilities::ExpandString(arguments, single_animation_value, ' ', '(', ')');
+ 
+ 		bool duration_found = false;
+ 		bool delay_found = false;
+@@ -202,7 +285,15 @@ bool PropertyParserAnimation::ParseAnimation(Property& property, const StringLis
+ 
+ 			// See if we have a <keyword> or <tween> specifier as defined in keywords
+ 			auto it = parser_data->keywords.find(StringUtilities::ToLower(argument));
+-			if (it != parser_data->keywords.end() && it->second.ValidAnimation())
++			Tween easing;
++			bool valid_easing = false;
++			if (ParseEasingFunction(argument, easing, valid_easing))
++			{
++				if (!valid_easing)
++					return false;
++				animation.tween = easing;
++			}
++			else if (it != parser_data->keywords.end() && it->second.ValidAnimation())
+ 			{
+ 				switch (it->second.type)
+ 				{
+@@ -296,10 +387,11 @@ bool PropertyParserAnimation::ParseTransition(Property& property, const StringLi
+ 	{
+ 		Transition transition;
+ 		transition.list_index = list_index++;
++		transition.tween = Ease();
+ 		PropertyIdSet target_property_ids;
+ 
+ 		StringList arguments;
+-		StringUtilities::ExpandString(arguments, single_transition_value, ' ');
++		StringUtilities::ExpandString(arguments, single_transition_value, ' ', '(', ')');
+ 
+ 		bool duration_found = false;
+ 		bool delay_found = false;
+@@ -311,8 +403,16 @@ bool PropertyParserAnimation::ParseTransition(Property& property, const StringLi
+ 				continue;
+ 
+ 			// See if we have a <keyword> or <tween> specifier as defined in keywords
+-			auto it = parser_data->keywords.find(argument);
+-			if (it != parser_data->keywords.end() && it->second.ValidTransition())
++			auto it = parser_data->keywords.find(StringUtilities::ToLower(argument));
++			Tween easing;
++			bool valid_easing = false;
++			if (ParseEasingFunction(argument, easing, valid_easing))
++			{
++				if (!valid_easing)
++					return false;
++				transition.tween = easing;
++			}
++			else if (it != parser_data->keywords.end() && it->second.ValidTransition())
+ 			{
+ 				if (it->second.type == KeywordType::None)
+ 				{
+diff --git a/Source/Core/Tween.cpp b/Source/Core/Tween.cpp
+index 6296bfe..5dd78fc 100644
+--- a/Source/Core/Tween.cpp
++++ b/Source/Core/Tween.cpp
+@@ -1,5 +1,6 @@
+ #include "../../Include/RmlUi/Core/Tween.h"
+ #include "../../Include/RmlUi/Core/Math.h"
++#include "../../Include/RmlUi/Core/StringUtilities.h"
+ #include <utility>
+ 
+ namespace Rml {
+@@ -85,6 +86,59 @@ namespace TweenFunctions {
+ 		return 1.f - Math::Cos(t * Math::RMLUI_PI * 0.5f);
+ 	}
+ 
++	// CSS cubic-bezier(): solve x(s) = t for the curve parameter s, then return y(s).
++	static float cubic_bezier(const float* points, float t)
++	{
++		if (t <= 0.f || t >= 1.f)
++			return t <= 0.f ? 0.f : 1.f;
++		const double cx = 3.0 * points[0], bx = 3.0 * (double(points[2]) - points[0]) - cx, ax = 1.0 - cx - bx;
++		const double cy = 3.0 * points[1], by = 3.0 * (double(points[3]) - points[1]) - cy, ay = 1.0 - cy - by;
++		const auto sample_x = [&](double s) { return ((ax * s + bx) * s + cx) * s; };
++		const auto slope_x = [&](double s) { return (3.0 * ax * s + 2.0 * bx) * s + cx; };
++		const double x = t;
++		double s = x;
++		for (int i = 0; i < 8; ++i)
++		{
++			const double error = sample_x(s) - x;
++			if (error > -1e-7 && error < 1e-7)
++				return float(((ay * s + by) * s + cy) * s);
++			const double slope = slope_x(s);
++			if (slope > -1e-6 && slope < 1e-6)
++				break;
++			s -= error / slope;
++		}
++		double low = 0.0, high = 1.0;
++		s = x;
++		for (int i = 0; i < 64; ++i)
++		{
++			const double sample = sample_x(s);
++			if (sample - x > -1e-7 && sample - x < 1e-7)
++				break;
++			if (x > sample)
++				low = s;
++			else
++				high = s;
++			s = 0.5 * (low + high);
++		}
++		return float(((ay * s + by) * s + cy) * s);
++	}
++
++	// CSS steps(), outside any before phase.
++	static float steps(const float* parameters, float t)
++	{
++		const float count = parameters[0];
++		const auto position = Tween::StepPosition(int(parameters[1]));
++		float step = Math::RoundDown(t * count);
++		if (position == Tween::StepPosition::JumpStart || position == Tween::StepPosition::JumpBoth)
++			step += 1.f;
++		if (t >= 0.f && step < 0.f)
++			step = 0.f;
++		const float jumps = position == Tween::StepPosition::JumpBoth ? count + 1.f : position == Tween::StepPosition::JumpNone ? count - 1.f : count;
++		if (t <= 1.f && step > jumps)
++			step = jumps;
++		return step / jumps;
++	}
++
+ } // namespace TweenFunctions
+ 
+ Tween::Tween(Type type, Direction direction)
+@@ -102,6 +156,22 @@ Tween::Tween(CallbackFnc callback, Direction direction) : callback(callback)
+ 	if (direction & Out)
+ 		type_out = Callback;
+ }
++Tween Tween::CubicBezierCurve(float x1, float y1, float x2, float y2)
++{
++	Tween result(CubicBezier, In);
++	result.parameters[0] = x1;
++	result.parameters[1] = y1;
++	result.parameters[2] = x2;
++	result.parameters[3] = y2;
++	return result;
++}
++Tween Tween::StepFunction(int count, StepPosition position)
++{
++	Tween result(Steps, In);
++	result.parameters[0] = float(count);
++	result.parameters[1] = float(int(position));
++	return result;
++}
+ float Tween::operator()(float t) const
+ {
+ 	if (type_in != None && type_out == None)
+@@ -126,7 +196,8 @@ void Tween::reverse()
+ 
+ bool Tween::operator==(const Tween& other) const
+ {
+-	return type_in == other.type_in && type_out == other.type_out && callback == other.callback;
++	return type_in == other.type_in && type_out == other.type_out && callback == other.callback && parameters[0] == other.parameters[0] &&
++		parameters[1] == other.parameters[1] && parameters[2] == other.parameters[2] && parameters[3] == other.parameters[3];
+ }
+ 
+ bool Tween::operator!=(const Tween& other) const
+@@ -136,9 +207,16 @@ bool Tween::operator!=(const Tween& other) const
+ 
+ String Tween::to_string() const
+ {
+-	static const Array<String, size_t(Count)> type_str = {
+-		{"none", "back", "bounce", "circular", "cubic", "elastic", "exponential", "linear", "quadratic", "quartic", "quintic", "sine", "callback"}};
++	static const Array<String, size_t(Count)> type_str = {{"none", "back", "bounce", "circular", "cubic", "elastic", "exponential", "linear",
++		"quadratic", "quartic", "quintic", "sine", "callback", "cubic-bezier", "steps"}};
+ 
++	if (type_in == CubicBezier && type_out == None)
++		return CreateString("cubic-bezier(%g, %g, %g, %g)", parameters[0], parameters[1], parameters[2], parameters[3]);
++	if (type_in == Steps && type_out == None)
++	{
++		static const Array<const char*, 4> positions = {{"jump-start", "jump-end", "jump-none", "jump-both"}};
++		return CreateString("steps(%d, %s)", int(parameters[0]), positions[size_t(parameters[1])]);
++	}
+ 	if (size_t(type_in) < type_str.size() && size_t(type_out) < type_str.size())
+ 	{
+ 		if (type_in == None && type_out == None)
+@@ -182,6 +260,8 @@ float Tween::tween(Type type, float t) const
+ 	case Quartic: return quartic(t);
+ 	case Quintic: return quintic(t);
+ 	case Sine: return sine(t);
++	case CubicBezier: return cubic_bezier(parameters, t);
++	case Steps: return steps(parameters, t);
+ 	case Callback:
+ 		if (callback)
+ 			return (*callback)(t);

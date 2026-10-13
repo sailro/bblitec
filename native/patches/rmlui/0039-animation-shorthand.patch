@@ -1,0 +1,318 @@
+Parse the CSS animation shorthand grammar: a keyword fills the first longhand
+it is valid for that is still unset (easing, iteration count, direction, fill
+mode, play state), else names the animation, and a name of none runs nothing.
+Add the reverse and alternate-reverse directions and the backwards, forwards
+and both fill modes: a backwards fill holds the first frame during the delay, a
+forwards fill keeps the final frame until the animation is removed. Fractional
+or zero iteration counts and paused animations are rejected, not rounded or
+dropped.
+
+diff --git a/Include/RmlUi/Core/Animation.h b/Include/RmlUi/Core/Animation.h
+index 7896d0a..e933b1c 100644
+--- a/Include/RmlUi/Core/Animation.h
++++ b/Include/RmlUi/Core/Animation.h
+@@ -15,6 +15,10 @@ struct Animation {
+ 	bool paused = false;
+ 	int num_iterations = 1;
+ 	String name;
++	// CSS animation-direction reverse/alternate-reverse, and animation-fill-mode.
++	bool reverse = false;
++	bool fill_backwards = false;
++	bool fill_forwards = false;
+ };
+ 
+ /* Data parsed from the 'transition' property. */
+@@ -40,7 +44,8 @@ struct TransitionList {
+ inline bool operator==(const Animation& a, const Animation& b)
+ {
+ 	return a.duration == b.duration && a.tween == b.tween && a.delay == b.delay && a.alternate == b.alternate && a.paused == b.paused &&
+-		a.num_iterations == b.num_iterations && a.name == b.name;
++		a.num_iterations == b.num_iterations && a.name == b.name && a.reverse == b.reverse && a.fill_backwards == b.fill_backwards &&
++		a.fill_forwards == b.fill_forwards;
+ }
+ inline bool operator!=(const Animation& a, const Animation& b)
+ {
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 0cbe289..8957327 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -2875,7 +2875,9 @@ void Element::HandleAnimationProperty()
+ 						for (PropertyId id : property_ids)
+ 						{
+ 							const Property* property = ResolveProperty(id, (has_from_key ? blocks.front().properties.GetProperty(id) : nullptr), 0);
+-							StartAnimation(id, property, animation.num_iterations, animation.alternate, delay, true);
++							auto started = StartAnimation(id, property, animation.num_iterations, animation.alternate, delay, true);
++							if (started != animations.end())
++								started->SetPlayback(animation.reverse, animation.fill_backwards, animation.fill_forwards);
+ 						}
+ 
+ 						// Add middle keys: Need to skip the first and last keys if they set the initial and end conditions, respectively.
+@@ -2920,15 +2922,25 @@ void Element::AdvanceAnimations()
+ 				SetProperty(animation.GetPropertyId(), property);
+ 		}
+ 
+-		// Move all completed animations to the end of the list
+-		auto it_completed =
+-			std::partition(animations.begin(), animations.end(), [](const ElementAnimation& animation) { return !animation.IsComplete(); });
++		// Move all completed animations to the end of the list, except those whose forwards fill keeps their final frame.
++		auto it_completed = std::partition(animations.begin(), animations.end(),
++			[](const ElementAnimation& animation) { return !animation.IsComplete() || animation.FillsForwards(); });
+ 
+ 		Vector<Dictionary> dictionary_list;
+ 		Vector<bool> is_transition;
+ 		dictionary_list.reserve(animations.end() - it_completed);
+ 		is_transition.reserve(animations.end() - it_completed);
+ 
++		for (auto it = animations.begin(); it != it_completed; ++it)
++		{
++			if (it->IsComplete() && it->TakeEnd())
++			{
++				dictionary_list.emplace_back();
++				dictionary_list.back().emplace("property", Variant(StyleSheetSpecification::GetPropertyName(it->GetPropertyId())));
++				is_transition.push_back(false);
++			}
++		}
++
+ 		for (auto it = it_completed; it != animations.end(); ++it)
+ 		{
+ 			const String& property_name = StyleSheetSpecification::GetPropertyName(it->GetPropertyId());
+diff --git a/Source/Core/ElementAnimation.cpp b/Source/Core/ElementAnimation.cpp
+index fc6f87f..ed4d367 100644
+--- a/Source/Core/ElementAnimation.cpp
++++ b/Source/Core/ElementAnimation.cpp
+@@ -757,8 +757,19 @@ float ElementAnimation::GetInterpolationFactorAndKeys(int* out_key0, int* out_ke
+ Property ElementAnimation::UpdateAndGetProperty(double world_time, Element& element)
+ {
+ 	float dt = float(world_time - last_update_world_time);
+-	if (keys.size() < 2 || animation_complete || dt <= 0.0f)
++	if (keys.size() < 2 || animation_complete)
+ 		return Property{};
++	if (dt <= 0.0f)
++	{
++		// Before the start, a backwards fill holds the first frame of the first iteration.
++		if (!fill_backwards || started)
++			return Property{};
++		int key0 = -1;
++		int key1 = -1;
++		const float alpha = GetInterpolationFactorAndKeys(&key0, &key1);
++		return InterpolateProperties(keys[key0].property, keys[key1].property, alpha, element, keys[0].property.definition);
++	}
++	started = true;
+ 
+ 	dt = Math::Min(dt, 0.1f);
+ 
+diff --git a/Source/Core/ElementAnimation.h b/Source/Core/ElementAnimation.h
+index d2d5e0a..39a0beb 100644
+--- a/Source/Core/ElementAnimation.h
++++ b/Source/Core/ElementAnimation.h
+@@ -37,6 +37,11 @@ private:
+ 
+ 	bool animation_complete = false;
+ 	ElementAnimationOrigin origin = ElementAnimationOrigin::User;
++	// CSS animation-fill-mode: hold the first frame before the start, the final one after the end.
++	bool fill_backwards = false;
++	bool fill_forwards = false;
++	bool started = false;
++	bool end_reported = false;
+ 
+ 	bool InternalAddKey(float time, const Property& property, Element& element, Tween tween);
+ 
+@@ -53,6 +58,17 @@ public:
+ 
+ 	/// Starts the timeline this far in (a negative CSS delay), from the first update.
+ 	void SetStartOffset(float seconds) { start_offset = seconds; }
++	/// CSS animation-direction (a reversed first iteration) and animation-fill-mode.
++	void SetPlayback(bool reverse, bool backwards, bool forwards)
++	{
++		reverse_direction = reverse;
++		fill_backwards = backwards;
++		fill_forwards = forwards;
++	}
++	/// A completed animation whose forwards fill keeps its final frame.
++	bool FillsForwards() const { return fill_forwards; }
++	/// True once, when a completed forwards-filling animation first reports its end.
++	bool TakeEnd() { return !end_reported && (end_reported = true); }
+ 
+ 	PropertyId GetPropertyId() const { return property_id; }
+ 	float GetDuration() const { return duration; }
+diff --git a/Source/Core/PropertyParserAnimation.cpp b/Source/Core/PropertyParserAnimation.cpp
+index ac81bd3..2260bd3 100644
+--- a/Source/Core/PropertyParserAnimation.cpp
++++ b/Source/Core/PropertyParserAnimation.cpp
+@@ -99,7 +99,21 @@ static Tween Ease()
+ 	return Tween::CubicBezierCurve(0.25f, 0.1f, 0.25f, 1.f);
+ }
+ 
+-enum class KeywordType { None, Tween, All, Alternate, Infinite, Paused };
++enum class KeywordType {
++	None,
++	Tween,
++	All,
++	Alternate,
++	Infinite,
++	Paused,
++	Running,
++	Normal,
++	Reverse,
++	AlternateReverse,
++	Forwards,
++	Backwards,
++	Both
++};
+ 
+ struct Keyword {
+ 	KeywordType type;
+@@ -110,8 +124,7 @@ struct Keyword {
+ 	bool ValidTransition() const { return type == KeywordType::None || type == KeywordType::Tween || type == KeywordType::All; }
+ 	bool ValidAnimation() const
+ 	{
+-		return type == KeywordType::None || type == KeywordType::Tween || type == KeywordType::Alternate || type == KeywordType::Infinite ||
+-			type == KeywordType::Paused;
++		return type != KeywordType::All;
+ 	}
+ };
+ 
+@@ -122,6 +135,13 @@ struct PropertyParserAnimationData {
+ 		{"alternate", {KeywordType::Alternate}},
+ 		{"infinite", {KeywordType::Infinite}},
+ 		{"paused", {KeywordType::Paused}},
++		{"running", {KeywordType::Running}},
++		{"normal", {KeywordType::Normal}},
++		{"reverse", {KeywordType::Reverse}},
++		{"alternate-reverse", {KeywordType::AlternateReverse}},
++		{"forwards", {KeywordType::Forwards}},
++		{"backwards", {KeywordType::Backwards}},
++		{"both", {KeywordType::Both}},
+ 
+ 		// CSS easing keywords.
+ 		{"linear", {Tween{}}},
+@@ -277,6 +297,12 @@ bool PropertyParserAnimation::ParseAnimation(Property& property, const StringLis
+ 		bool duration_found = false;
+ 		bool delay_found = false;
+ 		bool num_iterations_found = false;
++		// CSS: a keyword fills the first longhand it is valid for that is still unset, else names the animation.
++		bool easing_found = false;
++		bool direction_found = false;
++		bool fill_found = false;
++		bool state_found = false;
++		bool name_found = false;
+ 
+ 		for (auto& argument : arguments)
+ 		{
+@@ -287,35 +313,61 @@ bool PropertyParserAnimation::ParseAnimation(Property& property, const StringLis
+ 			auto it = parser_data->keywords.find(StringUtilities::ToLower(argument));
+ 			Tween easing;
+ 			bool valid_easing = false;
++			const auto take = [](bool& found) { return !found && (found = true); };
+ 			if (ParseEasingFunction(argument, easing, valid_easing))
+ 			{
+-				if (!valid_easing)
++				if (!valid_easing || !take(easing_found))
+ 					return false;
+ 				animation.tween = easing;
+ 			}
+-			else if (it != parser_data->keywords.end() && it->second.ValidAnimation())
++			else if (it != parser_data->keywords.end() && it->second.ValidAnimation() &&
++				[&] {
++					switch (it->second.type)
++					{
++					case KeywordType::None:
++						if (!take(fill_found))
++							return false;
++						return true;
++					case KeywordType::Tween:
++						if (!take(easing_found))
++							return false;
++						animation.tween = it->second.tween;
++						return true;
++					case KeywordType::Infinite:
++						if (!take(num_iterations_found))
++							return false;
++						animation.num_iterations = -1;
++						return true;
++					case KeywordType::Normal:
++					case KeywordType::Reverse:
++					case KeywordType::Alternate:
++					case KeywordType::AlternateReverse:
++						if (!take(direction_found))
++							return false;
++						animation.reverse = it->second.type == KeywordType::Reverse || it->second.type == KeywordType::AlternateReverse;
++						animation.alternate = it->second.type == KeywordType::Alternate || it->second.type == KeywordType::AlternateReverse;
++						return true;
++					case KeywordType::Forwards:
++					case KeywordType::Backwards:
++					case KeywordType::Both:
++						if (!take(fill_found))
++							return false;
++						animation.fill_forwards = it->second.type != KeywordType::Backwards;
++						animation.fill_backwards = it->second.type != KeywordType::Forwards;
++						return true;
++					case KeywordType::Running:
++					case KeywordType::Paused:
++						if (!take(state_found))
++							return false;
++						animation.paused = it->second.type == KeywordType::Paused;
++						return true;
++					default: return false;
++					}
++				}())
+ 			{
+-				switch (it->second.type)
+-				{
+-				case KeywordType::None:
+-				{
+-					if (animation_list.size() > 0) // The none keyword can not be part of multiple definitions
+-						return false;
+-					property = Property{AnimationList{}, Unit::ANIMATION};
+-					return true;
+-				}
+-				break;
+-				case KeywordType::Tween: animation.tween = it->second.tween; break;
+-				case KeywordType::Alternate: animation.alternate = true; break;
+-				case KeywordType::Infinite:
+-					if (num_iterations_found)
+-						return false;
+-					animation.num_iterations = -1;
+-					num_iterations_found = true;
+-					break;
+-				case KeywordType::Paused: animation.paused = true; break;
+-				default: break;
+-				}
++				// A paused animation's held frame is not represented.
++				if (animation.paused)
++					return false;
+ 			}
+ 			else
+ 			{
+@@ -345,8 +397,8 @@ bool PropertyParserAnimation::ParseAnimation(Property& property, const StringLis
+ 					}
+ 					else
+ 					{
+-						// No 's' unit means num_iterations was found
+-						if (!num_iterations_found)
++						// No 's' unit means num_iterations was found; a fractional or zero count is not represented.
++						if (!num_iterations_found && number >= 1.f && number == float(Math::RoundToInteger(number)))
+ 						{
+ 							animation.num_iterations = Math::RoundToInteger(number);
+ 							num_iterations_found = true;
+@@ -358,13 +410,18 @@ bool PropertyParserAnimation::ParseAnimation(Property& property, const StringLis
+ 				else
+ 				{
+ 					// Must be an animation name
++					if (!take(name_found))
++						return false;
+ 					animation.name = argument;
+ 				}
+ 			}
+ 		}
+ 
+-		// Validate the parsed transition
+-		if (animation.name.empty() || animation.duration <= 0.0f || (animation.num_iterations < -1 || animation.num_iterations == 0))
++		// A keyword that no longhand takes names the animation; 'none' names none.
++		if (StringUtilities::ToLower(animation.name) == "none")
++			animation.name.clear();
++		// Validate the parsed animation: one without a name runs nothing.
++		if ((!animation.name.empty() && animation.duration <= 0.0f) || animation.num_iterations < -1 || animation.num_iterations == 0)
+ 		{
+ 			return false;
+ 		}

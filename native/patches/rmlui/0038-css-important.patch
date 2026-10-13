@@ -1,0 +1,248 @@
+Honour CSS !important: a declaration marked important wins over every normal
+one, inline or not, and a later normal declaration in the same block does not
+replace it. Important stylesheet declarations rank above all normal ones by
+specificity, important inline declarations above important stylesheet ones,
+transitions above both, keyframe animations below important declarations, and
+keyframes ignore important declarations, as in CSS.
+
+diff --git a/Include/RmlUi/Core/Property.h b/Include/RmlUi/Core/Property.h
+index 46bc6af..d731ef5 100644
+--- a/Include/RmlUi/Core/Property.h
++++ b/Include/RmlUi/Core/Property.h
+@@ -50,6 +50,10 @@ public:
+ 	Variant value;
+ 	Unit unit;
+ 	int specificity;
++	// Declared !important: an important declaration wins over every normal one, inline or not.
++	bool important = false;
++	// Added to an important stylesheet declaration's specificity, above every normal one.
++	static constexpr int ImportantSpecificity = 1 << 30;
+ 
+ 	const PropertyDefinition* definition = nullptr;
+ 	int parser_index = -1;
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 46f01a9..0cbe289 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -2747,7 +2747,11 @@ bool Element::StartTransition(const Transition& transition, const Property& star
+ 	bool result = it->AddKey(duration, target_value, *this, transition.tween, true);
+ 
+ 	if (result)
+-		SetProperty(transition.id, start_value);
++	{
++		Property start = start_value;
++		start.important = true;
++		SetProperty(transition.id, start);
++	}
+ 	else
+ 		animations.erase(it);
+ 
+@@ -2910,6 +2914,8 @@ void Element::AdvanceAnimations()
+ 		for (auto& animation : animations)
+ 		{
+ 			Property property = animation.UpdateAndGetProperty(time, *this);
++			// Transitions override important declarations as in CSS; keyframe animations do not.
++			property.important = animation.IsTransition();
+ 			if (property.unit != Unit::UNKNOWN)
+ 				SetProperty(animation.GetPropertyId(), property);
+ 		}
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 74deb25..cff85f5 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -49,29 +49,25 @@ ElementStyle::ElementStyle(Element* _element)
+ 
+ const Property* ElementStyle::GetLocalProperty(PropertyId id, const PropertyDictionary& inline_properties, const ElementDefinition* definition)
+ {
+-	// Check for overriding local properties.
++	// Check for overriding local properties, unless an RCSS rule declares the property important.
+ 	const Property* property = inline_properties.GetProperty(id);
+-	if (property)
++	const Property* defined = definition ? definition->GetProperty(id) : nullptr;
++	if (property && (!defined || property->important || !defined->important))
+ 		return property;
+ 
+ 	// Check for a property defined in an RCSS rule.
+-	if (definition)
+-		return definition->GetProperty(id);
+-
+-	return nullptr;
++	return defined;
+ }
+ 
+ const Property* ElementStyle::GetLocalCustomProperty(const String& name, const PropertyDictionary& inline_properties,
+ 	const ElementDefinition* definition)
+ {
+ 	const Property* property = inline_properties.GetCustomProperty(name);
+-	if (property)
++	const Property* defined = definition ? definition->GetCustomProperty(name) : nullptr;
++	if (property && (!defined || property->important || !defined->important))
+ 		return property;
+ 
+-	if (definition)
+-		return definition->GetCustomProperty(name);
+-
+-	return nullptr;
++	return defined;
+ }
+ 
+ const Property* ElementStyle::GetLocalShorthand(ShorthandId id, const PropertyDictionary& inline_properties, const ElementDefinition* definition)
+@@ -513,7 +509,8 @@ void ElementStyle::UpdateDefinition()
+ 			{
+ 				const Property* p0 = definition->GetProperty(id);
+ 				const Property* p1 = new_definition->GetProperty(id);
+-				if (p0 && p1 && *p0 == *p1 && p0->unit != Unit::VAR_EXPRESSION && p1->unit != Unit::SHORTHAND_PLACEHOLDER)
++				if (p0 && p1 && *p0 == *p1 && p0->important == p1->important && p0->unit != Unit::VAR_EXPRESSION &&
++					p1->unit != Unit::SHORTHAND_PLACEHOLDER)
+ 					changed_properties.Erase(id);
+ 			}
+ 
+diff --git a/Source/Core/PropertiesIterator.h b/Source/Core/PropertiesIterator.h
+index 772e13a..de04859 100644
+--- a/Source/Core/PropertiesIterator.h
++++ b/Source/Core/PropertiesIterator.h
+@@ -16,7 +16,8 @@ public:
+ 	using PropertyIt = PropertyMap::const_iterator;
+ 
+ 	PlainPropertiesIterator(const PropertyMap& inline_properties, const PropertyMap* definition_properties) :
+-		it_style(inline_properties.begin()), it_style_end(inline_properties.end()), it_definition{}, it_definition_end{}
++		definition_properties(definition_properties), it_style(inline_properties.begin()), it_style_end(inline_properties.end()), it_definition{},
++		it_definition_end{}
+ 	{
+ 		if (definition_properties)
+ 		{
+@@ -42,13 +43,23 @@ public:
+ 	ValueType operator*() const
+ 	{
+ 		if (it_style != it_style_end)
++		{
++			// An important RCSS declaration overrides a normal local one.
++			if (definition_properties && !it_style->second.important)
++			{
++				const auto defined = definition_properties->find(it_style->first);
++				if (defined != definition_properties->end() && defined->second.important)
++					return {defined->first, defined->second};
++			}
+ 			return {it_style->first, it_style->second};
++		}
+ 		return {it_definition->first, it_definition->second};
+ 	}
+ 
+ 	bool AtEnd() const { return at_end; }
+ 
+ private:
++	const PropertyMap* definition_properties;
+ 	PropertyIdSet visited_properties;
+ 	PropertyIt it_style, it_style_end;
+ 	PropertyIt it_definition, it_definition_end;
+diff --git a/Source/Core/PropertyDictionary.cpp b/Source/Core/PropertyDictionary.cpp
+index fc2c815..1e4564c 100644
+--- a/Source/Core/PropertyDictionary.cpp
++++ b/Source/Core/PropertyDictionary.cpp
+@@ -92,14 +92,17 @@ const UnorderedMap<String, Property>& PropertyDictionary::GetCustomProperties()
+ 
+ void PropertyDictionary::Import(const PropertyDictionary& other, int property_specificity)
+ {
++	const auto specificity = [property_specificity](const Property& property) {
++		return (property_specificity > 0 ? property_specificity : property.specificity) + (property.important ? Property::ImportantSpecificity : 0);
++	};
+ 	for (const auto& [id, property] : other.properties)
+-		SetProperty(id, property, property_specificity > 0 ? property_specificity : property.specificity);
++		SetProperty(id, property, specificity(property));
+ 
+ 	for (const auto& [name, property] : other.custom_properties)
+-		SetCustomProperty(name, property, property_specificity > 0 ? property_specificity : property.specificity);
++		SetCustomProperty(name, property, specificity(property));
+ 
+ 	for (const auto& [id, property] : other.var_shorthands)
+-		SetVarShorthand(id, property, property_specificity > 0 ? property_specificity : property.specificity);
++		SetVarShorthand(id, property, specificity(property));
+ }
+ 
+ void PropertyDictionary::Merge(const PropertyDictionary& other, int specificity_offset)
+diff --git a/Source/Core/StyleSheetParser.cpp b/Source/Core/StyleSheetParser.cpp
+index 2f88e2d..1b7dff0 100644
+--- a/Source/Core/StyleSheetParser.cpp
++++ b/Source/Core/StyleSheetParser.cpp
+@@ -140,7 +140,51 @@ public:
+ 		properties(properties), specification(specification)
+ 	{}
+ 
+-	bool Parse(const String& name, const String& value) override { return specification.ParsePropertyDeclaration(properties, name, value); }
++	bool Parse(const String& name, const String& value) override
++	{
++		// A trailing '!important' (ASCII case-insensitive, optional space after '!') marks the declaration.
++		String declared = value;
++		bool important = false;
++		const String lower = StringUtilities::ToLower(declared);
++		if (lower.size() > 9 && lower.compare(lower.size() - 9, 9, "important") == 0)
++		{
++			size_t mark = lower.size() - 9;
++			while (mark > 0 && StringUtilities::IsWhitespace(lower[mark - 1]))
++				--mark;
++			if (mark > 0 && lower[mark - 1] == '!')
++			{
++				important = true;
++				declared = StringUtilities::StripWhitespace(declared.substr(0, mark - 1));
++			}
++		}
++		PropertyDictionary parsed;
++		if (!specification.ParsePropertyDeclaration(parsed, name, declared))
++			return false;
++		// A later normal declaration does not replace an important one in the same block.
++		const auto keep = [important](const Property* existing) { return existing && existing->important && !important; };
++		for (auto [id, property] : parsed.GetProperties())
++		{
++			if (keep(properties.GetProperty(id)))
++				continue;
++			property.important = important;
++			properties.SetProperty(id, property);
++		}
++		for (auto [custom_name, property] : parsed.GetCustomProperties())
++		{
++			if (keep(properties.GetCustomProperty(custom_name)))
++				continue;
++			property.important = important;
++			properties.SetCustomProperty(custom_name, property);
++		}
++		for (auto [id, property] : parsed.GetVarShorthands())
++		{
++			if (keep(properties.GetVarShorthand(id)))
++				continue;
++			property.important = important;
++			properties.SetVarShorthand(id, property);
++		}
++		return true;
++	}
+ };
+ 
+ /*
+@@ -409,7 +453,18 @@ bool StyleSheetParser::ParseKeyframeBlock(KeyframesMap& keyframes_map, const Str
+ 		Log::Message(Log::LT_WARNING, "Invalid keyframes identifier '%s' at %s:%d", identifier.c_str(), stream_file_name.c_str(), line_number);
+ 		return false;
+ 	}
+-	if (properties.Empty())
++	// CSS ignores important declarations inside keyframes.
++	PropertyDictionary normal_properties;
++	for (const auto& [id, property] : properties.GetProperties())
++		if (!property.important)
++			normal_properties.SetProperty(id, property);
++	for (const auto& [name, property] : properties.GetCustomProperties())
++		if (!property.important)
++			normal_properties.SetCustomProperty(name, property);
++	for (const auto& [id, property] : properties.GetVarShorthands())
++		if (!property.important)
++			normal_properties.SetVarShorthand(id, property);
++	if (normal_properties.Empty())
+ 		return true;
+ 
+ 	StringList rule_list;
+@@ -455,7 +510,7 @@ bool StyleSheetParser::ParseKeyframeBlock(KeyframesMap& keyframes_map, const Str
+ 			it->properties = PropertyDictionary();
+ 		}
+ 
+-		it->properties.Import(properties);
++		it->properties.Import(normal_properties);
+ 	}
+ 
+ 	return true;

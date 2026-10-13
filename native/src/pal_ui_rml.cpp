@@ -77,6 +77,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -152,6 +153,21 @@ std::string_view trim_css_token(std::string_view value) {
         return {};
     const std::size_t last = value.find_last_not_of(" \t\r\n");
     return value.substr(first, last - first + 1);
+}
+
+/** A declaration value without its trailing `!important`, and whether it carried one. */
+std::pair<std::string_view, bool> split_css_important(std::string_view value) {
+    value = trim_css_token(value);
+    constexpr std::string_view keyword = "important";
+    if (value.size() <= keyword.size() ||
+        !ascii_iequals(value.substr(value.size() - keyword.size()), keyword))
+        return {value, false};
+    auto mark = value.size() - keyword.size();
+    while (mark > 0 && std::isspace(static_cast<unsigned char>(value[mark - 1])))
+        --mark;
+    if (mark == 0 || value[mark - 1] != '!')
+        return {value, false};
+    return {trim_css_token(value.substr(0, mark - 1)), true};
 }
 
 // CSS Backgrounds 3 `box-shadow: none | <shadow>#`: each shadow is an optional `inset`, two to four
@@ -2988,10 +3004,12 @@ std::string rml_css_font_families(std::string value, std::string_view property) 
             else if (character == ';' || character == '}')
                 break;
         }
-        const auto family = trim_css_token(std::string_view(value).substr(start, end - start));
+        const auto [family, important] =
+            split_css_important(std::string_view(value).substr(start, end - start));
         if (family.find(',') != std::string_view::npos) {
             // RmlUi parses a string property as one token; our font engine owns the CSS list.
-            const auto quoted = quote_css_font_family(std::string(family));
+            const auto quoted =
+                quote_css_font_family(std::string(family)) + (important ? " !important" : "");
             value.replace(start, end - start, quoted);
             end = start + quoted.size();
         }
@@ -3031,28 +3049,64 @@ void replace_css_identifier(std::string& text, std::string_view identifier,
     }
 }
 
-std::string rml_css_animation_easing(std::string value) {
-    // RmlUi exposes the same animation shorthand, but names its tween curves
-    // differently and does not implement CSS steps(). Translate the browser
-    // timing vocabulary reached by the demos. A linear interpolation across
-    // the platformer's adjacent 49%/50% opacity keys remains an effectively
-    // instantaneous blink while preserving the declared period.
-    std::size_t position = 0;
-    while ((position = value.find("steps(", position)) != std::string::npos) {
-        const std::size_t end = value.find(')', position + 6);
-        if (end == std::string::npos)
-            break;
-        value.replace(position, end - position + 1, "linear-in-out");
-        position += 13;
+/**
+ * RmlUi's transition-delay and animation-delay replace the delays their shorthand lists, and a CSS
+ * shorthand declaration resets its longhands: follow each transition/animation declaration of a
+ * declaration list or sheet with its delay longhand's 'auto', which keeps the shorthand's delays.
+ */
+std::string rml_css_delay_resets(std::string_view source) {
+    std::string result;
+    std::size_t copied = 0, name_start = 0, value_start = 0;
+    std::string_view reset;
+    char quote = 0;
+    int depth = 0;
+    const auto end_declaration = [&](std::size_t at) {
+        if (reset.empty())
+            return;
+        result.append(source.substr(copied, at - copied));
+        result += ';';
+        result += reset;
+        result += ":auto";
+        if (split_css_important(source.substr(value_start, at - value_start)).second)
+            result += " !important";
+        copied = at;
+        reset = {};
+    };
+    for (std::size_t index = 0; index < source.size(); ++index) {
+        const char token = source[index];
+        if (token == '\\') {
+            ++index;
+        } else if (quote) {
+            if (token == quote)
+                quote = 0;
+        } else if (token == '/' && index + 1 < source.size() && source[index + 1] == '*') {
+            const auto close = source.find("*/", index + 2);
+            index = close == std::string_view::npos ? source.size() : close + 1;
+        } else if (token == '\'' || token == '"') {
+            quote = token;
+        } else if (token == '(' || token == '[') {
+            ++depth;
+        } else if ((token == ')' || token == ']') && depth > 0) {
+            --depth;
+        } else if (depth == 0 && token == ':' && name_start != std::string_view::npos) {
+            const auto name = trim_css_token(source.substr(name_start, index - name_start));
+            reset = ascii_iequals(name, "transition")  ? "transition-delay"
+                    : ascii_iequals(name, "animation") ? "animation-delay"
+                                                       : "";
+            name_start = std::string_view::npos;
+            value_start = index + 1;
+        } else if (depth == 0 && (token == ';' || token == '}')) {
+            end_declaration(index);
+            name_start = index + 1;
+        } else if (depth == 0 && token == '{') {
+            // A selector or at-rule prelude, not a declaration.
+            reset = {};
+            name_start = index + 1;
+        }
     }
-    replace_css_identifier(value, "step-start", "linear-in-out");
-    replace_css_identifier(value, "step-end", "linear-in-out");
-    replace_css_identifier(value, "ease-in-out", "sine-in-out");
-    replace_css_identifier(value, "ease-in", "sine-in");
-    replace_css_identifier(value, "ease-out", "sine-out");
-    replace_css_identifier(value, "ease", "sine-in-out");
-    replace_css_identifier(value, "linear", "linear-in-out");
-    return value;
+    end_declaration(source.size());
+    result.append(source.substr(copied));
+    return result;
 }
 
 std::string rml_css_filter_arguments(std::string value) {
@@ -3143,6 +3197,74 @@ std::string rml_css_color_alpha(std::string value, bool clamp_channels = false) 
         } else {
             position = end + 1;
         }
+    }
+    return value;
+}
+
+/** rgb()/rgba() over var() keep CSS channel ranges until var() substitution resolves them. */
+std::string rml_css_variable_colors(std::string value) {
+    constexpr std::string_view marker = "bbl-css-color";
+    for (std::size_t position = 0; (position = value.find("rgb", position)) != std::string::npos;) {
+        const bool alpha = value.compare(position, 5, "rgba(") == 0;
+        const std::size_t open = position + (alpha ? 4 : 3);
+        if ((!alpha && value.compare(position, 4, "rgb(") != 0) ||
+            (position && css_identifier_character(value[position - 1]))) {
+            position += 3;
+            continue;
+        }
+        std::size_t end = open;
+        for (int depth = 0; end < value.size(); ++end) {
+            depth += value[end] == '(' ? 1 : value[end] == ')' ? -1 : 0;
+            if (depth == 0)
+                break;
+        }
+        if (std::string_view(value).substr(open, end - open).find("var(") == std::string::npos) {
+            position = end;
+            continue;
+        }
+        value.replace(position, open - position, marker);
+        position += marker.size();
+    }
+    return value;
+}
+
+/** Substituted rgb()/rgba() over var(): CSS channels and alpha to RmlUi's 0..255 channels. */
+std::string rml_css_resolve_variable_colors(std::string value) {
+    constexpr std::string_view marker = "bbl-css-color(";
+    for (std::size_t position = 0;
+         (position = value.find(marker, position)) != std::string::npos;) {
+        const std::size_t open = position + marker.size();
+        const std::size_t end = value.find(')', open);
+        const auto refuse = [&] {
+            throw std::runtime_error(
+                "Unsupported retained UI colour after variable substitution: " +
+                value.substr(position));
+        };
+        if (end == std::string::npos)
+            refuse();
+        Rml::StringList arguments;
+        Rml::StringUtilities::ExpandString(arguments, value.substr(open, end - open), ',');
+        if (arguments.size() != 3 && arguments.size() != 4)
+            refuse();
+        std::string resolved = arguments.size() == 4 ? "rgba(" : "rgb(";
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
+            const std::string_view argument = trim_css_token(arguments[index]);
+            const bool negative = !argument.empty() && argument.front() == '-';
+            std::size_t offset = !argument.empty() && (negative || argument.front() == '+') ? 1 : 0;
+            const auto number = pal::detail::css_decimal(argument, offset);
+            const bool percent = offset + 1 == argument.size() && argument[offset] == '%';
+            if (!number || (offset != argument.size() && !percent))
+                refuse();
+            const double signed_number = negative ? -*number : *number;
+            const double channel =
+                index == 3
+                    ? std::clamp(percent ? signed_number / 100 : signed_number, 0.0, 1.0) * 255
+                    : std::clamp(percent ? signed_number * 2.55 : signed_number, 0.0, 255.0);
+            resolved += std::to_string(std::lround(channel));
+            resolved += index + 1 == arguments.size() ? ")" : ",";
+        }
+        value.replace(position, end + 1 - position, resolved);
+        position += resolved.size();
     }
     return value;
 }
@@ -3540,16 +3662,19 @@ struct CascadedUiDeclaration {
     std::uint32_t specificity = 0;
     std::size_t source_order = 0;
     std::string value;
+    bool important = false;
 };
 
-void consider_cascaded_declaration(CascadedUiDeclaration& current, std::string value,
+/** Importance, then specificity, then source order. */
+void consider_cascaded_declaration(CascadedUiDeclaration& current, std::string_view value,
                                    std::uint32_t specificity, std::size_t source_order) {
-    if (value.empty() || (!current.value.empty() && (specificity < current.specificity ||
-                                                     (specificity == current.specificity &&
-                                                      source_order < current.source_order)))) {
+    const auto [declared, important] = split_css_important(value);
+    if (declared.empty() ||
+        (!current.value.empty() &&
+         std::tuple(important, specificity, source_order) <
+             std::tuple(current.important, current.specificity, current.source_order)))
         return;
-    }
-    current = {specificity, source_order, std::move(value)};
+    current = {specificity, source_order, std::string(declared), important};
 }
 
 struct ProjectedUiStyleSource {
@@ -4744,6 +4869,11 @@ public:
     }
 };
 
+struct UiRmlRuntime;
+/** The one live runtime, whose viewport and root font complete math after var() substitution. */
+UiRmlRuntime* substitution_runtime = nullptr;
+Rml::String substitute_css(const Rml::String& property, const Rml::String& value);
+
 struct UiRmlRuntime {
     UiRmlRuntime(Engine& engine, SDL_Window* window, std::uint32_t width, std::uint32_t height,
                  bool (*read_motion_preference)() = system_reduced_motion)
@@ -4757,6 +4887,8 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi initialization failed.");
             }
             initialized = true;
+            substitution_runtime = this;
+            Rml::StyleSheetSpecification::SetSubstitutionFilter(&substitute_css);
             register_ui_style_properties();
             for (const auto* name : {"brightness", "contrast", "grayscale", "invert", "opacity",
                                      "saturate", "sepia", "hue-rotate", "blur", "drop-shadow"}) {
@@ -4967,6 +5099,8 @@ struct UiRmlRuntime {
 #endif
         } catch (...) {
             if (initialized) {
+                Rml::StyleSheetSpecification::SetSubstitutionFilter(nullptr);
+                substitution_runtime = nullptr;
                 style_selectors.clear();
                 background_styles.clear();
                 Rml::Shutdown();
@@ -4984,6 +5118,8 @@ struct UiRmlRuntime {
             engine.dom_input->end_withheld_press = {};
         }
         if (initialized) {
+            Rml::StyleSheetSpecification::SetSubstitutionFilter(nullptr);
+            substitution_runtime = nullptr;
             style_selectors.clear();
             background_styles.clear();
             Rml::Shutdown();
@@ -5041,9 +5177,9 @@ struct UiRmlRuntime {
         if (property == "filter")
             return value;
         if (property.empty())
-            return project_css_outside_filters(value, [this](std::string part) {
-                return project_css_fragment(std::move(part), {});
-            });
+            return project_css_outside_filters(
+                rml_css_delay_resets(value),
+                [this](std::string part) { return project_css_fragment(std::move(part), {}); });
         return project_css_fragment(std::move(value), property);
     }
 
@@ -5054,16 +5190,32 @@ struct UiRmlRuntime {
         replace_all(value, "ui-monospace", css_monospace_family);
         replace_all(value, "monospace", css_monospace_family);
         value = rml_css_font_families(std::move(value), property);
-        value = rml_css_animation_easing(std::move(value));
         value = rml_css_filter_arguments(std::move(value));
         value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
                                     viewport_height / density_ratio, root_font_size, property);
         value = rml_css_density_units(std::move(value));
-        return rml_css_color_alpha(std::move(value));
+        return rml_css_color_alpha(rml_css_variable_colors(std::move(value)));
+    }
+
+    /** Completes the math and colours the projection left over var() once it is substituted. */
+    std::string project_substituted_css(std::string value, std::string_view property) const {
+        // Filter arguments resolve their own arithmetic (UiResolvedFilter).
+        if (property == "filter" || property == "backdrop-filter")
+            return value;
+        value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
+                                    viewport_height / density_ratio, root_font_size, property);
+        return rml_css_resolve_variable_colors(rml_css_density_units(std::move(value)));
     }
 
     void set_projected_property(Rml::Element& element, const std::string& name,
                                 const std::string& value) const {
+        if (name == "transition" || name == "animation") {
+            // The shorthand resets its delay longhand; 'auto' keeps the shorthand's own delays.
+            if (value.empty())
+                element.RemoveProperty(name + "-delay");
+            else
+                element.SetProperty(name + "-delay", "auto");
+        }
         if (value.empty()) {
             element.RemoveProperty(name);
             if (name == "display")
@@ -5079,12 +5231,15 @@ struct UiRmlRuntime {
             name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
             name == "margin-left" || name == "margin-right" || name == "box-shadow" ||
             name == "accent-color" || name == "color-scheme" || name == "text-decoration";
+        // Motion values keep their case (keyframes names) and refuse rather than drop.
+        const bool motion = name == "transition" || name == "animation" ||
+                            name == "transition-delay" || name == "animation-delay";
         const bool accepted = element.SetProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
                                   : value,
                               name));
-        if (checked && !accepted)
+        if ((checked || motion) && !accepted)
             throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
     }
 
@@ -7154,6 +7309,12 @@ struct UiRmlRuntime {
     UiBackgroundStyles background_styles;
     double canvas_render_ms = 0;
 };
+
+Rml::String substitute_css(const Rml::String& property, const Rml::String& value) {
+    if (!substitution_runtime)
+        throw std::runtime_error("CSS variable substitution needs the retained UI runtime.");
+    return substitution_runtime->project_substituted_css(value, property);
+}
 
 // A canvas is a replaced element: its backing size, in CSS pixels, is its
 // intrinsic size and ratio wherever CSS leaves a dimension auto.
