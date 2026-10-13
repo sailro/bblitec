@@ -132,8 +132,8 @@ settle_webgpu_operation(const WebGpuCompletionStart& start,
                         js::Promise<js::PromiseVoid> result = {}) {
     struct Completion final : CompletionEvent {
         std::exception_ptr error;
-        Completion(std::uint64_t id, std::exception_ptr value)
-            : CompletionEvent(id), error(std::move(value)) {}
+        Completion(std::uint64_t id, const std::exception_ptr& value)
+            : CompletionEvent(id), error(value) {}
     };
     struct Pending {
         std::unique_ptr<OffscreenCompletion> operation;

@@ -80,6 +80,7 @@ import {
     optionalOf,
     stripOptional,
     primitiveRecordShape,
+    isRecordScalar,
     typedElementCpp,
     type RecordShape,
 } from "./record-shapes.js";
@@ -4109,7 +4110,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 );
             else if (ts.isObjectBindingPattern(parameter.name))
                 prolog.push(
-                    ...this.objectPattern(parameter.name, value, local, indent),
+                    ...this.objectPattern(
+                        parameter.name,
+                        value,
+                        local,
+                        indent,
+                        value === argument,
+                    ),
                 );
             else
                 return this.refuse(
@@ -6279,7 +6286,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             )
             .join(" ");
         return this.narrowed(
-            `[&]() -> ${type} { const auto& ${holder} = ${owner}; const std::string ${key} = ${this.convert(node.argumentExpression, { kind: "string" })}; ${arms} throw std::logic_error("Pinned computed member key outside its type."); }()`,
+            `[&]() -> ${type} { const auto& ${holder} = ${owner}; const std::string& ${key} = ${this.convert(node.argumentExpression, { kind: "string" })}; ${arms} throw std::logic_error("Pinned computed member key outside its type."); }()`,
             members[0]!.shape,
             node,
         );
@@ -7302,7 +7309,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const items = this.temporary("items");
         const mapped = this.temporary("mapper");
         const map = this.temporary("map");
-        return `[&] { const auto ${items} = ${this.presentValue(seed.expression.expression)}; const auto ${mapped} = ${lambda}; ${this.cpp(shape)} ${map}{}; for (std::size_t index = 0; index < ${items}.size(); ++index) { auto entry = ${mapped}(${items}[index], static_cast<double>(index)); ${map}.set(std::move(entry.first), std::move(entry.second)); } return ${map}; }()`;
+        return `[&] { const auto ${items} = ${this.presentValue(seed.expression.expression)}; const auto ${mapped} = ${lambda}; ${this.cpp(shape)} ${map}{}; for (std::size_t index = 0; index < ${items}.size(); ++index) { auto entry = ${mapped}(${items}[index], static_cast<double>(index)); ${map}.set(entry.first, ${isRecordScalar(shape.value) ? "entry.second" : "std::move(entry.second)"}); } return ${map}; }()`;
     }
 
     /** The weak key a WeakMap or WeakSet files an object under. */
@@ -8179,7 +8186,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const optional =
             shape.kind === "optional" ||
             this.model.representations.nullable(present);
-        return `{ auto ${temporary} = ${this.value(source)}; ${
+        return `{ const auto& ${temporary} = ${this.value(source)}; ${
             optional
                 ? `if (bbl::pinned::truthy_object(${temporary})) { ${body} }`
                 : body
@@ -8775,7 +8782,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         const arms = members
                             .map(
                                 (member) =>
-                                    `if (${key} == ${stringLiteral(member.name)}) { ${member.access(owner)} = std::move(${stored}); return; }`,
+                                    `if (${key} == ${stringLiteral(member.name)}) { ${member.access(owner)} = ${isRecordScalar(member.shape) ? stored : `std::move(${stored})`}; return; }`,
                             )
                             .join(" ");
                         return `[&](${this.cpp(members[0]!.shape)} ${stored}) { ${arms} throw std::logic_error("Pinned computed member key outside its type."); }(${value})`;
@@ -9128,20 +9135,26 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         );
     }
 
-    /** `{ _a: a, b }` bound from `value`, a record evaluated once. */
+    /**
+     * `{ _a: a, b }` bound from `value`, a record evaluated once; a
+     * `named` value is a name nothing else writes, read in place.
+     */
     private objectPattern(
         pattern: ts.ObjectBindingPattern,
         value: string,
         shape: RecordShape,
         indent: string,
+        named = false,
     ): string[] {
         if (shape.kind !== "record")
             return this.refuse(
                 pattern,
                 "Pinned destructuring of a non-record.",
             );
-        const source = this.temporary("destructured");
-        const lines = [`${indent}${this.cpp(shape)} ${source} = ${value};`];
+        const source = named ? value : this.temporary("destructured");
+        const lines = named
+            ? []
+            : [`${indent}${this.cpp(shape)} ${source} = ${value};`];
         for (const element of pattern.elements) {
             const property = element.propertyName ?? element.name;
             if (
@@ -9768,7 +9781,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const element = this.temporary("element");
             return {
                 prefix: [
-                    `auto ${range} = bbl::pinned::json_array(${this.presentValue(iterated)}, "Symbol.iterator").array_value();`,
+                    `auto ${range} = bbl::pinned::json_iterated_array(${this.presentValue(iterated)});`,
                 ],
                 header: `const auto& ${element} : ${range}`,
                 bindings: [
@@ -9804,7 +9817,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 prefix,
                 header: `std::size_t ${index} = 0; ${index} < ${range}.size(); ++${index}`,
                 bindings: [
-                    `const auto ${item} = ${range}[${index}];`,
+                    `const auto& ${item} = ${range}[${index}];`,
                     ...binding.elements.map((part) => {
                         const key = part.propertyName ?? part.name;
                         if (

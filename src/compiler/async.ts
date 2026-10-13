@@ -55,6 +55,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { hasNoValueCompletion } from "./native-return-type.js";
 import { representedResultType } from "./represented-result.js";
 import { isNullable, isTypeReference } from "./type-facts.js";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 
 interface AsyncContext extends Pick<
     LoweringServices,
@@ -76,6 +77,7 @@ interface AsyncContext extends Pick<
     | "nativeEmission"
     | "emit"
     | "emitDiscardedValue"
+    | "evaluationOrder"
     | "unwrap"
     | "bindings"
     | "libraryGlobal"
@@ -390,18 +392,10 @@ export class AsyncLowerer {
                 context.compileValue(callee.expression),
                 node,
             );
-            const name = context.allocateTemporaryCppName("promise_receiver");
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name,
-                initializer: receiver.cpp,
-            });
-            const promise = {
-                ...receiver,
-                cpp: name,
-                nativeCaptures: [context.registerNativeBinding(name)],
-            };
+            const promise = this.orderedReceiver(receiver, [
+                callee.expression,
+                ...node.arguments,
+            ]);
             if (cleanup) {
                 const callback = node.arguments[0];
                 if (!callback) {
@@ -1858,6 +1852,35 @@ export class AsyncLowerer {
     }
 
     /** Contextual result types keep the payload's concrete owner storage. */
+    /**
+     * The receiver of a reaction call. A named receiver is read where the
+     * call is made unless a later argument can change what it names; any
+     * other receiver is read once, first, into a temporary.
+     */
+    private orderedReceiver(
+        receiver: Value,
+        operands: readonly ts.Expression[],
+    ): Value {
+        const context = this.context;
+        if (
+            cppIdentifierPattern.test(receiver.cpp) &&
+            !context.evaluationOrder.operandsToPin(operands)[0]
+        )
+            return receiver;
+        const name = context.allocateTemporaryCppName("promise_receiver");
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name,
+            initializer: receiver.cpp,
+        });
+        return {
+            ...receiver,
+            cpp: name,
+            nativeCaptures: [context.registerNativeBinding(name)],
+        };
+    }
+
     private retainedSettlement(
         value: Value,
         expected: DataType<"promise">,

@@ -406,6 +406,8 @@ public:
                 if (inner.state().record.scheme == "http" || inner.state().record.scheme == "https")
                     return inner.origin();
             } catch (const NamedError&) {
+                // A path that does not parse leaves the blob URL an opaque origin.
+                return "null";
             }
         }
         return "null";

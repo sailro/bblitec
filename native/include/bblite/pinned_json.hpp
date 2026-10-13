@@ -131,46 +131,51 @@ json_entries(const js::JsonValue& value) {
     throw js::NamedError("TypeError", std::string(method) + " is not a function");
 }
 
-/** The array a narrowed `any[]` holds; anything else has no such method. */
-inline const js::JsonValue& json_array(const js::JsonValue& value, std::string_view method) {
+/** A narrowed `any[]` holds an array; anything else has no such method. */
+inline void json_require_array(const js::JsonValue& value, std::string_view method) {
     if (!value.is_array())
         json_not_callable(method);
-    return value;
+}
+
+/** The elements `for...of` visits over a narrowed `any[]`. */
+[[nodiscard]] inline js::Array<js::JsonValue> json_iterated_array(const js::JsonValue& value) {
+    json_require_array(value, "Symbol.iterator");
+    return value.array_value();
 }
 
 template <class R, class F>
 [[nodiscard]] js::Array<R> json_map(const js::JsonValue& value, F&& callback) {
-    const auto& array = json_array(value, "map");
-    const std::size_t length = static_cast<std::size_t>(array.length());
+    json_require_array(value, "map");
+    const std::size_t length = static_cast<std::size_t>(value.length());
     std::vector<R> result;
     result.reserve(length);
     for (std::size_t index = 0; index < length; ++index)
         result.push_back(
-            callback(array.at(static_cast<double>(index)), static_cast<double>(index)));
+            callback(value.at(static_cast<double>(index)), static_cast<double>(index)));
     return js::Array<R>(result.begin(), result.end());
 }
 
 template <class F> void json_for_each(const js::JsonValue& value, F&& callback) {
-    const auto& array = json_array(value, "forEach");
-    const std::size_t length = static_cast<std::size_t>(array.length());
+    json_require_array(value, "forEach");
+    const std::size_t length = static_cast<std::size_t>(value.length());
     for (std::size_t index = 0; index < length; ++index)
-        callback(array.at(static_cast<double>(index)), static_cast<double>(index));
+        callback(value.at(static_cast<double>(index)), static_cast<double>(index));
 }
 
 template <class F> [[nodiscard]] bool json_every(const js::JsonValue& value, F&& callback) {
-    const auto& array = json_array(value, "every");
-    const std::size_t length = static_cast<std::size_t>(array.length());
+    json_require_array(value, "every");
+    const std::size_t length = static_cast<std::size_t>(value.length());
     for (std::size_t index = 0; index < length; ++index)
-        if (!truthy(callback(array.at(static_cast<double>(index)), static_cast<double>(index))))
+        if (!truthy(callback(value.at(static_cast<double>(index)), static_cast<double>(index))))
             return false;
     return true;
 }
 
 template <class F> [[nodiscard]] bool json_some(const js::JsonValue& value, F&& callback) {
-    const auto& array = json_array(value, "some");
-    const std::size_t length = static_cast<std::size_t>(array.length());
+    json_require_array(value, "some");
+    const std::size_t length = static_cast<std::size_t>(value.length());
     for (std::size_t index = 0; index < length; ++index)
-        if (truthy(callback(array.at(static_cast<double>(index)), static_cast<double>(index))))
+        if (truthy(callback(value.at(static_cast<double>(index)), static_cast<double>(index))))
             return true;
     return false;
 }

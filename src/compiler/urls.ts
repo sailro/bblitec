@@ -59,8 +59,15 @@ export function compileUrlNew(
     if (arguments_.length < 1 || arguments_.length > 2)
         return context.fail(node, "new URL takes an input and a base.");
     context.reachJsData();
-    const input = stringOperand(lowerer, arguments_[0]!, "url_input");
+    const inputNode = arguments_[0]!;
     const baseNode = arguments_[1];
+    // The input is read first; it needs its own temporary only when the base
+    // can change what it reads.
+    const input =
+        baseNode &&
+        context.evaluationOrder.operandsToPin([inputNode, baseNode])[0]
+            ? stringOperand(lowerer, inputNode, "url_input")
+            : lowerer.compileForSink(inputNode, { kind: "string" });
     if (!baseNode)
         return {
             ...lowerer.leafValue(`bbl::js::Url(${input})`, URL_TYPE),
