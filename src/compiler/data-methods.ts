@@ -934,8 +934,16 @@ export function compileDataMethodCall(
         lowerer.registerLocal(temporary, "owned");
         constructedOwner = { kind: "data", cpp: temporary, dataType };
     }
+    // A receiver with effects (a call in its chain) already ran them while
+    // evaluating `dynamicOwner`; its value is the owner, evaluated once.
+    const evaluatedOwner =
+        (dynamicOwner?.kind === "data" || dynamicOwner?.kind === "string") &&
+        !lowerer.context.evaluationOrder.isPureExpression(callee.expression)
+            ? dynamicOwner
+            : undefined;
     const owner =
         constructedOwner ??
+        evaluatedOwner ??
         (dynamicOwner?.kind === "tuple"
             ? undefined
             : lowerer.compileDataPath(
