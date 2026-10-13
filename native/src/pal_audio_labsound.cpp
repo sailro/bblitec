@@ -1634,16 +1634,30 @@ void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples, std:
         destination.store(start + index, source.load(index));
 }
 
+namespace {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+AudioNodeRecord& require_buffer_source(AudioNodeHandle source) {
+    ContextRecord& record = require_context(context_of(source.value));
+    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(record, source)))
+        throw std::runtime_error("Audio node is not a buffer source.");
+    return *source.ownership;
+}
+#else
+[[noreturn]] void buffer_sources_absent() {
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+}
+#endif
+} // namespace
+
 bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
-    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source)))
-        throw std::runtime_error("Audio node is not a buffer source.");
-    if (!source.ownership->buffer.value)
+    const auto& buffer = require_buffer_source(source).buffer;
+    if (!buffer.value)
         return std::nullopt;
-    return source.ownership->buffer;
+    return buffer;
 #else
     (void)source;
-    throw std::runtime_error("Audio buffer source support was not compiled.");
+    buffer_sources_absent();
 #endif
 }
 
@@ -1651,10 +1665,8 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     auto& context = require_context(context_of(source.value));
     lab::ContextRenderLock render(context.context.get(), "bblite audio buffer assignment");
-    auto sampled = std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source));
-    if (!sampled) {
-        throw std::runtime_error("Audio node is not a buffer source.");
-    }
+    const auto sampled =
+        std::static_pointer_cast<lab::SampledAudioNode>(require_buffer_source(source).node);
     const auto& buffer_record = require_buffer(buffer);
     // Alias the bus to the buffer owner: LabSound can keep playing after JS
     // releases its AudioBuffer handle, without dangling channel memory.
@@ -1677,24 +1689,9 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer) {
 #else
     (void)source;
     (void)buffer;
-    throw std::runtime_error("Audio buffer source support was not compiled.");
+    buffer_sources_absent();
 #endif
 }
-
-namespace {
-#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
-AudioNodeRecord& require_buffer_source(AudioNodeHandle source) {
-    ContextRecord& record = require_context(context_of(source.value));
-    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(record, source)))
-        throw std::runtime_error("Audio node is not a buffer source.");
-    return *source.ownership;
-}
-#else
-[[noreturn]] void buffer_sources_absent() {
-    throw std::runtime_error("Audio buffer source support was not compiled.");
-}
-#endif
-} // namespace
 
 bool audio_loop(AudioNodeHandle source) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
@@ -1749,15 +1746,11 @@ void audio_set_loop_end(AudioNodeHandle source, double seconds) {
 
 void audio_set_loop(AudioNodeHandle source, bool enabled) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
-    ContextRecord& record = require_context(context_of(source.value));
-    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(record, source))) {
-        throw std::runtime_error("Audio node is not a buffer source.");
-    }
-    source.ownership->source_loop = enabled;
+    require_buffer_source(source).source_loop = enabled;
 #else
     (void)source;
     (void)enabled;
-    throw std::runtime_error("Audio buffer source support was not compiled.");
+    buffer_sources_absent();
 #endif
 }
 
@@ -2235,10 +2228,7 @@ AudioNodeHandle create_element_output(AudioContextHandle context) {
     ContextRecord& record = require_context(context.value);
     auto value = js::make_gc_shared<AudioNodeRecord>();
     value->node = std::make_shared<lab::SampledAudioNode>(*record.context);
-    auto entry = record.nodes.insert(std::move(value));
-    AudioNodeHandle handle{pack(context.value, entry.index), std::move(entry.ownership)};
-    register_graph_node(record, handle);
-    return handle;
+    return insert_node(context, record, std::move(value));
 }
 
 void finish_element_load(const AudioElement& element, std::uint64_t generation,
