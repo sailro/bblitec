@@ -298,3 +298,16 @@ for (const [name, body] of Object.entries(programs)) {
         });
     });
 }
+
+test("an optional call on a method of a present receiver lowers as a call", () => {
+    for (const source of [
+        `const canvas = document.createElement("canvas");
+document.body.appendChild(canvas);
+canvas.addEventListener("pointerdown", (event) => {
+    canvas.setPointerCapture(event.pointerId);
+    if (!canvas.hasPointerCapture?.(event.pointerId)) throw new Error("capture");
+});`,
+        `document.documentElement.requestFullscreen?.();`,
+    ])
+        compileSource(source);
+});
