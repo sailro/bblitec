@@ -32,60 +32,49 @@ inline UiScrollbarProperties register_ui_scrollbar_properties() {
     return {width, thumb, track};
 }
 
-inline bool sync_ui_scrollbar_styles(Rml::Element& document,
-                                     const UiScrollbarProperties& properties) {
+/** A scroll owner's scrollbar pseudo-classes and color variables; others are untouched. */
+inline bool sync_ui_scrollbar_element(Rml::Element& element,
+                                      const UiScrollbarProperties& properties) {
+    auto* scroll = element.GetElementScroll();
+    if (!scroll->GetScrollbar(Rml::ElementScroll::VERTICAL) &&
+        !scroll->GetScrollbar(Rml::ElementScroll::HORIZONTAL))
+        return false;
     bool changed = false;
-    const auto sync = [&](Rml::Element& element) {
-        const int width = element.GetProperty(properties.width)->Get<int>();
-        const auto* thumb = element.GetProperty(properties.thumb);
-        const auto* track = element.GetProperty(properties.track);
-        const bool colored =
-            thumb && track && thumb->unit == Rml::Unit::COLOUR && track->unit == Rml::Unit::COLOUR;
-        const auto pseudo = [&](const Rml::String& name, bool active) {
-            if (element.IsPseudoClassSet(name) != active) {
-                element.SetPseudoClass(name, active);
-                changed = true;
-            }
-        };
-        static const Rml::String standard_name = "bbl-standard-scrollbar",
-                                 thin_name = "bbl-thin-scrollbar",
-                                 hidden_name = "bbl-hidden-scrollbar",
-                                 colored_name = "bbl-colored-scrollbar",
-                                 thumb_name = "--bbl-scrollbar-thumb",
-                                 track_name = "--bbl-scrollbar-track";
-        pseudo(standard_name, width != 0 || colored);
-        pseudo(thin_name, width == 1);
-        pseudo(hidden_name, width == 2);
-        pseudo(colored_name, colored);
-        const auto variable = [&](const Rml::String& name, const Rml::Property* color) {
-            const auto* previous = element.GetLocalProperty(name);
-            if (colored) {
-                const auto value = color->ToString();
-                if (!previous || previous->Get<Rml::String>() != value) {
-                    element.SetProperty(name, value);
-                    changed = true;
-                }
-            } else if (previous) {
-                element.RemoveProperty(name);
-                changed = true;
-            }
-        };
-        variable(thumb_name, thumb);
-        variable(track_name, track);
-    };
-    const auto visit = [&](const auto& self, Rml::Element& element) -> void {
-        auto* scroll = element.GetElementScroll();
-        if (scroll->GetScrollbar(Rml::ElementScroll::VERTICAL) ||
-            scroll->GetScrollbar(Rml::ElementScroll::HORIZONTAL))
-            sync(element);
-        // Internal controls inherit the variables but are not scroll owners.
-        for (int index = 0; index < element.GetNumChildren(); ++index) {
-            auto* child = element.GetChild(index);
-            if (!rmlui_dynamic_cast<Rml::ElementText*>(child))
-                self(self, *child);
+    const int width = element.GetProperty(properties.width)->Get<int>();
+    const auto* thumb = element.GetProperty(properties.thumb);
+    const auto* track = element.GetProperty(properties.track);
+    const bool colored =
+        thumb && track && thumb->unit == Rml::Unit::COLOUR && track->unit == Rml::Unit::COLOUR;
+    const auto pseudo = [&](const Rml::String& name, bool active) {
+        if (element.IsPseudoClassSet(name) != active) {
+            element.SetPseudoClass(name, active);
+            changed = true;
         }
     };
-    visit(visit, document);
+    static const Rml::String standard_name = "bbl-standard-scrollbar",
+                             thin_name = "bbl-thin-scrollbar", hidden_name = "bbl-hidden-scrollbar",
+                             colored_name = "bbl-colored-scrollbar",
+                             thumb_name = "--bbl-scrollbar-thumb",
+                             track_name = "--bbl-scrollbar-track";
+    pseudo(standard_name, width != 0 || colored);
+    pseudo(thin_name, width == 1);
+    pseudo(hidden_name, width == 2);
+    pseudo(colored_name, colored);
+    const auto variable = [&](const Rml::String& name, const Rml::Property* color) {
+        const auto* previous = element.GetLocalProperty(name);
+        if (colored) {
+            const auto value = color->ToString();
+            if (!previous || previous->Get<Rml::String>() != value) {
+                element.SetProperty(name, value);
+                changed = true;
+            }
+        } else if (previous) {
+            element.RemoveProperty(name);
+            changed = true;
+        }
+    };
+    variable(thumb_name, thumb);
+    variable(track_name, track);
     return changed;
 }
 

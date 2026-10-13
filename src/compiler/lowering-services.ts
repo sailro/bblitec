@@ -659,6 +659,11 @@ export interface LoweringServices {
     importedName(identifier: ts.Identifier): string | undefined;
     requiresStaticIteration(statement: ts.Statement): boolean;
     eraseBrowserInstrumentation(position: number): void;
+    /**
+     * Records a browser-instrumentation erasure of a write through `receiver`;
+     * a DOM element receiver refuses once the program reaches retained UI.
+     */
+    noteErasedElementWrite(receiver: ts.Expression, site: ts.Node): void;
     expectArgumentCount(
         call: ts.CallExpression,
         minimum: number,
