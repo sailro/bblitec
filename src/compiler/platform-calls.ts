@@ -39,6 +39,7 @@ import { isDocumentReceiver } from "./dom-targets.js";
 import { isPinnedType, type DataType } from "./data-types.js";
 import { compileBooleanOptions } from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
+import { compilePointerCapture } from "./pointer-capture.js";
 import { compileDateParse, compileDateUtc } from "./dates.js";
 import {
     parseUiSelectorSequence,
@@ -501,7 +502,8 @@ export class PlatformCalls {
         if (ts.isPropertyAccessExpression(callee)) {
             const dispatched =
                 compileSyntheticEventDispatch(this.context, call) ??
-                compileCustomEventDispatch(this.context, call);
+                compileCustomEventDispatch(this.context, call) ??
+                compilePointerCapture(this.context, this.ui, call);
             if (dispatched) return dispatched;
             const value = this.compileUiCall(call, callee);
             if (value) return value;
@@ -2532,23 +2534,6 @@ export class PlatformCalls {
                     height: component("offset_height"),
                 },
             };
-        }
-        if (
-            element &&
-            (callee.name.text === "setPointerCapture" ||
-                callee.name.text === "releasePointerCapture")
-        ) {
-            this.context.expectArgumentCount(call, 1, 1);
-            // RmlUi owns pointer capture while dispatching a pressed
-            // control. The DOM call has no additional native action.
-            return { kind: "void", cpp: "" };
-        }
-        if (element && callee.name.text === "hasPointerCapture") {
-            this.context.expectArgumentCount(call, 1, 1);
-            // RmlUi dispatches captured pointer motion back to the pressed
-            // element. Reaching this callback is therefore the native
-            // equivalent of the DOM capture predicate used by the demos.
-            return { kind: "boolean", cpp: "true" };
         }
         if (element && callee.name.text === "animate") {
             this.context.expectArgumentCount(call, 2, 2);
