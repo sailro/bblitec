@@ -118,6 +118,13 @@ template <class T>
                                               : js::Nullable<T>{};
 }
 
+/** `array.fill(value)`: every element. */
+template <class T, class V> js::Array<T>& array_fill(js::Array<T>& values, const V& value) {
+    for (std::size_t index = 0; index < values.size(); ++index)
+        values[index] = value;
+    return values;
+}
+
 /** A typed-array read, including views; past the end reads NaN. */
 template <class T> [[nodiscard]] double typed_get(const js::TypedArray<T>& values, double index) {
     return js::array_has_index(values, index)

@@ -7586,6 +7586,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     }
                     case "slice":
                         return `bbl::js::array_slice(${receiver()}, ${node.arguments[0] ? this.value(node.arguments[0]) : "0.0"}, ${node.arguments[1] ? this.value(node.arguments[1]) : "std::numeric_limits<double>::infinity()"})`;
+                    case "fill":
+                        if (node.arguments.length !== 1)
+                            return this.refuse(
+                                node,
+                                "Pinned array fill of a range.",
+                            );
+                        return `bbl::pinned::array_fill(${receiver()}, ${this.convert(node.arguments[0]!, element)})`;
                     case "splice": {
                         const [start, count, ...items] = node.arguments;
                         if (!start || !count)

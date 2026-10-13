@@ -2291,7 +2291,6 @@ std::optional<PromiseRejection> enable_csm_static_cache(
     cache->refit_angle = refit_angle;
     cache->refit_max_interval_ms = refit_max_interval_ms.value_or(0.0);
     cache->static_cascades_per_frame = static_cast<std::uint32_t>(per_frame);
-    upstream::csm_scheduler_create(*cache, static_cast<double>(generator.csm_num_cascades), per_frame);
     generator.csm_cache = std::move(cache);
     return std::nullopt;
 }
@@ -2704,7 +2703,7 @@ void refresh_shadow_task_meshes(
             // static pass while the refit gate holds it static, the
             // dynamic pass otherwise (\`isDynamic\`).
             if (generator.csm_cache &&
-                upstream::csm_refit_is_dynamic(*generator.csm_cache, mesh) ==
+                upstream::csm_refit_is_dynamic(engine, *generator.csm_cache, mesh) ==
                     task.render.shadow_cache_static)
                 continue;`
                     : ""
@@ -2833,8 +2832,7 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
         cache->refit_angle = options.refit_angle;
         cache->refit_max_interval_ms = options.refit_max_interval_ms;
         cache->static_cascades_per_frame = options.static_cascades_per_frame;
-        upstream::csm_scheduler_create(*cache, static_cast<double>(layers),
-                                       static_cast<double>(options.static_cascades_per_frame));
+        upstream::csm_refit_start(engine, *cache, ${recordAt("engine.shadow_generators", "handle")}, layers);
         ${recordAt("engine.shadow_generators", "handle")}.csm_cascades.resize(layers);
         ${recordAt("engine.render_targets", "rt")}.copy_destination = true;
         target.sampled_depth = false;
