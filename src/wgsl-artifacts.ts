@@ -21,7 +21,7 @@ function load(bytes: Uint8Array, offset: number, count: number): bigint {
 }
 
 /** native/include/bblite/byte_hash.hpp `hash_bytes(data, size)` with a zero seed. */
-export function hashBytes(bytes: Uint8Array): bigint {
+function hashBytes(bytes: Uint8Array): bigint {
     const size = bytes.length;
     let hash = absorb(0n, BigInt(size));
     if (size > 8) {

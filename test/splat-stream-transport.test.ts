@@ -8,27 +8,35 @@ import {
     lowerSplatStreamTransport,
     SPLAT_STREAM_TRANSPORT_MODULES,
 } from "../src/lowering/splat-stream-records.js";
-import {
-    createJavaScriptFunction,
-    transpileCommonJs,
-} from "../src/typescript-transpile.js";
-import { sharedUpstreamStore } from "../src/upstream-source.js";
 import { webgpuFlagNamespaces } from "../src/webgpu-flags.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import {
+    type Exports,
+    pinnedModules,
+    splatStreamFamilyHeader,
+} from "./splat-stream-fixtures.js";
+
+/** The transport's modules and the ledger the scenarios create. */
+const TRANSPORT_ROOTS = [
+    ...SPLAT_STREAM_TRANSPORT_MODULES,
+    "src/loader-splat-stream/splat-stream-gpu-ledger.ts",
+];
 
 /**
  * The pinned splat-stream request manager and voxel collision lowered by the
- * record model, compiled with MSVC and run over deterministic fakes of
- * `bblite/splat_stream_platform.hpp`
- * (test/fixtures/splat-stream-transport-check.cpp), against the pinned
- * modules executed under Node over the same fakes written in JavaScript: a
+ * record model, compiled with MSVC and run over deterministic definitions of
+ * the web platform seam (`bblite/web_platform.hpp`,
+ * test/fixtures/splat-stream-transport-check.cpp), against the pinned
+ * modules executed under Node over the same seam written in JavaScript: a
  * virtual clock whose timers fire one per task with microtasks drained
  * between, a scripted fetch with streamed bodies and aborts, a WebP-header
- * image decoder and a logging GPU device. Equal logs are equal scheduling,
- * retries, preemption, admission, abort propagation and error wrapping.
+ * image decoder and a logging GPU device. URL, AbortController, DOMException,
+ * TextDecoder and Blob are the runtime's own objects natively and Node's
+ * under Node. Equal logs are equal scheduling, retries, preemption,
+ * admission, abort propagation and error wrapping.
  */
 
 // ── The scenarios ──────────────────────────────────────────────────────
@@ -510,47 +518,9 @@ function collisionScenario(): Scenario {
 
 // ── The pinned modules over JavaScript fakes ───────────────────────────
 
-type Exports = Record<string, unknown>;
 type Callable = (...args: never[]) => unknown;
 
-const transpiled = new Map<string, string>();
-
 /** The pinned modules as CommonJS, their web globals bound to `globals`. */
-function pinnedModules(
-    globals: Readonly<Record<string, unknown>>,
-): Map<string, Exports> {
-    const store = sharedUpstreamStore();
-    const loaded = new Map<string, Exports>();
-    const names = Object.keys(globals);
-    const load = (module: string): Exports => {
-        const known = loaded.get(module);
-        if (known) return known;
-        const exports: Exports = {};
-        loaded.set(module, exports);
-        const require = (specifier: string): Exports => {
-            const target = store.resolveImport(module, specifier);
-            if (!target)
-                throw new Error(`${module} imports unresolved ${specifier}.`);
-            return load(target);
-        };
-        let code = transpiled.get(module);
-        if (code === undefined) {
-            code = transpileCommonJs(store.getSource(module), module);
-            transpiled.set(module, code);
-        }
-        createJavaScriptFunction(
-            "exports",
-            "require",
-            ...names,
-            code,
-        )(exports, require, ...names.map((name) => globals[name]));
-        return exports;
-    };
-    for (const module of SPLAT_STREAM_TRANSPORT_MODULES) load(module);
-    load("src/loader-splat-stream/splat-stream-gpu-ledger.ts");
-    return loaded;
-}
-
 function exported<T extends Callable>(
     modules: Map<string, Exports>,
     module: string,
@@ -569,11 +539,6 @@ interface Timer {
     readonly id: number;
     readonly due: number;
     readonly callback: () => void;
-}
-
-interface FakeListener {
-    readonly listener: () => void;
-    readonly once: boolean;
 }
 
 interface PinnedSource {
@@ -620,6 +585,13 @@ interface PinnedCollision {
     readonly masks: Uint32Array;
 }
 
+/** The message of the AbortError a signal aborted without a reason carries under Node. */
+const defaultAbortMessage = ((): string => {
+    const controller = new AbortController();
+    controller.abort();
+    return (controller.signal.reason as Error).message;
+})();
+
 async function pinnedRun(scenario: Scenario): Promise<string> {
     const events: string[] = [];
     const out = (line: string): void => {
@@ -652,64 +624,6 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
         if (best) timers.splice(timers.indexOf(best), 1);
         return best;
     };
-
-    // DOMException and the abort signal.
-    class FakeDOMException extends Error {
-        constructor(message = "", name = "Error") {
-            super(message);
-            this.name = name;
-        }
-    }
-    class FakeAbortSignal {
-        aborted = false;
-        reason: Error | undefined = undefined;
-        listeners: FakeListener[] = [];
-        addEventListener(
-            type: string,
-            listener: () => void,
-            options?: { once?: boolean },
-        ): void {
-            if (type !== "abort")
-                throw new Error("Only abort listeners are admitted.");
-            if (this.listeners.some((entry) => entry.listener === listener))
-                return;
-            this.listeners.push({ listener, once: options?.once ?? false });
-        }
-        removeEventListener(type: string, listener: () => void): void {
-            if (type !== "abort")
-                throw new Error("Only abort listeners are admitted.");
-            this.listeners = this.listeners.filter(
-                (entry) => entry.listener !== listener,
-            );
-        }
-    }
-    class FakeAbortController {
-        readonly signal = new FakeAbortSignal();
-        abort(reason?: Error): void {
-            const signal = this.signal;
-            if (signal.aborted) return;
-            signal.aborted = true;
-            signal.reason =
-                reason === undefined
-                    ? new FakeDOMException(
-                          "This operation was aborted",
-                          "AbortError",
-                      )
-                    : reason;
-            for (const entry of [...signal.listeners]) {
-                if (!signal.listeners.includes(entry)) continue;
-                if (entry.once)
-                    signal.listeners = signal.listeners.filter(
-                        (other) => other !== entry,
-                    );
-                entry.listener();
-            }
-        }
-    }
-
-    /** An aborted signal's reason (every abort sets one). */
-    const reasonOf = (signal: FakeAbortSignal): Error =>
-        signal.reason ?? new Error("The signal was not aborted.");
 
     // fetch and its streamed bodies.
     class FakeStream {
@@ -803,7 +717,7 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
     const attempts = new Map<string, number>();
     const fetch = (
         input: string | URL,
-        init?: { signal?: FakeAbortSignal },
+        init?: { signal?: AbortSignal },
     ): Promise<FakeResponse> => {
         const url = typeof input === "string" ? input : input.href;
         out(`fetch ${url}`);
@@ -813,7 +727,7 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
         attempts.set(url, attempt + 1);
         const variant = variants[Math.min(attempt, variants.length - 1)]!;
         const signal = init?.signal;
-        if (signal?.aborted) return Promise.reject(reasonOf(signal));
+        if (signal?.aborted) return Promise.reject(signal.reason as Error);
         const response = new FakeResponse(url, variant);
         let settled = false;
         return new Promise((resolveFetch, rejectFetch) => {
@@ -823,8 +737,8 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
                     () => {
                         if (!settled) {
                             settled = true;
-                            rejectFetch(reasonOf(signal));
-                        } else response.body?.fail(reasonOf(signal));
+                            rejectFetch(signal.reason as Error);
+                        } else response.body?.fail(signal.reason as Error);
                     },
                     { once: true },
                 );
@@ -838,32 +752,29 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
         });
     };
 
-    // Blob, image decoding, text decoding.
-    class FakeBlob {
-        readonly bytes: Uint8Array;
-        readonly type: string;
+    // Blob (Node's, keeping its parts for the decoder) and image decoding.
+    class RecordingBlob extends Blob {
+        readonly parts: Uint8Array;
         constructor(parts: readonly Uint8Array[], options?: { type?: string }) {
-            this.bytes = Uint8Array.from(parts.flatMap((part) => [...part]));
-            this.type = options?.type ?? "";
-        }
-        text(): Promise<string> {
-            return Promise.resolve(Buffer.from(this.bytes).toString("utf8"));
+            super(parts as Uint8Array<ArrayBuffer>[], options);
+            this.parts = Uint8Array.from(parts.flatMap((part) => [...part]));
         }
     }
+    const bitmaps: { closed: boolean }[] = [];
     const createImageBitmap = (
-        blob: FakeBlob,
+        blob: RecordingBlob,
         options: Record<string, string>,
     ): Promise<{ width: number; height: number; close(): void }> => {
         out(
-            `decode ${blob.bytes.length} ${blob.type} ${options.premultiplyAlpha} ${options.colorSpaceConversion} ${options.imageOrientation}`,
+            `decode ${blob.size} ${blob.type} premultiply=${String(options.premultiplyAlpha === "premultiply")}`,
         );
-        const b = blob.bytes;
+        const b = blob.parts;
         if (
             b.length < 25 ||
             Buffer.from(b.subarray(12, 16)).toString("latin1") !== "VP8L"
         )
             return Promise.reject(
-                new FakeDOMException(
+                new DOMException(
                     "The source image could not be decoded.",
                     "InvalidStateError",
                 ),
@@ -872,21 +783,20 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
             (b[21]! | (b[22]! << 8) | (b[23]! << 16) | (b[24]! << 24)) >>> 0;
         const width = (bits & 0x3fff) + 1;
         const height = ((bits >>> 14) & 0x3fff) + 1;
+        const state = { closed: false };
+        bitmaps.push(state);
         return new Promise((resolveBitmap) => {
             schedule(scenario.decodeDelay, () =>
                 resolveBitmap({
                     width,
                     height,
-                    close: () => out(`close ${num(width)}x${num(height)}`),
+                    close: () => {
+                        state.closed = true;
+                    },
                 }),
             );
         });
     };
-    class FakeTextDecoder {
-        decode(bytes: Uint8Array): string {
-            return Buffer.from(bytes).toString("utf8");
-        }
-    }
 
     // Timers and the GPU device.
     const setTimeout = (callback: () => void, milliseconds: number): number => {
@@ -929,31 +839,31 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
                 );
             },
             copyExternalImageToTexture(
-                copySource: {
-                    source: { width: number; height: number };
-                    flipY: boolean;
-                },
-                destination: { premultipliedAlpha: boolean },
+                copySource: { source: { width: number; height: number } },
+                _destination: unknown,
                 size: { width: number; height: number },
             ) {
+                // The native upload writes the bitmap's rows into the texture.
                 out(
-                    `copy ${num(copySource.source.width)}x${num(copySource.source.height)} flip=${String(copySource.flipY)} premultiplied=${String(destination.premultipliedAlpha)} size=${num(size.width)}x${num(size.height)}`,
+                    `texture-write ${num(size.width)}x${num(size.height)} bytes-per-row=${num(copySource.source.width * 4)}`,
                 );
             },
         },
     };
 
-    const modules = pinnedModules({
-        globalThis: { fetch, createImageBitmap, ...webgpuFlagNamespaces },
-        fetch,
-        setTimeout,
-        clearTimeout,
-        queueMicrotask,
-        performance: { now: () => now },
-        AbortController: FakeAbortController,
-        DOMException: FakeDOMException,
-        Blob: FakeBlob,
-        TextDecoder: FakeTextDecoder,
+    const modules = pinnedModules(TRANSPORT_ROOTS, {
+        globals: {
+            globalThis: { fetch, createImageBitmap, ...webgpuFlagNamespaces },
+            fetch,
+            setTimeout,
+            clearTimeout,
+            queueMicrotask,
+            performance: { now: () => now },
+            AbortController,
+            DOMException,
+            Blob: RecordingBlob,
+            TextDecoder,
+        },
     });
     const REQUESTS = "src/loader-splat-stream/splat-stream-requests.ts";
     const COLLISION = "src/collision/splat-voxel-collision.ts";
@@ -983,8 +893,11 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
 
     const describe = (error: unknown): string => {
         if (!(error instanceof Error)) return `value ${String(error)}`;
-        let text = `${error.name} ${error.message}`;
-        if (error instanceof FakeDOMException) text += " dom";
+        // An abort without a reason: the platform's default AbortError, whose
+        // message differs between Node and the browser the runtime follows.
+        const dom = error instanceof DOMException;
+        let text = `${error.name} ${dom && error.message === defaultAbortMessage ? "(default reason)" : error.message}`;
+        if (dom) text += " dom";
         if (error instanceof PressureError)
             text += ` required=${num((error as unknown as { requiredBytes: number }).requiredBytes)}`;
         const cause = (error as { cause?: unknown }).cause;
@@ -996,11 +909,11 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
     const ledger = createLedger(scenario.gpuBytes, (dispose: () => void) =>
         dispose(),
     );
-    const controllers = new Map<string, FakeAbortController>();
-    const controller = (name: string): FakeAbortController => {
+    const controllers = new Map<string, AbortController>();
+    const controller = (name: string): AbortController => {
         let found = controllers.get(name);
         if (!found) {
-            found = new FakeAbortController();
+            found = new AbortController();
             controllers.set(name, found);
         }
         return found;
@@ -1148,34 +1061,21 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
         }
         await new Promise((resolveTurn) => setImmediate(resolveTurn));
     }
+    out(
+        `bitmaps decoded=${bitmaps.length} closed=${bitmaps.filter((bitmap) => bitmap.closed).length}`,
+    );
     return events.map((line) => `${line}\n`).join("");
 }
 
 // ── The lowered transport ──────────────────────────────────────────────
 
-function transportHeader(): string {
-    const transport = lowerSplatStreamTransport(new LoweringContext());
-    const includes = [
-        "bblite/pinned_records.hpp",
-        "bblite/gpu.hpp",
-        "bblite/splat_stream_platform.hpp",
-        ...transport.includes,
-    ];
-    return `#pragma once
-${includes.map((header) => `#include <${header}>`).join("\n")}
-namespace bbl {
-${transport.structs}
-${transport.declarations}
-${transport.definitions}
-} // namespace bbl
-`;
-}
-
 test("the lowered splat-stream requests and voxel collision schedule, retry, abort and fail as the pin does", async (t) => {
-    const header = transportHeader();
+    const header = splatStreamFamilyHeader(
+        lowerSplatStreamTransport(new LoweringContext()),
+    );
     // Async functions are coroutines over the runtime promise; platform
     // calls name the platform header; authored Error classes are records.
-    assert.match(header, /co_await bbl::splat_stream_platform::reader_read\(/);
+    assert.match(header, /co_await bbl::web_platform::reader_read\(/);
     assert.match(
         header,
         /bbl::pinned::construct_promise<bbl::js::PromiseVoid>/,

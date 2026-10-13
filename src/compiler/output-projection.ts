@@ -113,7 +113,7 @@ export const featureSources: Record<Feature, string[]> = {
     // unit; CMake derives the Dawn twin).
     "loader:splat-stream": [
         "src/pal_sdl_gpu_webgpu_device.cpp",
-        "src/pal_splat_stream_platform.cpp",
+        "src/pal_web_platform.cpp",
     ],
     "material:pbr": [],
     "material:source-texture-read": [],

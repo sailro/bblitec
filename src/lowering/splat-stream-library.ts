@@ -33,19 +33,14 @@ import {
     type RecordShape,
     type RecordSpec,
 } from "./pinned-record-lowerer.js";
-import {
-    gpuMapModeConstants,
-    gpuSubsetRecords,
-    gpuSubsetValues,
-} from "./gpu-schema.js";
+import { gpuMapModeConstants, gpuSubsetValues } from "./gpu-schema.js";
 import {
     SPLAT_STREAM_CORE_MODULES,
     SPLAT_STREAM_CORE_RECORDS,
     SPLAT_STREAM_TRANSPORT_MODULES,
     SPLAT_STREAM_TRANSPORT_RECORDS,
-    splatStreamTransportModel,
+    splatStreamTransportSchema,
 } from "./splat-stream-records.js";
-import { webgpuFlagNamespaces } from "../webgpu-flags.js";
 import { stringLiteral } from "../cpp-literals.js";
 import {
     pinnedRawShaderImports,
@@ -53,6 +48,10 @@ import {
 } from "./splat-stream-shaders.js";
 import {
     arrayOf as array,
+    field,
+    functionOf as fn,
+    gpuObjectShape as gpuObject,
+    members,
     optionalOf as optional,
     recordOf as record,
     recordScalars,
@@ -65,34 +64,15 @@ const CAMERA = "src/camera/camera.ts";
 const SIGNATURE = "src/engine/render-target-signature.ts";
 
 /** The modules the library model lowers beyond the core's. */
-export const SPLAT_STREAM_LIBRARY_MODULES = [
-    GPU,
-    MATERIAL,
-    LOAD,
-    SIGNATURE,
-] as const;
+const SPLAT_STREAM_LIBRARY_MODULES = [GPU, MATERIAL, LOAD, SIGNATURE] as const;
 
 const RUNTIME = "bbl::splat_stream";
 const { number, boolean, string, void: none } = recordScalars;
 const typedF32: RecordShape = { kind: "typed", element: "f32" };
-const gpuObject: RecordShape = {
-    kind: "native",
-    cpp: "bbl::GpuHandle",
-    nullable: true,
-};
-const fn = (
-    parameters: readonly RecordShape[],
-    result: RecordShape,
-): RecordShape => ({ kind: "function", parameters, result });
-const field = (shape: RecordShape, name?: string): MemberSpec =>
-    name === undefined ? { shape } : { shape, field: name };
 const read = (shape: RecordShape, native: string): MemberSpec => ({
     shape,
     access: (owner) => `${RUNTIME}::${native}(${owner})`,
 });
-const members = (
-    entries: readonly (readonly [string, MemberSpec])[],
-): ReadonlyMap<string, MemberSpec> => new Map(entries);
 /** A scene list the pin pushes to, searches and splices by identity. */
 const list = (native: string): MemberSpec => ({
     shape: { kind: "record", name: native },
@@ -396,101 +376,6 @@ const runtimeRecords: readonly RecordSpec[] = [
     },
 ];
 
-const PLATFORM = "bbl::splat_stream_platform";
-const bytes: RecordShape = { kind: "typed", element: "u8" };
-
-/**
- * The manifest's streaming UTF-8 decode (`new TextDecoder("utf-8", { fatal:
- * true })`, `decode(chunk, { stream: true })`, `decode()`) beside the
- * transport's plain one: the platform's Encoding Standard decoder.
- */
-const textDecoderRecords: readonly RecordSpec[] = [
-    {
-        pinned: ["TextDecoder"],
-        cpp: "splat_stream_platform::TextDecoderState",
-        handle: "splat_stream_platform::TextDecoder",
-        reference: true,
-        native: true,
-        members: members([
-            [
-                "decode",
-                {
-                    shape: fn(
-                        [
-                            optional(bytes),
-                            optional(record("TextDecodeOptions")),
-                        ],
-                        string,
-                    ),
-                    access: (owner) => owner,
-                    call: (owner, args) =>
-                        args.length === 0
-                            ? `${PLATFORM}::text_decoder_flush(${owner})`
-                            : args.length === 1
-                              ? `${PLATFORM}::text_decoder_decode(${owner}, *${args[0]})`
-                              : `${PLATFORM}::text_decoder_decode(${owner}, *${args[0]}, ${args[1]})`,
-                },
-            ],
-        ]),
-    },
-    {
-        pinned: ["TextDecoderOptions"],
-        cpp: "splat_stream_platform::TextDecoderOptions",
-        reference: false,
-        native: true,
-        members: members([
-            ["fatal", field(optional(boolean))],
-            ["ignoreBOM", field(optional(boolean), "ignore_bom")],
-        ]),
-    },
-    {
-        pinned: ["TextDecodeOptions"],
-        cpp: "splat_stream_platform::TextDecodeOptions",
-        reference: false,
-        native: true,
-        members: members([["stream", field(optional(boolean))]]),
-    },
-];
-
-const textDecoderConstructor: CallAdapter = {
-    cpp: (argument, call) =>
-        (call.arguments?.length ?? 0) === 0
-            ? `${PLATFORM}::text_decoder_create()`
-            : `${PLATFORM}::text_decoder_create(${argument(0)}, ${(call.arguments?.length ?? 0) > 1 ? argument(1) : "{}"})`,
-    parameters: [string, optional(record("TextDecoderOptions"))],
-};
-
-/**
- * The WebGPU subset with the queue's bitmap upload, which the platform
- * performs from the decoded bitmap's bytes.
- */
-const streamGpuRecords: readonly RecordSpec[] = gpuSubsetRecords.map((spec) =>
-    spec.pinned[0] === "GPUQueue"
-        ? {
-              ...spec,
-              members: new Map([
-                  ...(spec.members ?? []),
-                  [
-                      "copyExternalImageToTexture",
-                      {
-                          shape: fn(
-                              [
-                                  record("GPUCopyExternalImageSourceInfo"),
-                                  record("GPUCopyExternalImageDestInfo"),
-                                  record("GPUExtent3DDict"),
-                              ],
-                              none,
-                          ),
-                          access: (owner: string) => owner,
-                          call: (owner: string, args: readonly string[]) =>
-                              `${PLATFORM}::copy_external_image_to_texture(*${owner}, ${args.join(", ")})`,
-                      },
-                  ],
-              ]),
-          }
-        : spec,
-);
-
 /** The library's own records, emitted from the pin's declarations. */
 const libraryRecords: readonly RecordSpec[] = [
     {
@@ -713,31 +598,9 @@ const libraryValues: readonly (readonly [string, RecordShape])[] = [
     ["Mat4Storage", typedF32],
 ];
 
-/** The library's record model over every reached module. */
-export function splatStreamLibraryModel(
-    context: LoweringContext,
-): PinnedRecordModel {
-    const core = splatStreamTransportModel(context).schema;
-    const own = new Set(
-        [
-            ...streamGpuRecords,
-            ...runtimeRecords,
-            ...libraryRecords,
-            ...textDecoderRecords,
-        ].flatMap((spec) => spec.pinned),
-    );
-    const coreRecords = core.records
-        .filter((spec) => !spec.pinned.some((name) => own.has(name)))
-        .map((spec) =>
-            // The loader reads the option's (absent) test seams.
-            spec.pinned[0] === "GaussianSplatStreamOptions"
-                ? {
-                      pinned: spec.pinned,
-                      cpp: spec.cpp,
-                      reference: spec.reference,
-                  }
-                : spec,
-        );
+/** The library's record model: the transport's schema with the library's own records. */
+function splatStreamLibraryModel(context: LoweringContext): PinnedRecordModel {
+    const transport = splatStreamTransportSchema(true);
     return new PinnedRecordModel(
         context,
         context.store.program.modules([
@@ -746,29 +609,22 @@ export function splatStreamLibraryModel(
             ...SPLAT_STREAM_LIBRARY_MODULES,
         ]),
         {
-            ...core,
+            ...transport,
             records: [
-                ...coreRecords,
-                ...streamGpuRecords,
+                ...transport.records,
                 ...runtimeRecords,
                 ...libraryRecords,
-                ...textDecoderRecords,
             ],
-            constructors: new Map([
-                ...(core.constructors ?? []),
-                ["TextDecoder", textDecoderConstructor],
-            ]),
             values: new Map([
-                ...core.values,
+                ...transport.values,
                 ...gpuSubsetValues,
                 ...libraryValues,
             ]),
-            adapters: new Map([...core.adapters, ...libraryAdapters]),
+            adapters: new Map([...transport.adapters, ...libraryAdapters]),
             // The run-time WGSL each module imports, byte for byte: SDL_GPU
             // finds its stages by the text's hash.
-            moduleValues: new Map([
-                ...(core.moduleValues ?? []),
-                ...pinnedRawShaderImports(
+            moduleValues: new Map(
+                pinnedRawShaderImports(
                     context,
                     SPLAT_STREAM_SHADER_MODULES,
                 ).map(
@@ -781,46 +637,36 @@ export function splatStreamLibraryModel(
                             },
                         ] as const,
                 ),
-            ]),
-            unresolved: new Map([
-                ...(core.unresolved ?? []),
-                ...libraryUnresolved,
-            ]),
+            ),
+            unresolved: new Map(libraryUnresolved),
             constants: new Map([
-                ...(core.constants ?? []),
+                ...(transport.constants ?? []),
                 ...gpuMapModeConstants,
-                ...Object.entries(webgpuFlagNamespaces).flatMap(
-                    ([namespace, values]) =>
-                        Object.entries(values).map(
-                            ([name, value]) =>
-                                [`${namespace}.${name}`, value] as const,
-                        ),
-                ),
             ]),
         },
     );
 }
 
-/** The public functions the application reaches. */
-export function splatStreamLibraryRoots(
-    model: PinnedRecordModel,
-): PinnedCallable[] {
-    return [
-        model.functionDeclaration(LOAD, "loadGaussianSplatStream"),
-        model.functionDeclaration(LOAD, "attachGaussianSplatStream"),
-        model.functionDeclaration(LOAD, "disposeGaussianSplatStream"),
-    ];
-}
-
 const COLLISION = "src/collision/splat-voxel-collision.ts";
 
-/** Every root the application compiler can call. */
+/**
+ * The library's public functions a program calls, each with the pinned
+ * module declaring it: the roots the library header lowers, and the calls
+ * the application compiler admits.
+ */
+export const SPLAT_STREAM_APPLICATION_ROOTS: ReadonlyMap<string, string> =
+    new Map([
+        ["loadGaussianSplatStream", LOAD],
+        ["attachGaussianSplatStream", LOAD],
+        ["disposeGaussianSplatStream", LOAD],
+        ["loadSplatVoxelCollision", COLLISION],
+        ["moveSplatVoxelCamera", COLLISION],
+    ]);
+
 function applicationRoots(model: PinnedRecordModel): PinnedCallable[] {
-    return [
-        ...splatStreamLibraryRoots(model),
-        model.functionDeclaration(COLLISION, "loadSplatVoxelCollision"),
-        model.functionDeclaration(COLLISION, "moveSplatVoxelCamera"),
-    ];
+    return [...SPLAT_STREAM_APPLICATION_ROOTS].map(([name, module]) =>
+        model.functionDeclaration(module, name),
+    );
 }
 
 /** The draw batch's struct: native, since its base is a type-only declaration. */
@@ -947,7 +793,7 @@ export function splatStreamLibraryHeader(context: LoweringContext): string {
     const includes = [
         "bblite/pinned_records.hpp",
         "bblite/gpu.hpp",
-        "bblite/splat_stream_platform.hpp",
+        "bblite/web_platform.hpp",
         "bblite/splat_stream_runtime.hpp",
         "bblite/upstream/camera_math.hpp",
         "bblite/upstream/pinned_world_transform.hpp",

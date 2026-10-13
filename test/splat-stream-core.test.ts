@@ -10,14 +10,14 @@ import {
     SPLAT_STREAM_CORE_MODULES,
 } from "../src/lowering/splat-stream-records.js";
 import {
-    createJavaScriptFunction,
-    transpileCommonJs,
-} from "../src/typescript-transpile.js";
-import { sharedUpstreamStore } from "../src/upstream-source.js";
-import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import {
+    type Exports,
+    pinnedModules,
+    splatStreamFamilyHeader,
+} from "./splat-stream-fixtures.js";
 
 /**
  * The pinned splat-stream core lowered by the record model, compiled with
@@ -32,43 +32,22 @@ const manifestText = brotliDecompressSync(
     readFileSync(resolve("test/fixtures/splat-stream/trogir-lod-meta.json.br")),
 ).toString("utf8");
 
-type Exports = Record<string, unknown>;
 type Pinned = Record<string, (...args: never[]) => unknown>;
 
-/** The pinned modules as CommonJS under Node, each evaluated once. */
-function pinnedModules(): Map<string, Exports> {
-    const store = sharedUpstreamStore();
-    const loaded = new Map<string, Exports>();
-    const stubs = new Map<string, Exports>([
-        [
-            "src/engine/gpu-resource-retirement.ts",
-            {
-                retireGpuResources: () => {
-                    throw new Error("The test never fences on an engine.");
+/** The pinned core under Node; the retirement fence is never reached. */
+function coreModules(): Map<string, Exports> {
+    return pinnedModules(SPLAT_STREAM_CORE_MODULES, {
+        stubs: new Map([
+            [
+                "src/engine/gpu-resource-retirement.ts",
+                {
+                    retireGpuResources: () => {
+                        throw new Error("The test never fences on an engine.");
+                    },
                 },
-            },
-        ],
-    ]);
-    const load = (module: string): Exports => {
-        const known = loaded.get(module) ?? stubs.get(module);
-        if (known) return known;
-        const exports: Exports = {};
-        loaded.set(module, exports);
-        const require = (specifier: string): Exports => {
-            const target = store.resolveImport(module, specifier);
-            if (!target)
-                throw new Error(`${module} imports unresolved ${specifier}.`);
-            return load(target);
-        };
-        createJavaScriptFunction(
-            "exports",
-            "require",
-            transpileCommonJs(store.getSource(module), module),
-        )(exports, require);
-        return exports;
-    };
-    for (const module of SPLAT_STREAM_CORE_MODULES) load(module);
-    return loaded;
+            ],
+        ]),
+    });
 }
 
 function pinned(modules: Map<string, Exports>, module: string): Pinned {
@@ -680,7 +659,7 @@ interface Ledger {
 }
 
 function pinnedRun(scenarioValue: Record<string, unknown>): string {
-    const modules = pinnedModules();
+    const modules = coreModules();
     const types = pinned(modules, SPLAT_STREAM_CORE_MODULES[0]);
     const meta = pinned(modules, SPLAT_STREAM_CORE_MODULES[1]);
     const selection = pinned(modules, SPLAT_STREAM_CORE_MODULES[2]);
@@ -1076,26 +1055,10 @@ function pinnedRun(scenarioValue: Record<string, unknown>): string {
 
 // ── The lowered core ───────────────────────────────────────────────────
 
-function coreHeader(): string {
-    const core = lowerSplatStreamCore(new LoweringContext());
-    const includes = [
-        "bblite/pinned_records.hpp",
-        "bblite/gpu_object.hpp",
-        "bblite/splat_stream_platform.hpp",
-        ...core.includes,
-    ];
-    return `#pragma once
-${includes.map((header) => `#include <${header}>`).join("\n")}
-namespace bbl {
-${core.structs}
-${core.declarations}
-${core.definitions}
-} // namespace bbl
-`;
-}
-
 test("the lowered splat-stream core runs the real manifest, selection, cache and ledger as the pin does", (t) => {
-    const header = coreHeader();
+    const header = splatStreamFamilyHeader(
+        lowerSplatStreamCore(new LoweringContext()),
+    );
     // The parsed document is the runtime's dynamic value; array callbacks
     // are inline lambdas; the manifest's `satisfies` literal is its record.
     assert.match(

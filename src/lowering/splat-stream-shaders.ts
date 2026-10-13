@@ -15,7 +15,7 @@ import { wgslStageStem, type WgslStageKind } from "../wgsl-artifacts.js";
 import type { LoweringContext } from "./context.js";
 
 /** One `import NAME from "./x.wgsl?raw"` of a lowered module. */
-export interface PinnedRawShaderImport {
+interface PinnedRawShaderImport {
     /** The importing pinned module (`src/.../x.ts`). */
     readonly module: string;
     /** The binding the module reads the text through. */
@@ -32,11 +32,24 @@ export const SPLAT_STREAM_SHADER_MODULES = [
     "src/loader-splat-stream/splat-stream-material.ts",
 ] as const;
 
+/** Each context's imports by module list: a compile reads each module and shader once. */
+const importsByContext = new WeakMap<
+    LoweringContext,
+    Map<string, readonly PinnedRawShaderImport[]>
+>();
+
 /** Every `?raw` WGSL import of `modules`, in module and source order. */
 export function pinnedRawShaderImports(
     context: LoweringContext,
     modules: readonly string[],
-): PinnedRawShaderImport[] {
+): readonly PinnedRawShaderImport[] {
+    const cache =
+        importsByContext.get(context) ??
+        new Map<string, readonly PinnedRawShaderImport[]>();
+    importsByContext.set(context, cache);
+    const key = modules.join("|");
+    const known = cache.get(key);
+    if (known) return known;
     const imports: PinnedRawShaderImport[] = [];
     for (const module of modules) {
         const file = ts.createSourceFile(
@@ -73,11 +86,12 @@ export function pinnedRawShaderImports(
             });
         }
     }
+    cache.set(key, imports);
     return imports;
 }
 
 /** A module deployed under its first stage's stem, compiling every other stage beside it. */
-export interface RuntimeWgslModule {
+interface RuntimeWgslModule {
     readonly output: string;
     readonly data: string;
     readonly entryPoint: string;

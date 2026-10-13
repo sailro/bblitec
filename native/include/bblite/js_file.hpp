@@ -40,6 +40,12 @@ public:
         : data_(reinterpret_cast<const std::uint8_t*>(value.data())), size_(value.size()) {}
     explicit BlobPart(const U8Array& value) : data_(value.data()), size_(value.size()) {}
     explicit BlobPart(const ArrayBuffer& value) : data_(value.data()), size_(value.byte_length()) {}
+    /** A typed view's bytes, which the view (not its buffer handle) keeps alive. */
+    template <typename T>
+    explicit BlobPart(const TypedArray<T>& value) : size_(value.byte_length()) {
+        const ArrayBuffer buffer = value.buffer();
+        data_ = buffer.data() + value.byte_offset();
+    }
 
     [[nodiscard]] const std::uint8_t* data() const noexcept { return data_; }
     [[nodiscard]] std::size_t size() const noexcept { return size_; }

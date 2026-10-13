@@ -1,10 +1,16 @@
-import type ts from "typescript";
+import ts from "typescript";
+import { cppIdentifier, snakeCase } from "../../cpp-literals.js";
+import { SPLAT_STREAM_APPLICATION_ROOTS } from "../../lowering/splat-stream-library.js";
 import type { LoweringServices } from "../lowering-services.js";
 import type { Value } from "../types.js";
 import { argumentAt } from "../syntax.js";
 import { ApplicationRealmRequired } from "../worker-modules.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { retainedOptions } from "./retained-options.js";
+import {
+    emitPresentOption,
+    emitScalarOption,
+    retainedOptions,
+} from "./retained-options.js";
 
 export interface SplatStreamIntrinsicContext
     extends
@@ -13,7 +19,7 @@ export interface SplatStreamIntrinsicContext
             LoweringServices,
             | "allocateTemporaryCppName"
             | "bindings"
-            | "castNumber"
+            | "checker"
             | "dataTypes"
             | "dataLowerer"
             | "emit"
@@ -21,41 +27,13 @@ export interface SplatStreamIntrinsicContext
             | "options"
         > {}
 
-/**
- * The streamed Gaussian-splat library's public functions, lowered whole from
- * the pin into `bblite/upstream_splat_stream.hpp` (src/lowering/
- * splat-stream-library.ts): a stream loads on the realm's event loop, so a
- * program reaching it runs as an application realm.
- */
-const STREAM_FUNCTIONS = new Set([
-    "loadGaussianSplatStream",
-    "attachGaussianSplatStream",
-    "disposeGaussianSplatStream",
-    "loadSplatVoxelCollision",
-    "moveSplatVoxelCamera",
-]);
-
-/** `GaussianSplatStreamOptions`' numeric members, by native field. */
-const NUMERIC_OPTIONS: ReadonlyMap<string, string> = new Map([
-    ["maxSplats", "max_splats"],
-    ["maxCapacitySplats", "max_capacity_splats"],
-    ["maxGpuBytes", "max_gpu_bytes"],
-    ["maxCpuBytes", "max_cpu_bytes"],
-    ["maxConcurrentRequests", "max_concurrent_requests"],
-    ["maxConcurrentDecodes", "max_concurrent_decodes"],
-    ["screenError", "screen_error"],
-    ["lodHysteresis", "lod_hysteresis"],
-    ["lodCooldownMs", "lod_cooldown_ms"],
-    ["maxRetries", "max_retries"],
-]);
-
-export const gaussianSplatStreamValue = (cpp: string): Value => ({
+const gaussianSplatStreamValue = (cpp: string): Value => ({
     kind: "gaussian-splat-stream",
     cpp,
     dataType: { kind: "handle", handle: "gaussian-splat-stream" },
 });
 
-/** An AbortSignal argument as the library's handle on the same signal. */
+/** An AbortSignal argument: the runtime's own signal object, which the library holds. */
 function signalArgument(
     context: SplatStreamIntrinsicContext,
     value: Value,
@@ -68,21 +46,20 @@ function signalArgument(
             site,
             "A splat-stream signal requires an AbortSignal.",
         );
-    const held = context.allocateTemporaryCppName("stream_signal");
-    context.emit({
-        kind: "declaration",
-        type: "const auto",
-        name: held,
-        initializer: value.cpp,
-    });
     return optional
-        ? `(${held}.has_value() ? bbl::splat_stream_platform::abort_signal_of(*${held}) : bbl::splat_stream_platform::AbortSignal{})`
-        : `bbl::splat_stream_platform::abort_signal_of(${held})`;
+        ? `(${value.cpp}).value_or(bbl::js::AbortSignal{})`
+        : value.cpp;
 }
 
-/** `GaussianSplatStreamOptions` from a closed or typed record, each member at the call. */
+/**
+ * `GaussianSplatStreamOptions` from a closed or typed record, each member at
+ * the call: the pinned interface's public members (none `@internal`), each
+ * into its record field (the pinned name in snake case), absent ones left to
+ * the library's normalization.
+ */
 function streamOptions(
     context: SplatStreamIntrinsicContext,
+    call: ts.CallExpression,
     site: ts.Expression | undefined,
 ): string {
     const target = context.allocateTemporaryCppName("stream_options");
@@ -93,42 +70,41 @@ function streamOptions(
         initializer: "{}",
     });
     if (!site) return target;
-    for (const field of retainedOptions(
+    const parameter = context.checker
+        .getResolvedSignature(call)
+        ?.getParameters()[2];
+    const pinned = parameter
+        ? context.checker.getNonNullableType(
+              context.checker.getTypeOfSymbolAtLocation(parameter, call),
+          )
+        : undefined;
+    for (const option of retainedOptions(
         context,
         context.compileValue(site),
         site,
     )) {
-        const native = NUMERIC_OPTIONS.get(field.name);
-        if (native !== undefined) {
-            const type =
-                field.type?.kind === "optional" ? field.type.inner : field.type;
-            if (type?.kind !== "number")
-                context.fail(
-                    site,
-                    `GaussianSplatStreamOptions.${field.name} requires a number.`,
-                );
-            context.emit({
-                kind: "expression",
-                code:
-                    field.type?.kind === "optional"
-                        ? `${target}.${native} = ${field.cpp};`
-                        : `${target}.${native} = ${field.value ? context.castNumber(field.value, "double") : field.cpp};`,
-            });
-        } else if (field.name === "signal") {
-            const value: Value = field.value ?? {
-                kind: "data",
-                cpp: field.cpp,
-                ...(field.type ? { dataType: field.type } : {}),
-            };
-            context.emit({
-                kind: "expression",
-                code: `${target}.signal = ${signalArgument(context, value, site)};`,
-            });
-        } else
+        const declaration = pinned
+            ?.getProperty(option.name)
+            ?.declarations?.find(ts.isPropertySignature);
+        if (
+            !declaration ||
+            ts
+                .getJSDocTags(declaration)
+                .some((tag) => tag.tagName.text === "internal")
+        )
             context.fail(
                 site,
-                `GaussianSplatStreamOptions.${field.name} is not a public stream option.`,
+                `GaussianSplatStreamOptions.${option.name} is not a public stream option.`,
             );
+        const field = `${target}.${cppIdentifier(snakeCase(option.name))}`;
+        emitPresentOption(context, option, (present) => {
+            if (present.type?.kind === "abort-signal")
+                context.emit({
+                    kind: "expression",
+                    code: `${field} = ${present.cpp};`,
+                });
+            else emitScalarOption(context, present, "number", field, site);
+        });
     }
     return target;
 }
@@ -138,7 +114,7 @@ export function compileSplatStreamIntrinsic(
     name: string,
     call: ts.CallExpression,
 ): Value | undefined {
-    if (!STREAM_FUNCTIONS.has(name)) return undefined;
+    if (!SPLAT_STREAM_APPLICATION_ROOTS.has(name)) return undefined;
     if (!context.options.workers) throw new ApplicationRealmRequired();
     context.reachFeature("loader:splat-stream", call);
     switch (name) {
@@ -162,7 +138,7 @@ export function compileSplatStreamIntrinsic(
                 "stream_url",
                 argumentAt(call, 1),
             );
-            const options = streamOptions(context, call.arguments[2]);
+            const options = streamOptions(context, call, call.arguments[2]);
             return {
                 kind: "promise",
                 cpp: `bbl::load_gaussian_splat_stream(bbl::StoredEngine(${owner.cpp}), ${url.cpp}, ${options})`,
@@ -219,7 +195,7 @@ export function compileSplatStreamIntrinsic(
                       context.compileValue(argumentAt(call, 1)),
                       argumentAt(call, 1),
                   )
-                : "bbl::splat_stream_platform::AbortSignal{}";
+                : "bbl::js::AbortSignal{}";
             return {
                 kind: "promise",
                 cpp: `bbl::load_splat_voxel_collision(${url.cpp}, ${signal})`,

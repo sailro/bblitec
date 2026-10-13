@@ -29,3 +29,12 @@ export const webgpuFlagNamespaces: Readonly<
     },
     GPUColorWrite: { RED: 1, GREEN: 2, BLUE: 4, ALPHA: 8, ALL: 15 },
 };
+
+/** Each flag as the folded constant a pinned read names (`GPUBufferUsage.VERTEX`). */
+export const webgpuFlagConstants: ReadonlyMap<string, number> = new Map(
+    Object.entries(webgpuFlagNamespaces).flatMap(([namespace, values]) =>
+        Object.entries(values).map(
+            ([name, value]) => [`${namespace}.${name}`, value] as const,
+        ),
+    ),
+);

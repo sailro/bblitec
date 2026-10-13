@@ -95,11 +95,13 @@ evaluations observe each other's order -- a write or a throw, read from the sour
 callees' bodies, against a read of state, another write or another throw -- are evaluated first into
 temporaries in source order, and effect-free operands stay inline. An awaited operand leaves any lambda
 or braced list (a temporary declared before the statement, assigned through the comma operator); an
-`await` a lambda would still hold, and a compound assignment whose value may change its target, refuse. The web APIs the
-splat-stream transport calls (`fetch`, abort signals, timers, `createImageBitmap`) are schema adapters
-onto `splat_stream_platform.hpp`, which `pal_splat_stream_platform.cpp` defines over the native services (a test may
-define fakes); the loader's engine, scene, camera and renderable objects are `splat_stream_runtime.hpp`'s. A parameter whose type a type-only module erased takes each call's
-argument shape (one overload per signature). A bundled package's classes and calls bind by
+`await` a lambda would still hold, and a compound assignment whose value may change its target, refuse.
+A parameter whose type a type-only module erased takes each call's argument shape (one overload per signature).
+The web platform a lowered library reaches is one shared schema (`web-platform-schema.ts`) over the runtime's own
+URL, AbortController/AbortSignal, DOMException, TextDecoder, Blob and ImageBitmap (`web_platform.hpp`); only fetch,
+image decoding and the timers and task queue are a seam, which `pal_web_platform.cpp` defines over the native
+services and a test may define deterministically. The splat-stream loader's engine, scene, camera and renderable
+objects are `splat_stream_runtime.hpp`'s. A bundled package's classes and calls bind by
 `package#name` to native records and adapters: text-shaper's font, shaping buffers and `shapeInto` are
 HarfBuzz (`text_layout.hpp`). A lazy loader's root is the module function its
 `(await import(...)).name` returns. The pin's WebGPU calls lower one to one onto the device interface in
