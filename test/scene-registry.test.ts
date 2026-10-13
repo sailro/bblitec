@@ -345,6 +345,7 @@ test("registers unique generated scene targets", () => {
             "npe-sprite2d",
             "mosquito-amber",
             "calculator",
+            "trogir-streaming",
         ],
     );
     assert.equal(

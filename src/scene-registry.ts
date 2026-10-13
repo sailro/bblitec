@@ -5212,6 +5212,31 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "trogir-streaming",
+        name: "Trogir Gaussian Splat Streaming",
+        source: "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Trogir Gaussian Splat Streaming",
+        nativeHostUi: "ui/trogir-streaming-host.json",
+        parity: {
+            referenceHostPage:
+                "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
+            // The splats stream from the public dataset at run time, so the
+            // state the capture compares arrives at a different frame on
+            // every run: both captures wait for the stream to settle.
+            referenceSettle: {
+                key: "streamPhase",
+                values: ["idle"],
+                settleMilliseconds: 3000,
+            },
+            maxFullMad: 0.5,
+            maxForegroundMad: 0.5,
+            canvasThresholds: { maxFullMad: 0.5, maxForegroundMad: 0.5 },
+            backgroundColor: [8, 11, 14],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-timer-callback-cells",
         name: "Regression - Timer Callback Cells",
         source: "examples/regression-timer-callback-cells.ts",
