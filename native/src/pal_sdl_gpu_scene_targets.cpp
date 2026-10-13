@@ -648,7 +648,7 @@ GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Eng
     if (record.render.target.value >= state.render_targets.size())
         pal::refuse_invalid_frame_handle("A render-task transmission names no render target.");
     const RenderTargetRecord& target_record =
-        handle_at(engine.render_targets, record.render.target);
+        pal::resolve_render_target(engine, record.render.target, pal::task_target_user(record));
     const GpuRenderTarget& target = handle_at(state.render_targets, record.render.target);
     (void)task_pass_breaks(
         record, {.multisampled = target_sample_count(state, target_record) != SDL_GPU_SAMPLECOUNT_1,
@@ -699,7 +699,8 @@ void encode_task_transmission_grab(GpuState& state, const Engine& engine,
                                    SDL_GPUCommandBuffer* command, TaskHandle task) {
     GpuState::TaskTransmission& grab = prepare_task_transmission(state, engine, task);
     const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
-    const GpuRenderTarget& target = handle_at(state.render_targets, record.render.target);
+    const GpuRenderTarget& target = pal::resolve_gpu_target(
+        engine, state.render_targets, record.render.target, pal::task_target_user(record));
     if (!target.color)
         pal::fail_render_target_has_no_texture();
     if (!state.task_grab_pipeline)

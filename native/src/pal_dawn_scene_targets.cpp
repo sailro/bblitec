@@ -260,18 +260,13 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
     state.frame_graph_height = height;
 }
 
-std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& state,
-                                                                   const Engine& engine,
-                                                                   RenderTargetHandle target_handle,
-                                                                   bool depth_only) {
+std::pair<WGPUTexture, WGPUTextureView>
+dawn_render_target_texture(DawnState& state, const Engine& engine, RenderTargetHandle target_handle,
+                           bool depth_only, pal::TargetUser user) {
     if (target_handle.value >= state.render_targets.size()) {
         pal::refuse_invalid_frame_handle("Frame graph render target handle is invalid.");
     }
-    const RenderTargetRecord& record = handle_at(engine.render_targets, target_handle);
-#if BBLITE_RENDER_TARGET_DISPOSAL
-    if (record.retired)
-        pal::refuse_disposed_render_target("A frame-graph pass or material");
-#endif
+    const RenderTargetRecord& record = pal::resolve_render_target(engine, target_handle, user);
     DawnRenderTarget& target = handle_at(state.render_targets, target_handle);
     if (depth_only) {
         if (!record.sampled_depth || !target.depth_sampled_view) {
@@ -785,7 +780,7 @@ DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const E
     if (record.render.target.value >= state.render_targets.size())
         pal::refuse_invalid_frame_handle("A render-task transmission names no render target.");
     const RenderTargetRecord& target_record =
-        handle_at(engine.render_targets, record.render.target);
+        pal::resolve_render_target(engine, record.render.target, pal::task_target_user(record));
     const DawnRenderTarget& target = handle_at(state.render_targets, record.render.target);
     (void)task_pass_breaks(record, {.multisampled = target_sample_count(state, target_record) > 1,
                                     .swapchain = target_record.swapchain});
@@ -835,7 +830,8 @@ void encode_task_transmission_grab(DawnState& state, const Engine& engine,
                                    WGPUCommandEncoder encoder, TaskHandle task) {
     DawnState::TaskTransmission& grab = prepare_task_transmission(state, engine, task);
     const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
-    const DawnRenderTarget& target = handle_at(state.render_targets, record.render.target);
+    const DawnRenderTarget& target = pal::resolve_gpu_target(
+        engine, state.render_targets, record.render.target, pal::task_target_user(record));
     if (!target.sampled_color_view)
         pal::fail_render_target_has_no_texture();
     if (!state.task_grab_pipeline)

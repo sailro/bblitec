@@ -2117,7 +2117,7 @@ namespace {
 /** Every scene task's share of removeMeshFromScene; whether a non-render entry went. */
 bool remove_mesh_from_scene_tasks(Engine& engine, Scene& scene, MeshHandle mesh) {
     bool task_mesh_removed = false;
-    for (const TaskHandle task_handle : scene.tasks) {
+    for (const TaskHandle task_handle : scene.frame_passes()) {
         FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "task_handle")};
         if (task.kind != FrameTaskKind::render || task.render.shadow_generator.value != invalid_handle) {
             task_mesh_removed |= std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {
@@ -2739,7 +2739,7 @@ ${
     options.liveTaskAdd
         ? `    // \`ctx._frameGraph.build()\` records every task, including those
     // added while the scene was registered before.
-    for (const auto task_handle : scene.tasks) {
+    for (const auto task_handle : scene.frame_passes()) {
         auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
         if (task.record_state == FrameTaskRecordState::pending_build)
             task.record_state = FrameTaskRecordState::queued;
@@ -2749,7 +2749,7 @@ ${
 }\
     // registerScene builds the frame graph after the scene's material groups.
     // resolvePendingTaskMeshes constructs the queued explicit task renderables there.
-    for (const auto task_handle : scene.tasks) {
+    for (const auto task_handle : scene.frame_passes()) {
         auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
         if (task.kind != FrameTaskKind::render || task.record_state == FrameTaskRecordState::recorded) continue;
 ${this.renderTaskRecordSource(options)}
@@ -2794,19 +2794,11 @@ void retire_scene_shadow_states(Scene& scene) {
         // Every caster pass the generator built: one for a single-map
         // generator, one per cascade layer for a cascaded one.
         const std::vector<TaskHandle> retired = shadow.caster_tasks;
-        scene.tasks.erase(
-            std::remove_if(
-                scene.tasks.begin(),
-                scene.tasks.end(),
-                [&retired](const TaskHandle candidate) {
-                    return std::any_of(
-                        retired.begin(),
-                        retired.end(),
-                        [candidate](const TaskHandle task) {
-                            return candidate.value == task.value;
-                        });
-                }),
-            scene.tasks.end());
+        std::erase_if(scene.state->internal_passes, [&retired](const SceneInternalPass& pass) {
+            return std::any_of(retired.begin(), retired.end(), [&pass](const TaskHandle task) {
+                return pass.task.value == task.value;
+            });
+        });
         for (const TaskHandle task : retired) {
             if (auto* record = bbl::handle_find(scene.engine->frame_tasks, task)) {
                 *record = FrameTaskRecord{};
@@ -2858,6 +2850,7 @@ void dispose_scene(Scene& scene) {
     scene.meshes.clear();
     scene.lights.clear();
     scene.tasks.clear();
+    scene.state->internal_passes.clear();
 #if BBLITE_HAS_SHADOWS
     retire_scene_shadow_states(scene);
 #endif

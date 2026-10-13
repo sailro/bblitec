@@ -1574,7 +1574,7 @@ inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Eng
         json.end_array();
     };
     json.begin_array();
-    for (const TaskHandle handle : scene.tasks) {
+    for (const TaskHandle handle : scene.frame_passes()) {
         if (handle.value >= engine.frame_tasks.size())
             continue;
         const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
@@ -1856,7 +1856,7 @@ inline void write_render_capture(const std::string& path, const char* backend, c
     json.field("fogColor", scene.fog_color);
     json.field("meshCount", scene.meshes.size());
     json.field("lightCount", scene.lights.size());
-    json.field("taskCount", scene.tasks.size());
+    json.field("taskCount", scene.frame_passes().size());
 #if BBLITE_HAS_BILLBOARDS
     json.field("billboardSystemCount", scene.state->billboard_renderables.size());
 #endif

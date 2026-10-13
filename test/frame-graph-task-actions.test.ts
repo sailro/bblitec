@@ -273,13 +273,15 @@ int main() {
     bbl::Engine engine;
     auto scene = bbl::create_scene_context(engine);
     bblscene::bbl_ensure_default_render_task(scene);
-    assert(scene.tasks.size() == 3 && engine.frame_tasks.size() == 3);
+    // The pin's one default task; its resolve and present copies follow it.
+    assert(scene.tasks.size() == 1 && scene.frame_passes().size() == 3 &&
+           engine.frame_tasks.size() == 3);
     assert(bbl::handle_at(engine.frame_tasks, scene.tasks[0]).render.name == "default-render-task");
     bblscene::bbl_ensure_default_render_task(scene);
-    assert(scene.tasks.size() == 3);
+    assert(scene.tasks.size() == 1 && scene.frame_passes().size() == 3);
     auto disabled = bbl::configure_scene_render_defaults(bbl::create_scene_context(engine), false, 1);
     bblscene::bbl_ensure_default_render_task(disabled);
-    assert(disabled.tasks.empty());
+    assert(!disabled.has_frame_passes());
 }
 `,
         { flags: ["/Gy"], timeoutMs: 10000, expectedOutput: "" },

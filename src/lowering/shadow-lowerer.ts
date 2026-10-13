@@ -2824,16 +2824,18 @@ void register_scene_with_shadow_support(Scene& scene) {
         const auto& caster_tasks =
             ${recordAt("scene.engine->shadow_generators", "generator")}.caster_tasks;
         if (caster_tasks.empty()) build_shadow_task(scene, generator);
-        // Prepend in reverse order to preserve cascade order. Re-registering
-        // the same scene keeps each pass exactly once.
+        // Caster passes run ahead of every task, as the pin's one shadow
+        // task does: prepended in reverse to keep cascade order.
+        // Re-registering the same scene keeps each pass exactly once.
+        auto& passes = scene.state->internal_passes;
         for (std::size_t index = caster_tasks.size(); index-- > 0;) {
             const TaskHandle task = caster_tasks[index];
-            if (std::any_of(scene.tasks.begin(), scene.tasks.end(),
-                    [&](TaskHandle existing) { return existing.value == task.value; })) {
+            if (std::any_of(passes.begin(), passes.end(),
+                    [&](const SceneInternalPass& existing) { return existing.task.value == task.value; })) {
                 continue;
             }
             ${recordAt("scene.engine->frame_tasks", "task")}.source_scene = scene.state;
-            add_task_at_start(scene, task);
+            add_leading_pass(*scene.state, task);
         }
     }
     register_scene(scene);

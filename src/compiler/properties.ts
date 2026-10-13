@@ -3719,13 +3719,13 @@ export class PropertyAccessLowerer {
         ) {
             return owner;
         }
-        // The native list also holds the default task's resolve and present
-        // copies and each shadow generator's caster passes, where the pin's
-        // holds one task each, so no view of it keeps the pin's indices.
+        // The native list holds the pin's tasks only, but the pin's also
+        // holds its shadow task and its transmission image-processing task,
+        // which native passes replace, so its indices still differ.
         if (owner.kind === "frame-graph" && expression.name.text === "_tasks")
             this.context.fail(
                 expression,
-                "FrameGraph._tasks is private and is not represented: the native scene task list holds tasks the pin's does not, so its indices differ. Removing a task from a live graph is refused.",
+                "FrameGraph._tasks is private and is not represented: the pin's list holds a shadow task and a transmission image-processing task the native scene task list does not, so its indices differ. Removing a task from a live graph is refused.",
             );
         if (
             owner.kind === "utility-layer" &&
