@@ -2661,6 +2661,10 @@ class Compiler implements LoweringServices {
         return this.windowProperties.assignLogical(expression);
     }
 
+    public optionalChainStop(node: ts.Expression): Value | undefined {
+        return this.expressions.optionalChainStop(node);
+    }
+
     public compileValue(expression: ts.Expression): Value {
         const assigned = this.dataLowerer.assignedValue(expression);
         if (assigned) return assigned;

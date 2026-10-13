@@ -522,6 +522,8 @@ export function isNeverResized(
 
 interface DataLoweringContext extends Pick<
     LoweringServices,
+    | "symbols"
+    | "optionalChainStop"
     | "moduleNamespaces"
     | "recordProxies"
     | "options"
@@ -2513,8 +2515,14 @@ export class DataLowerer {
             const bound = ts.isIdentifier(receiver)
                 ? this.context.bindings.lookupOptional(receiver)
                 : undefined;
+            // A chain that stopped at generation is undefined.
+            const stopped =
+                mode === "read" && ts.isOptionalChain(unwrapped)
+                    ? this.context.optionalChainStop(unwrapped)
+                    : undefined;
+            if (stopped) return stopped;
             // A chain continuation (`a?.list()[0]`) indexes the value the
-            // chain produced, absent when an earlier `?.` short-circuited.
+            // chain produced.
             const chainOwner =
                 unwrapped.questionDotToken ||
                 (mode === "read" &&
@@ -2527,13 +2535,9 @@ export class DataLowerer {
                           const value = this.context.compileValue(
                               unwrapped.expression,
                           );
-                          // An absent receiver the chain did not stop at is
-                          // the element reader's TypeError to raise.
-                          return value.kind === "json-null" &&
-                              !unwrapped.questionDotToken &&
-                              !value.optionalChainShortCircuited
-                              ? undefined
-                              : value;
+                          // An absent receiver of a running chain is the
+                          // element reader's TypeError to raise.
+                          return value.kind === "json-null" ? undefined : value;
                       })
                     : undefined) ??
                 (this.isStaticIndex(unwrapped.argumentExpression)
@@ -2546,18 +2550,6 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
-            // The chain stopped at an absent receiver: the whole chain is undefined.
-            if (
-                owner.kind === "json-null" &&
-                (unwrapped.questionDotToken ||
-                    (ts.isOptionalChain(unwrapped) &&
-                        owner.optionalChainShortCircuited))
-            )
-                return {
-                    kind: "json-null",
-                    cpp: "std::nullopt",
-                    optionalChainShortCircuited: true,
-                };
             if (ts.isOptionalChain(unwrapped)) {
                 const optional = this.optionalElementRead(owner, unwrapped);
                 if (optional) return optional;
@@ -3971,6 +3963,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * captureAfterFrames` after `captureAfterFrames !== null` is how
      * every physics scene compares its freeze counter.
      */
+    /**
+     * A member call `run` lowers on its evaluated receiver `owner`: under
+     * the chain's guard when the call is `owner?.m()` or continues a chain
+     * whose absence reached `owner` (`a?.b.stream.getTracks()`), else on
+     * the receiver narrowed present.
+     */
+    public chainReceiverCall(
+        owner: Value,
+        callee: ts.PropertyAccessExpression,
+        call: ts.CallExpression,
+        run: (present: Value) => Value | undefined,
+    ): Value | undefined {
+        return callee.questionDotToken ||
+            (ts.isOptionalChain(callee) && owner.dataType?.kind === "optional")
+            ? this.optionalAccess(owner, call, run)
+            : run(this.narrowOptional(owner, callee.expression));
+    }
+
     public narrowOptional(
         value: Value,
         expression: ts.Expression,

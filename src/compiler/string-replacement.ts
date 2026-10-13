@@ -1,13 +1,15 @@
 import ts from "typescript";
+import { constInitializer } from "./browser-erasure.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
+import type { LoweringServices } from "./lowering-services.js";
+import {
+    regexpCaptureCount,
+    regexpCapturesMayBeUnmatched,
+    type RegExpLayout,
+} from "./regexp-grammar.js";
 import { valueForKind, type Value } from "./types.js";
 import { argumentAt, regularExpressionParts } from "./syntax.js";
-
-/** The empty first alternative exposes every capture without needing a matching input. */
-export function regexpCaptureCount(pattern: string): number {
-    return new RegExp(`|(?:${pattern})`).exec("")!.length - 1;
-}
 
 /** Both replacement overloads use the ordinary inline/stored callback invocation path. */
 export function replacementCallback(
@@ -41,7 +43,7 @@ export function replacementCallback(
     // template name.
     if (pattern) {
         parameters = `[[maybe_unused]] const bbl::js::RegExpReplacement& ${packet}`;
-        const captures = pattern.regexpCaptureCount;
+        const captures = pattern.regexpLayout?.captureCount;
         if (captures !== undefined) {
             supplied = [
                 lowerer.leafValue(`*${packet}.groups[0]`, { kind: "string" }),
@@ -158,71 +160,14 @@ export function replacementCallback(
 }
 
 /**
- * Whether a match can leave a capture group unmatched (undefined): a capture
- * inside an alternative, under a quantifier that admits zero repetitions, or
- * inside a negative lookahead. A capture whose own content alternates still
- * participates.
- */
-export function regexpCapturesMayBeUnmatched(pattern: string): boolean {
-    interface Frame {
-        capturing: boolean;
-        negative: boolean;
-        alternation: boolean;
-        captures: number;
-    }
-    const stack: Frame[] = [
-        { capturing: false, negative: false, alternation: false, captures: 0 },
-    ];
-    let unmatched = false;
-    for (let index = 0; index < pattern.length; index++) {
-        const character = pattern[index]!;
-        const frame = stack.at(-1)!;
-        if (character === "\\") {
-            index++;
-        } else if (character === "[") {
-            for (
-                index++;
-                index < pattern.length && pattern[index] !== "]";
-                index++
-            )
-                if (pattern[index] === "\\") index++;
-        } else if (character === "|") {
-            frame.alternation = true;
-        } else if (character === "(") {
-            const head = pattern.slice(index + 1, index + 4);
-            const capturing = !head.startsWith("?") || /^\?<[^=!]/.test(head);
-            stack.push({
-                capturing,
-                negative: head.startsWith("?!") || head.startsWith("?<!"),
-                alternation: false,
-                captures: 0,
-            });
-        } else if (character === ")" && stack.length > 1) {
-            const group = stack.pop()!;
-            const quantifier = pattern.slice(index + 1);
-            const optional = /^[?*]|^\{0+(?:,\d*)?\}/.test(quantifier);
-            const inner = group.captures;
-            const own = group.capturing ? 1 : 0;
-            if (
-                (group.alternation && inner > 0) ||
-                ((optional || group.negative) && inner + own > 0)
-            )
-                unmatched = true;
-            stack.at(-1)!.captures += inner + own;
-        }
-    }
-    return unmatched || (stack[0]!.alternation && stack[0]!.captures > 0);
-}
-
-/**
  * A RegExp's capture lists: strings when no capture can be unmatched,
  * else `string | undefined`, with the runtime's matching template argument.
  */
 export function regexpGroupsType(
-    pattern: Value,
+    layout: RegExpLayout | undefined,
     cppType: (type: DataType) => string,
 ): { element: DataType; template: string } {
-    if (pattern.regexpOptionalCaptures === false)
+    if (layout?.optionalCaptures === false)
         return { element: { kind: "string" }, template: "" };
     const element: DataType = {
         kind: "optional",
@@ -237,12 +182,11 @@ export function regexpGroupsType(
  * `new RegExp` of literal text, or a `const` bound to one.
  */
 function staticRegExpSource(
-    checker: ts.TypeChecker,
+    context: Pick<LoweringServices, "symbols" | "unwrap">,
     expression: ts.Expression,
     depth = 0,
 ): { pattern: string; flags: string } | undefined {
-    let node = expression;
-    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    const node = context.unwrap(expression);
     if (ts.isRegularExpressionLiteral(node))
         return regularExpressionParts(node);
     if (
@@ -258,13 +202,9 @@ function staticRegExpSource(
             flags: node.arguments[1]?.text ?? "",
         };
     if (!ts.isIdentifier(node) || depth > 4) return undefined;
-    const declaration = checker.getSymbolAtLocation(node)?.valueDeclaration;
-    return declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer &&
-        ts.isVariableDeclarationList(declaration.parent) &&
-        (declaration.parent.flags & ts.NodeFlags.Const) !== 0
-        ? staticRegExpSource(checker, declaration.initializer, depth + 1)
+    const initializer = constInitializer(context, node);
+    return initializer
+        ? staticRegExpSource(context, initializer, depth + 1)
         : undefined;
 }
 
@@ -273,20 +213,23 @@ function staticRegExpSource(
  * source of the expression that produced it.
  */
 export function regexpCaptureFacts(
-    checker: ts.TypeChecker,
+    context: Pick<LoweringServices, "symbols" | "unwrap">,
     value: Value,
     expression: ts.Expression,
 ): Value {
-    if (value.regexpOptionalCaptures !== undefined) return value;
-    const source = staticRegExpSource(checker, expression);
+    if (value.regexpLayout?.optionalCaptures !== undefined) return value;
+    const source = staticRegExpSource(context, expression);
     return source
         ? valueForKind(value.kind, {
               ...value,
-              regexpGlobal: source.flags.includes("g"),
-              regexpCaptureCount: regexpCaptureCount(source.pattern),
-              regexpOptionalCaptures: regexpCapturesMayBeUnmatched(
-                  source.pattern,
-              ),
+              regexpLayout: {
+                  ...value.regexpLayout,
+                  global: source.flags.includes("g"),
+                  captureCount: regexpCaptureCount(source.pattern),
+                  optionalCaptures: regexpCapturesMayBeUnmatched(
+                      source.pattern,
+                  ),
+              },
           })
         : value;
 }

@@ -2351,7 +2351,6 @@ export class AsyncLowerer {
             optionalStorageCpp,
             slotFoundCpp,
             truthinessCpp,
-            optionalChainShortCircuited,
             sharedStorageCpp,
             resourceStorageCpp,
             ownedCpp,
