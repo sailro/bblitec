@@ -2258,6 +2258,7 @@ public:
                         return handle_at(state.geometry_tasks, source.task)
                             .sampled_colors[attachment_index];
                     };
+#if BBLITE_STANDARD_VARIANTS > 0
                     // A material sampling a render target is no task's own
                     // target: its refusal names the material, as on Dawn.
                     const auto material_texture =
@@ -2266,6 +2267,7 @@ public:
                                                                   pal::frame_pass_target_user);
                         return source_texture(source);
                     };
+#endif
                     const auto gpu_mesh_index = [&](MeshHandle handle) {
                         for (std::size_t index = 0; index < graph_plan.items.size(); ++index) {
                             if (graph_plan.items[index].mesh == handle) {
