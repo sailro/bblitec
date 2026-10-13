@@ -2513,11 +2513,28 @@ export class DataLowerer {
             const bound = ts.isIdentifier(receiver)
                 ? this.context.bindings.lookupOptional(receiver)
                 : undefined;
+            // A chain continuation (`a?.list()[0]`) indexes the value the
+            // chain produced, absent when an earlier `?.` short-circuited.
+            const chainOwner =
+                unwrapped.questionDotToken ||
+                (mode === "read" &&
+                    ts.isOptionalChain(unwrapped) &&
+                    ts.isCallExpression(receiver));
             const owner =
                 this.compileDataPath(unwrapped.expression, mode, true) ??
-                (unwrapped.questionDotToken &&
-                !this.namesHandleCollection(unwrapped.expression)
-                    ? this.context.compileValue(unwrapped.expression)
+                (chainOwner && !this.namesHandleCollection(unwrapped.expression)
+                    ? this.context.probeEmission(() => {
+                          const value = this.context.compileValue(
+                              unwrapped.expression,
+                          );
+                          // An absent receiver the chain did not stop at is
+                          // the element reader's TypeError to raise.
+                          return value.kind === "json-null" &&
+                              !unwrapped.questionDotToken &&
+                              !value.optionalChainShortCircuited
+                              ? undefined
+                              : value;
+                      })
                     : undefined) ??
                 (this.isStaticIndex(unwrapped.argumentExpression)
                     ? undefined
@@ -2529,6 +2546,18 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
+            // The chain stopped at an absent receiver: the whole chain is undefined.
+            if (
+                owner.kind === "json-null" &&
+                (unwrapped.questionDotToken ||
+                    (ts.isOptionalChain(unwrapped) &&
+                        owner.optionalChainShortCircuited))
+            )
+                return {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                    optionalChainShortCircuited: true,
+                };
             if (ts.isOptionalChain(unwrapped)) {
                 const optional = this.optionalElementRead(owner, unwrapped);
                 if (optional) return optional;
@@ -14005,10 +14034,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         )
             return undefined;
         const type = this.dataTypeAt(expression);
+        const scalars = ["boolean", "number", "string", "enum"];
+        // `maybe || fallback` with a present fallback is present: the left
+        // value when truthy (so present), the fallback otherwise. Strings
+        // take compileStringLogicalValue.
+        const leftType = this.dataTypeAt(expression.left);
         if (
-            type?.kind !== "optional" ||
-            !["boolean", "number", "string", "enum"].includes(type.inner.kind)
+            operator === ts.SyntaxKind.BarBarToken &&
+            type !== undefined &&
+            ["boolean", "number", "enum"].includes(type.kind) &&
+            leftType?.kind === "optional" &&
+            leftType.inner.kind === type.kind
         )
+            return this.leafValue(
+                this.compileLogicalSelection(
+                    expression,
+                    type,
+                    "logical_value",
+                    (left, condition) => {
+                        const present =
+                            left.dataType?.kind === "optional"
+                                ? this.leafValue(
+                                      optionalValueCpp(left.cpp),
+                                      left.dataType.inner,
+                                  )
+                                : left;
+                        return `(${condition} ? ${this.compileKnownValueForSink(present, type, expression.left)} : ${this.context.dataTypes.cppType(type)}{})`;
+                    },
+                ),
+                type,
+            );
+        if (type?.kind !== "optional" || !scalars.includes(type.inner.kind))
             return undefined;
         // A truthy present value contributes only its absent state to `&&`;
         // this includes unions of object shapes and nonempty literal types.
