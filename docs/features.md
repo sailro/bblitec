@@ -393,6 +393,9 @@ ArcRotate/Free cameras, framing, orthographic projection, viewports and supporte
 ArcRotate `wheelPrecision`, `angularSensibility` and `panningSensibility` writes reach attached controls.
 `attachControl`, `attachFreeControl` and `attachConfigurableFreeControl` retain independent attachment
 state and callback order. Their disposers remove only that attachment; runtime reattachment is supported.
+In a Window realm a canvas's pointer input reaches them as in a standalone program, and keys reach them once a
+primary press on the canvas gave it keyboard focus (a press elsewhere takes it away), unless a listener or the
+retained UI consumed the key.
 Orthographic options admit halfHeight and optional left/right/bottom/top planes; later plane writes refuse.
 FreeCamera `inertia` writes reach attached free controls. World matrices admit copied typed-array reads,
 constant indices 0–15 and `ArrayLike<number>` parameters (a numeric copy at the call). Tracked transforms and
