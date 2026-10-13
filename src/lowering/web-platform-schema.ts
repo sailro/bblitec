@@ -15,7 +15,11 @@ import { stringLiteral } from "../cpp-literals.js";
 import { isUtf8Label } from "../compiler/text-codecs.js";
 import {
     AUDIO_BUFFER_PROPERTIES,
+    AUDIO_CONTEXT_TRANSITIONS,
     AUDIO_ELEMENT_PROPERTIES,
+    AUDIO_NODE_FACTORIES,
+    BIQUAD_FILTER_KINDS,
+    OSCILLATOR_WAVES,
     AUDIO_LISTENER_PARAMS,
     AUDIO_PARAM_NAMES,
     AUDIO_PARAM_SCHEDULES,
@@ -532,6 +536,31 @@ const listenerSetter = (
                 .join(" ")} }(${owner})`,
     );
 
+/**
+ * `node.type = "<type>"`: the oscillator wave or filter kind a generation-known
+ * spelling names; a library and an application both write a string literal.
+ */
+function nodeTypeAssign(owner: string, value: string): string {
+    const spelling: unknown = value.startsWith('"')
+        ? JSON.parse(value)
+        : undefined;
+    const wave = OSCILLATOR_WAVES.find(([name]) => name === spelling);
+    if (wave)
+        return `${AUDIO}::audio_set_oscillator_wave(${owner}, ${AUDIO}::OscillatorWave::${wave[1]})`;
+    const kind = BIQUAD_FILTER_KINDS.find(([name]) => name === spelling);
+    if (kind)
+        return `${AUDIO}::audio_set_filter_kind(${owner}, ${AUDIO}::BiquadFilterKind::${kind[1]})`;
+    throw new Error(`${value} is not a lowered oscillator or filter type.`);
+}
+
+/** `buffer.copyFromChannel` / `copyToChannel(samples, channel, offset?)`. */
+const channelCopy = (direction: "FromChannel" | "ToChannel"): MemberSpec =>
+    spelled(
+        fn([{ kind: "typed", element: "f32" }, number, number], none),
+        (owner, [samples, channel, offset]) =>
+            `${AUDIO}::audio_buffer_copy(${owner}, ${samples}, bbl::js::to_uint32(${channel}), ${offset === undefined ? "0u" : `bbl::js::to_uint32(${offset})`}, ${AUDIO}::AudioBufferCopy::${direction})`,
+    );
+
 /** A member table's scalar shape. */
 const scalar = (shape: "boolean" | "number" | "string"): RecordShape =>
     shape === "boolean" ? boolean : shape === "number" ? number : string;
@@ -599,22 +628,45 @@ export const webAudioRecords: readonly RecordSpec[] = [
                     ] as const,
             ),
             [
+                // `connect(node)` returns the node; `connect(param)` an
+                // automation edge, its result unused.
                 "connect",
                 spelled(
                     fn([audioNode], audioNode),
                     (owner, [destination]) =>
-                        `[&](const ${AUDIO}::AudioNodeHandle& destination) { ${AUDIO}::audio_connect(${owner}, destination); return destination; }(${destination})`,
+                        `[&](const auto& destination) { ${AUDIO}::audio_connect(${owner}, destination); return destination; }(${destination})`,
                 ),
             ],
             [
-                // `disconnect()` drops every edge, `disconnect(node)` that node's.
+                // `disconnect()` drops every edge, `disconnect(node[, output[,
+                // input]])` the edges into that node.
                 "disconnect",
-                spelled(fn([audioNode], none), (owner, args) =>
-                    args.length === 0
-                        ? `${AUDIO}::audio_disconnect(${owner})`
-                        : `${AUDIO}::audio_disconnect(${owner}, ${args[0]})`,
+                spelled(
+                    fn([audioNode, number, number], none),
+                    (owner, args) =>
+                        `${AUDIO}::audio_disconnect(${[owner, ...args].join(", ")})`,
                 ),
             ],
+            [
+                "buffer",
+                {
+                    shape: optional(record("AudioBuffer")),
+                    access: (owner) =>
+                        `${AUDIO}::audio_source_buffer(${owner})`,
+                    assign: (owner, value) =>
+                        `${AUDIO}::audio_set_buffer(${owner}, ${value})`,
+                },
+            ],
+            [
+                // A handler property: an empty callback clears it.
+                "onended",
+                {
+                    shape: optional(fn([], none)),
+                    assign: (owner, value) =>
+                        `${AUDIO}::audio_set_ended_handler(${owner}, ${value})`,
+                },
+            ],
+            ["type", { shape: string, assign: nodeTypeAssign }],
             [
                 // `start(when?, offset?, duration?)`, a `duration` that may
                 // be `undefined` included.
@@ -724,6 +776,24 @@ export const webAudioRecords: readonly RecordSpec[] = [
             ],
             // The context's one listener, seen through the context.
             ["listener", reads(record("AudioListener"), (owner) => owner)],
+            ...AUDIO_NODE_FACTORIES.map(
+                ([name, factory]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([], audioNode),
+                            (owner) => `${AUDIO}::${factory}(${owner})`,
+                        ),
+                    ] as const,
+            ),
+            [
+                "createBuffer",
+                spelled(
+                    fn([number, number, number], record("AudioBuffer")),
+                    (owner, [channels, frames, rate]) =>
+                        `${AUDIO}::audio_create_buffer(${owner}, static_cast<std::uint32_t>(${channels}), static_cast<std::uint32_t>(${frames}), ${rate})`,
+                ),
+            ],
             [
                 "createMediaStreamDestination",
                 spelled(
@@ -732,6 +802,33 @@ export const webAudioRecords: readonly RecordSpec[] = [
                         `${AUDIO}::audio_create_media_stream_destination(${owner})`,
                 ),
             ],
+            [
+                "createMediaStreamSource",
+                spelled(
+                    fn([record("MediaStream")], audioNode),
+                    (owner, [stream]) =>
+                        `${AUDIO}::audio_create_media_stream_source(${owner}, ${stream})`,
+                ),
+            ],
+            [
+                "createMediaElementSource",
+                spelled(
+                    fn([record("HTMLAudioElement")], audioNode),
+                    (owner, [element]) =>
+                        `${AUDIO}::audio_create_media_element_source(${owner}, ${element})`,
+                ),
+            ],
+            ...AUDIO_CONTEXT_TRANSITIONS.map(
+                ([name, action]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([], promise(none)),
+                            (owner) =>
+                                `${AUDIO}::audio_context_transition(${owner}, ${AUDIO}::AudioContextAction::${action})`,
+                        ),
+                    ] as const,
+            ),
             [
                 "decodeAudioData",
                 spelled(
@@ -747,16 +844,29 @@ export const webAudioRecords: readonly RecordSpec[] = [
         cpp: "pal::AudioBufferHandle",
         reference: false,
         native: true,
-        members: members(
-            AUDIO_BUFFER_PROPERTIES.map(([name, property]) => [
-                name,
-                reads(
-                    number,
-                    (owner) =>
-                        `${AUDIO}::audio_buffer_property(${owner}, ${AUDIO}::AudioBufferProperty::${property})`,
+        members: members([
+            ...AUDIO_BUFFER_PROPERTIES.map(
+                ([name, property]) =>
+                    [
+                        name,
+                        reads(
+                            number,
+                            (owner) =>
+                                `${AUDIO}::audio_buffer_property(${owner}, ${AUDIO}::AudioBufferProperty::${property})`,
+                        ),
+                    ] as const,
+            ),
+            [
+                "getChannelData",
+                spelled(
+                    fn([number], { kind: "typed", element: "f32" }),
+                    (owner, [channel]) =>
+                        `${AUDIO}::audio_buffer_channel(${owner}, static_cast<std::uint32_t>(${channel}))`,
                 ),
-            ]),
-        ),
+            ],
+            ["copyFromChannel", channelCopy("FromChannel")],
+            ["copyToChannel", channelCopy("ToChannel")],
+        ]),
     },
     {
         // `HTMLAudioElement` (`pal_audio_element.hpp`): a library probes it,
@@ -793,6 +903,17 @@ export const webAudioRecords: readonly RecordSpec[] = [
                     fn([], promise(none)),
                     (owner) => `${AUDIO}::audio_element_play(${owner})`,
                 ),
+            ],
+            [
+                // Only the source attribute is represented.
+                "removeAttribute",
+                spelled(fn([string], none), (owner, [name]) => {
+                    if (name !== stringLiteral("src"))
+                        throw new Error(
+                            'An Audio element removes only its "src" attribute.',
+                        );
+                    return `${AUDIO}::audio_element_remove_source(${owner})`;
+                }),
             ],
             ...(["pause", "load"] as const).map(
                 (name) =>
@@ -862,6 +983,32 @@ export const webAudioRecords: readonly RecordSpec[] = [
                         ),
                     ] as const,
             ),
+            ...(["addTrack", "removeTrack"] as const).map(
+                (name) =>
+                    [
+                        name,
+                        spelled(
+                            fn([record("MediaStreamTrack")], none),
+                            (owner, [track]) =>
+                                `${AUDIO}::media_stream_${name === "addTrack" ? "add" : "remove"}_track(${owner}, ${track})`,
+                        ),
+                    ] as const,
+            ),
+            [
+                "getTrackById",
+                spelled(
+                    fn([string], optional(record("MediaStreamTrack"))),
+                    (owner, [id]) =>
+                        `${AUDIO}::media_stream_track_by_id(${owner}, ${id})`,
+                ),
+            ],
+            [
+                "clone",
+                spelled(
+                    fn([], record("MediaStream")),
+                    (owner) => `${AUDIO}::media_stream_clone(${owner})`,
+                ),
+            ],
             ...MEDIA_STREAM_TRACK_LISTS.map(
                 ([name, kind]) =>
                     [
@@ -900,12 +1047,34 @@ export const webAudioRecords: readonly RecordSpec[] = [
                     (owner) => `${AUDIO}::media_stream_track_stop(${owner})`,
                 ),
             ],
+            [
+                "clone",
+                spelled(
+                    fn([], record("MediaStreamTrack")),
+                    (owner) => `${AUDIO}::media_stream_track_clone(${owner})`,
+                ),
+            ],
         ]),
     },
     descriptor("AudioBufferSourceOptions", "pal::AudioBufferSourceInit", [
         ["buffer", field(optional(record("AudioBuffer")))],
     ]),
 ];
+
+/** A Web Audio or media property's native write, as the records above spell it. */
+export function webAudioMemberAssign(
+    record: string,
+    member: string,
+): (owner: string, value: string) => string {
+    const assign = webAudioRecords
+        .find((spec) => spec.pinned.includes(record))
+        ?.members?.get(member)?.assign;
+    if (!assign)
+        throw new Error(
+            `The Web Audio records spell no ${record}.${member} write.`,
+        );
+    return assign;
+}
 
 /** A Web Audio or media property's native read, as the records above spell it. */
 export function webAudioMemberRead(

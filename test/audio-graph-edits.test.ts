@@ -114,7 +114,7 @@ test("application Web Audio lowers targeted disconnects, value curves and loop p
     `);
     assert.match(
         result.cpp,
-        /bbl::pal::audio_disconnect\(v_bblite_audio_disconnect_source_\d+, v_bblite_audio_disconnect_destination_\d+\)/,
+        /bbl::pal::audio_disconnect\(v_source, v_right, 0\.0, 0\.0\)/,
     );
     assert.match(result.cpp, /bbl::pal::audio_param_set_value_curve\(/);
     assert.match(result.cpp, /bbl::pal::audio_set_loop_start\(/);

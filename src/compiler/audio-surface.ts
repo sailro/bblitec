@@ -19,10 +19,17 @@ import {
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { packagedUrlAssets, type StaticFetchContext } from "./static-fetch.js";
 import { deploymentUrl } from "./deployment.js";
-import { webAudioMemberCall } from "../lowering/web-platform-schema.js";
 import {
+    webAudioMemberAssign,
+    webAudioMemberCall,
+} from "../lowering/web-platform-schema.js";
+import {
+    AUDIO_CONTEXT_TRANSITIONS,
     AUDIO_ELEMENT_PROPERTIES,
+    AUDIO_NODE_FACTORIES,
     AUDIO_PARAM_SCHEDULES,
+    BIQUAD_FILTER_KINDS,
+    OSCILLATOR_WAVES,
     PANNER_MODELS,
     PANNER_PROPERTIES,
     SOURCE_LOOP_MEMBERS,
@@ -60,6 +67,8 @@ interface AudioWriteContext
             | "options"
             | "callbacks"
             | "dataLowerer"
+            | "evaluationOrder"
+            | "cppString"
         > {}
 
 /** What a method call needs. The expression compiler satisfies it. */
@@ -95,26 +104,6 @@ const AUDIO_KINDS = new EmissionSet<string>([
     "audio-param",
 ]);
 
-/** `oscillator.type`, as the Web Audio strings spell it. */
-const OSCILLATOR_WAVES: Readonly<Record<string, string>> = {
-    sine: "Sine",
-    square: "Square",
-    sawtooth: "Sawtooth",
-    triangle: "Triangle",
-};
-
-/** `filter.type`. */
-const FILTER_KINDS: Readonly<Record<string, string>> = {
-    lowpass: "Lowpass",
-    highpass: "Highpass",
-    bandpass: "Bandpass",
-    lowshelf: "Lowshelf",
-    highshelf: "Highshelf",
-    peaking: "Peaking",
-    notch: "Notch",
-    allpass: "Allpass",
-};
-
 /**
  * Whether `member` is an oscillator's or filter's `type`: a closed string
  * enum the graph composes at generation from a static string.
@@ -140,33 +129,6 @@ export function isComposedAudioEnum(
     );
 }
 
-/** `ctx.create*()`, mapped to the PAL factory each names. */
-const NODE_FACTORIES: Readonly<
-    Record<string, { factory: string; feature?: Feature }>
-> = {
-    createGain: { factory: "audio_create_gain" },
-    createOscillator: {
-        factory: "audio_create_oscillator",
-        feature: "audio:oscillator",
-    },
-    createBiquadFilter: {
-        factory: "audio_create_biquad_filter",
-        feature: "audio:biquad-filter",
-    },
-    createStereoPanner: {
-        factory: "audio_create_stereo_panner",
-        feature: "audio:stereo-panner",
-    },
-    createPanner: {
-        factory: "audio_create_panner",
-        feature: "audio:panner",
-    },
-    createBufferSource: {
-        factory: "audio_create_buffer_source",
-        feature: "audio:buffer-source",
-    },
-};
-
 /** Optional host capabilities absent from the native audio platform. Keep
  * their feature-detection answer and unguarded-call diagnostic together. */
 const UNAVAILABLE_CONTEXT_METHODS: Readonly<Record<string, string>> = {
@@ -189,7 +151,7 @@ export function audioTypeof(
     if (receiver?.kind !== "audio-context") return undefined;
     const result = UNAVAILABLE_CONTEXT_METHODS[property.name.text]
         ? "undefined"
-        : NODE_FACTORIES[property.name.text] ||
+        : AUDIO_NODE_FACTORIES.some(([name]) => name === property.name.text) ||
             [
                 "resume",
                 "suspend",
@@ -339,11 +301,6 @@ export function compileAudioConstructor(
     };
 }
 
-/** `param.<method>(value, time)`. */
-const PARAM_SCHEDULES: ReadonlyMap<string, string> = new Map(
-    AUDIO_PARAM_SCHEDULES,
-);
-
 /**
  * Web Audio the reached slice does not lower, each refusing by name
  * rather than compiling to something quieter.
@@ -449,10 +406,10 @@ function emitAudioNode(context: AudioCallContext, initializer: string): Value {
     return { kind: "audio-node", cpp: node };
 }
 
-/** An audio call's operand, evaluated into a temporary in source order. */
+/** An audio call's operand, evaluated into a temporary where it stands. */
 function pinnedAudioOperand(
     context: AudioCallContext,
-    value: Value,
+    cpp: string,
     label: string,
 ): string {
     const name = context.allocateTemporaryCppName(label);
@@ -460,25 +417,38 @@ function pinnedAudioOperand(
         kind: "declaration",
         type: "const auto",
         name,
-        initializer: value.cpp,
+        initializer: cpp,
     });
     return name;
 }
 
-/** A numeric operand, evaluated into a temporary in source order. */
-function numberOperand(
+/**
+ * A call's receiver and arguments in JavaScript's order, for its record's
+ * spelling: an operand a later one could change, or see changed, is read
+ * into a temporary first (`EvaluationOrder.operandsToPin`). `argument`
+ * compiles one argument to the native type the record takes.
+ */
+function orderedOperands(
     context: AudioCallContext,
-    argument: ts.Expression,
-    label: string,
-): string {
-    const name = context.allocateTemporaryCppName(label);
-    context.emit({
-        kind: "declaration",
-        type: "const double",
-        name,
-        initializer: context.compileNumber(argument, "double"),
+    call: ts.CallExpression,
+    callee: ts.PropertyAccessExpression,
+    receiver: Value,
+    argument: (expression: ts.Expression, index: number) => string,
+): { owner: string; args: string[] } {
+    const pins = context.evaluationOrder.operandsToPin([
+        callee.expression,
+        ...call.arguments,
+    ]);
+    const owner = pins[0]
+        ? pinnedAudioOperand(context, receiver.cpp, "audio_receiver")
+        : receiver.cpp;
+    const args = call.arguments.map((expression, index) => {
+        const cpp = argument(expression, index);
+        return pins[index + 1]
+            ? pinnedAudioOperand(context, cpp, "audio_argument")
+            : cpp;
     });
-    return name;
+    return { owner, args };
 }
 
 export function compileAudioMethodCall(
@@ -681,7 +651,9 @@ function compileAudioElementMethod(
             );
         return {
             kind: "void",
-            cpp: `bbl::pal::audio_element_remove_source(${receiver.cpp})`,
+            cpp: webAudioMemberCall("HTMLAudioElement", method)(receiver.cpp, [
+                context.cppString("src"),
+            ]),
         };
     }
     if (method === "play" || method === "pause" || method === "load") {
@@ -717,231 +689,68 @@ function compileAudioReceiverMethod(
         method === "decodeAudioData" &&
         call.arguments.length === 1
     ) {
-        const encoded = context.compileValue(argumentAt(call, 0));
-        if (
-            encoded.kind === "data" &&
-            encoded.dataType?.kind === "arraybuffer"
-        ) {
-            context.reachFeature("audio:buffer-source", call);
-            context.reachFeature("audio:decoded-buffer", call);
-            let input = context.unwrap(argumentAt(call, 0));
-            while (ts.isAwaitExpression(input))
-                input = context.unwrap(input.expression);
-            const sources =
-                encoded.fetchedBytes?.expression === input
-                    ? encoded.fetchedBytes.sources
-                    : undefined;
-            const codecs = sources
-                ? new Set(
-                      sources.flatMap((source) => {
-                          const codec = audioCodecForBytes(
-                              readAssetBytesSync(
-                                  source,
-                                  context.options.fileName,
-                              ),
-                          );
-                          return codec ? [codec] : [];
-                      }),
-                  )
-                : AUDIO_CODECS;
-            for (const codec of codecs)
-                context.reachFeature(`audio:decode-${codec}`, call);
-            if (context.options.workers)
-                return context.dataLowerer.leafValue(
-                    `bbl::pal::audio_decode_async(${receiver.cpp}, ${encoded.cpp})`,
-                    {
-                        kind: "promise",
-                        result: { kind: "handle", handle: "audio-buffer" },
-                    },
-                );
-            const decoded = context.allocateTemporaryCppName("decoded_audio");
-            context.emit({
-                kind: "declaration",
-                type: "const bbl::pal::AudioBufferHandle",
-                name: decoded,
-                initializer: `bbl::pal::audio_decode_buffer(${receiver.cpp}, ${encoded.cpp})`,
-            });
-            return {
-                kind: "audio-buffer",
-                cpp: decoded,
-                dataType: { kind: "handle", handle: "audio-buffer" },
-                optionalFoundCpp: `${decoded}.value != 0u`,
-            };
-        }
+        const decoded = compileAudioDecode(context, call, receiver);
+        if (decoded) return decoded;
     }
     refuseAudioName(context, REFUSED_METHODS, method, call, "Web Audio");
 
     if (receiver.kind === "audio-element")
         return compileAudioElementMethod(context, call, callee, receiver);
+    if (receiver.kind === "audio-context")
+        return compileAudioContextMethod(context, call, callee, receiver);
 
-    if (
-        receiver.kind === "audio-context" &&
-        method === "createMediaElementSource"
-    ) {
-        context.expectArgumentCount(call, 1, 1);
-        const audioContext = pinnedAudioOperand(
-            context,
-            receiver,
-            "media_element_context",
-        );
-        const element = context.compileValue(argumentAt(call, 0));
-        if (element.kind !== "audio-element")
-            context.fail(
-                argumentAt(call, 0),
-                "createMediaElementSource takes an Audio element.",
-            );
-        context.reachFeature("audio:media-element", call);
-        return emitAudioNode(
-            context,
-            `bbl::pal::audio_create_media_element_source(${audioContext}, ${element.cpp})`,
-        );
-    }
+    const number = (expression: ts.Expression): string =>
+        context.compileNumber(expression, "double");
+    /** A typed-array operand the record's call takes. */
+    const samples = (expression: ts.Expression, message: string): string => {
+        const value = context.compileValue(expression);
+        if (value.dataType?.kind !== "f32array")
+            context.fail(expression, message);
+        return value.cpp;
+    };
 
-    if (receiver.kind === "audio-context") {
-        if (method === "resume" || method === "suspend" || method === "close") {
-            if (call.arguments.length)
+    if (receiver.kind === "audio-buffer") {
+        if (method === "getChannelData") {
+            if (call.arguments.length !== 1)
                 context.fail(
                     call,
-                    `AudioContext.${method} takes no arguments.`,
+                    "getChannelData expects exactly one channel index.",
                 );
-            if (!context.options.workers) throw new ApplicationRealmRequired();
-            const action =
-                method === "resume"
-                    ? "Resume"
-                    : method === "suspend"
-                      ? "Suspend"
-                      : "Close";
-            return {
-                ...context.dataLowerer.leafValue(
-                    `bbl::pal::audio_context_transition(${receiver.cpp}, bbl::pal::AudioContextAction::${action})`,
-                    { kind: "promise" },
-                ),
-                impure: true,
-            };
-        }
-        if (method === "createBuffer") {
-            if (call.arguments.length !== 3) {
-                context.fail(
-                    call,
-                    "createBuffer expects channel count, frame count, and sample rate.",
-                );
-            }
-            context.reachFeature("audio:buffer-source", call);
-            return {
-                kind: "audio-buffer",
-                cpp:
-                    `bbl::pal::audio_create_buffer(${receiver.cpp}, ` +
-                    `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 0))}), ` +
-                    `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 1))}), ` +
-                    `${context.compileNumber(argumentAt(call, 2), "double")})`,
-                dataType: { kind: "handle", handle: "audio-buffer" },
-            };
-        }
-        if (
-            method === "createMediaStreamDestination" ||
-            method === "createMediaStreamSource"
-        ) {
-            const source = method === "createMediaStreamSource";
-            context.expectArgumentCount(call, source ? 1 : 0, source ? 1 : 0);
-            context.reachFeature("audio:media-stream", call);
-            context.reachFeature("platform:media-stream", call);
-            context.reachJsData();
-            const owner = pinnedAudioOperand(
+            const { owner, args } = orderedOperands(
                 context,
+                call,
+                callee,
                 receiver,
-                "audio_stream_context",
+                number,
             );
-            const stream = source
-                ? `, ${context.dataLowerer.compileForSink(argumentAt(call, 0), {
-                      kind: "handle",
-                      handle: "media-stream",
-                  })}`
-                : "";
-            return emitAudioNode(
+            return {
+                kind: "data",
+                cpp: webAudioMemberCall("AudioBuffer", method)(owner, args),
+                dataType: { kind: "f32array" },
+            };
+        }
+        if (method === "copyFromChannel" || method === "copyToChannel") {
+            context.expectArgumentCount(call, 2, 3);
+            context.reachFeature("audio:buffer-source", call);
+            const { owner, args } = orderedOperands(
                 context,
-                `bbl::pal::audio_create_media_stream_${source ? "source" : "destination"}(${owner}${stream})`,
-            );
-        }
-        const factory = NODE_FACTORIES[method];
-        if (!factory) {
-            return undefined;
-        }
-        if (call.arguments.length !== 0) {
-            context.fail(
                 call,
-                `${method} takes no arguments in the reached slice.`,
+                callee,
+                receiver,
+                (expression, index) =>
+                    index === 0
+                        ? samples(
+                              expression,
+                              `${method} requires a Float32Array.`,
+                          )
+                        : number(expression),
             );
+            return {
+                kind: "void",
+                cpp: webAudioMemberCall("AudioBuffer", method)(owner, args),
+            };
         }
-        if (factory.feature) {
-            context.reachFeature(factory.feature, call);
-        }
-        return emitAudioNode(
-            context,
-            `bbl::pal::${factory.factory}(${receiver.cpp})`,
-        );
-    }
-
-    if (receiver.kind === "audio-buffer" && method === "getChannelData") {
-        if (call.arguments.length !== 1) {
-            context.fail(
-                call,
-                "getChannelData expects exactly one channel index.",
-            );
-        }
-        return {
-            kind: "data",
-            cpp:
-                `bbl::pal::audio_buffer_channel(${receiver.cpp}, ` +
-                `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 0))}))`,
-            dataType: { kind: "f32array" },
-        };
-    }
-
-    if (
-        receiver.kind === "audio-buffer" &&
-        (method === "copyFromChannel" || method === "copyToChannel")
-    ) {
-        context.expectArgumentCount(call, 2, 3);
-        context.reachFeature("audio:buffer-source", call);
-        const buffer = context.allocateTemporaryCppName("audio_copy_buffer");
-        context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: buffer,
-            initializer: receiver.cpp,
-        });
-        const samples = context.compileValue(argumentAt(call, 0));
-        if (samples.dataType?.kind !== "f32array")
-            context.fail(
-                argumentAt(call, 0),
-                `${method} requires a Float32Array.`,
-            );
-        const input = context.allocateTemporaryCppName("audio_copy_samples");
-        context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: input,
-            initializer: samples.cpp,
-        });
-        const index = (argument: ts.Expression): string => {
-            const cpp = context.compileNumber(argument, "double");
-            const name = context.allocateTemporaryCppName("audio_copy_index");
-            context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: name,
-                initializer: `bbl::js::to_uint32(${cpp})`,
-            });
-            return name;
-        };
-        const channel = index(argumentAt(call, 1));
-        const offset = call.arguments[2] ? index(call.arguments[2]) : "0u";
-        const direction =
-            method === "copyToChannel" ? "ToChannel" : "FromChannel";
-        return {
-            kind: "void",
-            cpp: `bbl::pal::audio_buffer_copy(${buffer}, ${input}, ${channel}, ${offset}, bbl::pal::AudioBufferCopy::${direction})`,
-        };
+        return undefined;
     }
 
     if (receiver.kind === "audio-node") {
@@ -964,102 +773,86 @@ function compileAudioReceiverMethod(
                         `bbl::pal::audio_${removing ? "remove" : "add"}_ended_listener(${target}, ${identity}, ${rest})`,
                 );
             case "connect": {
-                if (call.arguments.length !== 1) {
+                if (call.arguments.length !== 1)
                     context.fail(
                         call,
                         "connect(destination) is the reached form.",
                     );
-                }
-                const destination = context.compileValue(argumentAt(call, 0));
-                if (destination.kind === "audio-param") {
-                    return {
-                        kind: "void",
-                        cpp:
-                            `bbl::pal::audio_connect_param(${receiver.cpp}, ` +
-                            `${destination.cpp})`,
-                    };
-                }
-                if (destination.kind !== "audio-node") {
-                    context.fail(
-                        argumentAt(call, 0),
-                        "connect expects an audio node or AudioParam.",
-                    );
-                }
-                return {
-                    ...destination,
-                    cpp:
-                        `(bbl::pal::audio_connect(${receiver.cpp}, ` +
-                        `${destination.cpp}), ${destination.cpp})`,
-                    impure: true,
-                };
+                let destination: Value | undefined;
+                const { owner, args } = orderedOperands(
+                    context,
+                    call,
+                    callee,
+                    receiver,
+                    (expression) => {
+                        destination = context.compileValue(expression);
+                        if (
+                            destination.kind !== "audio-node" &&
+                            destination.kind !== "audio-param"
+                        )
+                            context.fail(
+                                expression,
+                                "connect expects an audio node or AudioParam.",
+                            );
+                        return destination.cpp;
+                    },
+                );
+                const cpp = webAudioMemberCall("AudioNode", method)(
+                    owner,
+                    args,
+                );
+                // `connect(param)` returns undefined; `connect(node)` the node.
+                return destination!.kind === "audio-param"
+                    ? { kind: "void", cpp }
+                    : { ...destination!, cpp, impure: true };
             }
             case "disconnect": {
-                if (call.arguments.length === 0)
-                    return {
-                        kind: "void",
-                        cpp: `bbl::pal::audio_disconnect(${receiver.cpp})`,
-                    };
                 // `disconnect(destination[, output[, input]])`: the
                 // operands in order, then the edge.
-                context.expectArgumentCount(call, 1, 3);
-                const node = pinnedAudioOperand(
+                context.expectArgumentCount(call, 0, 3);
+                const { owner, args } = orderedOperands(
                     context,
+                    call,
+                    callee,
                     receiver,
-                    "audio_disconnect_source",
+                    (expression, index) => {
+                        if (index > 0) return number(expression);
+                        const destination = context.compileValue(expression);
+                        if (destination.kind !== "audio-node")
+                            context.fail(
+                                expression,
+                                destination.kind === "audio-param"
+                                    ? "disconnect(AudioParam) is not lowered; disconnect a node destination."
+                                    : "disconnect expects an audio node destination.",
+                            );
+                        return destination.cpp;
+                    },
                 );
-                const destination = context.compileValue(argumentAt(call, 0));
-                if (destination.kind !== "audio-node")
-                    context.fail(
-                        argumentAt(call, 0),
-                        destination.kind === "audio-param"
-                            ? "disconnect(AudioParam) is not lowered; disconnect a node destination."
-                            : "disconnect expects an audio node destination.",
-                    );
-                const target = pinnedAudioOperand(
-                    context,
-                    destination,
-                    "audio_disconnect_destination",
-                );
-                const indices = call.arguments
-                    .slice(1)
-                    .map((argument) =>
-                        numberOperand(
-                            context,
-                            argument,
-                            "audio_disconnect_index",
-                        ),
-                    );
                 return {
                     kind: "void",
-                    cpp: `bbl::pal::audio_disconnect(${[node, target, ...indices].join(", ")})`,
+                    cpp: webAudioMemberCall("AudioNode", method)(owner, args),
                 };
             }
             case "start":
             case "stop": {
                 // The spec's own default: `start()` is `start(0)`, which
                 // the engine reads as "now".
-                const when =
-                    call.arguments.length > 0
-                        ? context.compileNumber(argumentAt(call, 0), "double")
-                        : "0.0";
                 const maximum = method === "start" ? 3 : 1;
-                if (call.arguments.length > maximum) {
+                if (call.arguments.length > maximum)
                     context.fail(
                         call,
                         `${method} expects at most ${maximum} arguments.`,
                     );
-                }
-                const trailing = call.arguments
-                    .slice(1)
-                    .map((argument) =>
-                        context.compileNumber(argument, "double"),
-                    );
+                const { owner, args } = orderedOperands(
+                    context,
+                    call,
+                    callee,
+                    receiver,
+                    number,
+                );
                 return {
                     kind: "void",
-                    cpp: webAudioMemberCall("AudioNode", method)(receiver.cpp, [
-                        when,
-                        ...trailing,
-                    ]),
+                    cpp: webAudioMemberCall("AudioNode", method)(owner, args),
                 };
             }
             default:
@@ -1068,84 +861,218 @@ function compileAudioReceiverMethod(
     }
 
     if (receiver.kind === "audio-param") {
-        const schedule = PARAM_SCHEDULES.get(method);
-        if (schedule) {
-            if (call.arguments.length !== 2) {
-                context.fail(
-                    call,
-                    `${method}(value, time) is the reached form.`,
-                );
-            }
-            const value = context.compileNumber(argumentAt(call, 0), "float");
-            const time = context.compileNumber(argumentAt(call, 1), "double");
-            return {
-                kind: "void",
-                cpp: `bbl::pal::${schedule}(${receiver.cpp}, ${value}, ${time})`,
-            };
-        }
-        if (method === "setValueCurveAtTime") {
+        const schedule = AUDIO_PARAM_SCHEDULES.some(
+            ([name]) => name === method,
+        );
+        if (schedule && call.arguments.length !== 2)
+            context.fail(call, `${method}(value, time) is the reached form.`);
+        if (method === "setValueCurveAtTime")
             context.expectArgumentCount(call, 3, 3);
-            const param = pinnedAudioOperand(
-                context,
-                receiver,
-                "audio_curve_param",
-            );
-            const values = context.compileValue(argumentAt(call, 0));
-            if (values.dataType?.kind !== "f32array")
-                context.fail(
-                    argumentAt(call, 0),
-                    "setValueCurveAtTime requires a Float32Array.",
-                );
-            const curve = pinnedAudioOperand(
-                context,
-                values,
-                "audio_curve_values",
-            );
-            const start = numberOperand(
-                context,
-                argumentAt(call, 1),
-                "audio_curve_start",
-            );
-            const duration = numberOperand(
-                context,
-                argumentAt(call, 2),
-                "audio_curve_duration",
-            );
-            return {
-                kind: "void",
-                cpp: webAudioMemberCall("AudioParam", method)(param, [
-                    curve,
-                    start,
-                    duration,
-                ]),
-            };
-        }
-        if (method === "cancelScheduledValues") {
-            const time =
-                call.arguments.length > 0
-                    ? context.compileNumber(argumentAt(call, 0), "double")
-                    : "0.0";
-            return {
-                kind: "void",
-                cpp: webAudioMemberCall("AudioParam", method)(receiver.cpp, [
-                    time,
-                ]),
-            };
-        }
-        return undefined;
+        if (method === "cancelScheduledValues")
+            context.expectArgumentCount(call, 0, 1);
+        if (
+            !schedule &&
+            method !== "setValueCurveAtTime" &&
+            method !== "cancelScheduledValues"
+        )
+            return undefined;
+        const { owner, args } = orderedOperands(
+            context,
+            call,
+            callee,
+            receiver,
+            (expression, index) =>
+                method === "setValueCurveAtTime" && index === 0
+                    ? samples(
+                          expression,
+                          "setValueCurveAtTime requires a Float32Array.",
+                      )
+                    : number(expression),
+        );
+        return {
+            kind: "void",
+            cpp: webAudioMemberCall("AudioParam", method)(owner, args),
+        };
     }
 
     return undefined;
 }
 
+/**
+ * `context.decodeAudioData(encoded)` over an ArrayBuffer: the decoders its
+ * fetched sources need (all of them for bytes generation cannot trace), then
+ * the record's asynchronous decode, or, in a program with no realm to settle
+ * a promise on, a decode in place.
+ */
+function compileAudioDecode(
+    context: AudioCallContext,
+    call: ts.CallExpression,
+    receiver: Value,
+): Value | undefined {
+    const encoded = context.compileValue(argumentAt(call, 0));
+    if (encoded.kind !== "data" || encoded.dataType?.kind !== "arraybuffer")
+        return undefined;
+    context.reachFeature("audio:buffer-source", call);
+    context.reachFeature("audio:decoded-buffer", call);
+    let input = context.unwrap(argumentAt(call, 0));
+    while (ts.isAwaitExpression(input))
+        input = context.unwrap(input.expression);
+    const sources =
+        encoded.fetchedBytes?.expression === input
+            ? encoded.fetchedBytes.sources
+            : undefined;
+    const codecs = sources
+        ? new Set(
+              sources.flatMap((source) => {
+                  const codec = audioCodecForBytes(
+                      readAssetBytesSync(source, context.options.fileName),
+                  );
+                  return codec ? [codec] : [];
+              }),
+          )
+        : AUDIO_CODECS;
+    for (const codec of codecs)
+        context.reachFeature(`audio:decode-${codec}`, call);
+    if (context.options.workers)
+        return context.dataLowerer.leafValue(
+            webAudioMemberCall("AudioContext", "decodeAudioData")(
+                receiver.cpp,
+                [encoded.cpp],
+            ),
+            {
+                kind: "promise",
+                result: { kind: "handle", handle: "audio-buffer" },
+            },
+        );
+    const decoded = context.allocateTemporaryCppName("decoded_audio");
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::pal::AudioBufferHandle",
+        name: decoded,
+        initializer: `bbl::pal::audio_decode_buffer(${receiver.cpp}, ${encoded.cpp})`,
+    });
+    return {
+        kind: "audio-buffer",
+        cpp: decoded,
+        dataType: { kind: "handle", handle: "audio-buffer" },
+        optionalFoundCpp: `${decoded}.value != 0u`,
+    };
+}
+
+/** An AudioContext's factories, buffers, media sources and transitions, over its record. */
+function compileAudioContextMethod(
+    context: AudioCallContext,
+    call: ts.CallExpression,
+    callee: ts.PropertyAccessExpression,
+    receiver: Value,
+): Value | undefined {
+    const method = callee.name.text;
+    const spell = webAudioMemberCall;
+    const factory = AUDIO_NODE_FACTORIES.find(([name]) => name === method);
+    if (factory) {
+        if (call.arguments.length !== 0)
+            context.fail(
+                call,
+                `${method} takes no arguments in the reached slice.`,
+            );
+        if (factory[2]) context.reachFeature(factory[2], call);
+        return emitAudioNode(
+            context,
+            spell("AudioContext", method)(receiver.cpp, []),
+        );
+    }
+    if (AUDIO_CONTEXT_TRANSITIONS.some(([name]) => name === method)) {
+        if (call.arguments.length)
+            context.fail(call, `AudioContext.${method} takes no arguments.`);
+        if (!context.options.workers) throw new ApplicationRealmRequired();
+        return {
+            ...context.dataLowerer.leafValue(
+                spell("AudioContext", method)(receiver.cpp, []),
+                { kind: "promise" },
+            ),
+            impure: true,
+        };
+    }
+    if (method === "createBuffer") {
+        if (call.arguments.length !== 3)
+            context.fail(
+                call,
+                "createBuffer expects channel count, frame count, and sample rate.",
+            );
+        context.reachFeature("audio:buffer-source", call);
+        const { owner, args } = orderedOperands(
+            context,
+            call,
+            callee,
+            receiver,
+            (expression) => context.compileNumber(expression, "double"),
+        );
+        return {
+            kind: "audio-buffer",
+            cpp: spell("AudioContext", method)(owner, args),
+            dataType: { kind: "handle", handle: "audio-buffer" },
+        };
+    }
+    if (
+        method === "createMediaStreamDestination" ||
+        method === "createMediaStreamSource"
+    ) {
+        const source = method === "createMediaStreamSource";
+        context.expectArgumentCount(call, source ? 1 : 0, source ? 1 : 0);
+        context.reachFeature("audio:media-stream", call);
+        context.reachFeature("platform:media-stream", call);
+        context.reachJsData();
+        const { owner, args } = orderedOperands(
+            context,
+            call,
+            callee,
+            receiver,
+            (expression) =>
+                context.dataLowerer.compileForSink(expression, {
+                    kind: "handle",
+                    handle: "media-stream",
+                }),
+        );
+        return emitAudioNode(
+            context,
+            spell("AudioContext", method)(owner, args),
+        );
+    }
+    if (method === "createMediaElementSource") {
+        context.expectArgumentCount(call, 1, 1);
+        const { owner, args } = orderedOperands(
+            context,
+            call,
+            callee,
+            receiver,
+            (expression) => {
+                const element = context.compileValue(expression);
+                if (element.kind !== "audio-element")
+                    context.fail(
+                        expression,
+                        "createMediaElementSource takes an Audio element.",
+                    );
+                return element.cpp;
+            },
+        );
+        context.reachFeature("audio:media-element", call);
+        return emitAudioNode(
+            context,
+            spell("AudioContext", method)(owner, args),
+        );
+    }
+    return undefined;
+}
+
 // -- writes --------------------------------------------------------------
 
-/** The Web Audio interface a lowered value's kind stands for. */
+/** The Web Audio interface, and record, a lowered value's kind stands for. */
 const AUDIO_INTERFACES: Readonly<Record<string, string>> = {
     "audio-buffer": "AudioBuffer",
     "audio-context": "AudioContext",
     "audio-node": "AudioNode",
     "audio-param": "AudioParam",
+    "audio-element": "HTMLAudioElement",
 };
 
 /** A written value, compiled to the native type a member table names. */
@@ -1176,9 +1103,110 @@ function refuseAudioWrite(
 }
 
 /**
+ * The written value of an application property write the records spell,
+ * with the feature it reaches; undefined for a member they do not write.
+ */
+function audioWriteValue(
+    context: AudioWriteContext,
+    owner: Value,
+    left: ts.PropertyAccessExpression,
+    right: ts.Expression,
+): { feature?: Feature; value: () => string } | undefined {
+    const property = left.name.text;
+    if (owner.kind === "audio-param")
+        return property === "value"
+            ? { value: () => context.compileNumber(right, "double") }
+            : undefined;
+    if (owner.kind === "audio-element") {
+        const member = AUDIO_ELEMENT_PROPERTIES.find(
+            ([name, , , writable]) => writable && name === property,
+        );
+        if (!member)
+            return context.fail(
+                left.name,
+                `HTMLAudioElement.${property} writes are not lowered: an Audio element writes ${AUDIO_ELEMENT_PROPERTIES.filter(
+                    ([, , , writable]) => writable,
+                )
+                    .map(([name]) => name)
+                    .join(", ")}.`,
+            );
+        return {
+            feature: "audio:media-element",
+            value: () => compileAudioScalar(context, member[1], right),
+        };
+    }
+    if (owner.kind !== "audio-node") return undefined;
+    if (property === "buffer")
+        return {
+            feature: "audio:buffer-source",
+            value: () => {
+                const buffer = context.compileValue(right);
+                if (buffer.kind !== "audio-buffer")
+                    context.fail(
+                        right,
+                        "AudioBufferSourceNode.buffer expects an AudioBuffer.",
+                    );
+                return buffer.cpp;
+            },
+        };
+    const loop = SOURCE_LOOP_MEMBERS.find(([name]) => name === property);
+    if (loop)
+        return {
+            feature: "audio:buffer-source",
+            value: () => compileAudioScalar(context, loop[1], right),
+        };
+    if (PANNER_PROPERTIES.some(([name]) => name === property))
+        return {
+            feature: "audio:panner",
+            value: () => context.compileNumber(right, "double"),
+        };
+    if (PANNER_MODELS.some(([name]) => name === property))
+        return {
+            feature: "audio:panner",
+            value: () => {
+                const model = context.compileValue(right);
+                if (!isStringValue(model))
+                    context.fail(right, `${property} takes a string.`);
+                // A model chosen at run time throws there (`audio_set_panner_model`).
+                if (model.staticString === "HRTF")
+                    context.fail(
+                        right,
+                        'panningModel "HRTF" is not lowered: it needs an HRTF database, which this build does not package.',
+                    );
+                return model.cpp;
+            },
+        };
+    if (property === "type")
+        return {
+            value: () => {
+                const spelling = context.compileValue(right).staticString;
+                if (spelling === undefined)
+                    context.fail(
+                        right,
+                        "An oscillator or filter type must be a static string; the " +
+                            "pin's own types are string enums and the composed set is " +
+                            "closed at generation.",
+                    );
+                if (
+                    !OSCILLATOR_WAVES.some(([name]) => name === spelling) &&
+                    !BIQUAD_FILTER_KINDS.some(([name]) => name === spelling)
+                )
+                    context.fail(
+                        right,
+                        `'${spelling}' is not a reached oscillator or filter type. A ` +
+                            "custom periodic wave is not lowered.",
+                    );
+                return context.cppString(spelling);
+            },
+        };
+    return undefined;
+}
+
+/**
  * Emits a reached Web Audio property write, in the shape every other hook
  * on the assignment chain takes: it either handles the assignment and
- * says so, or leaves it alone.
+ * says so, or leaves it alone. The write is its record's spelling, its
+ * owner read before its value as JavaScript reads them.
  */
 export function emitAudioPropertyAssignment(
     context: AudioWriteContext,
@@ -1198,113 +1226,10 @@ export function emitAudioPropertyAssignment(
         );
     }
     context.reachFeature("audio:engine", expression);
+    if (owner.kind === "audio-engine") return false;
+    const record = AUDIO_INTERFACES[owner.kind];
 
-    if (owner.kind === "audio-param" && property === "value") {
-        context.emit({
-            kind: "expression",
-            code:
-                `bbl::pal::audio_param_set_value(${owner.cpp}, ` +
-                `${context.compileNumber(right, "float")});`,
-        });
-        return true;
-    }
-
-    if (owner.kind === "audio-element") {
-        context.reachFeature("audio:media-element", expression);
-        const element = context.bindings.pinValueToTemporary(
-            owner,
-            "audio_element",
-            left.expression,
-        ).cpp;
-        const member = AUDIO_ELEMENT_PROPERTIES.find(
-            ([name, , , writable]) => writable && name === property,
-        );
-        if (!member)
-            return context.fail(
-                left.name,
-                `HTMLAudioElement.${property} writes are not lowered: an Audio element writes ${AUDIO_ELEMENT_PROPERTIES.filter(
-                    ([, , , writable]) => writable,
-                )
-                    .map(([name]) => name)
-                    .join(", ")}.`,
-            );
-        context.emit({
-            kind: "expression",
-            code: `bbl::pal::audio_element_set_${member[2]}(${element}, ${compileAudioScalar(context, member[1], right)});`,
-        });
-        return true;
-    }
-
-    // Web Audio objects are DOM types, which the browser-erasure gate later
-    // in the chain drops: a write this surface does not lower refuses here.
-    if (owner.kind !== "audio-node") {
-        if (owner.kind === "audio-engine") return false;
-        return refuseAudioWrite(context, left, owner);
-    }
-
-    if (property === "buffer") {
-        const buffer = context.compileValue(right);
-        if (buffer.kind !== "audio-buffer") {
-            context.fail(
-                right,
-                "AudioBufferSourceNode.buffer expects an AudioBuffer.",
-            );
-        }
-        context.reachFeature("audio:buffer-source", expression);
-        context.emit({
-            kind: "expression",
-            code: `bbl::pal::audio_set_buffer(${owner.cpp}, ${buffer.cpp});`,
-        });
-        return true;
-    }
-
-    const loopMember = SOURCE_LOOP_MEMBERS.find(([name]) => name === property);
-    if (loopMember) {
-        context.reachFeature("audio:buffer-source", expression);
-        context.emit({
-            kind: "expression",
-            code: `bbl::pal::audio_set_${loopMember[2]}(${owner.cpp}, ${compileAudioScalar(context, loopMember[1], right)});`,
-        });
-        return true;
-    }
-
-    const pannerProperty = PANNER_PROPERTIES.find(
-        ([name]) => name === property,
-    );
-    if (pannerProperty) {
-        context.reachFeature("audio:panner", expression);
-        context.emit({
-            kind: "expression",
-            code:
-                `bbl::pal::audio_set_panner_property(${owner.cpp}, ` +
-                `bbl::pal::PannerProperty::${pannerProperty[1]}, ` +
-                `${context.compileNumber(right, "double")});`,
-        });
-        return true;
-    }
-
-    const pannerModel = PANNER_MODELS.find(([name]) => name === property);
-    if (pannerModel) {
-        context.reachFeature("audio:panner", expression);
-        const model = context.compileValue(right);
-        if (!isStringValue(model))
-            context.fail(right, `${property} takes a string.`);
-        // A model chosen at run time throws there (`audio_set_panner_model`).
-        if (model.staticString === "HRTF")
-            context.fail(
-                right,
-                'panningModel "HRTF" is not lowered: it needs an HRTF database, which this build does not package.',
-            );
-        context.emit({
-            kind: "expression",
-            code:
-                `bbl::pal::audio_set_panner_model(${owner.cpp}, ` +
-                `bbl::pal::PannerModel::${pannerModel[1]}, ${model.cpp});`,
-        });
-        return true;
-    }
-
-    if (property === "onended") {
+    if (owner.kind === "audio-node" && property === "onended") {
         if (!context.options.workers) throw new ApplicationRealmRequired();
         const selected = { ...owner };
         delete selected.nativeBinding;
@@ -1334,46 +1259,30 @@ export function emitAudioPropertyAssignment(
                   .cpp;
         context.emit({
             kind: "expression",
-            code: `bbl::pal::audio_set_ended_handler(${target.cpp}, ${callback});`,
+            code: `${webAudioMemberAssign("AudioNode", property)(target.cpp, callback)};`,
         });
         return true;
-    }
-    if (property !== "type") {
-        return refuseAudioWrite(context, left, owner);
     }
 
-    const spelling = context.compileValue(right).staticString;
-    if (spelling === undefined) {
-        context.fail(
-            right,
-            "An oscillator or filter type must be a static string; the " +
-                "pin's own types are string enums and the composed set is " +
-                "closed at generation.",
-        );
-    }
-    const wave = OSCILLATOR_WAVES[spelling];
-    if (wave) {
-        context.emit({
-            kind: "expression",
-            code:
-                `bbl::pal::audio_set_oscillator_wave(${owner.cpp}, ` +
-                `bbl::pal::OscillatorWave::${wave});`,
-        });
-        return true;
-    }
-    const filter = FILTER_KINDS[spelling];
-    if (filter) {
-        context.emit({
-            kind: "expression",
-            code:
-                `bbl::pal::audio_set_filter_kind(${owner.cpp}, ` +
-                `bbl::pal::BiquadFilterKind::${filter});`,
-        });
-        return true;
-    }
-    context.fail(
+    // Web Audio objects are DOM types, which the browser-erasure gate later
+    // in the chain drops: a write this surface does not lower refuses here.
+    const write = audioWriteValue(context, owner, left, right);
+    if (!write || !record) return refuseAudioWrite(context, left, owner);
+    if (write.feature) context.reachFeature(write.feature, expression);
+    const [pinOwner] = context.evaluationOrder.operandsToPin([
+        left.expression,
         right,
-        `'${spelling}' is not a reached oscillator or filter type. A ` +
-            "custom periodic wave is not lowered.",
-    );
+    ]);
+    const target = pinOwner
+        ? context.bindings.pinValueToTemporary(
+              owner,
+              "audio_owner",
+              left.expression,
+          ).cpp
+        : owner.cpp;
+    context.emit({
+        kind: "expression",
+        code: `${webAudioMemberAssign(record, property)(target, write.value())};`,
+    });
+    return true;
 }

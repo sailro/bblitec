@@ -68,6 +68,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <bblite/js_data.hpp>
 #include <bblite/pal_audio_types.hpp>
@@ -320,6 +321,11 @@ void audio_connect(AudioNodeHandle source, AudioNodeHandle destination);
 
 /** `source.connect(destinationParam)` -- an audio-rate modulation edge. */
 void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination);
+
+/** `connect` spelled once for both destinations: a parameter's edge. */
+inline void audio_connect(AudioNodeHandle source, AudioParamHandle destination) {
+    audio_connect_param(std::move(source), std::move(destination));
+}
 
 /** `node.disconnect()` -- every outgoing edge. */
 void audio_disconnect(AudioNodeHandle node);
