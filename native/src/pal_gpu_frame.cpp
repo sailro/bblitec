@@ -143,6 +143,7 @@ double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock, doub
         if (registered->state->process_material_groups)
             registered->state->process_material_groups(*registered);
     }
+    project_tracked_material_colors(engine);
     return scene_delta_ms;
 }
 
@@ -155,6 +156,7 @@ double advance_frame(Engine& engine, FrameClock& frame_clock, double frame_delta
     const double delta_ms = frame_clock.advance(frame_delta_ms);
     engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
+    project_tracked_material_colors(engine);
     return delta_ms;
 }
 
@@ -172,6 +174,7 @@ double advance_frame(Engine& engine, FrameGraphContext& context, FrameClock& fra
     for (const auto& callback : context.updates) {
         callback(callback_delta_ms);
     }
+    project_tracked_material_colors(engine);
     return delta_ms;
 }
 

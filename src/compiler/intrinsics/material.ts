@@ -10,6 +10,7 @@ import {
 } from "../emission-transaction.js";
 import { sharedPinnedContext } from "../../lowering/context.js";
 import { lowerMaterialPredicate } from "../../lowering/material-predicate.js";
+import { lowerMaterialTracking } from "../../lowering/material-tracking.js";
 import { shaderMatrixWriteProvenance } from "../../lowering/shader-matrix-write.js";
 import {
     compileCreateStorageBuffer,
@@ -432,6 +433,32 @@ function compileGetShaderUniform(
             kind: "union",
             members: [{ kind: "number" }, { kind: "f32array" }],
         },
+    };
+}
+
+/** The pin's per-scene before-render range upload over one shader material's slots. */
+function compileEnableShaderUniformRangeUpdates(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const scene = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 0)),
+        "range_scene",
+        argumentAt(call, 0),
+    );
+    context.expectKind(scene, "scene", argumentAt(call, 0));
+    const material = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 1)),
+        "range_material",
+        argumentAt(call, 1),
+    );
+    context.expectKind(material, "material", argumentAt(call, 1));
+    context.reachFeature("material:shader", call);
+    context.reachFeature("material:shader-uniform-ranges", call);
+    return {
+        kind: "void",
+        cpp: `bbl::enable_shader_uniform_range_updates(${context.requireEngine(material, call)}, ${scene.cpp}, ${material.cpp})`,
     };
 }
 
@@ -1825,6 +1852,34 @@ function compileInstallPbrTracking(
     return { kind: "void", cpp: "" };
 }
 
+const materialTracking = new EmissionWeakMap<object, string>();
+
+/** The pin's async family selection; resolves after its module hop. */
+function compileEnableMaterialTracking(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const material = context.compileValue(argumentAt(call, 0));
+    context.expectKind(material, "material", argumentAt(call, 0));
+    let name = materialTracking.get(context);
+    if (!name) {
+        name = context.allocateTemporaryCppName("enable_material_tracking");
+        const lowered = lowerMaterialTracking(sharedPinnedContext(), name);
+        context.nativeEmission.registerNativeFunction(
+            lowered.prototype,
+            lowered.lines,
+        );
+        materialTracking.set(context, name);
+    }
+    return {
+        kind: "promise",
+        cpp: `bblscene::${name}(${context.requireEngine(material, call)}, ${material.cpp})`,
+        promiseType: "bbl::js::PromiseVoid",
+        promiseResult: { kind: "void", cpp: "" },
+    };
+}
+
 function compileSetPbrSheen(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
@@ -2143,6 +2198,7 @@ const materialIntrinsicHandlers = new EmissionMap<
     ["createLinearDepthMaterial", compileCreateLinearDepthMaterial],
     ["setShaderUniform", compileSetShaderUniform],
     ["getShaderUniform", compileGetShaderUniform],
+    ["enableShaderUniformRangeUpdates", compileEnableShaderUniformRangeUpdates],
     ["setShaderTexture", compileSetShaderTexture],
     ["createExternalTexture", compileCreateExternalTexture],
     ["isExternalTextureReady", compileIsExternalTextureReady],
@@ -2164,6 +2220,7 @@ const materialIntrinsicHandlers = new EmissionMap<
     ["setPbrAnisotropy", compileSetPbrAnisotropy],
     ["installPbrTracking", compileInstallPbrTracking],
     ["installStdTracking", compileInstallPbrTracking],
+    ["enableMaterialTracking", compileEnableMaterialTracking],
     ["setPbrSheen", compileSetPbrSheen],
     ["setAlphaToCoverage", compileSetAlphaToCoverage],
     ["createStandardMaterial", compileCreateStandardMaterial],

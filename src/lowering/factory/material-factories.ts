@@ -14,6 +14,7 @@ import { lowerNodeInputScalarSetter } from "../node-input-uniform-lowerer.js";
 import { lowerPixelsTextureWrites } from "../pixels-texture-writes.js";
 import {
     lowerShaderUniformApi,
+    lowerShaderUniformRangeUpdates,
     lowerShaderUniformSnapshot,
 } from "../shader-uniforms.js";
 
@@ -311,7 +312,7 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
         };
     }
 
-    public lowerShaderMaterialFactory(): LoweredSource {
+    public lowerShaderMaterialFactory(rangeUpdates = false): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
         const { declaration } = this.context.functionDeclaration(
             modulePath,
@@ -410,11 +411,12 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
 
 #include <algorithm>
 #include <stdexcept>
-
+${rangeUpdates ? "#include <bit>\n#include <iterator>\n#include <utility>\n" : ""}
 namespace bbl {
 
 ${lowerShaderUniformApi(this.context)}
 ${lowerShaderUniformSnapshot(this.context)}
+${rangeUpdates ? lowerShaderUniformRangeUpdates(this.context) : ""}
 
 // The generated shader-variant table carries the pinned fixed-function
 // mapping (needAlphaBlending -> blend alpha mode, backFaceCulling ->

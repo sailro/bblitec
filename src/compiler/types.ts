@@ -3024,6 +3024,7 @@ export type Feature =
     | "material:node"
     | "material:node-inputs"
     | "material:shader"
+    | "material:shader-uniform-ranges"
     | "material:shader-storage"
     | "material:shader-external-texture"
     | "material:standard"

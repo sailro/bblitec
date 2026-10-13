@@ -278,22 +278,18 @@ test("deferred promise methods reject on the realm reaction queue", () => {
 
 test("pinned public missing calls preserve engine arguments and original strict refusal", () => {
     const source = `
-        import {createEngine,enableAsyncShaderPipelineCompilation,setGpuTimingEnabled} from "@babylonjs/lite";
+        import {createEngine,setGpuTimingEnabled} from "@babylonjs/lite";
         const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
-        try{enableAsyncShaderPipelineCompilation(engine);}catch{}
         try{setGpuTimingEnabled(engine,true);}catch{}
     `;
     assert.throws(
         () => compileSource(source),
-        /enableAsyncShaderPipelineCompilation.*not supported/,
+        /setGpuTimingEnabled.*not supported/,
     );
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        [
-            "babylon:enableAsyncShaderPipelineCompilation",
-            "babylon:setGpuTimingEnabled",
-        ],
+        ["babylon:setGpuTimingEnabled"],
     );
     assert.match(result.cpp, /deferred_capability<void>/);
 });

@@ -27,6 +27,8 @@ anything not listed here must match it.
 | GPU adapter info | Describes the selected device; SDL leaves architecture empty; Metal reports Apple vendor only for Apple GPUs |
 | Compute limits | Dawn queries device limits; SDL_GPU uses 256-byte uniform offsets |
 | GPU task timing | Dawn times on passes; SDL_GPU at source pass boundaries; omitted passes are untimed |
+| Scene registration | `registerScene` settles without the pin's intermediate awaits (builders, preloads, async pipeline preparation) |
+| Shader uniform ranges | A slot is marked when its value differs from its last upload; the pin marks every element write |
 | Listener signals | Abort removes only the listener its add created (DOM); Chromium can also remove a same-key re-add until GC |
 | Pointer offsets | `offsetX/Y` equal `clientX/Y`: exact only for the full-window primary canvas |
 | Touch | One finger rotates; two-finger span feeds wheel zoom; the primary contact drives mouse hooks |

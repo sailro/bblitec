@@ -66,6 +66,37 @@ function assertPinnedUniformCaching(): void {
     );
     uniformCachingAnchored = true;
 }
+/**
+ * `enableAsyncShaderPipelineCompilation` installs, once per engine, the
+ * preparation `registerScene` awaits before building its frame graph. Native
+ * scene preparation compiles every reached pipeline before the scene's first
+ * frame, and later renderables compile at their first draw on both sides.
+ */
+let asyncShaderPipelinesAnchored = false;
+function assertPinnedAsyncShaderPipelines(): void {
+    if (asyncShaderPipelinesAnchored) return;
+    const context = sharedPinnedContext();
+    const { declaration } = context.functionDeclaration(
+        "src/material/shader/enable-async-shader-pipeline-compilation.ts",
+        "enableAsyncShaderPipelineCompilation",
+    );
+    context.assertStatementShapes(
+        declaration,
+        declaration.body!.statements,
+        "if (_recipesByEngine?.has(engine)) { return; } if (!_recipesByEngine) { _recipesByEngine = new WeakMap(); _installAsyncShaderPipelineRegistrar(_registerAsyncShaderPipelineRecipe); _installAsyncShaderPipelinePreparation(_prepareAsyncShaderPipelinesForScene); } const recipes = new WeakMap<object, PrepareRecipe>(); _recipesByEngine.set(engine, recipes);",
+        "Async ShaderMaterial pipeline opt-in",
+    );
+    const { declaration: register } = context.functionDeclaration(
+        "src/scene/scene-core.ts",
+        "registerScene",
+    );
+    context.expectShapeCount(
+        register,
+        "_prepareShaderPipelines(ctx)",
+        "registration pipeline preparation",
+    );
+    asyncShaderPipelinesAnchored = true;
+}
 import { validateObjectProperties } from "../option-helpers.js";
 import {
     compileGpuTaskTimingIntrinsic,
@@ -240,6 +271,15 @@ export function compileEngineIntrinsic(
             // native frame loops already refresh every surface's extent from
             // its window, so the call only evaluates its engine.
             assertPinnedResizeEngine();
+            context.expectArgumentCount(call, 1, 1);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            context.emitDiscardedValue(engine);
+            return { kind: "void", cpp: "" };
+        }
+
+        case "enableAsyncShaderPipelineCompilation": {
+            assertPinnedAsyncShaderPipelines();
             context.expectArgumentCount(call, 1, 1);
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));

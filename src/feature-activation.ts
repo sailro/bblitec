@@ -735,6 +735,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/shader/shader-material.ts",
         consumers: CMAKE,
     },
+    "material:shader-uniform-ranges": {
+        provenance: "src/material/shader/shader-uniform-range.ts",
+        consumers: CMAKE,
+    },
     "material:shader-storage": {
         provenance:
             "src/material/shader/storage-buffer.ts + " +

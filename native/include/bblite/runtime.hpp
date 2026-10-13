@@ -4527,6 +4527,8 @@ struct Engine {
     /** The last `SourceMaterialDraw::identity` this engine published. */
     std::uint64_t source_output_identity = 0;
     std::vector<MaterialRecord> materials;
+    /** Source materials `enableMaterialTracking` installed observable colors on. */
+    std::vector<MaterialHandle> tracked_materials;
     struct StorageBufferRecord {
         std::vector<std::uint8_t> bytes;
         std::shared_ptr<pal::StorageBufferOwner> gpu;
@@ -5375,6 +5377,25 @@ inline void project_material_source_colors(MaterialRecord& material) {
         material.diffuse_color =
             Color3{static_cast<float>(source[0]), static_cast<float>(source[1]),
                    static_cast<float>(source[2])};
+    }
+}
+
+/** A tracked color element write marks the source UBO dirty; the next draw reads the array. */
+inline void project_tracked_material_colors(Engine& engine) {
+    for (const MaterialHandle handle : engine.tracked_materials) {
+        MaterialRecord& record = handle_at(engine.materials, handle);
+        if (!record.source_diffuse_color)
+            continue;
+        const auto& source = *record.source_diffuse_color;
+        if (source.size() != 3)
+            throw std::runtime_error("Material diffuseColor requires three numeric channels.");
+        const Color3 next{static_cast<float>(source[0]), static_cast<float>(source[1]),
+                          static_cast<float>(source[2])};
+        if (next.r == record.diffuse_color.r && next.g == record.diffuse_color.g &&
+            next.b == record.diffuse_color.b)
+            continue;
+        record.diffuse_color = next;
+        ++record.ubo_version;
     }
 }
 
