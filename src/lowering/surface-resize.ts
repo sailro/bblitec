@@ -50,9 +50,15 @@ export function lowerSurfaceResize(
             "canvas.clientHeight",
             { cpp: "engine.canvas_client_height", type: "scalar" },
         ],
+        // The realm global's own value: a Window host provides it, a
+        // realm without one (a worker global) reads undefined.
         [
             "globalThis.devicePixelRatio",
-            { cpp: "bbl::pal::window_device_pixel_ratio()", type: "scalar" },
+            {
+                cpp: "static_cast<double>(*bbl::pal::realm_device_pixel_ratio())",
+                type: "scalar",
+                nullish: "!bbl::pal::realm_device_pixel_ratio().has_value()",
+            },
         ],
         [
             "surface.maxDevicePixelRatio",
