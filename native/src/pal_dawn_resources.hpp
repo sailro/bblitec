@@ -4,10 +4,54 @@
 #include <bblite/runtime.hpp>
 #include <bblite/gpu.hpp>
 #include <webgpu/webgpu.h>
+#include <cstdint>
+#include <memory>
 #include <source_location>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace bbl::pal {
+
+/**
+ * One native Dawn reference a device owner tracks (`GpuLeaseRetirement`):
+ * `destroy()` is WebGPU's, `retire()` releases the reference, and later
+ * use refuses. `owner` is the device state its object reads; `capture_id`
+ * names the owner's capture record of the object, released with it.
+ */
+template <class Owner, class Handle, auto Release, auto Destroy = nullptr> struct DawnLease {
+    std::shared_ptr<Owner> owner;
+    Handle handle = nullptr;
+    bool destroyed = false;
+    std::uint64_t capture_id = 0;
+    DawnLease() = default;
+    DawnLease(const DawnLease&) = delete;
+    DawnLease& operator=(const DawnLease&) = delete;
+    ~DawnLease() { retire(); }
+    void destroy() noexcept {
+        if constexpr (Destroy != nullptr) {
+            if (handle && !destroyed)
+                Destroy(handle);
+        }
+        if constexpr (requires { owner->capture; }) {
+            if (!destroyed && capture_id)
+                owner->capture.release(capture_id);
+        }
+        destroyed = true;
+    }
+    void retire() noexcept {
+        destroy();
+        if (handle)
+            Release(std::exchange(handle, nullptr));
+    }
+    bool live() const noexcept { return handle && !destroyed; }
+    Handle get() const {
+        if (!live())
+            throw std::runtime_error("A GPU object was destroyed or retired with its device.");
+        return handle;
+    }
+};
 
 /** Terminal Dawn transports; both owned resources and borrowed PAL destinations use them. */
 inline void write_dawn_gpu_buffer(WGPUQueue queue, WGPUBuffer buffer, std::size_t offset,
@@ -130,6 +174,48 @@ using DawnRenderPipeline = DawnOwned<WGPURenderPipeline, wgpuRenderPipelineRelea
 using DawnCommandEncoder = DawnOwned<WGPUCommandEncoder, wgpuCommandEncoderRelease>;
 using DawnCommandBuffer = DawnOwned<WGPUCommandBuffer, wgpuCommandBufferRelease>;
 using DawnRenderPass = DawnOwned<WGPURenderPassEncoder, wgpuRenderPassEncoderRelease>;
+
+/**
+ * Raises a device request's limits to an engine's `requiredLimits`
+ * (`gpu_required_limits`); false when every limit keeps its default.
+ */
+inline bool request_dawn_limits(WGPULimits& limits, const GpuSupportedLimits& required) {
+    bool raised = false;
+    if (required.max_buffer_size > gpu_default_limits.max_buffer_size) {
+        limits.maxBufferSize = static_cast<std::uint64_t>(required.max_buffer_size);
+        raised = true;
+    }
+    if (required.max_storage_buffer_binding_size >
+        gpu_default_limits.max_storage_buffer_binding_size) {
+        limits.maxStorageBufferBindingSize =
+            static_cast<std::uint64_t>(required.max_storage_buffer_binding_size);
+        raised = true;
+    }
+    if (required.max_compute_workgroups_per_dimension >
+        gpu_default_limits.max_compute_workgroups_per_dimension) {
+        limits.maxComputeWorkgroupsPerDimension =
+            gpu_u32(static_cast<std::size_t>(required.max_compute_workgroups_per_dimension));
+        raised = true;
+    }
+    if (required.max_color_attachment_bytes_per_sample >
+        gpu_default_limits.max_color_attachment_bytes_per_sample) {
+        limits.maxColorAttachmentBytesPerSample =
+            gpu_u32(static_cast<std::size_t>(required.max_color_attachment_bytes_per_sample));
+        raised = true;
+    }
+    return raised;
+}
+
+/** Whether a device's limits satisfy an engine's `requiredLimits`. */
+inline bool dawn_limits_satisfy(const WGPULimits& limits, const GpuSupportedLimits& required) {
+    return static_cast<double>(limits.maxBufferSize) >= required.max_buffer_size &&
+           static_cast<double>(limits.maxStorageBufferBindingSize) >=
+               required.max_storage_buffer_binding_size &&
+           static_cast<double>(limits.maxComputeWorkgroupsPerDimension) >=
+               required.max_compute_workgroups_per_dimension &&
+           static_cast<double>(limits.maxColorAttachmentBytesPerSample) >=
+               required.max_color_attachment_bytes_per_sample;
+}
 
 inline void submit_dawn_command(WGPUQueue queue, WGPUCommandBuffer command) {
     wgpuQueueSubmit(queue, 1, &command);

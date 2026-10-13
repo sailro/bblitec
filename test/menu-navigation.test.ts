@@ -204,7 +204,7 @@ test("native links retain browser user-agent decoration below author rules", () 
     const source = readFileSync("native/src/pal_ui_defaults.hpp", "utf8");
     assert.match(
         source,
-        /a\[href\]\{color:#0000ee;text-decoration:underline;cursor:pointer;\}/,
+        /a:where\(\[href\]\)\{color:#0000ee;text-decoration:underline;cursor:pointer;\}/,
     );
     assert.match(
         readFileSync("native/src/pal_ui_rml.cpp", "utf8"),

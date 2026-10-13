@@ -16,7 +16,7 @@ namespace bbl::pal {
 struct DawnTextDevice {
     WGPUDevice device = nullptr;
     WGPUQueue queue = nullptr;
-    TextResourceRetirement resources;
+    GpuLeaseRetirement resources;
     TextGpuCapture capture;
 
     void retire() noexcept {
@@ -26,33 +26,9 @@ struct DawnTextDevice {
     }
 };
 
-template <class Handle, auto Release, auto Destroy = nullptr> struct DawnTextLease {
-    std::shared_ptr<DawnTextDevice> owner;
-    Handle handle = nullptr;
-    bool destroyed = false;
-    std::uint64_t capture_id = 0;
-
-    ~DawnTextLease() { retire(); }
-    void destroy() noexcept {
-        if constexpr (Destroy != nullptr) {
-            if (handle && !destroyed)
-                Destroy(handle);
-        }
-        if (!destroyed && capture_id)
-            owner->capture.release(capture_id);
-        destroyed = true;
-    }
-    void retire() noexcept {
-        destroy();
-        if (handle)
-            Release(std::exchange(handle, nullptr));
-    }
-    Handle get() const {
-        if (!handle || destroyed)
-            throw std::runtime_error("Text GPU resource was destroyed.");
-        return handle;
-    }
-};
+/** A text object (`DawnLease`), whose capture record releases with it. */
+template <class Handle, auto Release, auto Destroy = nullptr>
+using DawnTextLease = DawnLease<DawnTextDevice, Handle, Release, Destroy>;
 
 using DawnTextBufferLease = DawnTextLease<WGPUBuffer, wgpuBufferRelease, wgpuBufferDestroy>;
 using DawnTextTextureLease = DawnTextLease<WGPUTexture, wgpuTextureRelease, wgpuTextureDestroy>;
@@ -265,7 +241,7 @@ struct DawnTextGpuResources : GpuDevice {
         info.size = bytes;
         // WebGPU's usage bits are Dawn's.
         info.usage = static_cast<WGPUBufferUsage>(gpu_size(descriptor.usage));
-        const bool uniform = text_usage_has(descriptor.usage, text_buffer_usage_uniform);
+        const bool uniform = webgpu_usage_has(descriptor.usage, webgpu_buffer_usage::uniform);
         auto buffer = std::make_shared<DawnTextGpuBuffer>();
         buffer->size = descriptor.size;
         buffer->lease = retain_dawn_text_resource<DawnTextBufferLease>(

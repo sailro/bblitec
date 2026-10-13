@@ -19,7 +19,8 @@
 //     which is how a reader finds a scene; a cell may carry commentary
 //     after the name, separated by `;` or `.`;
 //   * every published "canvas-only MAD" pair against the canvas lane's
-//     own report (`artifacts/parity-canvas/<id>/report-canvas.json`).
+//     own report (`artifacts/parity-canvas/<id>/report-canvas.json`),
+//     a wobbling backend's pair printed instead, like the cells above.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type {
@@ -343,6 +344,8 @@ export function canvasProblems(
     rows: readonly PublishedRow[],
     canvasRoot: string,
     statusPath = "docs/status.md",
+    /** Receives the wobbling cells, which are printed rather than compared. */
+    exempt: string[] = [],
 ): string[] {
     const problems: string[] = [];
     for (const row of rows) {
@@ -374,7 +377,14 @@ export function canvasProblems(
                 measuredPair.foregroundMad,
             );
             const published = row.canvas[backend];
-            if (rendered[0] !== published[0] || rendered[1] !== published[1]) {
+            const differs =
+                rendered[0] !== published[0] || rendered[1] !== published[1];
+            if (isWobblingCell(row.sceneId, `canvas-only ${label}`)) {
+                exempt.push(
+                    `${statusPath}:${row.line} ${row.sceneId} canvas-only ${label}: wobble-exempt, published ${pairText(published)}, newest ${pairText(rendered)}` +
+                        (differs ? " (differs)" : ""),
+                );
+            } else if (differs) {
                 problems.push(
                     `${statusPath}:${row.line} ${row.sceneId} canvas-only ${label}: published ${pairText(published)}, measured ${pairText(rendered)}`,
                 );
@@ -417,7 +427,7 @@ export function verifyStatus(options: VerifyStatusOptions = {}): StatusVerdict {
     problems.push(...outOfOrderRows(rows, statusPath));
     problems.push(...coverageProblems(rows, statusPath));
     problems.push(...spellingProblems(rows, statusPath));
-    problems.push(...canvasProblems(rows, canvasRoot, statusPath));
+    problems.push(...canvasProblems(rows, canvasRoot, statusPath, exempt));
     const columns = [
         "SDL_GPU full",
         "SDL_GPU foreground",

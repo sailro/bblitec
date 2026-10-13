@@ -49,20 +49,7 @@ struct DawnStorageReadback final : StorageReadback {
               std::function<void(std::exception_ptr)> complete) override {
         if (!buffer)
             throw std::runtime_error("Dawn storage readback has been destroyed.");
-        auto state = std::make_shared<DawnCompletionState>(std::move(complete));
-        WGPUBufferMapCallbackInfo callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-        callback.mode = WGPUCallbackMode_WaitAnyOnly;
-        callback.userdata1 = new std::shared_ptr<DawnCompletionState>(state);
-        callback.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void* data, void*) {
-            const std::unique_ptr<std::shared_ptr<DawnCompletionState>> owner(
-                static_cast<std::shared_ptr<DawnCompletionState>*>(data));
-            (*owner)->deliver(status == WGPUMapAsyncStatus_Success
-                                  ? std::exception_ptr{}
-                                  : std::make_exception_ptr(std::runtime_error(
-                                        "Dawn storage readback mapping failed.")));
-        };
-        const auto future = wgpuBufferMapAsync(buffer, WGPUMapMode_Read, offset, count, callback);
-        return std::make_unique<DawnFutureCompletion>(instance, future, std::move(state));
+        return dawn_buffer_map_read(instance, buffer, offset, count, std::move(complete));
     }
     std::span<const std::uint8_t> mapped_range(std::size_t offset, std::size_t count) override {
         if (!buffer)

@@ -345,8 +345,9 @@ export function isNativeWorkerExpression(
     if (
         ts.isPropertyAccessExpression(node) &&
         (node.name.text === "reload" ||
+            node.name.text === "assign" ||
             (context.options.runtimeLocationSearch &&
-                node.name.text === "search")) &&
+                (node.name.text === "search" || node.name.text === "href"))) &&
         context.libraryGlobal(node.expression) === "location"
     )
         return true;

@@ -3777,12 +3777,16 @@ relative_slice_bounds(std::size_t length, double begin_value, double end_value) 
     return value;
 }
 
+/** ASCII lowercase of one byte; other bytes, UTF-8 included, are unchanged. */
+[[nodiscard]] constexpr char ascii_lower(char character) {
+    return character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a')
+                                                : character;
+}
+
+/** ASCII lowercase, the one case fold of header names, URL schemes and hosts and MIME types. */
 [[nodiscard]] inline std::string string_lower(std::string value) {
-    for (char& character : value) {
-        if (character >= 'A' && character <= 'Z') {
-            character = static_cast<char>(character - 'A' + 'a');
-        }
-    }
+    for (char& character : value)
+        character = ascii_lower(character);
     return value;
 }
 
@@ -4856,7 +4860,7 @@ template <typename T>
 inline typename ArrayRemovalResult<T>::Type array_shift_or_absent(Array<T>& values) {
     if (values.empty())
         return {};
-    T first = values.front();
+    T first = std::move(values.front());
     values.erase(values.begin());
     return first;
 }
@@ -5866,21 +5870,40 @@ inline void typed_array_set(std::vector<T>& target, const std::vector<T>& source
 }
 
 /**
- * `Math.hypot`, as the plain root of the sum of squares.
- *
- * The ECMAScript spec leaves `Math.hypot` implementation-approximated, so
- * no port can match V8 by construction; this is the adaptation the splat
- * folds record as `splat-hypot-approximation`. One home rather than one per
- * generated translation unit, for the reason `round_js` below has one.
+ * `Math.hypot` as V8 computes it: an infinity wins over NaN, then each
+ * magnitude is scaled by the largest one and the squares are summed with
+ * Kahan compensation, so the result is bitwise the browser's. One home
+ * rather than one per generated translation unit, for the reason
+ * `round_js` below has one.
  */
 template <typename Range> [[nodiscard]] inline double hypot_js(const Range& values) {
-    double sum = 0.0;
+    double largest = 0.0;
+    bool nan = false;
     for (double value : values) {
-        if (std::isinf(value))
-            return std::numeric_limits<double>::infinity();
-        sum += value * value;
+        if (std::isnan(value))
+            nan = true;
+        else if (std::fabs(value) > largest)
+            largest = std::fabs(value);
     }
-    return std::sqrt(sum);
+    if (largest == std::numeric_limits<double>::infinity())
+        return largest;
+    if (nan)
+        return std::numeric_limits<double>::quiet_NaN();
+    if (largest == 0.0)
+        return 0.0;
+    double sum = 0.0;
+    double compensation = 0.0;
+    for (double value : values) {
+        const double scaled = std::fabs(value) / largest;
+        // Separate statements: no compiler fuses the square into the
+        // subtraction (V8 rounds each operation).
+        const double square = scaled * scaled;
+        const double summand = square - compensation;
+        const double preliminary = sum + summand;
+        compensation = (preliminary - sum) - summand;
+        sum = preliminary;
+    }
+    return std::sqrt(sum) * largest;
 }
 
 [[nodiscard]] inline double hypot_js(std::initializer_list<double> values) {

@@ -647,6 +647,12 @@ if(SDL3_FOUND AND BBLITE_REQUIRED_IMAGE_CODECS)
     target_link_libraries(bblite_features INTERFACE
         $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
     )
+    # Run-time createImageBitmap decodes WebP through libwebp directly
+    # (pal_image_bitmap.hpp), concurrently and outside SDL_image's lock.
+    if("webp" IN_LIST BBLITE_REQUIRED_IMAGE_CODECS)
+        find_package(WebP CONFIG REQUIRED)
+        target_link_libraries(bblite_features INTERFACE WebP::webp)
+    endif()
 endif()
 
 if("text:layout" IN_LIST BBLITE_RUNTIME_FEATURES)
@@ -1040,23 +1046,29 @@ if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQ
     if(BBLITE_NATIVE_CACHE_ACTIVE)
         target_compile_options(bblite_core INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
     endif()
-    # The invariant repository headers bring the standard library they use; the
-    # rest are what the PAL units include beyond them.
-    set(
-        BBLITE_PCH_HEADERS
-        <bblite/pal_image.hpp>
-        <bblite/runtime.hpp>
-        <SDL3/SDL.h>
-        <chrono>
-        <cstdio>
-        <cstring>
-        <filesystem>
-        <fstream>
-        <iomanip>
-        <iostream>
-        <sstream>
-        <stdexcept>
-    )
+    # clang-cl's PCH holds C headers only: test/pch-exception-copies.test.ts
+    # owns why.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+        set(BBLITE_PCH_HEADERS <SDL3/SDL.h>)
+    else()
+        # The invariant repository headers bring the standard library they use;
+        # the rest are what the PAL units include beyond them.
+        set(
+            BBLITE_PCH_HEADERS
+            <bblite/pal_image.hpp>
+            <bblite/runtime.hpp>
+            <SDL3/SDL.h>
+            <chrono>
+            <cstdio>
+            <cstring>
+            <filesystem>
+            <fstream>
+            <iomanip>
+            <iostream>
+            <sstream>
+            <stdexcept>
+        )
+    endif()
     if(BBLITE_BACKEND_SDL_GPU)
         list(APPEND BBLITE_PCH_HEADERS <SDL3/SDL_gpu.h>)
     endif()

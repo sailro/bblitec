@@ -28,6 +28,7 @@ export const featureSources: Record<Feature, string[]> = {
     "text:weight": [],
     "text:renderable": [],
     "renderer:text": ["src/pal_sdl_gpu_sprite.cpp"],
+    "renderer:external-renderables": [],
     "animation:gltf-groups": [],
     "animation:property": [],
     "animation:property-blending": [],
@@ -42,11 +43,14 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:workers": [],
     "platform:http": ["src/pal_http.cpp"],
     "platform:packaged-fetch": [],
+    "image:runtime-decode": [],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
     "engine:device-recovery": [],
     "engine:dispose": [],
     "engine:gpu-retirement": [],
+    // Each backend binds the device at createEngine; CMake derives the Dawn twin.
+    "engine:webgpu-device": ["src/pal_sdl_gpu_webgpu_device.cpp"],
     "engine:gpu-task-timing": [],
     "profile:source": ["src/pal_source_profile.cpp"],
     "compute:storage-texture": [],
@@ -107,6 +111,10 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:splat-sh": [],
     "loader:splat-sog": [],
     "loader:splat-spz": [],
+    // The pin's splat-stream library, lowered whole; its renderable draws
+    // through renderer:external-renderables, its fetch, decode and timers
+    // through the web platform seam.
+    "loader:splat-stream": ["src/pal_web_platform.cpp"],
     "material:pbr": [],
     "material:source-texture-read": [],
     "material:clearcoat": [],
@@ -359,6 +367,25 @@ export function asFeatures(names: readonly string[]): Feature[] {
  */
 const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
     "mesh:thin-instances": ["engine:gpu-retirement"],
+    // The stream fetches its sources, decodes WebP images, retires GPU
+    // generations behind the queue, parses JSON and collates source URLs.
+    "loader:splat-stream": [
+        "engine:gpu-retirement",
+        "platform:http",
+        "image:runtime-decode",
+        "data:json",
+        "data:locale",
+        // The library reads the pass camera's view and projection matrices.
+        "camera:view-projection",
+        // Its renderable binds and draws in the scene's own pass.
+        "renderer:external-renderables",
+    ],
+    // Bindings build pipelines on the engine's WebGPU device; replaced
+    // update batches retire behind the GPU.
+    "renderer:external-renderables": [
+        "engine:webgpu-device",
+        "engine:gpu-retirement",
+    ],
     "mesh:thin-instance-colors": ["mesh:thin-instances"],
     "mesh:thin-instances-dynamic": ["mesh:thin-instances"],
     "mesh:thin-instance-gpu-culling": ["mesh:thin-instances"],
@@ -561,6 +588,8 @@ interface MainCppProjection {
     deferredCapabilitiesReached?: boolean;
     windowStorageReached?: boolean;
     responseStorageReached?: boolean;
+    /** Header-only web platform storage the program reaches (`bblite/<name>.hpp`). */
+    webPlatformHeaders?: readonly string[];
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     imageDecodeReached: boolean;
     runtimeMeshProfiles?: boolean;
@@ -753,6 +782,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("data:locale")
             ? "#include <bblite/pal_locale.hpp>\n"
             : "") +
+        (features.includes("loader:splat-stream")
+            ? "#include <bblite/upstream_splat_stream.hpp>\n"
+            : "") +
         (features.includes("platform:http")
             ? "#include <bblite/pal_http.hpp>\n"
             : projection.responseStorageReached &&
@@ -762,6 +794,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("platform:packaged-fetch")
             ? "#include <bblite/pal_packaged_fetch.hpp>\n"
             : "") +
+        (projection.webPlatformHeaders ?? [])
+            .map((header) => `#include <bblite/${header}.hpp>\n`)
+            .join("") +
         (features.includes("storage:local")
             ? "#include <bblite/js_storage.hpp>\n"
             : "") +

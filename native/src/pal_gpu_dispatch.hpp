@@ -4,6 +4,7 @@
 #include <bblite/features/has_effect_renderer.hpp>
 #include <bblite/features/has_frame_graph_renderer.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
+#include <bblite/features/engine_webgpu.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text_renderer.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
@@ -33,6 +34,8 @@ struct GpuBackend {
     SceneRun (*run_effects)(Engine&);
     SceneRun (*run_frame_graph)(Engine&);
     std::shared_ptr<WindowPresenter> (*create_window_presenter)(SDL_Window*);
+    /** Creates `Engine::webgpu_device` over the engine's source device. */
+    void (*bind_webgpu_device)(Engine&);
     /** Flags the backend's surface needs on the SDL window it presents to. */
     SDL_WindowFlags window_flags;
 };
@@ -64,6 +67,11 @@ struct GpuBackend {
 #else
 #define BBLITE_GPU_WINDOW_ENTRY(entry) nullptr
 #endif
+#if BBLITE_ENGINE_WEBGPU
+#define BBLITE_GPU_WEBGPU_ENTRY(entry) &entry
+#else
+#define BBLITE_GPU_WEBGPU_ENTRY(entry) nullptr
+#endif
 
 #if BBLITE_HAS_SDL_GPU
 inline constexpr GpuBackend sdl_gpu_backend{
@@ -73,6 +81,7 @@ inline constexpr GpuBackend sdl_gpu_backend{
     BBLITE_GPU_EFFECT_ENTRY(run_effect_gpu_engine),
     BBLITE_GPU_FRAME_GRAPH_ENTRY(run_frame_graph_gpu_engine),
     BBLITE_GPU_WINDOW_ENTRY(create_window_sdl_gpu_presenter),
+    BBLITE_GPU_WEBGPU_ENTRY(bind_sdl_gpu_engine_webgpu_device),
     0,
 };
 #endif
@@ -84,6 +93,7 @@ inline constexpr GpuBackend dawn_gpu_backend{
     BBLITE_GPU_EFFECT_ENTRY(run_effect_dawn_engine),
     BBLITE_GPU_FRAME_GRAPH_ENTRY(run_frame_graph_dawn_engine),
     BBLITE_GPU_WINDOW_ENTRY(create_window_dawn_presenter),
+    BBLITE_GPU_WEBGPU_ENTRY(bind_dawn_engine_webgpu_device),
 #ifdef __ANDROID__
     // Marks Dawn's external Vulkan context so SDL does not restore an EGL context on resume.
     SDL_WINDOW_VULKAN,
@@ -98,6 +108,7 @@ inline constexpr GpuBackend dawn_gpu_backend{
 #undef BBLITE_GPU_EFFECT_ENTRY
 #undef BBLITE_GPU_FRAME_GRAPH_ENTRY
 #undef BBLITE_GPU_WINDOW_ENTRY
+#undef BBLITE_GPU_WEBGPU_ENTRY
 
 /** The backend BBLITE_GPU_BACKEND selects; `use_dawn_backend` refuses one this build lacks. */
 inline const GpuBackend& selected_gpu_backend() {
@@ -114,7 +125,8 @@ inline const GpuBackend& selected_gpu_backend() {
 #else
     // A PAL unit compiled without any renderer (a native fixture): every
     // entry is absent, so each caller refuses by name.
-    static constexpr GpuBackend none{"none", nullptr, nullptr, nullptr, nullptr, nullptr, 0};
+    static constexpr GpuBackend none{"none",  nullptr, nullptr, nullptr,
+                                     nullptr, nullptr, nullptr, 0};
     return none;
 #endif
 }

@@ -22,6 +22,7 @@ import {
     argumentAt,
     identifierText,
     isAssignmentExpression,
+    outermostWrapper,
     stringLiteralText,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
@@ -117,6 +118,14 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "worker-media-query",
     "worker-mutation-observer",
     "offscreen-canvas",
+]);
+
+/** DOM-declared classes with native runtime values (`web-platform.ts`). */
+const NATIVE_PLATFORM_CLASSES: ReadonlySet<string> = new Set([
+    "AbortController",
+    "AbortSignal",
+    "DOMException",
+    "URL",
 ]);
 
 /** A browser value the fold spells as a literal: a number, string, boolean, null or undefined. */
@@ -1337,6 +1346,7 @@ export class BrowserErasure {
             return false;
         }
         if (ts.isIdentifier(unwrapped)) {
+            const global = this.context.libraryGlobal(unwrapped) ?? "";
             if (
                 [
                     "console",
@@ -1344,10 +1354,18 @@ export class BrowserErasure {
                     "globalThis",
                     "performance",
                     "window",
-                ].includes(this.context.libraryGlobal(unwrapped) ?? "")
+                ].includes(global)
             ) {
                 return true;
             }
+            // Runtime web platform classes (`instanceof`, `new`) are native;
+            // URL's statics (`URL.createObjectURL`) are the browser-file
+            // bridge's, classified as any other browser read.
+            if (
+                NATIVE_PLATFORM_CLASSES.has(global) &&
+                !(global === "URL" && this.isStaticMemberReceiver(unwrapped))
+            )
+                return false;
             const value = this.context.bindings.lookupOptional(unwrapped);
             const bound = value?.kind;
             // A FROZEN pure-2D particle binding has no native counterpart
@@ -1520,6 +1538,17 @@ export class BrowserErasure {
         );
     }
 
+    /** Whether an expression is the object a member is read off (`URL.createObjectURL`). */
+    private isStaticMemberReceiver(expression: ts.Expression): boolean {
+        const outer = outermostWrapper(expression);
+        const parent = outer.parent;
+        return (
+            (ts.isPropertyAccessExpression(parent) ||
+                ts.isElementAccessExpression(parent)) &&
+            parent.expression === outer
+        );
+    }
+
     private isNativeDomBridge(expression: ts.Expression): boolean {
         const owner = (node: ts.Expression): Value | undefined => {
             const unwrapped = this.context.unwrap(node);
@@ -1539,6 +1568,14 @@ export class BrowserErasure {
             if (ts.isIdentifier(unwrapped)) {
                 return this.context.bindings.lookupOptional(unwrapped);
             }
+            // A runtime web platform object (`new URL(...)`) is native data.
+            if (
+                ts.isNewExpression(unwrapped) &&
+                NATIVE_PLATFORM_CLASSES.has(
+                    this.context.libraryGlobal(unwrapped.expression) ?? "",
+                )
+            )
+                return { kind: "data", cpp: "" };
             // getComputedStyle(element) views the element's computed style.
             const computed = computedStyleElement(this.context, unwrapped);
             if (computed) return owner(computed);

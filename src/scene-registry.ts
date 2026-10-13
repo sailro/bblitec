@@ -1,3 +1,24 @@
+/** A canvas dataset state a capture waits on (`SceneParityDefinition.referenceSettle`). */
+export interface ReferenceSettle {
+    /** The `canvas.dataset` key, camelCase as the program writes it. */
+    key: string;
+    values: readonly string[];
+    settleMilliseconds: number;
+}
+
+/**
+ * The native run's form of a settle: `BBLITE_CAPTURE_SETTLE` names the
+ * canvas attribute, its accepted values and the settle time.
+ */
+export function referenceSettleEnvironment(
+    settle: ReferenceSettle,
+): Record<string, string> {
+    const attribute = `data-${settle.key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+    return {
+        BBLITE_CAPTURE_SETTLE: `${attribute}=${settle.values.join("|")};${settle.settleMilliseconds}`,
+    };
+}
+
 export interface SceneParityDefinition {
     /** Fixed capture bounds for live measurements; neutrality checks every other pixel exactly. */
     neutralityPartition?: import("./parity.js").ImagePartition;
@@ -10,6 +31,13 @@ export interface SceneParityDefinition {
      * this instead of a wall-clock settle.
      */
     referenceFrame?: number;
+    /**
+     * Capture once the primary canvas has held one of `values` in its
+     * `dataset[key]` for `settleMilliseconds`, instead of on a frozen frame:
+     * an application whose content arrives over the network reaches the same
+     * state at a different frame on every run. Both captures wait on it.
+     */
+    referenceSettle?: ReferenceSettle;
     /** Number of independently frozen engine timelines, across any realms. */
     independentEngines?: number;
     /** Exact upstream host HTML used for the reference page. */
@@ -5184,6 +5212,50 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "trogir-streaming",
+        name: "Trogir Gaussian Splat Streaming",
+        source: "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Trogir Gaussian Splat Streaming",
+        nativeHostUi: "ui/trogir-streaming-host.json",
+        parity: {
+            neutralityPartition: {
+                width: 1280,
+                height: 720,
+                // The HUD's live first coarse frame value (#firstFrame, wall
+                // milliseconds), laid out natively at the start of the stats
+                // value column; its label and the other stats stay strict.
+                regions: [
+                    {
+                        name: "First coarse frame",
+                        x: 247,
+                        y: 75,
+                        width: 100,
+                        height: 16,
+                    },
+                ],
+            },
+            referenceHostPage:
+                "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
+            // The splats stream from the public dataset at run time, so the
+            // state the capture compares arrives at a different frame on
+            // every run: both captures wait for the stream to settle.
+            referenceSettle: {
+                key: "streamPhase",
+                values: ["idle"],
+                settleMilliseconds: 3000,
+            },
+            // The canvas matches the settled browser frame (0.000 / 0.001); the
+            // full-page residual is the retained HUD over it (text
+            // rasterization and the live first-frame timing).
+            maxFullMad: 0.3,
+            maxForegroundMad: 0.3,
+            canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
+            backgroundColor: [8, 11, 14],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-timer-callback-cells",
         name: "Regression - Timer Callback Cells",
         source: "examples/regression-timer-callback-cells.ts",
@@ -5220,6 +5292,15 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
     if (!parity) {
         return resolved;
     }
+    if (
+        parity.referenceSettle !== undefined &&
+        (parity.referenceFrame !== undefined ||
+            parity.referenceTimeSeconds !== undefined)
+    ) {
+        throw new Error(
+            `Scene '${scene.id}' captures on a settled canvas state; it cannot also freeze a frame or seek.`,
+        );
+    }
     const parityWithSeek = {
         ...parity,
         ...derivedSeekEnvironment(scene.id, parity),
@@ -5227,6 +5308,15 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
     const parityWithFrame = {
         ...parityWithSeek,
         ...derivedReferenceFrameEnvironment(scene.id, parityWithSeek),
+        // The native run waits on the same canvas state the browser does.
+        ...(parity.referenceSettle !== undefined
+            ? {
+                  nativeEnvironment: {
+                      ...parityWithSeek.nativeEnvironment,
+                      ...referenceSettleEnvironment(parity.referenceSettle),
+                  },
+              }
+            : {}),
     };
     return {
         ...resolved,

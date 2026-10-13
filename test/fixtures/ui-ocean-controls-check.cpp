@@ -20,7 +20,17 @@ int main() {
         on_dom_pointer(engine, DomEventTarget::document(), "click", 1,
                        [&](const PlatformMouseEvent&) { ++clicks; });
         const auto details = ui_create_element(engine, "details");
+        int toggles = 0, bubbled = 0;
+        on_dom_pointer(engine, DomEventTarget::node(details.value), "toggle", 2,
+                       [&](const PlatformMouseEvent& event) {
+                           assert(!event.dom->bubbles && !event.dom->cancelable);
+                           ++toggles;
+                       });
+        on_dom_pointer(engine, DomEventTarget::document(), "toggle", 3,
+                       [&](const PlatformMouseEvent&) { ++bubbled; });
         ui_set_boolean_attribute(engine, details, "open", true);
+        ui_set_boolean_attribute(engine, details, "open", true);
+        assert(toggles == 1);
         ui_set_attribute(engine, details, "style",
                          "position:absolute;left:20px;top:20px;width:240px;");
         const auto summary = ui_create_element(engine, "summary");
@@ -62,13 +72,13 @@ int main() {
         runtime.context->ProcessMouseMove(40, 30, 0);
         runtime.context->ProcessMouseButtonDown(0, 0);
         runtime.context->ProcessMouseButtonUp(0, 0);
-        assert(clicks == 1 && !ui_has_attribute(engine, details, "open"));
+        assert(clicks == 1 && !ui_has_attribute(engine, details, "open") && toggles == 2);
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(raw_select->GetDisplay() == Rml::Style::Display::None);
         runtime.context->ProcessMouseButtonDown(0, 0);
         runtime.context->ProcessMouseButtonUp(0, 0);
         assert(clicks == 2);
-        assert(ui_has_attribute(engine, details, "open"));
+        assert(ui_has_attribute(engine, details, "open") && toggles == 3);
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(raw_select->GetDisplay() != Rml::Style::Display::None);
         assert(raw_select->Focus());
@@ -103,9 +113,12 @@ int main() {
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(raw_select->GetNumOptions() == 2 && raw_select->GetValue() == "256");
         ui_click(engine, summary);
-        assert(!ui_has_attribute(engine, details, "open"));
+        assert(!ui_has_attribute(engine, details, "open") && toggles == 4 && bubbled == 0);
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(raw_select->GetDisplay() == Rml::Style::Display::None);
+        off_dom_pointer(engine, DomEventTarget::node(details.value), "toggle", 2);
+        ui_set_boolean_attribute(engine, details, "open", true);
+        assert(toggles == 4);
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

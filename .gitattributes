@@ -24,6 +24,7 @@
 # DecoratorGradient.cpp contains CRLF in the pinned upstream Git blob.
 native/patches/rmlui/0026-gradient-opacity.patch -text
 *.png binary
+*.br binary
 *.ts text eol=lf
 *.yml text eol=lf
 

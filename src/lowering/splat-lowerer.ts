@@ -15,14 +15,8 @@
  *    blend, plus the two helpers that size its scratch.
  *
  * The PLY parse is the opposite case and is executed at generation instead
- * (`src/splat-packager.ts` states why).
- *
- * One adaptation, measured rather than assumed: `Math.hypot` is
- * implementation-approximated by the ECMAScript spec, so no port can match
- * it by construction. `pinned_hypot` here is the plain root of the sum of
- * squares. Across scene 120's 345,217 splats that changes 10 of 2,785,280
- * emitted floats, every one of them a covariance entry below 1e-19 — a splat
- * whose projected area is zero either way. Recorded in `fidelity.json`.
+ * (`src/splat-packager.ts` states why). `Math.hypot` is the runtime's
+ * `bbl::js::hypot_js`, V8's own scaled sum.
  */
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";

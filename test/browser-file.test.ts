@@ -96,8 +96,8 @@ test("refuses unsupported Blob parts and options by name", () => {
         /Blob option 'endings' is not lowered/,
     );
     refusal(
-        `const parts = ["x"]; const blob = new Blob(parts);`,
-        /Blob parts require an array literal/,
+        `const parts = [1, 2]; const blob = new Blob(parts);`,
+        /Blob parts require an array literal, or an array of strings, Uint8Array or ArrayBuffer values/,
     );
     refusal(
         `const blob = new Blob([new Float32Array([1])]);`,
@@ -136,13 +136,15 @@ test("lowers object URLs and retained anchor downloads without navigation", () =
         () =>
             compileFileBody(`
                 const anchor = document.createElement("a");
-                anchor.href = "https://example.invalid/";
                 anchor.download = "map.json";
+                anchor.href = "https://example.invalid/";
                 anchor.click();
             `),
         (error: unknown) =>
             error instanceof CompileError &&
-            /Expected object-url, received string/.test(error.message),
+            /A native download anchor's href requires an object URL/.test(
+                error.message,
+            ),
     );
 });
 

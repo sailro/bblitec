@@ -14,6 +14,7 @@
 #include <bblite/features/has_picking.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/external_renderables.hpp>
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
@@ -66,6 +67,9 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_common.hpp"
+#if BBLITE_EXTERNAL_RENDERABLES
+#include "pal_external_renderables.hpp"
+#endif
 #include "pal_sdl_gpu_indexed_draw.hpp"
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
@@ -957,6 +961,10 @@ struct GpuState : SdlGpuDevice {
 #endif
 #if BBLITE_HAS_SPLATS
     std::vector<SplatPass> splat_passes;
+#endif
+#if BBLITE_EXTERNAL_RENDERABLES
+    /** Lowered renderables drawn in the scene's own pass (pal_external_renderables.hpp). */
+    ExternalRenderablePass external_pass;
 #endif
 #if BBLITE_HAS_PICKING
     // Built on the first pick and released with the renderer, as the pin

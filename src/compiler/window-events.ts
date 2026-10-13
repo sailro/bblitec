@@ -5,6 +5,7 @@ import type { Value } from "./types.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { RuntimeSearchParamsRequired } from "./search-params.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { deploymentUrl } from "./deployment.js";
 
 type WindowContext = Pick<
     LoweringServices,
@@ -17,6 +18,25 @@ type WindowContext = Pick<
     | "referenceSearch"
 >;
 
+/** The live query, read at run time from the realm host's location. */
+function runtimeLocationSearchCpp(
+    context: Pick<LoweringServices, "options" | "cppString">,
+): string {
+    return `bbl::pal::window_location_search(${context.cppString(context.options.initialSearch ?? context.options.search)})`;
+}
+
+/** The document's href at run time: the deployment URL with the live query. */
+function runtimeLocationHrefCpp(
+    context: Pick<LoweringServices, "options" | "cppString">,
+): string {
+    return `(std::string(${context.cppString(deploymentUrl(context.options).href)}) + ${runtimeLocationSearchCpp(context)})`;
+}
+
+/**
+ * `location.search = query` and `location.href = url`: navigation to this
+ * document with another query; `href` naming another document throws at
+ * run time (`window_location_assign`).
+ */
 export function emitWindowLocationAssignment(
     lowerer: DataLowerer,
     expression: ts.BinaryExpression,
@@ -25,14 +45,14 @@ export function emitWindowLocationAssignment(
     const left = context.unwrap(expression.left);
     if (
         !ts.isPropertyAccessExpression(left) ||
-        left.name.text !== "search" ||
+        (left.name.text !== "search" && left.name.text !== "href") ||
         context.libraryGlobal(left.expression) !== "location"
     )
         return false;
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
         context.fail(
             expression,
-            "Location search supports direct assignment only.",
+            `Location ${left.name.text} supports direct assignment only.`,
         );
     if (!context.options.workers) throw new ApplicationRealmRequired();
     requireWindowHost(context, expression);
@@ -41,9 +61,32 @@ export function emitWindowLocationAssignment(
     const value = lowerer.compileForSink(expression.right, { kind: "string" });
     context.emit({
         kind: "expression",
-        code: `bbl::pal::window_location_set_search(${value});`,
+        code:
+            left.name.text === "search"
+                ? `bbl::pal::window_location_set_search(${value});`
+                : `bbl::pal::window_location_assign(${value}, ${runtimeLocationHrefCpp(context)});`,
     });
     return true;
+}
+
+/**
+ * A link's activation, clicked or `click()`: `location.assign(href)` in this
+ * realm, installed as the engine's link navigation; a link opening another
+ * browsing context stays inert natively.
+ */
+export function linkNavigationCpp(
+    context: Pick<
+        LoweringServices,
+        "options" | "reachFeature" | "fail" | "cppString"
+    >,
+    engine: string,
+    site: ts.Node,
+): string {
+    if (!context.options.workers) throw new ApplicationRealmRequired();
+    requireWindowHost(context, site);
+    if (!context.options.runtimeLocationSearch)
+        throw new RuntimeSearchParamsRequired(true);
+    return `bbl::ui_set_link_navigation(${engine}, [](const std::string& url) { bbl::pal::window_location_assign(url, ${runtimeLocationHrefCpp(context)}); })`;
 }
 
 /** Retained host method aliases use the same operation as a direct call. */
@@ -54,6 +97,28 @@ export function compileWindowServiceCall(
 ): Value | undefined {
     const context = lowerer.context;
     const callee = context.unwrap(call.expression);
+    if (
+        ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "assign" &&
+        context.libraryGlobal(callee.expression) === "location"
+    ) {
+        if (!context.options.workers)
+            context.fail(
+                call,
+                "Location assign requires an asynchronous application realm.",
+            );
+        requireWindowHost(context, call);
+        context.expectArgumentCount(call, 1, 1);
+        if (!context.options.runtimeLocationSearch)
+            throw new RuntimeSearchParamsRequired(true);
+        const target = lowerer.compileForSink(call.arguments[0]!, {
+            kind: "string",
+        });
+        return {
+            kind: "void",
+            cpp: `bbl::pal::window_location_assign(${target}, ${runtimeLocationHrefCpp(context)})`,
+        };
+    }
     if (
         ts.isPropertyAccessExpression(callee) &&
         callee.name.text === "reload" &&
@@ -153,13 +218,17 @@ export function compileWindowIdentity(
     if (
         context.options.runtimeLocationSearch &&
         ts.isPropertyAccessExpression(expression) &&
-        expression.name.text === "search" &&
+        (expression.name.text === "search" ||
+            expression.name.text === "href") &&
         context.libraryGlobal(expression.expression) === "location"
     ) {
         requireWindowHost(context, expression);
         return {
             kind: "string",
-            cpp: `bbl::pal::window_location_search(${context.cppString(context.options.initialSearch ?? context.referenceSearch())})`,
+            cpp:
+                expression.name.text === "search"
+                    ? runtimeLocationSearchCpp(context)
+                    : runtimeLocationHrefCpp(context),
             dataType: { kind: "string" },
         };
     }

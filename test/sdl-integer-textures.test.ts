@@ -84,13 +84,12 @@ void SDL_BindGPUFragmentSamplers(SDL_GPURenderPass*, Uint32 first, const SDL_GPU
 void SDL_BindGPUVertexStorageTextures(SDL_GPURenderPass*, Uint32 first, SDL_GPUTexture* const* textures, Uint32 count) { bind_loaded(false, first, textures, count); }
 void SDL_BindGPUFragmentStorageTextures(SDL_GPURenderPass*, Uint32 first, SDL_GPUTexture* const* textures, Uint32 count) { bind_loaded(true, first, textures, count); }
 [[noreturn]] void gpu_error(const char* text) { throw std::runtime_error(text); }
-std::string environment_variable(const char*) { return {}; }
-std::string executable_directory() { return {}; }
-std::string join_path(const std::string&, const std::string& name) { return name; }
+std::string gpu_shader_path(const std::string& file) { return file; }
 std::vector<std::uint8_t> read_binary_file(const std::string&) { return {fixture_sidecar.begin(), fixture_sidecar.end()}; }
 void upload_2d_texture_into(SDL_GPUDevice*, SDL_GPUTexture* texture, const void* bytes, std::size_t size, std::uint32_t, std::uint32_t, const char*, bool) {
     auto data = static_cast<const std::uint8_t*>(bytes); allocations.at(texture).bytes.assign(data, data + size);
 }
+${cppRecord(shared, "struct PinnedStageBinding")}
 ${cppRecord(shared, "struct PinnedStageSlots")}
 ${cppFunction(shared, "inline PinnedStageSlots read_pinned_stage_slots(")}
 template<typename Resolve>

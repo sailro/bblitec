@@ -366,6 +366,52 @@ export function assignmentTargets(
     return [target];
 }
 
+/**
+ * The identifiers whose values a stored expression holds as they are: the
+ * expression itself, a member, element or spread of a literal it builds,
+ * or a branch it selects (`cond ? a : b`, `a ?? b`). A value computed from
+ * an identifier (a call's result) holds none of them.
+ */
+export function heldIdentifiers(
+    expression: ts.Expression,
+    unwrap: (node: ts.Expression) => ts.Expression = unwrapExpression,
+): readonly ts.Identifier[] {
+    const node = unwrap(expression);
+    if (ts.isIdentifier(node)) return [node];
+    if (ts.isSpreadElement(node))
+        return heldIdentifiers(node.expression, unwrap);
+    if (ts.isArrayLiteralExpression(node))
+        return node.elements.flatMap((element) =>
+            heldIdentifiers(element, unwrap),
+        );
+    if (ts.isObjectLiteralExpression(node))
+        return node.properties.flatMap((property) =>
+            ts.isPropertyAssignment(property)
+                ? heldIdentifiers(property.initializer, unwrap)
+                : ts.isShorthandPropertyAssignment(property)
+                  ? [property.name]
+                  : ts.isSpreadAssignment(property)
+                    ? heldIdentifiers(property.expression, unwrap)
+                    : [],
+        );
+    if (ts.isConditionalExpression(node))
+        return [
+            ...heldIdentifiers(node.whenTrue, unwrap),
+            ...heldIdentifiers(node.whenFalse, unwrap),
+        ];
+    if (
+        ts.isBinaryExpression(node) &&
+        (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+            node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+            node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+    )
+        return [
+            ...heldIdentifiers(node.left, unwrap),
+            ...heldIdentifiers(node.right, unwrap),
+        ];
+    return [];
+}
+
 /** A prefix or postfix `++`/`--`. */
 type UpdateExpression = (
     ts.PrefixUnaryExpression | ts.PostfixUnaryExpression

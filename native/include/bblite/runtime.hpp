@@ -177,6 +177,8 @@ struct EngineOptions {
     /** Zero retains the generated default; source runtime choices store one or four. */
     std::uint32_t msaa_samples = 0;
     double max_device_pixel_ratio = std::numeric_limits<double>::infinity();
+    /** `requiredLimits` the engine's `requestDevice` passes, by WebGPU limit name. */
+    std::vector<std::pair<std::string, double>> required_limits{};
 };
 
 /** Browser-neutral keyboard data delivered by the platform event loop. */
@@ -906,6 +908,10 @@ struct BoundingBoxGizmoHandle {
  */
 struct SceneState;
 struct TextRenderableState;
+struct GpuObject;
+struct GpuDevice;
+struct GpuCommandEncoder;
+struct GpuExternalRenderable;
 struct TextLayerState;
 struct TextSurface;
 struct TextRendererState;
@@ -4153,6 +4159,21 @@ struct Engine {
     std::shared_ptr<DeviceRecoveryState> device_recovery;
     /** Retains the SDK device until all source resources and retirement state are released. */
     std::shared_ptr<pal::OffscreenDevice> source_gpu_device;
+    /**
+     * The WebGPU subset (`gpu.hpp`) over the engine's device: what lowered
+     * `engine._device` calls reach. Declared after `source_gpu_device`, whose
+     * native device it uses, so it retires first.
+     */
+    std::shared_ptr<GpuDevice> webgpu_device;
+    /** `engine._currentEncoder` while a renderer prepares a pass's external renderables. */
+    std::shared_ptr<GpuCommandEncoder> current_encoder;
+    /**
+     * `getSceneBindGroupLayout(engine)` and the group a scene pass binds at 0
+     * for its external renderables, made with `webgpu_device`
+     * (`bind_engine_scene_group`, gpu_renderable.hpp).
+     */
+    std::shared_ptr<GpuObject> webgpu_scene_layout;
+    std::shared_ptr<GpuObject> webgpu_scene_group;
     std::shared_ptr<pal::EventLoop> source_gpu_loop;
     bool source_gpu_host_closed = false;
     std::shared_ptr<pal::GpuRetirementState> gpu_retirements;
@@ -4287,6 +4308,8 @@ struct Engine {
     /** Audited host-page rules, preceding scene-created sheets in cascade. */
     std::vector<UiStyleRule> ui_host_style_rules;
     std::function<void(UiElementHandle, const std::string&)> ui_attribute_changed;
+    /** A link's default action (`ui_set_link_navigation`); set by a program with links. */
+    void (*ui_link_navigation)(const std::string& url) = nullptr;
     /** A realm host can synchronously publish pending edits before a source layout read. */
     UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
@@ -4524,6 +4547,12 @@ public:
         return *pointer_;
     }
     [[nodiscard]] const std::shared_ptr<Engine>& owner() const { return owner_; }
+    /** A realm engine slot holds its owner: the stored engine's, which must exist. */
+    operator std::shared_ptr<Engine>() const {
+        if (!owner_)
+            throw std::runtime_error("A stored engine without a realm owner fills an owned slot.");
+        return owner_;
+    }
     [[nodiscard]] Engine* identity() const noexcept { return pointer_; }
     [[nodiscard]] bool operator==(const StoredEngine& other) const noexcept {
         return pointer_ == other.pointer_;
@@ -5477,6 +5506,8 @@ struct SceneState {
     std::vector<SplatMeshHandle> splat_meshes;
     /** Retained text is populated only by the reached text attachment adapter. */
     std::vector<std::shared_ptr<TextRenderableState>> text_renderables;
+    /** Lowered renderables a scene pass draws through `gpu_renderable.hpp`'s protocol. */
+    std::vector<std::shared_ptr<GpuExternalRenderable>> external_renderables;
     /**
      * The clustered light field this scene was given, if it was given one.
      *
@@ -5560,6 +5591,7 @@ struct SceneState {
         visitor(animation_seekers);
         visitor(deferred_builders);
         visitor(text_renderables);
+        visitor(external_renderables);
     }
 };
 
@@ -6782,6 +6814,41 @@ void remove_from_scene(Scene& scene, const SceneNodeHandle& node);
 void on_before_render(Scene& scene, js::Callback<void(double)> callback);
 void run_scene_before_render(Scene& scene, double delta_ms);
 void on_scene_dispose(Scene& scene, js::Callback<void()> callback);
+
+// The scene's own lists the pin reaches as arrays (`scene._beforeRender`,
+// `_disposables`, `_renderables`: SceneState::before_render, disposables,
+// external_renderables), as scene programs and lowered libraries both spell
+// them: entries are found by identity, and a splice takes the in-range start
+// the pin reads from `indexOf`.
+
+/** `list.push(entry)`: the list's new length. */
+template <class List, class Entry> double scene_list_push(List& list, Entry entry) {
+    list.push_back(std::move(entry));
+    return static_cast<double>(list.size());
+}
+/** Whether a list entry is `key`: the same object, or a callback of that identity. */
+template <class Entry, class Key>
+[[nodiscard]] bool scene_list_entry_is(const Entry& entry, const Key& key) {
+    if constexpr (std::is_same_v<Key, std::size_t>)
+        return entry.identity() == key;
+    else
+        return entry == key;
+}
+/** `list.indexOf(key)`: the first entry that is `key`, or -1. */
+template <class List, class Key>
+[[nodiscard]] double scene_list_index_of(const List& list, const Key& key) {
+    for (std::size_t index = 0; index < list.size(); ++index)
+        if (scene_list_entry_is(list[index], key))
+            return static_cast<double>(index);
+    return -1.0;
+}
+/** `list.splice(start, count)`. */
+template <class List> void scene_list_splice(List& list, double start, double count) {
+    if (!(start >= 0 && count >= 0 && start + count <= static_cast<double>(list.size())))
+        throw std::out_of_range("A scene list splice is outside the list.");
+    const auto first = list.begin() + static_cast<std::ptrdiff_t>(start);
+    list.erase(first, first + static_cast<std::ptrdiff_t>(count));
+}
 void on_key_down(Engine& engine, std::size_t identity,
                  js::Callback<void(const PlatformKeyboardEvent&)> callback, bool once = false);
 void off_key_down(Engine& engine, std::size_t identity);

@@ -535,6 +535,7 @@ export interface AssignmentContext
             | "requireEngine"
             | "assetRegistry"
             | "eraseBrowserInstrumentation"
+            | "noteErasedElementWrite"
             | "browserErasure"
             | "isNativeUiValueExpression"
             | "emit"
@@ -1280,6 +1281,7 @@ export function emitPropertyAssignment(
         context.browserErasure.isBrowserOnlyExpression(left) ||
         context.browserErasure.isBrowserDomValue(left)
     ) {
+        context.noteErasedElementWrite(left.expression, expression);
         context.eraseBrowserInstrumentation(expression.pos);
         return;
     }
@@ -1493,6 +1495,7 @@ export function emitPropertyAssignment(
     ) {
         const target = context.bindings.lookup(left.expression.expression);
         if (target.kind === "browser") {
+            context.noteErasedElementWrite(left.expression, expression);
             context.eraseBrowserInstrumentation(expression.pos);
             return;
         }

@@ -43,9 +43,9 @@ import {
     type RecordSpec,
 } from "./pinned-record-lowerer.js";
 
+import { webgpuFlagConstants } from "../webgpu-flags.js";
 import {
     textGpuAdapters,
-    textGpuConstants,
     textGpuRecords,
     textGpuUnresolved,
     textGpuValues,
@@ -622,7 +622,7 @@ export function textRecordModel(context: LoweringContext): PinnedRecordModel {
                 ],
             ]),
             adapters: new Map([...adapters, ...textGpuAdapters]),
-            constants: textGpuConstants,
+            constants: webgpuFlagConstants,
             exported: EXPORTED,
             unresolved: new Map([
                 ...textGpuUnresolved,

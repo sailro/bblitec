@@ -14,7 +14,7 @@ namespace bbl::pal {
 
 struct SdlTextDevice {
     SDL_GPUDevice* device = nullptr;
-    TextResourceRetirement resources;
+    GpuLeaseRetirement resources;
     TextGpuCapture capture;
 
     void retire() noexcept {
@@ -23,24 +23,9 @@ struct SdlTextDevice {
     }
 };
 
-template <class Resource, auto Release> struct SdlTextLease {
-    std::shared_ptr<SdlTextDevice> owner;
-    Resource* handle = nullptr;
-    std::uint64_t capture_id = 0;
-    ~SdlTextLease() { retire(); }
-    void retire() noexcept {
-        if (handle) {
-            Release(owner->device, std::exchange(handle, nullptr));
-            if (capture_id)
-                owner->capture.release(capture_id);
-        }
-    }
-    Resource* get() const {
-        if (!handle)
-            throw std::runtime_error("Text GPU resource was destroyed.");
-        return handle;
-    }
-};
+/** A text object (`SdlGpuLease`), whose capture record releases with it. */
+template <class Resource, auto Release>
+using SdlTextLease = SdlGpuLease<SdlTextDevice, Resource, Release>;
 
 using SdlTextBufferLease = SdlTextLease<SDL_GPUBuffer, SDL_ReleaseGPUBuffer>;
 using SdlTextTextureLease = SdlTextLease<SDL_GPUTexture, SDL_ReleaseGPUTexture>;
@@ -332,7 +317,7 @@ struct SdlTextGpuResources : GpuDevice {
         const auto bytes = gpu_size(descriptor.size);
         auto buffer = std::make_shared<SdlTextGpuBuffer>();
         buffer->size = descriptor.size;
-        if (text_usage_has(descriptor.usage, text_buffer_usage_uniform)) {
+        if (webgpu_usage_has(descriptor.usage, webgpu_buffer_usage::uniform)) {
             auto uniform = std::make_shared<SdlTextUniform>();
             uniform->owner = owner;
             uniform->bytes.resize(bytes);
@@ -343,9 +328,9 @@ struct SdlTextGpuResources : GpuDevice {
         }
         SDL_GPUBufferCreateInfo info{};
         info.size = gpu_u32(bytes);
-        if (text_usage_has(descriptor.usage, text_buffer_usage_vertex))
+        if (webgpu_usage_has(descriptor.usage, webgpu_buffer_usage::vertex))
             info.usage |= SDL_GPU_BUFFERUSAGE_VERTEX;
-        if (text_usage_has(descriptor.usage, text_buffer_usage_storage))
+        if (webgpu_usage_has(descriptor.usage, webgpu_buffer_usage::storage))
             info.usage |= SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
         buffer->lease = retain_sdl_gpu_text_resource<SdlTextBufferLease>(
             owner, SDL_CreateGPUBuffer(owner->device, &info), text_resource_role(descriptor.label),
@@ -355,7 +340,7 @@ struct SdlTextGpuResources : GpuDevice {
 
     GpuHandle create_texture(const GpuTextureDescriptor& descriptor) override {
         if (descriptor.format != "rgba32float" ||
-            !text_usage_has(descriptor.usage, text_texture_usage_binding) ||
+            !webgpu_usage_has(descriptor.usage, webgpu_texture_usage::texture_binding) ||
             gpu_size(descriptor.size.depth_or_array_layers) != 1)
             throw std::runtime_error("Unmapped text texture descriptor.");
         const auto width = gpu_size(descriptor.size.width), rows = gpu_size(descriptor.size.height);

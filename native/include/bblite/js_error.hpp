@@ -39,8 +39,38 @@ public:
     std::string name;
     std::exception_ptr cause;
     bool message_present;
+    /** A WebIDL DOMException: `instanceof DOMException` holds, and so does `instanceof Error`. */
+    bool dom_exception = false;
     const std::shared_ptr<const bool> identity = std::make_shared<const bool>(true);
 };
+
+/** `new DOMException(message, name)`. */
+[[nodiscard]] inline NamedError make_dom_exception(std::string message,
+                                                   std::string name = "Error") {
+    NamedError error(std::move(name), std::move(message));
+    error.dom_exception = true;
+    return error;
+}
+
+/** A DOMException as an Error value: what platform operations reject and abort with. */
+[[nodiscard]] inline std::exception_ptr dom_exception_error(std::string message,
+                                                            std::string name = "Error") {
+    return std::make_exception_ptr(make_dom_exception(std::move(message), std::move(name)));
+}
+
+/** Whether `error` is a DOMException, which only the DOMException constructor and platform
+ * operations create. */
+[[nodiscard]] inline bool is_dom_exception(const std::exception_ptr& error) {
+    if (!error)
+        return false;
+    try {
+        std::rethrow_exception(error);
+    } catch (const NamedError& value) {
+        return value.dom_exception;
+    } catch (...) {
+        return false;
+    }
+}
 
 inline std::shared_ptr<const bool> error_identity(const std::exception_ptr& error) {
     if (!error)
@@ -205,8 +235,13 @@ inline std::string error_name(const std::exception_ptr& error) {
     }
 }
 inline bool error_is(const Error& error, std::string_view name) {
-    return name == "Error" ||
-           (error.object() ? error.object()->base == name : error_name(error) == name);
+    if (error.object())
+        return name == "Error" || error.object()->base == name;
+    // A DOMException named like an ECMAScript error (SyntaxError) is not that error's instance.
+    const bool dom = is_dom_exception(error);
+    if (name == "DOMException")
+        return dom;
+    return name == "Error" || (!dom && error_name(error) == name);
 }
 template <typename Errors>
 Error make_aggregate_error(const Errors& errors, std::string message,

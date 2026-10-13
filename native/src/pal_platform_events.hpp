@@ -320,8 +320,12 @@ public:
                 throw std::runtime_error("Unable to queue deterministic text input.");
             return;
         }
-        if (code.starts_with("UiKey@")) {
-            std::string name = code.substr(6);
+        // `UiKey@Name` presses and releases a key; `+UiKey@Name` holds it, `-UiKey@Name`
+        // releases it, frames apart.
+        const bool key_hold = code.starts_with("+UiKey@");
+        const bool key_release = code.starts_with("-UiKey@");
+        if (code.starts_with("UiKey@") || key_hold || key_release) {
+            std::string name = code.substr(key_hold || key_release ? 7 : 6);
             const bool control = name.starts_with("Ctrl+");
             if (control)
                 name.erase(0, 5);
@@ -336,11 +340,11 @@ public:
             key.key.mod = control ? SDL_KMOD_CTRL : SDL_KMOD_NONE;
             key.key.key = SDL_GetKeyFromScancode(scancode, key.key.mod, false);
             key.key.down = true;
-            if (!SDL_PushEvent(&key))
+            if (!key_release && !SDL_PushEvent(&key))
                 throw std::runtime_error("Unable to queue deterministic UI key down.");
             key.type = SDL_EVENT_KEY_UP;
             key.key.down = false;
-            if (!SDL_PushEvent(&key))
+            if (!key_hold && !SDL_PushEvent(&key))
                 throw std::runtime_error("Unable to queue deterministic UI key up.");
             return;
         }

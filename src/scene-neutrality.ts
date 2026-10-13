@@ -78,6 +78,7 @@ const imageCells = new Set([
  * | 226 | SDL_GPU | differ, worst MAD 0.000260, max 1 | byte-identical |
  * | 226 | Dawn | differ, worst MAD 0.000210, max 1 | byte-identical |
  * | 231 | SDL_GPU | differ, worst MAD 0.000005, max 1 | byte-identical |
+ * | trogir-streaming | Dawn | canvas-only straddles 0.0005 between runs (published 0.000, measured 0.00055; SDL_GPU 0.00018): the splat coverage wobble over a streamed cloud | n/a |
  * | 231 | Dawn | differ under concurrent captures, worst MAD 0.000004, max 1 | byte-identical |
  * | 302 | Dawn | differ under mixed GPU load, worst MAD 0.000004, max 1 | byte-identical |
  * | 302 | SDL_GPU | differ under mixed GPU load, worst MAD 0.000012, max 1 | byte-identical |
@@ -110,6 +111,7 @@ const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene231", new Set(["dawn", "sdl_gpu"])],
     ["scene302", new Set(["dawn", "sdl_gpu"])],
     ["playroom", new Set(["dawn", "sdl_gpu"])],
+    ["trogir-streaming", new Set(["dawn"])],
 ]);
 
 /**

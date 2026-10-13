@@ -75,7 +75,7 @@ import {
 import { nativeHostUiElements } from "../native-host-ui.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
-import { documentEngine } from "./window-events.js";
+import { documentEngine, linkNavigationCpp } from "./window-events.js";
 import {
     elementDomHandlerFamily,
     emitDomEventHandler,
@@ -84,6 +84,7 @@ import {
 } from "./dom-listeners.js";
 import {
     elementInterfaceTag,
+    isCanvasSurfaceWrite,
     eventTargetCpp,
     isDocumentReceiver,
     isDomReceiver,
@@ -96,7 +97,8 @@ import {
     primaryCanvasIds,
 } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredSymbol } from "./symbols.js";
+import { declaredInDomLibrary, declaredSymbol } from "./symbols.js";
+import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
 import { argumentAt } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
@@ -204,6 +206,7 @@ interface UiProjectionContext extends Pick<
     | "compileNumber"
     | "compilePlatformCall"
     | "callbacks"
+    | "canvasSizeProperty"
     | "compileStringLiteral"
     | "compileValue"
     | "cppString"
@@ -213,6 +216,7 @@ interface UiProjectionContext extends Pick<
     | "deferredCapabilities"
     | "emit"
     | "emitDiscardedValue"
+    | "eraseBrowserInstrumentation"
     | "evaluator"
     | "expectKind"
     | "expectSameEngine"
@@ -249,11 +253,15 @@ interface UiReflectedAttribute {
     readable: boolean;
     tag?: string;
 }
+/** Elements whose `value` property is their form value. */
+const UI_FORM_VALUE_TAGS = ["textarea", "input", "select", "option", "output"];
+
 const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
     new Map<string, UiReflectedAttribute>([
         ["id", { attribute: "id", readable: true }],
         ["className", { attribute: "class", readable: true }],
         ["lang", { attribute: "lang", readable: true }],
+        ["title", { attribute: "title", readable: true }],
         ["type", { attribute: "type", readable: false }],
         ...["min", "max", "step"].map(
             (name): [string, UiReflectedAttribute] => [
@@ -262,6 +270,17 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
             ],
         ),
     ]);
+
+/** A link's `target` names this browsing context: absent, empty, `_self`, `_parent` or `_top`. */
+function linksThisContext(
+    attributes: Readonly<Record<string, string>>,
+): boolean {
+    const target = attributes.target?.toLowerCase();
+    return (
+        target === undefined ||
+        ["", "_self", "_parent", "_top"].includes(target)
+    );
+}
 
 export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
@@ -677,6 +696,135 @@ export class UiProjection {
         );
     }
 
+    /**
+     * Whether the element is one of `tags`: its own tag, or every member of
+     * its declared (possibly union) HTML interface type when storage did not
+     * carry the tag.
+     */
+    private declaresUiTags(
+        element: Value,
+        expression: ts.Expression,
+        tags: readonly string[],
+    ): boolean {
+        if (element.uiTag !== undefined) return tags.includes(element.uiTag);
+        const type = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(expression),
+        );
+        const members = type.isUnion() ? type.types : [type];
+        return members.every((member) =>
+            tags.includes(
+                elementInterfaceTag(member.getSymbol()?.name ?? "") ?? "",
+            ),
+        );
+    }
+
+    /**
+     * The values an image source expression can take, when generation knows
+     * them all: string literals, conditionals over them, and dataset reads of
+     * a host companion element whose data attribute the program never writes.
+     */
+    private uiImageSourceCandidates(
+        expression: ts.Expression,
+    ): string[] | undefined {
+        const fixed = this.tryUiStaticString(expression);
+        if (fixed !== undefined) return [fixed];
+        const value = this.context.unwrap(expression);
+        if (ts.isConditionalExpression(value)) {
+            const whenTrue = this.uiImageSourceCandidates(value.whenTrue);
+            const whenFalse = this.uiImageSourceCandidates(value.whenFalse);
+            return whenTrue && whenFalse
+                ? [...whenTrue, ...whenFalse]
+                : undefined;
+        }
+        if (
+            !ts.isPropertyAccessExpression(value) ||
+            !ts.isPropertyAccessExpression(value.expression) ||
+            value.expression.name.text !== "dataset"
+        )
+            return undefined;
+        const owner = this.uiElementValue(value.expression.expression);
+        const id = owner?.uiHostId ?? owner?.uiLookupId;
+        const attribute = `data-${value.name.text.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+        const host =
+            id === undefined
+                ? undefined
+                : [
+                      ...nativeHostUiElements(
+                          this.context.options.nativeHostUi?.elements ?? [],
+                      ),
+                  ].find((element) => element.attributes?.id === id);
+        const source = host?.attributes?.[attribute];
+        return source !== undefined && !this.programWritesUiAttribute(attribute)
+            ? [source]
+            : undefined;
+    }
+
+    /**
+     * Whether any program source may write the named attribute: a dataset
+     * write or delete of its key, an attribute call naming it or a dynamic
+     * name, or an Object.assign into a dataset.
+     */
+    private programWritesUiAttribute(attribute: string): boolean {
+        const key = attribute
+            .slice("data-".length)
+            .replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+        const isDataset = (node: ts.Expression): boolean => {
+            const value = this.context.unwrap(node);
+            return (
+                ts.isPropertyAccessExpression(value) &&
+                value.name.text === "dataset"
+            );
+        };
+        const writesKey = (target: ts.Expression): boolean => {
+            const value = this.context.unwrap(target);
+            if (ts.isPropertyAccessExpression(value))
+                return isDataset(value.expression) && value.name.text === key;
+            if (
+                ts.isElementAccessExpression(value) &&
+                isDataset(value.expression)
+            ) {
+                const name = this.context.unwrap(value.argumentExpression);
+                return !ts.isStringLiteralLike(name) || name.text === key;
+            }
+            return false;
+        };
+        const writes = (node: ts.Node): boolean => {
+            if (
+                (ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+                    writesKey(node.left)) ||
+                (ts.isDeleteExpression(node) && writesKey(node.expression))
+            )
+                return true;
+            if (ts.isCallExpression(node)) {
+                const callee = this.context.unwrap(node.expression);
+                const name = ts.isPropertyAccessExpression(callee)
+                    ? callee.name.text
+                    : undefined;
+                const first = node.arguments[0]
+                    ? this.context.unwrap(node.arguments[0])
+                    : undefined;
+                if (
+                    (name === "setAttribute" ||
+                        name === "removeAttribute" ||
+                        name === "toggleAttribute" ||
+                        name === "setAttributeNS" ||
+                        name === "removeAttributeNS") &&
+                    (!first ||
+                        !ts.isStringLiteralLike(first) ||
+                        first.text.toLowerCase() === attribute)
+                )
+                    return true;
+                if (name === "assign" && first && isDataset(first)) return true;
+            }
+            return ts.forEachChild(node, writes) ?? false;
+        };
+        return this.context
+            .sourceFiles()
+            .some((file) => !file.isDeclarationFile && writes(file));
+    }
+
     /** Evaluate helper receivers at admitted operations, not during erasure probes. */
     public compileUiElementReceiver(
         expression: ts.Expression,
@@ -686,12 +834,28 @@ export class UiProjection {
             return known.engineCpp
                 ? known
                 : { ...known, engineCpp: this.documentEngine(expression) };
-        if (!ts.isCallExpression(this.context.unwrap(expression)))
+        const owner = this.context.unwrap(expression);
+        // The checker types a conditional as the union of its arms, which
+        // no one data type names; each arm answers for itself.
+        const holdsElement = (node: ts.Expression): boolean => {
+            const value = this.context.unwrap(node);
+            if (ts.isConditionalExpression(value))
+                return (
+                    holdsElement(value.whenTrue) &&
+                    holdsElement(value.whenFalse)
+                );
+            const type = this.context.dataLowerer.dataTypeAt(node);
+            const inner = type?.kind === "optional" ? type.inner : type;
+            return inner?.kind === "handle" && inner.handle === "ui-element";
+        };
+        if (
+            !(
+                ts.isCallExpression(owner) || ts.isConditionalExpression(owner)
+            ) ||
+            !holdsElement(expression)
+        )
             return undefined;
-        const type = this.context.dataLowerer.dataTypeAt(expression);
-        const inner = type?.kind === "optional" ? type.inner : type;
-        if (inner?.kind !== "handle" || inner.handle !== "ui-element")
-            return undefined;
+        // A conditional selects between its arms' handles, evaluated once.
         const value = this.context.dataLowerer.narrowOptional(
             this.context.compileValue(expression),
             expression,
@@ -699,16 +863,24 @@ export class UiProjection {
         if (value.kind !== "ui-element")
             this.context.fail(
                 expression,
-                "A DOM helper must return a retained element.",
+                ts.isCallExpression(owner)
+                    ? "A DOM helper must return a retained element."
+                    : "A conditional element receiver must select retained elements.",
             );
-        // Nullable calls keep their safe storage until the admitted operation
-        // enters its presence branch; pinning the payload here dereferences it.
-        if (presenceFlagCpp(value) !== undefined) return value;
-        return this.context.bindings.pinValueToTemporary(
-            value,
-            "ui_receiver",
-            expression,
-        );
+        // Nullable receivers keep their safe storage until the admitted
+        // operation enters its presence branch; pinning the payload here
+        // dereferences it.
+        const receiver =
+            presenceFlagCpp(value) !== undefined
+                ? value
+                : this.context.bindings.pinValueToTemporary(
+                      value,
+                      "ui_receiver",
+                      expression,
+                  );
+        return ts.isCallExpression(owner) || receiver.engineCpp
+            ? receiver
+            : { ...receiver, engineCpp: this.documentEngine(expression) };
     }
 
     /** Whether `uiElementValue` answers a UI element here, and its tag. */
@@ -1340,6 +1512,7 @@ export class UiProjection {
     private static readonly PROJECTED_UI_STYLE_PROPERTIES =
         new EmissionSet<string>([
             ...uiLogicalSpacingProperties,
+            "accent-color",
             "appearance",
             "-webkit-appearance",
             "align-content",
@@ -1376,6 +1549,7 @@ export class UiProjection {
             "box-shadow",
             "bottom",
             "color",
+            "color-scheme",
             "clip",
             "clear",
             "column-gap",
@@ -1446,6 +1620,7 @@ export class UiProjection {
             "scrollbar-width",
             "scrollbar-color",
             "text-align",
+            "text-decoration",
             "text-shadow",
             "text-transform",
             "text-overflow",
@@ -1489,6 +1664,9 @@ export class UiProjection {
         ],
         ["-webkit-tap-highlight-color", ["transparent"]],
         ["text-transform", ["none", "uppercase", "lowercase", "capitalize"]],
+        // A preference-dependent list (`light dark`) has no native preference.
+        ["color-scheme", ["normal", "light", "dark"]],
+        ["text-decoration", ["none", "underline", "overline", "line-through"]],
         ["text-overflow", ["clip", "ellipsis"]],
         ["font-style", ["normal", "italic"]],
         ["scrollbar-gutter", ["auto", "stable"]],
@@ -1549,6 +1727,18 @@ export class UiProjection {
             ? `${second!} ${first!}${depth ?? ""}`
             : value;
     }
+
+    /**
+     * An accent the native control palette can derive its states from:
+     * Chromium composites a translucent accent onto a scheme-dependent base,
+     * which the native palette does not represent.
+     */
+    private static readonly UI_ACCENT_COLOR = (() => {
+        const channel = String.raw`\s*(?:25[0-5]|2[0-4]\d|1?\d?\d)\s*`;
+        return new RegExp(
+            String.raw`^(?:auto|#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\(${channel},${channel},${channel}\)|rgba\(${channel},${channel},${channel},\s*1(?:\.0*)?\s*\)|black|silver|gr[ae]y|white|maroon|red|orange|purple|fuchsia|green|lime|olive|yellow|navy|blue|teal|aqua)$`,
+        );
+    })();
 
     /** font-feature-settings naming only the numeral variants font-variant-numeric covers. */
     private static readonly UI_NUMERAL_FEATURES = (() => {
@@ -1840,6 +2030,15 @@ export class UiProjection {
                         site,
                         property,
                         "only a single raster image with auto, contain, cover or zero sizing and centered or default positioning is represented",
+                    );
+                return;
+            }
+            if (property === "accent-color") {
+                if (!UiProjection.UI_ACCENT_COLOR.test(literalValue))
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "only auto or an opaque literal hex, rgb() or named color is represented",
                     );
                 return;
             }
@@ -4651,12 +4850,37 @@ export class UiProjection {
         if (element.uiTag !== "a") return undefined;
         if (name === "href") {
             const url = this.context.compileValue(value);
+            // A document URL is the link's `href` attribute; activating the
+            // link navigates as `location.assign` does (docs/ui.md).
+            if (
+                url.kind === "string" ||
+                (url.kind === "data" && url.dataType?.kind === "string")
+            ) {
+                if (element.uiDownload)
+                    this.context.fail(
+                        site,
+                        "A native download anchor's href requires an object URL.",
+                    );
+                writable(element).uiLinkHref = true;
+                return `(${linkNavigationCpp(this.context, engine, site)}, bbl::ui_set_attribute(${engine}, ${element.cpp}, "href", ${url.cpp}))`;
+            }
+            if (element.uiLinkHref)
+                this.context.fail(
+                    site,
+                    "A native link anchor's href cannot become an object URL.",
+                );
             this.context.expectKind(url, "object-url", value);
             this.context.expectSameEngine(element, url, site);
             this.context.reachFeature("browser:file", site);
             return `bbl::ui_set_download_url(${engine}, ${element.cpp}, ${url.cpp})`;
         }
         if (name === "download") {
+            if (element.uiLinkHref)
+                this.context.fail(
+                    site,
+                    "A native download anchor's href requires an object URL.",
+                );
+            writable(element).uiDownload = true;
             this.context.reachFeature("browser:file", site);
             return (
                 `bbl::ui_set_download_name(${engine}, ${element.cpp}, ` +
@@ -4686,10 +4910,46 @@ export class UiProjection {
         });
     }
 
+    /**
+     * A DOM write erased by contract: one the engine's drawing surface owns
+     * (`isCanvasSurfaceWrite`), a canvas dataset member the program never
+     * reads back, or, outside Worker hosts, any other dataset member nothing
+     * can observe. Assignments consume these here; a browser-erasure path
+     * that drops a whole statement asks the same question before refusing an
+     * element write it drops.
+     */
+    public erasesByContract(expression: ts.BinaryExpression): boolean {
+        if (isCanvasSurfaceWrite(this.context, expression)) return true;
+        if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+            return false;
+        const canvasDataset = this.canvasDatasetMember(expression.left);
+        return canvasDataset
+            ? !canvasDataset.read
+            : this.unobservedDatasetWrite(expression.left);
+    }
+
     public emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean {
         const globalLeft = this.context.unwrap(expression.left);
+        if (this.erasesByContract(expression)) {
+            this.context.eraseBrowserInstrumentation(expression.pos);
+            return true;
+        }
+        // A canvas's dataset read back is the capture handshake.
+        const canvasDataset = this.canvasDatasetMember(expression.left);
         if (
-            this.context.options.workers &&
+            canvasDataset &&
+            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+            if (canvasDataset.key === "ready")
+                this.primaryCanvasReadyGate = true;
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::set_canvas_dataset(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(canvasDataset.key)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
+            });
+            return true;
+        }
+        // Any other retained element's dataset is its data-* attributes.
+        if (
             (ts.isPropertyAccessExpression(globalLeft) ||
                 ts.isElementAccessExpression(globalLeft)) &&
             ts.isPropertyAccessExpression(globalLeft.expression) &&
@@ -4753,22 +5013,18 @@ export class UiProjection {
             });
             return true;
         }
-        const canvasDataset = this.primaryCanvasDataset(expression.left);
-        if (
-            canvasDataset &&
-            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        ) {
-            if (canvasDataset === "ready") this.primaryCanvasReadyGate = true;
-            this.context.emit({
-                kind: "expression",
-                code: `bbl::set_canvas_dataset(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(canvasDataset)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
-            });
-            return true;
-        }
         if (
             expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
             !ts.isPropertyAccessExpression(expression.left)
         ) {
+            if (
+                ts.isPropertyAccessExpression(expression.left) &&
+                this.compileUiElementReceiver(expression.left.expression)
+            )
+                this.context.fail(
+                    expression,
+                    `Compound assignment to retained element property '${expression.left.name.text}' is not lowered natively.`,
+                );
             return false;
         }
         const property = expression.left.name.text;
@@ -4830,11 +5086,10 @@ export class UiProjection {
             }
             if (
                 property === "value" &&
-                ["textarea", "input", "select", "option", "output"].includes(
-                    this.declaredUiTag(
-                        directElement,
-                        expression.left.expression,
-                    ) ?? "",
+                this.declaresUiTags(
+                    directElement,
+                    expression.left.expression,
+                    UI_FORM_VALUE_TAGS,
                 ) &&
                 !directElement.uiFileInput
             ) {
@@ -5083,6 +5338,46 @@ export class UiProjection {
                 });
                 return true;
             }
+            const tag = this.declaredUiTag(
+                directElement,
+                expression.left.expression,
+            );
+            if (property === "src" && tag === "img") {
+                // Every source the write can select is packaged; the
+                // selection itself runs as written.
+                const sources = this.uiImageSourceCandidates(expression.right);
+                if (!sources)
+                    this.context.fail(
+                        expression.right,
+                        "An img src write requires sources generation can package: string literals, conditionals of them, or host data attributes the program never writes.",
+                    );
+                for (const source of sources) this.registerImageSource(source);
+                const fixed = this.tryUiStaticString(expression.right);
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, "src", ` +
+                        `${
+                            fixed !== undefined
+                                ? this.context.cppString(
+                                      this.lowerUiAttributeLiteral(
+                                          "src",
+                                          fixed,
+                                          expression.right,
+                                      ),
+                                  )
+                                : this.uiStringCpp(
+                                      expression.right,
+                                      "UI img src",
+                                  )
+                        });`,
+                });
+                return true;
+            }
+            this.context.fail(
+                expression.left,
+                `Retained element property '${property}' assignment is not lowered natively.`,
+            );
         }
         const style = this.context.unwrap(expression.left.expression);
         if (
@@ -5319,15 +5614,79 @@ export class UiProjection {
     }
 
     public primaryCanvasDataset(expression: ts.Expression): string | undefined {
+        const member = this.canvasDatasetMember(expression);
+        return member?.read ? member.key : undefined;
+    }
+
+    private readonly observedDatasetFields = new EmissionMap<string, boolean>();
+
+    /**
+     * An element dataset member outside Worker hosts that nothing in the
+     * program or its host can observe (`observesDatasetFields`, other writes
+     * of the field aside): capture instrumentation, as erasable as an
+     * unobserved metadata helper.
+     */
+    private unobservedDatasetWrite(expression: ts.Expression): boolean {
+        if (this.context.options.workers) return false;
+        const member = this.context.unwrap(expression);
+        if (!ts.isPropertyAccessExpression(member)) return false;
+        const dataset = this.context.unwrap(member.expression);
+        if (
+            !ts.isPropertyAccessExpression(dataset) ||
+            dataset.name.text !== "dataset"
+        )
+            return false;
+        const map = this.context.checker.getTypeAtLocation(dataset).getSymbol();
+        if (map?.name !== "DOMStringMap" || !declaredInDomLibrary(map))
+            return false;
+        const field = member.name.text;
+        let observed = this.observedDatasetFields.get(field);
+        if (observed === undefined) {
+            observed = observesDatasetFields(
+                this.context.checker,
+                this.context.sourceFiles(),
+                new Set([field]),
+                this.context.options.nativeHostUi,
+                (node) => {
+                    const write = node.parent;
+                    return ts.isPropertyAccessExpression(node) &&
+                        node.name.text === field &&
+                        ts.isPropertyAccessExpression(node.expression) &&
+                        node.expression.name.text === "dataset" &&
+                        ((ts.isBinaryExpression(write) &&
+                            write.left === node &&
+                            write.operatorToken.kind ===
+                                ts.SyntaxKind.EqualsToken) ||
+                            (ts.isDeleteExpression(write) &&
+                                write.expression === node))
+                        ? "self"
+                        : undefined;
+                },
+            );
+            this.observedDatasetFields.set(field, observed);
+        }
+        return !observed;
+    }
+
+    /**
+     * A canvas's dataset member outside Worker hosts: the capture handshake
+     * the native engine keeps when its program reads the dataset back, and
+     * unobservable instrumentation otherwise.
+     */
+    private canvasDatasetMember(
+        expression: ts.Expression,
+    ): { key: string; read: boolean } | undefined {
         if (this.context.options.workers) return undefined;
         const value = this.context.unwrap(expression);
         if (!ts.isPropertyAccessExpression(value)) return undefined;
         const dataset = this.context.unwrap(value.expression);
         return ts.isPropertyAccessExpression(dataset) &&
             dataset.name.text === "dataset" &&
-            this.context.isCanvasElement(dataset.expression) &&
-            this.readsCanvasDataset(value.getSourceFile())
-            ? value.name.text
+            this.context.isCanvasElement(dataset.expression)
+            ? {
+                  key: value.name.text,
+                  read: this.readsCanvasDataset(value.getSourceFile()),
+              }
             : undefined;
     }
 
@@ -5660,6 +6019,7 @@ export class UiProjection {
                 );
         }
 
+        let linkNavigation = false;
         const appendElement = (element: NativeHostUiNode, parent?: string) => {
             if (element.tag === undefined) {
                 emitted.push(
@@ -5704,6 +6064,17 @@ export class UiProjection {
                 const value = this.lowerUiAttributeLiteral(name, sourceValue);
                 if (element.tag === "img" && name === "src")
                     this.registerImageSource(value);
+                if (
+                    normalizedTag === "a" &&
+                    name === "href" &&
+                    linksThisContext(element.attributes ?? {}) &&
+                    !linkNavigation
+                ) {
+                    linkNavigation = true;
+                    emitted.push(
+                        `${indent}${linkNavigationCpp(this.context, engine, this.context.sourceFile)};`,
+                    );
+                }
                 emitted.push(
                     `${indent}bbl::ui_set_attribute(${engine}, ${handle}, ` +
                         `${this.context.cppString(name)}, ${this.context.cppString(value)});`,

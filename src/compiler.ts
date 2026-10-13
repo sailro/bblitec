@@ -98,6 +98,8 @@ import {
     compileTextMutation,
 } from "./compiler/text-surface.js";
 import { promoteLiveTextData } from "./compiler/intrinsics/text.js";
+import { emitSplatStreamAssignment } from "./compiler/splat-stream-surface.js";
+import { retainedOptions } from "./compiler/intrinsics/retained-options.js";
 import { compileNodeInputMutation } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
 import {
@@ -260,6 +262,7 @@ import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
     bindingNameIdentifiers,
+    heldIdentifiers,
     identifierText,
     isAssignmentExpression,
     isDeclaredInside,
@@ -894,6 +897,15 @@ class Compiler implements LoweringServices {
         new EmissionWeakSet<NativeCaptureBinding>();
     private readonly nativeDependencyStack: Set<NativeCaptureBinding>[] =
         emissionArray([]);
+    /**
+     * The native bindings a store placed inside another binding's value
+     * (`saved = { box }`), by a native binding of the holder: a hoisted
+     * finally reading the holder reaches them (`captureHoistedLines`).
+     */
+    private readonly heldNativeBindings = new EmissionMap<
+        NativeCaptureBinding,
+        readonly NativeCaptureBinding[]
+    >();
     private readonly realmEngineCaptures = new EmissionMap<
         string,
         readonly NativeCaptureBinding[]
@@ -918,6 +930,8 @@ class Compiler implements LoweringServices {
     private readonly loweringStatements: LoweringStatement[] = [];
     public readonly erasedBrowserExpressions = new EmissionSet<number>();
     public readonly erasedBrowserInstrumentation = new EmissionSet<number>();
+    /** Erased writes through DOM element receivers, refused with retained UI. */
+    private readonly erasedElementWrites = new EmissionMap<number, ts.Node>();
     public readonly unwrappedAwaitExpressions = new EmissionSet<number>();
     public readonly localCubemapState: { maxCandidates?: number } =
         emissionRecord({});
@@ -1104,6 +1118,7 @@ class Compiler implements LoweringServices {
         // loop that presents it (NA-26).
         this.refuseMixedStandaloneTextContexts();
         this.refuseUiWithoutPresentation();
+        this.refuseErasedElementWrites();
         this.ui.validateUiStaticProjection();
 
         if (this.dataTypes.usesJsonStorage()) this.reachJson();
@@ -1993,6 +2008,8 @@ class Compiler implements LoweringServices {
             case "navigation-obstacle":
             case "storage-buffer":
             case "scene":
+            case "gaussian-splat-stream":
+            case "splat-voxel-collision":
                 return { kind: pinned, cppType: handleCppType(pinned) };
         }
         const audio = domAudioHandleKind(member);
@@ -2222,9 +2239,45 @@ class Compiler implements LoweringServices {
 
     public emitAssignment(expression: ts.BinaryExpression): void {
         traceSourceNode(expression.left);
+        this.noteHeldNativeBindings(expression);
         this.dataLowerer.withStoreKeysHeld(expression, () =>
             this.emitStore(expression),
         );
+    }
+
+    /**
+     * `holder = { box }`: the native bindings whose values the store places
+     * inside the holder's value -- the stored value itself, or a member,
+     * element or branch of a literal it builds -- whatever storage the
+     * holder's type (declared or inferred) gave it. A value computed from
+     * them (`createCsgFromMesh(box)`) holds none of them.
+     */
+    public noteHeldNativeBindings(expression: ts.BinaryExpression): void {
+        if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return;
+        const target = this.unwrap(expression.left);
+        if (!ts.isIdentifier(target)) return;
+        const holders = this.identifierNativeBindings(target);
+        if (holders.length === 0) return;
+        const held = heldIdentifiers(this.unwrap(expression.right), (node) =>
+            this.unwrap(node),
+        ).flatMap((identifier) => this.identifierNativeBindings(identifier));
+        if (held.length === 0) return;
+        for (const holder of holders)
+            this.heldNativeBindings.set(holder, [
+                ...(this.heldNativeBindings.get(holder) ?? []),
+                ...held,
+            ]);
+    }
+
+    /** The native bindings a source binding's current value reads. */
+    private identifierNativeBindings(
+        identifier: ts.Identifier,
+    ): readonly NativeCaptureBinding[] {
+        const symbol = this.symbols.valueSymbol(identifier);
+        const binding = symbol && this.bindings.peekBinding(symbol);
+        return binding
+            ? this.nativeValueCaptures.bindingsOf(binding.value)
+            : [];
     }
 
     /** `emitAssignment` once its target's keys are read. */
@@ -2248,6 +2301,7 @@ class Compiler implements LoweringServices {
             return;
         }
         if (this.compileCameraMutation(expression)) return;
+        if (emitSplatStreamAssignment(this, expression)) return;
         if (emitCanvasAssignment(this, expression)) return;
         if (this.options.workers && this.emitUiPropertyAssignment(expression))
             return;
@@ -4099,6 +4153,47 @@ class Compiler implements LoweringServices {
         return unwrapped;
     }
 
+    /**
+     * `requiredLimits`: the record's present numeric members by WebGPU limit
+     * name, in property order, as the device request reads them
+     * (`EngineOptions::required_limits`; an undefined member requests nothing).
+     */
+    private compileRequiredLimits(site: ts.Expression): string {
+        const target = this.allocateTemporaryCppName("required_limits");
+        this.emit({
+            kind: "declaration",
+            type: "std::vector<std::pair<std::string, double>>",
+            name: target,
+            initializer: "{}",
+        });
+        for (const field of retainedOptions(
+            this,
+            this.compileValue(site),
+            site,
+        )) {
+            const type =
+                field.type?.kind === "optional" ? field.type.inner : field.type;
+            if (type?.kind !== "number")
+                this.fail(
+                    site,
+                    `Engine requiredLimits.${field.name} requires a number.`,
+                );
+            const value =
+                field.value && field.type?.kind !== "optional"
+                    ? this.castNumber(field.value, "double")
+                    : field.cpp;
+            const entry = `${target}.emplace_back(${this.cppString(field.name)}, `;
+            this.emit({
+                kind: "expression",
+                code:
+                    field.type?.kind === "optional"
+                        ? `if (${value}.has_value()) ${entry}*${value});`
+                        : `${entry}${value});`,
+            });
+        }
+        return target;
+    }
+
     public compileEngineCreation(
         call: ts.CallExpression,
         cppName: string,
@@ -4139,6 +4234,7 @@ class Compiler implements LoweringServices {
         let pixelRatioCap: number | undefined;
         let highPrecisionMatrix = false;
         let floatingOrigin = false;
+        let requiredLimits: string | undefined;
         if (call.arguments[1]) {
             const options = this.expectObjectLiteral(call.arguments[1]);
             validateObjectProperties(
@@ -4199,9 +4295,7 @@ class Compiler implements LoweringServices {
                 }
             }
             const limits = this.objectProperty(options, "requiredLimits");
-            if (limits) {
-                this.expectObjectLiteral(limits);
-            }
+            if (limits) requiredLimits = this.compileRequiredLimits(limits);
         }
         if (this.defaultEngineCpp) {
             this.fail(
@@ -4218,11 +4312,26 @@ class Compiler implements LoweringServices {
             engineOptions.push(sampleOverride ?? "0");
         if (pixelRatioCap !== undefined)
             engineOptions.push(String(pixelRatioCap));
+        let engineOptionsCpp = `bbl::EngineOptions{${engineOptions.join(", ")}}`;
+        if (requiredLimits) {
+            const named = this.allocateTemporaryCppName("engine_options");
+            this.emit({
+                kind: "declaration",
+                type: "bbl::EngineOptions",
+                name: named,
+                initializer: engineOptionsCpp,
+            });
+            this.emit({
+                kind: "expression",
+                code: `${named}.required_limits = std::move(${requiredLimits});`,
+            });
+            engineOptionsCpp = `std::move(${named})`;
+        }
         this.emit({
             kind: "declaration",
             type: "auto",
             name: cppName,
-            initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${engineOptions.join(", ")}}${canvasArgument})`,
+            initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(${engineOptionsCpp}${canvasArgument})`,
         });
         this.registerNativeBindingType(
             cppName,
@@ -6119,7 +6228,14 @@ class Compiler implements LoweringServices {
             this.synchronousCleanupFrames.pop();
             this.popDependencies(this.nativeDependencyStack);
         }
-        for (const binding of dependencies) {
+        // A native local of the try body, read directly or held by a
+        // binding the guard reads (`saved = { box }`), has left scope when
+        // the guard runs.
+        const reached = [...dependencies].flatMap((binding) => [
+            binding,
+            ...(this.heldNativeBindings.get(binding) ?? []),
+        ]);
+        for (const binding of reached) {
             if (
                 binding.sequence > beforeBody &&
                 binding.sequence <= beforeGuard
@@ -9130,6 +9246,65 @@ class Compiler implements LoweringServices {
         this.erasedBrowserInstrumentation.add(position);
     }
 
+    /**
+     * A browser-erasure path dropped a write through `receiver`. Writes erased
+     * by contract (`UiProjection.erasesByContract`) are consumed before the
+     * assignment fallback; a path dropping a whole statement asks the same
+     * question. With retained UI, any other write through a DOM element is
+     * one no path represents.
+     */
+    public noteErasedElementWrite(
+        receiver: ts.Expression,
+        site: ts.Node,
+    ): void {
+        if (ts.isBinaryExpression(site) && this.ui.erasesByContract(site))
+            return;
+        const isElement = (expression: ts.Expression): boolean => {
+            const type = this.checker.getNonNullableType(
+                this.checker.getTypeAtLocation(expression),
+            );
+            return (type.isUnion() ? type.types : [type]).some((member) => {
+                const symbol = member.getSymbol();
+                return (
+                    declaredInDomLibrary(symbol) &&
+                    /^(?:Element|(?:HTML|SVG|MathML)\w*Element)$/.test(
+                        symbol?.name ?? "",
+                    )
+                );
+            });
+        };
+        // `element.dataset.key` and `element.style.color` write through the
+        // element that owns the receiver.
+        let owner: ts.Expression | undefined = receiver;
+        while (owner) {
+            const value = this.unwrap(owner);
+            if (isElement(owner)) {
+                this.erasedElementWrites.set(site.pos, site);
+                return;
+            }
+            owner =
+                ts.isPropertyAccessExpression(value) ||
+                ts.isElementAccessExpression(value)
+                    ? value.expression
+                    : undefined;
+        }
+    }
+
+    /**
+     * A program with retained UI projects its DOM elements natively, so a write
+     * through an element the projection did not represent would vanish: it must
+     * lower or refuse, never erase as browser instrumentation.
+     */
+    private refuseErasedElementWrites(): void {
+        if (!this.features.has("ui:rml")) return;
+        const [site] = this.erasedElementWrites.values();
+        if (site)
+            this.fail(
+                site,
+                "A write through a DOM element that the retained UI does not represent cannot be erased in a program with retained UI.",
+            );
+    }
+
     public expectArgumentCount(
         call: ts.CallExpression,
         minimum: number,
@@ -9316,6 +9491,7 @@ class Compiler implements LoweringServices {
                 this.dataTypes.usesDeferredPlatformStorage(),
             windowStorageReached: this.dataTypes.usesWindowStorage(),
             responseStorageReached: this.dataTypes.usesResponseStorage(),
+            webPlatformHeaders: this.dataTypes.webPlatformHeaders(),
             imageDecodeReached: this.imageDecodeReached,
             runtimeMeshProfiles: this.sceneManifest.hasRuntimeMeshProfiles(),
             jsRandomReached: this.jsRandomReached,

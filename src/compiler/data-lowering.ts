@@ -1,3 +1,4 @@
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     isPresentValue,
     isStringValue,
@@ -89,6 +90,10 @@ import {
     type SlotStep,
 } from "./numeric-slot-storage.js";
 import { httpResponseProperty } from "./http.js";
+import {
+    compileWebPlatformAssignment,
+    webPlatformProperty,
+} from "./web-platform.js";
 import { gpuAdapterProperty } from "./gpu-adapter.js";
 import { gpuValue } from "./gpu-value.js";
 import {
@@ -769,6 +774,8 @@ export class DataLowerer {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);
         if (deferred) return deferred;
+        const platform = compileWebPlatformAssignment(this, expression);
+        if (platform) return platform;
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
             const operator = ASSIGNMENT_OPERATORS.get(
                 expression.operatorToken.kind,
@@ -4921,6 +4928,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (exported) return exported;
         const http = httpResponseProperty(this, owner, property);
         if (http) return http;
+        const platform = webPlatformProperty(this, owner, property, access);
+        if (platform) return platform;
         const gpu = gpuAdapterProperty(this, owner, property);
         if (gpu) return gpu;
         if (owner.dataType?.kind === "storage") {
@@ -11102,6 +11111,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (dataType.kind === "span" && value.kind === "tuple") {
             return this.compileKnownValueForSink(value, dataType, expression);
         }
+        if (
+            dataType.kind === "span" &&
+            dataType.element.kind === "number" &&
+            value.kind === "camera-world-matrix"
+        ) {
+            // `camera.worldMatrix` as `ArrayLike<number>`: its stored lanes,
+            // as numbers, in a named local the call reads.
+            const engine = this.context.requireEngine(value, expression);
+            const lanes =
+                this.context.allocateTemporaryCppName("camera_world_lanes");
+            const widened =
+                this.context.allocateTemporaryCppName("array_like_numbers");
+            this.context.reachJsData();
+            this.context.emit(
+                `const auto ${lanes} = bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, value.cpp)});`,
+            );
+            this.context.emit(
+                `const bbl::js::F64Array ${widened}(${lanes}.begin(), ${lanes}.end());`,
+            );
+            this.registerLocal(widened, "owned");
+            return widened;
+        }
         if (value.kind !== "data" || !value.dataType) {
             this.context.fail(
                 expression,
@@ -12793,12 +12824,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ts.isArrayLiteralExpression(right) ||
                 right.kind === ts.SyntaxKind.NullKeyword ||
                 identifierText(right) === "undefined");
+        // A record a function builds and returns at every return is a new
+        // object no alias names, so its copy is the object itself.
+        const freshRecord =
+            target.dataType.kind === "struct" &&
+            ts.isCallExpression(right) &&
+            this.returnsFreshRecord(right);
         if (
             kind !== "function" &&
             !reseatsOnAssignment(target.dataType, (name) =>
                 this.context.dataTypes.isReferenceStruct(name),
             ) &&
-            !freshOptional
+            !freshOptional &&
+            !freshRecord
         ) {
             this.requireNumericSlot(
                 this.context.probeEmission(
@@ -14638,11 +14676,51 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * side compiles into the store; an assignment used as a value has it
      * bound where the store first consumes it (`compileAssignmentValue`).
      */
+    /**
+     * Whether a call's callee is a source function whose every return
+     * builds a new object literal (`return { x: ..., y: ... }`).
+     */
+    private returnsFreshRecord(call: ts.CallExpression): boolean {
+        const callee = this.context.unwrap(call.expression);
+        if (!ts.isIdentifier(callee)) return false;
+        const declaration = tryResolveFunctionDeclaration(
+            this.context.checker,
+            callee,
+        );
+        const body =
+            declaration && "body" in declaration ? declaration.body : undefined;
+        if (!body || !ts.isBlock(body)) return false;
+        let returns = 0;
+        let fresh = true;
+        const visit = (node: ts.Node): void => {
+            if (!fresh || ts.isFunctionLike(node)) return;
+            if (ts.isReturnStatement(node)) {
+                returns++;
+                if (
+                    !node.expression ||
+                    !ts.isObjectLiteralExpression(
+                        this.context.unwrap(node.expression),
+                    )
+                )
+                    fresh = false;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        ts.forEachChild(body, visit);
+        return fresh && returns > 0;
+    }
+
     public emitAssignment(expression: ts.BinaryExpression): boolean {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);
         if (deferred) {
             this.context.emit({ kind: "expression", code: `${deferred.cpp};` });
+            return true;
+        }
+        const platform = compileWebPlatformAssignment(this, expression);
+        if (platform) {
+            this.context.emitDiscardedValue(platform);
             return true;
         }
         const operator = ASSIGNMENT_OPERATORS.get(

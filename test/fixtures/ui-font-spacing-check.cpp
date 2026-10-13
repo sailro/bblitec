@@ -82,7 +82,8 @@ int main() {
     Rml::SetSystemInterface(&system);
     Rml::SetRenderInterface(&recorder);
     assert(Rml::Initialise());
-    bbl::pal::UiRangeDecoratorInstancer ranges;
+    const auto schemes = bbl::pal::register_ui_control_scheme_properties();
+    bbl::pal::UiRangeDecoratorInstancer ranges{schemes};
     Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &ranges);
     const auto font = bbl::pal::find_system_font("Segoe UI", 400);
     assert(font);

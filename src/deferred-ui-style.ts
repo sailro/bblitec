@@ -54,7 +54,6 @@ const properties = new Set([
     "scroll-padding-right",
     "scroll-padding-bottom",
     "scroll-padding-left",
-    "accent-color",
     "text-indent",
 ]);
 

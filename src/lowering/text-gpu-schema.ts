@@ -1,4 +1,9 @@
 import {
+    descriptor,
+    field,
+    functionOf as fn,
+    gpuObjectShape as gpuObject,
+    members,
     recordOf as record,
     optionalOf as optional,
     recordScalars,
@@ -20,44 +25,13 @@ import {
  */
 import type {
     CallAdapter,
-    MemberSpec,
     RecordShape,
     RecordSpec,
 } from "./pinned-record-lowerer.js";
 import { gpuRecords } from "./gpu-schema.js";
-import { webgpuFlagNamespaces } from "../webgpu-flags.js";
 
 const { number, string, void: none } = recordScalars;
-const fn = (
-    parameters: readonly RecordShape[],
-    result: RecordShape,
-): RecordShape => ({ kind: "function", parameters, result });
-/** A backend GPU object the text path holds; absent while `null`. */
-const gpuObject: RecordShape = {
-    kind: "native",
-    cpp: "bbl::GpuHandle",
-    nullable: true,
-};
 const typedF32: RecordShape = { kind: "typed", element: "f32" };
-
-const members = (
-    entries: readonly (readonly [string, MemberSpec])[],
-): ReadonlyMap<string, MemberSpec> => new Map(entries);
-const field = (shape: RecordShape, name?: string): MemberSpec =>
-    name === undefined ? { shape } : { shape, field: name };
-
-/** A value descriptor the pin builds and a backend reads. */
-const descriptor = (
-    pinned: string,
-    cpp: string,
-    entries: readonly (readonly [string, MemberSpec])[],
-): RecordSpec => ({
-    pinned: [pinned],
-    cpp,
-    reference: false,
-    native: true,
-    members: members(entries),
-});
 
 export const textGpuRecords: readonly RecordSpec[] = [
     ...gpuRecords,
@@ -296,12 +270,3 @@ export const textGpuAdapters: readonly (readonly [string, CallAdapter])[] = [
         },
     ],
 ];
-
-/** The WebGPU flag globals, as the specification numbers them. */
-export const textGpuConstants: ReadonlyMap<string, number> = new Map(
-    Object.entries(webgpuFlagNamespaces).flatMap(([namespace, values]) =>
-        Object.entries(values).map(
-            ([name, value]) => [`${namespace}.${name}`, value] as const,
-        ),
-    ),
-);

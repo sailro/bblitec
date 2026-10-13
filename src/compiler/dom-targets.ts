@@ -141,6 +141,8 @@ const WINDOW_INTERFACES: ReadonlyMap<string, WindowInterface> = new Map<
         [
             ["HTMLInputElement", "input"],
             ["HTMLSelectElement", "select"],
+            ["HTMLOptionElement", "option"],
+            ["HTMLOutputElement", "output"],
             ["HTMLTextAreaElement", "textarea"],
             ["HTMLButtonElement", "button"],
             ["HTMLCanvasElement", "canvas"],
@@ -225,4 +227,40 @@ export function compileDomInstanceOf(
         case "tag":
             return `bbl::dom_target_has_tag(${target}, ${context.cppString(entry.test.tag)})`;
     }
+}
+
+/**
+ * A write the engine's drawing surface owns: the backing extent of the canvas
+ * that is the surface (the window owns its size, and `canvas.width` reads
+ * answer it), and `tabIndex = 0` on a canvas (keyboard focus already targets
+ * the SDL surface, and a native canvas's tabIndex reads 0). Answered without
+ * emitting, for writes a browser-erasure path drops too.
+ */
+export function isCanvasSurfaceWrite(
+    context: Pick<
+        LoweringServices,
+        "unwrap" | "isCanvasElement" | "canvasSizeProperty" | "probeEmission"
+    >,
+    assignment: ts.BinaryExpression,
+): boolean {
+    const left = context.unwrap(assignment.left);
+    if (
+        assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+        !ts.isPropertyAccessExpression(left) ||
+        !context.isCanvasElement(left.expression)
+    )
+        return false;
+    if (left.name.text === "width" || left.name.text === "height")
+        return (
+            context.probeEmission(
+                () => context.canvasSizeProperty(left),
+                () => false,
+            ) !== undefined
+        );
+    const right = context.unwrap(assignment.right);
+    return (
+        left.name.text === "tabIndex" &&
+        ts.isNumericLiteral(right) &&
+        Number(right.text) === 0
+    );
 }

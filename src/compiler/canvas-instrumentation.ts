@@ -786,6 +786,26 @@ export function writesUnobservedCanvasMetadata(
     };
     visit(declaration.body);
     if (!valid || fields.size === 0) return false;
+    return !observesDatasetFields(checker, sourceFiles, fields, host, (node) =>
+        node === declaration ? "subtree" : undefined,
+    );
+}
+
+/**
+ * Whether a program source or the native host can observe the named dataset
+ * fields: a host element, rule or sheet naming the attribute, a style text
+ * or stylesheet write that could select it, an attribute reader or query that
+ * may name it, any whole-dataset use, a member of the same name, or a string
+ * naming the attribute. `ignore` excludes the writes being judged: a whole
+ * subtree, or one node whose children are still read.
+ */
+export function observesDatasetFields(
+    checker: ts.TypeChecker,
+    sourceFiles: readonly ts.SourceFile[],
+    fields: ReadonlySet<string>,
+    host: NativeHostUi | undefined,
+    ignore: (node: ts.Node) => "subtree" | "self" | undefined,
+): boolean {
     const attributes = [...fields].map(
         (name) =>
             `data-${name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`,
@@ -799,7 +819,7 @@ export function writesUnobservedCanvasMetadata(
               host.styleSheets,
           ])
         : "";
-    if (attributes.some((name) => hostText.includes(name))) return false;
+    if (attributes.some((name) => hostText.includes(name))) return true;
     const hasDomType = (expression: ts.Expression, name: string): boolean => {
         const owner = checker
             .getNonNullableType(checker.getTypeAtLocation(expression))
@@ -807,8 +827,10 @@ export function writesUnobservedCanvasMetadata(
         return owner?.name === name && declaredInDomLibrary(owner);
     };
     const observes = (node: ts.Node): boolean => {
-        if (node === declaration) return false;
+        const ignored = ignore(node);
+        if (ignored === "subtree") return false;
         if (ts.isTypeNode(node)) return false;
+        if (ignored === "self") return ts.forEachChild(node, observes) ?? false;
         if (
             ts.isElementAccessExpression(node) ||
             (ts.isPropertyAccessExpression(node) &&
@@ -883,7 +905,7 @@ export function writesUnobservedCanvasMetadata(
             return true;
         return ts.forEachChild(node, observes) ?? false;
     };
-    return !sourceFiles.some(
+    return sourceFiles.some(
         (file) => !file.isDeclarationFile && observes(file),
     );
 }

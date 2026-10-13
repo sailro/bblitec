@@ -1,0 +1,28 @@
+{
+  "scene": "examples/window-free-control.ts",
+  "notes": "Window-realm owned camera controls (attachFreeControl, as the Trogir demo attaches them): a drag on the canvas turns the camera, and holding W after a press on the canvas (which gives it keyboard focus) moves it through the control's per-frame update; a press alone leaves the pose alone.",
+  "base": "adhoc",
+  "minFrames": 90,
+  "phases": [
+    { "id": "settled", "frame": 60 },
+    { "id": "pressed", "frame": 60, "tape": ["-*20", "UiClick@640:360"] },
+    {
+      "id": "dragged",
+      "frame": 60,
+      "tape": ["-*20", "+UiMouseLeft@640:360", "UiMove@660:360", "UiMove@680:360", "UiMove@700:360", "UiMove@720:360", "UiMove@740:360", "-UiMouseLeft@740:360"]
+    },
+    {
+      "id": "walked",
+      "frame": 60,
+      "tape": ["-*20", "UiClick@640:360", "+UiKey@W", "-*15", "-UiKey@W"]
+    }
+  ],
+  "expect": [
+    { "kind": "camera-delta", "phase": "pressed", "vs": "settled", "key": "freeYaw", "max": 0.000001 },
+    { "kind": "camera-delta", "phase": "pressed", "vs": "settled", "key": "position[2]", "max": 0.000001 },
+    { "kind": "camera-delta", "phase": "dragged", "vs": "settled", "key": "freeYaw", "min": 0.05 },
+    { "kind": "camera-delta", "phase": "walked", "vs": "settled", "key": "position[2]", "min": 0.5 },
+    { "kind": "camera-delta", "phase": "walked", "vs": "settled", "key": "freeYaw", "max": 0.000001 },
+    { "kind": "image-mad", "phase": "dragged", "vs": "settled", "min": 0.05, "notes": "the turned camera renders another image" }
+  ]
+}

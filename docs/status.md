@@ -208,8 +208,8 @@ Physics rows measure Bullet against Havok: their residuals include solver differ
 | 224 | <img src="images/scenes/scene224.png" alt="Scene 224 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Bounding Box Gizmo |
 | 225 | <img src="images/scenes/scene225.png" alt="Scene 225 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Geospatial Camera; renders its pose, controls attach without input arms. |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001/0.003 | 0.001/0.003 | Gaussian Splatting glTF |
-| 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.000/0.001 | 0.001/0.001 | Shared Scene Surfaces |
-| 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.000/0.000 | 0.000/0.001 | Independent Scene Surfaces |
+| 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.001/0.001 | 0.001/0.001 | Shared Scene Surfaces |
+| 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.000/0.001 | 0.000/0.001 | Independent Scene Surfaces |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Triangle Without Indices |
 | 231 | <img src="images/scenes/scene231.png" alt="Scene 231 rendering" width="160"> | 0.000/0.001 | 0.000/0.000 | Standard Material Deform Features |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Animated Triangle |
@@ -293,6 +293,7 @@ Unchanged pinned applications, including their reached source and asset graphs.
 | Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.139/0.169 | 0.139/0.169 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only: pixel-perfect on both backends. |
 | Mosquito in Amber | <img src="images/scenes/mosquito-amber.png" alt="Mosquito in Amber rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Transmissive glTF (scene 176) as a demo; studio HDR IBL; retained chrome. |
 | Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | 0.020/0.089 | 0.020/0.089 | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only: pixel-perfect on both backends. |
+| Trogir Streaming | <img src="images/scenes/trogir-streaming.png" alt="Trogir Gaussian splat streaming rendering" width="160"> | 0.285/0.286 | 0.289/0.290 | Gaussian splats streamed at run time (LOD manifest, SOG WebP sources, GPU gather, radix sort, indirect draw); voxel collision; retained HUD. Measured once the stream settles (phase idle). UI residual, with the live first-frame timing; canvas-only MAD: 0.000/0.000 on both backends. |
 
 ## Project-owned differential gates
 

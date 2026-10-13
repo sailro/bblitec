@@ -11,7 +11,7 @@ inline void update_sdl_gpu_text_renderers(Engine& engine, SdlTextRenderer& text,
     const auto& surface = bbl::text_surface(engine);
     surface->device = text.device;
     surface->canvas = {width, height};
-    surface->format = sdl_text_format_name(text.device->color_format);
+    surface->format = sdl_webgpu_format_name(text.device->color_format);
     const auto renderers = engine.text_renderer_contexts();
     for (std::size_t index = 0; index < renderers.size(); ++index)
         renderers[index]->update();

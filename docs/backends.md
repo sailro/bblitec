@@ -108,6 +108,35 @@ Interactive desktop runs use SDL main callbacks, including iteration during Win3
 Suspended frame state owns renderer resources until shutdown. Capture, benchmark and mobile runs
 use explicit iteration; Worker renderers retain their realm RAF scheduling.
 
+## WebGPU subset devices
+
+`DawnWebGpuDevice` maps `gpu.hpp`'s WebGPU subset one to one. `SdlWebGpuDevice` emulates it: a runtime
+WGSL module resolves to the stages generation compiled under `wgsl-<text digest>.<entry>.<stage>`
+(`src/wgsl-artifacts.ts`); bind groups keep
+their entries and each dispatch or draw binds the resources its stage's sidecar names, at the group's
+dynamic offsets; storage buffers bind whole; uniform buffers are CPU bytes pushed when a command is
+encoded; command encoders record and encode at submission (or before a renderer's passes); each dispatch
+is its own compute pass; indirect dispatch reads a copy of its arguments, since D3D12 holds a buffer
+bound as storage in a shader-resource state (one copy per buffer and offset until a command writes the
+buffer); queue writes and new buffers' zeroes stage in one upload ring, recorded in one copy pass ahead
+of the next encoded or submitted commands; `clearBuffer` uploads zeros; `MAP_READ` buffers are
+download transfer buffers mapped after a fence. Device limits are WebGPU's defaults raised by the
+engine's `requiredLimits`; SDL_GPU admits 32-bit sizes.
+
+`engine:webgpu-device` binds the device at `createEngine`, with the engine's scene layout and group
+(empty on both backends; a renderable shader reading group 0 fails). `renderer:external-renderables`
+draws a scene pass's lowered renderables (`gpu_renderable.hpp`, `pal_external_renderables.hpp`) with
+render-task-base.ts's protocol, pinned by `external-renderable-contract.ts`: bound per target signature
+and published renderable version (a failed bind releases its batch generation at once), prepared
+before the pass (batch reset, update, batch flush recorded into the frame encoder), and drawn at their
+place in the transparent bucket (`pal_transparent_order.hpp`): transparent meshes, billboards and
+external bindings sort by the pin's lowered `compareTransparentBindings` and `_sortDistance`
+(`transparent_order.hpp`; distance 0 without `_worldCenter`). Mixed families without a camera, or tied
+in distance and order, refuse; so do external renderables beside text, splat clouds or depth-hosted
+sprite layers, in render tasks, or opaque. Text keeps its own instance of the protocol (`TextScenePass`)
+and its own devices: its generated bindings draw into a text surface with the live view-projection, also
+run inside render tasks, and need render bundles, vertex buffers and samplers outside the subset.
+
 ## Temporal post-process transport
 
 Each TAA source task owns scratch, uniforms and history. Hooks run once in source order.

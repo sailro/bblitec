@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -9,6 +8,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    serveHttpFixture,
 } from "./native-fixture.js";
 
 async function checkRuntimeHttp(
@@ -26,7 +26,7 @@ async function checkRuntimeHttp(
         body: string;
         contentType: string | undefined;
     }[] = [];
-    const server = createServer((request, response) => {
+    const base = await serveHttpFixture(t, (request, response) => {
         const chunks: Buffer[] = [];
         request.on("data", (chunk: Buffer) => chunks.push(chunk));
         request.on("end", () => {
@@ -59,35 +59,17 @@ async function checkRuntimeHttp(
             response.end('{"answer":42}');
         });
     });
-    await new Promise<void>((resolve) =>
-        server.listen(0, "127.0.0.1", resolve),
-    );
-    t.after(() => {
-        server.closeAllConnections();
-        server.close();
-    });
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const base = `http://127.0.0.1:${address.port}`;
     const directory = resolve(
         `artifacts/runtime-http${deferred ? "-headers" : ""}`,
     );
     mkdirSync(directory, { recursive: true });
+    // Runtime responses expose native headers and bodies in either admission mode.
     const headerProbe = deferred
         ? `
-            let headersFailed=false, keys=0;
-            function headerName():string{keys++;return 'content-encoding';}
-            try { response.headers?.get(headerName()); } catch(error) {
-                if(!error.message.includes('dom:Response.headers'))throw error;
-                headersFailed=true;
-            }
-            if(!headersFailed||keys!==0||response.bodyUsed)throw new Error('header boundary ordering');
-            let bodyFailed=false;
-            try { response.body; } catch(error) {
-                if(!error.message.includes('dom:Body.body'))throw error;
-                bodyFailed=true;
-            }
-            if(!bodyFailed||response.bodyUsed)throw new Error('stream boundary consumed body');
+            let keys=0;
+            function headerName():string{keys++;return 'content-type';}
+            if(response.headers?.get(headerName())!=='application/json'||keys!==1)throw new Error('response headers');
+            if(!response.body||response.bodyUsed)throw new Error('response body');
     `
         : "";
     const source = `
@@ -125,12 +107,7 @@ async function checkRuntimeHttp(
         fileName: entry,
         ...(deferred ? { deferredCapabilities: "runtime-throw" as const } : {}),
     });
-    assert.deepEqual(
-        compiled.manifest.deferredCapabilities?.map((site) => site.id),
-        deferred
-            ? ["dom:Response.headers", "dom:Headers.get", "dom:Body.body"]
-            : undefined,
-    );
+    assert.equal(compiled.manifest.deferredCapabilities, undefined);
     assert.ok(compiled.manifest.features.includes("platform:http"));
     assert.ok(compiled.manifest.runtimeSources.includes("src/pal_http.cpp"));
     const cpp = resolve(directory, "main.cpp"),
@@ -169,7 +146,7 @@ async function checkRuntimeHttp(
 
 test("strict runtime HTTP preserves requests, responses and rejection", (t) =>
     checkRuntimeHttp(t, false));
-test("deferred response headers and streams preserve HTTP bodies and recovery", (t) =>
+test("runtime response headers and bodies stay native in deferred capability mode", (t) =>
     checkRuntimeHttp(t, true));
 
 test("fetch refuses a cache mode a native response cannot honour", () => {

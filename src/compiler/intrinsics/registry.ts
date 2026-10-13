@@ -1,5 +1,9 @@
 import { compileComputeUniformArenaIntrinsic } from "./compute-uniform-arena.js";
 import {
+    compileSplatStreamIntrinsic,
+    type SplatStreamIntrinsicContext,
+} from "./splat-stream.js";
+import {
     compileProceduralSkyIntrinsic,
     type ProceduralSkyIntrinsicContext,
 } from "./procedural-sky.js";
@@ -111,6 +115,7 @@ import {
 interface IntrinsicContext
     extends
         ProceduralSkyIntrinsicContext,
+        SplatStreamIntrinsicContext,
         AnimationIntrinsicContext,
         AssetIntrinsicContext,
         AudioIntrinsicContext,
@@ -228,6 +233,7 @@ type IntrinsicCompiler = (
 
 const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileProceduralSkyIntrinsic,
+    compileSplatStreamIntrinsic,
     compileStorageReadbackIntrinsic,
     compileComputeDispatchIntrinsic,
     compileComputeShaderIntrinsic,

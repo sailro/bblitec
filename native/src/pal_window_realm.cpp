@@ -7,6 +7,7 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_animation_frame.hpp>
 #include <bblite/pal_location.hpp>
+#include <bblite/js_url.hpp>
 #include "pal_window_presenter.hpp"
 #include "pal_window_frame_clock.hpp"
 #include "pal_gpu_frame.hpp"
@@ -22,9 +23,12 @@
 #include "pal_camera_controls.hpp"
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <charconv>
+#include <optional>
+#include <string_view>
 #include <condition_variable>
 #include <iostream>
 #include <sstream>
@@ -107,8 +111,8 @@ struct WindowFocusEvent final : ExternalEvent {
     UiElementHandle element;
     bool visible = false;
 };
-/** Only pointer event structs are copied; SDL events containing pointers are
- * never admitted to the realm mailbox. */
+/** Only pointer and key event structs are copied; SDL events containing
+ * pointers are never admitted to the realm mailbox. */
 struct WindowPointerEvent final : ExternalEvent {
     UiElementHandle element;
     SDL_Event pointer{};
@@ -169,6 +173,48 @@ struct LayoutSnapshot {
     }
 };
 
+/**
+ * `BBLITE_CAPTURE_SETTLE` (`data-attribute=value|value;milliseconds`): the
+ * canvas state a capture waits on, held for the settle time. An application
+ * whose content arrives over the network reaches it at a different frame on
+ * every run, so the capture follows the state rather than a frame.
+ */
+struct CaptureSettle {
+    std::string attribute;
+    std::vector<std::string> values;
+    double milliseconds = 0;
+};
+
+const std::optional<CaptureSettle>& capture_settle() {
+    static const std::optional<CaptureSettle> settle = []() -> std::optional<CaptureSettle> {
+        const std::string text = environment_variable("BBLITE_CAPTURE_SETTLE");
+        if (text.empty())
+            return std::nullopt;
+        const auto equals = text.find('=');
+        const auto separator = text.rfind(';');
+        CaptureSettle parsed;
+        const auto [end, error] =
+            separator == std::string::npos
+                ? std::from_chars_result{text.data(), std::errc::invalid_argument}
+                : std::from_chars(text.data() + separator + 1, text.data() + text.size(),
+                                  parsed.milliseconds);
+        if (equals == std::string::npos || separator < equals || error != std::errc{} ||
+            end != text.data() + text.size() || parsed.milliseconds < 0)
+            throw std::runtime_error(
+                "BBLITE_CAPTURE_SETTLE must read data-attribute=value|value;milliseconds.");
+        parsed.attribute = text.substr(0, equals);
+        std::string_view values(text.data() + equals + 1, separator - equals - 1);
+        for (std::size_t start = 0; start <= values.size();) {
+            const auto bar = values.find('|', start);
+            const auto stop = bar == std::string_view::npos ? values.size() : bar;
+            parsed.values.emplace_back(values.substr(start, stop - start));
+            start = stop + 1;
+        }
+        return parsed;
+    }();
+    return settle;
+}
+
 /** Only native records cross this mailbox. Source callbacks are removed on
  * their owning thread before a snapshot becomes visible to the window. */
 struct WindowServices final : CanvasProvider {
@@ -219,7 +265,11 @@ struct WindowServices final : CanvasProvider {
     }
     std::shared_ptr<OffscreenDevice> graphics;
     const std::uint64_t capture_frame_count;
-    std::shared_ptr<std::atomic<bool>> capture_ready = std::make_shared<std::atomic<bool>>(true);
+    std::shared_ptr<std::atomic<bool>> capture_ready =
+        std::make_shared<std::atomic<bool>>(!capture_settle());
+    /** When `capture_ready` last became true, and how long the active settles hold it. */
+    std::atomic<double> capture_ready_since = 0;
+    std::atomic<double> capture_settle_milliseconds = 0;
     std::shared_ptr<AnimationFrameSource> animation_frames =
         std::make_shared<AnimationFrameSource>();
     std::shared_ptr<EventLoop::Inbox> inbox = std::make_shared<EventLoop::Inbox>();
@@ -253,7 +303,8 @@ struct WindowDocument {
                                              const std::string& attribute) {
             for (const auto& observer : mutation_observers)
                 observer->notify(element, attribute);
-            if (attribute == "data-ready" || attribute == "data-error")
+            if (attribute == "data-ready" || attribute == "data-error" ||
+                (capture_settle() && attribute == capture_settle()->attribute))
                 update_capture_ready();
         };
         engine.ui_measure_element = [](Engine& owner, UiElementHandle element) {
@@ -265,21 +316,42 @@ struct WindowDocument {
     }
     std::shared_ptr<WindowServices> host;
     bool wait_for_canvas_ready = false;
+    /**
+     * The capture's canvas settles, as the browser harness waits on them: the data-ready gate
+     * (`data-ready="true"`, at once) and the registered settle. Each holds when any canvas
+     * (GPU or retained Canvas2D) carries one of its values; the capture waits until all hold for
+     * the longest settle time, and any canvas's nonempty `data-error` fails a bounded run.
+     */
     void update_capture_ready() {
-        if (!wait_for_canvas_ready)
+        static const CaptureSettle canvas_ready{"data-ready", {"true"}, 0};
+        std::vector<const CaptureSettle*> settles;
+        if (wait_for_canvas_ready)
+            settles.push_back(&canvas_ready);
+        if (const auto& settle = capture_settle())
+            settles.push_back(&*settle);
+        if (settles.empty())
             return;
-        // GPU canvases and retained Canvas2D canvases both render the page.
-        bool ready = false;
+        std::vector<bool> held(settles.size(), false);
+        double milliseconds = 0;
         std::string failure;
         for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index) {
             if (handle_at(engine.ui_elements, UiElementHandle{index}).tag != "canvas")
                 continue;
-            ready =
-                ready || ui_get_attribute(engine, UiElementHandle{index}, "data-ready") == "true";
+            for (std::size_t row = 0; row < settles.size(); ++row)
+                held[row] =
+                    held[row] || std::ranges::find(settles[row]->values,
+                                                   ui_get_attribute(engine, UiElementHandle{index},
+                                                                    settles[row]->attribute)) !=
+                                     settles[row]->values.end();
             if (failure.empty())
                 failure = ui_get_attribute(engine, UiElementHandle{index}, "data-error");
         }
-        host->capture_ready->store(ready);
+        for (const auto* settle : settles)
+            milliseconds = std::max(milliseconds, settle->milliseconds);
+        const bool ready = std::ranges::all_of(held, [](bool value) { return value; });
+        host->capture_settle_milliseconds.store(milliseconds);
+        if (!host->capture_ready->exchange(ready) && ready)
+            host->capture_ready_since.store(monotonic_milliseconds());
         std::lock_guard lock(host->mutex);
         host->capture_failure = std::move(failure);
     }
@@ -296,7 +368,9 @@ struct WindowDocument {
         explicit InputTarget(const std::shared_ptr<Engine>& engine) : engine(engine) {}
         std::weak_ptr<Engine> engine;
 #if BBLITE_HAS_PBR_RENDERER
+        /** The camera controls' gesture state, as a standalone driver keeps it per surface. */
         CameraPointerState camera;
+        SurfaceCameraPointerState surfaces;
 #endif
     };
     std::unordered_map<std::uint32_t, InputTarget> input_targets;
@@ -481,6 +555,24 @@ void tick_document() {
     tick_document_changes();
 }
 
+#if BBLITE_HAS_PBR_RENDERER
+/**
+ * A canvas's input for its engine's camera controls, through the dispatcher the standalone
+ * drivers use: owned controls (`attachFreeControl` and kin) take pointer and key events first,
+ * otherwise the first scene's legacy controls take pointer events.
+ */
+void dispatch_camera_input(Engine& engine, const SDL_Event& event,
+                           WindowDocument::InputTarget& target) {
+    CameraRecord* primary = nullptr;
+    if (!engine.scenes().empty() && engine.scenes().front()) {
+        const auto camera = engine.scenes().front()->camera;
+        if (camera.value < engine.cameras.size())
+            primary = &handle_at(engine.cameras, camera);
+    }
+    dispatch_surface_camera_pointer(engine, event, primary, target.camera, target.surfaces);
+}
+#endif
+
 void dispatch_canvas_input(const WindowPointerEvent& packet) {
     auto& doc = current_document();
     if (packet.pointer.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
@@ -491,9 +583,13 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
                     dispatch_dom_batch(*engine, batch);
                     dispatch_touch_defaults(*engine, *batch);
                 }
+#if BBLITE_HAS_PBR_RENDERER
+                dispatch_camera_input(*engine, packet.pointer, target);
+#endif
             }
 #if BBLITE_HAS_PBR_RENDERER
             target.camera = {};
+            target.surfaces = {};
 #endif
         }
         return;
@@ -505,6 +601,14 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
     if (!engine)
         return;
     const auto& event = packet.pointer;
+    if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+        // The document's listeners already had the key; the display forwards it to the canvas
+        // holding keyboard focus only when neither they nor the retained UI consumed it.
+#if BBLITE_HAS_PBR_RENDERER
+        dispatch_camera_input(*engine, event, target->second);
+#endif
+        return;
+    }
     if (is_touch_event(event)) {
         const auto batch = prepare_dom_platform_input(*engine, event);
         dispatch_dom_batch(*engine, batch);
@@ -533,13 +637,7 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
                                       event.wheel.mouse_y);
     }
 #if BBLITE_HAS_PBR_RENDERER
-    if (engine->scenes().empty() || !engine->scenes().front())
-        return;
-    const auto camera = engine->scenes().front()->camera;
-    if (camera.value < engine->cameras.size())
-        handle_camera_pointer_event(event, handle_at(engine->cameras, camera),
-                                    target->second.camera, engine->canvas_client_width,
-                                    engine->canvas_client_height);
+    dispatch_camera_input(*engine, event, target->second);
 #endif
 }
 } // namespace
@@ -581,6 +679,18 @@ std::string window_location_search(const std::string& initial) {
 void window_location_set_search(const std::string& value) {
     current_document().host->location->navigate(value);
     window_location_reload();
+}
+void window_location_assign(const std::string& target, const std::string& current) {
+    const js::Url page(current);
+    const js::Url destination(target, &page);
+    if (destination.protocol() != page.protocol() || destination.username() != page.username() ||
+        destination.password() != page.password() || destination.host() != page.host() ||
+        destination.pathname() != page.pathname())
+        throw js::make_dom_exception("location.assign navigates only within this document by "
+                                     "its query; " +
+                                         destination.href() + " is another document.",
+                                     "NotSupportedError");
+    window_location_set_search(destination.search());
 }
 js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
     auto& doc = current_document();
@@ -1085,6 +1195,11 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 return {};
             };
             UiElementHandle pointer_capture{};
+            // The canvas a primary press last reached holds keyboard focus, as the pinned
+            // controls' tabindex lets a pressed canvas take it; a press elsewhere takes it
+            // away. A released key goes where its press went.
+            UiElementHandle keyboard_canvas{};
+            std::map<SDL_Scancode, UiElementHandle> held_keys;
             std::map<std::pair<std::uint64_t, std::uint64_t>, UiElementHandle> touch_captures;
             SDL_MouseButtonFlags pointer_buttons = 0;
             int width = 0, height = 0;
@@ -1297,9 +1412,31 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         services->inbox->post(std::move(packet));
                         continue;
                     }
+                    if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+                        UiElementHandle target{};
+                        if (event.type == SDL_EVENT_KEY_UP) {
+                            if (const auto held = held_keys.find(event.key.scancode);
+                                held != held_keys.end()) {
+                                target = held->second;
+                                held_keys.erase(held);
+                            }
+                        } else if (reaches_canvas && keyboard_canvas.value != invalid_handle) {
+                            target = keyboard_canvas;
+                            held_keys.insert_or_assign(event.key.scancode, target);
+                        }
+                        if (target.value != invalid_handle) {
+                            auto packet = std::make_unique<WindowPointerEvent>();
+                            packet->element = target;
+                            packet->pointer = event;
+                            services->inbox->post(std::move(packet));
+                        }
+                        continue;
+                    }
                     const bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
                     const bool up = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
                     const bool wheel = event.type == SDL_EVENT_MOUSE_WHEEL;
+                    if (down && event.button.button == SDL_BUTTON_LEFT)
+                        keyboard_canvas = {};
                     if (!(move || down || up || wheel) ||
                         (!reaches_canvas && pointer_capture.value == invalid_handle))
                         continue;
@@ -1319,6 +1456,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     if (down) {
                         pointer_capture = target;
                         pointer_buttons |= SDL_BUTTON_MASK(event.button.button);
+                        if (event.button.button == SDL_BUTTON_LEFT)
+                            keyboard_canvas = target;
                     }
                     if (up) {
                         pointer_buttons &= ~SDL_BUTTON_MASK(event.button.button);
@@ -1391,6 +1530,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 services->wake.notify_all();
                 const bool source_ready =
                     services->capture_ready->load() &&
+                    monotonic_milliseconds() - services->capture_ready_since.load() >=
+                        services->capture_settle_milliseconds.load() &&
                     std::all_of(frames.begin(), frames.end(),
                                 [](const auto& canvas) { return canvas.frame.capture_ready; });
                 // Engine frames every canvas has rendered, or presented

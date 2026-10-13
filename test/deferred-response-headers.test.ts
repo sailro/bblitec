@@ -40,10 +40,7 @@ test("packaged static response headers throw before header arguments and leave l
             site.operation,
             site.timing,
         ]),
-        [
-            ["dom:Response.headers", "read", "throw"],
-            ["dom:Headers.get", "call", "throw"],
-        ],
+        [["dom:Response.headers", "read", "throw"]],
     );
     assert.ok(!result.manifest.features.includes("platform:http"));
     const tools = optionalNativeFixtureTools(false);
@@ -62,30 +59,19 @@ test("packaged static response headers throw before header arguments and leave l
     );
 });
 
-test("Headers signatures retain nominal nullable storage and authored names keep their implementation", () => {
+test("Headers values keep native nullable storage and authored names keep their implementation", () => {
     const source = `
         const reads:Array<(headers:Headers)=>string|null>=[headers=>headers.get('content-type')];
-        const optional:Array<(headers:Headers|undefined)=>string|null|undefined>=[headers=>headers?.get('content-type')];
+        const optional:Array<(headers:Headers|undefined)=>boolean|undefined>=[headers=>headers?.has('content-type')];
         if(optional[0]!(undefined)!==undefined)throw new Error('absent Headers');
         class LocalHeaders {get(key:string):string|null{return key==='content-type'?'image/png':null;}}
         const local=new LocalHeaders();
         const response={headers:local};
         if(response.headers.get('content-type')!=='image/png')throw new Error('authored method');
     `;
-    assert.throws(
-        () => compileSource(source),
-        /get|Headers|represented|Unsupported/,
-    );
     const result = compileSource(source, { deferredCapabilities });
-    assert.deepEqual(
-        result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["dom:Headers.get", "dom:Headers.get"],
-    );
-    assert.match(result.cpp, /std::shared_ptr<bbl::DeferredHeaders>/);
-    assert.match(
-        result.cpp,
-        /deferred_capability<bbl::js::Nullable<std::string>>/,
-    );
+    assert.equal(result.manifest.deferredCapabilities, undefined);
+    assert.match(result.cpp, /bbl::pal::HttpHeaders/);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(

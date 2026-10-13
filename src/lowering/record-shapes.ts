@@ -1,11 +1,24 @@
 import { CPP_ELEMENT, CPP_SCALAR } from "./cpp-types.js";
 import ts from "typescript";
+import type { MemberSpec, RecordSpec } from "./pinned-record-lowerer.js";
 
 /** The represented shape of a pinned value, independent of its native owner. */
 export type RecordShape =
     | {
           readonly kind:
-              "number" | "boolean" | "string" | "void" | "object" | "buffer";
+              | "number"
+              | "boolean"
+              | "string"
+              | "void"
+              | "object"
+              | "buffer"
+              /** `unknown`: a dynamic JSON value (`bbl::js::JsonValue`). */
+              | "json"
+              | "dataview"
+              /** `ArrayLike<number>`: a read-only view over any number list. */
+              | "arraylike"
+              /** A thrown value: `bbl::js::Error`. */
+              | "error";
       }
     | {
           readonly kind: "native";
@@ -23,12 +36,17 @@ export type RecordShape =
       }
     | { readonly kind: "weakmap"; readonly value: RecordShape }
     | { readonly kind: "weakset" }
-    | { readonly kind: "typed"; readonly element: "f32" | "u32" | "i32" | "u8" }
+    | {
+          readonly kind: "typed";
+          readonly element: "f32" | "f64" | "u32" | "i32" | "u8";
+      }
     | {
           readonly kind: "function";
           readonly parameters: readonly RecordShape[];
           readonly result: RecordShape;
       }
+    /** `Promise<T>`: `bbl::js::Promise<T>` (`void` for `Promise<void>`). */
+    | { readonly kind: "promise"; readonly value: RecordShape }
     | { readonly kind: "optional"; readonly value: RecordShape }
     | { readonly kind: "variant"; readonly members: readonly RecordShape[] };
 
@@ -73,6 +91,53 @@ export function optionalOf(shape: RecordShape): RecordShape {
         : { kind: "optional", value: shape };
 }
 
+export const promiseOf = (value: RecordShape): RecordShape => ({
+    kind: "promise",
+    value,
+});
+export const functionOf = (
+    parameters: readonly RecordShape[],
+    result: RecordShape,
+): RecordShape => ({ kind: "function", parameters, result });
+
+/** A backend GPU object a record holds by identity; absent while `null`. */
+export const gpuObjectShape: RecordShape = {
+    kind: "native",
+    cpp: "bbl::GpuHandle",
+    nullable: true,
+};
+
+// Record-spec builders the schemas over native types share.
+
+/** A stored member, under its own field name or `name`. */
+export const field = (shape: RecordShape, name?: string): MemberSpec =>
+    name === undefined ? { shape } : { shape, field: name };
+export const members = (
+    entries: readonly (readonly [string, MemberSpec])[],
+): ReadonlyMap<string, MemberSpec> => new Map(entries);
+/** A member whose call the port spells over the receiver and arguments. */
+export const spelled = (
+    shape: RecordShape,
+    call: (owner: string, args: readonly string[]) => string,
+): MemberSpec => ({ shape, access: (owner) => owner, call });
+/** A member read the port spells over the receiver. */
+export const reads = (
+    shape: RecordShape,
+    access: (owner: string) => string,
+): MemberSpec => ({ shape, access });
+/** A value dictionary a native header declares, its members exactly `entries`. */
+export const descriptor = (
+    pinned: string,
+    cpp: string,
+    entries: readonly (readonly [string, MemberSpec])[],
+): RecordSpec => ({
+    pinned: [pinned],
+    cpp,
+    reference: false,
+    native: true,
+    members: members(entries),
+});
+
 export function stripOptional(shape: RecordShape): RecordShape {
     return shape.kind === "optional" ? shape.value : shape;
 }
@@ -98,6 +163,10 @@ export class RecordRepresentation {
         return (
             shape.kind === "object" ||
             shape.kind === "function" ||
+            // A dynamic value holds `undefined`/`null` itself; an empty
+            // error is no error.
+            shape.kind === "json" ||
+            shape.kind === "error" ||
             (shape.kind === "native" && shape.nullable === true) ||
             (shape.kind === "record" &&
                 this.storage.record(shape.name).reference)
@@ -122,6 +191,16 @@ export class RecordRepresentation {
                 return "void";
             case "object":
                 return this.storage.object;
+            case "json":
+                return `${js}::JsonValue`;
+            case "dataview":
+                return `${js}::DataView`;
+            case "arraylike":
+                return "bbl::pinned::NumberArrayLike";
+            case "error":
+                return `${js}::Error`;
+            case "promise":
+                return `${js}::Promise<${shape.value.kind === "void" ? `${js}::PromiseVoid` : this.cppType(shape.value)}>`;
             case "native":
                 return shape.cpp;
             case "record":

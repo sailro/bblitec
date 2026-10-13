@@ -78,12 +78,35 @@ their storage policies select record ownership. Pinned classes are structs of
 their fields with their accessors, methods and constructor lowered over the instance. A closure is a
 `bbl::js::Callback` over its frame's environment struct, which holds the bindings closures capture and is
 shared by the frame and all of its closures; records and environments that can close a cycle describe
-their edges to cycle collection. A parameter whose type a type-only module erased takes each call's
-argument shape (one overload per signature). A bundled package's classes and calls bind by
-`package#name` to native records and adapters: text-shaper's font, shaping buffers and `shapeInto` are
-HarfBuzz (`text_layout.hpp`). A lazy loader's root is the module function its
+their edges to cycle collection. A function literal an array iteration method receives is a native
+lambda over its frame's own storage; an object literal's method reading `this` closes over an
+environment holding the object. `unknown` is the runtime's dynamic `JsonValue`, read as the primitive a
+checker narrowing proves (`pinned_json.hpp`); an anonymous object type the schema does not name is a
+struct named by its members' native types, or the schema record with exactly those members. Async
+functions and arrows are C++20 coroutines over `bbl::js::Promise` (`pinned_async.hpp`); an `await` in a
+`catch` handler runs after the handler recorded its exception, and a `finally` block is a guard run once
+on every exit (an `await` or exit inside it refuses). A `class X extends Error` is a record thrown as a
+typed error object and matched by `instanceof`. A captured binding of a nested block or a `for (let ...)`
+header lives in an environment per block execution or per iteration; other loop-header and case-clause
+captures refuse. A generic arrow lowers once per instantiation its calls reach. C++ leaves the order
+of call arguments and operands unspecified; operands of one form (arguments and a receiver spelled as
+one, template substitutions, constructions, binary operands, an assignment's target and value) that the
+entry compiler's `EvaluationOrder` pins (a later operand writes what it touches, or touches what it
+writes) are evaluated first into temporaries in source order, and effect-free operands stay inline. An
+awaited operand leaves any lambda or braced list (a temporary declared before the statement, assigned
+through the comma operator); an `await` a lambda would still hold, and a compound assignment whose value
+may change its target, refuse. A frame's leading guards run before its closure environment is allocated.
+A parameter whose type a type-only module erased takes each call's argument shape (one overload per
+signature). A bundled package's classes and calls bind by `package#name` to native records and
+adapters: text-shaper's font, shaping buffers and `shapeInto` are HarfBuzz (`text_layout.hpp`). The web
+platform a lowered library reaches is one shared schema (`web-platform-schema.ts`) over the runtime's own
+URL, AbortController/AbortSignal, DOMException, TextDecoder, Blob and ImageBitmap (`web_platform.hpp`); only
+fetch, image decoding and the timers and task queue are a seam, which `pal_web_platform.cpp` defines over the
+native services and a test may define deterministically. The splat-stream loader's engine, scene, camera and
+renderable objects are `splat_stream_runtime.hpp`'s. A lazy loader's root is the module function its
 `(await import(...)).name` returns. The pin's WebGPU calls lower one to one onto the device interface in
-`gpu.hpp`, shared by text, storage, uniform and scene uploads. Backend adapters preserve native
+`gpu.hpp`, shared by text, storage, uniform and scene uploads; its compute, indirect and buffer-mapping
+subset has a device per backend (`pal_dawn_webgpu.hpp`, `pal_sdl_gpu_webgpu.hpp`). Backend adapters preserve native
 batching and resource ownership; `text_gpu.hpp` owns text pipeline policy. WGSL uses typed IR or
 explicit reflected-source contracts.
 

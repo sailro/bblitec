@@ -26,7 +26,8 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
 
 ## Integration
 
-- TypeScript owns live controls; reviewed `ui/*.json` companions or an HTML page describe static host chrome.
+- TypeScript owns live controls; reviewed `ui/*.json` companions (elements, interleaved text nodes and
+  bounded style rules) or an HTML page describe static host chrome.
 - An HTML page (`bblitec page.html [--site-root <dir>]`) is parsed by Chromium; its markup, text, attributes and
   `<style>` sheets are the host, and its one module script names the entry. `/` paths resolve beneath the site root
   (the page's directory by default).
@@ -63,9 +64,11 @@ Logical keywords remain unsupported; dynamic values are checked during native pr
 - Location follows deployment. A query value the deployment answers folds to a constant (alone, beside
   native operands in comparisons, arithmetic and logical chains, or as a native string method receiver),
   including short-circuits it decides; other reads, such as run-time keys, parse the deployment query
-  natively. Conditions over browser values the deployment does not answer refuse. Reload and
-  location.search assignment complete the task/microtasks, then recreate realms retaining durable storage
-  and the current query; other navigation refuses. Screen/viewport metrics use CSS pixels at display scale.
+  natively. Conditions over browser values the deployment does not answer refuse. Reload,
+  location.search assignment, and `location.assign(url)`/`location.href = url` naming this document (any
+  query) complete the task/microtasks, then recreate realms retaining durable storage and the new query;
+  `assign`/`href` naming another document throw a NotSupportedError DOMException; other navigation refuses.
+  A program that navigates reads `location.search`/`href` live. Screen/viewport metrics use CSS pixels at display scale.
 - The Window service provides promise-backed clipboard text writes; reads/rich data are unsupported.
 - document.hidden/visibilityState and visibilitychange follow window hide/minimize and show/restore, once per change.
 
@@ -73,14 +76,16 @@ Host multi-canvas companions retain canvases, dividers and labels. Canvas-only c
 canvas at its page position.
 Reached canvas `dataset.ready` writes gate Window captures until a rendering canvas has `data-ready="true"`
 and publishes a fresh frame; startup rendering continues past a requested capture frame when necessary.
-Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
+The browser and native captures wait on the same canvas settles: that gate (`data-ready` `true`, at once) and a
+registered `referenceSettle`, each held on any canvas, together for the longest settle time. A canvas's nonempty
+`data-error` fails either capture (and a bounded native run).
 
 ## DOM and events
 
 | Area | Supported | Limits |
 | --- | --- | --- |
 | Construction | Static tags, retained createTextNode, appendChild/insertBefore, mixed text/element append/prepend/replaceChildren, element-array spreads in append/replaceChildren, remove, retained roots; parentElement, first/last child and sibling node/element reads; childElementCount and direct children.length/childNodes.length | No general DOM implementation; stored child collections and prepend spreads refuse; tree, text and insertion reads inside innerHTML throw; document roots only append |
-| Content | textContent/innerText writes, textContent reads, bounded innerHTML, static attributes, reflected id/className/lang/type/min/max/step, getAttribute/hasAttribute/toggleAttribute, isContentEditable from contenteditable; dataset reads/writes (dot or static computed keys) and Object.assign from plain string/number/boolean/nullish fields | Compound text/dataset writes and dynamic dataset keys; `<style>` text reads; unsupported root replacement/removal |
+| Content | textContent/innerText writes, textContent reads, bounded innerHTML, static attributes, reflected id/className/lang/title/type/min/max/step, img src selecting at run time among packaged sources (string literals, conditionals of them, host data attributes the program never writes), getAttribute/hasAttribute/toggleAttribute, isContentEditable from contenteditable; dataset reads/writes (dot or static computed keys) and Object.assign from plain string/number/boolean/nullish fields; writes through stored elements resolve their tag from the declared element interface; writes through a conditional of retained elements evaluate it once | Compound text/dataset writes and dynamic dataset keys; `<style>` text reads; unsupported root replacement/removal; other img src writes, other property writes and compound writes on a retained element refuse; with retained UI, a write through any other DOM element value refuses rather than erasing; title tooltips are not rendered |
 | Styles/classes | cssText, static style fields/methods, Object.assign from represented records into existing style setters, classList add/remove/forced toggle; getComputedStyle display/opacity/visibility/zIndex from the last layout | Nonempty setProperty priority; dynamic property names; other computed properties; a scene's first computed read precedes its layout |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup (also `querySelector("#id")`); contains, isConnected; `instanceof` Node/Element/HTMLElement and reached control interfaces | :scope, pseudo-element queries; dynamic selectors and interaction-state queries throw in deferred capability mode and otherwise refuse |
 | Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events; setPointerCapture/releasePointerCapture/hasPointerCapture throw in deferred capability mode |
@@ -91,7 +96,7 @@ Bounded runs fail when a rendering canvas reports a nonempty `data-error`.
 | Custom events | Owned CustomEvent, synchronous Document/Window dispatch, live JSON-compatible detail, cancellation and listener lifetime | Literal names distinct from native event channels; no element dispatch |
 | Constructed input events | Owned Event/MouseEvent/PointerEvent/InputEvent values, identity sets, synchronous element/Document/Window dispatch, capture/bubble routing, cancellation and redispatch | Shared pointer, focus and input/change channels only; cross-document redispatch, unrepresented payload fields and option accessors refuse |
 | Focus/forms | Focus/blur, literal/stored/optional focus options preventScroll (native focus never scrolls) and focusVisible, activeElement, input/textarea select(), button navigation, text/password/checkbox/color inputs, textarea, range value/min/max/step, select value/option selected, output value | Focus-option getters and spreads; full browser form behavior and broader constructed input types |
-| Disclosure | details.open and summary activation | Broader disclosure-group behavior |
+| Disclosure | details.open and summary activation; each change of `open` queues a non-bubbling `toggle` task through shared listener dispatch and removal | Broader disclosure-group behavior; toggle carries no oldState/newState and changes are not coalesced |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 
 Queries use current attributes/order, including detached subtrees. Single queries return null; lists
@@ -109,6 +114,11 @@ Window keyboard listeners precede default actions. Element focus/blur preserves 
 removal, non-bubbling dispatch and related targets. Form and successful file-selection input/change events
 use shared DOM listener ordering and removal; form state is updated before callbacks.
 Native canvas `tabIndex` reads as zero; keyboard focus targets the SDL surface rather than HTML tab order.
+Writing 0 to a canvas `tabIndex` is therefore inert; other `tabIndex` writes refuse.
+DOM writes erased by contract: `tabIndex = 0` on a canvas; `width`/`height` of the canvas that is the engine's drawing
+surface (the window owns its size, and reads answer it); a canvas dataset member the program never reads back; and,
+outside Worker hosts, any other dataset member no source, host element, rule or sheet can observe. Other dataset
+writes on a retained element lower.
 Deferred-capability mode throws on retained-element numeric `tabIndex` reads and writes; RmlUi's `tab-index: auto | none` does not implement browser numeric focus order.
 
 Checkbox activation updates checked before input/change. Programmatic control writes are silent.
@@ -151,9 +161,16 @@ Pixel ratio, viewport size and input capabilities read host state without flushi
 ### File transfer controls
 
 Window object URLs share the document's lifetime, including before rendering-engine creation and in deferred callbacks.
+An anchor `href` is an object URL (a download anchor) or a string, a link: clicked or `click()`, it activates as
+`location.assign(href)` (another document throws a NotSupportedError DOMException). A link whose `target` is not
+`_self`, `_parent` or `_top` is drawn and inert: the native host has one browsing context. A string `href` beside
+`download` refuses.
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
 snapshot bytes/name before change dispatch; cancellation dispatches `cancel` and preserves the selection.
 File, Blob and FileList aliases retain identity through owned containers, callbacks and promise results.
+A Blob builds from an array literal or a run-time array of strings, Uint8Array or ArrayBuffer values (64 MiB bound),
+with a static or run-time type (lowercased; one with a non-printable character is empty); `text()`, `arrayBuffer()`
+and `bytes()` resolve copies in an application realm.
 FileList values retain immutable snapshots; only index zero is represented, with a missing file yielding undefined. Selections have a 256 MiB
 live cap and per-file limits. Drops count up to 4096 files and snapshot the first (64 MiB maximum). Completion may occur before click returns. FileReader reads a
 File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
@@ -206,11 +223,11 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Position/box | Reached defaults, fixed/inset, viewport/px/rem calc/min/max/clamp, box sizing, physical edges, horizontal-LTR logical margins/padding | Vertical/RTL logical mapping; containing-block/element-font-relative math, rem math in font sizing or custom properties, and unrepresented shorthands |
 | Flex | Wrapping/reversal, grow/shrink/basis, numeric shorthand, flow, alignment, independent gaps | Intrinsic basis keywords and unrepresented CSS math |
 | Grid | Sparse row flow; numeric column/row lines, negative lines and spans; auto/px/fr, minmax(auto or px, auto/px/fr), integer/auto-fit/auto-fill repeat, implicit track patterns, gaps/alignment and intrinsic spans | 256 tracks per axis; named areas/lines, alternate flow, subgrid, percentage/relative tracks, broader intrinsic functions and absolute-item placement |
-| Grid items | Cell-relative widths/spacing, anonymous text items, live child/style changes | Percentage heights, baseline alignment and broader replaced-item sizing |
+| Grid items | Cell-relative widths/spacing, anonymous text items, live child/style changes; form controls stretch as non-replaced items, replaced content starts | Percentage heights, baseline alignment and broader replaced-item sizing |
 | Isolation | Reversible auto/isolate stacking contexts for painting and hit testing | Blend modes remain outside the retained surface |
 | Containers | inline-size containment; unnamed nearest-ancestor max-width:Npx queries | Named/min/height/style/scroll-state queries, relative units, other containment types |
 | Media | Reached max-width, portrait/landscape and reduced-motion rules | Reduced motion polls Windows/macOS accessibility preferences, Android animator scale or the Linux desktop portal (standard reduced-motion, then GNOME enable-animations); unavailable preferences refuse |
-| Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects, vertical-align keywords | Browser min-content, oblique, custom overflow, exact shaping/rasterization; vertical-align lengths/percentages |
+| Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects, vertical-align keywords, text-decoration line keywords | Browser min-content, oblique, custom overflow, exact shaping/rasterization; vertical-align lengths/percentages; decoration colors, styles and thickness; pre-wrap trailing spaces count toward line alignment instead of hanging |
 | Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
 | Borders/backgrounds | Solid sides, px/em/rem widths, length/percentage corner radii, gradients, solid border/padding/content clipping | Slash-separated elliptical radius syntax; gradient/image clipping and broader border composition |
 | Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables; outer shadows blur before the border-box clip; a single box larger than the viewport renders its shadow with a stretched band; a runtime assignment is checked against the CSS grammar itself, so an invalid value is ignored as CSSOM does while a valid one RmlUi cannot represent refuses | Omitted/currentColor, non-pixel lengths; a multi-box (inline) shadow texture clips to viewport size |
@@ -246,6 +263,20 @@ Horizontal range widgets support appearance:none and WebKit thumb/track styles, 
 size/margins/borders/gradients/shadows. Input behavior remains native. Vertical ranges and tick marks
 are unsupported; Gecko-only selector lists are rejected like Chromium's. Native scrollbars use 15/8
 CSS-pixel auto/thin widths; standard non-auto settings override vendor styles.
+
+Selects, checkboxes, color inputs, ranges, scrollbars and links use Chromium's control palettes for the
+inherited `color-scheme` (`normal`, `light` or `dark`); author rules keep precedence. `accent-color` (`auto`
+or an opaque literal) fills checked checkboxes and range values and thumbs: as in Chromium, an accent
+under 3:1 contrast with its palette's control fill selects the other palette, hover and press move its
+HSL lightness by 0.11, and disabled controls ignore it. A range's thumb takes its own hover/press state.
+Preference-dependent scheme lists and translucent accents refuse; system colors (Canvas, CanvasText)
+are not represented, and an open select menu takes the closed control's palette.
+
+Inside its CSS padding, a select keeps Chromium's internal insets: 4px before its longest option label
+(width rounded up) and 16px after it for the arrow, and 1px above and below its font's normal line height,
+whatever its line-height. Its arrow is a 2px chevron centered 9px from the right border edge; a closed or
+open summary marker is a 0.66em equilateral triangle on the first baseline, 0.4em before the text. Both
+are antialiased by pixel coverage.
 
 Packaged raster images expose decode/complete/natural dimensions before engine creation. Decode settles
 on realm microtasks; empty/broken images reject and source changes invalidate requests. Network/responsive

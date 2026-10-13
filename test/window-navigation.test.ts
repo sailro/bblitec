@@ -145,3 +145,98 @@ test("Window startup separates capture queries and retains navigation across fre
         },
     );
 });
+
+test("location.assign navigates this document by query and refuses other documents", (t) => {
+    const directory = resolve("artifacts/window-navigation-assign");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
+    const generated = compileSource(
+        `
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
+        worker.terminate();
+        void (async () => {
+            const url = new URL(location.href);
+            const quality = url.searchParams.get("quality");
+            if (quality === null) {
+                if (location.href !== "https://example.test/lite/") throw new Error("initial href");
+                setTimeout(() => {
+                    url.searchParams.set("quality", "high");
+                    location.assign(url.href);
+                    if (new URL(location.href).searchParams.get("quality") !== null) throw new Error("navigation commits after this task");
+                }, 0);
+            } else if (quality === "high") {
+                if (location.href !== "https://example.test/lite/?quality=high") throw new Error("assigned href");
+                let refused = false;
+                try { location.assign("https://other.test/lite/"); } catch (error) { refused = error instanceof DOMException && error.name === "NotSupportedError"; }
+                if (!refused) throw new Error("another document");
+                location.href = "?quality=low&x=1";
+            } else {
+                if (quality !== "low" || url.searchParams.get("x") !== "1" || location.search !== "?quality=low&x=1") throw new Error("relative assignment");
+                globalThis.close();
+            }
+        })();
+    `,
+        {
+            search: "",
+            initialSearch: "",
+            siteUrl: "https://example.test/lite/",
+            fileName: resolve(directory, "entry.ts"),
+        },
+    );
+    assert.match(generated.cpp, /window_location_assign/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const source = readFileSync("native/src/pal_window_realm.cpp", "utf8");
+    const functions = [
+        "void window_location_reload()",
+        "std::string window_location_search(const std::string& initial)",
+        "void window_location_set_search(const std::string& value)",
+        "void window_location_assign(const std::string& target, const std::string& current)",
+    ]
+        .map((signature) => cppFunction(source, signature))
+        .join("\n");
+    runGeneratedProgram(
+        tools,
+        "window-navigation-assign",
+        generated.cpp +
+            `
+        #include <bblite/pal_location.hpp>
+        #include <bblite/js_url.hpp>
+        #include <cassert>
+        namespace bbl::pal {
+            struct TestServices {
+                std::shared_ptr<WindowLocation> location = std::make_shared<WindowLocation>();
+                bool reload_requested = false;
+            };
+            struct TestDocument { std::shared_ptr<TestServices> host = std::make_shared<TestServices>(); };
+            TestDocument& current_document() { static TestDocument document; return document; }
+            std::string environment_variable(const char*) { return {}; }
+            ${functions}
+            int run_window_application(WorkerEntry initialize, EngineOptions) {
+                auto& services = *current_document().host;
+                int runs = 0;
+                do {
+                    services.reload_requested = false;
+                    const js::RealmScope scope;
+                    EventLoop loop;
+                    WorkerRealm realm(loop);
+                    loop.run([&] { initialize(realm); });
+                    ++runs;
+                    assert(runs <= 3);
+                    if (services.reload_requested) services.location->commit_reload();
+                } while (services.reload_requested);
+                assert(runs == 3);
+                return 0;
+            }
+        }
+    `,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+});

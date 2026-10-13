@@ -211,33 +211,60 @@ inline std::string string_from_base64(const std::string& input) {
     return string_from_code_units(output);
 }
 
-/** String-initialized URLSearchParams retain the ordered query list across aliases. */
+/**
+ * String-initialized URLSearchParams retain the ordered query list across aliases. A URL's
+ * query object carries the URL's update steps, which a mutation runs with the serialized list.
+ */
 class SearchParams {
     using Entries = std::vector<std::pair<std::string, std::string>>;
-    std::shared_ptr<Entries> entries_;
+    struct State {
+        Entries entries;
+        /** The owning URL's "update steps"; absent for a standalone object. */
+        std::function<void(const std::string&)> update;
+    };
+    std::shared_ptr<State> entries_;
 
-public:
-    SearchParams() = default;
-    explicit SearchParams(const std::string& input) : entries_(make_gc_shared<Entries>()) {
+    static Entries parse(std::string_view input) {
         const auto text = usv_string(input);
         std::string_view remaining(text);
-        if (remaining.starts_with('?'))
-            remaining.remove_prefix(1);
+        Entries entries;
         while (!remaining.empty()) {
             const auto end = remaining.find('&');
             const auto field = remaining.substr(0, end);
             if (!field.empty()) {
                 const auto equals = field.find('=');
-                entries_->emplace_back(
-                    search_params_detail::decode(field.substr(0, equals)),
-                    equals == std::string_view::npos
-                        ? ""
-                        : search_params_detail::decode(field.substr(equals + 1)));
+                entries.emplace_back(search_params_detail::decode(field.substr(0, equals)),
+                                     equals == std::string_view::npos
+                                         ? ""
+                                         : search_params_detail::decode(field.substr(equals + 1)));
             }
             if (end == std::string_view::npos)
                 break;
             remaining.remove_prefix(end + 1);
         }
+        return entries;
+    }
+
+public:
+    SearchParams() = default;
+    explicit SearchParams(const std::string& input) : entries_(std::make_shared<State>()) {
+        std::string_view text(input);
+        if (text.starts_with('?'))
+            text.remove_prefix(1);
+        entries_->entries = parse(text);
+    }
+    /** A URL's query object: `query` without its '?', and the URL's update steps. */
+    [[nodiscard]] static SearchParams for_url(std::string_view query,
+                                              std::function<void(const std::string&)> update) {
+        SearchParams params;
+        params.entries_ = std::make_shared<State>(State{parse(query), std::move(update)});
+        return params;
+    }
+    /** The URL's query changed (`search`, `href`): its object takes the parsed list. */
+    void replace_query(std::string_view query) const {
+        if (!entries_)
+            throw std::runtime_error("URLSearchParams receiver is absent.");
+        entries_->entries = parse(query);
     }
     const void* get() const noexcept { return entries_.get(); }
     explicit operator bool() const noexcept { return static_cast<bool>(entries_); }
@@ -247,7 +274,7 @@ public:
         if (!entries_)
             throw std::runtime_error("URLSearchParams receiver is absent.");
         const auto name = usv_string(key);
-        for (const auto& [candidate, value] : *entries_)
+        for (const auto& [candidate, value] : entries_->entries)
             if (candidate == name)
                 return value;
         return std::nullopt;
@@ -257,31 +284,34 @@ public:
         if (!entries_)
             throw std::runtime_error("URLSearchParams receiver is absent.");
         const auto name = usv_string(key), expected = usv_string(value);
-        return std::any_of(entries_->begin(), entries_->end(), [&](const auto& item) {
-            return item.first == name && item.second == expected;
-        });
+        return std::any_of(
+            entries_->entries.begin(), entries_->entries.end(),
+            [&](const auto& item) { return item.first == name && item.second == expected; });
     }
     void set(const std::string& key, const std::string& value) const {
         if (!entries_)
             throw std::runtime_error("URLSearchParams receiver is absent.");
         const auto name = usv_string(key);
         const auto replacement = usv_string(value);
-        auto first = std::find_if(entries_->begin(), entries_->end(),
+        auto& entries = entries_->entries;
+        auto first = std::find_if(entries.begin(), entries.end(),
                                   [&](const auto& item) { return item.first == name; });
-        if (first == entries_->end()) {
-            entries_->emplace_back(name, replacement);
-            return;
+        if (first == entries.end()) {
+            entries.emplace_back(name, replacement);
+        } else {
+            first->second = replacement;
+            entries.erase(std::remove_if(std::next(first), entries.end(),
+                                         [&](const auto& item) { return item.first == name; }),
+                          entries.end());
         }
-        first->second = replacement;
-        entries_->erase(std::remove_if(std::next(first), entries_->end(),
-                                       [&](const auto& item) { return item.first == name; }),
-                        entries_->end());
+        if (entries_->update)
+            entries_->update(to_string());
     }
     std::string to_string() const {
         if (!entries_)
             throw std::runtime_error("URLSearchParams receiver is absent.");
         std::string result;
-        for (const auto& [key, value] : *entries_) {
+        for (const auto& [key, value] : entries_->entries) {
             if (!result.empty())
                 result.push_back('&');
             result += search_params_detail::encode(key);

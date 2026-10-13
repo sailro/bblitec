@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "scene": "trogir-streaming",
+  "pin": {
+    "package": "@babylonjs/lite",
+    "version": "1.34.0",
+    "sourceVersion": "22bd82496ecbb38f7bbd4107ef5eca40c2897bd0"
+  },
+  "reference": {
+    "source": "reference/trogir-streaming/babylon-lite-golden.png",
+    "sha256": "afd723aa637ab0687b0480ce52bc48d9f12e3d373b733d68135b30e377a91972"
+  },
+  "entry": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
+  "hostPage": "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
+  "pose": {
+    "search": "",
+    "width": 1280,
+    "height": 720,
+    "dpr": 1,
+    "settle": {
+      "key": "streamPhase",
+      "values": [
+        "idle"
+      ],
+      "settleMilliseconds": 3000
+    }
+  },
+  "dataset": {
+    "metadataUrl": "https://assets.babylonjs.com/splats/Trogir/lod-meta.json",
+    "quality": "low"
+  },
+  "readiness": {
+    "engine": "Babylon Lite v1.34.0",
+    "streamPhase": "idle",
+    "selectedSplats": "1000000",
+    "residentFiles": "8",
+    "coarseReady": "true",
+    "collisionReady": "true",
+    "ready": "true",
+    "leaves": "123 / 123",
+    "gpuBytes": "221.0 / 221.0 MB",
+    "requests": "8 / 0"
+  },
+  "browser": {
+    "version": "155.0.8059.39",
+    "arguments": [
+      "--force-color-profile=srgb",
+      "--enable-unsafe-webgpu",
+      "--disable-lcd-text"
+    ],
+    "adapter": {
+      "vendor": "nvidia",
+      "architecture": "lovelace"
+    }
+  },
+  "capturedAt": "2026-10-13T00:50:29.797Z"
+}

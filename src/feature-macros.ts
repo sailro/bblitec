@@ -30,6 +30,8 @@ interface FeatureMacro {
     readonly allOf?: readonly Feature[];
     /** 1 when a packaged asset reaches an image codec. */
     readonly imageDecoder?: true;
+    /** 1 when the program links this image codec. */
+    readonly imageCodec?: string;
 }
 
 export const featureMacros: readonly FeatureMacro[] = [
@@ -60,6 +62,7 @@ export const featureMacros: readonly FeatureMacro[] = [
         anyOf: ["mesh:update-geometry"],
     },
     { macro: "BBLITE_HAS_IMAGE_DECODER", imageDecoder: true },
+    { macro: "BBLITE_HAS_WEBP_DECODER", imageCodec: "webp" },
     { macro: "BBLITE_HAS_GAMEPAD", anyOf: ["input:gamepad"] },
     { macro: "BBLITE_HAS_DOM_INPUT", anyOf: ["input:dom"] },
     { macro: "BBLITE_HAS_BROWSER_FILE", anyOf: ["browser:file"] },
@@ -106,6 +109,11 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_TEXT_RENDERER", anyOf: ["renderer:text"] },
     { macro: "BBLITE_HAS_BILLBOARDS", anyOf: ["sprite:billboard"] },
     { macro: "BBLITE_HAS_SPLATS", anyOf: ["loader:splat"] },
+    { macro: "BBLITE_ENGINE_WEBGPU", anyOf: ["engine:webgpu-device"] },
+    {
+        macro: "BBLITE_EXTERNAL_RENDERABLES",
+        anyOf: ["renderer:external-renderables"],
+    },
     { macro: "BBLITE_HAS_PICKING", anyOf: ["picking:gpu"] },
     { macro: "BBLITE_HAS_DETAILED_PICKING", anyOf: ["picking:detailed"] },
     { macro: "BBLITE_HAS_CLUSTERED_LIGHTS", anyOf: ["light:clustered"] },
@@ -166,6 +174,7 @@ export function featureMacroInclude(macro: string): string {
 
 function describe(row: FeatureMacro): string {
     if (row.imageDecoder) return "a packaged asset reaches an image codec";
+    if (row.imageCodec) return `the program links the ${row.imageCodec} codec`;
     if (row.allOf) return `the scene reaches ${row.allOf.join(" and ")}`;
     return `the scene reaches ${(row.anyOf ?? []).join(" or ")}`;
 }
@@ -176,6 +185,7 @@ export function featureMacroValue(
     reach: FeatureMacroReach,
 ): boolean {
     if (row.imageDecoder) return reach.imageCodecs.length > 0;
+    if (row.imageCodec) return reach.imageCodecs.includes(row.imageCodec);
     if (row.allOf)
         return row.allOf.every((feature) => reach.features.includes(feature));
     return (row.anyOf ?? []).some((feature) =>

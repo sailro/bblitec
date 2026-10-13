@@ -12,6 +12,7 @@ import test from "node:test";
 import {
     configureAdHocScenes,
     getScene,
+    referenceSettleEnvironment,
     resolveScene,
     sceneReferencePage,
     scenes,
@@ -344,6 +345,7 @@ test("registers unique generated scene targets", () => {
             "npe-sprite2d",
             "mosquito-amber",
             "calculator",
+            "trogir-streaming",
         ],
     );
     assert.equal(
@@ -544,6 +546,27 @@ test("fixed browser poses use engine frames independently of Window repaint cade
         assert.equal(
             parity.nativeEnvironment?.BBLITE_CAPTURE_ENGINE_FRAME,
             expected,
+            scene.id,
+        );
+    }
+});
+
+test("settled captures wait on the same canvas state natively", () => {
+    assert.deepEqual(
+        referenceSettleEnvironment({
+            key: "streamPhase",
+            values: ["idle", "budget-limited"],
+            settleMilliseconds: 3000,
+        }),
+        { BBLITE_CAPTURE_SETTLE: "data-stream-phase=idle|budget-limited;3000" },
+    );
+    for (const scene of scenes) {
+        const settle = scene.parity?.referenceSettle;
+        if (settle === undefined) continue;
+        assert.equal(scene.parity?.referenceFrame, undefined, scene.id);
+        assert.equal(
+            scene.parity?.nativeEnvironment?.BBLITE_CAPTURE_SETTLE,
+            referenceSettleEnvironment(settle).BBLITE_CAPTURE_SETTLE,
             scene.id,
         );
     }

@@ -1849,51 +1849,6 @@
       "upstreamPath": "LICENSE",
       "source": "corpus/babylon-lite/LICENSE",
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
-    },
-    {
-      "upstreamPath": "lab/lite/demo-trogir-streaming.html",
-      "source": "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
-      "sha256": "ebdebd8b62bf8630aed160404298c5cd741eae8c386ab3bb4e0ba1bc8aeaadbd"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/trogir-assets.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-assets.ts",
-      "sha256": "89c40ef904ab7ce11d761da5f3d0ae42671feded358b44362a3218d2da8e078d"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/trogir-camera-pose.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-camera-pose.ts",
-      "sha256": "ed4e6897516de01412d72f5aa06a8aa5fafe2e38deced3b0ca84c8eace9faa8a"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/trogir-camera.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-camera.ts",
-      "sha256": "5133242674d693323be72041f1be5cf561615b26ad0ad42af98c73d106fd8b8f"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/trogir-collision.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-collision.ts",
-      "sha256": "a477d43439a8152891a76ee6d13118c7c1b11dfc077f884cc86b506e41130b91"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/trogir-quality.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-quality.ts",
-      "sha256": "4392affda13e2db3f8809950c1c15b141e28abebc7fc65c4c9d5d54d49fba502"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/trogir-streaming-lifecycle.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming-lifecycle.ts",
-      "sha256": "cd2730f0929ce6778bbe655f5fc402c04838fd7ab642236b9977eb89373758a4"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/trogir-streaming-placement.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming-placement.ts",
-      "sha256": "073f2a9f69ef4369a7b993d87188702ecabea6ae39a7d14f0121eafe53ce2a9c"
-    },
-    {
-      "upstreamPath": "lab/lite/src/demos/trogir-streaming.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
-      "sha256": "e5023c409383bcdc11010c32b7bfe90702714fd3b1c815cb8b57b706ecf7656e"
     }
   ],
   "tooling": [
@@ -5126,6 +5081,65 @@
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
           "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
+        }
+      ]
+    },
+    {
+      "id": "trogir-streaming",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
+      "reference": {
+        "source": "reference/trogir-streaming/babylon-lite-golden.png",
+        "sha256": "afd723aa637ab0687b0480ce52bc48d9f12e3d373b733d68135b30e377a91972",
+        "provenance": {
+          "source": "reference/trogir-streaming/provenance.json",
+          "sha256": "e628cffdb8a501ad33ff86515ef3ee35fd440f4cb4efde1d8d1f7893af3a06c3"
+        }
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/demo-trogir-streaming.html",
+          "source": "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
+          "sha256": "ebdebd8b62bf8630aed160404298c5cd741eae8c386ab3bb4e0ba1bc8aeaadbd"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/trogir-streaming.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
+          "sha256": "e5023c409383bcdc11010c32b7bfe90702714fd3b1c815cb8b57b706ecf7656e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/trogir-assets.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-assets.ts",
+          "sha256": "89c40ef904ab7ce11d761da5f3d0ae42671feded358b44362a3218d2da8e078d"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/trogir-camera-pose.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-camera-pose.ts",
+          "sha256": "ed4e6897516de01412d72f5aa06a8aa5fafe2e38deced3b0ca84c8eace9faa8a"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/trogir-camera.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-camera.ts",
+          "sha256": "5133242674d693323be72041f1be5cf561615b26ad0ad42af98c73d106fd8b8f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/trogir-collision.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-collision.ts",
+          "sha256": "a477d43439a8152891a76ee6d13118c7c1b11dfc077f884cc86b506e41130b91"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/trogir-quality.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-quality.ts",
+          "sha256": "4392affda13e2db3f8809950c1c15b141e28abebc7fc65c4c9d5d54d49fba502"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/trogir-streaming-lifecycle.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming-lifecycle.ts",
+          "sha256": "cd2730f0929ce6778bbe655f5fc402c04838fd7ab642236b9977eb89373758a4"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/trogir-streaming-placement.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming-placement.ts",
+          "sha256": "073f2a9f69ef4369a7b993d87188702ecabea6ae39a7d14f0121eafe53ce2a9c"
         }
       ]
     }

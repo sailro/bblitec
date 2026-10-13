@@ -20,7 +20,11 @@ import {
     tryResolveFunctionDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
-import { unwrapExpression, argumentAt } from "./syntax.js";
+import {
+    unwrapExpression,
+    argumentAt,
+    expressionHasEffects,
+} from "./syntax.js";
 import {
     declarationInDefaultLibrary,
     declaredInDefaultLibrary,
@@ -51,6 +55,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { hasNoValueCompletion } from "./native-return-type.js";
 import { representedResultType } from "./represented-result.js";
 import { isNullable, isTypeReference } from "./type-facts.js";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 
 interface AsyncContext extends Pick<
     LoweringServices,
@@ -72,6 +77,7 @@ interface AsyncContext extends Pick<
     | "nativeEmission"
     | "emit"
     | "emitDiscardedValue"
+    | "evaluationOrder"
     | "unwrap"
     | "bindings"
     | "libraryGlobal"
@@ -331,7 +337,39 @@ export class AsyncLowerer {
         )
             return this.compileRace(node, callee.name.text);
         if (this.isPromiseMethod(callee)) {
-            const rejection = callee.name.text === "catch";
+            // A reaction the checker types undefined, null or void
+            // (`undefined`, `null`, `void 0`) is no callback: then passes
+            // the settlement on. `then(absent, onRejected)` is
+            // `catch(onRejected)`; `then(onFulfilled, absent)` is
+            // `then(onFulfilled)`.
+            const absent = (index: number): boolean => {
+                const argument = node.arguments[index];
+                if (!argument || expressionHasEffects(argument)) return false;
+                const type = context.checker.getTypeAtLocation(argument);
+                return (
+                    !type.isUnion() &&
+                    (type.flags &
+                        (ts.TypeFlags.Undefined |
+                            ts.TypeFlags.Null |
+                            ts.TypeFlags.Void)) !==
+                        0
+                );
+            };
+            const absentFulfillment =
+                callee.name.text === "then" &&
+                node.arguments.length === 2 &&
+                absent(0);
+            const absentRejection =
+                callee.name.text === "then" &&
+                node.arguments.length === 2 &&
+                !absentFulfillment &&
+                absent(1);
+            const bothReactions =
+                node.arguments.length === 2 &&
+                !absentFulfillment &&
+                !absentRejection;
+            const rejection = callee.name.text === "catch" || absentFulfillment;
+            const reactionIndex = absentFulfillment ? 1 : 0;
             const cleanup = callee.name.text === "finally";
             if (cleanup && node.arguments.length > 1)
                 return context.fail(
@@ -341,7 +379,7 @@ export class AsyncLowerer {
             if (
                 !cleanup &&
                 (node.arguments.length < 1 ||
-                    node.arguments.length > (rejection ? 1 : 2))
+                    node.arguments.length > (rejection ? reactionIndex + 1 : 2))
             ) {
                 return context.fail(
                     node,
@@ -354,18 +392,10 @@ export class AsyncLowerer {
                 context.compileValue(callee.expression),
                 node,
             );
-            const name = context.allocateTemporaryCppName("promise_receiver");
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name,
-                initializer: receiver.cpp,
-            });
-            const promise = {
-                ...receiver,
-                cpp: name,
-                nativeCaptures: [context.registerNativeBinding(name)],
-            };
+            const promise = this.orderedReceiver(receiver, [
+                callee.expression,
+                ...node.arguments,
+            ]);
             if (cleanup) {
                 const callback = node.arguments[0];
                 if (!callback) {
@@ -404,13 +434,13 @@ export class AsyncLowerer {
                 };
             }
             let settlement =
-                rejection || node.arguments.length === 2
+                rejection || bothReactions
                     ? this.settlementType(node)
                     : undefined;
             if (rejection && settlement)
                 settlement = this.retainedSettlement(promise, settlement, node);
             const first = this.compileReaction(
-                argumentAt(node, 0),
+                argumentAt(node, reactionIndex),
                 promise,
                 rejection ? "catch" : "then",
                 node,
@@ -458,7 +488,7 @@ export class AsyncLowerer {
             let output = rejection ? promise.promiseResult! : first.output;
             const cppType = rejection ? promise.promiseType! : first.cppType;
             const reactions = [first.cpp];
-            if (node.arguments.length === 2) {
+            if (bothReactions) {
                 const second = this.compileReaction(
                     argumentAt(node, 1),
                     promise,
@@ -1822,6 +1852,35 @@ export class AsyncLowerer {
     }
 
     /** Contextual result types keep the payload's concrete owner storage. */
+    /**
+     * The receiver of a reaction call. A named receiver is read where the
+     * call is made unless a later argument can change what it names; any
+     * other receiver is read once, first, into a temporary.
+     */
+    private orderedReceiver(
+        receiver: Value,
+        operands: readonly ts.Expression[],
+    ): Value {
+        const context = this.context;
+        if (
+            cppIdentifierPattern.test(receiver.cpp) &&
+            !context.evaluationOrder.operandsToPin(operands)[0]
+        )
+            return receiver;
+        const name = context.allocateTemporaryCppName("promise_receiver");
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name,
+            initializer: receiver.cpp,
+        });
+        return {
+            ...receiver,
+            cpp: name,
+            nativeCaptures: [context.registerNativeBinding(name)],
+        };
+    }
+
     private retainedSettlement(
         value: Value,
         expected: DataType<"promise">,

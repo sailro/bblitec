@@ -8,6 +8,7 @@
 #include <bblite/features/has_gamepad.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/storage_readback.hpp>
+#include <bblite/pal_image.hpp>
 
 #include "pal_dawn_device.hpp"
 #include "pal_dawn_adapter.hpp"
@@ -15,6 +16,7 @@
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 #include "pal_gpu_common.hpp"
+#include "pal_gpu_shader_path.hpp"
 #include "pal_dawn_completion.hpp"
 #include "pal_dawn_formats.hpp"
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -338,6 +340,7 @@ struct DawnOffscreenDevice final : OffscreenDevice {
                                  const std::string&) override {
         return create_dawn_compute_shader_module(device, descriptor);
     }
+    using OffscreenDevice::create_compute_pipeline;
     std::shared_ptr<ComputePipeline>
     create_compute_pipeline(const ComputePipelineDescriptor& descriptor) override {
         return create_dawn_compute_pipeline(device, descriptor);
@@ -389,22 +392,8 @@ struct DawnOffscreenDevice final : OffscreenDevice {
     }
 #endif
     std::unique_ptr<OffscreenCompletion>
-    on_submitted_work_done(std::function<void(std::exception_ptr)> complete) override {
-        auto state = std::make_shared<DawnCompletionState>(std::move(complete));
-        WGPUQueueWorkDoneCallbackInfo callback = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
-        callback.mode = WGPUCallbackMode_WaitAnyOnly;
-        callback.userdata1 = new std::shared_ptr<DawnCompletionState>(state);
-        callback.callback = [](WGPUQueueWorkDoneStatus status, WGPUStringView message,
-                               void* userdata, void*) {
-            const std::unique_ptr<std::shared_ptr<DawnCompletionState>> handler(
-                static_cast<std::shared_ptr<DawnCompletionState>*>(userdata));
-            (*handler)->deliver(status == WGPUQueueWorkDoneStatus_Success
-                                    ? std::exception_ptr{}
-                                    : std::make_exception_ptr(std::runtime_error(
-                                          "GPU queue completion failed: " + view_text(message))));
-        };
-        const auto future = wgpuQueueOnSubmittedWorkDone(queue, callback);
-        return std::make_unique<DawnFutureCompletion>(instance, future, std::move(state));
+    notify_submitted_work_done(std::function<void(std::exception_ptr)> complete) override {
+        return dawn_queue_work_done(instance, queue, std::move(complete));
     }
     const WGPUInstance instance;
     const WGPUAdapter adapter;
@@ -619,7 +608,8 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
         if (wgpuDeviceGetLimits(shared->device, &limits) != WGPUStatus_Success ||
             options.max_vertex_attributes > limits.maxVertexAttributes ||
             options.max_color_attachment_bytes_per_sample >
-                limits.maxColorAttachmentBytesPerSample) {
+                limits.maxColorAttachmentBytesPerSample ||
+            !dawn_limits_satisfy(limits, gpu_required_limits(engine_options.required_limits))) {
             dawn_error("Shared offscreen device limits do not satisfy this renderer.");
         }
         // Immutable device/queue handles may cross realms. Every engine's
@@ -833,14 +823,21 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
     device_descriptor.requiredFeatureCount = device_features.size();
     device_descriptor.requiredFeatures = device_features.data();
     WGPULimits required_limits = WGPU_LIMITS_INIT;
-    bool needs_limits = false;
+    // `requestDevice({requiredLimits})`: an adapter below them fails creation.
+    bool needs_limits =
+        request_dawn_limits(required_limits, gpu_required_limits(engine_options.required_limits));
     if (options.max_vertex_attributes > 0) {
         required_limits.maxVertexAttributes = options.max_vertex_attributes;
         needs_limits = true;
     }
+    // The scene's own attachments and the program's requiredLimits both
+    // raise this one; the device takes the larger.
     if (options.max_color_attachment_bytes_per_sample > 0) {
+        const auto requested = required_limits.maxColorAttachmentBytesPerSample;
         required_limits.maxColorAttachmentBytesPerSample =
-            options.max_color_attachment_bytes_per_sample;
+            requested == WGPU_LIMIT_U32_UNDEFINED
+                ? options.max_color_attachment_bytes_per_sample
+                : std::max(requested, options.max_color_attachment_bytes_per_sample);
         needs_limits = true;
     }
     if (needs_limits) {
@@ -920,11 +917,7 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
 /** A deployed shader artifact: `<stem><suffix>` in the shader directory. */
 inline std::vector<std::uint8_t> read_dawn_shader_file(const std::string& base_name,
                                                        std::string_view suffix) {
-    const std::string shader_override = environment_variable("BBLITE_GPU_SHADER_DIR");
-    const std::string shader_root = shader_override.empty()
-                                        ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
-                                        : shader_override;
-    return read_binary_file(join_path(shader_root, base_name + std::string(suffix)));
+    return read_binary_file(gpu_shader_path(base_name + std::string(suffix)));
 }
 
 inline WGPUShaderModule load_wgsl_module(WGPUDevice device, const std::string& base_name) {
@@ -1013,13 +1006,7 @@ inline WGPUTextureSampleType dawn_reflected_sample_type(std::string_view value,
 /** Parses one `@binding <group> <binding> <name> <resource...>` line. */
 inline DawnReflectedBinding parse_dawn_reflected_binding(std::string_view line,
                                                          std::string_view stem) {
-    std::vector<std::string_view> words;
-    for (std::size_t start = 0; start < line.size();) {
-        const std::size_t end = std::min(line.find(' ', start), line.size());
-        if (end > start)
-            words.push_back(line.substr(start, end - start));
-        start = end + 1;
-    }
+    const std::vector<std::string_view> words = sidecar_words(line);
     const auto malformed = [&]() -> DawnReflectedBinding {
         dawn_error(std::string(stem) + ".slots has a malformed layout line '" + std::string(line) +
                    "'.");

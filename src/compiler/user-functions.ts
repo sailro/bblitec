@@ -6509,9 +6509,13 @@ export class UserFunctionLowerer {
         callNode: ts.Node,
         expectedResult?: DataType,
     ): DataType {
-        const signature = this.checker.getSignatureFromDeclaration(
-            ir.declaration,
-        );
+        // A generic function's result at this call is its instantiated
+        // signature's (`acquire<T>(...): Promise<T | null>` with `T` bound).
+        const signature =
+            ir.declaration.typeParameters?.length &&
+            ts.isCallExpression(callNode)
+                ? this.checker.getResolvedSignature(callNode)
+                : this.checker.getSignatureFromDeclaration(ir.declaration);
         let type = signature
             ? context.dataTypes.fromTsType(
                   this.checker.getReturnTypeOfSignature(signature),

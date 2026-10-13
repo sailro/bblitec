@@ -33,6 +33,7 @@ import {
 import { compileStringValueMethod } from "./string-methods.js";
 import { compileDateMethod, compileDateTimeFormatMethod } from "./dates.js";
 import { compileHttpResponseMethod } from "./http.js";
+import { compileWebPlatformMethod } from "./web-platform.js";
 import { compileTextCodecMethod } from "./text-codecs.js";
 import { compileIntlMethod } from "./locale.js";
 import { compileWeakRefMethod } from "./weak-refs.js";
@@ -534,6 +535,10 @@ export function compileDataMethodCall(
         return compileBigIntMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "http-response")
         return compileHttpResponseMethod(lowerer, call, dynamicOwner, method);
+    const platform =
+        dynamicOwner &&
+        compileWebPlatformMethod(lowerer, call, dynamicOwner, method);
+    if (platform) return platform;
     if (dynamicOwner?.dataType?.kind === "search-params")
         return compileSearchParamsMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "date-time-format")

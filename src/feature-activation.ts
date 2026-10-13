@@ -197,6 +197,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/text/text-renderer.ts#createTextRenderer + registerTextRenderer",
         consumers: CMAKE,
     },
+    "renderer:external-renderables": {
+        provenance:
+            "src/frame-graph/render-task-base.ts#_buildBindings + " +
+            "#prepareRenderTaskPass + #executePassBody + " +
+            "src/render/draw-update-batches.ts (a scene pass's lowered renderables)",
+        consumers: ["features.cmake", "feature macros"],
+    },
     "text:weight": {
         provenance: "src/text/set-font-weight-offset.ts#setFontWeightOffset",
         consumers: CMAKE,
@@ -376,6 +383,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/compute/compute-uniform-writer.ts#createComputeUniformLayout",
         consumers: INVENTORY,
+    },
+    "engine:webgpu-device": {
+        provenance:
+            "src/engine/engine.ts#createEngine (engine._device over the WebGPU subset)",
+        consumers: ["features.cmake", "feature macros"],
     },
     "engine:device-recovery": {
         provenance:
@@ -598,6 +610,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "loader:splat-spz": {
         provenance: "src/loader-splat/load-spz.ts#loadSPZ",
         consumers: INVENTORY,
+    },
+    "loader:splat-stream": {
+        provenance:
+            "src/loader-splat-stream/load-gaussian-splat-stream.ts" +
+            "#loadGaussianSplatStream + #attachGaussianSplatStream + " +
+            "src/loader-splat-stream/splat-stream-gpu.ts + " +
+            "src/loader-splat-stream/splat-stream-material.ts + " +
+            "src/collision/splat-voxel-collision.ts",
+        consumers: ["features.cmake", "deployed shaders"],
     },
     "loader:splat-sh": {
         provenance:
@@ -1504,6 +1525,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "owned fetch responses from the closed packaged asset manifest, without network transport",
         consumers: INVENTORY,
+    },
+    "image:runtime-decode": {
+        provenance:
+            "the HTML createImageBitmap decode of run-time image bytes; generation adds the WebP codec it links (image-codecs.ts)",
+        consumers: CMAKE,
     },
     "platform:window": {
         provenance:

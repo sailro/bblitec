@@ -55,6 +55,7 @@
 #include "pal_ui_range.hpp"
 #include "pal_ui_control_marks.hpp"
 #include "pal_ui_color.hpp"
+#include "pal_ui_control_scheme.hpp"
 #include "pal_ui_scrollbars.hpp"
 #include "pal_ui_style_properties.hpp"
 #include "pal_ui_background.hpp"
@@ -1165,6 +1166,30 @@ js::Promise<js::PromiseVoid> ui_decode_image(Engine& engine, UiElementHandle ele
 }
 #endif
 
+namespace {
+/**
+ * HTML's details notification steps: a change of a details element's `open` attribute queues a
+ * task firing a non-bubbling, non-cancelable `toggle` at it (each change its own task; a
+ * synchronous program dispatches at once).
+ */
+void queue_details_toggle(Engine& engine, UiElementHandle element) {
+    const auto fire = [&engine, element] {
+        if (!engine.dom_input || element.value >= engine.ui_elements.size())
+            return;
+        PlatformMouseEvent payload;
+        payload.payload_kind = DomInputEventKind::Event;
+        const auto event = dom_event(payload, "toggle", dom_ui_path(engine, element), false, false);
+        event.dom->trusted = true;
+        dispatch_dom_pointer(engine, event);
+    };
+#if BBLITE_WORKERS
+    pal::EventLoop::current().post(fire);
+#else
+    fire();
+#endif
+}
+} // namespace
+
 void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
                       std::string value) {
     if (name.empty()) {
@@ -1212,9 +1237,13 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
         record.image_request.reset();
     }
 #endif
+    const bool opens_details =
+        record.tag == "details" && name == "open" && existing == record.attributes.end();
     const auto updated = record.attributes.insert_or_assign(std::move(name), std::move(value));
     if (engine.ui_attribute_changed)
         engine.ui_attribute_changed(element, updated.first->first);
+    if (opens_details)
+        queue_details_toggle(engine, element);
 #if BBLITE_WORKERS
     if (updates_image)
         static_cast<void>(image_request(engine, element));
@@ -1239,6 +1268,8 @@ void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_vi
     bool changed = record.attributes.erase(normalized) != 0;
     if (changed && engine.ui_attribute_changed)
         engine.ui_attribute_changed(element, normalized);
+    if (changed && normalized == "open" && record.tag == "details")
+        queue_details_toggle(engine, element);
 #if BBLITE_WORKERS
     if (changed && normalized == "src" && record.image_request) {
         record.image_request->invalidated = true;
@@ -1659,8 +1690,43 @@ bool ui_activation_disabled(const UiElementRecord& record) {
 } // namespace
 
 namespace {
+/** A link: an anchor with a string href (a download anchor's object URL is no attribute). */
+bool ui_is_link(const UiElementRecord& record) {
+    return record.tag == "a" && record.attributes.contains("href");
+}
+
+/** The link's `target` names this browsing context, the native host's only one. */
+bool ui_link_targets_this_context(const UiElementRecord& record) {
+    const auto target = record.attributes.find("target");
+    if (target == record.attributes.end())
+        return true;
+    const std::string name = js::string_lower(target->second);
+    return name.empty() || name == "_self" || name == "_parent" || name == "_top";
+}
+
+/**
+ * A link's default action: `location.assign(href)` through the program's link navigation. A link
+ * opening another browsing context is inert: the native host has one.
+ */
+void activate_ui_link(const UiElementRecord& record, void (*navigate)(const std::string& url)) {
+    if (!ui_link_targets_this_context(record))
+        return;
+    if (!navigate)
+        throw std::logic_error(
+            "A link was activated in a program compiled without link navigation.");
+    // Navigation runs application code that may grow the element arena: pass a copy.
+    const std::string href = record.attributes.at("href");
+    navigate(href);
+}
+
+/** A link this browsing context activates: clicks reach it as they reach a listener. */
+bool ui_activates_link(const UiElementRecord& record) {
+    return ui_is_link(record) && ui_link_targets_this_context(record);
+}
+
 bool ui_needs_click_listener(const Engine& engine, const UiElementRecord& record) {
     return record.tag == "summary" || !record.click_callbacks.empty() ||
+           ui_activates_link(record) ||
            (engine.dom_input && engine.dom_input->event_types.contains("click"));
 }
 
@@ -1692,13 +1758,16 @@ bool dispatch_ui_click(Engine& engine, UiElementHandle element, bool trusted, bo
         if (first_summary != children.end() && *first_summary == element) {
             ui_set_boolean_attribute(engine, parent, "open",
                                      !ui_has_attribute(engine, parent, "open"));
-            dispatch_ui_listeners(ui_element(engine, parent), "toggle", PlatformMouseEvent{});
         }
     }
-#if BBLITE_HAS_BROWSER_FILE
     // Default actions carry the stable handle because opening a dialog can
     // synchronously release pointer lock and run callbacks that grow this arena.
     const std::string tag = ui_element(engine, element).tag;
+    if (tag == "a" && ui_is_link(ui_element(engine, element))) {
+        activate_ui_link(ui_element(engine, element), engine.ui_link_navigation);
+        return true;
+    }
+#if BBLITE_HAS_BROWSER_FILE
     if (tag == "a") {
         js::click_download_anchor(engine, element);
     } else if (tag == "input") {
@@ -1711,6 +1780,10 @@ bool dispatch_ui_click(Engine& engine, UiElementHandle element, bool trusted, bo
 
 void ui_click(Engine& engine, UiElementHandle element, bool trusted) {
     static_cast<void>(dispatch_ui_click(engine, element, trusted, true));
+}
+
+void ui_set_link_navigation(Engine& engine, void (*navigate)(const std::string& url)) {
+    engine.ui_link_navigation = navigate;
 }
 
 namespace {
@@ -4401,6 +4474,7 @@ struct UiRmlRuntime {
             Rml::Factory::RegisterElementInstancer("select", &select_instancer);
             Rml::Factory::RegisterElementInstancer("input", &input_instancer);
             scrollbar_properties = register_ui_scrollbar_properties();
+            control_scheme_properties = register_ui_control_scheme_properties();
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-control-mark",
                                                      &control_mark_decorator);
@@ -4551,7 +4625,7 @@ struct UiRmlRuntime {
                 if (sync_generated_content())
                     context->Update();
             }
-            if (sync_ui_scrollbar_styles(*document, scrollbar_properties))
+            if (sync_control_states())
                 context->Update();
             if (background_styles.sync(*document))
                 context->Update();
@@ -4634,6 +4708,26 @@ struct UiRmlRuntime {
         return path;
     }
 
+    /**
+     * One walk per update syncs the cascaded state the user-agent sheet reads:
+     * scrollbar styles on scroll owners, scheme and accent on every element.
+     */
+    bool sync_control_states() {
+        bool changed = false;
+        const auto visit = [&](const auto& self, Rml::Element& element) -> void {
+            changed = sync_ui_scrollbar_element(element, scrollbar_properties) || changed;
+            changed = sync_ui_control_scheme_element(element, control_scheme_properties) || changed;
+            // Internal controls inherit the variables but are not scroll owners.
+            for (int index = 0; index < element.GetNumChildren(); ++index) {
+                auto* child = element.GetChild(index);
+                if (!rmlui_dynamic_cast<Rml::ElementText*>(child))
+                    self(self, *child);
+            }
+        };
+        visit(visit, *document);
+        return changed;
+    }
+
     bool update_density_ratio() {
         const float next_density_ratio = pal::window_render_density(window, engine.options);
         if (density_ratio == next_density_ratio)
@@ -4679,12 +4773,13 @@ struct UiRmlRuntime {
         }
         if (name == "display")
             element.SetProperty("--bbl-authored-display", "1");
-        const bool checked = name == "float" || name == "clear" || name == "object-fit" ||
-                             name == "filter" || name == "overflow-wrap" || name == "word-break" ||
-                             name == "flex" || name.starts_with("flex-") || name == "align-self" ||
-                             name == "align-content" || name == "row-gap" || name == "column-gap" ||
-                             name.starts_with("padding-") || name == "margin-left" ||
-                             name == "margin-right" || name == "box-shadow";
+        const bool checked =
+            name == "float" || name == "clear" || name == "object-fit" || name == "filter" ||
+            name == "overflow-wrap" || name == "word-break" || name == "flex" ||
+            name.starts_with("flex-") || name == "align-self" || name == "align-content" ||
+            name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
+            name == "margin-left" || name == "margin-right" || name == "box-shadow" ||
+            name == "accent-color" || name == "color-scheme" || name == "text-decoration";
         const bool accepted = element.SetProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
@@ -5027,6 +5122,7 @@ struct UiRmlRuntime {
             source_declares_pointer_events;
         if (!has_pointer_events &&
             (!record.click_callbacks.empty() || !record.event_callbacks.empty() ||
+             ui_activates_link(record) ||
              (engine.dom_input && engine.dom_input->pointer_elements.contains(handle.value)))) {
             append("pointer-events:auto;");
         }
@@ -6636,8 +6732,9 @@ struct UiRmlRuntime {
     UiSystemInterface system_interface;
     UiRenderRecorder render_interface;
     std::vector<std::unique_ptr<UiFilterInstancer>> filter_instancers;
-    UiRangeDecoratorInstancer range_decorator;
-    UiControlMarkDecoratorInstancer control_mark_decorator;
+    UiControlSchemeProperties control_scheme_properties{};
+    UiRangeDecoratorInstancer range_decorator{control_scheme_properties};
+    UiControlMarkDecoratorInstancer control_mark_decorator{control_scheme_properties};
     UiControlArrowDecoratorInstancer control_arrow_decorator;
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::ElementInstancerGeneric<UiCanvasElement> canvas_instancer;
@@ -6969,7 +7066,7 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
                 runtime.context->Update();
         }
     }
-    if (sync_ui_scrollbar_styles(*runtime.document, runtime.scrollbar_properties))
+    if (runtime.sync_control_states())
         runtime.context->Update();
     if (focus_changed || hover_changed || motion_changed || dimensions_changed || density_changed ||
         generated_changed || containers_changed) {

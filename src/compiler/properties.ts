@@ -53,6 +53,7 @@ import {
 import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
+import { webPlatformProperty } from "./web-platform.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
@@ -69,6 +70,7 @@ import { recordAt } from "./record-access.js";
 import { staticFetchProperty } from "./static-fetch.js";
 import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
+import { readSplatStreamProperty } from "./splat-stream-surface.js";
 import {
     contextCanvas,
     optionalPresentCpp,
@@ -908,6 +910,12 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "speed",
         value: "number",
         record: ["cameras", "speed"],
+    },
+    {
+        owner: "camera",
+        property: "inertia",
+        value: "number",
+        record: ["cameras", "inertia"],
     },
     {
         owner: "camera",
@@ -2591,6 +2599,13 @@ export class PropertyAccessLowerer {
             expression.name.text,
         );
         if (httpProperty) return httpProperty;
+        const platformProperty = webPlatformProperty(
+            this.context.dataLowerer,
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (platformProperty) return platformProperty;
         if (
             owner.kind === "json-null" &&
             (expression.questionDotToken ||
@@ -3483,6 +3498,13 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (textProperty) return textProperty;
+        const streamProperty = readSplatStreamProperty(
+            this.context,
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (streamProperty) return streamProperty;
         const inputProperty = readNodeInputProperty(
             this.context,
             owner,

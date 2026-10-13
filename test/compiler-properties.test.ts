@@ -194,7 +194,8 @@ test("names the same camera fields for reads and both write paths", () => {
             camera.speed = 2;
             scene.camera.speed = 3;
             camera.angularSensitivity = 500;
-            const box = createBox(engine, camera.angularSensitivity);
+            camera.inertia = 0.6;
+            const box = createBox(engine, camera.angularSensitivity + camera.inertia);
         `,
             ["createBox"],
         ),
@@ -207,6 +208,9 @@ test("names the same camera fields for reads and both write paths", () => {
         /bbl::handle_at\(v_engine\.cameras, v_scene\.camera\)\.speed = 3\.0;/,
     );
     assert.match(result.cpp, /\.angular_sensibility = 500\.0;/);
+    // The pinned free controls read the same field (configurable-camera-controls.test.ts).
+    assert.match(result.cpp, /\.inertia = 0\.6;/);
+    assert.match(result.cpp, /bbl::create_box\([^;]*\.inertia/);
     assert.match(result.cpp, cameraRecord);
     assert.match(result.cpp, /bbl::create_box\([^;]*angular_sensibility/);
 });
@@ -262,4 +266,42 @@ test("every container-returning property helper declares fresh data", () => {
         )
         .map((rule) => `${rule.owner}.${rule.property}`);
     assert.deepEqual(missing, []);
+});
+
+test("passes a camera world matrix to an ArrayLike<number> parameter as a numeric copy", () => {
+    const result = compileSource(`
+        import { createArcRotateCamera, createEngine, createSceneContext, onBeforeRender } from "@babylonjs/lite";
+        function normalized(world: ArrayLike<number>): number {
+            const length = Math.hypot(world[0]!, world[1]!, world[2]!);
+            if (!Number.isFinite(length) || length <= 0) throw new RangeError("basis");
+            return world[12]! / length;
+        }
+        function format(world: ArrayLike<number>): string { return normalized(world).toFixed(2); }
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            scene.camera = createArcRotateCamera(0, 1, 3, { x: 0, y: 0, z: 0 });
+            let text = "";
+            onBeforeRender(scene, () => {
+                if (!scene.camera) return;
+                try { text = format(scene.camera.worldMatrix); }
+                catch (reason) { if (!(reason instanceof RangeError)) throw reason; text = reason.message; }
+                canvas.dataset.text = text;
+            });
+        }
+        main();
+    `);
+    assert.match(
+        result.cpp,
+        /double normalized\(bbl::js::Span<const double> v_fn\d+_world\)/,
+    );
+    assert.match(
+        result.cpp,
+        /const auto v_bblite_camera_world_lanes_\d+ = bbl::upstream::camera_world_matrix\(/,
+    );
+    assert.match(
+        result.cpp,
+        /const bbl::js::F64Array v_bblite_array_like_numbers_\d+\(v_bblite_camera_world_lanes_\d+\.begin\(\), v_bblite_camera_world_lanes_\d+\.end\(\)\);/,
+    );
 });

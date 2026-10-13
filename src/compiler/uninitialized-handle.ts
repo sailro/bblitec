@@ -1,5 +1,9 @@
 import ts from "typescript";
-import type { DataType, DataTypeRegistry } from "./data-types.js";
+import {
+    dataTypesEqual,
+    type DataType,
+    type DataTypeRegistry,
+} from "./data-types.js";
 import { declaredSymbol, libraryGlobal, resolvedSymbol } from "./symbols.js";
 
 /** An escaped Promise reject callback accepts the runtime's represented Error reason. */
@@ -63,8 +67,13 @@ export function inferPromiseRejectStorage(
         : undefined;
 }
 
-/** TypeScript's evolving-any declarations acquire storage only when all uses agree. */
-export function inferUninitializedHandle(
+/**
+ * TypeScript's evolving-any declarations (`let pose;`) acquire storage only
+ * when every write and read of them TypeScript types as the same native
+ * handle or the same record (`let pose; try { pose = format(world); } catch
+ * { ... } use(pose.x)`), assigned where the source assigns it.
+ */
+export function inferUninitializedStorage(
     declaration: ts.VariableDeclaration,
     checker: ts.TypeChecker,
     dataTypes: DataTypeRegistry,
@@ -77,7 +86,7 @@ export function inferUninitializedHandle(
         return undefined;
     const symbol = declaredSymbol(checker, declaration.name);
     if (!symbol) return undefined;
-    let inferred: (DataType & { kind: "handle" }) | undefined;
+    let inferred: DataType | undefined;
     let writes = 0;
     let reads = 0;
     let compatible = true;
@@ -100,8 +109,8 @@ export function inferUninitializedHandle(
                 expression,
             );
             if (
-                type?.kind !== "handle" ||
-                (inferred && inferred.handle !== type.handle)
+                (type?.kind !== "handle" && type?.kind !== "struct") ||
+                (inferred && !dataTypesEqual(inferred, type))
             ) {
                 compatible = false;
                 return;

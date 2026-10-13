@@ -52,6 +52,14 @@ export const scalarKinds: DataKindOperations<
     | "file-list"
     | "search-params"
     | "http-response"
+    | "http-headers"
+    | "byte-stream"
+    | "byte-stream-reader"
+    | "byte-read-result"
+    | "abort-controller"
+    | "abort-signal"
+    | "url"
+    | "image-bitmap"
     | "gpu"
     | "gpu-adapter"
     | "gpu-adapter-info"
@@ -118,6 +126,18 @@ export const scalarKinds: DataKindOperations<
         reseats: true,
     },
     "http-response": opaqueLeaf("bbl::pal::HttpResponse", "http-response"),
+    "http-headers": opaqueLeaf("bbl::pal::HttpHeaders", "http-headers"),
+    "byte-stream": opaqueLeaf("bbl::pal::BodyStream", "byte-stream"),
+    "byte-stream-reader": opaqueLeaf("bbl::pal::BodyReader", "byte-reader"),
+    // A fresh `{ done, value }` record each read; nothing aliases it.
+    "byte-read-result": reseatingLeaf("bbl::pal::BodyReadResult", "byte-read"),
+    "abort-controller": opaqueLeaf(
+        "bbl::js::AbortController",
+        "abort-controller",
+    ),
+    "abort-signal": opaqueLeaf("bbl::js::AbortSignal", "abort-signal"),
+    url: opaqueLeaf("bbl::js::Url", "url"),
+    "image-bitmap": opaqueLeaf("bbl::pal::ImageBitmap", "image-bitmap"),
     gpu: {
         ...reseatingLeaf("const void*", "gpu"),
         opaqueReference: true,

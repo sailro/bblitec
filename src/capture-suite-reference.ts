@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { extname, relative, resolve, sep } from "node:path";
 import type { NativeHostUi } from "./compiler/types.js";
+import type { ReferenceSettle } from "./scene-registry.js";
 import { applyCaptureAnimationPose } from "./capture-animation-pose.js";
 import {
     engineCaptureEntryUrl,
@@ -435,6 +436,8 @@ interface SuiteCaptureOptions {
     fixedAnimationFrame?: number;
     /** Each engine freezes independently after this frame, in any realm. */
     independentEngines?: number;
+    /** Capture once the canvas dataset settles (`referenceSettle`). */
+    settle?: ReferenceSettle;
     /** Immutable upstream HTML; replace its single bundled module URL only. */
     hostPage?: string;
     /**
@@ -517,6 +520,7 @@ if (hostStyleSheet) {
     document.head.appendChild(style);
 }
 const create = (record) => {
+    if (record.tag === undefined) return document.createTextNode(record.text);
     const element = document.createElement(record.tag);
     for (const [name, value] of Object.entries(record.attributes ?? {})) {
         element.setAttribute(name, value);
@@ -1107,6 +1111,7 @@ export async function captureSuiteReference(
                 options.independentEngines === undefined
                     ? options.fixedAnimationFrame
                     : undefined,
+                options.settle,
             );
             if (options.independentEngines !== undefined) {
                 await page.evaluate(waitForCapturedEngines, 60_000);

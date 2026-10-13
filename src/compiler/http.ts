@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { LoweringServices } from "./lowering-services.js";
-import type { Value } from "./types.js";
+import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
 type HttpContext = Pick<LoweringServices, "unwrap" | "libraryGlobal">;
@@ -129,7 +129,7 @@ export function compileHttpCall(
         );
     const fields = options?.recordProperties ?? {};
     for (const name of Object.keys(fields))
-        if (!["method", "headers", "body", "cache"].includes(name))
+        if (!["method", "headers", "body", "cache", "signal"].includes(name))
             context.fail(
                 optionsNode!,
                 `fetch option '${name}' is not lowered.`,
@@ -158,10 +158,50 @@ export function compileHttpCall(
         !fields.body || fields.body.kind === "json-null"
             ? "std::nullopt"
             : snapshot(fields.body, optionsNode!, "http_body");
+    const signal = fields.signal
+        ? requestSignal(lowerer, fields.signal, optionsNode!)
+        : undefined;
     return lowerer.leafValue(
-        `bbl::pal::fetch_http(${url}, bbl::pal::HttpRequest{${method}, {${entries.join(", ")}}, ${body}})`,
+        `bbl::pal::fetch_http(${url}, bbl::pal::HttpRequest{${method}, {${entries.join(", ")}}, ${body}}${signal ? `, ${signal}` : ""})`,
         { kind: "promise", result: { kind: "http-response" } },
     );
+}
+
+/**
+ * A request's `signal` option: an AbortSignal, `undefined` (none), or an
+ * optional signal read at the call; its value is snapshotted in order.
+ */
+function requestSignal(
+    lowerer: DataLowerer,
+    value: Value,
+    site: ts.Node,
+): string | undefined {
+    const context = lowerer.context;
+    if (
+        value.kind === "json-null" ||
+        value.dataType?.kind === "undefined" ||
+        value.dataType?.kind === "null"
+    ) {
+        context.emitDiscardedValue(value);
+        return undefined;
+    }
+    const type = value.dataType;
+    const optional = type?.kind === "optional";
+    if ((optional ? type.inner : type)?.kind !== "abort-signal")
+        return context.fail(
+            site,
+            "fetch option 'signal' requires an AbortSignal, null or undefined.",
+        );
+    const cpp = context.allocateTemporaryCppName("http_signal");
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: cpp,
+        initializer: value.cpp,
+    });
+    return optional
+        ? `(${optionalPresentCpp(cpp)} ? ${optionalValueCpp(cpp)} : bbl::js::AbortSignal{})`
+        : cpp;
 }
 
 export function httpResponseProperty(
@@ -179,8 +219,18 @@ export function httpResponseProperty(
     if (property === "url")
         return lowerer.leafValue(`(${owner.cpp})->url`, { kind: "string" });
     if (property === "bodyUsed")
-        return lowerer.leafValue(`(${owner.cpp})->consumed`, {
-            kind: "boolean",
+        return lowerer.leafValue(
+            `bbl::pal::http_response_body_used(${owner.cpp})`,
+            { kind: "boolean" },
+        );
+    if (property === "headers")
+        return lowerer.leafValue(`(${owner.cpp})->headers`, {
+            kind: "http-headers",
+        });
+    if (property === "body")
+        return lowerer.leafValue(`bbl::pal::http_response_body(${owner.cpp})`, {
+            kind: "optional",
+            inner: { kind: "byte-stream" },
         });
     return undefined;
 }

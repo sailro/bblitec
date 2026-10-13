@@ -79,16 +79,19 @@ export function compileSearchParamsMethod(
         );
     const minimum = method === "toString" ? 0 : method === "set" ? 2 : 1;
     context.expectArgumentCount(call, minimum, method === "has" ? 2 : minimum);
-    const receiver = context.bindings.pinValueToTemporary(
-        owner,
-        "query_receiver",
-    );
-    const arguments_ = call.arguments.map((argument) => {
+    const callee = context.unwrap(call.expression);
+    const pins = context.evaluationOrder.operandsToPin([
+        ts.isPropertyAccessExpression(callee) ? callee.expression : callee,
+        ...call.arguments,
+    ]);
+    const receiver = pins[0]
+        ? context.bindings.pinValueToTemporary(owner, "query_receiver")
+        : owner;
+    const arguments_ = call.arguments.map((argument, index) => {
         const compiled = context.compileValue(argument);
-        const value = context.bindings.pinValueToTemporary(
-            compiled,
-            "query_argument",
-        );
+        const value = pins[index + 1]
+            ? context.bindings.pinValueToTemporary(compiled, "query_argument")
+            : compiled;
         return lowerer.compileKnownValueForSink(
             value,
             { kind: "string" },
