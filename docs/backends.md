@@ -117,7 +117,9 @@ their entries and each dispatch or draw binds the resources its stage's sidecar 
 dynamic offsets; storage buffers bind whole; uniform buffers are CPU bytes pushed when a command is
 encoded; command encoders record and encode at submission (or before a renderer's passes); each dispatch
 is its own compute pass; indirect dispatch reads a copy of its arguments, since D3D12 holds a buffer
-bound as storage in a shader-resource state; `clearBuffer` uploads zeros; `MAP_READ` buffers are
+bound as storage in a shader-resource state (one copy per buffer and offset until a command writes the
+buffer); queue writes and new buffers' zeroes stage in one upload ring, recorded in one copy pass ahead
+of the next encoded or submitted commands; `clearBuffer` uploads zeros; `MAP_READ` buffers are
 download transfer buffers mapped after a fence. Device limits are WebGPU's defaults raised by the
 engine's `requiredLimits`; SDL_GPU admits 32-bit sizes.
 
