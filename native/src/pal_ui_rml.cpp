@@ -1674,26 +1674,30 @@ js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
     return result;
 }
 
-UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child) {
-    UiElementRecord& parent_record = ui_element(engine, parent);
-    UiElementRecord& child_record = ui_element(engine, child);
-    if (child_record.markup_owner.value != invalid_handle ||
-        parent_record.markup_owner.value != invalid_handle)
+namespace {
+/** Pre-insertion validity, checked before any node moves. */
+void require_insertable(Engine& engine, UiElementHandle parent, UiElementHandle node) {
+    const UiElementRecord& record = ui_element(engine, node);
+    if (record.markup_owner.value != invalid_handle)
         throw std::runtime_error(
             "Reparenting queried innerHTML nodes requires an authored markup tree.");
-    if (parent.value == child.value) {
-        throw std::runtime_error("A native UI element cannot contain itself.");
-    }
-    for (UiElementHandle ancestor = parent; ancestor.value != invalid_handle;
-         ancestor = ui_element(engine, ancestor).parent) {
-        if (ancestor.value == child.value) {
-            throw std::runtime_error("A native UI element cannot contain one of its ancestors.");
-        }
-    }
+    if (ui_contains(engine, node, parent))
+        throw js::make_dom_exception("The new child element contains the parent.",
+                                     "HierarchyRequestError");
     if (engine.ui_document_roots.active() &&
-        (child == engine.ui_document_roots.html || child == engine.ui_document_roots.head ||
-         child == engine.ui_document_roots.body))
+        (node == engine.ui_document_roots.html || node == engine.ui_document_roots.head ||
+         node == engine.ui_document_roots.body))
         throw std::runtime_error("Reparenting document roots is not supported.");
+}
+} // namespace
+
+UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child) {
+    if (ui_element(engine, parent).markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Reparenting queried innerHTML nodes requires an authored markup tree.");
+    require_insertable(engine, parent, child);
+    UiElementRecord& parent_record = ui_element(engine, parent);
+    UiElementRecord& child_record = ui_element(engine, child);
     if (child_record.parent.value != invalid_handle) {
         const auto previous_parent = child_record.parent;
         std::erase(ui_element(engine, previous_parent).children, child);
@@ -1867,20 +1871,6 @@ UiElementHandle ui_sibling_parent(Engine& engine, UiElementHandle node) {
     return record.parent;
 }
 
-/** Pre-insertion validity, checked before any node moves. */
-void require_insertable(Engine& engine, UiElementHandle parent, UiElementHandle node) {
-    const UiElementRecord& record = ui_element(engine, node);
-    if (record.markup_owner.value != invalid_handle)
-        throw std::runtime_error(
-            "Reparenting queried innerHTML nodes requires an authored markup tree.");
-    if (ui_contains(engine, node, parent))
-        throw js::make_dom_exception("The new child element contains the parent.",
-                                     "HierarchyRequestError");
-    if (engine.ui_document_roots.active() &&
-        (node == engine.ui_document_roots.html || node == engine.ui_document_roots.head ||
-         node == engine.ui_document_roots.body))
-        throw std::runtime_error("Reparenting document roots is not supported.");
-}
 } // namespace
 
 void ui_replace_with(Engine& engine, UiElementHandle node,
@@ -1956,10 +1946,8 @@ UiScrollIntoView::Alignment scroll_alignment(std::string_view value) {
 }
 
 void request_scroll_into_view(Engine& engine, UiElementHandle element, UiScrollIntoView request) {
-    UiElementRecord& record = ui_element(engine, element);
-    mark_ui_changed(engine, record);
-    request.sequence = engine.ui_revision;
-    record.scroll_into_view = request;
+    mark_ui_changed(engine, ui_element(engine, element));
+    engine.ui_scroll_requests.emplace_back(element, request);
 }
 } // namespace
 
@@ -6613,20 +6601,11 @@ struct UiRmlRuntime {
         return true;
     }
 
-    /** Applies scrollIntoView requests newer than the last applied, in request order. */
+    /** Applies the pending scrollIntoView requests in call order. */
     bool sync_scroll_requests() {
-        if (scroll_search_revision == engine.ui_revision)
+        if (engine.ui_scroll_requests.empty())
             return false;
-        scroll_search_revision = engine.ui_revision;
-        std::vector<std::pair<std::uint64_t, std::uint32_t>> pending;
-        for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index)
-            if (const auto& request = engine.ui_elements[index].scroll_into_view;
-                request && request->sequence > projected_scroll_sequence)
-                pending.emplace_back(request->sequence, index);
-        if (pending.empty())
-            return false;
-        std::sort(pending.begin(), pending.end());
-        projected_scroll_sequence = pending.back().first;
+        const auto pending = std::exchange(engine.ui_scroll_requests, {});
         const auto alignment = [](UiScrollIntoView::Alignment value) {
             switch (value) {
             case UiScrollIntoView::Alignment::Start:
@@ -6641,13 +6620,12 @@ struct UiRmlRuntime {
             throw std::logic_error("Unknown scrollIntoView alignment.");
         };
         bool scrolled = false;
-        for (const auto& [sequence, index] : pending) {
-            static_cast<void>(sequence);
-            auto* element =
-                index < projected_elements.size() ? projected_elements[index].element : nullptr;
+        for (const auto& [target, request] : pending) {
+            auto* element = target.value < projected_elements.size()
+                                ? projected_elements[target.value].element
+                                : nullptr;
             if (!element)
                 continue;
-            const auto& request = *engine.ui_elements[index].scroll_into_view;
             element->ScrollIntoView(Rml::ScrollIntoViewOptions(
                 alignment(request.block), alignment(request.inline_axis),
                 request.smooth ? Rml::ScrollBehavior::Smooth : Rml::ScrollBehavior::Instant));
@@ -7296,9 +7274,6 @@ struct UiRmlRuntime {
     std::uint64_t projected_focus_revision = ~std::uint64_t{0};
     UiElementHandle projected_focused{};
     std::uint64_t projected_text_selection_revision = 0;
-    /** The newest scrollIntoView request already applied, and the revision last searched. */
-    std::uint64_t projected_scroll_sequence = 0;
-    std::uint64_t scroll_search_revision = 0;
     std::vector<std::pair<DomEventTarget, std::string>> ended_transitions;
     std::unique_ptr<UiTransitionListener> transition_listener;
     std::string css_font_family;

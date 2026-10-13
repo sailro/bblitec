@@ -722,15 +722,7 @@ inline std::vector<DomEventTarget> dom_ui_path(const Engine& engine, UiElementHa
 }
 
 /** WebIDL `long` conversion of a pointerId argument. */
-inline double dom_pointer_id(double value) {
-    if (!std::isfinite(value))
-        return 0;
-    constexpr double range = 4294967296.0;
-    double wrapped = std::fmod(std::trunc(value), range);
-    if (wrapped < 0)
-        wrapped += range;
-    return (wrapped >= range / 2 ? wrapped - range : wrapped) + 0.0;
-}
+inline double dom_pointer_id(double value) { return static_cast<double>(js::to_int32(value)); }
 
 /** Node.isConnected of an element that can hold pointer capture; the engine canvas always is. */
 inline bool dom_capture_target_connected(const Engine& engine, DomEventTarget target) {

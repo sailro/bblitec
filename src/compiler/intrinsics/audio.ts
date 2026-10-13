@@ -5,6 +5,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // Unreached sound, bus, and spatial behavior remains an explicit refusal.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
+import { pinCpp } from "../evaluation-order.js";
 import {
     optionalPresentCpp,
     optionalValueCpp,
@@ -425,13 +426,7 @@ function spatialVector(
     const value = context.compileValue(expression);
     if (value.kind !== "data" || value.dataType?.kind !== "struct")
         context.fail(expression, "Expected a Vec3 record { x, y, z }.");
-    const name = context.allocateTemporaryCppName("spatial_vector");
-    context.emit({
-        kind: "declaration",
-        type: "const auto",
-        name,
-        initializer: value.cpp,
-    });
+    const name = pinCpp(context, value.cpp, "spatial_vector");
     return context.vec3FromRecord(
         { ...value, cpp: name },
         expression,
@@ -596,16 +591,12 @@ function compileStaticSound(
             context.expectArgumentCount(call, 2, 3);
             context.reachFeature("audio:static-sound", call);
             const sound = soundArgument(context, call);
-            const volume = context.allocateTemporaryCppName("sound_volume");
-            context.emit({
-                kind: "declaration",
-                type: "const double",
-                name: volume,
-                initializer: context.compileNumber(
-                    argumentAt(call, 1),
-                    "double",
-                ),
-            });
+            const volume = pinCpp(
+                context,
+                context.compileNumber(argumentAt(call, 1), "double"),
+                "sound_volume",
+                "const double",
+            );
             const ramp = call.arguments[2]
                 ? soundOptions(context, call.arguments[2], "bbl::RampOptions", {
                       duration: "number",

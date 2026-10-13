@@ -14,8 +14,8 @@ import {
     declaresListenerSignal,
     listenerAddition,
     listenerOptions,
-    pinListener,
 } from "./dom-listeners.js";
+import { pinCpp } from "./evaluation-order.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { packagedUrlAssets, type StaticFetchContext } from "./static-fetch.js";
 import { deploymentUrl } from "./deployment.js";
@@ -406,22 +406,6 @@ function emitAudioNode(context: AudioCallContext, initializer: string): Value {
     return { kind: "audio-node", cpp: node };
 }
 
-/** An audio call's operand, evaluated into a temporary where it stands. */
-function pinnedAudioOperand(
-    context: AudioCallContext,
-    cpp: string,
-    label: string,
-): string {
-    const name = context.allocateTemporaryCppName(label);
-    context.emit({
-        kind: "declaration",
-        type: "const auto",
-        name,
-        initializer: cpp,
-    });
-    return name;
-}
-
 /**
  * A call's receiver and arguments in JavaScript's order, for its record's
  * spelling: an operand a later one could change, or see changed, is read
@@ -440,13 +424,11 @@ function orderedOperands(
         ...call.arguments,
     ]);
     const owner = pins[0]
-        ? pinnedAudioOperand(context, receiver.cpp, "audio_receiver")
+        ? pinCpp(context, receiver.cpp, "audio_receiver")
         : receiver.cpp;
     const args = call.arguments.map((expression, index) => {
         const cpp = argument(expression, index);
-        return pins[index + 1]
-            ? pinnedAudioOperand(context, cpp, "audio_argument")
-            : cpp;
+        return pins[index + 1] ? pinCpp(context, cpp, "audio_argument") : cpp;
     });
     return { owner, args };
 }
@@ -593,7 +575,7 @@ function compileAudioListener(
         !removing &&
         declaresListenerSignal(context.checker, call.arguments[2])
     )
-        listener = pinListener(context, listener);
+        listener = pinCpp(context, listener, "event_listener");
     const options = listenerOptions(context, call.arguments[2], removing);
     if (absent) return { kind: "void", cpp: "" };
     if (removing)
@@ -609,7 +591,7 @@ function compileAudioListener(
                 target.cpp,
                 type,
                 identity,
-                `${listener}, ${options.capture}, ${options.once}${lease ? `, ${lease}` : ""}`,
+                `${listener}, ${options.capture}, ${options.once}${lease}`,
             ),
         ),
     };

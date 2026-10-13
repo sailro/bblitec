@@ -1,14 +1,14 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
-import {
-    optionalPresentCpp,
-    optionalValueCpp,
-    valueForKind,
-    type Value,
-} from "./types.js";
+import { valueForKind, type Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { documentEngine } from "./window-events.js";
-import { compileBooleanOptions } from "./option-helpers.js";
+import {
+    compileBooleanOptions,
+    optionalOptionMember,
+    optionalOptionValue,
+} from "./option-helpers.js";
+import { pinCpp } from "./evaluation-order.js";
 
 type Context = Pick<
     LoweringServices,
@@ -308,6 +308,7 @@ export function listenerOptions(
 function listenerSignal(
     context: Pick<
         Context,
+        | "dataLowerer"
         | "dataTypes"
         | "fail"
         | "allocateTemporaryCppName"
@@ -341,55 +342,53 @@ function listenerSignal(
             "Event listener signal requires the DOM AbortSignal identity.",
         );
     const signalType = context.dataTypes.cppType(type);
-    let read = present
-        ? `(${present} ? ${value.cpp} : ${context.dataTypes.cppType(stored)}{})`
-        : value.cpp;
-    if (optional) {
-        const stored = context.allocateTemporaryCppName("listener_signals");
-        context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: stored,
-            initializer: read,
-        });
-        read = `(${optionalPresentCpp(stored)} ? ${optionalValueCpp(stored)} : ${signalType}{})`;
-    }
-    const name = context.allocateTemporaryCppName("listener_signal");
-    context.emit({
-        kind: "declaration",
-        type: `const ${signalType}`,
-        name,
-        initializer: read,
-    });
-    return name;
+    const read = optional
+        ? optionalOptionValue(
+              optionalOptionMember(
+                  context.dataLowerer,
+                  value,
+                  present,
+                  type,
+                  "listener_signals",
+                  site,
+              ),
+              `${signalType}{}`,
+          )
+        : present
+          ? `(${present} ? ${value.cpp} : ${signalType}{})`
+          : value.cpp;
+    return pinCpp(context, read, "listener_signal", `const ${signalType}`);
 }
 
 /**
  * Adds a listener through `add(lease)`: plainly, or under `signal`'s lifetime
- * when the options may carry one (`bbl::js::add_event_listener`).
+ * when the options may carry one (`bbl::js::add_event_listener`). `lease` is
+ * the trailing lease argument, `", <lease>"`, or empty.
  */
 export function listenerAddition(
     signal: string | undefined,
-    add: (lease?: string) => string,
+    add: (lease: string) => string,
 ): string {
     return signal
-        ? `bbl::js::add_event_listener(${signal}, [&](bbl::ListenerLeasePtr listener_lease) { return ${add("std::move(listener_lease)")}; })`
-        : add();
+        ? `bbl::js::add_event_listener(${signal}, [&](bbl::ListenerLeasePtr listener_lease) { return ${add(", std::move(listener_lease)")}; })`
+        : add("");
 }
 
-/** Pins a listener before options whose `signal` evaluates after it. */
-export function pinListener(
-    context: Pick<Context, "allocateTemporaryCppName" | "emit">,
+/**
+ * An addition's listener and options in evaluation order: options that may
+ * carry a `signal`, which evaluates after the listener, pin it first.
+ */
+export function signalListener(
+    context: ListenerOptionsContext,
+    options: ts.Expression | undefined,
     listener: string,
-): string {
-    const name = context.allocateTemporaryCppName("event_listener");
-    context.emit({
-        kind: "declaration",
-        type: "const auto",
-        name,
-        initializer: listener,
-    });
-    return name;
+): { listener: string; options: ListenerOptions } {
+    return {
+        listener: declaresListenerSignal(context.checker, options)
+            ? pinCpp(context, listener, "event_listener")
+            : listener,
+        options: listenerOptions(context, options, false),
+    };
 }
 
 export function pinDetached(
@@ -637,17 +636,18 @@ export function emitDomEventListener(
         return true;
     }
     const compiled = compileDomCallback(context, callback, family, engine);
-    const listener = declaresListenerSignal(context.checker, call.arguments[2])
-        ? pinListener(context, compiled.cpp)
-        : compiled.cpp;
-    const options = listenerOptions(context, call.arguments[2], false);
+    const { listener, options } = signalListener(
+        context,
+        call.arguments[2],
+        compiled.cpp,
+    );
     context.emit({
         kind: "expression",
         code: `${listenerAddition(
             options.signal,
             (lease) =>
                 `bbl::on_dom_${family}(${prefix}, ${compiled.identity}, ${listener}, ` +
-                `${options.capture}, ${options.once}, ${options.passive}${lease ? `, ${lease}` : ""})`,
+                `${options.capture}, ${options.once}, ${options.passive}${lease})`,
         )};`,
     });
     return true;

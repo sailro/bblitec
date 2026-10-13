@@ -5,7 +5,11 @@ import { IDLE_FUNCTIONS } from "./dom-lowerings.js";
 import { pinDetached } from "./dom-listeners.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { nativeFunctionValue } from "./native-function-values.js";
-import { compileBooleanOptions } from "./option-helpers.js";
+import {
+    compileBooleanOptions,
+    optionalOptionMember,
+    optionalOptionValue,
+} from "./option-helpers.js";
 import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 import { compileWindowMemberCall, isWindowReceiver } from "./window-members.js";
@@ -73,32 +77,26 @@ function compileTimeout(
     lowerer: DataLowerer,
     options: ts.Expression | undefined,
 ): string {
-    const context = lowerer.context;
     let timeout = "0.0";
     if (!options) return timeout;
-    const type = { kind: "optional", inner: { kind: "number" } } as const;
-    compileBooleanOptions(context, lowerer, options, [], {
+    compileBooleanOptions(lowerer.context, lowerer, options, [], {
         subject: "Idle request options",
         member: "idle request option",
         forms: "a represented options record",
         temporary: "idle_option",
         consume: {
             timeout: (value, present) => {
-                const converted = lowerer.compileKnownValueForSink(
-                    value,
-                    type,
-                    options,
+                timeout = optionalOptionValue(
+                    optionalOptionMember(
+                        lowerer,
+                        value,
+                        present,
+                        { kind: "number" },
+                        "idle_timeout",
+                        options,
+                    ),
+                    "0.0",
                 );
-                const stored = context.allocateTemporaryCppName("idle_timeout");
-                context.emit({
-                    kind: "declaration",
-                    type: `const ${context.dataTypes.cppType(type)}`,
-                    name: stored,
-                    initializer: present
-                        ? `${present} ? ${converted} : ${context.dataTypes.cppType(type)}{}`
-                        : converted,
-                });
-                timeout = `(${optionalPresentCpp(stored)} ? *${stored} : 0.0)`;
             },
         },
     });

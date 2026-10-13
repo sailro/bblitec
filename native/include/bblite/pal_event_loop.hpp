@@ -964,7 +964,7 @@ void dispatch_platform_event(EventLoop& loop, Listeners& listeners, Event& event
         event);
 }
 
-/** The same, for listeners that take no payload (`ended`, `play`). */
+/** The same, for listeners that take no event. */
 template <typename Listeners> void dispatch_platform_event(EventLoop& loop, Listeners& listeners) {
     listeners.dispatch_with(
         [&](auto& listener) { loop.dispatch_callback([callback = listener] { callback(); }); });

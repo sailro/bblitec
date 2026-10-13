@@ -6,13 +6,18 @@ import {
 } from "./dom-lowerings.js";
 import { domAudioHandleKind, type DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { compileBooleanOptions } from "./option-helpers.js";
+import {
+    compileBooleanOptions,
+    optionalOptionMember,
+    optionalOptionValue,
+} from "./option-helpers.js";
+import { pinCpp } from "./evaluation-order.js";
 import {
     declaredInDomLibrary,
     resolvedDomApi,
     resolvedSymbol,
 } from "./symbols.js";
-import { optionalPresentCpp, type Value } from "./types.js";
+import type { Value } from "./types.js";
 import { MEDIA_STREAM_TRACK_LISTS } from "./web-audio-members.js";
 import {
     webAudioMemberAssign,
@@ -31,8 +36,6 @@ const STREAM: DataType = { kind: "handle", handle: "media-stream" };
 const TRACK: DataType = { kind: "handle", handle: "media-stream-track" };
 const TRACKS: DataType = { kind: "vector", element: TRACK };
 
-type Context = DataLowerer["context"];
-
 function reachMediaStreams(
     context: Pick<LoweringServices, "reachFeature" | "reachJsData">,
     node: ts.Node,
@@ -47,18 +50,6 @@ export function mediaStreamValue(cpp: string): Value {
 
 function trackValue(cpp: string): Value {
     return { kind: "media-stream-track", cpp, dataType: TRACK, impure: true };
-}
-
-/** An operand evaluated into a temporary, in source order. */
-function pinned(context: Context, cpp: string, label: string): string {
-    const name = context.allocateTemporaryCppName(label);
-    context.emit({
-        kind: "declaration",
-        type: "const auto",
-        name,
-        initializer: cpp,
-    });
-    return name;
 }
 
 /** `new MediaStream(...)` and `new MediaRecorder(stream, options)`. */
@@ -90,7 +81,7 @@ export function compileMediaStreamNew(
             node,
             "MediaRecorder takes a stream and an optional options record.",
         );
-    const stream = pinned(
+    const stream = pinCpp(
         context,
         lowerer.compileForSink(first, STREAM),
         "recorder_stream",
@@ -104,27 +95,17 @@ export function compileMediaStreamNew(
             temporary: "recorder_option",
             consume: {
                 mimeType: (value, present) => {
-                    const type = {
-                        kind: "optional",
-                        inner: { kind: "string" },
-                    } as const;
-                    const converted = lowerer.compileKnownValueForSink(
-                        value,
-                        type,
-                        second,
+                    mimeType = optionalOptionValue(
+                        optionalOptionMember(
+                            lowerer,
+                            value,
+                            present,
+                            { kind: "string" },
+                            "recorder_mime_type",
+                            second,
+                        ),
+                        "std::string()",
                     );
-                    const cppType = context.dataTypes.cppType(type);
-                    const held =
-                        context.allocateTemporaryCppName("recorder_mime_type");
-                    context.emit({
-                        kind: "declaration",
-                        type: `const ${cppType}`,
-                        name: held,
-                        initializer: present
-                            ? `${present} ? ${cppType}{${converted}} : ${cppType}{}`
-                            : converted,
-                    });
-                    mimeType = `(${optionalPresentCpp(held)} ? std::string(*${held}) : std::string())`;
                 },
             },
         });
@@ -245,7 +226,7 @@ export function compileMediaStreamMethodCall(
     reachMediaStreams(context, call);
     const owner = context.compileValue(callee.expression);
     const run = (present: Value): Value | undefined => {
-        const receiver = pinned(context, present.cpp, "media_receiver");
+        const receiver = pinCpp(context, present.cpp, "media_receiver");
         return lower(lowerer, call, receiver, method);
     };
     // `a?.b.stream.getTracks()` continues the chain `?.` started.
@@ -281,7 +262,7 @@ export function emitMediaStreamAssignment(
             "Only `track.enabled = value` writes a MediaStreamTrack natively.",
         );
     reachMediaStreams(context, expression);
-    const track = pinned(
+    const track = pinCpp(
         context,
         lowerer.compileForSink(left.expression, TRACK),
         "media_track",
@@ -351,7 +332,7 @@ export function compileCanvasCaptureStream(
         return undefined;
     context.expectArgumentCount(call, 0, 1);
     reachMediaStreams(context, call);
-    const canvas = pinned(context, element.cpp, "captured_canvas");
+    const canvas = pinCpp(context, element.cpp, "captured_canvas");
     const rate = call.arguments[0]
         ? lowerer.compileForSink(call.arguments[0], {
               kind: "optional",
@@ -378,7 +359,7 @@ function uninhabitedMember(
     const type = owner.dataType;
     const name = type?.kind === "uninhabited-object" ? type.name : "object";
     reachMediaStreams(context, node);
-    const receiver = pinned(context, owner.cpp, "uninhabited_receiver");
+    const receiver = pinCpp(context, owner.cpp, "uninhabited_receiver");
     const label = context.cppString(`${name}.${member}`);
     if (!result)
         return {

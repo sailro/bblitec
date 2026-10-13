@@ -126,21 +126,15 @@ struct ListenerNames {
     bool click = false;
     std::vector<std::string> events;
 };
-struct ClipboardWrite final : CompletionEvent {
-    std::string text;
+struct PageFullscreen;
+/** Window-thread work a realm requests (`submit_window_request`). */
+using WindowWork = std::function<std::string(SDL_Window*, PageFullscreen&)>;
+/** One request on the Window thread, then its failure (empty on success) back to the realm. */
+struct WindowRequest final : CompletionEvent {
+    WindowWork perform;
     std::string error;
-    ClipboardWrite(std::uint64_t id, std::string value)
-        : CompletionEvent(id), text(std::move(value)) {}
-};
-/**
- * The window state a page fullscreen request or exit asks for (none keeps it, ordered after
- * earlier requests), and the platform's failure.
- */
-struct FullscreenRequest final : CompletionEvent {
-    std::optional<bool> fullscreen;
-    std::string error;
-    FullscreenRequest(std::uint64_t id, std::optional<bool> value)
-        : CompletionEvent(id), fullscreen(value) {}
+    WindowRequest(std::uint64_t id, WindowWork work)
+        : CompletionEvent(id), perform(std::move(work)) {}
 };
 /** The display ended page fullscreen itself: Escape, or the system left window fullscreen. */
 struct WindowFullscreenExit final : ExternalEvent {};
@@ -173,6 +167,8 @@ struct DocumentSnapshot {
     bool focus_visible = true;
     UiElementHandle text_selection{};
     std::uint64_t text_selection_revision = 0;
+    /** The realm's scrollIntoView requests since the last published snapshot. */
+    std::vector<std::pair<UiElementHandle, UiScrollIntoView>> scroll_requests;
     std::set<std::string> dom_event_types;
     std::set<std::uint32_t> dom_pointer_elements;
     /** The realm's pointer capture state, which the display targets input by. */
@@ -185,8 +181,6 @@ struct LayoutElement {
     UiContentBox content_box;
     /** Computed style, for an element the realm requested it of. */
     UiComputedStyle style;
-    /** `UiElementRecord::pointer_states` the update styled it with. */
-    std::uint8_t pointer_states = 0;
     [[nodiscard]] bool operator==(const LayoutElement&) const = default;
 };
 
@@ -307,8 +301,8 @@ struct WindowServices final : CanvasProvider {
     std::string capture_failure;
     std::condition_variable wake;
     std::unique_ptr<DocumentSnapshot> pending;
-    std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
-    std::vector<std::unique_ptr<FullscreenRequest>> fullscreen_requests;
+    /** Requests the Window thread performs in submission order. */
+    std::vector<std::unique_ptr<WindowRequest>> window_requests;
     /** The realm's pending message box, answered in place; guarded by `mutex`. */
     std::shared_ptr<MessageBoxRequest> message_box;
     std::uint64_t requested = 0, completed = 0;
@@ -318,6 +312,11 @@ struct WindowServices final : CanvasProvider {
      * presents. Mouse motion remains ordered without blocking presentation. */
     std::uint64_t input_posted = 0, input_handled = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
+    /**
+     * `UiElementRecord::pointer_states` by element as the display's last update styled them,
+     * apart from `layout` so a hover change copies no layout; replaced only when one changes.
+     */
+    std::shared_ptr<const std::vector<std::uint8_t>> pointer_states;
     std::atomic<bool> screen_requested = false;
     std::atomic<bool> reload_requested = false;
     std::shared_ptr<WindowLocation> location;
@@ -427,18 +426,17 @@ struct PageFullscreen {
     }
 };
 
-/** Applies the realm's fullscreen requests in order and posts each one's completion. */
-void serve_fullscreen_requests(WindowServices& services, SDL_Window* window,
-                               PageFullscreen& fullscreen) {
-    std::vector<std::unique_ptr<FullscreenRequest>> requests;
+/** Performs the realm's Window requests in order and posts each one's completion. */
+void serve_window_requests(WindowServices& services, SDL_Window* window,
+                           PageFullscreen& fullscreen) {
+    std::vector<std::unique_ptr<WindowRequest>> requests;
     {
         std::lock_guard lock(services.mutex);
-        requests.swap(services.fullscreen_requests);
+        requests.swap(services.window_requests);
     }
     for (auto& request : requests) {
-        if (request->fullscreen)
-            request->error =
-                *request->fullscreen ? fullscreen.enter(window) : fullscreen.leave(window);
+        // The work and what it captured end on this thread, before the completion is posted.
+        request->error = std::exchange(request->perform, {})(window, fullscreen);
         services.inbox->post(std::move(request));
     }
 }
@@ -638,6 +636,9 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
  * as input the display waits on (WindowServices::post_input). */
 void apply_document(Engine& engine, DocumentSnapshot snapshot,
                     const std::function<void(std::unique_ptr<ExternalEvent>)>& post_input) {
+    engine.ui_scroll_requests.insert(engine.ui_scroll_requests.end(),
+                                     snapshot.scroll_requests.begin(),
+                                     snapshot.scroll_requests.end());
     if (snapshot.text_updates) {
         for (auto& update : *snapshot.text_updates)
             ui_set_text(engine, update.element, std::move(update.text));
@@ -885,27 +886,47 @@ void window_location_assign(const std::string& target, const std::string& curren
                                      "NotSupportedError");
     window_location_set_search(destination.search());
 }
-js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
-    auto& doc = current_document();
+namespace {
+/**
+ * Hands `perform` to the Window thread after earlier requests; `settle` runs on this realm with
+ * its failure, empty on success.
+ */
+void submit_window_request(WindowWork perform, std::function<void(const std::string&)> settle) {
+    auto& host = *current_document().host;
     auto& loop = EventLoop::current();
-    js::Promise<js::PromiseVoid> result;
-    const auto id = loop.register_completion([result](std::unique_ptr<ExternalEvent> event) {
-        const auto* completion = dynamic_cast<const ClipboardWrite*>(event.get());
-        if (!completion)
-            throw std::logic_error("Incorrect clipboard completion payload.");
-        if (completion->error.empty())
-            result.resolve(js::PromiseVoid{});
-        else
-            result.reject(std::make_exception_ptr(std::runtime_error(completion->error)));
-    });
+    const auto id = loop.register_completion(
+        [settle = std::move(settle)](std::unique_ptr<ExternalEvent> event) {
+            const auto* completion = dynamic_cast<const WindowRequest*>(event.get());
+            if (!completion)
+                throw std::logic_error("Incorrect Window request completion payload.");
+            settle(completion->error);
+        });
     try {
-        auto request = std::make_unique<ClipboardWrite>(id, std::move(text));
-        std::lock_guard lock(doc.host->mutex);
-        if (doc.host->stopping)
+        auto request = std::make_unique<WindowRequest>(id, std::move(perform));
+        std::lock_guard lock(host.mutex);
+        if (host.stopping)
             throw WorkerTerminated{};
-        doc.host->clipboard_writes.push_back(std::move(request));
+        host.window_requests.push_back(std::move(request));
     } catch (...) {
         loop.cancel_completion(id);
+        throw;
+    }
+}
+} // namespace
+js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
+    js::Promise<js::PromiseVoid> result;
+    try {
+        submit_window_request(
+            [text = std::move(text)](SDL_Window*, PageFullscreen&) {
+                return SDL_SetClipboardText(text.c_str()) ? std::string() : SDL_GetError();
+            },
+            [result](const std::string& error) {
+                if (error.empty())
+                    result.resolve(js::PromiseVoid{});
+                else
+                    result.reject(std::make_exception_ptr(std::runtime_error(error)));
+            });
+    } catch (...) {
         result.reject(std::current_exception());
     }
     return result;
@@ -933,9 +954,7 @@ namespace {
 /** Fires `fullscreenchange` at the document's listeners in its own task. */
 void queue_fullscreen_change() {
     EventLoop::current().post([] {
-        auto& loop = EventLoop::current();
-        current_document().fullscreen_listeners.dispatch_with(
-            [&](auto& listener) { loop.dispatch_callback([callback = listener] { callback(); }); });
+        dispatch_platform_event(EventLoop::current(), current_document().fullscreen_listeners);
     });
 }
 /** The display ended page fullscreen: the document fully exits it. */
@@ -952,25 +971,13 @@ void exit_page_fullscreen() {
  */
 void request_window_fullscreen(std::optional<bool> fullscreen,
                                std::function<void(const std::string&)> settle) {
-    auto& host = *current_document().host;
-    auto& loop = EventLoop::current();
-    const auto id = loop.register_completion(
-        [settle = std::move(settle)](std::unique_ptr<ExternalEvent> event) {
-            const auto* completion = dynamic_cast<const FullscreenRequest*>(event.get());
-            if (!completion)
-                throw std::logic_error("Incorrect fullscreen completion payload.");
-            settle(completion->error);
-        });
-    try {
-        auto request = std::make_unique<FullscreenRequest>(id, fullscreen);
-        std::lock_guard lock(host.mutex);
-        if (host.stopping)
-            throw WorkerTerminated{};
-        host.fullscreen_requests.push_back(std::move(request));
-    } catch (...) {
-        loop.cancel_completion(id);
-        throw;
-    }
+    submit_window_request(
+        [fullscreen](SDL_Window* window, PageFullscreen& page) {
+            if (!fullscreen)
+                return std::string();
+            return *fullscreen ? page.enter(window) : page.leave(window);
+        },
+        std::move(settle));
 }
 } // namespace
 js::Promise<js::PromiseVoid> window_request_fullscreen(UiElementHandle element) {
@@ -1105,6 +1112,7 @@ void update_window_document(bool wait) {
     if (host.stopping)
         throw WorkerTerminated{};
     if (snapshot) {
+        snapshot->scroll_requests = std::exchange(doc.engine.ui_scroll_requests, {});
         host.pending = std::move(snapshot);
         const auto revision = ++host.requested;
         doc.published_revision = doc.engine.ui_revision;
@@ -1128,7 +1136,6 @@ void update_window_document(bool wait) {
             record.client_rect = laid.rectangle;
             record.content_box = laid.content_box;
             record.computed_style = laid.style;
-            record.pointer_states = laid.pointer_states;
         }
         for (const auto& [index, canvas] : doc.canvases) {
             if (index >= layout->elements.size())
@@ -1198,19 +1205,17 @@ const void* window_screen_identity() { return std::addressof(current_document().
 namespace {
 void adopt_window_pointer_states() {
     auto& doc = current_document();
-    std::shared_ptr<const LayoutSnapshot> layout;
+    std::shared_ptr<const std::vector<std::uint8_t>> states;
     {
         const std::lock_guard lock(doc.host->mutex);
         if (doc.host->stopping)
             throw WorkerTerminated{};
-        layout = doc.host->layout;
+        states = doc.host->pointer_states;
     }
-    // Only pointer states: rectangles and styles still adopt with their
-    // published document in update_window_document.
+    // Rectangles and styles adopt with their published document in update_window_document.
     for (std::size_t index = 0;
-         layout && index < layout->elements.size() && index < doc.engine.ui_elements.size();
-         ++index)
-        doc.engine.ui_elements[index].pointer_states = layout->elements[index].pointer_states;
+         states && index < states->size() && index < doc.engine.ui_elements.size(); ++index)
+        doc.engine.ui_elements[index].pointer_states = (*states)[index];
 }
 } // namespace
 UiClientRect window_element_size(UiElementHandle element) {
@@ -1548,6 +1553,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             PlatformInputReplay input_replay;
             LayoutSnapshot next_layout;
             std::shared_ptr<const LayoutSnapshot> layout;
+            std::vector<std::uint8_t> next_pointer_states;
+            std::shared_ptr<const std::vector<std::uint8_t>> pointer_states;
             const auto canvas_at = [&](double x, double y) -> UiElementHandle {
                 for (std::size_t index = 0;
                      index < display.ui_elements.size() && index < layout->elements.size();
@@ -1626,14 +1633,22 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 }
                 next_layout.elements.clear();
                 next_layout.elements.reserve(display.ui_elements.size());
-                for (const auto& record : display.ui_elements)
-                    next_layout.elements.push_back({record.client_rect, record.content_box,
-                                                    record.computed_style, record.pointer_states});
+                next_pointer_states.clear();
+                next_pointer_states.reserve(display.ui_elements.size());
+                for (const auto& record : display.ui_elements) {
+                    next_layout.elements.push_back(
+                        {record.client_rect, record.content_box, record.computed_style});
+                    next_pointer_states.push_back(record.pointer_states);
+                }
                 if (!layout || !layout->equals(next_layout))
                     layout = std::make_shared<LayoutSnapshot>(next_layout);
+                if (!pointer_states || *pointer_states != next_pointer_states)
+                    pointer_states =
+                        std::make_shared<const std::vector<std::uint8_t>>(next_pointer_states);
                 {
                     const std::lock_guard lock(services->mutex);
                     services->layout = layout;
+                    services->pointer_states = pointer_states;
                     services->completed = revision;
                 }
                 services->wake.notify_all();
@@ -1672,21 +1687,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             while (running && !finished) {
                 co_yield true;
                 const double started = cpu_profile ? monotonic_milliseconds() : 0;
-                std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
-                {
-                    std::lock_guard lock(services->mutex);
-                    clipboard_writes.swap(services->clipboard_writes);
-                }
-                for (auto& request : clipboard_writes) {
-                    {
-                        const auto text = std::move(request->text);
-                        if (!SDL_SetClipboardText(text.c_str()))
-                            request->error = SDL_GetError();
-                    }
-                    services->inbox->post(std::move(request));
-                }
+                serve_window_requests(*services, window.get(), page_fullscreen);
                 serve_message_box(*services, window.get());
-                serve_fullscreen_requests(*services, window.get(), page_fullscreen);
                 SDL_Event event;
                 for (;;) {
                     if (!poll_sdl_event(&event))
