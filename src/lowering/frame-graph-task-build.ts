@@ -1,4 +1,3 @@
-import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
@@ -7,25 +6,6 @@ import { taskDisposedCpp } from "./frame-graph-task-disposal.js";
 const graphModule = "src/frame-graph/frame-graph.ts";
 const baseModule = "src/frame-graph/render-task-base.ts";
 const effectModule = "src/effect/effect-renderer.ts";
-
-/** The one method `name` of the object literal `owner` initializes `task` with. */
-function taskMethod(
-    context: LoweringContext,
-    owner: ts.FunctionDeclaration,
-    name: string,
-): ts.MethodDeclaration {
-    const method = context
-        .findNodes(owner, (node): node is ts.MethodDeclaration =>
-            ts.isMethodDeclaration(node),
-        )
-        .filter((node) => context.propertyName(node.name) === name);
-    if (method.length !== 1 || !method[0]!.body)
-        return context.contractError(
-            owner,
-            `Expected one task ${name}() method.`,
-        );
-    return method[0]!;
-}
 
 /**
  * `buildFrameGraphTask`: record one task already in a live graph. Native
@@ -78,15 +58,15 @@ export function lowerFrameGraphTaskBuild(
     `,
         "Single task record",
     );
-    const renderRecord = taskMethod(
-        context,
-        context.functionDeclaration(baseModule, "_createAutomaticRenderTask")
-            .declaration,
+    const renderRecord = context.propertyFunction(
+        baseModule,
+        "_createAutomaticRenderTask",
         "record",
-    );
+        { unique: true },
+    ).declaration;
     context.assertStatementShapes(
-        renderRecord.body!,
-        renderRecord.body!.statements,
+        renderRecord.body,
+        renderRecord.body.statements,
         `
         if (task._disposed) {
             throw new Error("RenderTask has been disposed.");
@@ -100,15 +80,15 @@ export function lowerFrameGraphTaskBuild(
         "Render task record",
     );
     if (effectTasks) {
-        const effectRecord = taskMethod(
-            context,
-            context.functionDeclaration(effectModule, "createEffectRenderTask")
-                .declaration,
+        const effectRecord = context.propertyFunction(
+            effectModule,
+            "createEffectRenderTask",
             "record",
-        );
+            { unique: true },
+        ).declaration;
         context.assertStatementShapes(
-            effectRecord.body!,
-            effectRecord.body!.statements,
+            effectRecord.body,
+            effectRecord.body.statements,
             `
             buildRenderTarget(rt, eng);
             task._pipeline = getEffectPipeline(effect, task._targetSignature);

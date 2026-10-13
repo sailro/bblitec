@@ -1,25 +1,8 @@
-import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 
 const gateModule = "src/shadow/csm-refit-gate.ts";
 const cacheModule = "src/shadow/csm-shadow-cache.ts";
 const enableModule = "src/shadow/enable-csm-static-cache.ts";
-
-/** The method `name` of the object literal `owner` returns. */
-function returnedMethod(
-    context: LoweringContext,
-    owner: ts.FunctionDeclaration,
-    name: string,
-): ts.MethodDeclaration {
-    const methods = context
-        .findNodes(owner, (node): node is ts.MethodDeclaration =>
-            ts.isMethodDeclaration(node),
-        )
-        .filter((node) => context.propertyName(node.name) === name);
-    if (methods.length !== 1 || !methods[0]!.body)
-        return context.contractError(owner, `Expected one ${name}() method.`);
-    return methods[0]!;
-}
 
 /**
  * Asserts the pinned refit gate, scheduler and cached render the header
@@ -36,10 +19,15 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
         "new Map<M, CasterSlot>()",
     ])
         context.expectShapeCount(gate, shape, "CSM refit gate state");
-    const sync = returnedMethod(context, gate, "syncCasters");
+    const sync = context.propertyFunction(
+        gateModule,
+        "createCsmRefitGate",
+        "syncCasters",
+        { unique: true },
+    ).declaration;
     context.assertStatementShapes(
-        sync.body!,
-        sync.body!.statements,
+        sync.body,
+        sync.body.statements,
         `
         if (next === casters) {
             return;
@@ -63,8 +51,13 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
     `,
         "CSM refit caster sync",
     );
-    const update = returnedMethod(context, gate, "update");
-    const statements = update.body!.statements;
+    const update = context.propertyFunction(
+        gateModule,
+        "createCsmRefitGate",
+        "update",
+        { unique: true },
+    ).declaration;
+    const statements = update.body.statements;
     if (statements.length !== 26)
         context.contractError(
             update,
@@ -104,10 +97,15 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
         "Number.isFinite(cascadesPerFrame) && cascadesPerFrame > 0 && cascadesPerFrame < count ? Math.floor(cascadesPerFrame) : 0",
         "CSM static refit budget",
     );
-    const arm = returnedMethod(context, scheduler, "arm");
+    const arm = context.propertyFunction(
+        gateModule,
+        "createCsmStaticRefitScheduler",
+        "arm",
+        { unique: true },
+    ).declaration;
     context.assertStatementShapes(
-        arm.body!,
-        arm.body!.statements,
+        arm.body,
+        arm.body.statements,
         `
         waiting.fill(true);
         waitingCount = count;
@@ -115,10 +113,15 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
     `,
         "CSM static refit arm",
     );
-    const take = returnedMethod(context, scheduler, "take");
+    const take = context.propertyFunction(
+        gateModule,
+        "createCsmStaticRefitScheduler",
+        "take",
+        { unique: true },
+    ).declaration;
     context.assertStatementShapes(
-        take.body!,
-        take.body!.statements,
+        take.body,
+        take.body.statements,
         `
         out.length = 0;
         if (waitingCount === 0) {
