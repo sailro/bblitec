@@ -225,6 +225,14 @@ export const webPlatformRecords: readonly RecordSpec[] = [
         members: members([
             ["ok", seamRead(boolean, "response_ok")],
             ["status", seamRead(number, "response_status")],
+            ["statusText", seamRead(string, "response_status_text")],
+            [
+                "arrayBuffer",
+                seamCall(
+                    fn([], promise({ kind: "buffer" })),
+                    "response_array_buffer",
+                ),
+            ],
             ["url", seamRead(string, "response_url")],
             // The headers are the response's own.
             ["headers", reads(record("Headers"), (owner) => owner)],
@@ -409,11 +417,11 @@ export const webPlatformGlobals: ReadonlyMap<string, CallAdapter> = new Map<
     ],
     ["performance.now", { cpp: () => `${PLATFORM}::performance_now()` }],
     [
-        // `fetch(url, init)` with a string or a URL object.
+        // `fetch(url, init?)` with a string or a URL object.
         "fetch",
         {
-            cpp: (argument) =>
-                `${PLATFORM}::fetch(${argument(0)}, ${argument(1)})`,
+            cpp: (argument, call) =>
+                `${PLATFORM}::fetch(${argument(0)}, ${(call.arguments?.length ?? 0) > 1 ? argument(1) : `${PLATFORM}::RequestInit{}`})`,
             parameters: [undefined, record("RequestInit")],
         },
     ],
@@ -660,6 +668,25 @@ export const webAudioRecords: readonly RecordSpec[] = [
             ]),
         ),
     },
+    {
+        // `HTMLAudioElement` as a library probes it (`pal_audio_element.hpp`);
+        // element playback joins this record.
+        pinned: ["HTMLAudioElement", "HTMLMediaElement"],
+        cpp: "pal::AudioElementState",
+        handle: "pal::AudioElement",
+        reference: true,
+        native: true,
+        members: members([
+            [
+                "canPlayType",
+                spelled(
+                    fn([string], string),
+                    (owner, [type]) =>
+                        `${AUDIO}::audio_can_play_type(${owner}, ${type})`,
+                ),
+            ],
+        ]),
+    },
     descriptor("AudioBufferSourceOptions", "pal::AudioBufferSourceInit", [
         ["buffer", field(optional(record("AudioBuffer")))],
     ]),
@@ -674,6 +701,19 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
     string,
     CallAdapter
 >([
+    [
+        // A library probes an element; a source to play is the element's.
+        "Audio",
+        {
+            cpp: (_argument, call) => {
+                if ((call.arguments?.length ?? 0) > 0)
+                    throw new Error(
+                        "A lowered Audio element is constructed without a source.",
+                    );
+                return `${AUDIO}::audio_create_element()`;
+            },
+        },
+    ],
     [
         "GainNode",
         {
@@ -703,4 +743,5 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
 /** The Web Audio classes a pinned library tests for (`typeof AudioBuffer`). */
 export const webAudioClasses: ReadonlyMap<string, RecordShape> = new Map([
     ["AudioBuffer", record("AudioBuffer")],
+    ["Audio", record("HTMLAudioElement")],
 ]);

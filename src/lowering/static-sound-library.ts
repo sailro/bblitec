@@ -13,6 +13,7 @@
  * subscribing to it -- a looped sound started while the context is not
  * running -- refuses at run time.
  */
+import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
     PinnedRecordModel,
@@ -250,12 +251,25 @@ export function staticSoundLibraryModel(
     );
 }
 
-/** The declarations of `roots` in `static-sound.ts`. */
+/** The declarations of `roots`, each in the first family module declaring it. */
 export function staticSoundRoots(
     model: PinnedRecordModel,
     roots: readonly string[] = STATIC_SOUND_ROOTS,
 ): PinnedCallable[] {
-    return roots.map((name) => model.functionDeclaration(STATIC_SOUND, name));
+    return roots.map((name) => {
+        const module = STATIC_SOUND_MODULES.find((candidate) =>
+            model.typed
+                .sourceFile(candidate)
+                .statements.some(
+                    (statement) =>
+                        ts.isFunctionDeclaration(statement) &&
+                        statement.name?.text === name,
+                ),
+        );
+        if (!module)
+            throw new Error(`No static-sound module declares '${name}'.`);
+        return model.functionDeclaration(module, name);
+    });
 }
 
 /**
@@ -271,6 +285,9 @@ export function staticSoundLibraryHeader(
     const { declarations, definitions } = model.lower(
         staticSoundRoots(model, roots),
     );
+    // Every struct's members, so the generic instances they name exist.
+    for (const name of STATIC_SOUND_RECORDS)
+        if (!model.isGenericRecord(name)) model.record(name).members();
     const emitted = [
         ...STATIC_SOUND_RECORDS,
         ...model.instantiatedRecords(),
@@ -286,6 +303,7 @@ export function staticSoundLibraryHeader(
         "bblite/audio_types.hpp",
         "bblite/pal_audio.hpp",
         "bblite/pal_audio_async.hpp",
+        "bblite/pal_audio_element.hpp",
         "bblite/web_platform.hpp",
         ...model.includes,
     ];

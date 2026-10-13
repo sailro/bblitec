@@ -341,6 +341,40 @@ interface ModuleVariable {
 const nullishFlags =
     ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
 
+/** Whether a pattern has a `^` or `$` assertion (outside classes and escapes). */
+function hasLineAnchor(source: string): boolean {
+    let inClass = false;
+    for (let index = 0; index < source.length; index++) {
+        const unit = source[index]!;
+        if (unit === "\\") {
+            index++;
+            continue;
+        }
+        if (inClass) {
+            if (unit === "]") inClass = false;
+            continue;
+        }
+        if (unit === "[") {
+            inClass = true;
+            // A leading `^` negates the class.
+            if (source[index + 1] === "^") index++;
+            continue;
+        }
+        if (unit === "^" || unit === "$") return true;
+    }
+    return false;
+}
+
+/**
+ * A `RegExp`: the entry compiler's own runtime regular expression
+ * (`bbl::js::RegExp`), empty while absent.
+ */
+const regExpShape: RecordShape = {
+    kind: "native",
+    cpp: "bbl::js::RegExp",
+    nullable: true,
+};
+
 /** The native namespace of a module's internal functions. */
 function detailNamespace(module: string): string {
     // `_matrix-allocator.ts` is internal by its underscore; the native
@@ -959,6 +993,14 @@ export class PinnedRecordModel {
             if (library && name === "Float64Array")
                 return { kind: "typed", element: "f64" };
             if (library && name === "DataView") return { kind: "dataview" };
+            if (library && name === "RegExp") return regExpShape;
+            // A match's captures: unmatched groups read as empty strings,
+            // as the runtime's RegExp reports them.
+            if (
+                library &&
+                (name === "RegExpMatchArray" || name === "RegExpExecArray")
+            )
+                return { kind: "array", element: { kind: "string" } };
             if (library && name === "ArrayLike") {
                 const [element] = argumentsOf();
                 if (!element || !(element.flags & ts.TypeFlags.NumberLike))
@@ -1061,6 +1103,20 @@ export class PinnedRecordModel {
                     ),
                 };
             }
+            // A dictionary (`{ [key: string]: string }`): a Map by key, whose
+            // missing keys read `undefined` (noUncheckedIndexedAccess).
+            const indexes = this.checker.getIndexInfosOfType(type);
+            if (
+                type.getProperties().length === 0 &&
+                signatures.length === 0 &&
+                indexes.length === 1 &&
+                indexes[0]!.keyType.flags & ts.TypeFlags.String
+            )
+                return {
+                    kind: "map",
+                    key: { kind: "string" },
+                    value: this.shapeOf(indexes[0]!.type, site),
+                };
             if (type.getProperties().length === 0 && signatures.length === 0)
                 return { kind: "object" };
             // One arm of a discriminated record union (`TextDataUpdate`
@@ -5857,9 +5913,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 // (a scratch matrix) is one object for the realm.
                 if (
                     declaration.initializer &&
-                    ts.isNewExpression(
+                    (ts.isNewExpression(
                         this.skipParentheses(declaration.initializer),
-                    )
+                    ) ||
+                        this.model.declaredShape(
+                            this.checker.getTypeAtLocation(declaration.name),
+                            declaration,
+                        ).kind === "map")
                 ) {
                     const variable = this.model.variable(declaration, (shape) =>
                         this.convert(declaration.initializer!, shape),
@@ -6633,6 +6693,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             }
             case "record":
                 return this.keyedMemberRead(node, shape.name, owner);
+            case "map":
+                // A dictionary's entry, absent for a missing key.
+                if (stripOptional(shape.key).kind !== "string")
+                    return this.refuse(
+                        node,
+                        "Pinned element read of a non-dictionary map.",
+                    );
+                return this.narrowed(
+                    this.collectionResult(
+                        `${owner}.get_owned(${this.convert(node.argumentExpression, shape.key)})`,
+                        shape.value,
+                    ),
+                    optionalOf(shape.value),
+                    node,
+                );
             default:
                 return this.refuse(node, "Pinned element read of a non-array.");
         }
@@ -8281,6 +8356,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "repeat":
                 arity(1);
                 return `bbl::js::string_repeat(${receiver()}, ${this.value(first!)})`;
+            case "match": {
+                // String.prototype.match over the runtime's RegExp: the first
+                // match's captures, or every match under `g` (lastIndex
+                // reset first); null when nothing matches.
+                arity(1);
+                const pattern = this.skipParentheses(first!);
+                const expression = ts.isRegularExpressionLiteral(pattern)
+                    ? this.regularExpression(pattern)
+                    : stripOptional(this.shapeAt(pattern)).kind === "native" &&
+                        this.cpp(stripOptional(this.shapeAt(pattern))) ===
+                            this.cpp(regExpShape)
+                      ? this.value(pattern)
+                      : this.refuse(first!, "Pinned match takes a RegExp.");
+                return `[&](const std::string& subject) { return (${expression}).match(subject); }(${receiver()})`;
+            }
             case "trim":
                 arity(0);
                 return `bbl::js::string_trim(${receiver()})`;
@@ -8365,6 +8455,45 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     /**
+     * `new RegExp(pattern, flags?)` over the runtime's RegExp: a pattern
+     * computed at run time, flags known at generation (`g` and `i`; a `u`
+     * pattern is translated at generation, which a computed one cannot be).
+     */
+    private regExpConstruction(
+        node: ts.NewExpression,
+        to: RecordShape,
+    ): string {
+        const [pattern, flagsNode] = node.arguments ?? [];
+        if (!pattern || (node.arguments?.length ?? 0) > 2)
+            return this.refuse(
+                node,
+                "Pinned RegExp takes a pattern and optional flags.",
+            );
+        const flags =
+            flagsNode === undefined
+                ? ""
+                : ts.isStringLiteralLike(this.skipParentheses(flagsNode))
+                  ? (this.skipParentheses(flagsNode) as ts.StringLiteralLike)
+                        .text
+                  : this.refuse(
+                        flagsNode,
+                        "Pinned RegExp flags must be a string literal.",
+                    );
+        for (const flag of flags)
+            if (flag !== "g" && flag !== "i")
+                return this.refuse(
+                    flagsNode ?? node,
+                    `Pinned RegExp constructors support the g and i flags, not '${flag}'.`,
+                );
+        return this.coerce(
+            `bbl::js::RegExp(${this.convert(pattern, { kind: "string" })}, ${flags.includes("g")}, ${flags.includes("i")})`,
+            regExpShape,
+            to,
+            node,
+        );
+    }
+
+    /**
      * A regular expression literal as the runtime's JavaScript `RegExp`:
      * its source and its global and case-insensitive flags. Other flags
      * refuse.
@@ -8375,7 +8504,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const source = text.slice(1, slash);
         const flags = text.slice(slash + 1);
         for (const flag of flags)
-            if (flag !== "g" && flag !== "i")
+            if (
+                flag !== "g" &&
+                flag !== "i" &&
+                // `m` changes only what `^` and `$` match.
+                !(flag === "m" && !hasLineAnchor(source))
+            )
                 return this.refuse(
                     node,
                     `Pinned regular expression flag '${flag}'.`,
@@ -8687,6 +8821,32 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             : value;
     }
 
+    /** A dictionary literal: its entries set in source order. */
+    private dictionaryLiteral(
+        node: ts.ObjectLiteralExpression,
+        shape: Extract<RecordShape, { kind: "map" }>,
+    ): string {
+        if (stripOptional(shape.key).kind !== "string")
+            return this.refuse(node, "Pinned dictionary keyed by non-strings.");
+        const map = this.temporary("dictionary");
+        const entries = node.properties.map((property) => {
+            if (
+                !ts.isPropertyAssignment(property) ||
+                !(
+                    ts.isIdentifier(property.name) ||
+                    ts.isStringLiteral(property.name) ||
+                    ts.isNumericLiteral(property.name)
+                )
+            )
+                return this.refuse(
+                    property,
+                    "Pinned dictionary literals take named entries only.",
+                );
+            return `${map}.set(std::string(${stringLiteral(property.name.text)}), ${this.convert(property.initializer, shape.value)});`;
+        });
+        return `[&] { ${this.cpp(shape)} ${map}{}; ${entries.join(" ")} return ${map}; }()`;
+    }
+
     private objectLiteral(
         node: ts.ObjectLiteralExpression,
         to: RecordShape,
@@ -8724,6 +8884,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 );
             return "std::make_shared<bbl::pinned::PlainObject>()";
         }
+        if (shape.kind === "map") return this.dictionaryLiteral(node, shape);
         if (shape.kind === "variant") {
             const records = shape.members.filter(
                 (member) => member.kind === "record",
@@ -8868,6 +9029,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         }
         // A platform class the schema constructs (`new URL(a, base)`).
         const library = this.libraryName(node.expression);
+        if (library === "RegExp") return this.regExpConstruction(node, to);
         const constructed =
             library !== undefined
                 ? this.model.schema.constructors?.get(library)

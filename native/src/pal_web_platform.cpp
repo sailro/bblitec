@@ -9,6 +9,7 @@
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_http.hpp>
 #include <bblite/pal_image_bitmap.hpp>
+#include <bblite/pal_packaged_responses.hpp>
 #include <bblite/web_platform.hpp>
 
 #include <memory>
@@ -52,14 +53,23 @@ js::Promise<Result> wrapped(const js::Promise<Source>& source, Wrap wrap) {
 // ── fetch ──────────────────────────────────────────────────────────────
 
 js::Promise<Response> fetch(const std::string& url, const RequestInit& init) {
+    const auto wrap = [](const pal::HttpResponse& response) {
+        return std::make_shared<ResponseState>(ResponseState{response, nullptr});
+    };
+    if (auto packaged = pal::fetch_registered_packaged(url)) {
+        if (init.signal && init.signal.aborted())
+            return js::Promise<Response>::rejected(*init.signal.reason());
+        return wrapped<Response>(*packaged, wrap);
+    }
     return wrapped<Response>(
-        pal::fetch_http(url, pal::HttpRequest{"GET", {}, std::nullopt}, init.signal),
-        [](const pal::HttpResponse& response) {
-            return std::make_shared<ResponseState>(ResponseState{response, nullptr});
-        });
+        pal::fetch_http(url, pal::HttpRequest{"GET", {}, std::nullopt}, init.signal), wrap);
 }
 bool response_ok(const Response& response) { return pal::http_response_ok(response->response); }
 double response_status(const Response& response) { return response->response->status; }
+std::string response_status_text(const Response&) { return {}; }
+js::Promise<js::ArrayBuffer> response_array_buffer(const Response& response) {
+    return pal::http_response_buffer(response->response);
+}
 std::string response_url(const Response& response) { return response->response->url; }
 js::Nullable<std::string> response_header(const Response& response, const std::string& name) {
     return response->response->headers.get(name);
