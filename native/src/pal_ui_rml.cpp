@@ -2947,30 +2947,6 @@ void replace_css_identifier(std::string& text, std::string_view identifier,
     }
 }
 
-std::string rml_css_animation_easing(std::string value) {
-    // RmlUi exposes the same animation shorthand, but names its tween curves
-    // differently and does not implement CSS steps(). Translate the browser
-    // timing vocabulary reached by the demos. A linear interpolation across
-    // the platformer's adjacent 49%/50% opacity keys remains an effectively
-    // instantaneous blink while preserving the declared period.
-    std::size_t position = 0;
-    while ((position = value.find("steps(", position)) != std::string::npos) {
-        const std::size_t end = value.find(')', position + 6);
-        if (end == std::string::npos)
-            break;
-        value.replace(position, end - position + 1, "linear-in-out");
-        position += 13;
-    }
-    replace_css_identifier(value, "step-start", "linear-in-out");
-    replace_css_identifier(value, "step-end", "linear-in-out");
-    replace_css_identifier(value, "ease-in-out", "sine-in-out");
-    replace_css_identifier(value, "ease-in", "sine-in");
-    replace_css_identifier(value, "ease-out", "sine-out");
-    replace_css_identifier(value, "ease", "sine-in-out");
-    replace_css_identifier(value, "linear", "linear-in-out");
-    return value;
-}
-
 /**
  * RmlUi's transition-delay and animation-delay replace the delays their shorthand lists, and a CSS
  * shorthand declaration resets its longhands: follow each transition/animation declaration of a
@@ -5027,7 +5003,6 @@ struct UiRmlRuntime {
         replace_all(value, "ui-monospace", css_monospace_family);
         replace_all(value, "monospace", css_monospace_family);
         value = rml_css_font_families(std::move(value), property);
-        value = rml_css_animation_easing(std::move(value));
         value = rml_css_filter_arguments(std::move(value));
         value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
                                     viewport_height / density_ratio, root_font_size, property);
@@ -5059,12 +5034,15 @@ struct UiRmlRuntime {
             name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
             name == "margin-left" || name == "margin-right" || name == "box-shadow" ||
             name == "accent-color" || name == "color-scheme" || name == "text-decoration";
+        // Motion values keep their case (keyframes names) and refuse rather than drop.
+        const bool motion = name == "transition" || name == "animation" ||
+                            name == "transition-delay" || name == "animation-delay";
         const bool accepted = element.SetProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
                                   : value,
                               name));
-        if (checked && !accepted)
+        if ((checked || motion) && !accepted)
             throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
     }
 

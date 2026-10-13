@@ -21,6 +21,7 @@ import {
     visitUiStyleSheetDeclarations,
 } from "../deferred-ui-style.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
+import { unrepresentedUiEasing } from "../ui-easing.js";
 import { uiGradientBackground } from "../ui-gradient-background.js";
 import { supportedUiGridPlacement, supportedUiGridTracks } from "../ui-grid.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
@@ -2072,6 +2073,10 @@ export class UiProjection {
                         "only auto or an opaque literal hex, rgb() or named color is represented",
                     );
                 return;
+            }
+            if (property === "transition" || property === "animation") {
+                const reason = unrepresentedUiEasing(literalValue);
+                if (reason) this.uiStyleRefusal(site, property, reason);
             }
             if (property === "scale") {
                 if (
@@ -5639,6 +5644,8 @@ export class UiProjection {
                 "overflow-wrap",
                 "word-break",
                 "transform-origin",
+                "transition",
+                "animation",
             ].includes(nativeProperty) ||
             isUiLayoutProperty(nativeProperty)
         ) {
