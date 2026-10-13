@@ -42,11 +42,14 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties, dataset, packaged img `src` choices | Compound text/dataset writes, dynamic dataset keys, other property writes; `title` tooltips not rendered |
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
 | Queries | Literal selectors, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements; dynamic selectors (deferred: throw) |
-| Pointer/keyboard | Mouse, multi-touch, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events, pointer capture (deferred: throw) |
+| Pointer/keyboard | Mouse, multi-touch, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events |
 | Events | transitionend, storage, file drags (first file), CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent, `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
 | Forms | Focus/blur, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
 
 - Listener options: `capture`, `once`, `passive`, `signal`; abort removes the listener its add created.
+- Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
+  events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
+  mouse beyond the window.
 - UI handles input before cameras; `preventDefault` suppresses camera propagation. Only the primary touch emits mouse events.
 - `tabIndex` reflects `tabindex`: 0 joins Tab navigation in tree order, negative leaves it; positive values throw
   NotSupportedError. Canvas `tabIndex` reads 0 (keyboard focus targets the SDL surface); other canvas writes refuse.

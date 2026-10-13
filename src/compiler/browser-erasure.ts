@@ -28,6 +28,7 @@ import {
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
 import { customEventDispatchTarget } from "./custom-events.js";
+import { isCanvasPointerCapture } from "./pointer-capture.js";
 import { windowInterfaceTypeof } from "./dom-targets.js";
 import {
     hasOnlyReportingEffects,
@@ -1297,6 +1298,11 @@ export class BrowserErasure {
         ) {
             return false;
         }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            isCanvasPointerCapture(this.context, unwrapped)
+        )
+            return false;
         if (
             ts.isCallExpression(unwrapped) &&
             this.isBrowserOnlyLocalCall(unwrapped)

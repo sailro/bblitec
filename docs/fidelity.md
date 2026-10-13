@@ -30,6 +30,7 @@ anything not listed here must match it.
 | Listener signals | Abort removes only the listener its add created (DOM); Chromium can also remove a same-key re-add until GC |
 | Pointer offsets | `offsetX/Y` equal `clientX/Y`: exact only for the full-window primary canvas |
 | Touch | One finger rotates; two-finger span feeds wheel zoom; the primary contact drives mouse hooks |
+| Pointer capture | Window applications: a capture a pointermove listener sets targets from a later motion packet; pointer lock does not make `setPointerCapture` throw |
 | Skinning | Eight influences reduced to four |
 | Video textures | One frame from Chromium's WebGPU import, baked RGBA8, sampled as 2D |
 | Thin-instance culling | May use the pin's all-active fallback |

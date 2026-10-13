@@ -5,8 +5,12 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/js_error.hpp>
 
+#include <cmath>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <tuple>
 #include <atomic>
@@ -137,13 +141,38 @@ private:
 struct DomEventBatch;
 struct DomTouchContact {
     PlatformMouseEvent pointer;
+    /** The hit path of the contact's press. */
     std::vector<DomEventTarget> path;
+    /** The path its events last targeted: its capture target's while captured. */
+    std::vector<DomEventTarget> target_path;
     bool gesture = false;
 };
 
 inline double touch_wheel_delta_y(double previous, double current) {
     return previous > 0 && current > 0 ? -300 * std::log(current / previous) : 0;
 }
+
+/** The mouse's PointerEvent.pointerId; touch contacts number from 2. */
+inline constexpr double dom_mouse_pointer_id = 1;
+
+/**
+ * Pointer Events capture state where script runs: each pointer's pending
+ * capture target override, and the active pointers with whether each is in
+ * the active buttons state. The mouse is always active. A Window display shares
+ * this record to target the input it prepares, hence the lock.
+ */
+struct DomPointerCaptures {
+    mutable std::mutex mutex;
+    std::map<double, DomEventTarget> pending;
+    std::map<double, bool> active{{dom_mouse_pointer_id, false}};
+
+    [[nodiscard]] std::optional<DomEventTarget> pending_target(double pointer_id) const {
+        const std::lock_guard lock(mutex);
+        const auto found = pending.find(pointer_id);
+        return found == pending.end() ? std::nullopt : std::optional{found->second};
+    }
+};
+
 struct DomInput {
     DomEventListeners<PlatformMouseEvent> pointer;
     DomEventListeners<PlatformKeyboardEvent> keyboard;
@@ -162,6 +191,11 @@ struct DomInput {
     std::function<void()> end_withheld_press;
     std::vector<DomEventTarget> hover_path;
     std::vector<DomEventTarget> pressed_path;
+    std::shared_ptr<DomPointerCaptures> pointer_captures = std::make_shared<DomPointerCaptures>();
+    /** The pointer capture target override per pointer: where prepared input is targeted. */
+    std::map<double, DomEventTarget> capture_overrides;
+    /** The platform holds the mouse for a captured pointer (pal_platform_events). */
+    bool platform_mouse_capture = false;
     std::set<double> suppress_compatibility_mouse;
     std::map<std::pair<std::uint64_t, std::uint64_t>, DomTouchContact> touches;
     bool native_pointer_default = false;
@@ -393,6 +427,38 @@ inline void dispatch_dom_pointer(Engine& engine, const PlatformMouseEvent& event
             event, [](auto& callback, const auto& payload) { callback(payload); }, &engine);
 }
 
+/** Trusted pointer input records its pointer before listeners run: the mouse's
+ * active buttons state, or a touch contact, whose pointerdown implicitly
+ * captures it to its target element. */
+inline void dom_pointer_dispatching(DomPointerCaptures& captures, const PlatformMouseEvent& event) {
+    const auto& state = *event.dom;
+    if (!state.type.starts_with("pointer"))
+        return;
+    const std::lock_guard lock(captures.mutex);
+    if (event.pointer_type == "mouse") {
+        captures.active[event.pointer_id] = event.buttons != 0;
+        return;
+    }
+    if (state.type != "pointerdown")
+        return;
+    captures.active[event.pointer_id] = true;
+    if (state.target.kind == DomEventTargetKind::Element ||
+        state.target.kind == DomEventTargetKind::Canvas)
+        captures.pending[event.pointer_id] = state.target;
+}
+
+/** Implicit release: a pointer's pending capture ends after its pointerup or
+ * pointercancel, and a touch contact stops being an active pointer. */
+inline void dom_pointer_dispatched(DomPointerCaptures& captures, const PlatformMouseEvent& event) {
+    const auto& type = event.dom->type;
+    if (type != "pointerup" && type != "pointercancel")
+        return;
+    const std::lock_guard lock(captures.mutex);
+    captures.pending.erase(event.pointer_id);
+    if (event.pointer_type != "mouse")
+        captures.active.erase(event.pointer_id);
+}
+
 /** One physical input transaction. Only native payloads cross threads. The
  * display checks completion between frames, so callbacks can request layout
  * without deadlocking behind a synchronous input acknowledgement. */
@@ -430,6 +496,12 @@ struct DomEventBatch {
                             if (suppressed.contains(event.pointer_id) &&
                                 (type == "mousedown" || type == "mouseup" || type == "mousemove"))
                                 return;
+                            struct Dispatched {
+                                std::shared_ptr<DomPointerCaptures> captures;
+                                const PlatformMouseEvent& event;
+                                ~Dispatched() { dom_pointer_dispatched(*captures, event); }
+                            } dispatched{engine.dom_input->pointer_captures, event};
+                            dom_pointer_dispatching(*dispatched.captures, event);
                             engine.dom_input->pointer.dispatch(event, invoke, &engine);
                             if (type == "pointerdown" && event.default_prevented)
                                 suppressed.insert(event.pointer_id);
@@ -627,6 +699,15 @@ inline bool dom_target_is_node(const js::Nullable<DomEventTargetValue>& value) {
     return value.has_value() && dom_target_is_node(*value);
 }
 
+/** `ancestor.contains(target)`: Document, Window and other documents' nodes are never contained. */
+inline bool dom_target_within(Engine& engine, UiElementHandle ancestor,
+                              const js::Nullable<DomEventTargetValue>& value) {
+    if (!value.has_value() || value->engine != &engine)
+        return false;
+    return ui_contains(engine, ancestor, dom_target_retained_element(*value));
+}
+#endif
+
 inline std::vector<DomEventTarget> dom_ui_path(const Engine& engine, UiElementHandle target) {
     std::vector<DomEventTarget> path;
     for (; target.value != invalid_handle;
@@ -640,14 +721,104 @@ inline std::vector<DomEventTarget> dom_ui_path(const Engine& engine, UiElementHa
     return path;
 }
 
-/** `ancestor.contains(target)`: Document, Window and other documents' nodes are never contained. */
-inline bool dom_target_within(Engine& engine, UiElementHandle ancestor,
-                              const js::Nullable<DomEventTargetValue>& value) {
-    if (!value.has_value() || value->engine != &engine)
-        return false;
-    return ui_contains(engine, ancestor, dom_target_retained_element(*value));
+/** WebIDL `long` conversion of a pointerId argument. */
+inline double dom_pointer_id(double value) {
+    if (!std::isfinite(value))
+        return 0;
+    constexpr double range = 4294967296.0;
+    double wrapped = std::fmod(std::trunc(value), range);
+    if (wrapped < 0)
+        wrapped += range;
+    return (wrapped >= range / 2 ? wrapped - range : wrapped) + 0.0;
 }
-#endif
+
+/** Node.isConnected of an element that can hold pointer capture; the engine canvas always is. */
+inline bool dom_capture_target_connected(const Engine& engine, DomEventTarget target) {
+    if (target.kind == DomEventTargetKind::Canvas)
+        return true;
+    return target.kind == DomEventTargetKind::Element &&
+           target.element < engine.ui_elements.size() &&
+           ui_is_connected(engine, UiElementHandle{target.element});
+}
+
+/** The event path of a pointer capture target, or the Document's once it left the tree. */
+inline std::vector<DomEventTarget> dom_capture_path(const Engine& engine, DomEventTarget target) {
+    if (target.kind == DomEventTargetKind::Canvas)
+        return dom_canvas_path();
+    if (!dom_capture_target_connected(engine, target))
+        return {DomEventTarget::document(), DomEventTarget::window()};
+    return dom_ui_path(engine, UiElementHandle{target.element});
+}
+
+namespace detail {
+/** The capture state of an element's document, with the pointer named by `pointer_id`. */
+struct PointerCaptureCall {
+    Engine& engine;
+    DomPointerCaptures& captures;
+    std::unique_lock<std::mutex> lock;
+    DomEventTarget target;
+    double pointer_id;
+    bool active_buttons;
+};
+
+inline PointerCaptureCall pointer_capture_call(DomEventTargetValue value, double pointer_id,
+                                               std::string_view method) {
+    auto& engine = dom_target_owner(value);
+    if (value.target.kind != DomEventTargetKind::Element &&
+        value.target.kind != DomEventTargetKind::Canvas)
+        std::rethrow_exception(js::make_error("TypeError", "Illegal invocation"));
+    auto& captures = *dom_input(engine).pointer_captures;
+    std::unique_lock lock(captures.mutex);
+    const auto id = dom_pointer_id(pointer_id);
+    const auto pointer = captures.active.find(id);
+    if (pointer == captures.active.end())
+        throw js::make_dom_exception("Failed to execute '" + std::string(method) +
+                                         "' on 'Element': No active pointer with the given id "
+                                         "is found.",
+                                     "NotFoundError");
+    // A pending target that left the tree no longer holds the pointer.
+    if (const auto pending = captures.pending.find(id);
+        pending != captures.pending.end() && !dom_capture_target_connected(engine, pending->second))
+        captures.pending.erase(pending);
+    return {engine, captures, std::move(lock), value.target, id, pointer->second};
+}
+} // namespace detail
+
+/**
+ * Element.setPointerCapture: NotFoundError for an inactive pointer,
+ * InvalidStateError for a disconnected element or while the pointer is locked;
+ * a pointer without pressed buttons is left uncaptured. The capture targets the
+ * pointer's events from its next one (`dom_process_pointer_capture`).
+ */
+inline void dom_set_pointer_capture(DomEventTargetValue value, double pointer_id) {
+    auto call = detail::pointer_capture_call(value, pointer_id, "setPointerCapture");
+    if (!dom_capture_target_connected(call.engine, call.target))
+        throw js::make_dom_exception("Failed to execute 'setPointerCapture' on 'Element': The "
+                                     "element is not connected.",
+                                     "InvalidStateError");
+    if (call.engine.pointer_locked)
+        throw js::make_dom_exception("Failed to execute 'setPointerCapture' on 'Element': The "
+                                     "pointer is locked.",
+                                     "InvalidStateError");
+    if (call.active_buttons)
+        call.captures.pending[call.pointer_id] = call.target;
+}
+
+/** Element.releasePointerCapture: NotFoundError for an inactive pointer; another element's capture stays. */
+inline void dom_release_pointer_capture(DomEventTargetValue value, double pointer_id) {
+    auto call = detail::pointer_capture_call(value, pointer_id, "releasePointerCapture");
+    const auto pending = call.captures.pending.find(call.pointer_id);
+    if (pending != call.captures.pending.end() && pending->second == call.target)
+        call.captures.pending.erase(pending);
+}
+
+/** Element.hasPointerCapture: whether the element is the pointer's pending capture target. */
+inline bool dom_has_pointer_capture(DomEventTargetValue value, double pointer_id) {
+    auto& engine = dom_target_owner(value);
+    const auto pending =
+        dom_input(engine).pointer_captures->pending_target(dom_pointer_id(pointer_id));
+    return pending == value.target && dom_capture_target_connected(engine, *pending);
+}
 
 /** A boundary event has its own target and path. Sharing a parent does not
  * create a second parent enter/leave event, while over/out still bubble. */
@@ -695,8 +866,61 @@ inline void append_dom_pointer_boundary(DomEventBatch& batch, const PlatformMous
     }
 }
 
+/** gotpointercapture and lostpointercapture bubble and cannot be canceled. */
+inline void append_dom_capture_event(const Engine& engine, DomEventBatch& batch,
+                                     const PlatformMouseEvent& payload, std::string type,
+                                     DomEventTarget target) {
+    batch.add(dom_event(payload, std::move(type), dom_capture_path(engine, target), true, false));
+}
+
+/**
+ * Pointer Events' "process pending pointer capture" ahead of a pointer's
+ * event: lostpointercapture at the previous override (the Document once it
+ * left the tree), then gotpointercapture at the pending target, which becomes
+ * the override. Returns the override's path, which the event then targets.
+ */
+inline std::optional<std::vector<DomEventTarget>>
+dom_process_pointer_capture(Engine& engine, DomEventBatch& batch,
+                            const PlatformMouseEvent& payload) {
+    auto& input = dom_input(engine);
+    auto pending = input.pointer_captures->pending_target(payload.pointer_id);
+    if (pending && !dom_capture_target_connected(engine, *pending))
+        pending.reset();
+    const auto found = input.capture_overrides.find(payload.pointer_id);
+    const auto current =
+        found == input.capture_overrides.end() ? std::nullopt : std::optional{found->second};
+    if (current && current != pending)
+        append_dom_capture_event(engine, batch, payload, "lostpointercapture", *current);
+    if (pending && pending != current)
+        append_dom_capture_event(engine, batch, payload, "gotpointercapture", *pending);
+    if (!pending) {
+        if (found != input.capture_overrides.end())
+            input.capture_overrides.erase(found);
+        return std::nullopt;
+    }
+    input.capture_overrides.insert_or_assign(payload.pointer_id, *pending);
+    return dom_capture_path(engine, *pending);
+}
+
+/** Implicit release after pointerup or pointercancel: the realm clears the
+ * pending capture once that event ran, and lostpointercapture follows it. */
+inline bool dom_release_pointer_capture_after(Engine& engine, DomEventBatch& batch,
+                                              const PlatformMouseEvent& payload) {
+    auto& input = dom_input(engine);
+    const auto found = input.capture_overrides.find(payload.pointer_id);
+    if (found == input.capture_overrides.end())
+        return false;
+    const auto target = found->second;
+    input.capture_overrides.erase(found);
+    append_dom_capture_event(engine, batch, payload, "lostpointercapture", target);
+    return true;
+}
+
 enum class DomPointerAction { Move, Down, Up, Wheel, Leave, Cancel };
 
+/** Mouse input over `path` (the hit test). A captured pointer's events, its
+ * compatibility mouse events and its hover follow the capture target until the
+ * capture ends; boundary events then reach the pointer's position. */
 inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPointerAction action,
                                                         PlatformMouseEvent payload,
                                                         std::vector<DomEventTarget> path) {
@@ -704,14 +928,21 @@ inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPoint
     auto& input = dom_input(engine);
     if (action == DomPointerAction::Leave)
         path.clear();
-    if (action != DomPointerAction::Wheel && action != DomPointerAction::Cancel) {
-        append_dom_pointer_boundary(*batch, payload, input.hover_path, path);
-        input.hover_path = path;
+    auto target = path;
+    if (action != DomPointerAction::Wheel && action != DomPointerAction::Leave)
+        if (auto captured = dom_process_pointer_capture(engine, *batch, payload))
+            target = std::move(*captured);
+    const bool captured_leave =
+        action == DomPointerAction::Leave && input.capture_overrides.contains(payload.pointer_id);
+    if (action != DomPointerAction::Wheel && action != DomPointerAction::Cancel &&
+        !captured_leave) {
+        append_dom_pointer_boundary(*batch, payload, input.hover_path, target);
+        input.hover_path = target;
     }
-    if (path.empty())
+    if (target.empty())
         return batch;
     const auto add = [&](std::string type, bool controls_default = false) {
-        batch->add(dom_event(payload, std::move(type), path), controls_default);
+        batch->add(dom_event(payload, std::move(type), target), controls_default);
     };
     switch (action) {
     case DomPointerAction::Move:
@@ -725,38 +956,45 @@ inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPoint
         add(static_cast<int>(payload.buttons) == mask ? "pointerdown" : "pointermove", true);
         add("mousedown", true);
         if (payload.button == 0)
-            input.pressed_path = path;
+            input.pressed_path = target;
         break;
     }
-    case DomPointerAction::Up:
-        add(payload.buttons == 0 ? "pointerup" : "pointermove");
+    case DomPointerAction::Up: {
+        const bool released = payload.buttons == 0;
+        add(released ? "pointerup" : "pointermove");
+        if (released && dom_release_pointer_capture_after(engine, *batch, payload)) {
+            append_dom_pointer_boundary(*batch, payload, input.hover_path, path);
+            input.hover_path = path;
+        }
         add("mouseup");
         if (payload.button == 0 && !input.pressed_path.empty()) {
             // Click targets the nearest common inclusive ancestor of down/up.
-            for (std::size_t index = 0; index < path.size(); ++index) {
-                if (std::find(input.pressed_path.begin(), input.pressed_path.end(), path[index]) ==
-                    input.pressed_path.end())
+            for (std::size_t index = 0; index < target.size(); ++index) {
+                if (std::find(input.pressed_path.begin(), input.pressed_path.end(),
+                              target[index]) == input.pressed_path.end())
                     continue;
-                if ((path[index].kind == DomEventTargetKind::Element ||
-                     path[index].kind == DomEventTargetKind::Canvas) &&
-                    (!input.can_activate || input.can_activate(path[index])))
+                if ((target[index].kind == DomEventTargetKind::Element ||
+                     target[index].kind == DomEventTargetKind::Canvas) &&
+                    (!input.can_activate || input.can_activate(target[index])))
                     batch->add(dom_event(payload, "click",
                                          std::vector<DomEventTarget>(
-                                             path.begin() + static_cast<std::ptrdiff_t>(index),
-                                             path.end())),
+                                             target.begin() + static_cast<std::ptrdiff_t>(index),
+                                             target.end())),
                                true);
                 break;
             }
             input.pressed_path.clear();
         }
-        if (payload.buttons == 0)
+        if (released)
             batch->released_pointers.push_back(payload.pointer_id);
         break;
+    }
     case DomPointerAction::Wheel:
         add("wheel", true);
         break;
     case DomPointerAction::Cancel:
-        batch->add(dom_event(payload, "pointercancel", path, true, false));
+        batch->add(dom_event(payload, "pointercancel", target, true, false));
+        dom_release_pointer_capture_after(engine, *batch, payload);
         input.pressed_path.clear();
         batch->released_pointers.push_back(payload.pointer_id);
         break;
@@ -766,16 +1004,29 @@ inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPoint
     return batch;
 }
 
-/** Direct touch retains its initial target until release (implicit capture).
- * Contact identity and primary status survive motion, sibling releases and cancel. */
+/** Direct touch: its pointerdown implicitly captures the contact to its target
+ * (`dom_pointer_dispatching`), so later events follow the capture target; a
+ * released capture leaves them at the element under the contact. Contact
+ * identity and primary status survive motion, sibling releases and cancel. */
 inline std::shared_ptr<DomEventBatch> dom_touch_input(Engine& engine, DomPointerAction action,
-                                                      const DomTouchContact& contact) {
+                                                      DomTouchContact& contact) {
     auto batch = std::make_shared<DomEventBatch>();
     const auto& pointer = contact.pointer;
-    const auto& path = contact.path;
     batch->primary_touch = pointer.is_primary;
-    if (path.empty())
+    if (contact.path.empty())
         return batch;
+    auto path = contact.path;
+    if (action != DomPointerAction::Down) {
+        const auto& input = *engine.dom_input;
+        if (auto captured = dom_process_pointer_capture(engine, *batch, pointer))
+            path = std::move(*captured);
+        else if (input.hit_path)
+            path = input.hit_path(pointer.client_x, pointer.client_y);
+        if (path.empty())
+            path = contact.target_path;
+        append_dom_pointer_boundary(*batch, pointer, contact.target_path, path);
+    }
+    contact.target_path = path;
     const auto add = [&](std::string type, bool controls_default = false) {
         batch->add(dom_event(pointer, std::move(type), path), controls_default);
     };
@@ -793,6 +1044,7 @@ inline std::shared_ptr<DomEventBatch> dom_touch_input(Engine& engine, DomPointer
         break;
     case DomPointerAction::Up:
         add("pointerup");
+        dom_release_pointer_capture_after(engine, *batch, pointer);
         if (pointer.is_primary)
             add("mouseup");
         if ((path.front().kind == DomEventTargetKind::Element ||
@@ -802,6 +1054,7 @@ inline std::shared_ptr<DomEventBatch> dom_touch_input(Engine& engine, DomPointer
         break;
     case DomPointerAction::Cancel:
         batch->add(dom_event(pointer, "pointercancel", path, true, false));
+        dom_release_pointer_capture_after(engine, *batch, pointer);
         break;
     default:
         throw std::logic_error("Unsupported direct-touch action.");

@@ -87,7 +87,7 @@ test("retained text nodes, child reads and insertion preserve identity and DOM o
     });
 });
 
-test("unrepresented markup bridges and pointer capture use explicit typed throws", (t) => {
+test("unrepresented markup bridges use explicit typed throws beside native pointer capture", (t) => {
     const source = `
     const host = document.createElement('div'); host.textContent = 'retained';
     let calls = 0, caught = 0;
@@ -95,13 +95,12 @@ test("unrepresented markup bridges and pointer capture use explicit typed throws
     try { host.innerHTML = '<svg><image href="' + value() + '"/></svg>'; }
     catch(error) { if (!error.message.includes('dom:Element.innerHTML.svg-image')) throw error; caught++; }
     function pointer(): number { calls++; return 1; }
+    // The mouse is an active pointer; a detached element cannot capture it.
     try { host.setPointerCapture(pointer()); }
-    catch(error) { if (!error.message.includes('dom:Element.setPointerCapture')) throw error; caught++; }
-    try { host.releasePointerCapture(pointer()); }
-    catch(error) { if (!error.message.includes('dom:Element.releasePointerCapture')) throw error; caught++; }
-    try { host.hasPointerCapture(pointer()); }
-    catch(error) { if (!error.message.includes('dom:Element.hasPointerCapture')) throw error; caught++; }
-    if (calls !== 4 || caught !== 4 || host.textContent !== 'retained') throw new Error('deferred mutation');
+    catch(error) { if (!(error instanceof DOMException) || error.name !== 'InvalidStateError') throw error; caught++; }
+    host.releasePointerCapture(pointer());
+    if (host.hasPointerCapture(pointer())) throw new Error('detached capture');
+    if (calls !== 4 || caught !== 2 || host.textContent !== 'retained') throw new Error('deferred mutation');
     const conditional = document.createElement('div');
     let completed = 0, selectedCalls = 0;
     function selected(): string { selectedCalls++; return 'choice'; }
@@ -119,7 +118,7 @@ test("unrepresented markup bridges and pointer capture use explicit typed throws
         if (!error.message.includes('dom:Element.innerHTML.svg-image')) throw error;
         caught++;
     }
-    if (completed !== 2 || selectedCalls !== 4 || caught !== 6) throw new Error('conditional markup');
+    if (completed !== 2 || selectedCalls !== 4 || caught !== 4) throw new Error('conditional markup');
     const local = { setPointerCapture: (value: number) => value + 1 };
     if (local.setPointerCapture(2) !== 3) throw new Error('authored method');
     globalThis.close();
@@ -133,12 +132,7 @@ test("unrepresented markup bridges and pointer capture use explicit typed throws
     });
     assert.deepEqual(
         new Set(result.manifest.deferredCapabilities?.map((site) => site.id)),
-        new Set([
-            "dom:Element.innerHTML.svg-image",
-            "dom:Element.setPointerCapture",
-            "dom:Element.releasePointerCapture",
-            "dom:Element.hasPointerCapture",
-        ]),
+        new Set(["dom:Element.innerHTML.svg-image"]),
     );
     assert.ok(
         result.manifest.deferredCapabilities?.every(
