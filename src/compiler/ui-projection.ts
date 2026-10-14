@@ -106,6 +106,7 @@ import {
     isImplicitPrimaryCanvasLookup,
     primaryCanvasIds,
 } from "./browser-erasure.js";
+import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredInDomLibrary, declaredSymbol } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
@@ -289,6 +290,7 @@ interface UiProjectionContext extends Pick<
     | "expectSameEngine"
     | "fail"
     | "failAtFile"
+    | "refuseLoweredSite"
     | "hasFeature"
     | "hasPresentationHost"
     | "isCanvasElement"
@@ -640,12 +642,21 @@ export class UiProjection {
             let value =
                 this.context.resolveRecordMember(owner) ??
                 this.context.dataLowerer.compileDataPath(owner, "read");
-            if (!value) {
-                const type = this.context.dataLowerer.dataTypeAt(owner);
-                const inner = type?.kind === "optional" ? type.inner : type;
-                if (inner?.kind === "event-target")
-                    value = this.context.compileValue(owner);
-            }
+            // An event target, also once `instanceof` narrowed the read
+            // itself (`e.target instanceof HTMLElement && e.target.style`):
+            // the member's declared type still names the target.
+            if (
+                !value &&
+                [
+                    this.context.dataLowerer.dataTypeAt(owner),
+                    this.declaredMemberType(owner),
+                ].some(
+                    (type) =>
+                        (type?.kind === "optional" ? type.inner : type)
+                            ?.kind === "event-target",
+                )
+            )
+                value = this.context.compileValue(owner);
             // Tree reads can produce a nullable element directly rather than
             // a stored data path. Its presence and handle share one evaluation.
             if (value?.dataType?.kind === "optional")
@@ -703,6 +714,19 @@ export class UiProjection {
     ): Value<"ui-element"> | undefined {
         const target = this.narrowedTarget(value, expression);
         return target === undefined ? undefined : this.targetElement(target);
+    }
+
+    /** A member read's declared type, before the program's narrowing. */
+    private declaredMemberType(
+        member: ts.PropertyAccessExpression,
+    ): DataType | undefined {
+        const symbol = this.context.checker.getSymbolAtLocation(member.name);
+        return symbol
+            ? this.context.dataTypes.fromTsType(
+                  this.context.checker.getTypeOfSymbol(symbol),
+                  member,
+              )
+            : undefined;
     }
 
     /** The element view of a pinned event target. */
@@ -3860,10 +3884,12 @@ export class UiProjection {
     public validateUiStaticProjection(): void {
         for (const query of this.uiPendingClassQueries) {
             if (query.root.uiStaticId === undefined) {
-                this.context.fail(
+                this.context.refuseLoweredSite(
                     query.site,
                     "Retained UI querySelectorAll requires a statically-known retained root.",
+                    query.site,
                 );
+                continue;
             }
             const descendants = this.uiStaticDescendants(query.root.uiStaticId);
             const unknownClass = [...descendants.elements].some(
@@ -3885,12 +3911,13 @@ export class UiProjection {
                 retainedMatches.length === 0 ||
                 markupMatches.length > 0
             ) {
-                this.context.fail(
+                this.context.refuseLoweredSite(
                     query.site,
                     `Retained UI querySelectorAll('.${query.className}') ` +
                         "requires a complete statically-known retained subtree " +
                         "with at least one matching retained element and no " +
                         "matching innerHTML-only node.",
+                    query.site,
                 );
             }
         }

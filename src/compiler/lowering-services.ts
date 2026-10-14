@@ -669,6 +669,11 @@ export interface LoweringServices {
      * a DOM element receiver refuses once the program reaches retained UI.
      */
     noteErasedElementWrite(receiver: ts.Expression, site: ts.Node): void;
+    /**
+     * Refuses a site after lowering: a survey records it against the site's
+     * statement and continues; generation stops. A cascade traces `subject`.
+     */
+    refuseLoweredSite(site: ts.Node, message: string, subject: ts.Node): void;
     expectArgumentCount(
         call: ts.CallExpression,
         minimum: number,

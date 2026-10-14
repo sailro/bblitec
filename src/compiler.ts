@@ -84,6 +84,7 @@ import {
     type DynamicBindingStorage,
 } from "./compiler/dynamic-binding-storage.js";
 import {
+    activeStorageDemandPlanner,
     isStorageDemand,
     recordStorageCompileAttempt,
     storageDemandPlanningEnabled,
@@ -944,7 +945,10 @@ class Compiler implements LoweringServices {
     public readonly erasedBrowserExpressions = new EmissionSet<number>();
     public readonly erasedBrowserInstrumentation = new EmissionSet<number>();
     /** Erased writes through DOM element receivers, refused with retained UI. */
-    private readonly erasedElementWrites = new EmissionMap<number, ts.Node>();
+    private readonly erasedElementWrites = new EmissionMap<
+        number,
+        { site: ts.Node; element: ts.Expression }
+    >();
     public readonly unwrappedAwaitExpressions = new EmissionSet<number>();
     public readonly localCubemapState: { maxCandidates?: number } =
         emissionRecord({});
@@ -9313,7 +9317,10 @@ class Compiler implements LoweringServices {
         while (owner) {
             const value = this.unwrap(owner);
             if (isElement(owner)) {
-                this.erasedElementWrites.set(site.pos, site);
+                this.erasedElementWrites.set(site.pos, {
+                    site,
+                    element: owner,
+                });
                 return;
             }
             owner =
@@ -9331,12 +9338,26 @@ class Compiler implements LoweringServices {
      */
     private refuseErasedElementWrites(): void {
         if (!this.features.has("ui:rml")) return;
-        const [site] = this.erasedElementWrites.values();
-        if (site)
-            this.fail(
+        for (const { site, element } of this.erasedElementWrites.values())
+            this.refuseLoweredSite(
                 site,
                 "A write through a DOM element that the retained UI does not represent cannot be erased in a program with retained UI.",
+                element,
             );
+    }
+
+    public refuseLoweredSite(
+        site: ts.Node,
+        message: string,
+        subject: ts.Node,
+    ): void {
+        const error = this.refusal(site, message, "unsupported", subject);
+        const survey = activeStorageDemandPlanner()
+            ? undefined
+            : activeSurvey();
+        const statement = ts.findAncestor(site, ts.isStatement);
+        if (!survey || !statement) throw error;
+        survey.refuseLowered(this.checker, statement, error);
     }
 
     public expectArgumentCount(
@@ -9560,14 +9581,23 @@ class Compiler implements LoweringServices {
         message: string,
         reason: CompileError["reason"] = "unsupported",
     ): never {
-        const { file, line, character } = sourceLocation(node);
-        throw new CompileError(
+        throw this.refusal(node, message, reason, node);
+    }
+
+    private refusal(
+        site: ts.Node,
+        message: string,
+        reason: CompileError["reason"],
+        subject: ts.Node,
+    ): CompileError {
+        const { file, line, character } = sourceLocation(site);
+        return new CompileError(
             file === this.sourceFile ? this.options.fileName : file.fileName,
             line,
             character,
             message,
             reason,
-            node,
+            subject,
         );
     }
 

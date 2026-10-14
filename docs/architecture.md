@@ -80,6 +80,8 @@ Paths are relative to `generated/<id>/`.
   from `reachFeature`; explicit `ApplicationRealmRequired` throws remain only for conditional shapes.
 - Erasure never drops an API `dom-lowerings.ts` lists, and an erased method call needs a receiver `isBrowserOwner`
   classifies as browser state; any other receiver refuses.
+- A site refusal decided after lowering (erased element writes, static class queries) goes through `refuseLoweredSite`:
+  a survey records it against the site's statement and continues.
 - Namespace member calls (`N.f`) are rewritten only in `compileCall`. Never in the shared `unwrap`: it would silently
   admit writes and rewrite library namespaces (`Intl.*`).
 - Pinned functions use `lowerPinnedFunction`, selected bodies `lowerPinnedBody`. Plain-record pinned modules (text family)

@@ -247,6 +247,49 @@ test("an error outside statement lowering ends the survey as incomplete", () => 
     assert.deepEqual(report.refusals, []);
 });
 
+test("a site refusal decided after lowering is recorded against its statement", () => {
+    // Erased element writes and static class queries are checked once the
+    // realm has lowered; the survey counts each site and completes.
+    const source = `
+document.body.append(document.createElement("div"));
+const page = document.scrollingElement as HTMLElement;
+page.scrollTop = 4;
+const box = document.createElement("div");
+box.innerHTML = '<span class="item">a</span>';
+document.body.append(box);
+const none = box.querySelectorAll(".missing");
+page.dataset.mark = String(none.length);
+localStorage.setItem("mark", "x");
+`;
+    const fileName = resolve("survey-after-lowering.ts");
+    const { report, result } = surveySource(source, { fileName });
+    assert.equal(report.complete, true, report.terminal);
+    assert.ok(result, "every realm lowered to the end");
+    const erased =
+        "A write through a DOM element that the retained UI does not represent cannot be erased in a program with retained UI.";
+    assert.deepEqual(
+        report.refusals.map((refusal) => [
+            refusal.statement.line,
+            refusal.statement.kind,
+            refusal.message,
+        ]),
+        [
+            [4, "ExpressionStatement", erased],
+            [
+                8,
+                "VariableStatement",
+                "Retained UI querySelectorAll('.missing') requires a complete statically-known retained subtree with at least one matching retained element and no matching innerHTML-only node.",
+            ],
+            [9, "ExpressionStatement", erased],
+        ],
+    );
+    // Generation still stops at the first.
+    assert.throws(
+        () => compileSource(source, { fileName }),
+        /:4:1: A write through a DOM element that the retained UI does not represent/,
+    );
+});
+
 // The survey is a measurement of generation, never a change to it: scenes
 // that generate produce the same bytes under a survey and no census entries,
 // which also proves that refusals decided inside speculative probes are the
