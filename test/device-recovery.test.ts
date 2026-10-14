@@ -91,55 +91,92 @@ test("recovery declines unrepresented callbacks, listeners and options", () => {
     }
 });
 
-test("recovery refuses Window application realms selected by timer polling", () => {
-    const timerSource = `
-        import { createEngine } from "@babylonjs/lite";
+test("Window application realms register recovery anywhere with shared callbacks", () => {
+    const realmSource = `
+        import { createEngine, createSceneContext, enableDeviceLostSceneRecovery, forceWebGpuDeviceLossForTesting, registerScene, startEngine } from "@babylonjs/lite";
         async function main(): Promise<void> {
-            const engine = await createEngine(document.createElement("canvas"));
+            const canvas = document.createElement("canvas");
+            const engine = await createEngine(canvas);
             await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            let lost = 0;
+            enableDeviceLostSceneRecovery(engine, {
+                onLost() { lost++; },
+                onRecovered() { recovered++; },
+                onRecoveryFailed(error) { canvas.dataset.error = error.message; },
+            });
+            let recovered = 0;
+            await registerScene(createSceneContext(engine));
+            await startEngine(engine);
+            const late = () => enableDeviceLostSceneRecovery(engine, { onRecovered() { lost += recovered; } });
+            late().disable();
+            forceWebGpuDeviceLossForTesting(engine);
         }
         void main();
     `;
-    const timer = compileSource(timerSource);
-    assert.ok(timer.manifest.features.includes("platform:window"));
-    assert.match(timer.cpp, /bbl::pal::create_realm_engine/);
-    // The timer selects a Window realm without a source Worker. Recovery
-    // cannot rebuild that realm's presenter-owned graphics device.
-    assert.ok(source.includes("requestAnimationFrame(poll);"));
+    for (const options of [
+        {},
+        { deferredCapabilities: "runtime-throw" },
+    ] as const) {
+        const result = compileSource(realmSource, options);
+        for (const feature of ["platform:window", "engine:device-recovery"])
+            assert.ok(result.manifest.features.includes(feature), feature);
+        assert.deepEqual(result.manifest.deferredCapabilities ?? [], []);
+        assert.equal(
+            result.cpp.match(/bbl::enable_device_lost_scene_recovery\(/g)
+                ?.length,
+            2,
+        );
+        // A loss reaches the callbacks on a later realm turn, through the
+        // live cells they share with the program, including a later `let`.
+        for (const target of ["on_lost", "on_recovered", "on_failed"])
+            assert.match(
+                result.cpp,
+                new RegExp(`->${target} = bbl::js::make_closure\\(`),
+            );
+        assert.match(
+            result.cpp,
+            /->on_recovered = bbl::js::make_closure\([^\n]*_recovered\}/,
+        );
+        assert.match(result.cpp, /bbl::disable_device_recovery\(/);
+        assert.match(result.cpp, /bbl::force_device_loss\(/);
+    }
+    // The entry's callbacks borrow its frame and join the continuation.
     assert.throws(
         () =>
-            compileSource(
-                source.replace(
-                    "requestAnimationFrame(poll);",
-                    "setTimeout(poll, 0);",
-                ),
-                { fileName: sourcePath },
-            ),
-        /Device recovery does not represent Window\/worker application realms or shared offscreen device ownership/,
-    );
-});
-
-test("recovery also refuses applications with explicit workers", () => {
-    const directory = resolve("artifacts/device-recovery-worker-refusal");
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "worker.ts"), "self.close();");
-    assert.throws(
-        () =>
-            compileSource(
-                `
-                import { createEngine, enableDeviceLostSceneRecovery } from "@babylonjs/lite";
-                const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
-                worker.terminate();
+            compileSource(`
+                import { createEngine, createSceneContext, enableDeviceLostSceneRecovery, registerScene, startEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
-                    const engine = await createEngine(document.createElement("canvas"));
+                    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+                    await registerScene(createSceneContext(engine));
+                    await startEngine(engine);
                     enableDeviceLostSceneRecovery(engine);
                 }
                 void main();
-            `,
-                { fileName: join(directory, "entry.ts") },
-            ),
-        /Device recovery does not represent Window\/worker application realms or shared offscreen device ownership/,
+            `),
+        /Device recovery registration requires unconditional construction before engine startup/,
     );
+});
+
+test("recovery lowers beside explicit workers", () => {
+    const directory = resolve("artifacts/device-recovery-worker-realm");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        import { createEngine, enableDeviceLostSceneRecovery } from "@babylonjs/lite";
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+        worker.terminate();
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.createElement("canvas"));
+            enableDeviceLostSceneRecovery(engine);
+        }
+        void main();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    for (const feature of ["platform:workers", "engine:device-recovery"])
+        assert.ok(result.manifest.features.includes(feature), feature);
+    assert.match(result.cpp, /bbl::enable_device_lost_scene_recovery\(/);
 });
 
 test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract drift", () => {

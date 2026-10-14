@@ -7,8 +7,8 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon streaming
-sounds, microphone sources, the unmute UI and the visualizer, `prompt`, application-realm device
-recovery, and the [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
+sounds, microphone sources, the unmute UI and the visualizer, `prompt`, and the [UI](ui.md) items marked deferred.
+Unregistered APIs still refuse.
 
 ## Language
 
@@ -89,6 +89,7 @@ Rules:
   static cap of 1 or more applies as below (desktop keeps devicePixelRatio 1); any other cap selects a realm.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
+- Recovery registers before `startEngine` in the entry, anywhere in an application realm.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
 - `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer

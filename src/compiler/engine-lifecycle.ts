@@ -34,13 +34,13 @@ interface EngineLifecycleContext extends Pick<
     | "allocateTemporaryCppName"
     | "bindings"
     | "browserErasure"
+    | "callbacks"
     | "captureEmittedLines"
     | "captureManagedClosureLines"
     | "nativeEmission"
     | "checker"
     | "compileCallbackWithValues"
     | "compileValue"
-    | "deferredCapabilities"
     | "conditions"
     | "decreaseIndent"
     | "emit"
@@ -510,20 +510,19 @@ export class EngineLifecycle {
         );
         const engine = this.context.compileValue(argumentAt(call, 0));
         this.context.expectKind(engine, "engine", argumentAt(call, 0));
-        const deferredRealm =
-            !!this.context.options.deferredCapabilities &&
-            !!this.context.options.workers &&
-            name !== "disposeEngine";
-        if (!deferredRealm)
-            this.context.reachFeature(
-                name === "disposeEngine"
-                    ? "engine:dispose"
-                    : "engine:device-recovery",
-                call,
-            );
+        this.context.reachFeature(
+            name === "disposeEngine"
+                ? "engine:dispose"
+                : "engine:device-recovery",
+            call,
+        );
         if (name === "enableDeviceLostSceneRecovery") {
+            // An application realm's registration is runtime data and its
+            // callbacks are shared closures, so it may run at any point; the
+            // entry's callbacks borrow its frame and join the continuation.
+            const realm = !!this.context.options.workers;
             if (
-                !deferredRealm &&
+                !realm &&
                 (this.engineHasStarted() ||
                     this.context.isRuntimeResourceConstruction())
             )
@@ -533,7 +532,6 @@ export class EngineLifecycle {
                 );
             const cpp =
                 this.context.allocateTemporaryCppName("device_recovery");
-            if (deferredRealm) this.context.emitDiscardedValue(engine);
             let registration:
                 (typeof this.deviceRecoveryCallbacks)[number] | undefined;
             if (call.arguments[1]) {
@@ -557,31 +555,15 @@ export class EngineLifecycle {
                 }
                 registration = { cpp, options, node };
             }
-            if (deferredRealm && registration)
-                this.emitDeviceRecoveryCallbacks([registration], true);
-            const deferred = deferredRealm
-                ? this.context.deferredCapabilities.emitKnown(
-                      call,
-                      {
-                          id: "babylon:enableDeviceLostSceneRecovery.application",
-                          origin: "babylon",
-                          operation: "call",
-                          timing: "throw",
-                          signature:
-                              "enableDeviceLostSceneRecovery(EngineContext, DeviceLostRecoveryCallbacks?): DeviceLostRecoveryHandle",
-                      },
-                      { kind: "handle", handle: "device-recovery" },
-                  )
-                : undefined;
             this.context.emit({
                 kind: "declaration",
                 type: "auto",
                 name: cpp,
-                initializer:
-                    deferred?.cpp ??
-                    `bbl::enable_device_lost_scene_recovery(${engine.cpp})`,
+                initializer: `bbl::enable_device_lost_scene_recovery(${engine.cpp})`,
             });
-            if (registration && !deferredRealm)
+            if (registration && realm)
+                this.emitDeviceRecoveryCallbacks([registration], true);
+            else if (registration)
                 this.deviceRecoveryCallbacks.push(registration);
             return {
                 kind: "device-recovery",
@@ -589,17 +571,6 @@ export class EngineLifecycle {
                 engineCpp: engine.cpp,
                 dataType: { kind: "handle", handle: "device-recovery" },
             };
-        }
-        if (deferredRealm) {
-            this.context.emitDiscardedValue(engine);
-            return this.context.deferredCapabilities.emitKnown(call, {
-                id: "babylon:forceWebGpuDeviceLossForTesting.application",
-                origin: "babylon",
-                operation: "call",
-                timing: "throw",
-                signature:
-                    "forceWebGpuDeviceLossForTesting(EngineContext): void",
-            });
         }
         return {
             kind: "void",
@@ -610,9 +581,14 @@ export class EngineLifecycle {
         };
     }
 
+    /**
+     * Writes each option callback onto its registration: as a lambda over
+     * the entry's frame at `startEngine`, or as a shared closure where an
+     * application realm registers.
+     */
     private emitDeviceRecoveryCallbacks(
         registrations = this.deviceRecoveryCallbacks.splice(0),
-        discard = false,
+        shared = false,
     ): void {
         for (const registration of registrations) {
             const options = registration.options;
@@ -679,14 +655,19 @@ export class EngineLifecycle {
                     );
                     this.context.emitDiscardedValue(result);
                 };
-                if (discard) {
+                if (shared) {
+                    // The callback may read bindings declared later in its
+                    // block, which it reaches only once a loss is delivered.
+                    this.context.callbacks.hoistForwardCallbackBindings(
+                        callback,
+                    );
                     const closure = this.context.captureManagedClosureLines(
                         emitBody,
                         false,
                     );
-                    this.context.emitDiscardedValue({
-                        kind: "callback",
-                        cpp: this.context.nativeEmission.renderSharedClosure(
+                    this.context.emit({
+                        kind: "expression",
+                        code: `${registration.cpp}->${target} = ${this.context.nativeEmission.renderSharedClosure(
                             closure,
                             "void",
                             callback,
@@ -694,7 +675,7 @@ export class EngineLifecycle {
                                 ? `[[maybe_unused]] const std::string& ${error}`
                                 : "",
                             error ? [error] : [],
-                        ),
+                        )};`,
                     });
                     continue;
                 }

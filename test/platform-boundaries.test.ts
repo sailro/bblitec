@@ -87,36 +87,34 @@ void remove_local_storage(const std::string&) { throw std::runtime_error("unexpe
     );
 });
 
-test("application recovery keeps callback bodies and defers only the missing realm contract", () => {
+test("application recovery writes its callbacks onto the realm engine's registration", () => {
     const source = `
         import {createEngine,enableDeviceLostSceneRecovery,forceWebGpuDeviceLossForTesting} from '@babylonjs/lite';
         const engine=await createEngine(new OffscreenCanvas(1,1));
         await new Promise<void>(resolve=>setTimeout(resolve,0));
-        let caught=0; let callbacks=0;
-        try {
-            const registration=enableDeviceLostSceneRecovery(engine, {
-                onRecovered:()=>{callbacks++;},
-                onRecoveryFailed:error=>{if(error.message) callbacks++;},
-            });
-            registration.disable();
-        } catch(error) {
-            if(!error.message.includes('babylon:enableDeviceLostSceneRecovery.application')) throw error;
-            caught++;
-        }
-        try { forceWebGpuDeviceLossForTesting(engine); } catch { caught++; }
-        if(caught!==2 || callbacks!==0) throw new Error('recovery boundary');
+        let lost=0; let failure='';
+        const registration=enableDeviceLostSceneRecovery(engine, {
+            onLost:()=>{lost++;},
+            onRecovered:()=>{recovered+=lost;},
+            onRecoveryFailed:error=>{failure=error.message;},
+        });
+        let recovered=0;
+        forceWebGpuDeviceLossForTesting(engine);
+        registration.disable();
+        forceWebGpuDeviceLossForTesting(engine);
+        if(lost!==1 || recovered!==1 || failure!=='rebuild failed') throw new Error('recovery callbacks');
         setTimeout(()=>globalThis.close(),0);
     `;
-    const result = compileSource(source, { deferredCapabilities });
-    assert.ok(!result.manifest.features.includes("engine:device-recovery"));
+    const result = compileSource(source);
+    assert.ok(result.manifest.features.includes("engine:device-recovery"));
+    assert.equal(result.manifest.deferredCapabilities, undefined);
     assert.throws(
         () =>
             compileSource(
                 source.replace(
-                    "callbacks++;},",
-                    "new FinalizationRegistry(()=>{}); callbacks++;},",
+                    "lost++;},",
+                    "new FinalizationRegistry(()=>{}); lost++;},",
                 ),
-                { deferredCapabilities },
             ),
         /Unsupported constructor/,
     );
@@ -134,7 +132,23 @@ std::shared_ptr<Engine> create_realm_engine(EngineOptions, const std::shared_ptr
             runtime +
             `
 namespace bbl {
-void disable_device_recovery(const std::shared_ptr<DeviceRecoveryRegistration>&) { throw std::runtime_error("unexpected recovery"); }
+std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(Engine& engine) {
+    if (!engine.device_recovery) engine.device_recovery = std::make_shared<Engine::DeviceRecoveryState>();
+    auto registration = std::make_shared<DeviceRecoveryRegistration>();
+    registration->engine = &engine;
+    engine.device_recovery->registrations.push_back(registration);
+    return registration;
+}
+void disable_device_recovery(const std::shared_ptr<DeviceRecoveryRegistration>& registration) {
+    std::erase(registration->engine->device_recovery->registrations, registration);
+}
+// The realm's frame loop delivers the loss and settles the run; here at once, both ways.
+void force_device_loss(Engine& engine) {
+    const auto registrations = engine.device_recovery->registrations;
+    for (const auto& registration : registrations) if (registration->on_lost) registration->on_lost();
+    for (const auto& registration : registrations) if (registration->on_recovered) registration->on_recovered();
+    for (const auto& registration : registrations) if (registration->on_failed) registration->on_failed("rebuild failed");
+}
 }
 `,
         {
