@@ -1106,14 +1106,6 @@ class Compiler implements LoweringServices {
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
         if (this.features.has("engine:device-recovery")) {
-            if (
-                this.features.has("platform:workers") ||
-                this.features.has("platform:window")
-            )
-                this.fail(
-                    this.sourceFile,
-                    "Device recovery does not represent Window/worker application realms or shared offscreen device ownership.",
-                );
             if (this.admissions.temporalRegisteredScenes.length > 1)
                 this.fail(
                     this.sourceFile,
