@@ -1,9 +1,11 @@
 // The lowered audio library's mixer surface (test/audio-mixer.test.ts writes
 // it) over the real LabSound PAL, rendered offline between its calls: a
 // looped constant-level WAVE sound routed through two nested buses, each
-// bus's volume set and ramped, then a bus disposed; a second sound panned
-// across the stereo field. Prints one line per step: the left and right
-// channel peaks once settled.
+// bus's volume set and ramped, then a bus disposed; sound buffers decoded
+// from URL lists and played; a last sound panned across the stereo field
+// (LabSound up-mixes a later mono input to the left channel only once a
+// stereo source has left the main bus, so mono measurements come first).
+// Prints one line per step: the left and right channel peaks once settled.
 
 #include "pal_audio_labsound.cpp"
 #include "labsound-fixture.hpp"
@@ -44,13 +46,15 @@ std::string render(pal::AudioContextHandle context, int frames, int measured) {
 /** A fixture packages its files where they are. */
 std::string fixture_path(const std::string& path) { return path; }
 
-js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& lines) {
+js::Promise<js::PromiseVoid> run(std::string wav, std::string broken,
+                                 std::vector<std::string>& lines) {
     AudioEngineOptions engine_options{};
     engine_options.audio_context = pal::audio_create_context();
     const auto engine = co_await create_audio_engine_async(engine_options);
     const auto context = engine.context;
-    const std::array<pal::PackagedFetchEntry, 1> responses{
-        {{"/sounds/tone.wav", "http://localhost/sounds/tone.wav", wav}}};
+    const std::array<pal::PackagedFetchEntry, 2> responses{
+        {{"/sounds/tone.wav", "http://localhost/sounds/tone.wav", wav},
+         {"/sounds/broken.wav", "http://localhost/sounds/broken.wav", broken}}};
     pal::register_packaged_responses("http://localhost/", fixture_path, responses);
 
     // music (0.5) <- effects (0.5) <- the sound: a quarter of its level.
@@ -92,6 +96,32 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& line
     dispose_sound(sound);
     dispose_audio_bus(music);
 
+    // A sound buffer from a URL list: the codec check skips an extension no
+    // linked decoder reads, and the first decodable URL wins.
+    const auto buffer = co_await create_sound_buffer_async(
+        engine, js::Array<std::string>{"/sounds/tone.xyz", "/sounds/tone.wav"},
+        SoundBufferOptions{});
+    lines.push_back("buffer " + fixed(buffer->get_duration()) + " " +
+                    std::to_string(static_cast<int>(buffer->get_sample_rate())) + " " +
+                    std::to_string(static_cast<int>(buffer->get_channel_count())) + " " +
+                    std::to_string(static_cast<int>(buffer->get_length())));
+    // Without the check, an undecodable file marks its format invalid and
+    // the next URL is tried.
+    SoundBufferOptions unchecked{};
+    unchecked.skip_codec_check = true;
+    const auto recovered = co_await create_sound_buffer_async(
+        engine, js::Array<std::string>{"/sounds/broken.wav", "/sounds/tone.wav"}, unchecked);
+    lines.push_back("recovered " + fixed(recovered->get_duration()) + " " +
+                    std::to_string(engine.invalid_formats.has("wav")));
+    // A sound over the buffer plays it; a sound passed its own buffer shares it.
+    StaticSoundOptions buffered_options{};
+    buffered_options.loop = true;
+    const auto buffered = co_await create_sound_async(engine, buffer, buffered_options);
+    play_sound(buffered);
+    lines.push_back("buffered" + render(context, 4800, 2400));
+    lines.push_back("shared " + std::to_string(static_cast<int>(buffered->get_buffer() == buffer)));
+    dispose_sound(buffered);
+
     // A sound on the main bus, panned: equal-power stereo panning of mono,
     // measured once LabSound's de-zippered pan settles.
     StaticSoundOptions panned_options{};
@@ -108,13 +138,14 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& line
     set_stereo_pan(panned, 0.0, instant);
     lines.push_back("pan-centre" + render(context, 19200, 4800));
     dispose_sound(panned);
+
     co_return js::PromiseVoid{};
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 2)
+    if (argc != 3)
         return 2;
     _putenv_s("BBLITE_AUDIO_CAPTURE", "audio-mixer-capture-unused.wav");
     std::vector<std::string> lines;
@@ -123,7 +154,7 @@ int main(int argc, char** argv) {
         const js::RealmScope realm;
         pal::EventLoop loop;
         loop.run([&] {
-            static_cast<void>(run(argv[1], lines)
+            static_cast<void>(run(argv[1], argv[2], lines)
                                   .then(js::Callback<void(js::PromiseVoid)>(
                                             [&](js::PromiseVoid) { loop.close(); }),
                                         js::Callback<void(js::Error)>([&](js::Error error) {

@@ -53,6 +53,7 @@ export interface AudioIntrinsicContext
             | "compileVec3"
             | "vec3FromRecord"
             | "sceneManifest"
+            | "unwrap"
         > {}
 
 function sourceDisposer(context: AudioIntrinsicContext): string {
@@ -63,17 +64,14 @@ function sourceDisposer(context: AudioIntrinsicContext): string {
 }
 
 /**
- * The Lite audio functions that are not lowered: sound buffers, streaming
- * sounds, the analyzer, the microphone, the unmute UI and the visualizer
- * refuse by name, because a silent no-op would be a scene that renders
- * without sounding. The engine, its master volume, static sounds, buses,
- * their spatial audio and stereo panning, and the engine's media-stream tap
- * run the pin's lowered family (`compileLibraryCall`).
+ * The Lite audio functions that are not lowered: streaming sounds, the
+ * analyzer, the microphone, the unmute UI and the visualizer refuse by name,
+ * because a silent no-op would be a scene that renders without sounding. The
+ * engine, its master volume, sound buffers, static sounds, buses, their
+ * spatial audio and stereo panning, and the engine's media-stream tap run the
+ * pin's lowered family (`compileLibraryCall`).
  */
 const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
-    createSoundBufferAsync:
-        "decoding an audio file is an asset question, and no audio asset " +
-        "is materialized at generation yet",
     createStreamingSoundAsync:
         "streaming sounds wrap an HTMLAudioElement, which a native build " +
         "has no equivalent for.",
@@ -144,6 +142,9 @@ function requireAbsentOptions(
 
 /** The static-sound handle a sound function receives. */
 const staticSoundType: DataType = { kind: "handle", handle: "static-sound" };
+
+/** The sound buffer handle `createSoundBufferAsync` settles with. */
+const soundBufferType: DataType = { kind: "handle", handle: "sound-buffer" };
 
 /** The bus handle `createAudioBusAsync` settles with. */
 const audioBusType: DataType = { kind: "handle", handle: "audio-bus" };
@@ -484,27 +485,40 @@ function cleanAudioUrl(url: string): string {
 }
 
 /**
- * `createSoundAsync`'s source: a URL selecting packaged audio (each file it
- * may select packaged, registered as the library requests it, its decoder
- * linked), an `ArrayBuffer` or an `AudioBuffer`.
+ * A `createSoundAsync` / `createSoundBufferAsync` source: a URL selecting
+ * packaged audio (each file it may select packaged, registered as the
+ * library requests it, its decoder linked), an array literal of such URLs
+ * (the pin decodes the first its codecs accept), an `ArrayBuffer`, an
+ * `AudioBuffer` or a sound buffer.
  */
 function soundSource(
     context: AudioIntrinsicContext,
     call: ts.CallExpression,
+    name: string,
 ): string {
     const argument = argumentAt(call, 1);
-    const type = context.checker.getTypeAtLocation(argument);
-    if (type.flags & ts.TypeFlags.StringLike)
-        return packagedAudioUrl(
+    const url = (element: ts.Expression): string =>
+        packagedAudioUrl(
             context,
             call,
-            argument,
-            "A createSoundAsync URL must select packaged audio a linked decoder reads: a literal, or a runtime string whose candidates generation can find.",
+            element,
+            `A ${name} URL must select packaged audio a linked decoder reads: a literal, or a runtime string whose candidates generation can find.`,
             cleanAudioUrl,
             "sound_url",
         );
+    const type = context.checker.getTypeAtLocation(argument);
+    if (type.flags & ts.TypeFlags.StringLike) return url(argument);
+    const list = context.unwrap(argument);
+    if (ts.isArrayLiteralExpression(list)) {
+        if (list.elements.some(ts.isSpreadElement))
+            return context.fail(
+                list,
+                `A ${name} URL list is an array literal of URLs, without spreads.`,
+            );
+        return `bbl::js::Array<std::string>{${list.elements.map(url).join(", ")}}`;
+    }
     const value = context.compileValue(argument);
-    if (value.kind === "audio-buffer")
+    if (value.kind === "audio-buffer" || value.kind === "sound-buffer")
         return context.bindings.pinValueToTemporary(
             value,
             "sound_buffer",
@@ -521,7 +535,7 @@ function soundSource(
     }
     return context.fail(
         argument,
-        "createSoundAsync takes a packaged URL, an ArrayBuffer or an AudioBuffer; URL lists and SoundBuffers are not lowered.",
+        `${name} takes a packaged URL, an array literal of packaged URLs, an ArrayBuffer, an AudioBuffer or a SoundBuffer.`,
     );
 }
 
@@ -669,7 +683,7 @@ function compileLibraryCall(
             context.expectArgumentCount(call, 2, 3);
             reachLibraryRoot(context, importedName, "audio:static-sound", call);
             const engine = engineArgument(context, call, "sound_engine");
-            const source = soundSource(context, call);
+            const source = soundSource(context, call, importedName);
             const { options, refused } = soundOptions(
                 context,
                 call.arguments[2],
@@ -691,6 +705,28 @@ function compileLibraryCall(
                     kind: "static-sound",
                     cpp: "",
                     dataType: staticSoundType,
+                },
+            };
+        }
+        case "createSoundBufferAsync": {
+            // Decoded on native jobs and fetched like a sound's source.
+            context.expectArgumentCount(call, 2, 3);
+            reachLibraryRoot(context, importedName, "audio:static-sound", call);
+            const engine = engineArgument(context, call, "buffer_engine");
+            const source = soundSource(context, call, importedName);
+            const { options } = soundOptions(context, call.arguments[2], {
+                cppType: "bbl::SoundBufferOptions",
+                kinds: { skipCodecCheck: "boolean" },
+                label: "Sound buffer",
+            });
+            return {
+                kind: "promise",
+                cpp: `bbl::create_sound_buffer_async(${engine}, ${source}, ${options})`,
+                promiseType: "std::shared_ptr<bbl::SoundBuffer>",
+                promiseResult: {
+                    kind: "sound-buffer",
+                    cpp: "",
+                    dataType: soundBufferType,
                 },
             };
         }

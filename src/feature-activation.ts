@@ -1382,7 +1382,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "audio:static-sound": {
         provenance:
             "src/audio/static-sound.ts createSoundAsync/playSound/stopSound/" +
-            "setSoundVolume/disposeSound with the sound buffer, sub-graph, " +
+            "setSoundVolume/disposeSound and src/audio/sound-buffer.ts " +
+            "createSoundBufferAsync with the sound buffer, sub-graph, " +
             "ramped parameters, signals and fetch they reach, lowered whole",
         consumers: CMAKE,
         applicationRealm: true,

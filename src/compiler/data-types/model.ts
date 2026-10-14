@@ -33,6 +33,7 @@ export type HandleKind =
     | "audio-source"
     | "static-sound"
     | "audio-bus"
+    | "sound-buffer"
     | "audio-element"
     | "audio-context"
     | "camera"

@@ -756,6 +756,20 @@ export const propertyRules: readonly PropertyRule[] = [
         access: (owner) => `${owner}->name`,
         dataType: { kind: "string" },
     },
+    // A lowered sound buffer's getters over its decoded buffer.
+    ...(
+        [
+            ["duration", "duration"],
+            ["sampleRate", "sample_rate"],
+            ["channelCount", "channel_count"],
+            ["length", "length"],
+        ] as const
+    ).map(([property, native]): PropertyRead => ({
+        owner: "sound-buffer",
+        property,
+        value: "number",
+        access: (owner) => `${owner}->get_${native}()`,
+    })),
     {
         owner: "audio-engine",
         property: "onStateChanged",

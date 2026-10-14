@@ -20,9 +20,10 @@ using AudioEngineSoundHandle = std::shared_ptr<AudioEngineSound>;
 
 struct AudioSourceState;
 using AudioSourceHandle = std::shared_ptr<AudioSourceState>;
-/** The lowered static sound and bus (`bblite/upstream_static_sound.hpp`), held by handle. */
+/** The lowered static sound, bus and sound buffer (`bblite/upstream_static_sound.hpp`), held by handle. */
 struct StaticSound;
 struct AudioBus;
+struct SoundBuffer;
 
 /**
  * `_listener`: the lowered spatial listener (`bblite/upstream_static_sound.hpp`),

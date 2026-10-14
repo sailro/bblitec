@@ -18,13 +18,13 @@ import { wave } from "./native-fixture.js";
 
 /**
  * A mixer: buses nested under a music bus, a sound routed into one and
- * panned, re-volumed and re-panned with ramps, a bus disposed, then the
- * engine with the rest.
+ * panned, sounds over a shared buffer and a URL list, re-volumed and
+ * re-panned with ramps, a bus disposed, then the engine with the rest.
  */
 const APPLICATION = `
 import {
-    createAudioBusAsync, createAudioEngineAsync, createSoundAsync, disposeAudioBus, disposeAudioEngine,
-    enableStereo, playSound, setBusVolume, setStereoPan, type AudioBus, type AudioBusOptions,
+    createAudioBusAsync, createAudioEngineAsync, createSoundAsync, createSoundBufferAsync, disposeAudioBus,
+    disposeAudioEngine, enableStereo, playSound, setBusVolume, setStereoPan, type AudioBus, type AudioBusOptions,
 } from "@babylonjs/lite";
 
 async function main(): Promise<void> {
@@ -36,6 +36,14 @@ async function main(): Promise<void> {
     const sound = await createSoundAsync(engine, "/assets/sfx/tone.wav", { outBus: effects, loop: true });
     enableStereo(sound, { pan: -0.5 });
     playSound(sound);
+    // A buffer from a URL list, shared by a sound; a sound from a list.
+    const buffer = await createSoundBufferAsync(engine, ["/assets/sfx/hum.wav", "/assets/sfx/tone.wav"]);
+    if (buffer.duration !== 0.5 || buffer.channelCount !== 1 || buffer.length !== buffer.sampleRate / 2)
+        throw new Error("buffer shape");
+    const replay = await createSoundAsync(engine, buffer, { outBus: music });
+    const listed = await createSoundAsync(engine, ["/assets/sfx/tone.wav"], { skipCodecCheck: true });
+    playSound(replay);
+    playSound(listed);
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     setBusVolume(music, 0.25, { duration: 0.05 });
     setStereoPan(sound, 0.5, { duration: 0.05 });
@@ -46,11 +54,12 @@ async function main(): Promise<void> {
 void main();
 `;
 
-test("buses and stereo panning compile strictly and run natively", (t) => {
+test("buses, stereo panning and sound buffers compile strictly and run natively", (t) => {
     const output = resolve("artifacts/audio-mixer-application");
     const sounds = join(output, "public/assets/sfx");
     mkdirSync(sounds, { recursive: true });
     writeFileSync(join(sounds, "tone.wav"), wave(0.5, 0.5));
+    writeFileSync(join(sounds, "hum.wav"), wave(0.5, 0.25));
     const result = compileSource(APPLICATION, {
         fileName: join(output, "entry.ts"),
         publicDir: join(output, "public"),
@@ -64,6 +73,7 @@ test("buses and stereo panning compile strictly and run natively", (t) => {
         "disposeAudioBus",
         "enableStereo",
         "setStereoPan",
+        "createSoundBufferAsync",
     ])
         assert.ok(result.manifest.audioLibraryRoots?.includes(root), root);
     // The engine's disposal releases its buses as the pin's does.
@@ -103,7 +113,7 @@ ${FIXTURE_APPLICATION}`,
     );
 });
 
-test("buses mix, ramp and release and stereo pans in a LabSound capture", (t) => {
+test("buses mix, stereo pans and URL-list sound buffers play in a LabSound capture", (t) => {
     if (!native) {
         t.skip("The native compiler and pinned LabSound library are required.");
         return;
@@ -116,6 +126,8 @@ test("buses mix, ramp and release and stereo pans in a LabSound capture", (t) =>
     );
     const wav = join(output, "tone.wav");
     writeFileSync(wav, wave(1, 0.5));
+    const broken = join(output, "broken.wav");
+    writeFileSync(broken, "not audio");
     const lines = runAudioProgram(
         output,
         "test/fixtures/audio-mixer-capture-check.cpp",
@@ -124,7 +136,7 @@ test("buses mix, ramp and release and stereo pans in a LabSound capture", (t) =>
             "/DBBLITE_HAS_AUDIO_PANNER=1",
             "/DBBLITE_HAS_AUDIO_STEREO_PANNER=1",
         ],
-        [wav],
+        [wav, broken],
     )
         .replaceAll("\r\n", "\n")
         .trimEnd()
@@ -161,6 +173,27 @@ test("buses mix, ramp and release and stereo pans in a LabSound capture", (t) =>
     near("pan-right", 0, 0.5);
     near("pan-left", 0.5, 0);
     near("pan-centre", 0.5 * Math.SQRT1_2, 0.5 * Math.SQRT1_2);
+    // One second of mono at the context's rate, from the list's WAVE file;
+    // the unchecked list records the undecodable format and recovers.
+    assert.deepEqual(at("buffer"), ["1.000", "48000", "1", "48000"]);
+    assert.deepEqual(at("recovered"), ["1.000", "1"]);
+    near("buffered", 0.5, 0.5);
+    assert.deepEqual(at("shared"), ["1"]);
+});
+
+test("a sound source that is not a packaged URL list refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+import { createAudioEngineAsync, createSoundBufferAsync } from "@babylonjs/lite";
+async function main(urls: string[]): Promise<void> {
+    const engine = await createAudioEngineAsync();
+    await createSoundBufferAsync(engine, urls);
+}
+void main([]);
+`),
+        /createSoundBufferAsync takes a packaged URL, an array literal of packaged URLs/,
+    );
 });
 
 test("an outBus that is not a created bus refuses", () => {

@@ -85,8 +85,9 @@ export const ENGINE_ROOTS = [
     "getMasterVolume",
 ] as const;
 
-/** The static-sound functions a program calls. */
+/** The static-sound functions a program calls, sound buffers included. */
 export const STATIC_SOUND_ROOTS = [
+    "createSoundBufferAsync",
     "createSoundAsync",
     "playSound",
     "stopSound",
