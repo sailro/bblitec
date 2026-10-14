@@ -276,6 +276,16 @@ const char* renderer_name(RendererKind kind) {
                              std::string(backend.name) + " backend.");
 }
 
+#if BBLITE_DEVICE_RECOVERY
+/** A renderer failure reaches the GPU error listeners and fails a recovery in flight. */
+void settle_renderer_failure(Engine& engine, const std::exception& error) {
+    if (dynamic_cast<const GpuTransportError*>(&error))
+        report_gpu_error(engine, error.what());
+    if (engine.device_recovery && engine.device_recovery->recovering)
+        fail_device_recovery(engine, error.what());
+}
+#endif
+
 #if !BBLITE_WORKERS
 pal::SceneRun run_renderer(Engine& engine, RendererKind kind, const pal::GpuBackend& backend) {
     pal::SceneRun (*context)(Engine&) = nullptr;
@@ -300,6 +310,15 @@ pal::SceneRun run_renderer(Engine& engine, RendererKind kind, const pal::GpuBack
     return context(engine);
 }
 #else
+/** Rejects the first-frame promise, or reports a later failure as the realm's uncaught error. */
+void deliver_realm_frame_failure(js::Promise<js::PromiseVoid>& ready, std::exception_ptr failure) {
+    if (ready.pending())
+        ready.reject(std::move(failure));
+    else
+        pal::EventLoop::current().post(
+            [failure = std::move(failure)] { std::rethrow_exception(failure); });
+}
+
 js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
                                               js::Promise<js::PromiseVoid> ready) {
     try {
@@ -319,17 +338,25 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
             driver.start();
             if (!(co_await driver.finished()))
                 refuse_uncompiled_renderer(kind, backend);
+#if BBLITE_DEVICE_RECOVERY
+            // The producer's renderer released its resources on the Window
+            // host's shared device; the next run rebuilds them.
+            if (engine->device_recovery && engine->device_recovery->requested)
+                begin_device_recovery(*engine);
+#endif
             if (!engine->renderer_restart_requested)
                 break;
         }
     } catch (const pal::WorkerTerminated&) {
         throw;
+#if BBLITE_DEVICE_RECOVERY
+    } catch (const std::exception& error) {
+        // A throwing recovery callback escapes as this activation's rejection.
+        settle_renderer_failure(*engine, error);
+        deliver_realm_frame_failure(ready, std::current_exception());
+#endif
     } catch (...) {
-        if (ready.pending())
-            ready.reject(std::current_exception());
-        else
-            pal::EventLoop::current().post(
-                [error = std::current_exception()] { std::rethrow_exception(error); });
+        deliver_realm_frame_failure(ready, std::current_exception());
     }
     co_return js::PromiseVoid{};
 }
@@ -376,10 +403,7 @@ static pal::Iteration<int> run_engine_iterations(Engine& engine) {
         } catch (const std::exception& error) {
             static_cast<void>(error);
 #if BBLITE_DEVICE_RECOVERY
-            if (dynamic_cast<const GpuTransportError*>(&error))
-                report_gpu_error(engine, error.what());
-            if (engine.device_recovery && engine.device_recovery->recovering)
-                fail_device_recovery(engine, error.what());
+            settle_renderer_failure(engine, error);
 #endif
             throw;
         }

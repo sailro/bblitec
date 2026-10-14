@@ -112,4 +112,5 @@ buffer; SDL delays draw encoding until final writes exist. Resize recreates targ
   reads/parsing/decoding, IBL BRDF reads, packaged `fetch` reads, audio device opens and decodes.
 - Window scene preparation (texture uploads, environment, background, pipeline compilation) runs on native workers;
   Dawn needs implicit device synchronization. Geometry-output pipelines and worker-free builds prepare on the renderer thread.
+- A device loss restarts the producer's renderer on the shared device, which it never destroys.
 - Readiness requires the first complete published canvas frame. SDL_image calls are serialized across jobs and UI.

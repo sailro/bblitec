@@ -4474,7 +4474,13 @@ public:
 #endif
         report_benchmark(benchmark_samples, "Dawn", "D3D12");
 #if BBLITE_DEVICE_RECOVERY
-        if (engine.device_recovery &&
+        bool owns_device = true;
+#if BBLITE_OFFSCREEN_SURFACES
+        // A realm renders on the Window host's shared device, which outlives
+        // this engine's loss and disposal; the run releases only its references.
+        owns_device = data_.offscreen == nullptr;
+#endif
+        if (owns_device && engine.device_recovery &&
             (engine.device_recovery->requested || engine.device_recovery->disposed))
             state.destroy_device();
 #endif
