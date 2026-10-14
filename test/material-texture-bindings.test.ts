@@ -42,8 +42,13 @@ struct GpuMesh { std::vector<SDL_GPUTextureSamplerBinding> textures; };
 struct GpuState {
     struct Slots { std::vector<std::string> textures; };
     std::array<Slots, 3> shader_fragment_slots;
+    // Each packed texture's declared slot, per program.
+    std::array<std::vector<std::size_t>, 3> shader_fragment_texture_slots;
     std::vector<SDL_GPUTextureSamplerBinding> shader_texture_binding_scratch;
+    unsigned ground_sampler = 33;
 };
+// A render target's current colour texture.
+unsigned sdl_render_texture_color(const GpuState&, const Engine&, const RenderTextureRef&) { return 77; }
 const auto& mesh_shader_textures(const GpuMesh& mesh) { ++cache_reads; return mesh.textures; }
 [[noreturn]] void gpu_error(const char* message) { throw std::runtime_error(message); }
 ${cppFunction(source, "void bind_shader_material_textures(")}
@@ -53,6 +58,8 @@ int main() {
     pal::GpuState state; pal::GpuMesh mesh;
     state.shader_fragment_slots[1].textures = {"albedo"};
     state.shader_fragment_slots[2].textures = {"albedo", "normal"};
+    state.shader_fragment_texture_slots[1] = {0};
+    state.shader_fragment_texture_slots[2] = {0, 1};
     mesh.textures = {{11, 21}};
     Scene scene; Engine engine; MaterialRecord material;
     const auto bind = [&](unsigned variant) {
@@ -79,8 +86,14 @@ int main() {
     bind(2);
     assert(bindings == 2 && submitted.size() == 2);
     assert(submitted[1].texture == 12 && submitted[1].sampler == 22);
+    // A render target's declared slot binds the target's current texture.
+    material.shader_render_textures = {std::nullopt, RenderTextureRef{}};
+    bind(2);
+    assert(bindings == 3 && submitted[0].texture == 11 && submitted[0].sampler == 21);
+    assert(submitted[1].texture == 77 && submitted[1].sampler == 33);
+    material.shader_render_textures.clear();
     mesh.textures.clear(); bind(1);
-    assert(bindings == 2);
+    assert(bindings == 3);
 }
 `,
         );

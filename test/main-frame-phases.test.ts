@@ -56,7 +56,7 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
             join(directory, `${backend}Scene.hpp`),
             [
                 "Frame& current_frame()",
-                "void rebuild_task_draw_lists()",
+                "void rebuild_task_draw_lists(const std::vector<TaskHandle>* only",
                 "bool acquire()",
                 "FramePreparation update()",
             ]

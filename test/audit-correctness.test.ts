@@ -1005,6 +1005,7 @@ test(
             "void ui_clear_style_rules(",
             "void ui_add_style_rule(",
             "void ui_add_host_style_rule(",
+            "void require_insertable(",
             "UiElementHandle ui_append_child(",
             "UiElementHandle ui_append_to_root(",
             "void ui_remove(",
