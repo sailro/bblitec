@@ -354,7 +354,11 @@ export class UiProjection {
 
     private readonly uiMarkupAlternativeOwners = new EmissionSet<number>();
     private readonly uiMarkupNodeIds = new EmissionMap<number, number>();
-    /** The program's candidate markup parsed together (`prefetchUiMarkup`). */
+    /**
+     * @unjournaled Whether the program's candidate markup was parsed together
+     * (`prefetchUiMarkup`): a cache of fragments keyed by their source text,
+     * filled once per compile whatever a transaction later keeps.
+     */
     private uiMarkupPrefetched = false;
 
     private uiRuleSuffix(
