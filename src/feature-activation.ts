@@ -1398,6 +1398,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the reached Web Audio graph calls AudioContext.createStereoPanner()",
         consumers: CMAKE,
     },
+    "audio:analyser": {
+        provenance:
+            "the reached Web Audio graph constructs an AnalyserNode " +
+            "(src/audio/analyzer.ts createAnalyzerSubNode)",
+        consumers: CMAKE,
+    },
     "audio:engine-media-stream": {
         provenance:
             "src/audio/media-stream-output.ts createAudioEngineMediaStream, " +

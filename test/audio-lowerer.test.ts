@@ -59,7 +59,6 @@ test("the Babylon sound families refuse by name rather than no-op", () => {
     const intrinsic = source("src/compiler/intrinsics/audio.ts");
     for (const name of [
         "createStreamingSoundAsync",
-        "enableAnalyzer",
         "createMicrophoneSoundSourceAsync",
         "createUnmuteUI",
         "createAudioVisualizer",

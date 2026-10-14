@@ -262,6 +262,34 @@ std::string audio_panner_model(AudioNodeHandle panner, PannerModel which);
  */
 void audio_set_panner_model(AudioNodeHandle panner, PannerModel which, const std::string& value);
 
+/**
+ * `new AnalyserNode(ctx)`, with Web Audio's defaults: fftSize 2048, -100 to
+ * -30 dB, smoothing 0.8. It analyses its input every quantum whether or not
+ * its output reaches the destination.
+ */
+AudioNodeHandle audio_create_analyser(AudioContextHandle context);
+
+/** An AnalyserNode's numeric attributes; `FrequencyBinCount` is read-only. */
+enum class AnalyserProperty : std::uint8_t {
+    FftSize,
+    FrequencyBinCount,
+    MinDecibels,
+    MaxDecibels,
+    SmoothingTimeConstant,
+};
+double audio_analyser_property(AudioNodeHandle analyser, AnalyserProperty property);
+/** A value the attribute rejects throws IndexSizeError, as Web Audio does. */
+void audio_set_analyser_property(AudioNodeHandle analyser, AnalyserProperty property, double value);
+
+/**
+ * `get{Byte,Float}{Frequency,TimeDomain}Data(out)`: writes as many values as
+ * both `out` and the analysis hold (`frequencyBinCount` or `fftSize`).
+ */
+enum class AnalyserData : std::uint8_t { Frequency, TimeDomain };
+void audio_analyser_byte_data(AudioNodeHandle analyser, AnalyserData data,
+                              bbl::js::TypedArray<std::uint8_t> out);
+void audio_analyser_float_data(AudioNodeHandle analyser, AnalyserData data, bbl::js::F32Array out);
+
 /** `ctx.listener.<name>`: a listener parameter (the `Listener*` names). */
 AudioParamHandle audio_listener_param(AudioContextHandle context, AudioParamName name);
 

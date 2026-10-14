@@ -16,10 +16,11 @@
  * looped sound started while the context is not running -- refuses at run
  * time.
  *
- * Spatial audio (`spatial.ts`) and stereo panning (`stereo.ts`) join the
- * model when a program reaches them, as the pin tree-shakes them: a panner or
- * stereo panner sub-node per sound and, for spatial audio, the engine's
- * listener over the context's `AudioListener`. A host is a static sound,
+ * Spatial audio (`spatial.ts`), stereo panning (`stereo.ts`) and the
+ * analyzer (`analyzer.ts`) join the model when a program reaches them, as
+ * the pin tree-shakes them: a panner, stereo panner or analyser sub-node per
+ * sound and, for spatial audio, the engine's listener over the context's
+ * `AudioListener`. A host is a static sound,
  * the one host this surface lowers; the engine keeps the listener and the
  * attached nodes' updates in its native handle.
  */
@@ -105,6 +106,15 @@ const BUS_ROOTS = [
 /** The stereo functions a program calls. */
 const STEREO_ROOTS = ["enableStereo", "setStereoPan"] as const;
 
+/** The analyzer functions a program calls. */
+const ANALYZER_ROOTS = [
+    "enableAnalyzer",
+    "getByteFrequencyData",
+    "getFloatFrequencyData",
+    "getByteTimeDomainData",
+    "getFloatTimeDomainData",
+] as const;
+
 /** The spatial functions a program calls. */
 const SPATIAL_ROOTS = [
     "enableSpatial",
@@ -124,6 +134,7 @@ export const AUDIO_LIBRARY_ROOTS: readonly string[] = [
     ...STATIC_SOUND_ROOTS,
     ...BUS_ROOTS,
     ...STEREO_ROOTS,
+    ...ANALYZER_ROOTS,
     ...SPATIAL_ROOTS,
     ...MEDIA_STREAM_ROOTS,
 ];
@@ -529,6 +540,21 @@ const stereoRecords: readonly RecordSpec[] = [
     },
 ];
 
+/** The analyzer's records: its options and its tap, the sub-graph's slot. */
+const analyzerRecords: readonly RecordSpec[] = [
+    {
+        pinned: ["AudioAnalyzerOptions"],
+        cpp: "AudioAnalyzerOptions",
+        reference: false,
+    },
+    {
+        pinned: ["AnalyzerSubNode"],
+        cpp: "AnalyzerSubNode",
+        reference: true,
+        bases: ["AnalyzerSlot"],
+    },
+];
+
 /** An optional part of the family, lowered when a program reaches one of its roots. */
 interface FamilyPart {
     readonly roots: readonly string[];
@@ -563,6 +589,11 @@ const FAMILY_PARTS: readonly FamilyPart[] = [
         roots: STEREO_ROOTS,
         modules: ["src/audio/stereo.ts"],
         records: stereoRecords,
+    },
+    {
+        roots: ANALYZER_ROOTS,
+        modules: ["src/audio/analyzer.ts"],
+        records: analyzerRecords,
     },
     {
         roots: SPATIAL_ROOTS,

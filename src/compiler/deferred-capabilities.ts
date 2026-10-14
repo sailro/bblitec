@@ -59,9 +59,11 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         "createStreamingSoundAsync",
         "createMicrophoneSoundSourceAsync",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "reject" })),
-    ...["enableAnalyzer", "createUnmuteUI", "createAudioVisualizer"].map(
-        (api): Descriptor => ({ origin: "babylon", api, timing: "throw" }),
-    ),
+    ...["createUnmuteUI", "createAudioVisualizer"].map((api): Descriptor => ({
+        origin: "babylon",
+        api,
+        timing: "throw",
+    })),
 ];
 
 const descriptors = new Map(

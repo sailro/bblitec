@@ -18,13 +18,15 @@ import { wave } from "./native-fixture.js";
 
 /**
  * A mixer: buses nested under a music bus, a sound routed into one and
- * panned, sounds over a shared buffer and a URL list, re-volumed and
- * re-panned with ramps, a bus disposed, then the engine with the rest.
+ * panned, sounds over a shared buffer and a URL list, a meter reading a
+ * sound, re-volumed and re-panned with ramps, a bus disposed, then the
+ * engine with the rest.
  */
 const APPLICATION = `
 import {
     createAudioBusAsync, createAudioEngineAsync, createSoundAsync, createSoundBufferAsync, disposeAudioBus,
-    disposeAudioEngine, enableStereo, playSound, setBusVolume, setStereoPan, type AudioBus, type AudioBusOptions,
+    disposeAudioEngine, enableAnalyzer, enableStereo, getByteFrequencyData, getFloatTimeDomainData, playSound,
+    setBusVolume, setStereoPan, type AudioBus, type AudioBusOptions,
 } from "@babylonjs/lite";
 
 async function main(): Promise<void> {
@@ -44,6 +46,13 @@ async function main(): Promise<void> {
     const listed = await createSoundAsync(engine, ["/assets/sfx/tone.wav"], { skipCodecCheck: true });
     playSound(replay);
     playSound(listed);
+    // The sound's spectrum and waveform, read by a meter.
+    enableAnalyzer(sound, { fftSize: 512, smoothing: 0.5 });
+    const bins = new Uint8Array(256);
+    const waveform = new Float32Array(512);
+    getByteFrequencyData(sound, bins);
+    getFloatTimeDomainData(sound, waveform);
+    if (waveform.some((sample) => Math.abs(sample) > 1)) throw new Error("waveform range");
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     setBusVolume(music, 0.25, { duration: 0.05 });
     setStereoPan(sound, 0.5, { duration: 0.05 });
@@ -54,7 +63,7 @@ async function main(): Promise<void> {
 void main();
 `;
 
-test("buses, stereo panning and sound buffers compile strictly and run natively", (t) => {
+test("buses, stereo panning, sound buffers and analyzers compile strictly and run natively", (t) => {
     const output = resolve("artifacts/audio-mixer-application");
     const sounds = join(output, "public/assets/sfx");
     mkdirSync(sounds, { recursive: true });
@@ -65,7 +74,11 @@ test("buses, stereo panning and sound buffers compile strictly and run natively"
         publicDir: join(output, "public"),
     });
     assert.equal(result.manifest.deferredCapabilities, undefined);
-    for (const feature of ["audio:pinned-engine", "audio:stereo-panner"])
+    for (const feature of [
+        "audio:pinned-engine",
+        "audio:stereo-panner",
+        "audio:analyser",
+    ])
         assert.ok(result.manifest.features.includes(feature), feature);
     for (const root of [
         "createAudioBusAsync",
@@ -74,6 +87,9 @@ test("buses, stereo panning and sound buffers compile strictly and run natively"
         "enableStereo",
         "setStereoPan",
         "createSoundBufferAsync",
+        "enableAnalyzer",
+        "getByteFrequencyData",
+        "getFloatTimeDomainData",
     ])
         assert.ok(result.manifest.audioLibraryRoots?.includes(root), root);
     // The engine's disposal releases its buses as the pin's does.
@@ -106,14 +122,18 @@ ${FIXTURE_APPLICATION}`,
         runAudioProgram(
             output,
             join(output, "check.cpp"),
-            ["/DBBLITE_HAS_AUDIO_STEREO_PANNER=1", ...library],
+            [
+                "/DBBLITE_HAS_AUDIO_STEREO_PANNER=1",
+                "/DBBLITE_HAS_AUDIO_ANALYSER=1",
+                ...library,
+            ],
             [],
         ),
         "",
     );
 });
 
-test("buses mix, stereo pans and URL-list sound buffers play in a LabSound capture", (t) => {
+test("buses mix, stereo pans, URL-list sound buffers play and an analyser reads in a LabSound capture", (t) => {
     if (!native) {
         t.skip("The native compiler and pinned LabSound library are required.");
         return;
@@ -128,6 +148,11 @@ test("buses mix, stereo pans and URL-list sound buffers play in a LabSound captu
     writeFileSync(wav, wave(1, 0.5));
     const broken = join(output, "broken.wav");
     writeFileSync(broken, "not audio");
+    const sine = join(output, "sine.wav");
+    writeFileSync(
+        sine,
+        wave(1, (time) => 0.5 * Math.sin(2 * Math.PI * 1500 * time)),
+    );
     const lines = runAudioProgram(
         output,
         "test/fixtures/audio-mixer-capture-check.cpp",
@@ -135,8 +160,9 @@ test("buses mix, stereo pans and URL-list sound buffers play in a LabSound captu
             "/DBBLITE_AUDIO_CAPTURE=1",
             "/DBBLITE_HAS_AUDIO_PANNER=1",
             "/DBBLITE_HAS_AUDIO_STEREO_PANNER=1",
+            "/DBBLITE_HAS_AUDIO_ANALYSER=1",
         ],
-        [wav, broken],
+        [wav, broken, sine],
     )
         .replaceAll("\r\n", "\n")
         .trimEnd()
@@ -179,6 +205,32 @@ test("buses mix, stereo pans and URL-list sound buffers play in a LabSound captu
     assert.deepEqual(at("recovered"), ["1.000", "1"]);
     near("buffered", 0.5, 0.5);
     assert.deepEqual(at("shared"), ["1"]);
+    // The pin's analyser defaults, read back from the node.
+    assert.deepEqual(at("analyser"), [
+        "-100.000",
+        "-30.000",
+        "0.800",
+        "2048.000",
+        "1024.000",
+    ]);
+    // The sine's bin leads both spectra; its waveform peaks at 0.5, 64 to
+    // 192 as bytes.
+    assert.deepEqual(at("spectrum"), ["64", "64"]);
+    const [top, lowest, highest] = at("waveform").map(Number);
+    assert.ok(
+        Math.abs(top! - 0.5) < 0.005 &&
+            Math.abs(lowest! - 64) <= 1 &&
+            Math.abs(highest! - 192) <= 1,
+        lines.join(" | "),
+    );
+    assert.deepEqual(at("reconfigured"), [
+        "-90.000",
+        "-10.000",
+        "0.500",
+        "1024.000",
+        "512.000",
+    ]);
+    assert.deepEqual(at("refused"), ["IndexSizeError"]);
 });
 
 test("a sound source that is not a packaged URL list refuses", () => {

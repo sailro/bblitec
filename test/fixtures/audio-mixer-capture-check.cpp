@@ -2,7 +2,8 @@
 // it) over the real LabSound PAL, rendered offline between its calls: a
 // looped constant-level WAVE sound routed through two nested buses, each
 // bus's volume set and ramped, then a bus disposed; sound buffers decoded
-// from URL lists and played; a last sound panned across the stereo field
+// from URL lists and played; an analyser's readouts of a sine; a last sound
+// panned across the stereo field
 // (LabSound up-mixes a later mono input to the left channel only once a
 // stereo source has left the main bus, so mono measurements come first).
 // Prints one line per step: the left and right channel peaks once settled.
@@ -46,15 +47,16 @@ std::string render(pal::AudioContextHandle context, int frames, int measured) {
 /** A fixture packages its files where they are. */
 std::string fixture_path(const std::string& path) { return path; }
 
-js::Promise<js::PromiseVoid> run(std::string wav, std::string broken,
+js::Promise<js::PromiseVoid> run(std::string wav, std::string broken, std::string sine_wav,
                                  std::vector<std::string>& lines) {
     AudioEngineOptions engine_options{};
     engine_options.audio_context = pal::audio_create_context();
     const auto engine = co_await create_audio_engine_async(engine_options);
     const auto context = engine.context;
-    const std::array<pal::PackagedFetchEntry, 2> responses{
+    const std::array<pal::PackagedFetchEntry, 3> responses{
         {{"/sounds/tone.wav", "http://localhost/sounds/tone.wav", wav},
-         {"/sounds/broken.wav", "http://localhost/sounds/broken.wav", broken}}};
+         {"/sounds/broken.wav", "http://localhost/sounds/broken.wav", broken},
+         {"/sounds/sine.wav", "http://localhost/sounds/sine.wav", sine_wav}}};
     pal::register_packaged_responses("http://localhost/", fixture_path, responses);
 
     // music (0.5) <- effects (0.5) <- the sound: a quarter of its level.
@@ -122,6 +124,67 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::string broken,
     lines.push_back("shared " + std::to_string(static_cast<int>(buffered->get_buffer() == buffer)));
     dispose_sound(buffered);
 
+    // An analyser on a 1500 Hz sine: bin 64 of a 2048-point FFT at 48 kHz.
+    StaticSoundOptions sine_options{};
+    sine_options.loop = true;
+    const auto sine =
+        co_await create_sound_async(engine, std::string("/sounds/sine.wav"), sine_options);
+    enable_analyzer(sine);
+    const auto analyser = std::static_pointer_cast<AnalyzerSubNode>(sine->graph->analyzer)->node;
+    const auto attributes = [&] {
+        std::string line;
+        for (const auto property :
+             {pal::AnalyserProperty::MinDecibels, pal::AnalyserProperty::MaxDecibels,
+              pal::AnalyserProperty::SmoothingTimeConstant, pal::AnalyserProperty::FftSize,
+              pal::AnalyserProperty::FrequencyBinCount})
+            line += " " + fixed(pal::audio_analyser_property(analyser, property));
+        return line;
+    };
+    lines.push_back("analyser" + attributes());
+    play_sound(sine);
+    static_cast<void>(render(context, 9600, 2400));
+    js::TypedArray<std::uint8_t> bins(1024);
+    get_byte_frequency_data(sine, bins);
+    std::size_t loudest = 0;
+    for (std::size_t index = 1; index < bins.size(); ++index)
+        if (bins.load(index) > bins.load(loudest))
+            loudest = index;
+    js::F32Array decibels(1024);
+    get_float_frequency_data(sine, decibels);
+    std::size_t strongest = 0;
+    for (std::size_t index = 1; index < decibels.size(); ++index)
+        if (decibels.load(index) > decibels.load(strongest))
+            strongest = index;
+    lines.push_back("spectrum " + std::to_string(loudest) + " " + std::to_string(strongest));
+    js::F32Array waveform(2048);
+    get_float_time_domain_data(sine, waveform);
+    float top = 0.0f;
+    for (std::size_t index = 0; index < waveform.size(); ++index)
+        top = std::max(top, std::abs(waveform.load(index)));
+    js::TypedArray<std::uint8_t> levels(2048);
+    get_byte_time_domain_data(sine, levels);
+    std::uint8_t lowest = 255;
+    std::uint8_t highest = 0;
+    for (std::size_t index = 0; index < levels.size(); ++index) {
+        lowest = std::min(lowest, levels.load(index));
+        highest = std::max(highest, levels.load(index));
+    }
+    lines.push_back("waveform " + fixed(top) + " " + std::to_string(lowest) + " " +
+                    std::to_string(highest));
+    // Reconfigured: a smaller FFT keeps the smoothing; the range is written whole.
+    AudioAnalyzerOptions reconfigured{};
+    reconfigured.fft_size = 1024.0;
+    reconfigured.min_decibels = -90.0;
+    reconfigured.max_decibels = -10.0;
+    reconfigured.smoothing = 0.5;
+    enable_analyzer(sine, reconfigured);
+    lines.push_back("reconfigured" + attributes());
+    lines.push_back("refused " + labsound_fixture::thrown([&] {
+                        pal::audio_set_analyser_property(analyser, pal::AnalyserProperty::FftSize,
+                                                         1000.0);
+                    }));
+    dispose_sound(sine);
+
     // A sound on the main bus, panned: equal-power stereo panning of mono,
     // measured once LabSound's de-zippered pan settles.
     StaticSoundOptions panned_options{};
@@ -145,7 +208,7 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::string broken,
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 3)
+    if (argc != 4)
         return 2;
     _putenv_s("BBLITE_AUDIO_CAPTURE", "audio-mixer-capture-unused.wav");
     std::vector<std::string> lines;
@@ -154,7 +217,7 @@ int main(int argc, char** argv) {
         const js::RealmScope realm;
         pal::EventLoop loop;
         loop.run([&] {
-            static_cast<void>(run(argv[1], argv[2], lines)
+            static_cast<void>(run(argv[1], argv[2], argv[3], lines)
                                   .then(js::Callback<void(js::PromiseVoid)>(
                                             [&](js::PromiseVoid) { loop.close(); }),
                                         js::Callback<void(js::Error)>([&](js::Error error) {

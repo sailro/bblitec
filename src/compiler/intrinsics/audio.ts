@@ -65,17 +65,16 @@ function sourceDisposer(context: AudioIntrinsicContext): string {
 
 /**
  * The Lite audio functions that are not lowered: streaming sounds, the
- * analyzer, the microphone, the unmute UI and the visualizer refuse by name,
- * because a silent no-op would be a scene that renders without sounding. The
- * engine, its master volume, sound buffers, static sounds, buses, their
- * spatial audio and stereo panning, and the engine's media-stream tap run the
- * pin's lowered family (`compileLibraryCall`).
+ * microphone, the unmute UI and the visualizer refuse by name, because a
+ * silent no-op would be a scene that renders without sounding. The engine,
+ * its master volume, sound buffers, static sounds, buses, their spatial
+ * audio, stereo panning and analyzer, and the engine's media-stream tap run
+ * the pin's lowered family (`compileLibraryCall`).
  */
 const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
     createStreamingSoundAsync:
         "streaming sounds wrap an HTMLAudioElement, which a native build " +
         "has no equivalent for.",
-    enableAnalyzer: "the analyzer is not lowered",
     createMicrophoneSoundSourceAsync:
         "microphone capture needs a device-permission contract this " +
         "runtime does not have",
@@ -176,6 +175,14 @@ const SOUND_OPTIONS: OptionKinds = {
     startOffset: "number",
     volume: "number",
     skipCodecCheck: "boolean",
+};
+
+/** An analyzer's options (`enableAnalyzer`). */
+const ANALYZER_OPTIONS: OptionKinds = {
+    fftSize: "number",
+    minDecibels: "number",
+    maxDecibels: "number",
+    smoothing: "number",
 };
 
 /** A bus's options (`createAudioBusAsync`). */
@@ -457,6 +464,34 @@ function busArgument(
         "audio_bus",
         argumentAt(call, 0),
     ).cpp;
+}
+
+/**
+ * An analyzer readout's destination, evaluated into a temporary in source
+ * order: a `Float32Array` as it is, a `Uint8Array` as the library's view over
+ * the same buffer, so the readout lands in the program's array.
+ */
+function analyserReadout(
+    context: AudioIntrinsicContext,
+    call: ts.CallExpression,
+    bytes: boolean,
+): string {
+    const argument = argumentAt(call, 1);
+    const value = context.compileValue(argument);
+    const kind = bytes ? "u8array" : "f32array";
+    if (value.kind !== "data" || value.dataType?.kind !== kind)
+        return context.fail(
+            argument,
+            `An analyzer readout writes into a ${bytes ? "Uint8Array" : "Float32Array"}.`,
+        );
+    const out = context.bindings.pinValueToTemporary(
+        value,
+        "analyser_readout",
+        argument,
+    ).cpp;
+    return bytes
+        ? `bbl::js::TypedArray<std::uint8_t>(${out}.buffer(), static_cast<double>(${out}.byte_offset()), static_cast<double>(${out}.size()))`
+        : out;
 }
 
 /** A sound function's sound, evaluated into a temporary in source order. */
@@ -879,6 +914,35 @@ function compileLibraryCall(
             return {
                 kind: "void",
                 cpp: `bbl::enable_spatial(${sound}, ${lowered.options})`,
+            };
+        }
+        case "enableAnalyzer": {
+            // A static sound's analyser tap off its volume.
+            context.expectArgumentCount(call, 1, 2);
+            reachLibraryRoot(context, importedName, "audio:static-sound", call);
+            context.reachFeature("audio:analyser", call);
+            const sound = soundArgument(context, call);
+            const lowered = soundOptions(context, call.arguments[1], {
+                cppType: "bbl::AudioAnalyzerOptions",
+                kinds: ANALYZER_OPTIONS,
+                label: "Analyzer",
+            });
+            return {
+                kind: "void",
+                cpp: `bbl::enable_analyzer(${sound}, ${lowered.options})`,
+            };
+        }
+        case "getByteFrequencyData":
+        case "getFloatFrequencyData":
+        case "getByteTimeDomainData":
+        case "getFloatTimeDomainData": {
+            context.expectArgumentCount(call, 2, 2);
+            reachLibraryRoot(context, importedName, "audio:static-sound", call);
+            context.reachFeature("audio:analyser", call);
+            const sound = soundArgument(context, call);
+            return {
+                kind: "void",
+                cpp: `bbl::${snakeCase(importedName)}(${sound}, ${analyserReadout(context, call, importedName.includes("Byte"))})`,
             };
         }
         case "enableStereo":

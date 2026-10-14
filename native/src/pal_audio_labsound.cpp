@@ -23,6 +23,7 @@
 #include <bblite/features/has_audio_oscillator.hpp>
 #include <bblite/features/has_audio_panner.hpp>
 #include <bblite/features/has_audio_stereo_panner.hpp>
+#include <bblite/features/has_audio_analyser.hpp>
 #include <bblite/features/workers.hpp>
 
 #include <bblite/js_error.hpp>
@@ -70,6 +71,9 @@
 #endif
 #if BBLITE_HAS_AUDIO_STEREO_PANNER
 #include "LabSound/core/StereoPannerNode.h"
+#endif
+#if BBLITE_HAS_AUDIO_ANALYSER
+#include "LabSound/core/AnalyserNode.h"
 #endif
 #if BBLITE_HAS_AUDIO_MEDIA_STREAM
 #include <bblite/pal_media_stream.hpp>
@@ -1321,6 +1325,169 @@ AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context) {
 #else
     (void)context;
     throw std::runtime_error("Stereo panner support was not compiled.");
+#endif
+}
+
+#if BBLITE_HAS_AUDIO_ANALYSER
+namespace {
+std::shared_ptr<lab::AnalyserNode> require_analyser(AudioNodeHandle node) {
+    auto analyser = std::dynamic_pointer_cast<lab::AnalyserNode>(require_node(node));
+    if (!analyser)
+        throw std::runtime_error("Audio node is not an analyser.");
+    return analyser;
+}
+
+/**
+ * The decibel range, written through LabSound's settings: its maxDecibels
+ * setting hands the analyser the minDecibels setting's value, and a setting
+ * notifies only on change. So the minimum setting carries the maximum first,
+ * a changed maximum setting copies it, then the minimum is set.
+ */
+void set_decibel_range(lab::AnalyserNode& analyser, double minimum, double maximum) {
+    const auto top = static_cast<float>(maximum);
+    analyser.setMinDecibels(top);
+    analyser.setMaxDecibels(top + 1.0f);
+    analyser.setMaxDecibels(top);
+    analyser.setMinDecibels(static_cast<float>(minimum));
+}
+} // namespace
+#else
+namespace {
+[[noreturn]] void analysers_absent() {
+    throw std::runtime_error("Analyser support was not compiled.");
+}
+} // namespace
+#endif
+
+AudioNodeHandle audio_create_analyser(AudioContextHandle context) {
+#if BBLITE_HAS_AUDIO_ANALYSER
+    ContextRecord& record = require_context(context.value);
+    auto value = js::make_gc_shared<AudioNodeRecord>();
+    // LabSound's own default size is 1024; its decibel range and smoothing
+    // defaults are Web Audio's.
+    value->node = std::make_shared<lab::AnalyserNode>(*record.context, 2048);
+    const auto node = value->node;
+    auto handle = insert_node(context, record, std::move(value));
+    record.context->addAutomaticPullNode(node);
+    record.graph.at(node.get()).automatic_pull = true;
+    return handle;
+#else
+    (void)context;
+    analysers_absent();
+#endif
+}
+
+double audio_analyser_property(AudioNodeHandle node, AnalyserProperty property) {
+#if BBLITE_HAS_AUDIO_ANALYSER
+    const auto analyser = require_analyser(node);
+    switch (property) {
+    case AnalyserProperty::FftSize:
+        return static_cast<double>(analyser->fftSize());
+    case AnalyserProperty::FrequencyBinCount:
+        return static_cast<double>(analyser->frequencyBinCount());
+    case AnalyserProperty::MinDecibels:
+        return analyser->minDecibels();
+    case AnalyserProperty::MaxDecibels:
+        return analyser->maxDecibels();
+    case AnalyserProperty::SmoothingTimeConstant:
+        return analyser->smoothingTimeConstant();
+    }
+    throw std::logic_error("Unknown analyser property.");
+#else
+    (void)node;
+    (void)property;
+    analysers_absent();
+#endif
+}
+
+void audio_set_analyser_property(AudioNodeHandle node, AnalyserProperty property, double value) {
+#if BBLITE_HAS_AUDIO_ANALYSER
+    const auto analyser = require_analyser(node);
+    if (!std::isfinite(value))
+        throw js::NamedError("TypeError", "An analyser attribute takes a finite number.");
+    const auto out_of_range = [](const char* message) {
+        return js::make_dom_exception(message, "IndexSizeError");
+    };
+    switch (property) {
+    case AnalyserProperty::FftSize: {
+        const double size = std::trunc(value);
+        const auto whole = static_cast<std::uint32_t>(std::clamp(size, 0.0, 65536.0));
+        if (size < 32.0 || size > 32768.0 || (whole & (whole - 1)) != 0)
+            throw out_of_range("fftSize must be a power of two from 32 to 32768.");
+        // A new size rebuilds LabSound's analyser under the render lock (the
+        // audio thread writes into it); the rebuild keeps the decibel range
+        // but not the smoothing.
+        const double smoothing = analyser->smoothingTimeConstant();
+        ContextRecord& record = require_context(context_of(node.value));
+        lab::ContextRenderLock render(record.context.get(), "bblite analyser size");
+        analyser->setFftSize(render, static_cast<int>(whole));
+        analyser->setSmoothingTimeConstant(smoothing);
+        return;
+    }
+    case AnalyserProperty::FrequencyBinCount:
+        throw std::logic_error("frequencyBinCount is read-only.");
+    case AnalyserProperty::MinDecibels:
+        if (value >= analyser->maxDecibels())
+            throw out_of_range("minDecibels must be less than maxDecibels.");
+        set_decibel_range(*analyser, value, analyser->maxDecibels());
+        return;
+    case AnalyserProperty::MaxDecibels:
+        if (value <= analyser->minDecibels())
+            throw out_of_range("maxDecibels must be greater than minDecibels.");
+        set_decibel_range(*analyser, analyser->minDecibels(), value);
+        return;
+    case AnalyserProperty::SmoothingTimeConstant:
+        if (value < 0.0 || value > 1.0)
+            throw out_of_range("smoothingTimeConstant must lie in [0, 1].");
+        analyser->setSmoothingTimeConstant(value);
+        return;
+    }
+#else
+    (void)node;
+    (void)property;
+    (void)value;
+    analysers_absent();
+#endif
+}
+
+void audio_analyser_byte_data(AudioNodeHandle node, AnalyserData data,
+                              js::TypedArray<std::uint8_t> out) {
+#if BBLITE_HAS_AUDIO_ANALYSER
+    const auto analyser = require_analyser(node);
+    const std::size_t held =
+        data == AnalyserData::Frequency ? analyser->frequencyBinCount() : analyser->fftSize();
+    std::vector<std::uint8_t> values(std::min(out.size(), held));
+    if (data == AnalyserData::Frequency)
+        analyser->getByteFrequencyData(values);
+    else
+        analyser->getByteTimeDomainData(values);
+    for (std::size_t index = 0; index < values.size(); ++index)
+        out.store(index, values[index]);
+#else
+    (void)node;
+    (void)data;
+    (void)out;
+    analysers_absent();
+#endif
+}
+
+void audio_analyser_float_data(AudioNodeHandle node, AnalyserData data, js::F32Array out) {
+#if BBLITE_HAS_AUDIO_ANALYSER
+    const auto analyser = require_analyser(node);
+    const std::size_t held =
+        data == AnalyserData::Frequency ? analyser->frequencyBinCount() : analyser->fftSize();
+    std::vector<float> values(std::min(out.size(), held));
+    if (data == AnalyserData::Frequency)
+        analyser->getFloatFrequencyData(values);
+    else
+        analyser->getFloatTimeDomainData(values);
+    for (std::size_t index = 0; index < values.size(); ++index)
+        out.store(index, values[index]);
+#else
+    (void)node;
+    (void)data;
+    (void)out;
+    analysers_absent();
 #endif
 }
 

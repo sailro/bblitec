@@ -3110,6 +3110,7 @@ export type Feature =
     | "audio:oscillator"
     | "audio:biquad-filter"
     | "audio:stereo-panner"
+    | "audio:analyser"
     | "audio:panner"
     | "audio:media-stream"
     | "audio:pinned-engine"
