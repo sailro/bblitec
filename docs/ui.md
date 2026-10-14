@@ -50,7 +50,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Area | Admitted | Refuses |
 | --- | --- | --- |
 | Tree | Static tags, text nodes, append/insert/prepend/replaceChildren, remove, `replaceWith`, `insertAdjacentElement`, parent/child/sibling reads | Stored child collections, prepend spreads, tree reads inside innerHTML, `replaceWith` text/spreads, dynamic adjacent positions |
-| Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties, dataset, packaged img `src` choices | Compound text/dataset writes, dynamic dataset keys, other property writes; `title` tooltips not rendered |
+| Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties, dataset, packaged img `src` choices, `scrollTop`/`scrollLeft` (applied clamped at the next layout) | Compound text/dataset writes, dynamic dataset keys, other property writes, `draggable = true`, `autocomplete` reads; `title` tooltips not rendered |
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
 | Queries | Literal selectors, runtime text in quoted attribute values, unions of literal selectors, state pseudo-classes, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements, other runtime selector text |
 | Pointer/keyboard | Mouse, multi-touch, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events |
@@ -64,6 +64,10 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - Listener options: `capture`, `once`, `passive`, `signal` ([abort](fidelity.md#semantic-contract)).
 - An event's `target`/`currentTarget` narrowed by `instanceof` to an element is that retained element; writes through it
   lower as the element's own.
+- Script elements are retained, never rendered: an external script fails to load (a task fires `error` after it
+  connects, never `load`); inline script text refuses, or throws NotSupportedError when a connected script gets it.
+- `inputmode`, input `type` and inherited `spellcheck` choose the platform keyboard and autocorrection; labels activate
+  their `for` or nested control.
 - Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
   events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
   mouse beyond the window.

@@ -168,8 +168,8 @@ struct DocumentSnapshot {
     bool focus_visible = true;
     UiElementHandle text_selection{};
     std::uint64_t text_selection_revision = 0;
-    /** The realm's scrollIntoView requests since the last published snapshot. */
-    std::vector<std::pair<UiElementHandle, UiScrollIntoView>> scroll_requests;
+    /** The realm's scroll requests since the last published snapshot. */
+    std::vector<std::pair<UiElementHandle, UiScrollRequest>> scroll_requests;
     std::set<std::string> dom_event_types;
     std::set<std::uint32_t> dom_pointer_elements;
     /** The realm's pointer capture state, which the display targets input by. */
@@ -1231,6 +1231,8 @@ UiClientRect window_element_size(UiElementHandle element) {
     box.height /= layout->pixel_ratio;
     box.offset_width /= layout->pixel_ratio;
     box.offset_height /= layout->pixel_ratio;
+    box.scroll_left /= layout->pixel_ratio;
+    box.scroll_top /= layout->pixel_ratio;
     return box;
 }
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element) {

@@ -6,6 +6,7 @@ import {
     valueForKind,
 } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { deploymentUrl } from "./deployment.js";
 import {
     emissionArray,
     EmissionSet,
@@ -320,7 +321,8 @@ interface UiProjectionContext extends Pick<
 interface UiReflectedAttribute {
     attribute: string;
     readable: boolean;
-    tag?: string;
+    /** The elements declaring the attribute, when not every HTML element does. */
+    tags?: readonly string[];
 }
 /** Elements whose `value` property is their form value. */
 const UI_FORM_VALUE_TAGS = ["textarea", "input", "select", "option", "output"];
@@ -332,13 +334,80 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
         ["lang", { attribute: "lang", readable: true }],
         ["title", { attribute: "title", readable: true }],
         ["type", { attribute: "type", readable: false }],
-        ...["min", "max", "step"].map(
+        ...["min", "max", "step", "pattern"].map(
             (name): [string, UiReflectedAttribute] => [
                 name,
-                { attribute: name, readable: true, tag: "input" },
+                { attribute: name, readable: true, tags: ["input"] },
             ],
         ),
+        [
+            "alt",
+            {
+                attribute: "alt",
+                readable: true,
+                tags: ["img", "input", "area"],
+            },
+        ],
+        [
+            "placeholder",
+            {
+                attribute: "placeholder",
+                readable: true,
+                tags: ["input", "textarea"],
+            },
+        ],
+        ["htmlFor", { attribute: "for", readable: true, tags: ["label"] }],
+        // Its getter is the IDL-exposed autofill value, which is not lowered.
+        [
+            "autocomplete",
+            {
+                attribute: "autocomplete",
+                readable: false,
+                tags: ["input", "textarea", "select", "form"],
+            },
+        ],
     ]);
+
+/**
+ * Element IDL attributes whose HTML getter or setter is more than plain
+ * string reflection, and the elements declaring them when not every HTML
+ * element does.
+ */
+type UiIdlAttribute = { tags?: readonly string[] } & (
+    | { kind: "script-async" }
+    | { kind: "script-src" }
+    | { kind: "max-length" }
+    | { kind: "draggable" }
+    | { kind: "spellcheck" }
+    | { kind: "input-mode" }
+    | { kind: "scroll"; left: boolean }
+);
+
+const UI_IDL_ATTRIBUTES: ReadonlyMap<string, UiIdlAttribute> = new Map<
+    string,
+    UiIdlAttribute
+>([
+    ["async", { kind: "script-async", tags: ["script"] }],
+    ["src", { kind: "script-src", tags: ["script"] }],
+    ["maxLength", { kind: "max-length", tags: ["input", "textarea"] }],
+    ["draggable", { kind: "draggable" }],
+    ["spellcheck", { kind: "spellcheck" }],
+    ["inputMode", { kind: "input-mode" }],
+    ["scrollLeft", { kind: "scroll", left: true }],
+    ["scrollTop", { kind: "scroll", left: false }],
+]);
+
+/** The `inputmode` keywords (HTML), its missing and invalid states both reading "". */
+const UI_INPUT_MODES = [
+    "none",
+    "text",
+    "tel",
+    "url",
+    "email",
+    "numeric",
+    "decimal",
+    "search",
+];
 
 /** A link's `target` names this browsing context: absent, empty, `_self`, `_parent` or `_top`. */
 function linksThisContext(
@@ -5013,14 +5082,169 @@ export class UiProjection {
     ): UiReflectedAttribute | undefined {
         const reflected = UI_REFLECTED_ATTRIBUTES.get(property);
         if (
-            reflected?.tag !== undefined &&
-            this.declaredUiTag(element, receiver) !== reflected.tag
+            reflected?.tags !== undefined &&
+            !this.declaresUiTags(element, receiver, reflected.tags)
         )
             this.context.fail(
                 site,
-                `UI ${property} requires an ${reflected.tag} element.`,
+                `UI ${property} requires a <${reflected.tags.join("> or <")}> element.`,
             );
         return reflected;
+    }
+
+    /**
+     * An IDL attribute with an HTML getter or setter of its own, when the
+     * element declares it: script `src` is the script's, other elements'
+     * `src` writes have their own paths.
+     */
+    private uiIdlAttribute(
+        element: Value,
+        property: string,
+        receiver: ts.Expression,
+        site: ts.Node,
+    ): UiIdlAttribute | undefined {
+        const attribute = UI_IDL_ATTRIBUTES.get(property);
+        if (
+            !attribute?.tags ||
+            this.declaresUiTags(element, receiver, attribute.tags)
+        )
+            return attribute;
+        if (attribute.kind === "script-src") return undefined;
+        return this.context.fail(
+            site,
+            `UI ${property} requires a <${attribute.tags.join("> or <")}> element.`,
+        );
+    }
+
+    /** The native write of an IDL attribute `uiIdlAttribute` names. */
+    private emitUiIdlAttributeWrite(
+        element: Value,
+        engine: string,
+        property: string,
+        expression: ts.BinaryExpression,
+        receiver: ts.Expression,
+    ): boolean {
+        const attribute = this.uiIdlAttribute(
+            element,
+            property,
+            receiver,
+            expression.left,
+        );
+        if (!attribute) return false;
+        const target = `${engine}, ${element.cpp}`;
+        const emit = (code: string): true => {
+            this.context.emit({ kind: "expression", code: `${code};` });
+            return true;
+        };
+        switch (attribute.kind) {
+            case "script-async":
+                return emit(
+                    `bbl::ui_set_script_async(${target}, ${this.uiBooleanCpp(expression.right, "UI script async")})`,
+                );
+            case "script-src":
+                // Only an application realm's task queue dispatches its error.
+                if (!this.context.options.workers)
+                    throw new ApplicationRealmRequired();
+                return emit(
+                    `bbl::ui_set_attribute(${target}, "src", ${this.uiStringCpp(expression.right, "UI script src")})`,
+                );
+            case "max-length":
+                return emit(
+                    `bbl::ui_set_max_length(${target}, ${this.context.compileNumber(expression.right, "double")})`,
+                );
+            case "draggable": {
+                // Only `false`, which matches a native UI that starts no
+                // element drags; `true` would need drag-and-drop.
+                if (
+                    this.context.unwrap(expression.right).kind !==
+                    ts.SyntaxKind.FalseKeyword
+                )
+                    return this.context.fail(
+                        expression.right,
+                        "Element drag-and-drop is not lowered natively: only draggable = false is.",
+                    );
+                return emit(
+                    `bbl::ui_set_attribute(${target}, "draggable", "false")`,
+                );
+            }
+            case "spellcheck":
+                return emit(
+                    `bbl::ui_set_attribute(${target}, "spellcheck", std::string((${this.uiBooleanCpp(expression.right, "UI spellcheck")}) ? "true" : "false"))`,
+                );
+            case "input-mode":
+                return emit(
+                    `bbl::ui_set_attribute(${target}, "inputmode", ${this.uiStringCpp(expression.right, "UI inputMode")})`,
+                );
+            case "scroll":
+                return emit(
+                    `bbl::ui_set_scroll_offset(${target}, ${attribute.left}, ${this.context.compileNumber(expression.right, "double")})`,
+                );
+        }
+    }
+
+    /** The native read of an IDL attribute `uiIdlAttribute` names. */
+    public uiIdlAttributeRead(
+        element: Value,
+        property: string,
+        receiver: ts.Expression,
+        site: ts.Node,
+    ): Value | undefined {
+        if (
+            property === "autocomplete" &&
+            this.declaresUiTags(element, receiver, [
+                "input",
+                "textarea",
+                "select",
+                "form",
+            ])
+        )
+            return this.context.fail(
+                site,
+                "Reading autocomplete (the IDL-exposed autofill value) is not lowered natively.",
+            );
+        const attribute = this.uiIdlAttribute(
+            element,
+            property,
+            receiver,
+            site,
+        );
+        if (!attribute) return undefined;
+        const target = `${this.context.requireEngine(element, site)}, ${element.cpp}`;
+        const read = (
+            cpp: string,
+            kind: "boolean" | "number" | "string",
+        ): Value => ({
+            kind,
+            cpp,
+            dataType: { kind },
+            impure: true,
+            ...(kind === "string" ? { freshData: true } : {}),
+        });
+        switch (attribute.kind) {
+            case "script-async":
+                return read(`bbl::ui_script_async(${target})`, "boolean");
+            case "script-src":
+                return read(
+                    `bbl::ui_get_url_attribute(${target}, "src", ${this.context.cppString(deploymentUrl(this.context.options).href)})`,
+                    "string",
+                );
+            case "max-length":
+                return read(`bbl::ui_get_max_length(${target})`, "number");
+            case "draggable":
+                return read(`bbl::ui_get_draggable(${target})`, "boolean");
+            case "spellcheck":
+                return read(`bbl::ui_get_spellcheck(${target})`, "boolean");
+            case "input-mode":
+                return read(
+                    `bbl::ui_get_enumerated_attribute(${target}, "inputmode", {${UI_INPUT_MODES.map((mode) => this.context.cppString(mode)).join(", ")}})`,
+                    "string",
+                );
+            case "scroll":
+                return read(
+                    `bbl::ui_scroll_offset(${target}, ${attribute.left})`,
+                    "number",
+                );
+        }
     }
 
     /** Retained controls dispatching input and change from their own state. */
@@ -5536,6 +5760,18 @@ export class UiProjection {
                     return true;
                 }
             }
+            if (
+                ["textContent", "innerText", "innerHTML", "text"].includes(
+                    property,
+                ) &&
+                this.declaresUiTags(directElement, expression.left.expression, [
+                    "script",
+                ])
+            )
+                this.context.fail(
+                    expression.left,
+                    "Inline script text does not run natively: there is no JavaScript engine.",
+                );
             if (property === "textContent" || property === "innerText") {
                 this.recordUiStaticReplaceChildren(directElement);
                 let textCpp: string;
@@ -5628,6 +5864,16 @@ export class UiProjection {
                 });
                 return true;
             }
+            if (
+                this.emitUiIdlAttributeWrite(
+                    directElement,
+                    engine,
+                    property,
+                    expression,
+                    expression.left.expression,
+                )
+            )
+                return true;
             const attribute = this.reflectedUiAttribute(
                 directElement,
                 property,
