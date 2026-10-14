@@ -596,6 +596,7 @@ export const webAudioRecords: readonly RecordSpec[] = [
             "AudioBufferSourceNode",
             "AudioScheduledSourceNode",
             "PannerNode",
+            "StereoPannerNode",
             "MediaStreamAudioDestinationNode",
         ],
         cpp: "pal::AudioNodeHandle",
@@ -1147,6 +1148,19 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
                 if ((call.arguments?.length ?? 0) > 1)
                     throw new Error("A lowered PannerNode takes no options.");
                 return `${AUDIO}::audio_create_panner(${argument(0)})`;
+            },
+            parameters: [record("BaseAudioContext")],
+        },
+    ],
+    [
+        "StereoPannerNode",
+        {
+            cpp: (argument, call) => {
+                if ((call.arguments?.length ?? 0) > 1)
+                    throw new Error(
+                        "A lowered StereoPannerNode takes no options.",
+                    );
+                return `${AUDIO}::audio_create_stereo_panner(${argument(0)})`;
             },
             parameters: [record("BaseAudioContext")],
         },

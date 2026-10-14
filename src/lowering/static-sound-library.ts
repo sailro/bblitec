@@ -16,8 +16,9 @@
  * looped sound started while the context is not running -- refuses at run
  * time.
  *
- * Spatial audio (`spatial.ts`) joins the model when a program reaches it,
- * as the pin tree-shakes it: a panner sub-node per sound and the engine's
+ * Spatial audio (`spatial.ts`) and stereo panning (`stereo.ts`) join the
+ * model when a program reaches them, as the pin tree-shakes them: a panner or
+ * stereo panner sub-node per sound and, for spatial audio, the engine's
  * listener over the context's `AudioListener`. A host is a static sound,
  * the one host this surface lowers; the engine keeps the listener and the
  * attached nodes' updates in its native handle.
@@ -100,6 +101,9 @@ const BUS_ROOTS = [
     "disposeAudioBus",
 ] as const;
 
+/** The stereo functions a program calls. */
+const STEREO_ROOTS = ["enableStereo", "setStereoPan"] as const;
+
 /** The spatial functions a program calls. */
 const SPATIAL_ROOTS = [
     "enableSpatial",
@@ -118,6 +122,7 @@ export const AUDIO_LIBRARY_ROOTS: readonly string[] = [
     ...ENGINE_ROOTS,
     ...STATIC_SOUND_ROOTS,
     ...BUS_ROOTS,
+    ...STEREO_ROOTS,
     ...SPATIAL_ROOTS,
     ...MEDIA_STREAM_ROOTS,
 ];
@@ -508,6 +513,21 @@ const spatialRecords: readonly RecordSpec[] = [
     },
 ];
 
+/** Stereo panning's records: its options and its sub-node, the sub-graph's slot. */
+const stereoRecords: readonly RecordSpec[] = [
+    {
+        pinned: ["StereoSoundOptions"],
+        cpp: "StereoSoundOptions",
+        reference: false,
+    },
+    {
+        pinned: ["StereoSubNode"],
+        cpp: "StereoSubNode",
+        reference: true,
+        bases: ["PreVolumeSlot"],
+    },
+];
+
 /** An optional part of the family, lowered when a program reaches one of its roots. */
 interface FamilyPart {
     readonly roots: readonly string[];
@@ -537,6 +557,11 @@ const FAMILY_PARTS: readonly FamilyPart[] = [
             "bblite/pal_audio_element.hpp",
             "bblite/web_platform.hpp",
         ],
+    },
+    {
+        roots: STEREO_ROOTS,
+        modules: ["src/audio/stereo.ts"],
+        records: stereoRecords,
     },
     {
         roots: SPATIAL_ROOTS,

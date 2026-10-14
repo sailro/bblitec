@@ -139,7 +139,7 @@ test("audio engine options adopt a context and refuse other present members once
 test("missing audio graph operations retain declared results and later authored bodies", () => {
     const result = compileSource(
         `
-        import {createAudioEngineAsync,createSoundBufferAsync,createStreamingSoundAsync,createMicrophoneSoundSourceAsync,enableStereo,enableAnalyzer,type StaticSound} from "@babylonjs/lite";
+        import {createAudioEngineAsync,createSoundBufferAsync,createStreamingSoundAsync,createMicrophoneSoundSourceAsync,enableAnalyzer,type StaticSound} from "@babylonjs/lite";
         async function run(){
             try {
                 const engine=await createAudioEngineAsync();
@@ -148,7 +148,6 @@ test("missing audio graph operations retain declared results and later authored 
                 await createStreamingSoundAsync(engine,"sound.wav");
                 await createMicrophoneSoundSourceAsync(engine);
                 for(const sound of sounds.values()){
-                    enableStereo(sound,{pan:0.5});
                     enableAnalyzer(sound);
                 }
             }catch(error){if(!error.message.includes("babylon:createSoundBufferAsync"))throw error;}
@@ -158,7 +157,7 @@ test("missing audio graph operations retain declared results and later authored 
     `,
         { deferredCapabilities },
     );
-    assert.equal(result.manifest.deferredCapabilities?.length, 5);
+    assert.equal(result.manifest.deferredCapabilities?.length, 4);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(

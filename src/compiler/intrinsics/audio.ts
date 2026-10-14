@@ -64,11 +64,11 @@ function sourceDisposer(context: AudioIntrinsicContext): string {
 
 /**
  * The Lite audio functions that are not lowered: sound buffers, streaming
- * sounds, stereo, the analyzer, the microphone, the unmute UI and the
- * visualizer refuse by name, because a silent no-op would be a scene that
- * renders without sounding. The engine, its master volume, static sounds,
- * buses, their spatial audio and the engine's media-stream tap run the pin's
- * lowered family (`compileLibraryCall`).
+ * sounds, the analyzer, the microphone, the unmute UI and the visualizer
+ * refuse by name, because a silent no-op would be a scene that renders
+ * without sounding. The engine, its master volume, static sounds, buses,
+ * their spatial audio and stereo panning, and the engine's media-stream tap
+ * run the pin's lowered family (`compileLibraryCall`).
  */
 const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
     createSoundBufferAsync:
@@ -77,7 +77,6 @@ const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
     createStreamingSoundAsync:
         "streaming sounds wrap an HTMLAudioElement, which a native build " +
         "has no equivalent for.",
-    enableStereo: "stereo panning is not lowered",
     enableAnalyzer: "the analyzer is not lowered",
     createMicrophoneSoundSourceAsync:
         "microphone capture needs a device-permission contract this " +
@@ -844,6 +843,39 @@ function compileLibraryCall(
             return {
                 kind: "void",
                 cpp: `bbl::enable_spatial(${sound}, ${lowered.options})`,
+            };
+        }
+        case "enableStereo":
+        case "setStereoPan": {
+            // A static sound's stereo panner sub-node.
+            const stereo = importedName === "enableStereo";
+            context.expectArgumentCount(call, stereo ? 1 : 2, stereo ? 2 : 3);
+            reachLibraryRoot(context, importedName, "audio:static-sound", call);
+            context.reachFeature("audio:stereo-panner", call);
+            const sound = soundArgument(context, call);
+            if (stereo) {
+                const lowered = soundOptions(context, call.arguments[1], {
+                    cppType: "bbl::StereoSoundOptions",
+                    kinds: { pan: "number" },
+                    label: "Stereo",
+                });
+                return {
+                    kind: "void",
+                    cpp: `bbl::enable_stereo(${sound}, ${lowered.options})`,
+                };
+            }
+            const pan = pinCpp(
+                context,
+                context.compileNumber(argumentAt(call, 1), "double"),
+                "stereo_pan",
+                "const double",
+            );
+            const ramp = call.arguments[2]
+                ? soundOptions(context, call.arguments[2], RAMP_OPTIONS)
+                : undefined;
+            return {
+                kind: "void",
+                cpp: `bbl::set_stereo_pan(${sound}, ${pan}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp.options})` : ""})`,
             };
         }
         case "setSpatialPosition": {

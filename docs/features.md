@@ -7,7 +7,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
-buffers, streaming sounds, stereo/analyzer, script elements, `prompt`, application-realm
+buffers, streaming sounds, the analyzer, script elements, `prompt`, application-realm
 device recovery, and the [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
 
 ## Language
@@ -201,7 +201,8 @@ family in an application realm. Sources: an audio URL, an `ArrayBuffer` or an `A
 refuse. A looped sound started while its context is not running throws (no statechange). Buses (`createAudioBusAsync`,
 `setBusVolume`, `disposeAudioBus`, the `outBus` option) run the pin's mixer. `enableSpatial`,
 `setSpatialPosition` and `setSpatialListenerPosition` add the pin's panner sub-node and listener; the `position`,
-orientation and attachment options refuse.
+orientation and attachment options refuse. `enableStereo` and `setStereoPan` add its stereo panner sub-node. Sub-node
+hosts are static sounds.
 `createAudioEngineMediaStream` taps the engine's master output into a stream destination's stream.
 
 Media elements (application realm): `new Audio(url)` with an audio URL, `play`/`pause`/`load`, `removeAttribute("src")`,

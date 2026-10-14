@@ -1,8 +1,9 @@
 // The lowered audio library's mixer surface (test/audio-mixer.test.ts writes
 // it) over the real LabSound PAL, rendered offline between its calls: a
 // looped constant-level WAVE sound routed through two nested buses, each
-// bus's volume set and ramped, then a bus disposed. Prints one line per
-// step: the left and right channel peaks once settled.
+// bus's volume set and ramped, then a bus disposed; a second sound panned
+// across the stereo field. Prints one line per step: the left and right
+// channel peaks once settled.
 
 #include "pal_audio_labsound.cpp"
 #include "labsound-fixture.hpp"
@@ -86,10 +87,27 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::vector<std::string>& line
 
     // The inner bus's sub-graph disconnects: nothing reaches the output.
     dispose_audio_bus(effects);
-    lines.push_back("disposed " + std::to_string(engine.buses.size()) +
-                    render(context, 4800, 2400));
+    lines.push_back("remaining " + std::to_string(engine.buses.size()));
+    lines.push_back("disposed" + render(context, 4800, 2400));
     dispose_sound(sound);
     dispose_audio_bus(music);
+
+    // A sound on the main bus, panned: equal-power stereo panning of mono,
+    // measured once LabSound's de-zippered pan settles.
+    StaticSoundOptions panned_options{};
+    panned_options.loop = true;
+    const auto panned =
+        co_await create_sound_async(engine, std::string("/sounds/tone.wav"), panned_options);
+    StereoSoundOptions stereo{};
+    stereo.pan = 1.0;
+    enable_stereo(panned, stereo);
+    play_sound(panned);
+    lines.push_back("pan-right" + render(context, 19200, 4800));
+    set_stereo_pan(panned, -1.0, instant);
+    lines.push_back("pan-left" + render(context, 19200, 4800));
+    set_stereo_pan(panned, 0.0, instant);
+    lines.push_back("pan-centre" + render(context, 19200, 4800));
+    dispose_sound(panned);
     co_return js::PromiseVoid{};
 }
 
