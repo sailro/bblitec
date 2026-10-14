@@ -32,7 +32,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "flow-graph-runtime": "std::shared_ptr<bbl::FlowGraphRuntime>",
     "audio-buffer": "bbl::pal::AudioBufferHandle",
     "audio-engine": "bbl::AudioEngineHandle",
-    "audio-source": "bbl::AudioSourceHandle",
+    "audio-source": "std::shared_ptr<bbl::AudioInputSource>",
     "static-sound": "std::shared_ptr<bbl::StaticSound>",
     "audio-bus": "std::shared_ptr<bbl::AudioBus>",
     "sound-buffer": "std::shared_ptr<bbl::SoundBuffer>",

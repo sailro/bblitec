@@ -869,9 +869,10 @@ private:
  */
 class StreamSourceNode final : public lab::AudioNode {
 public:
-    StreamSourceNode(lab::AudioContext& context, MediaStreamTrackHandle track)
+    StreamSourceNode(lab::AudioContext& context, MediaStreamTrackHandle track,
+                     MediaStreamHandle stream)
         : lab::AudioNode(context, stereo_node_descriptor()), track_(std::move(track)),
-          cursor_(track_->audio->position()) {
+          stream_(std::move(stream)), cursor_(track_->audio->position()) {
         _self->m_channelCountMode = lab::ChannelCountMode::Explicit;
         initialize();
     }
@@ -888,11 +889,14 @@ public:
         std::fill(right + copied, right + frames, 0.0f);
     }
     void reset(lab::ContextRenderLock&) override {}
+    /** The stream the node was created from (`mediaStream`). */
+    [[nodiscard]] const MediaStreamHandle& stream() const { return stream_; }
 
 private:
     double tailTime(lab::ContextRenderLock&) const override { return 0; }
     double latencyTime(lab::ContextRenderLock&) const override { return 0; }
     MediaStreamTrackHandle track_;
+    MediaStreamHandle stream_;
     std::uint64_t cursor_;
 };
 #endif
@@ -1281,7 +1285,7 @@ AudioNodeHandle audio_create_media_stream_source(AudioContextHandle context,
             "The MediaStream audio sample rate differs from the AudioContext sample rate.",
             "NotSupportedError");
     auto value = js::make_gc_shared<AudioNodeRecord>();
-    value->node = std::make_shared<StreamSourceNode>(*record.context, selected);
+    value->node = std::make_shared<StreamSourceNode>(*record.context, selected, stream);
     // A stream source keeps producing while connected, like a started source.
     value->source = std::make_shared<AudioSourceState>();
     value->source->started = true;
@@ -1289,6 +1293,27 @@ AudioNodeHandle audio_create_media_stream_source(AudioContextHandle context,
 #else
     (void)context;
     (void)stream;
+    throw std::runtime_error("Media stream audio support was not compiled.");
+#endif
+}
+
+bool audio_is_media_stream_source(AudioNodeHandle node) {
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    return std::dynamic_pointer_cast<StreamSourceNode>(require_node(node)) != nullptr;
+#else
+    static_cast<void>(require_node(node));
+    return false;
+#endif
+}
+
+std::shared_ptr<MediaStream> audio_source_stream(AudioNodeHandle node) {
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    const auto source = std::dynamic_pointer_cast<StreamSourceNode>(require_node(node));
+    if (!source)
+        throw std::runtime_error("Audio node is not a MediaStreamAudioSourceNode.");
+    return source->stream();
+#else
+    (void)node;
     throw std::runtime_error("Media stream audio support was not compiled.");
 #endif
 }

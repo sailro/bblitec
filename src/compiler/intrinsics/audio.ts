@@ -1,9 +1,8 @@
 import type { LoweringServices } from "../lowering-services.js";
-// Babylon Lite's audio functions: the engine, its master volume, static
-// sounds, spatial audio and the engine's media-stream tap call the pin's
-// lowered family (static-sound-library.ts); a caller-built source joins the
-// engine's main bus and source disposal is lowered from the pinned
-// declarations. The rest of the family refuses by name.
+// Babylon Lite's audio functions call the pin's lowered family
+// (static-sound-library.ts); the engine's disposal of what it holds is
+// lowered from the pinned declarations. The rest of the family refuses by
+// name.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { pinCpp } from "../evaluation-order.js";
@@ -11,7 +10,7 @@ import { presenceCpp, type Feature, type Value } from "../types.js";
 import type { DataType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { packagedAudioUrl, refuseAudioName } from "../audio-surface.js";
-import { lowerAudioSourceDisposal } from "../../lowering/audio-source-lowerer.js";
+import { lowerEngineSoundsDisposal } from "../../lowering/audio-engine-disposal.js";
 import { isNullable } from "../type-facts.js";
 import {
     emitPresentOption,
@@ -56,10 +55,11 @@ export interface AudioIntrinsicContext
             | "unwrap"
         > {}
 
-function sourceDisposer(context: AudioIntrinsicContext): string {
+/** `disposeAudioEngine`'s disposal of what the engine holds, lowered once. */
+function engineSoundsDisposer(context: AudioIntrinsicContext): string {
     return context.nativeEmission.lowerOnce(
-        "dispose_audio_source",
-        lowerAudioSourceDisposal,
+        "dispose_engine_sounds",
+        lowerEngineSoundsDisposal,
     );
 }
 
@@ -114,29 +114,6 @@ function engineArgument(
     ).cpp;
 }
 
-function requireAbsentOptions(
-    context: AudioIntrinsicContext,
-    argument: ts.Expression | undefined,
-    name: string,
-): void {
-    if (!argument) return;
-    const value = ts.isIdentifier(argument)
-        ? context.compileValue(argument)
-        : undefined;
-    if (value?.kind === "json-null") return;
-    const present = value && presenceCpp(value);
-    if (present && isNullable(context.checker.getTypeAtLocation(argument))) {
-        context.emit(
-            `if (${present}) throw std::runtime_error("${name} options are not lowered");`,
-        );
-        return;
-    }
-    context.fail(
-        argument,
-        `${name} options are not lowered; the reached calls pass none.`,
-    );
-}
-
 // -- static sounds -------------------------------------------------------
 
 /** The static-sound handle a sound function receives. */
@@ -144,6 +121,9 @@ const staticSoundType: DataType = { kind: "handle", handle: "static-sound" };
 
 /** The sound buffer handle `createSoundBufferAsync` settles with. */
 const soundBufferType: DataType = { kind: "handle", handle: "sound-buffer" };
+
+/** The source handle `createSoundSourceAsync` settles with. */
+const audioSourceType: DataType = { kind: "handle", handle: "audio-source" };
 
 /** The bus handle `createAudioBusAsync` settles with. */
 const audioBusType: DataType = { kind: "handle", handle: "audio-bus" };
@@ -183,6 +163,13 @@ const ANALYZER_OPTIONS: OptionKinds = {
     minDecibels: "number",
     maxDecibels: "number",
     smoothing: "number",
+};
+
+/** A source's options (`createSoundSourceAsync`); `outBus` is consumed. */
+const SOURCE_OPTIONS: OptionKinds = {
+    name: "string",
+    outBusAutoDefault: "boolean",
+    volume: "number",
 };
 
 /** A bus's options (`createAudioBusAsync`). */
@@ -450,6 +437,20 @@ function refuseHrtf(
             argument,
             'Spatial panningModel "HRTF" is not lowered: it needs an HRTF database, which this build does not package.',
         );
+}
+
+/** A source function's source, evaluated into a temporary in source order. */
+function sourceArgument(
+    context: AudioIntrinsicContext,
+    call: ts.CallExpression,
+): string {
+    const source = context.compileValue(argumentAt(call, 0));
+    context.expectKind(source, "audio-source", argumentAt(call, 0));
+    return context.bindings.pinValueToTemporary(
+        source,
+        "audio_source",
+        argumentAt(call, 0),
+    ).cpp;
 }
 
 /** A bus function's bus, evaluated into a temporary in source order. */
@@ -765,6 +766,89 @@ function compileLibraryCall(
                 },
             };
         }
+        case "createSoundSourceAsync": {
+            // A node the caller built, routed as a sound into a bus.
+            context.expectArgumentCount(call, 2, 3);
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:pinned-engine",
+                call,
+            );
+            const engine = engineArgument(context, call, "source_engine");
+            const node = context.compileValue(argumentAt(call, 1));
+            context.expectKind(node, "audio-node", argumentAt(call, 1));
+            const input = context.bindings.pinValueToTemporary(
+                node,
+                "source_node",
+                argumentAt(call, 1),
+            ).cpp;
+            const lowered = soundOptions(context, call.arguments[2], {
+                cppType: "bbl::SoundSourceOptions",
+                kinds: SOURCE_OPTIONS,
+                consumers: { outBus: outBusConsumer(context) },
+                label: "Sound source",
+            });
+            const created = `bbl::create_sound_source_async(${engine}, ${input}, ${lowered.options})`;
+            if (context.options.workers)
+                return {
+                    kind: "promise",
+                    cpp: created,
+                    promiseType: "std::shared_ptr<bbl::AudioInputSource>",
+                    promiseResult: {
+                        kind: "audio-source",
+                        cpp: "",
+                        dataType: audioSourceType,
+                    },
+                };
+            // The entry realm reads the settlement in place: the pin's
+            // function never suspends.
+            return context.bindings.pinValueToTemporary(
+                {
+                    kind: "audio-source",
+                    cpp: `bbl::js::settle_in_place<std::shared_ptr<bbl::AudioInputSource>>([&] { return ${created}; })`,
+                    dataType: audioSourceType,
+                },
+                "audio_source",
+                call,
+            );
+        }
+        case "setSoundSourceVolume": {
+            context.expectArgumentCount(call, 2, 3);
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:pinned-engine",
+                call,
+            );
+            const source = sourceArgument(context, call);
+            const volume = pinCpp(
+                context,
+                context.compileNumber(argumentAt(call, 1), "double"),
+                "source_volume",
+                "const double",
+            );
+            const ramp = call.arguments[2]
+                ? soundOptions(context, call.arguments[2], RAMP_OPTIONS)
+                : undefined;
+            return {
+                kind: "void",
+                cpp: `bbl::set_sound_source_volume(${source}, ${volume}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp.options})` : ""})`,
+            };
+        }
+        case "disposeSoundSource": {
+            context.expectArgumentCount(call, 1, 1);
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:pinned-engine",
+                call,
+            );
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_sound_source(${sourceArgument(context, call)})`,
+            };
+        }
         case "createAudioBusAsync": {
             // The bus settles on the realm's loop, as the pin's does.
             context.expectArgumentCount(call, 2, 3);
@@ -1072,99 +1156,11 @@ export function compileAudioIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "audio-engine", argumentAt(call, 0));
-            context.emit(
-                `${sourceDisposer(context)}_engine_sources(${engine.cpp});`,
-            );
+            context.emit(`${engineSoundsDisposer(context)}(${engine.cpp});`);
             return {
                 kind: "void",
                 cpp: `bbl::pal::audio_close_context((${engine.cpp}).context)`,
             };
-        }
-
-        case "disposeSoundSource": {
-            context.expectArgumentCount(call, 1, 1);
-            const source = context.compileValue(argumentAt(call, 0));
-            context.expectKind(source, "audio-source", argumentAt(call, 0));
-            return {
-                kind: "void",
-                cpp: `${sourceDisposer(context)}(${source.cpp})`,
-            };
-        }
-
-        case "createSoundSourceAsync": {
-            // The one sound-family entry point the demos reach, and the
-            // reason they reach it: it routes a node the CALLER built into
-            // the engine's main bus, so a hand-made graph shares the
-            // engine's master volume and unlock handling rather than
-            // opening a second context. The pin wraps it in a
-            // `SoundSubGraph` whose only reached node is the volume gain;
-            // with no spatial, stereo or analyzer sub-node the graph's
-            // head and tail are that one gain, which is what this emits.
-            context.expectArgumentCount(call, 2, 3);
-            let engine = context.compileValue(argumentAt(call, 0));
-            context.expectKind(engine, "audio-engine", argumentAt(call, 0));
-            const deferredOptions =
-                context.options.deferredCapabilities && call.arguments[2];
-            if (deferredOptions)
-                engine = context.bindings.pinValueToTemporary(
-                    engine,
-                    "audio_engine_argument",
-                    argumentAt(call, 0),
-                );
-            let node = context.compileValue(argumentAt(call, 1));
-            context.expectKind(node, "audio-node", argumentAt(call, 1));
-            if (deferredOptions)
-                node = context.bindings.pinValueToTemporary(
-                    node,
-                    "audio_node_argument",
-                    argumentAt(call, 1),
-                );
-            const supported = (): Value => {
-                const mainBus = `(${engine.cpp}).main_bus`;
-                const source = context.allocateTemporaryCppName("audio_source");
-                context.emit({
-                    kind: "declaration",
-                    type: "const bbl::pal::AudioNodeHandle",
-                    name: source,
-                    initializer: `bbl::pal::audio_create_gain((${engine.cpp}).context)`,
-                });
-                context.emit({
-                    kind: "expression",
-                    code: `bbl::pal::audio_connect(${source}, ${mainBus});`,
-                });
-                context.emit({
-                    kind: "expression",
-                    code: `bbl::pal::audio_connect(${node.cpp}, ${source});`,
-                });
-                const stored =
-                    context.allocateTemporaryCppName("audio_source_state");
-                context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: stored,
-                    initializer: `bbl::js::make_gc_shared<bbl::AudioSourceState>(bbl::AudioSourceState{{}, ${node.cpp}, ${source}, ${engine.cpp}})`,
-                });
-                // `_dispose: () => disposeSoundSource(source)`, which the
-                // engine's own disposal calls for every sound it holds.
-                context.emit(
-                    `${stored}->dispose = bbl::js::Callback<void()>(bbl::js::make_closure(std::tuple{${stored}}, [](auto& captured) -> void { ${sourceDisposer(context)}(std::get<0>(captured)); }));`,
-                );
-                context.emit(`(${engine.cpp}).sources.add(${stored});`);
-                return {
-                    kind: "audio-source",
-                    cpp: stored,
-                    dataType: { kind: "handle", handle: "audio-source" },
-                    requiresExplicitDiscard: true,
-                };
-            };
-            const deferred = context.deferredCapabilities.compileOptions(
-                call,
-                2,
-                supported,
-            );
-            if (deferred) return deferred;
-            requireAbsentOptions(context, call.arguments[2], importedName);
-            return supported();
         }
 
         default:

@@ -19,12 +19,13 @@ import { wave } from "./native-fixture.js";
 /**
  * A mixer: buses nested under a music bus, a sound routed into one and
  * panned, sounds over a shared buffer and a URL list, a meter reading a
- * sound, re-volumed and re-panned with ramps, a bus disposed, then the
- * engine with the rest.
+ * sound, a named source routed into a bus, re-volumed and re-panned with
+ * ramps, a bus disposed, then the engine with the rest.
  */
 const APPLICATION = `
 import {
-    createAudioBusAsync, createAudioEngineAsync, createSoundAsync, createSoundBufferAsync, disposeAudioBus,
+    createAudioBusAsync, createAudioEngineAsync, createSoundAsync, createSoundBufferAsync, createSoundSourceAsync,
+    disposeAudioBus, disposeSoundSource, setSoundSourceVolume,
     disposeAudioEngine, enableAnalyzer, enableStereo, getByteFrequencyData, getFloatTimeDomainData, playSound,
     setBusVolume, setStereoPan, type AudioBus, type AudioBusOptions,
 } from "@babylonjs/lite";
@@ -53,6 +54,15 @@ async function main(): Promise<void> {
     getByteFrequencyData(sound, bins);
     getFloatTimeDomainData(sound, waveform);
     if (waveform.some((sample) => Math.abs(sample) > 1)) throw new Error("waveform range");
+    // A node the program built, routed as a named source into the music bus.
+    const input = await createSoundSourceAsync(engine, engine.audioContext.createGain(), {
+        name: "input",
+        volume: 0.5,
+        outBus: music,
+    });
+    if (input.name !== "input") throw new Error("source name");
+    setSoundSourceVolume(input, 0.25, { duration: 0.05 });
+    disposeSoundSource(input);
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     setBusVolume(music, 0.25, { duration: 0.05 });
     setStereoPan(sound, 0.5, { duration: 0.05 });
@@ -63,7 +73,7 @@ async function main(): Promise<void> {
 void main();
 `;
 
-test("buses, stereo panning, sound buffers and analyzers compile strictly and run natively", (t) => {
+test("buses, stereo, sound buffers, analyzers and sound sources compile strictly and run natively", (t) => {
     const output = resolve("artifacts/audio-mixer-application");
     const sounds = join(output, "public/assets/sfx");
     mkdirSync(sounds, { recursive: true });
@@ -90,6 +100,9 @@ test("buses, stereo panning, sound buffers and analyzers compile strictly and ru
         "enableAnalyzer",
         "getByteFrequencyData",
         "getFloatTimeDomainData",
+        "createSoundSourceAsync",
+        "setSoundSourceVolume",
+        "disposeSoundSource",
     ])
         assert.ok(result.manifest.audioLibraryRoots?.includes(root), root);
     // The engine's disposal releases its buses as the pin's does.
@@ -133,7 +146,7 @@ ${FIXTURE_APPLICATION}`,
     );
 });
 
-test("buses mix, stereo pans, URL-list sound buffers play and an analyser reads in a LabSound capture", (t) => {
+test("buses, stereo, sound buffers, analysers and sound sources in a LabSound capture", (t) => {
     if (!native) {
         t.skip("The native compiler and pinned LabSound library are required.");
         return;
@@ -161,6 +174,7 @@ test("buses mix, stereo pans, URL-list sound buffers play and an analyser reads 
             "/DBBLITE_HAS_AUDIO_PANNER=1",
             "/DBBLITE_HAS_AUDIO_STEREO_PANNER=1",
             "/DBBLITE_HAS_AUDIO_ANALYSER=1",
+            "/DBBLITE_HAS_AUDIO_MEDIA_STREAM=1",
         ],
         [wav, broken, sine],
     )
@@ -179,7 +193,7 @@ test("buses mix, stereo pans, URL-list sound buffers play and an analyser reads 
         return level;
     };
     const near = (name: string, left: number, right: number): void => {
-        const [l, r] = at(name).map(Number);
+        const [l, r] = at(name).slice(-2).map(Number);
         assert.ok(
             Math.abs(l! - left) < 0.005 && Math.abs(r! - right) < 0.005,
             lines.join(" | "),
@@ -231,6 +245,16 @@ test("buses mix, stereo pans, URL-list sound buffers play and an analyser reads 
         "512.000",
     ]);
     assert.deepEqual(at("refused"), ["IndexSizeError"]);
+    // A 0.5 node at its options' half volume, then full; disposal leaves
+    // the engine and the output.
+    assert.deepEqual(at("source").slice(0, 2), ["input", "1"]);
+    near("source", 0.25, 0.25);
+    near("source-volume", 0.5, 0.5);
+    assert.equal(at("source-disposed")[0], "0");
+    assert.deepEqual(at("source-disposed").slice(1).map(Number), [0, 0]);
+    near("unrouted", 0, 0);
+    assert.deepEqual(at("stream"), ["live"]);
+    assert.deepEqual(at("stream-disposed"), ["ended"]);
 });
 
 test("a sound source that is not a packaged URL list refuses", () => {

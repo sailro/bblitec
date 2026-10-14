@@ -48,6 +48,7 @@ import {
 import {
     webAudioClasses,
     webAudioConstructors,
+    webAudioInstanceOf,
     webAudioRecords,
     webPlatformConstructors,
     webPlatformGlobals,
@@ -96,6 +97,13 @@ export const STATIC_SOUND_ROOTS = [
     "disposeSound",
 ] as const;
 
+/** The sound-source functions a program calls: a caller-built node routed as a sound. */
+const SOURCE_ROOTS = [
+    "createSoundSourceAsync",
+    "setSoundSourceVolume",
+    "disposeSoundSource",
+] as const;
+
 /** The bus functions a program calls. */
 const BUS_ROOTS = [
     "createAudioBusAsync",
@@ -132,6 +140,7 @@ const MEDIA_STREAM_ROOTS = ["createAudioEngineMediaStream"] as const;
 export const AUDIO_LIBRARY_ROOTS: readonly string[] = [
     ...ENGINE_ROOTS,
     ...STATIC_SOUND_ROOTS,
+    ...SOURCE_ROOTS,
     ...BUS_ROOTS,
     ...STEREO_ROOTS,
     ...ANALYZER_ROOTS,
@@ -525,6 +534,21 @@ const spatialRecords: readonly RecordSpec[] = [
     },
 ];
 
+/** A sound source's records: its options and the source, an engine sound. */
+const sourceRecords: readonly RecordSpec[] = [
+    {
+        pinned: ["SoundSourceOptions"],
+        cpp: "SoundSourceOptions",
+        reference: false,
+    },
+    {
+        pinned: ["AudioInputSource"],
+        cpp: "AudioInputSource",
+        reference: true,
+        bases: ["AudioEngineSound"],
+    },
+];
+
 /** Stereo panning's records: its options and its sub-node, the sub-graph's slot. */
 const stereoRecords: readonly RecordSpec[] = [
     {
@@ -568,8 +592,8 @@ interface FamilyPart {
 
 const FAMILY_PARTS: readonly FamilyPart[] = [
     {
-        // Every sound and bus routes through a sub-graph into a bus.
-        roots: [...STATIC_SOUND_ROOTS, ...BUS_ROOTS],
+        // Every sound, source and bus routes through a sub-graph into a bus.
+        roots: [...STATIC_SOUND_ROOTS, ...SOURCE_ROOTS, ...BUS_ROOTS],
         modules: [],
         records: graphRecords,
     },
@@ -584,6 +608,13 @@ const FAMILY_PARTS: readonly FamilyPart[] = [
             "bblite/pal_audio_element.hpp",
             "bblite/web_platform.hpp",
         ],
+    },
+    {
+        // A source over a stream source stops the stream's tracks.
+        roots: SOURCE_ROOTS,
+        modules: ["src/audio/sound-source.ts"],
+        records: sourceRecords,
+        includes: ["bblite/pal_media_stream.hpp"],
     },
     {
         roots: STEREO_ROOTS,
@@ -672,6 +703,7 @@ function staticSoundLibraryModel(
             ]),
             globals: webPlatformGlobals,
             platformClasses: webAudioClasses,
+            instanceOf: webAudioInstanceOf,
             // A type-only module the bundle does not declare: the host
             // state the spatial functions read off a static sound.
             unresolved: new Map([

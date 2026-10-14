@@ -232,6 +232,10 @@ std::shared_ptr<MediaStream> audio_destination_stream(AudioNodeHandle node);
  */
 AudioNodeHandle audio_create_media_stream_source(AudioContextHandle context,
                                                  const std::shared_ptr<MediaStream>& stream);
+/** `node instanceof MediaStreamAudioSourceNode`. */
+bool audio_is_media_stream_source(AudioNodeHandle node);
+/** A stream source's `mediaStream`: the stream it was created from. */
+std::shared_ptr<MediaStream> audio_source_stream(AudioNodeHandle node);
 
 /**
  * `ctx.createPanner()` / `new PannerNode(ctx)`, with Web Audio's defaults:

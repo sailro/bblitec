@@ -7,8 +7,8 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon streaming
-sounds, microphone sources, sound-source options, the unmute UI and the visualizer, script elements, `prompt`,
-application-realm device recovery, and the [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
+sounds, microphone sources, the unmute UI and the visualizer, script elements, `prompt`, application-realm device
+recovery, and the [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
 
 ## Language
 
@@ -197,13 +197,14 @@ audio track by id, from any context at the same sample rate; InvalidStateError w
 An audio URL (a static sound or media element source) selects packaged audio; a runtime URL needs inferable candidates.
 
 Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `disposeSound`) run the pin's lowered
-family in an application realm. Sources: an audio URL, an array literal of them, an `ArrayBuffer`, an `AudioBuffer` or
-a sound buffer (`createSoundBufferAsync`, over the same sources). A looped sound started while its context is not
-running throws (no statechange). Buses (`createAudioBusAsync`, `setBusVolume`, `disposeAudioBus`, the `outBus` option)
-run the pin's mixer. `enableSpatial`, `setSpatialPosition` and `setSpatialListenerPosition` add the pin's panner
-sub-node and listener; the `position`, orientation and attachment options refuse. `enableStereo` and `setStereoPan` add
-its stereo panner sub-node, `enableAnalyzer` and the `get*Data` readouts its analyser tap. Sub-node hosts are static
-sounds.
+family in an application realm. Sources: an audio URL, an array literal of them, an `ArrayBuffer`, an `AudioBuffer` or a
+sound buffer (`createSoundBufferAsync`, over the same sources). A looped sound started while its context is not running
+throws (no statechange). Sound sources (`createSoundSourceAsync` with its options, `setSoundSourceVolume`,
+`disposeSoundSource`) route a caller-built node through the same sub-graph, in any realm. Buses (`createAudioBusAsync`,
+`setBusVolume`, `disposeAudioBus`, the `outBus` option) run the pin's mixer. `enableSpatial`, `setSpatialPosition` and
+`setSpatialListenerPosition` add the pin's panner sub-node and listener; the `position`, orientation and attachment
+options refuse. `enableStereo` and `setStereoPan` add its stereo panner sub-node, `enableAnalyzer` and the `get*Data`
+readouts its analyser tap. Sub-node hosts are static sounds.
 `createAudioEngineMediaStream` taps the engine's master output into a stream destination's stream.
 
 Media elements (application realm): `new Audio(url)` with an audio URL, `play`/`pause`/`load`, `removeAttribute("src")`,

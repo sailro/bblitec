@@ -2,8 +2,8 @@
 // it) over the real LabSound PAL, rendered offline between its calls: a
 // looped constant-level WAVE sound routed through two nested buses, each
 // bus's volume set and ramped, then a bus disposed; sound buffers decoded
-// from URL lists and played; an analyser's readouts of a sine; a last sound
-// panned across the stereo field
+// from URL lists and played; an analyser's readouts of a sine; caller-built
+// nodes as sound sources; a last sound panned across the stereo field
 // (LabSound up-mixes a later mono input to the left channel only once a
 // stereo source has left the main bus, so mono measurements come first).
 // Prints one line per step: the left and right channel peaks once settled.
@@ -184,6 +184,42 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::string broken, std::strin
                                                          1000.0);
                     }));
     dispose_sound(sine);
+
+    // A caller-built node as a sound source: its options' volume and name,
+    // re-volumed, then disposed.
+    RampOptions immediate{};
+    immediate.shape = std::string("none");
+    const auto constant = labsound_fixture::constant_source(context, 0.5f, 48000 * 4);
+    pal::audio_node_start(constant, 0.0);
+    SoundSourceOptions source_options{};
+    source_options.volume = 0.5;
+    source_options.name = std::string("input");
+    const auto source = co_await create_sound_source_async(engine, constant, source_options);
+    lines.push_back("source " + source->name + " " + std::to_string(engine.sources.size()) +
+                    render(context, 4800, 2400));
+    set_sound_source_volume(source, 1.0, immediate);
+    lines.push_back("source-volume" + render(context, 4800, 2400));
+    dispose_sound_source(source);
+    lines.push_back("source-disposed " + std::to_string(engine.sources.size()) +
+                    render(context, 4800, 2400));
+    // Without the default bus, a source is silent until routed.
+    const auto unrouted_node = labsound_fixture::constant_source(context, 0.5f, 48000 * 4);
+    pal::audio_node_start(unrouted_node, 0.0);
+    SoundSourceOptions unrouted_options{};
+    unrouted_options.out_bus_auto_default = false;
+    const auto unrouted =
+        co_await create_sound_source_async(engine, unrouted_node, unrouted_options);
+    lines.push_back("unrouted" + render(context, 4800, 2400));
+    dispose_sound_source(unrouted);
+    // A stream source's disposal stops its stream's tracks.
+    const auto stream =
+        pal::audio_destination_stream(pal::audio_create_media_stream_destination(context));
+    const auto streamed = co_await create_sound_source_async(
+        engine, pal::audio_create_media_stream_source(context, stream), SoundSourceOptions{});
+    const auto track = pal::media_stream_tracks(stream, "")[0];
+    lines.push_back("stream " + pal::media_stream_track_ready_state(track));
+    dispose_sound_source(streamed);
+    lines.push_back("stream-disposed " + pal::media_stream_track_ready_state(track));
 
     // A sound on the main bus, panned: equal-power stereo panning of mono,
     // measured once LabSound's de-zippered pan settles.

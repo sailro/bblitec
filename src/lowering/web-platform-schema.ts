@@ -614,6 +614,7 @@ export const webAudioRecords: readonly RecordSpec[] = [
             "StereoPannerNode",
             "AnalyserNode",
             "MediaStreamAudioDestinationNode",
+            "MediaStreamAudioSourceNode",
         ],
         cpp: "pal::AudioNodeHandle",
         reference: false,
@@ -650,6 +651,14 @@ export const webAudioRecords: readonly RecordSpec[] = [
                 reads(
                     record("MediaStream"),
                     (owner) => `${AUDIO}::audio_destination_stream(${owner})`,
+                ),
+            ],
+            // A stream source's stream, the one it was created from.
+            [
+                "mediaStream",
+                reads(
+                    record("MediaStream"),
+                    (owner) => `${AUDIO}::audio_source_stream(${owner})`,
                 ),
             ],
             ...SOURCE_LOOP_MEMBERS.map(
@@ -1223,8 +1232,20 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
     ],
 ]);
 
+/** `node instanceof MediaStreamAudioSourceNode`. */
+export const webAudioInstanceOf: ReadonlyMap<
+    string,
+    (value: string) => string
+> = new Map([
+    [
+        "MediaStreamAudioSourceNode",
+        (value: string) => `${AUDIO}::audio_is_media_stream_source(${value})`,
+    ],
+]);
+
 /** The Web Audio classes a pinned library tests for (`typeof AudioBuffer`). */
 export const webAudioClasses: ReadonlyMap<string, RecordShape> = new Map([
     ["AudioBuffer", record("AudioBuffer")],
+    ["MediaStreamAudioSourceNode", record("AudioNode")],
     ["Audio", record("HTMLAudioElement")],
 ]);
