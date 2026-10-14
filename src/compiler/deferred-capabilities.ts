@@ -10,8 +10,7 @@ import {
     declarationOrigin,
     resolvedSymbol,
 } from "./symbols.js";
-import { presenceCpp, type Value } from "./types.js";
-import { isNullable } from "./type-facts.js";
+import type { Value } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinDetached } from "./dom-listeners.js";
 import { isWindowReceiver } from "./window-members.js";
@@ -51,19 +50,14 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         api,
         timing: "throw",
     })),
-    ...[
-        "createSoundSourceAsync.options",
-        "createSoundBufferAsync",
-        "createStreamingSoundAsync",
-        "createAudioBusAsync",
-        "createMicrophoneSoundSourceAsync",
-    ].map((api): Descriptor => ({ origin: "babylon", api, timing: "reject" })),
-    ...[
-        "enableStereo",
-        "enableAnalyzer",
-        "createUnmuteUI",
-        "createAudioVisualizer",
-    ].map((api): Descriptor => ({ origin: "babylon", api, timing: "throw" })),
+    ...["createStreamingSoundAsync", "createMicrophoneSoundSourceAsync"].map(
+        (api): Descriptor => ({ origin: "babylon", api, timing: "reject" }),
+    ),
+    ...["createUnmuteUI", "createAudioVisualizer"].map((api): Descriptor => ({
+        origin: "babylon",
+        api,
+        timing: "throw",
+    })),
 ];
 
 const descriptors = new Map(
@@ -267,115 +261,6 @@ export class DeferredCapabilities {
                 code: `static_cast<void>(${cpp});`,
             });
         }
-    }
-
-    /** A missing options contract leaves the existing absent-options adapter intact. */
-    compileOptions(
-        call: ts.CallExpression,
-        argumentIndex: number,
-        supported: () => Value,
-    ): Value | undefined {
-        const context = this.context;
-        const argument = call.arguments[argumentIndex];
-        if (!context.options.deferredCapabilities || !argument)
-            return undefined;
-        const signature = context.checker.getResolvedSignature(call);
-        const declaration = signature?.declaration;
-        if (!signature || !declaration || ts.isJSDocSignature(declaration))
-            return undefined;
-        const descriptor = descriptors.get(
-            `${declarationOrigin(declaration)}:${declarationApi(declaration)}.options`,
-        );
-        if (!descriptor) return undefined;
-        const value = context.compileValue(argument);
-        if (
-            value.kind === "json-null" ||
-            value.dataType?.kind === "undefined"
-        ) {
-            context.emitDiscardedValue(value);
-            return supported();
-        }
-        if (descriptor.timing === "reject" && !context.options.workers)
-            throw new ApplicationRealmRequired();
-        const parameter = signature.parameters[argumentIndex];
-        const type = this.argumentType(
-            argument,
-            value,
-            parameter &&
-                context.checker.getTypeOfSymbolAtLocation(parameter, call),
-        );
-        if (!type)
-            return context.fail(
-                argument,
-                `Deferred capability '${descriptor.api}' options have no owned native representation.`,
-            );
-        context.dataTypes.cppType(type);
-        const owned = context.bindings.pinValueToTemporary(
-            context.dataLowerer.leafValue(
-                context.dataLowerer.compileKnownValueForSink(
-                    value,
-                    type,
-                    argument,
-                ),
-                type,
-            ),
-            "deferred_options",
-            argument,
-        );
-        context.emitDiscardedValue(owned);
-        const resultType = context.dataTypes.fromTsType(
-            context.checker.getReturnTypeOfSignature(signature),
-            call,
-        );
-        if (!resultType)
-            return context.fail(
-                call,
-                `Deferred capability '${descriptor.api}' requires an owned representation of its declared result.`,
-            );
-        const rejected = this.emitKnown(
-            call,
-            {
-                id: `${descriptor.origin}:${descriptor.api}`,
-                origin: descriptor.origin,
-                operation: "call",
-                timing: descriptor.timing,
-                signature: context.checker.signatureToString(
-                    signature,
-                    call,
-                    ts.TypeFormatFlags.NoTruncation,
-                ),
-            },
-            resultType,
-        )!;
-        if (!isNullable(context.checker.getTypeAtLocation(argument)))
-            return rejected;
-        const present = presenceCpp(owned);
-        if (!present)
-            return context.fail(
-                argument,
-                `Deferred capability '${descriptor.api}' options require represented presence.`,
-            );
-        let accepted: Value | undefined;
-        const lines = context.captureEmittedLines(() => {
-            accepted = supported();
-        });
-        if (!accepted)
-            return context.fail(
-                call,
-                "Absent options require a represented native result.",
-            );
-        const cppType = context.dataTypes.cppType(resultType);
-        const acceptedCpp =
-            resultType.kind === "promise" && accepted.kind !== "promise"
-                ? `${cppType}::resolved(${accepted.cpp})`
-                : accepted.cpp;
-        return {
-            ...context.dataLowerer.leafValue(
-                `([&]() -> ${cppType} { if (${present}) return ${rejected.cpp}; ${lines.join(" ")} return ${acceptedCpp}; })()`,
-                resultType,
-            ),
-            impure: true,
-        };
     }
 
     compile(call: ts.CallExpression): Value | undefined {

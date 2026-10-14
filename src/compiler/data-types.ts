@@ -218,6 +218,8 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     AudioEngine: "audio-engine",
     AudioInputSource: "audio-source",
     StaticSound: "static-sound",
+    AudioBus: "audio-bus",
+    SoundBuffer: "sound-buffer",
     EngineContext: "engine",
     DeviceLostRecoveryHandle: "device-recovery",
     EnvironmentTextures: "gpu-environment",
@@ -5116,6 +5118,16 @@ export class DataTypeRegistry {
         const handles = members.map((member) => this.nativeHandleKind(member));
         if (handles.every((kind) => kind === "mesh" || kind === "scene-node"))
             return { kind: "handle", handle: "scene-node" };
+        // `PrimaryAudioBus`: no API hands a program the engine's main bus, so
+        // a primary bus it holds is a bus it created.
+        if (
+            members.every(
+                (member, index) =>
+                    handles[index] === "audio-bus" ||
+                    isPinnedType(member, ["MainBus"]),
+            )
+        )
+            return { kind: "handle", handle: "audio-bus" };
         if (
             members.every(
                 (member) =>

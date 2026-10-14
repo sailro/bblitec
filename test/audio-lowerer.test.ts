@@ -58,11 +58,7 @@ test("the engine and its master volume lower from the pin, ramps and all", () =>
 test("the Babylon sound families refuse by name rather than no-op", () => {
     const intrinsic = source("src/compiler/intrinsics/audio.ts");
     for (const name of [
-        "createSoundBufferAsync",
         "createStreamingSoundAsync",
-        "createAudioBusAsync",
-        "enableStereo",
-        "enableAnalyzer",
         "createMicrophoneSoundSourceAsync",
         "createUnmuteUI",
         "createAudioVisualizer",

@@ -215,7 +215,9 @@ export interface RecordSchema {
     readonly constructors?: ReadonlyMap<string, CallAdapter>;
     /**
      * Tests `error instanceof C` of platform error classes, keyed by the
-     * library global (`DOMException`), over the error's native spelling.
+     * library global (`DOMException`), over the error's native spelling;
+     * and `value instanceof C` of a platform class whose instances share a
+     * wider class's shape (`MediaStreamAudioSourceNode`), over the value's.
      */
     readonly instanceOf?: ReadonlyMap<string, (error: string) => string>;
     /**
@@ -6426,7 +6428,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const library = this.libraryName(target);
         const instances =
             library !== undefined ? this.classShape(library) : undefined;
+        const platform =
+            library !== undefined
+                ? this.model.schema.instanceOf?.get(library)
+                : undefined;
         if (instances !== undefined) {
+            // A narrower platform class over the same native handle
+            // (`MediaStreamAudioSourceNode` among `AudioNode`s) asks the
+            // platform.
+            if (platform && this.same(shape, instances)) return platform(value);
             if (shape.kind === "variant") {
                 return this.holdsAny(
                     shape.members.filter((member) =>
@@ -6437,10 +6447,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             }
             return this.same(shape, instances) ? "true" : "false";
         }
-        const platform =
-            library !== undefined
-                ? this.model.schema.instanceOf?.get(library)
-                : undefined;
         if (platform) return `(${isError()} && ${platform(error())})`;
         if (library === "Error") return isError();
         if (library === "RangeError" || library === "TypeError")

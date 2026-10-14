@@ -300,6 +300,7 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:oscillator": [],
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],
+    "audio:analyser": [],
     "audio:panner": [],
     "audio:media-stream": [],
     // The pin's audio engine, lowered into the generated library header.

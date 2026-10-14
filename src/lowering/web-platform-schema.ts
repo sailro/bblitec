@@ -28,6 +28,8 @@ import {
     MEDIA_STREAM_TRACK_PROPERTIES,
     PANNER_MODELS,
     PANNER_PROPERTIES,
+    ANALYSER_PROPERTIES,
+    ANALYSER_READOUTS,
     SOURCE_LOOP_MEMBERS,
     listenerParamName,
 } from "../compiler/web-audio-members.js";
@@ -509,6 +511,19 @@ const pannerProperty = (property: string): MemberSpec => ({
         `${AUDIO}::audio_set_panner_property(${owner}, ${AUDIO}::PannerProperty::${property}, ${value})`,
 });
 
+/** An analyser's numeric attribute: its PAL read and, when writable, its validated write. */
+const analyserProperty = (property: string, writable: boolean): MemberSpec => ({
+    shape: number,
+    access: (owner) =>
+        `${AUDIO}::audio_analyser_property(${owner}, ${AUDIO}::AnalyserProperty::${property})`,
+    ...(writable
+        ? {
+              assign: (owner: string, value: string) =>
+                  `${AUDIO}::audio_set_analyser_property(${owner}, ${AUDIO}::AnalyserProperty::${property}, ${value})`,
+          }
+        : {}),
+});
+
 /** `panningModel` / `distanceModel`: Web Audio's spelling both ways. */
 const pannerModel = (which: string): MemberSpec => ({
     shape: string,
@@ -596,7 +611,10 @@ export const webAudioRecords: readonly RecordSpec[] = [
             "AudioBufferSourceNode",
             "AudioScheduledSourceNode",
             "PannerNode",
+            "StereoPannerNode",
+            "AnalyserNode",
             "MediaStreamAudioDestinationNode",
+            "MediaStreamAudioSourceNode",
         ],
         cpp: "pal::AudioNodeHandle",
         reference: false,
@@ -612,12 +630,35 @@ export const webAudioRecords: readonly RecordSpec[] = [
             ...PANNER_MODELS.map(
                 ([name, which]) => [name, pannerModel(which)] as const,
             ),
+            ...ANALYSER_PROPERTIES.map(
+                ([name, enumerator, writable]) =>
+                    [name, analyserProperty(enumerator, writable)] as const,
+            ),
+            ...ANALYSER_READOUTS.map(
+                ([name, element, data]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([{ kind: "typed", element }], none),
+                            (owner, [out]) =>
+                                `${AUDIO}::audio_analyser_${element === "u8" ? "byte" : "float"}_data(${owner}, ${AUDIO}::AnalyserData::${data}, ${out})`,
+                        ),
+                    ] as const,
+            ),
             // A stream destination's stream, one per destination.
             [
                 "stream",
                 reads(
                     record("MediaStream"),
                     (owner) => `${AUDIO}::audio_destination_stream(${owner})`,
+                ),
+            ],
+            // A stream source's stream, the one it was created from.
+            [
+                "mediaStream",
+                reads(
+                    record("MediaStream"),
+                    (owner) => `${AUDIO}::audio_source_stream(${owner})`,
                 ),
             ],
             ...SOURCE_LOOP_MEMBERS.map(
@@ -1152,6 +1193,31 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
         },
     ],
     [
+        // The pin builds its analyser bare and sets each attribute after.
+        "AnalyserNode",
+        {
+            cpp: (argument, call) => {
+                if ((call.arguments?.length ?? 0) > 1)
+                    throw new Error("A lowered AnalyserNode takes no options.");
+                return `${AUDIO}::audio_create_analyser(${argument(0)})`;
+            },
+            parameters: [record("BaseAudioContext")],
+        },
+    ],
+    [
+        "StereoPannerNode",
+        {
+            cpp: (argument, call) => {
+                if ((call.arguments?.length ?? 0) > 1)
+                    throw new Error(
+                        "A lowered StereoPannerNode takes no options.",
+                    );
+                return `${AUDIO}::audio_create_stereo_panner(${argument(0)})`;
+            },
+            parameters: [record("BaseAudioContext")],
+        },
+    ],
+    [
         "AudioBufferSourceNode",
         {
             cpp: (argument, call) =>
@@ -1166,8 +1232,20 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
     ],
 ]);
 
+/** `node instanceof MediaStreamAudioSourceNode`. */
+export const webAudioInstanceOf: ReadonlyMap<
+    string,
+    (value: string) => string
+> = new Map([
+    [
+        "MediaStreamAudioSourceNode",
+        (value: string) => `${AUDIO}::audio_is_media_stream_source(${value})`,
+    ],
+]);
+
 /** The Web Audio classes a pinned library tests for (`typeof AudioBuffer`). */
 export const webAudioClasses: ReadonlyMap<string, RecordShape> = new Map([
     ["AudioBuffer", record("AudioBuffer")],
+    ["MediaStreamAudioSourceNode", record("AudioNode")],
     ["Audio", record("HTMLAudioElement")],
 ]);

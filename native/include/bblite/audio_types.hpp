@@ -18,10 +18,14 @@ struct AudioEngineSound {
 };
 using AudioEngineSoundHandle = std::shared_ptr<AudioEngineSound>;
 
-struct AudioSourceState;
-using AudioSourceHandle = std::shared_ptr<AudioSourceState>;
-/** The lowered static sound (`bblite/upstream_static_sound.hpp`), held by handle. */
+/**
+ * The lowered static sound, sound source, bus and sound buffer
+ * (`bblite/upstream_static_sound.hpp`), held by handle.
+ */
 struct StaticSound;
+struct AudioInputSource;
+struct AudioBus;
+struct SoundBuffer;
 
 /**
  * `_listener`: the lowered spatial listener (`bblite/upstream_static_sound.hpp`),
@@ -84,19 +88,6 @@ struct AudioEngineHandle {
         visitor(listener);
         visitor(spatial_updaters);
         visitor(disposers);
-    }
-};
-
-/** A caller-built node routed through the engine (`createSoundSourceAsync`). */
-struct AudioSourceState : AudioEngineSound {
-    pal::AudioNodeHandle input;
-    pal::AudioNodeHandle volume;
-    AudioEngineHandle engine;
-    void gc_trace(const js::TraceVisitor& visitor) const {
-        AudioEngineSound::gc_trace(visitor);
-        visitor(input);
-        visitor(volume);
-        visitor(engine);
     }
 };
 

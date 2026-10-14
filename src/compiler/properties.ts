@@ -748,6 +748,29 @@ export const propertyRules: readonly PropertyRule[] = [
         dataType: { kind: "string" },
         impure: true,
     },
+    // The lowered bus and source records' own names
+    // (`bblite/upstream_static_sound.hpp`).
+    ...(["audio-bus", "audio-source"] as const).map((owner): PropertyRead => ({
+        owner,
+        property: "name",
+        value: "data",
+        access: (record) => `${record}->name`,
+        dataType: { kind: "string" },
+    })),
+    // A lowered sound buffer's getters over its decoded buffer.
+    ...(
+        [
+            ["duration", "duration"],
+            ["sampleRate", "sample_rate"],
+            ["channelCount", "channel_count"],
+            ["length", "length"],
+        ] as const
+    ).map(([property, native]): PropertyRead => ({
+        owner: "sound-buffer",
+        property,
+        value: "number",
+        access: (owner) => `${owner}->get_${native}()`,
+    })),
     {
         owner: "audio-engine",
         property: "onStateChanged",
