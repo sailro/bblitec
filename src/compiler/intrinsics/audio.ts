@@ -26,6 +26,7 @@ import type { StaticFetchContext } from "../static-fetch.js";
 import { AUDIO_CODECS } from "../../audio-codecs.js";
 import { cppIdentifier, snakeCase } from "../../cpp-literals.js";
 import { mediaStreamValue } from "../media-streams.js";
+import { ApplicationRealmRequired } from "../worker-modules.js";
 
 export interface AudioIntrinsicContext
     extends
@@ -63,10 +64,10 @@ function sourceDisposer(context: AudioIntrinsicContext): string {
 
 /**
  * The Lite audio functions that are not lowered: sound buffers, streaming
- * sounds, buses, stereo, the analyzer, the microphone, the unmute UI and the
+ * sounds, stereo, the analyzer, the microphone, the unmute UI and the
  * visualizer refuse by name, because a silent no-op would be a scene that
  * renders without sounding. The engine, its master volume, static sounds,
- * their spatial audio and the engine's media-stream tap run the pin's
+ * buses, their spatial audio and the engine's media-stream tap run the pin's
  * lowered family (`compileLibraryCall`).
  */
 const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
@@ -76,8 +77,6 @@ const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
     createStreamingSoundAsync:
         "streaming sounds wrap an HTMLAudioElement, which a native build " +
         "has no equivalent for.",
-    createAudioBusAsync:
-        "buses are Babylon routing behaviour and are not lowered",
     enableStereo: "stereo panning is not lowered",
     enableAnalyzer: "the analyzer is not lowered",
     createMicrophoneSoundSourceAsync:
@@ -147,6 +146,9 @@ function requireAbsentOptions(
 /** The static-sound handle a sound function receives. */
 const staticSoundType: DataType = { kind: "handle", handle: "static-sound" };
 
+/** The bus handle `createAudioBusAsync` settles with. */
+const audioBusType: DataType = { kind: "handle", handle: "audio-bus" };
+
 /** The value kind each option member of a sound function's options takes. */
 type OptionKinds = Readonly<Record<string, "number" | "boolean" | "string">>;
 
@@ -176,10 +178,8 @@ const SOUND_OPTIONS: OptionKinds = {
     skipCodecCheck: "boolean",
 };
 
-/** Options members that refuse, with the reason. */
-const SOUND_OPTION_REFUSALS: Readonly<Record<string, string>> = {
-    outBus: "audio buses are not lowered, so no bus can be passed",
-};
+/** A bus's options (`createAudioBusAsync`). */
+const BUS_OPTIONS: OptionKinds = { volume: "number" };
 
 /** A ramp's options (`setSoundVolume`, `setMasterVolume`). */
 const RAMP_OPTIONS: OptionsShape = {
@@ -277,7 +277,7 @@ function soundOptions(
     const {
         cppType,
         kinds,
-        refusals = SOUND_OPTION_REFUSALS,
+        refusals = {},
         consumers = {},
         label = "Static sound",
     } = shape;
@@ -372,6 +372,22 @@ function soundOptions(
     return { options: target, ...(refused ? { refused } : {}) };
 }
 
+/** `outBus`: a bus the program created (`createAudioBusAsync`). */
+function outBusConsumer(context: AudioIntrinsicContext): OptionConsumer {
+    return (member, target, site) => {
+        const bus =
+            member.value?.kind === "audio-bus" ||
+            (member.type?.kind === "handle" &&
+                member.type.handle === "audio-bus");
+        if (!bus)
+            context.fail(
+                site,
+                "An 'outBus' option must be an AudioBus created by createAudioBusAsync.",
+            );
+        context.emit(`${target}.out_bus = ${member.cpp};`);
+    };
+}
+
 /** Throw a refused member's error where the call returns no promise to reject. */
 function throwWhenRefused(
     context: AudioIntrinsicContext,
@@ -427,6 +443,20 @@ function refuseHrtf(
             argument,
             'Spatial panningModel "HRTF" is not lowered: it needs an HRTF database, which this build does not package.',
         );
+}
+
+/** A bus function's bus, evaluated into a temporary in source order. */
+function busArgument(
+    context: AudioIntrinsicContext,
+    call: ts.CallExpression,
+): string {
+    const bus = context.compileValue(argumentAt(call, 0));
+    context.expectKind(bus, "audio-bus", argumentAt(call, 0));
+    return context.bindings.pinValueToTemporary(
+        bus,
+        "audio_bus",
+        argumentAt(call, 0),
+    ).cpp;
 }
 
 /** A sound function's sound, evaluated into a temporary in source order. */
@@ -647,6 +677,7 @@ function compileLibraryCall(
                 {
                     cppType: "bbl::StaticSoundOptions",
                     kinds: SOUND_OPTIONS,
+                    consumers: { outBus: outBusConsumer(context) },
                 },
             );
             return {
@@ -662,6 +693,85 @@ function compileLibraryCall(
                     cpp: "",
                     dataType: staticSoundType,
                 },
+            };
+        }
+        case "createAudioBusAsync": {
+            // The bus settles on the realm's loop, as the pin's does.
+            context.expectArgumentCount(call, 2, 3);
+            if (!context.options.workers) throw new ApplicationRealmRequired();
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:pinned-engine",
+                call,
+            );
+            const engine = engineArgument(context, call, "bus_engine");
+            const name = context.compileValue(argumentAt(call, 1));
+            context.expectKind(name, "string", argumentAt(call, 1));
+            const pinnedName = context.bindings.pinValueToTemporary(
+                name,
+                "bus_name",
+                argumentAt(call, 1),
+            ).cpp;
+            const { options, refused } = soundOptions(
+                context,
+                call.arguments[2],
+                {
+                    cppType: "bbl::AudioBusOptions",
+                    kinds: BUS_OPTIONS,
+                    consumers: { outBus: outBusConsumer(context) },
+                    label: "Audio bus",
+                },
+            );
+            return {
+                kind: "promise",
+                cpp: rejectedWhenRefused(
+                    refused,
+                    "std::shared_ptr<bbl::AudioBus>",
+                    `bbl::create_audio_bus_async(${engine}, ${pinnedName}, ${options})`,
+                ),
+                promiseType: "std::shared_ptr<bbl::AudioBus>",
+                promiseResult: {
+                    kind: "audio-bus",
+                    cpp: "",
+                    dataType: audioBusType,
+                },
+            };
+        }
+        case "setBusVolume": {
+            context.expectArgumentCount(call, 2, 3);
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:pinned-engine",
+                call,
+            );
+            const bus = busArgument(context, call);
+            const volume = pinCpp(
+                context,
+                context.compileNumber(argumentAt(call, 1), "double"),
+                "bus_volume",
+                "const double",
+            );
+            const ramp = call.arguments[2]
+                ? soundOptions(context, call.arguments[2], RAMP_OPTIONS)
+                : undefined;
+            return {
+                kind: "void",
+                cpp: `bbl::set_bus_volume(${bus}, ${volume}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp.options})` : ""})`,
+            };
+        }
+        case "disposeAudioBus": {
+            context.expectArgumentCount(call, 1, 1);
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:pinned-engine",
+                call,
+            );
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_audio_bus(${busArgument(context, call)})`,
             };
         }
         case "playSound":

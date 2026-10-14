@@ -2,7 +2,8 @@
  * The pin's audio family lowered from its own declarations, as one
  * `PinnedRecordModel`: the engine (`audio-engine.ts` with its buses, ramped
  * parameters and signals) and, as a program reaches them, `static-sound.ts`
- * with the modules it reaches (the sound buffer and sub-graph).
+ * with the modules it reaches (the sound buffer and sub-graph) and the mixer
+ * buses of `audio-bus.ts`.
  *
  * Web Audio is the application surface's own (`webAudioRecords`). The
  * engine is the native `bbl::AudioEngineHandle` (`bblite/audio_types.hpp`)
@@ -36,6 +37,7 @@ import {
     functionOf as fn,
     members,
     optionalOf,
+    promiseOf,
     reads,
     recordOf as record,
     recordScalars,
@@ -91,6 +93,13 @@ export const STATIC_SOUND_ROOTS = [
     "disposeSound",
 ] as const;
 
+/** The bus functions a program calls. */
+const BUS_ROOTS = [
+    "createAudioBusAsync",
+    "setBusVolume",
+    "disposeAudioBus",
+] as const;
+
 /** The spatial functions a program calls. */
 const SPATIAL_ROOTS = [
     "enableSpatial",
@@ -108,6 +117,7 @@ const MEDIA_STREAM_ROOTS = ["createAudioEngineMediaStream"] as const;
 export const AUDIO_LIBRARY_ROOTS: readonly string[] = [
     ...ENGINE_ROOTS,
     ...STATIC_SOUND_ROOTS,
+    ...BUS_ROOTS,
     ...SPATIAL_ROOTS,
     ...MEDIA_STREAM_ROOTS,
 ];
@@ -268,6 +278,15 @@ const engineRecords = (
                 reads(record("AudioEngineStateSignal"), (owner) => owner),
             ],
             ["_isOffline", reads(recordScalars.boolean, () => "false")],
+            // A held engine's creation has settled: it is ready.
+            [
+                "_isReady",
+                reads(
+                    promiseOf(none),
+                    () =>
+                        "bbl::js::Promise<bbl::js::PromiseVoid>::resolved({})",
+                ),
+            ],
             [
                 "_spatialUpdaters",
                 field(
@@ -398,7 +417,6 @@ const soundRecords: readonly RecordSpec[] = [
         bases: ["AudioEngineSound"],
     },
     { pinned: ["SoundInstance"], cpp: "SoundInstance", reference: true },
-    { pinned: ["SoundSubGraph"], cpp: "SoundSubGraph", reference: true },
     {
         pinned: ["SoundBuffer"],
         cpp: "SoundBuffer",
@@ -410,9 +428,24 @@ const soundRecords: readonly RecordSpec[] = [
             "length",
         ]),
     },
+];
+
+/**
+ * The mixer records a sound and a bus share: a bus's options, the bus (an
+ * engine sound the engine disposes), and the sub-graph each routes through
+ * with its optional sub-node slots.
+ */
+const graphRecords: readonly RecordSpec[] = [
+    { pinned: ["AudioBusOptions"], cpp: "AudioBusOptions", reference: false },
+    { pinned: ["SoundSubGraph"], cpp: "SoundSubGraph", reference: true },
     { pinned: ["PreVolumeSlot"], cpp: "SoundPreVolumeSlot", reference: true },
     { pinned: ["AnalyzerSlot"], cpp: "SoundAnalyzerSlot", reference: true },
-    { pinned: ["AudioBus"], cpp: "AudioBus", reference: true },
+    {
+        pinned: ["AudioBus"],
+        cpp: "AudioBus",
+        reference: true,
+        bases: ["AudioEngineSound"],
+    },
 ];
 
 /**
@@ -487,6 +520,12 @@ interface FamilyPart {
 }
 
 const FAMILY_PARTS: readonly FamilyPart[] = [
+    {
+        // Every sound and bus routes through a sub-graph into a bus.
+        roots: [...STATIC_SOUND_ROOTS, ...BUS_ROOTS],
+        modules: [],
+        records: graphRecords,
+    },
     {
         // A sound decodes on native jobs, fetches its URL, and probes a
         // format through `Audio.canPlayType`.

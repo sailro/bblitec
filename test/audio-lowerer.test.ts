@@ -60,7 +60,6 @@ test("the Babylon sound families refuse by name rather than no-op", () => {
     for (const name of [
         "createSoundBufferAsync",
         "createStreamingSoundAsync",
-        "createAudioBusAsync",
         "enableStereo",
         "enableAnalyzer",
         "createMicrophoneSoundSourceAsync",

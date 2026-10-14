@@ -2036,6 +2036,7 @@ class Compiler implements LoweringServices {
             case "gaussian-splat-stream":
             case "splat-voxel-collision":
             case "static-sound":
+            case "audio-bus":
                 return { kind: pinned, cppType: handleCppType(pinned) };
         }
         const audio = domAudioHandleKind(member);

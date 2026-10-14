@@ -1583,6 +1583,7 @@ export type ValueKind =
     | "audio-engine"
     | "audio-source"
     | "static-sound"
+    | "audio-bus"
     | "audio-element"
     | "audio-buffer"
     | "audio-context"

@@ -749,6 +749,14 @@ export const propertyRules: readonly PropertyRule[] = [
         impure: true,
     },
     {
+        // The lowered bus record's own name (`bblite/upstream_static_sound.hpp`).
+        owner: "audio-bus",
+        property: "name",
+        value: "data",
+        access: (owner) => `${owner}->name`,
+        dataType: { kind: "string" },
+    },
+    {
         owner: "audio-engine",
         property: "onStateChanged",
         unsupported:

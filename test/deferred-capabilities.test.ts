@@ -234,19 +234,19 @@ test("optional Window receivers suppress arguments and deferred failures", () =>
 test("deferred promise methods reject on the realm reaction queue", () => {
     const result = compileSource(
         `
-        import {createAudioEngineAsync,createAudioBusAsync} from "@babylonjs/lite";
+        import {createAudioEngineAsync,createStreamingSoundAsync} from "@babylonjs/lite";
         async function main():Promise<void>{
             const engine=await createAudioEngineAsync();
             let synchronous=true; let reactions=0;
-            const pending=createAudioBusAsync(engine,"bus");
+            const pending=createStreamingSoundAsync(engine,"sound.wav");
             const handled=pending.catch(error=>{
-                if(synchronous||!error.message.includes("babylon:createAudioBusAsync"))throw new Error("rejection timing");
+                if(synchronous||!error.message.includes("babylon:createStreamingSoundAsync"))throw new Error("rejection timing");
                 ++reactions;
             });
             synchronous=false;
             try{await pending;}catch{}
             await handled;
-            try{await createAudioBusAsync(engine,"second");}catch{++reactions;}
+            try{await createStreamingSoundAsync(engine,"second.wav");}catch{++reactions;}
             if(reactions!==2)throw new Error("rejections");
             // Blob reads are native.
             if(await new Blob(["payload"]).text()!=="payload")throw new Error("blob text");
@@ -294,18 +294,18 @@ test("deferred promise methods reject on the realm reaction queue", () => {
 
 test("pinned public missing calls preserve engine arguments and original strict refusal", () => {
     const source = `
-        import {createAudioEngineAsync,createAudioBusAsync} from "@babylonjs/lite";
+        import {createAudioEngineAsync,createStreamingSoundAsync} from "@babylonjs/lite";
         const audio=await createAudioEngineAsync();
-        try{await createAudioBusAsync(audio,"bus");}catch{}
+        try{await createStreamingSoundAsync(audio,"sound.wav");}catch{}
     `;
     assert.throws(
         () => compileSource(source),
-        /audio 'createAudioBusAsync' is not lowered/,
+        /audio 'createStreamingSoundAsync' is not lowered/,
     );
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:createAudioBusAsync"],
+        ["babylon:createStreamingSoundAsync"],
     );
     assert.match(result.cpp, /deferred_capability/);
 });
@@ -316,7 +316,7 @@ test("pinned geometry descriptor batch retains declared result shapes", () => {
         "enableThinInstanceDynamicDrawCount(mesh)",
         "setThinInstanceDrawCount(mesh,2)",
         "getMasterVolume(audio)",
-        "createAudioBusAsync(audio,'bus')",
+        "createStreamingSoundAsync(audio,'sound.wav')",
     ];
     const result = compileSource(
         `
@@ -332,7 +332,7 @@ test("pinned geometry descriptor batch retains declared result shapes", () => {
     );
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:createAudioBusAsync"],
+        ["babylon:createStreamingSoundAsync"],
     );
     assert.match(result.cpp, /bbl::get_master_volume\(/);
     assert.match(result.cpp, /bbl::dispose_mesh_gpu\(/);
@@ -382,12 +382,12 @@ test("deferred result templates never construct successful payloads", () => {
 test("deferred engine arguments retain ordinary checked reads", () => {
     const result = compileSource(
         `
-        import {createAudioEngineAsync,createAudioBusAsync} from "@babylonjs/lite";
+        import {createAudioEngineAsync,createStreamingSoundAsync} from "@babylonjs/lite";
         async function main():Promise<void>{
             const audio=await createAudioEngineAsync();
             const engines=[audio];
             let index=0; let caught=0;
-            try{await createAudioBusAsync(engines[++index]!,"bus");}catch(error){
+            try{await createStreamingSoundAsync(engines[++index]!,"sound.wav");}catch(error){
                 if(error.message.includes("Deferred native capability"))throw new Error("argument read was dropped");
                 ++caught;
             }

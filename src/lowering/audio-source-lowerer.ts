@@ -122,27 +122,42 @@ export function lowerAudioSourceDisposal(name: string): Array<{
         "src/audio/audio-engine.ts",
         "disposeAudioEngine",
     );
+    // The engine's sets of disposables (`_sounds`, `_buses`), each the
+    // native handle's set.
+    const sets = new Map([
+        ["_sounds", "engine.sources"],
+        ["_buses", "engine.buses"],
+    ]);
+    const setOf = (node: ts.Node): string | undefined =>
+        context
+            .findNodes(
+                node,
+                (candidate): candidate is ts.PropertyAccessExpression =>
+                    ts.isPropertyAccessExpression(candidate) &&
+                    sets.has(candidate.name.text),
+            )
+            .map((access) => access.name.text)[0];
     const engineStatements = engine.declaration.body!.statements.filter(
-        (statement) =>
-            context.findNodes(
-                statement,
-                (node): node is ts.PropertyAccessExpression =>
-                    ts.isPropertyAccessExpression(node) &&
-                    node.name.text === "_sounds",
-            ).length > 0,
+        (statement) => setOf(statement) !== undefined,
     );
     for (const statement of engineStatements) {
         if (ts.isForOfStatement(statement))
             context.assertExpressionShape(
                 statement.expression,
-                "Array.from(engine._sounds)",
-                "Audio engine source disposal snapshot",
+                `Array.from(engine.${setOf(statement.expression)})`,
+                "Audio engine disposal snapshot",
             );
     }
     const engineBody = lowerPinnedBody(engine.file, engineStatements, {
-        bindings: new Map([
-            ["engine._sounds", { cpp: "engine.sources", type: "opaque" }],
-        ]),
+        bindings: new Map(
+            [...sets].map(
+                ([member, cpp]) =>
+                    [
+                        `engine.${member}`,
+                        { cpp, type: "opaque" as const },
+                    ] as const,
+            ),
+        ),
         calls: new Map<string, (args: readonly string[]) => string>([
             [
                 "Array.from",
@@ -150,10 +165,14 @@ export function lowerAudioSourceDisposal(name: string): Array<{
                     `bbl::js::array_from_iterable<bbl::AudioEngineSoundHandle>(${args[0]})`,
             ],
             ["sound._dispose", () => "sound->dispose()"],
-            ["engine._sounds.clear", () => "engine.sources.clear()"],
+            ["bus._dispose", () => "bus->dispose()"],
+            ...[...sets].map(
+                ([member, cpp]) =>
+                    [`engine.${member}.clear`, () => `${cpp}.clear()`] as const,
+            ),
         ]),
-        forOf: (_iterated, element) => ({
-            range: "bbl::js::array_from_iterable<bbl::AudioEngineSoundHandle>(engine.sources)",
+        forOf: (_iterated, element, _binding, syntax) => ({
+            range: `bbl::js::array_from_iterable<bbl::AudioEngineSoundHandle>(${sets.get(setOf(syntax.expression)!)!})`,
             bindings: new Map([[element, { cpp: element, type: "opaque" }]]),
         }),
     });

@@ -1373,9 +1373,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "audio:pinned-engine": {
         provenance:
             "src/audio/audio-engine.ts createAudioEngineAsync/setMasterVolume/" +
-            "getMasterVolume with the main output and bus, ramped parameters " +
-            "and signals they reach, lowered from the pin over the engine's " +
-            "native handle",
+            "getMasterVolume and src/audio/audio-bus.ts createAudioBusAsync/" +
+            "setBusVolume/disposeAudioBus with the main output and bus, ramped " +
+            "parameters and signals they reach, lowered from the pin over the " +
+            "engine's native handle",
         consumers: CMAKE,
     },
     "audio:static-sound": {
