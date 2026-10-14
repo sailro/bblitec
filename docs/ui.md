@@ -62,6 +62,8 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - `:hover`/`:active` read the UI's last update, so a listener of the pointer event that changes them sees the earlier
   state; focus states, `:checked` and `:disabled` read the document.
 - Listener options: `capture`, `once`, `passive`, `signal` ([abort](fidelity.md#semantic-contract)).
+- An event's `target`/`currentTarget` narrowed by `instanceof` to an element is that retained element; writes through it
+  lower as the element's own.
 - Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
   events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
   mouse beyond the window.
