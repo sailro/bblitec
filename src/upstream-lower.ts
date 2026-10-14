@@ -1,6 +1,8 @@
 import {
     deformPickingHeader,
     type DeformPickingShader,
+    vatPickingHeader,
+    type VatPickingShader,
 } from "./pinned-picking-shaders.js";
 import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 import { renderLoweredSourceUnits } from "./compiler/lowered-source-units.js";
@@ -35,6 +37,10 @@ import {
     SPLAT_STREAM_SHADER_MODULES,
 } from "./lowering/splat-stream-shaders.js";
 import { splatStreamLibraryHeader } from "./lowering/splat-stream-library.js";
+import {
+    audioLibraryRoots,
+    staticSoundLibraryHeader,
+} from "./lowering/static-sound-library.js";
 import { transparentOrderHeader } from "./lowering/transparent-order-lowerer.js";
 import { assertExternalRenderableContracts } from "./lowering/external-renderable-contract.js";
 import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
@@ -105,7 +111,6 @@ import {
     renderPhysicsDebugCatalog,
 } from "./physics-debug-catalog.js";
 import { characterControllerHeader } from "./lowering/character-controller-runtime.js";
-import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
 import { navigationLibraryHeader } from "./lowering/navigation-library.js";
 import { PickingLowerer } from "./lowering/picking-lowerer.js";
@@ -119,9 +124,13 @@ import {
     pinnedShadowHeader,
     shadowFactorySource,
 } from "./lowering/shadow-lowerer.js";
+import { csmStaticCacheHeader } from "./lowering/csm-static-cache.js";
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
 import { pinnedWorldTransformHeader } from "./lowering/pinned-world-transform.js";
-import { pinnedTextureHeader } from "./lowering/pinned-texture.js";
+import {
+    pinnedTaskTransmissionHeader,
+    pinnedTextureHeader,
+} from "./lowering/pinned-texture.js";
 import { pinnedRgbdHeader } from "./lowering/pinned-rgbd.js";
 import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
@@ -149,7 +158,11 @@ import {
     pinnedSplatShader,
 } from "./shader-builtins-splat.js";
 import type { PinnedSplatShModule } from "./pinned-splat-fragments.js";
-import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
+import {
+    GeometryOutputLowerer,
+    type TaskRecordOptions,
+} from "./lowering/geometry-output-lowerer.js";
+import { renderTaskRemovalHeader } from "./lowering/render-task-removal.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import {
@@ -181,6 +194,7 @@ import {
 } from "./generation-refusal.js";
 import {
     EffectLowerer,
+    type EffectFactoryOptions,
     UniformEffectLowerer,
     effectStageStems,
 } from "./lowering/effect-lowerer.js";
@@ -338,6 +352,7 @@ import type {
 import { blitVertexWgsl } from "./shader-builtins-utility.js";
 import {
     pinnedMipBlitModule,
+    pinnedTaskTransmissionModules,
     pinnedTransmissionModules,
     type PinnedUtilityModule,
 } from "./pinned-utility-passes.js";
@@ -353,6 +368,8 @@ import { uiDrawWgsl, uiFilterFragmentWgsl } from "./shader-builtins-ui.js";
 export interface UpstreamEmitOptions {
     /** At least one admitted source collector needs its observed glTF order. */
     sourceMeshWalks?: boolean;
+    /** The pinned audio functions the program calls (the manifest's record). */
+    audioLibraryRoots?: readonly string[];
     textPipelines?: readonly ComposedTextPipeline[];
     textData?: readonly CompiledTextData[];
     idDiagnostics: boolean;
@@ -401,6 +418,8 @@ export interface UpstreamEmitOptions {
         detailed?: string;
         /** Per-mesh projection arms, each composed for basic and reached detailed picks. */
         deform?: readonly DeformPickingShader[];
+        /** VAT projection arms: regular, then thin over a texture or storage. */
+        vat?: readonly VatPickingShader[];
         cloud?: string;
         billboard?: { facing: string; axisLocked?: string };
     };
@@ -1042,6 +1061,11 @@ class GeneratedSourceWriter {
             "upstream/include/bblite/upstream/pinned_texture.hpp",
             pinnedTextureHeader(context),
         );
+        if (features.includes("frame-graph:render-task-transmission"))
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_task_transmission.hpp",
+                pinnedTaskTransmissionHeader(context),
+            );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_rgbd.hpp",
             pinnedRgbdHeader(context),
@@ -1284,6 +1308,12 @@ ${lowerThinInstanceSync(context)}
         emitReached("upstream/src/engine_dispose.cpp", () =>
             lowerEngineDisposal(context),
         );
+        // `_removeMeshFromRenderTask`: scene removal (always reached) and
+        // removeMeshFromTask both call it.
+        this.tree.write(
+            "upstream/include/bblite/upstream/render_task_removal.hpp",
+            renderTaskRemovalHeader(context),
+        );
         emitReached("upstream/src/scene_core.cpp", () =>
             new SceneLowerer(context).lowerCore({
                 fog: features.includes("renderer:fog"),
@@ -1306,14 +1336,21 @@ ${lowerThinInstanceSync(context)}
                     features.includes("mesh:thin-instances"),
                 gltfSceneHooks: features.includes("loader:gltf"),
                 thinBindings: options.gpuInstancing,
+                meshGpuDisposal: features.includes("mesh:dispose-gpu"),
+                taskBuild: features.includes("frame-graph:task-build"),
+                effectTasks: features.includes("effect:task"),
+                liveTaskAdd: features.includes("frame-graph:live-task-add"),
+                taskDisposal: features.includes("frame-graph:task-disposal"),
+                deformedPosition: features.includes("mesh:deformed-position"),
+                csmStaticCache: features.includes("shadow:csm-static-cache"),
             }),
         );
         this.emitTextData(features, context, options, generated);
         emitReached("upstream/src/frame_graph_resources.cpp", () =>
-            new RenderTargetLowerer(
-                context,
-                features.includes("frame-graph:surface-target"),
-            ).lower(),
+            new RenderTargetLowerer(context, {
+                surface: features.includes("frame-graph:surface-target"),
+                disposal: features.includes("frame-graph:target-disposal"),
+            }).lower(),
         );
         emitReached("upstream/src/frame_graph_context.cpp", () =>
             new FrameGraphContextLowerer(context).lower(),
@@ -1355,6 +1392,8 @@ ${lowerThinInstanceSync(context)}
         emitReached("upstream/src/vat.cpp", () =>
             new VatLowerer(context).lower({
                 instances: features.includes("mesh:vat-instances"),
+                time: features.includes("mesh:vat-time"),
+                instanceStorage: features.includes("mesh:vat-instance-storage"),
             }),
         );
         emitReached("upstream/src/skeleton.cpp", () =>
@@ -1466,6 +1505,16 @@ ${lowerThinInstanceSync(context)}
                 splatStreamLibraryHeader(context),
             );
         }
+        // The pin's audio family over the Web Audio PAL: the functions the
+        // program calls, each with what it reaches, in the family's order.
+        if (features.includes("audio:pinned-engine"))
+            this.tree.write(
+                "upstream/include/bblite/upstream_static_sound.hpp",
+                staticSoundLibraryHeader(
+                    context,
+                    audioLibraryRoots(options.audioLibraryRoots),
+                ),
+            );
         // The transparent bucket's comparator and sort distance, wherever a
         // billboard or an external renderable can join a transparent mesh.
         if (reachesTransparentOrderHeader(features))
@@ -1497,7 +1546,11 @@ ${lowerThinInstanceSync(context)}
         // sprite renderer for an atlas the pinned loader gave a chain.
         const deployMipBlit = (): void => deployUtility(pinnedMipBlitModule());
         if (features.includes("compute:texture-mipmaps")) deployMipBlit();
-        this.emitEffectWrapper(context, options, composedShaders, generated);
+        this.emitEffectWrapper(context, options, composedShaders, generated, {
+            disposal: features.includes("effect:wrapper-disposal"),
+            taskBuild: features.includes("frame-graph:task-build"),
+            taskDisposal: features.includes("frame-graph:task-disposal"),
+        });
         this.emitLoaderSplat(
             features,
             context,
@@ -1549,11 +1602,14 @@ ${lowerThinInstanceSync(context)}
             deployUtility,
             deployMipBlit,
         );
-        this.emitRendererGeometryOutput(
-            context,
-            generated,
-            options.gpuInstancing,
-        );
+        this.emitRendererGeometryOutput(context, generated, {
+            thinBindings: options.gpuInstancing,
+            meshRemoval: features.includes("frame-graph:task-mesh-removal"),
+            refreshedOverrides:
+                features.includes("frame-graph:task-mesh-refresh") &&
+                features.includes("frame-graph:task-material-override"),
+            taskDisposal: features.includes("frame-graph:task-disposal"),
+        });
         this.emitRendererPostProcess(
             features,
             options,
@@ -1575,10 +1631,16 @@ ${lowerThinInstanceSync(context)}
             factories.lowerFileTextureFactory(),
         );
         emitReached("upstream/src/texture_pixels.cpp", () =>
-            factories.lowerPixelsTextureFactory(),
+            factories.lowerPixelsTextureFactory({
+                writes: features.includes("texture:pixels-writes"),
+            }),
         );
         emitReached("upstream/src/material_shader.cpp", () =>
-            factories.lowerShaderMaterialFactory(),
+            factories.lowerShaderMaterialFactory({
+                rangeUpdates: features.includes(
+                    "material:shader-uniform-ranges",
+                ),
+            }),
         );
         emitReached("upstream/src/material_shader_external.cpp", () =>
             lowerShaderExternalTextures(context),
@@ -1655,14 +1717,6 @@ ${lowerThinInstanceSync(context)}
                 features.includes("mesh:extrude"),
             ),
         );
-        // The audio engine's output graph is FOLDED at the reaching call
-        // site rather than emitted here, because the shape is three
-        // statements long. This is the other half of that: it emits
-        // nothing and refuses generation the moment one of those
-        // statements moves.
-        if (features.includes("audio:engine")) {
-            new AudioLowerer(context).assertEngineGraphContract();
-        }
         // The shadow family. The pinned math is a header both backends
         // execute; the factories build the same depth-only render task the
         // pin's own `ensurePcfShadowTaskState` builds.
@@ -1906,6 +1960,8 @@ ${lowerThinInstanceSync(context)}
 #define BBLITE_GPU_MORPH_STORAGE ${gpuMorphStorage ? 1 : 0}
 // Storage lifetime is compiled only when a deployed projection reads morphs.
 #define BBLITE_DEFORM_PICKING_MORPH ${options.pickingShaders?.deform?.some((variant) => variant.morph) ? 1 : 0}
+// A baked mesh picks through its VAT pose where a GPU pick reaches one.
+#define BBLITE_VAT_PICKING ${options.pickingShaders?.vat?.length ? 1 : 0}
 #define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
 #define BBLITE_GPU_INSTANCE_COLORS ${options.gpuInstanceColors ? 1 : 0}
 // Baked vertex animation. Reached at bakeVat, which is the pin's own
@@ -2263,6 +2319,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     vat: features.includes("mesh:vat"),
                     deformPicking:
                         (options.pickingShaders?.deform?.length ?? 0) > 0,
+                    deformedPosition: features.includes(
+                        "mesh:deformed-position",
+                    ),
                     pinnedSkeletonPalette:
                         options.pinnedSkeletonPalette ?? false,
                     nodeTransforms: features.includes("scene:node-transforms"),
@@ -2409,6 +2468,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         options: UpstreamEmitOptions,
         composedShaders: ComposedShader[],
         generated: { modulePath: string; symbolName: string }[],
+        factory: EffectFactoryOptions,
     ): void {
         if (this.reaches("upstream/src/effect_renderer.cpp")) {
             // One module per descriptor, both entry points in it: the pin
@@ -2455,7 +2515,7 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/effect_renderer.cpp",
-                effects.lowerFactory(),
+                effects.lowerFactory(factory),
                 generated,
             );
         }
@@ -2962,6 +3022,9 @@ ${wgsl}`,
                 for (const module of pinnedTransmissionModules())
                     deployUtility(module);
             }
+            if (features.includes("frame-graph:render-task-transmission"))
+                for (const module of pinnedTaskTransmissionModules())
+                    deployUtility(module);
             if (options.shaderPrograms.length > 0) {
                 this.tree.write(
                     "upstream/shaders/shader-material-reflection.json",
@@ -3046,13 +3109,13 @@ ${wgsl}`,
     private emitRendererGeometryOutput(
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
-        thinBindings: boolean,
+        taskRecords: TaskRecordOptions,
     ): void {
         if (this.reaches("upstream/src/frame_graph_geometry.cpp")) {
             this.writeSource(
                 "upstream/src/frame_graph_geometry.cpp",
                 new GeometryOutputLowerer(context).lowerTaskRecords(
-                    thinBindings,
+                    taskRecords,
                 ),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_geometry.hpp",
@@ -3309,6 +3372,12 @@ ${composed.wgsl}`,
                     csmShadowHeader(context),
                 );
             }
+            if (features.includes("shadow:csm-static-cache")) {
+                this.tree.write(
+                    "upstream/include/bblite/upstream/csm_static_cache.hpp",
+                    csmStaticCacheHeader(context),
+                );
+            }
             this.writeSource(
                 "upstream/src/shadow.cpp",
                 shadowFactorySource(
@@ -3533,6 +3602,27 @@ ${shadow.blurFragmentWgsl}`,
                             "src/picking/deform-picking-projection.ts",
                             "getDeformPickingProjection",
                         )}\n${wgsl}`,
+                        family: "picking",
+                    });
+                }
+            }
+            // Each VAT arm is a whole advanced module: its vertex stage
+            // projects through the bake, its fragment is the advanced one.
+            const vatVariants = options.pickingShaders?.vat ?? [];
+            if (vatVariants.length > 0) {
+                this.tree.write(
+                    "upstream/include/bblite/upstream/picking_vat_projection.hpp",
+                    vatPickingHeader(vatVariants),
+                );
+            }
+            for (const [index, variant] of vatVariants.entries()) {
+                for (const stage of ["vert", "frag"] as const) {
+                    composedShaders.push({
+                        output: `upstream/shaders/picking-vat-${index}.${stage}.native.wgsl`,
+                        data: `// ${context.provenance(
+                            "src/picking/vat-picking-pipeline.ts",
+                            "getVatPickingProjection",
+                        )}\n${variant.module}`,
                         family: "picking",
                     });
                 }

@@ -17,6 +17,9 @@ import {
 import { listFiles } from "../src/tooling/records.js";
 import {
     cppFunction,
+    cppRecord,
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
     sceneBackendFiles,
     sceneBackendSource,
 } from "./native-fixture.js";
@@ -81,6 +84,7 @@ test("the repository manifest automatically feeds the full dev set", () => {
     assert.deepEqual(
         developmentVcpkgFeatures(readFileSync("native/vcpkg.json", "utf8")),
         [
+            "compression",
             "http",
             "jpeg",
             "locale",
@@ -226,15 +230,6 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
     );
     assert.match(cascade, /inline_specificity, source_order\)/);
     assert.match(cascade, /inline_specificity, source_order \+ 1\)/);
-    const winner = cppFunction(
-        projection,
-        "void consider_cascaded_declaration(",
-    );
-    assert.match(winner, /specificity < current\.specificity/);
-    assert.match(
-        winner,
-        /specificity == current\.specificity &&\s*source_order < current\.source_order/,
-    );
     const concreteWidth = projection.slice(
         projection.indexOf("bool is_concrete_authored_width"),
         projection.indexOf("UiElementRecord& ui_element"),
@@ -249,6 +244,59 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
     assert.match(
         setAttribute,
         /name == "style"[\s\S]{0,120}record\.style_properties\.clear\(\)/,
+    );
+});
+
+test("the retained cascade keeps the greater importance, then specificity, then source order", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("A native fixture compiler is required.");
+        return;
+    }
+    const projection = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
+    runGeneratedProgram(
+        tools,
+        "ui-cascade-winner",
+        `
+#include <algorithm>
+#include <cassert>
+#include <cctype>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <utility>
+${[
+    "char ascii_lower(",
+    "bool ascii_iequals(",
+    "std::string_view trim_css_token(",
+    "std::pair<std::string_view, bool> split_css_important(",
+]
+    .map((signature) => cppFunction(projection, signature))
+    .join("\n")}
+${cppRecord(projection, "struct CascadedUiDeclaration {")}
+${cppFunction(projection, "void consider_cascaded_declaration(")}
+int main() {
+    CascadedUiDeclaration current;
+    consider_cascaded_declaration(current, "", 5, 0);
+    assert(current.value.empty());
+    consider_cascaded_declaration(current, "10px", 1, 3);
+    // An earlier declaration of the same specificity loses; a later one wins.
+    consider_cascaded_declaration(current, "20px", 1, 2);
+    assert(current.value == "10px");
+    consider_cascaded_declaration(current, "30px", 1, 4);
+    assert(current.value == "30px");
+    // Greater specificity wins regardless of order.
+    consider_cascaded_declaration(current, "40px", 2, 0);
+    assert(current.value == "40px");
+    // !important wins over any specificity, and only another !important replaces it.
+    consider_cascaded_declaration(current, "50px !important", 1, 0);
+    assert(current.value == "50px" && current.important);
+    consider_cascaded_declaration(current, "60px", 9, 9);
+    assert(current.value == "50px");
+    consider_cascaded_declaration(current, "70px!IMPORTANT", 1, 1);
+    assert(current.value == "70px" && current.important);
+}`,
+        { expectedOutput: "" },
     );
 });
 

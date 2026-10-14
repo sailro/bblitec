@@ -29,6 +29,16 @@ struct CloneObjectWriter {
         if (present)
             (*this)(name, value);
     }
+    // An accessor property clones as data: serialization reads it through its
+    // getter, as [[Get]] does, and a removed own key stays absent.
+    template <typename T> void operator()(std::string_view name, const Accessor<T>& value) const {
+        (*this)(name, value.get());
+    }
+    template <typename T, typename Receiver>
+    void operator()(std::string_view name, const ReceiverAccessor<T, Receiver>& value) const {
+        if (value.has_own())
+            (*this)(name, value.get());
+    }
 };
 struct CloneObjectReader {
     pal::CloneReader& reader;
@@ -65,6 +75,29 @@ struct CloneObjectReader {
             (*this)(name, value);
         else
             value = T{};
+    }
+    // A cloned accessor property is a plain data slot holding the read value.
+    template <typename T> void operator()(std::string_view name, Accessor<T>& value) const {
+        T stored{};
+        (*this)(name, stored);
+        value = Accessor<T>(std::move(stored));
+    }
+    template <typename T>
+    void operator()(std::string_view name, Accessor<T>& value, bool default_when_missing) const {
+        T stored{};
+        (*this)(name, stored, default_when_missing);
+        value = Accessor<T>(std::move(stored));
+    }
+    template <typename T, typename Receiver>
+    void operator()(std::string_view name, ReceiverAccessor<T, Receiver>& value) const {
+        if (const auto id = reader.find_property(object, name))
+            value = ReceiverAccessor<T, Receiver>(clone_read<T>(reader, *id));
+        else
+            value = ReceiverAccessor<T, Receiver>{};
+    }
+    template <typename T, typename Receiver>
+    void operator()(std::string_view name, ReceiverAccessor<T, Receiver>& value, bool) const {
+        (*this)(name, value);
     }
 };
 
@@ -457,13 +490,13 @@ pal::SerializedMessage serialize_message(const T& value,
     return std::move(writer).finish(root);
 }
 
-/** `structuredClone(value)`: a deep copy keeping aliases and cycles, or a DataCloneError. */
+/** `structuredClone(value)`: a deep copy keeping aliases and cycles, or a DataCloneError DOMException. */
 template <typename T> T structured_clone(const T& value) {
     try {
         pal::CloneReader reader(serialize_message(value));
         return clone_read<T>(reader, reader.root());
     } catch (const pal::DataCloneError& error) {
-        throw NamedError("DataCloneError", error.what());
+        throw make_dom_exception(error.what(), "DataCloneError");
     }
 }
 

@@ -61,6 +61,10 @@ export const featureMacros: readonly FeatureMacro[] = [
         macro: "BBLITE_MESH_GEOMETRY_UPDATE",
         anyOf: ["mesh:update-geometry"],
     },
+    {
+        macro: "BBLITE_TEXTURE_PIXEL_WRITES",
+        anyOf: ["texture:pixels-writes"],
+    },
     { macro: "BBLITE_HAS_IMAGE_DECODER", imageDecoder: true },
     { macro: "BBLITE_HAS_WEBP_DECODER", imageCodec: "webp" },
     { macro: "BBLITE_HAS_GAMEPAD", anyOf: ["input:gamepad"] },
@@ -90,6 +94,38 @@ export const featureMacros: readonly FeatureMacro[] = [
         anyOf: ["renderer:frame-graph"],
     },
     { macro: "BBLITE_HAS_EFFECT_WRAPPER", anyOf: ["effect:wrapper"] },
+    {
+        macro: "BBLITE_EFFECT_WRAPPER_DISPOSAL",
+        anyOf: ["effect:wrapper-disposal"],
+    },
+    {
+        macro: "BBLITE_RENDER_TARGET_DISPOSAL",
+        anyOf: ["frame-graph:target-disposal"],
+    },
+    // A task added to a live scene refuses to execute until it is recorded.
+    {
+        macro: "BBLITE_LIVE_TASK_ADD",
+        anyOf: ["frame-graph:live-task-add"],
+    },
+    // A render task's mid-pass scene-colour grab (enableRenderTaskTransmission).
+    {
+        macro: "BBLITE_RENDER_TASK_TRANSMISSION",
+        anyOf: ["frame-graph:render-task-transmission"],
+    },
+    // A disposed task refuses to execute.
+    {
+        macro: "BBLITE_TASK_DISPOSAL",
+        anyOf: ["frame-graph:task-disposal"],
+    },
+    // A refreshed task orders the overrides it queues beside its tracked
+    // meshes at each rebind.
+    {
+        macro: "BBLITE_REFRESHED_TASK_OVERRIDES",
+        allOf: [
+            "frame-graph:task-mesh-refresh",
+            "frame-graph:task-material-override",
+        ],
+    },
     // The pin's mesh-phase Standard extension, reached only through
     // enableMaterialUvTransform().
     {
@@ -118,6 +154,12 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_DETAILED_PICKING", anyOf: ["picking:detailed"] },
     { macro: "BBLITE_HAS_CLUSTERED_LIGHTS", anyOf: ["light:clustered"] },
     { macro: "BBLITE_SHADOWS_CSM", anyOf: ["shadow:csm"] },
+    // The cached CSM generator's per-frame plan: static passes, layer
+    // copies and dynamic passes over the copied cache.
+    {
+        macro: "BBLITE_CSM_STATIC_CACHE",
+        anyOf: ["shadow:csm-static-cache"],
+    },
     {
         macro: "BBLITE_SHADER_EXTERNAL_TEXTURES",
         anyOf: ["material:shader-external-texture"],
@@ -157,6 +199,12 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_AUDIO_OSCILLATOR", anyOf: ["audio:oscillator"] },
     { macro: "BBLITE_HAS_AUDIO_BIQUAD_FILTER", anyOf: ["audio:biquad-filter"] },
     { macro: "BBLITE_HAS_AUDIO_STEREO_PANNER", anyOf: ["audio:stereo-panner"] },
+    { macro: "BBLITE_HAS_AUDIO_PANNER", anyOf: ["audio:panner"] },
+    { macro: "BBLITE_HAS_AUDIO_MEDIA_STREAM", anyOf: ["audio:media-stream"] },
+    {
+        macro: "BBLITE_HAS_AUDIO_MEDIA_ELEMENT",
+        anyOf: ["audio:media-element"],
+    },
     {
         macro: "BBLITE_HAS_GEOMETRY_OUTPUT",
         anyOf: ["renderer:geometry-output"],

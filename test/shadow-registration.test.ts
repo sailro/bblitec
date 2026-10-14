@@ -38,6 +38,7 @@ using LightHandle = Handle;
 using ShadowGeneratorHandle = Handle;
 struct Scene;
 struct Task { Scene* source_scene; };
+struct SceneInternalPass { TaskHandle task; TaskHandle after{}; };
 struct Generator { std::vector<TaskHandle> caster_tasks; };
 struct Light { ShadowGeneratorHandle shadow_generator; };
 struct Engine {
@@ -50,21 +51,25 @@ struct Scene {
     Scene* state = this;
     std::vector<LightHandle> lights{{0}};
     std::vector<TaskHandle> tasks{};
+    std::vector<SceneInternalPass> internal_passes{};
     std::optional<std::string> shadow_task_name{};
 };
 unsigned registrations = 0;
 void build_shadow_task(Scene&, ShadowGeneratorHandle) {
     throw std::runtime_error("Existing shadow passes must be reused.");
 }
-void add_task_at_start(Scene& scene, TaskHandle task) { scene.tasks.insert(scene.tasks.begin(), task); }
+void add_leading_pass(Scene& state, TaskHandle task) {
+    state.internal_passes.insert(state.internal_passes.begin(), SceneInternalPass{task, {}});
+}
 void register_scene(Scene&) { ++registrations; }
 void rebuild_scene_renderables(Scene&) {}
 ${cppFunction(source, "void register_scene_with_shadow_support(Scene& scene)")}
 void check(Scene& scene) {
     assert(scene.shadow_task_name == "shadow");
-    assert(scene.tasks.size() == 4);
+    // Caster passes stay out of the pin's task list, ahead of every task.
+    assert(scene.tasks.empty() && scene.internal_passes.size() == 4);
     for (unsigned i = 0; i < 4; ++i) {
-        assert(scene.tasks[i].value == i);
+        assert(scene.internal_passes[i].task.value == i);
         assert(scene.engine->frame_tasks[i].source_scene == &scene);
     }
 }
@@ -74,13 +79,13 @@ int main() {
     for (unsigned i = 0; i < 4; ++i) {
         engine.frame_tasks.push_back({&menu});
         engine.shadow_generators[0].caster_tasks.push_back({i});
-        menu.tasks.push_back({i});
+        menu.internal_passes.push_back({{i}, {}});
     }
     register_scene_with_shadow_support(menu);
     check(menu);
     register_scene_with_shadow_support(menu);
     check(menu);
-    menu.tasks.clear(); // Disposal retires the scene, while the world retains its generator.
+    menu.internal_passes.clear(); // Disposal retires the scene, while the world retains its generator.
     Scene race{&engine};
     register_scene_with_shadow_support(race);
     check(race);
@@ -92,7 +97,7 @@ int main() {
     assert(!empty.shadow_task_name);
     register_scene_with_shadow_support(empty);
     assert(empty.shadow_task_name == "shadow");
-    assert(empty.tasks.empty());
+    assert(empty.tasks.empty() && empty.internal_passes.empty());
     assert(registrations == 5);
 }
 `,

@@ -27,26 +27,51 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   ResizeObserver entries are unavailable.
 - Location: deployment query reads fold to constants. Reload, `location.search` writes and same-document
   `assign`/`href` recreate realms, keeping durable storage; another document throws NotSupportedError.
+- Web Storage: getItem/setItem/removeItem. `localStorage` lives in the host preference directory; `sessionStorage` in
+  process memory (kept across realm recreation, never on disk, no quota) and is absent in worker realms.
 - Clipboard: text writes only. `visibilitychange` follows window hide/show.
 - `beforeunload` then `pagehide` (persisted=false, no prompt) run before realm cleanup; worker realms refuse them.
 - Error/unhandledrejection listeners are supported; `rejectionhandled` is not.
+- `requestIdleCallback`/`cancelIdleCallback` (direct, `window.` members, stored aliases): each callback runs in its
+  own task once the task queue is empty, before a 50 ms deadline, the next due timer and, while a repaint is pending,
+  the next frame predicted from the display's tick interval; `timeout` runs it timed out (`timeRemaining()` 0).
+  Worker realms refuse them.
+- `alert`/`confirm` show a modal SDL message box (OK, or OK/Cancel; title = window title) on the Window thread and
+  block the realm. Linux Wayland needs zenity. `prompt` stays [deferred](features.md#deferred-capabilities): SDL has
+  no text-input dialog.
+- Fullscreen: `requestFullscreen()` on the document element or the primary canvas makes the window fullscreen, then
+  resolves, then fires the document's `fullscreenchange`; other elements reject with NotSupportedError, a failed
+  window change with TypeError. `exitFullscreen()` restores a window the page made fullscreen; Escape and the system
+  leaving fullscreen exit it too. `fullscreenerror`, element listeners and `:fullscreen` are not lowered.
 - GPU adapter requests describe the selected device; fallback, low-power, compatibility and XR requests reject.
 
 ## DOM and events
 
 | Area | Admitted | Refuses |
 | --- | --- | --- |
-| Tree | Static tags, text nodes, append/insert/prepend/replaceChildren, remove, parent/child/sibling reads | Stored child collections, prepend spreads, tree reads inside innerHTML |
+| Tree | Static tags, text nodes, append/insert/prepend/replaceChildren, remove, `replaceWith`, `insertAdjacentElement`, parent/child/sibling reads | Stored child collections, prepend spreads, tree reads inside innerHTML, `replaceWith` text/spreads, dynamic adjacent positions |
 | Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties, dataset, packaged img `src` choices | Compound text/dataset writes, dynamic dataset keys, other property writes; `title` tooltips not rendered |
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
-| Queries | Literal selectors, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements; dynamic selectors (deferred: throw) |
-| Pointer/keyboard | Mouse, multi-touch, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | AbortSignal, coalesced events, pointer capture (deferred: throw) |
-| Events | transitionend, storage, file drags (first file), CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent | Element CustomEvent dispatch, authored drags, cross-document redispatch |
-| Forms | Focus/blur, activeElement, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
+| Queries | Literal selectors, runtime text in quoted attribute values, unions of literal selectors, state pseudo-classes, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements, other runtime selector text |
+| Pointer/keyboard | Mouse, multi-touch, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events |
+| Events | transitionend, storage, file drags (first file), CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent, `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
+| Forms | Focus/blur, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
 
+- Selector structure is parsed at generation with the literal grammar. In a runtime attribute value, a line break
+  throws SyntaxError; the delimiting quote, a backslash, tab or NUL throw NotSupportedError.
+- `:hover`/`:active` read the UI's last update, so a listener of the pointer event that changes them sees the earlier
+  state; focus states, `:checked` and `:disabled` read the document.
+- Listener options: `capture`, `once`, `passive`, `signal` ([abort](fidelity.md#semantic-contract)).
+- Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
+  events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
+  mouse beyond the window.
 - UI handles input before cameras; `preventDefault` suppresses camera propagation. Only the primary touch emits mouse events.
-- Native canvas `tabIndex` reads 0; keyboard focus targets the SDL surface. Other `tabIndex` writes refuse (deferred: throw).
-- Erased writes: canvas `tabIndex = 0`, engine-canvas `width`/`height` (the window owns size), dataset members nothing reads.
+- `tabIndex` reflects `tabindex`: 0 joins Tab navigation in tree order, negative leaves it; positive values throw
+  NotSupportedError. Canvas `tabIndex` reads 0 (keyboard focus targets the SDL surface); writing 0 is erased, other
+  values refuse.
+- `scrollIntoView` (boolean or block/inline/behavior) applies at the next layout; smooth scrolls only the nearest
+  scroll container, outer ones jump.
+- Erased writes: engine-canvas `width`/`height` (the window owns size), dataset members nothing reads.
 - Color inputs use an RGB/hex popup (preview emits input, Apply emits change). Select keyboard navigation needs the menu open.
 - Canvas backing size is drawable pixels; client sizes and rects are CSS pixels; rect/size reads flush layout.
 
@@ -61,8 +86,12 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 
 ## Markup and SVG
 
+- Static innerHTML is parsed at generation by Chromium (the browser's tree, entities and implied end tags).
 - innerHTML admits text/div/span/label, comments, packaged img, reviewed SVG path/rect, role/aria-*/data-*; runtime text
-  is escaped. Scripts, event attributes and malformed nesting refuse; markup-created controls throw in deferred mode.
+  is escaped. Scripts, event attributes and runtime tag or attribute names refuse.
+- Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
+  ones do: div/span/p/h1/h2/b/strong/label/button and reviewed control attributes. Comments, other tags, textarea
+  content and dynamic markup with controls refuse; whitespace between options is not kept.
 - ARIA has no native accessibility bridge.
 - `createElementNS`: SVG svg/path/rect/circle/line/ellipse/polyline/polygon, rasterized at CSS size by RmlUi's SVG
   plugin. Shape styles, listeners, nested SVG and paint servers refuse.
@@ -77,7 +106,7 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 
 | Area | Admitted | Refuses |
 | --- | --- | --- |
-| Box | fixed/inset, px/rem/viewport calc/min/max/clamp, box sizing, physical and horizontal-LTR logical edges, float/clear | Vertical/RTL logical mapping, element-font-relative math |
+| Box | fixed/inset, px/rem/viewport calc/min/max/clamp (also over `var()`, with times and angles), box sizing, physical and horizontal-LTR logical edges, float/clear | Vertical/RTL logical mapping, element-font-relative math, other units in math over `var()` |
 | Flex | Wrap, direction, grow/shrink/basis, alignment, gaps | Intrinsic basis keywords |
 | Grid | Line placement, spans, auto/px/fr/minmax, repeat/auto-fit/auto-fill (≤256 tracks/axis) | Named areas/lines, subgrid, percentage tracks |
 | Containers/media | inline-size containment, unnamed max-width queries; max-width, orientation, reduced-motion media | Named/height/style queries |
@@ -85,8 +114,9 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 | Borders/backgrounds | Solid borders, radii, gradients, one packaged image, raster border-image slices | Elliptical radius syntax, multiple image layers, sized repetition |
 | Shadows/filters | Box shadows, filters, drop-shadow chains, backdrop blur | Non-pixel shadow lengths, other backdrop functions (may degrade) |
 | Transforms | Uniform nonnegative scale | Nonuniform scale, nonempty clip rectangles |
+| Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way) | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
 | Selectors | Tags/IDs/classes, attribute presence/equality, combinators, state pseudo-classes, An+B, `not/is/where/has`, `::before/::after` | Nested `:has`, wider attribute operators, counters |
-| Other | Custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` | Runtime-generated stylesheet text, list markers, translucent accents |
+| Other | `!important`, custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` | Runtime-generated stylesheet text, list markers, translucent accents |
 
 In [deferred mode](features.md#deferred-capabilities), registered missing CSS properties, grid-track forms, nonconstant
 stylesheet installation and unstructured declaration strings throw at the write; host-page sheets still need admission.

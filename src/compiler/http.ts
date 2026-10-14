@@ -93,9 +93,8 @@ export function compileHttpCall(
     )
         return undefined;
     // Runtime transport settles on the application realm's task queue.
-    if (!context.options.workers) throw new ApplicationRealmRequired();
-    context.expectArgumentCount(call, 1, 2);
     context.reachFeature("platform:http", call);
+    context.expectArgumentCount(call, 1, 2);
     context.reachJsData();
     const snapshot = (value: Value, site: ts.Node, name: string): string => {
         const cpp = context.allocateTemporaryCppName(name);

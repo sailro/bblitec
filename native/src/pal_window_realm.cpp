@@ -82,7 +82,8 @@ struct WindowEvent final : ExternalEvent {
     std::optional<std::string> form_value;
     std::optional<bool> checked;
     std::optional<UiElementHandle> selected_option;
-    std::optional<bool> open;
+    /** A summary activation: the realm flips its own disclosure, which the display may show stale. */
+    bool toggle_open = false;
 
     void capture_form_state(Engine& engine) {
         if (ui_get_attribute(engine, element, "type") == "checkbox")
@@ -126,11 +127,24 @@ struct ListenerNames {
     bool click = false;
     std::vector<std::string> events;
 };
-struct ClipboardWrite final : CompletionEvent {
-    std::string text;
+struct PageFullscreen;
+/** Window-thread work a realm requests (`submit_window_request`). */
+using WindowWork = std::function<std::string(SDL_Window*, PageFullscreen&)>;
+/** One request on the Window thread, then its failure (empty on success) back to the realm. */
+struct WindowRequest final : CompletionEvent {
+    WindowWork perform;
     std::string error;
-    ClipboardWrite(std::uint64_t id, std::string value)
-        : CompletionEvent(id), text(std::move(value)) {}
+    WindowRequest(std::uint64_t id, WindowWork work)
+        : CompletionEvent(id), perform(std::move(work)) {}
+};
+/** The display ended page fullscreen itself: Escape, or the system left window fullscreen. */
+struct WindowFullscreenExit final : ExternalEvent {};
+/** An alert or confirmation the realm waits on while the Window thread shows it. */
+struct MessageBoxRequest {
+    bool confirm = false;
+    std::string message;
+    std::optional<bool> answer;
+    std::string error;
 };
 struct DocumentSnapshot {
     struct TextUpdate {
@@ -154,22 +168,33 @@ struct DocumentSnapshot {
     bool focus_visible = true;
     UiElementHandle text_selection{};
     std::uint64_t text_selection_revision = 0;
+    /** The realm's scrollIntoView requests since the last published snapshot. */
+    std::vector<std::pair<UiElementHandle, UiScrollIntoView>> scroll_requests;
     std::set<std::string> dom_event_types;
     std::set<std::uint32_t> dom_pointer_elements;
+    /** The realm's pointer capture state, which the display targets input by. */
+    std::shared_ptr<DomPointerCaptures> pointer_captures;
 };
+
+/** One element as the display's last update laid it out and styled it. */
+struct LayoutElement {
+    UiClientRect rectangle;
+    UiContentBox content_box;
+    /** Computed style, for an element the realm requested it of. */
+    UiComputedStyle style;
+    [[nodiscard]] bool operator==(const LayoutElement&) const = default;
+};
+
 struct LayoutSnapshot {
-    std::vector<UiClientRect> rectangles;
-    std::vector<UiContentBox> content_boxes;
-    /** Computed styles of the elements the realm requested, by element. */
-    std::vector<UiComputedStyle> styles;
+    /** By element handle. */
+    std::vector<LayoutElement> elements;
     std::uint32_t width = 0, height = 0;
     double pixel_ratio = 1;
     ScreenMetrics screen;
     InputCapabilities input;
     bool equals(const LayoutSnapshot& other) const {
         return width == other.width && height == other.height && pixel_ratio == other.pixel_ratio &&
-               screen == other.screen && input == other.input && rectangles == other.rectangles &&
-               content_boxes == other.content_boxes && styles == other.styles;
+               screen == other.screen && input == other.input && elements == other.elements;
     }
 };
 
@@ -277,7 +302,10 @@ struct WindowServices final : CanvasProvider {
     std::string capture_failure;
     std::condition_variable wake;
     std::unique_ptr<DocumentSnapshot> pending;
-    std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
+    /** Requests the Window thread performs in submission order. */
+    std::vector<std::unique_ptr<WindowRequest>> window_requests;
+    /** The realm's pending message box, answered in place; guarded by `mutex`. */
+    std::shared_ptr<MessageBoxRequest> message_box;
     std::uint64_t requested = 0, completed = 0;
     /** Document input posted and handled, guarded by `mutex`. Except for mouse
      * motion, each transaction and its native default's events (click, input,
@@ -285,6 +313,11 @@ struct WindowServices final : CanvasProvider {
      * presents. Mouse motion remains ordered without blocking presentation. */
     std::uint64_t input_posted = 0, input_handled = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
+    /**
+     * `UiElementRecord::pointer_states` by element as the display's last update styled them,
+     * apart from `layout` so a hover change copies no layout; replaced only when one changes.
+     */
+    std::shared_ptr<const std::vector<std::uint8_t>> pointer_states;
     std::atomic<bool> screen_requested = false;
     std::atomic<bool> reload_requested = false;
     std::shared_ptr<WindowLocation> location;
@@ -292,6 +325,150 @@ struct WindowServices final : CanvasProvider {
     std::vector<std::weak_ptr<OffscreenSurface>> endpoints;
     bool stopping = false;
 };
+
+/**
+ * `BBLITE_MESSAGE_BOX_RESPONSE`: `accept` or `dismiss` answers every message box without
+ * showing it, for noninteractive runs.
+ */
+std::optional<bool> message_box_response() {
+    const auto text = environment_variable("BBLITE_MESSAGE_BOX_RESPONSE");
+    if (text.empty())
+        return std::nullopt;
+    if (text != "accept" && text != "dismiss")
+        throw std::runtime_error("BBLITE_MESSAGE_BOX_RESPONSE must be accept or dismiss.");
+    return text == "accept";
+}
+
+/** A modal SDL message box on this, the Window's thread: true when a confirmation is accepted. */
+bool show_message_box(SDL_Window* window, const MessageBoxRequest& request) {
+    const SDL_MessageBoxButtonData confirm_buttons[] = {
+        {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "OK"},
+        {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
+    };
+    const SDL_MessageBoxButtonData alert_button{
+        SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 1, "OK"};
+    const char* title = window ? SDL_GetWindowTitle(window) : "";
+    const SDL_MessageBoxData data{
+        SDL_MESSAGEBOX_INFORMATION | SDL_MESSAGEBOX_BUTTONS_LEFT_TO_RIGHT,
+        window,
+        title,
+        request.message.c_str(),
+        request.confirm ? 2 : 1,
+        request.confirm ? confirm_buttons : &alert_button,
+        nullptr,
+    };
+    int button = -1;
+    if (!SDL_ShowMessageBox(&data, &button))
+        throw std::runtime_error("SDL message box failed: " + std::string(SDL_GetError()));
+    return request.confirm && button == 1;
+}
+
+/** Answers the realm's pending message box, if any; a platform failure throws in the realm. */
+void serve_message_box(WindowServices& services, SDL_Window* window) {
+    std::shared_ptr<MessageBoxRequest> request;
+    {
+        std::lock_guard lock(services.mutex);
+        request = std::exchange(services.message_box, nullptr);
+    }
+    if (!request)
+        return;
+    std::optional<bool> answer;
+    std::string error;
+    if (const auto response = message_box_response())
+        answer = request->confirm && *response;
+    else
+        try {
+            answer = show_message_box(window, *request);
+        } catch (const std::exception& failure) {
+            error = failure.what();
+        }
+    {
+        std::lock_guard lock(services.mutex);
+        request->answer = answer;
+        request->error = std::move(error);
+    }
+    services.wake.notify_all();
+}
+
+/**
+ * The Window thread's page fullscreen: whether the page holds it, and whether entering it
+ * made a windowed window fullscreen, so leaving restores the window rather than leaving a
+ * fullscreen the window already had (mobile windows, a window the user made fullscreen).
+ */
+struct PageFullscreen {
+    bool active = false;
+    bool restore_windowed = false;
+
+    static bool window_fullscreen(SDL_Window* window) {
+        return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+    }
+    /** Applies `fullscreen` to the window: empty, or SDL's failure. */
+    static std::string set_window(SDL_Window* window, bool fullscreen) {
+        if (!SDL_SetWindowFullscreen(window, fullscreen))
+            return SDL_GetError();
+        // Asynchronous window systems apply the state later; wait for it, bounded by SDL.
+        static_cast<void>(SDL_SyncWindow(window));
+        return {};
+    }
+    std::string enter(SDL_Window* window) {
+        if (active)
+            return {};
+        const bool windowed = !window_fullscreen(window);
+        auto error = windowed ? set_window(window, true) : std::string();
+        if (error.empty()) {
+            active = true;
+            restore_windowed = windowed;
+        }
+        return error;
+    }
+    std::string leave(SDL_Window* window) {
+        active = false;
+        return std::exchange(restore_windowed, false) ? set_window(window, false) : std::string();
+    }
+};
+
+/** Performs the realm's Window requests in order and posts each one's completion. */
+void serve_window_requests(WindowServices& services, SDL_Window* window,
+                           PageFullscreen& fullscreen) {
+    std::vector<std::unique_ptr<WindowRequest>> requests;
+    {
+        std::lock_guard lock(services.mutex);
+        requests.swap(services.window_requests);
+    }
+    for (auto& request : requests) {
+        // The work and what it captured end on this thread, before the completion is posted.
+        request->error = std::exchange(request->perform, {})(window, fullscreen);
+        services.inbox->post(std::move(request));
+    }
+}
+
+/**
+ * The display ending page fullscreen itself, as browsers do: an Escape press (consumed) or the
+ * window leaving fullscreen. True when `event` was consumed.
+ */
+bool end_page_fullscreen(WindowServices& services, SDL_Window* window, PageFullscreen& fullscreen,
+                         const SDL_Event& event) {
+    if (!fullscreen.active)
+        return false;
+    const bool escape =
+        event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !event.key.repeat;
+    // A leave event left behind by an earlier exit arrives after a later enter; the window's
+    // present state tells them apart.
+    const bool left = event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN &&
+                      !PageFullscreen::window_fullscreen(window);
+    if (!escape && !left)
+        return false;
+    if (escape) {
+        if (const auto error = fullscreen.leave(window); !error.empty())
+            throw std::runtime_error("Leaving page fullscreen failed: " + error);
+    } else
+        fullscreen = {};
+    services.inbox->post(std::make_unique<WindowFullscreenExit>());
+    return escape;
+}
+
+/** The display's latest pointer states on the current realm's document. */
+void adopt_window_pointer_states();
 
 struct WindowDocument {
     explicit WindowDocument(std::shared_ptr<WindowServices> host, EngineOptions options)
@@ -311,6 +488,11 @@ struct WindowDocument {
             if (&owner != &window_document_engine())
                 throw std::logic_error("A Window layout read requires its owning realm.");
             return window_element_size(element);
+        };
+        engine.ui_adopt_pointer_states = [](Engine& owner) {
+            if (&owner != &window_document_engine())
+                throw std::logic_error("A Window selector state read requires its owning realm.");
+            adopt_window_pointer_states();
         };
         static_cast<void>(ui_document_root(engine, UiDocumentPart::Html));
     }
@@ -377,6 +559,11 @@ struct WindowDocument {
     std::vector<std::shared_ptr<ResizeObserver>> observers;
     std::vector<std::shared_ptr<MutationObserver>> mutation_observers;
     std::vector<std::shared_ptr<MediaQueryList>> media;
+    /** The first canvas an engine was created on. */
+    std::optional<std::uint32_t> primary_canvas;
+    /** Fullscreen elements, the document's fullscreen element last. */
+    std::vector<UiElementHandle> fullscreen;
+    PlatformEventListeners<void()> fullscreen_listeners;
     ApplicationErrors* errors = nullptr;
     const bool screen_identity = true;
 };
@@ -413,9 +600,6 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
         for (const auto& [name, callbacks] : native.event_callbacks)
             if (!callbacks->empty())
                 names.events.push_back(name);
-        if (native.tag == "details" &&
-            std::find(names.events.begin(), names.events.end(), "toggle") == names.events.end())
-            names.events.push_back("toggle");
         const auto input_type = native.attributes.find("type");
         if ((native.tag == "input" || native.tag == "textarea" || native.tag == "select") &&
             (input_type == native.attributes.end() || input_type->second != "file") &&
@@ -444,6 +628,7 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
     if (engine.dom_input) {
         snapshot->dom_event_types = engine.dom_input->event_types;
         snapshot->dom_pointer_elements = engine.dom_input->pointer_elements;
+        snapshot->pointer_captures = engine.dom_input->pointer_captures;
     }
     return snapshot;
 }
@@ -452,6 +637,9 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
  * as input the display waits on (WindowServices::post_input). */
 void apply_document(Engine& engine, DocumentSnapshot snapshot,
                     const std::function<void(std::unique_ptr<ExternalEvent>)>& post_input) {
+    engine.ui_scroll_requests.insert(engine.ui_scroll_requests.end(),
+                                     snapshot.scroll_requests.begin(),
+                                     snapshot.scroll_requests.end());
     if (snapshot.text_updates) {
         for (auto& update : *snapshot.text_updates)
             ui_set_text(engine, update.element, std::move(update.text));
@@ -469,6 +657,17 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
     engine.ui_focus_visible = snapshot.focus_visible;
     engine.ui_text_selection = snapshot.text_selection;
     engine.ui_text_selection_revision = snapshot.text_selection_revision;
+    if (snapshot.pointer_captures)
+        dom_input(engine).pointer_captures = std::move(snapshot.pointer_captures);
+    // A summary activation on the display toggles the realm's details, whose change queues its
+    // toggle event there.
+    engine.ui_details_toggled = [post_input](UiElementHandle element) {
+        auto event = std::make_unique<WindowEvent>();
+        event->element = element;
+        event->type = "toggle";
+        event->toggle_open = true;
+        post_input(std::move(event));
+    };
     if (!snapshot.dom_event_types.empty()) {
         auto& input = dom_input(engine);
         input.event_types = std::move(snapshot.dom_event_types);
@@ -518,8 +717,6 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
                 event->element = element;
                 event->type = name;
                 event->mouse = pointer;
-                if (name == "toggle")
-                    event->open = ui_has_attribute(engine, element, "open");
                 if (name == "input" || name == "change")
                     event->capture_form_state(engine);
                 post_input(std::move(event));
@@ -649,17 +846,15 @@ void bind_canvas_engine(const std::shared_ptr<CanvasElement>& canvas,
                                     [&](const auto& value) { return value.second == canvas; });
     if (entry == doc.canvases.end())
         throw InvalidCanvasState("Engine canvas is not attached to this Window.");
+    if (!doc.primary_canvas)
+        doc.primary_canvas = entry->first;
     doc.input_targets.insert_or_assign(entry->first, WindowDocument::InputTarget(engine));
+    // The engine's lowered `resizeSurface` sizes the backing store from this
+    // client box, as createEngine and every frame head run it.
     const auto box = window_element_size({entry->first});
-    const auto width = static_cast<std::uint32_t>(
-        std::max(1.0, std::round(box.width * window_device_pixel_ratio())));
-    const auto height = static_cast<std::uint32_t>(
-        std::max(1.0, std::round(box.height * window_device_pixel_ratio())));
-    canvas->resize_layout(width, height);
-    engine->options.width = width;
-    engine->options.height = height;
     engine->canvas_client_width = box.width;
     engine->canvas_client_height = box.height;
+    engine->dom_canvas = true;
 }
 
 Engine& window_document_engine() { return current_document().engine; }
@@ -692,34 +887,183 @@ void window_location_assign(const std::string& target, const std::string& curren
                                      "NotSupportedError");
     window_location_set_search(destination.search());
 }
-js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
-    auto& doc = current_document();
+namespace {
+/**
+ * Hands `perform` to the Window thread after earlier requests; `settle` runs on this realm with
+ * its failure, empty on success.
+ */
+void submit_window_request(WindowWork perform, std::function<void(const std::string&)> settle) {
+    auto& host = *current_document().host;
     auto& loop = EventLoop::current();
-    js::Promise<js::PromiseVoid> result;
-    const auto id = loop.register_completion([result](std::unique_ptr<ExternalEvent> event) {
-        const auto* completion = dynamic_cast<const ClipboardWrite*>(event.get());
-        if (!completion)
-            throw std::logic_error("Incorrect clipboard completion payload.");
-        if (completion->error.empty())
-            result.resolve(js::PromiseVoid{});
-        else
-            result.reject(std::make_exception_ptr(std::runtime_error(completion->error)));
-    });
+    const auto id = loop.register_completion(
+        [settle = std::move(settle)](std::unique_ptr<ExternalEvent> event) {
+            const auto* completion = dynamic_cast<const WindowRequest*>(event.get());
+            if (!completion)
+                throw std::logic_error("Incorrect Window request completion payload.");
+            settle(completion->error);
+        });
     try {
-        auto request = std::make_unique<ClipboardWrite>(id, std::move(text));
-        std::lock_guard lock(doc.host->mutex);
-        if (doc.host->stopping)
+        auto request = std::make_unique<WindowRequest>(id, std::move(perform));
+        std::lock_guard lock(host.mutex);
+        if (host.stopping)
             throw WorkerTerminated{};
-        doc.host->clipboard_writes.push_back(std::move(request));
+        host.window_requests.push_back(std::move(request));
     } catch (...) {
         loop.cancel_completion(id);
+        throw;
+    }
+}
+} // namespace
+js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
+    js::Promise<js::PromiseVoid> result;
+    try {
+        submit_window_request(
+            [text = std::move(text)](SDL_Window*, PageFullscreen&) {
+                return SDL_SetClipboardText(text.c_str()) ? std::string() : SDL_GetError();
+            },
+            [result](const std::string& error) {
+                if (error.empty())
+                    result.resolve(js::PromiseVoid{});
+                else
+                    result.reject(std::make_exception_ptr(std::runtime_error(error)));
+            });
+    } catch (...) {
         result.reject(std::current_exception());
     }
     return result;
 }
-void window_on_application_error(bool rejection, std::uint64_t identity,
-                                 ApplicationErrors::Callback callback, bool once) {
-    current_document().errors->add(rejection, identity, std::move(callback), once);
+bool window_message_box(bool confirm, std::string message) {
+    auto& host = *current_document().host;
+    auto request = std::make_shared<MessageBoxRequest>();
+    request->confirm = confirm;
+    request->message = std::move(message);
+    std::unique_lock lock(host.mutex);
+    if (host.stopping)
+        throw WorkerTerminated{};
+    host.message_box = request;
+    host.wake.notify_all();
+    host.wake.wait(lock, [&] {
+        return host.stopping || request->answer.has_value() || !request->error.empty();
+    });
+    if (!request->error.empty())
+        throw std::runtime_error(request->error);
+    if (!request->answer)
+        throw WorkerTerminated{};
+    return *request->answer;
+}
+namespace {
+/** Fires `fullscreenchange` at the document's listeners in its own task. */
+void queue_fullscreen_change() {
+    EventLoop::current().post([] {
+        dispatch_platform_event(EventLoop::current(), current_document().fullscreen_listeners);
+    });
+}
+/** The display ended page fullscreen: the document fully exits it. */
+void exit_page_fullscreen() {
+    auto& stack = current_document().fullscreen;
+    if (stack.empty())
+        return;
+    stack.clear();
+    queue_fullscreen_change();
+}
+/**
+ * Asks the Window thread for a window state (none keeps it) after earlier requests; `settle`
+ * runs on this realm with the platform's failure, empty on success.
+ */
+void request_window_fullscreen(std::optional<bool> fullscreen,
+                               std::function<void(const std::string&)> settle) {
+    submit_window_request(
+        [fullscreen](SDL_Window* window, PageFullscreen& page) {
+            if (!fullscreen)
+                return std::string();
+            return *fullscreen ? page.enter(window) : page.leave(window);
+        },
+        std::move(settle));
+}
+} // namespace
+js::Promise<js::PromiseVoid> window_request_fullscreen(UiElementHandle element) {
+    auto& doc = current_document();
+    js::Promise<js::PromiseVoid> result;
+    try {
+        if (element != ui_document_root(doc.engine, UiDocumentPart::Html) &&
+            !(doc.primary_canvas && element.value == *doc.primary_canvas))
+            throw js::make_dom_exception(
+                "Native fullscreen admits the document element and the primary canvas.",
+                "NotSupportedError");
+        if (!ui_is_connected(doc.engine, element))
+            std::rethrow_exception(
+                js::make_error("TypeError", "Fullscreen requires a connected element."));
+        request_window_fullscreen(true, [element, result](const std::string& error) {
+            if (!error.empty()) {
+                result.reject(js::make_error("TypeError", "Fullscreen request failed: " + error));
+                return;
+            }
+            auto& stack = current_document().fullscreen;
+            const bool current = !stack.empty() && stack.back() == element;
+            if (!current) {
+                std::erase(stack, element);
+                stack.push_back(element);
+            }
+            result.resolve(js::PromiseVoid{});
+            if (!current)
+                queue_fullscreen_change();
+        });
+    } catch (const WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        result.reject(std::current_exception());
+    }
+    return result;
+}
+js::Promise<js::PromiseVoid> window_exit_fullscreen() {
+    auto& doc = current_document();
+    js::Promise<js::PromiseVoid> result;
+    try {
+        if (doc.fullscreen.empty())
+            std::rethrow_exception(js::make_error("TypeError", "Document not active"));
+        // Below the top element the window stays fullscreen.
+        const bool nested = doc.fullscreen.size() > 1;
+        request_window_fullscreen(nested ? std::nullopt : std::optional(false),
+                                  [nested, result](const std::string& error) {
+                                      auto& stack = current_document().fullscreen;
+                                      const bool changed = !stack.empty();
+                                      if (nested && changed)
+                                          stack.pop_back();
+                                      else
+                                          stack.clear();
+                                      if (error.empty())
+                                          result.resolve(js::PromiseVoid{});
+                                      else
+                                          result.reject(js::make_error(
+                                              "TypeError", "Leaving fullscreen failed: " + error));
+                                      if (changed)
+                                          queue_fullscreen_change();
+                                  });
+    } catch (const WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        result.reject(std::current_exception());
+    }
+    return result;
+}
+js::Nullable<UiElementHandle> window_fullscreen_element() {
+    const auto& stack = current_document().fullscreen;
+    return stack.empty() ? js::Nullable<UiElementHandle>()
+                         : js::Nullable<UiElementHandle>(stack.back());
+}
+bool window_on_fullscreen_change(std::uint64_t identity, js::Callback<void()> callback, bool once,
+                                 ListenerLeasePtr lease) {
+    return current_document().fullscreen_listeners.add(identity, std::move(callback), once,
+                                                       std::move(lease));
+}
+void window_off_fullscreen_change(std::uint64_t identity) {
+    current_document().fullscreen_listeners.remove(identity);
+}
+bool window_on_application_error(bool rejection, std::uint64_t identity,
+                                 ApplicationErrors::Callback callback, bool once,
+                                 ListenerLeasePtr lease) {
+    return current_document().errors->add(rejection, identity, std::move(callback), once,
+                                          std::move(lease));
 }
 void window_off_application_error(bool rejection, std::uint64_t identity) {
     current_document().errors->remove(rejection, identity);
@@ -769,6 +1113,7 @@ void update_window_document(bool wait) {
     if (host.stopping)
         throw WorkerTerminated{};
     if (snapshot) {
+        snapshot->scroll_requests = std::exchange(doc.engine.ui_scroll_requests, {});
         host.pending = std::move(snapshot);
         const auto revision = ++host.requested;
         doc.published_revision = doc.engine.ui_revision;
@@ -786,24 +1131,29 @@ void update_window_document(bool wait) {
     if (doc.layout != layout && layout) {
         doc.layout = layout;
         for (std::size_t index = 0;
-             index < layout->rectangles.size() && index < doc.engine.ui_elements.size(); ++index) {
-            doc.engine.ui_elements[index].client_rect = layout->rectangles[index];
-            doc.engine.ui_elements[index].content_box = layout->content_boxes[index];
-            doc.engine.ui_elements[index].computed_style = layout->styles[index];
+             index < layout->elements.size() && index < doc.engine.ui_elements.size(); ++index) {
+            const auto& laid = layout->elements[index];
+            auto& record = doc.engine.ui_elements[index];
+            record.client_rect = laid.rectangle;
+            record.content_box = laid.content_box;
+            record.computed_style = laid.style;
         }
         for (const auto& [index, canvas] : doc.canvases) {
-            if (index >= layout->rectangles.size())
+            if (index >= layout->elements.size())
                 continue;
-            const auto& box = layout->rectangles[index];
-            if (box.width > 0 && box.height > 0)
+            const auto& box = layout->elements[index].rectangle;
+            const auto target = doc.input_targets.find(index);
+            const auto engine =
+                target != doc.input_targets.end() ? target->second.engine.lock() : nullptr;
+            if (engine) {
+                // The engine's next frame head resizes its backing store
+                // from the client box (`resizeSurface`).
+                engine->canvas_client_width = box.width / layout->pixel_ratio;
+                engine->canvas_client_height = box.height / layout->pixel_ratio;
+            } else if (box.width > 0 && box.height > 0) {
                 canvas->resize_layout(static_cast<std::uint32_t>(std::round(box.width)),
                                       static_cast<std::uint32_t>(std::round(box.height)));
-            const auto target = doc.input_targets.find(index);
-            if (target != doc.input_targets.end())
-                if (const auto engine = target->second.engine.lock()) {
-                    engine->canvas_client_width = box.width / layout->pixel_ratio;
-                    engine->canvas_client_height = box.height / layout->pixel_ratio;
-                }
+            }
         }
     }
 }
@@ -853,12 +1203,28 @@ ScreenMetrics window_screen_metrics() {
     return doc.layout->screen;
 }
 const void* window_screen_identity() { return std::addressof(current_document().screen_identity); }
+namespace {
+void adopt_window_pointer_states() {
+    auto& doc = current_document();
+    std::shared_ptr<const std::vector<std::uint8_t>> states;
+    {
+        const std::lock_guard lock(doc.host->mutex);
+        if (doc.host->stopping)
+            throw WorkerTerminated{};
+        states = doc.host->pointer_states;
+    }
+    // Rectangles and styles adopt with their published document in update_window_document.
+    for (std::size_t index = 0;
+         states && index < states->size() && index < doc.engine.ui_elements.size(); ++index)
+        doc.engine.ui_elements[index].pointer_states = (*states)[index];
+}
+} // namespace
 UiClientRect window_element_size(UiElementHandle element) {
     update_window_document();
     const auto& layout = current_document().layout;
-    if (!layout || element.value >= layout->rectangles.size())
+    if (!layout || element.value >= layout->elements.size())
         throw std::out_of_range("Window element has no layout box.");
-    auto box = handle_at(layout->rectangles, element);
+    auto box = handle_at(layout->elements, element).rectangle;
     box.left /= layout->pixel_ratio;
     box.top /= layout->pixel_ratio;
     box.width /= layout->pixel_ratio;
@@ -1065,6 +1431,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         ~Reset() { document = nullptr; }
                     } reset;
                     WorkerRealm realm(loop, {}, services);
+                    realm.provide_device_pixel_ratio(window_device_pixel_ratio);
                     ApplicationErrors errors(loop);
                     owner.errors = &errors;
                     realm.on_platform_event([services](std::unique_ptr<ExternalEvent> packet) {
@@ -1078,6 +1445,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             EventLoop::current().dispatch_callback([&] {
                                 set_document_hidden(window_document_engine(), visibility->hidden);
                             });
+                            return;
+                        }
+                        if (dynamic_cast<WindowFullscreenExit*>(packet.get())) {
+                            exit_page_fullscreen();
                             return;
                         }
                         // Acknowledge document input however its dispatch ends,
@@ -1110,8 +1481,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             return;
                         if (event->checked)
                             ui_set_checked(engine, event->element, *event->checked);
-                        if (event->open)
-                            ui_set_boolean_attribute(engine, event->element, "open", *event->open);
+                        if (event->toggle_open)
+                            ui_set_boolean_attribute(
+                                engine, event->element, "open",
+                                !ui_has_attribute(engine, event->element, "open"));
                         if (event->selected_option)
                             ui_set_selection(engine, event->element, *event->selected_option);
                         if (event->form_value)
@@ -1180,14 +1553,17 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             audio_initialize_subsystem();
 #endif
             std::unordered_map<std::uint32_t, OffscreenFrame> latest;
+            PageFullscreen page_fullscreen;
             PlatformInputReplay input_replay;
             LayoutSnapshot next_layout;
             std::shared_ptr<const LayoutSnapshot> layout;
+            std::vector<std::uint8_t> next_pointer_states;
+            std::shared_ptr<const std::vector<std::uint8_t>> pointer_states;
             const auto canvas_at = [&](double x, double y) -> UiElementHandle {
                 for (std::size_t index = 0;
-                     index < display.ui_elements.size() && index < layout->rectangles.size();
+                     index < display.ui_elements.size() && index < layout->elements.size();
                      ++index) {
-                    const auto& box = layout->rectangles[index];
+                    const auto& box = layout->elements[index].rectangle;
                     if (display.ui_elements[index].external_gpu_canvas && x >= box.left &&
                         y >= box.top && x < box.left + box.width && y < box.top + box.height)
                         return {static_cast<std::uint32_t>(index)};
@@ -1259,19 +1635,24 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         static_cast<double>(std::popcount(red) + std::popcount(green) +
                                             std::popcount(blue))};
                 }
-                next_layout.rectangles.resize(display.ui_elements.size());
-                next_layout.content_boxes.resize(display.ui_elements.size());
-                next_layout.styles.resize(display.ui_elements.size());
-                for (std::size_t index = 0; index < display.ui_elements.size(); ++index) {
-                    next_layout.rectangles[index] = display.ui_elements[index].client_rect;
-                    next_layout.content_boxes[index] = display.ui_elements[index].content_box;
-                    next_layout.styles[index] = display.ui_elements[index].computed_style;
+                next_layout.elements.clear();
+                next_layout.elements.reserve(display.ui_elements.size());
+                next_pointer_states.clear();
+                next_pointer_states.reserve(display.ui_elements.size());
+                for (const auto& record : display.ui_elements) {
+                    next_layout.elements.push_back(
+                        {record.client_rect, record.content_box, record.computed_style});
+                    next_pointer_states.push_back(record.pointer_states);
                 }
                 if (!layout || !layout->equals(next_layout))
                     layout = std::make_shared<LayoutSnapshot>(next_layout);
+                if (!pointer_states || *pointer_states != next_pointer_states)
+                    pointer_states =
+                        std::make_shared<const std::vector<std::uint8_t>>(next_pointer_states);
                 {
                     const std::lock_guard lock(services->mutex);
                     services->layout = layout;
+                    services->pointer_states = pointer_states;
                     services->completed = revision;
                 }
                 services->wake.notify_all();
@@ -1281,17 +1662,21 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             // posted so far. Source callbacks can synchronously request layout:
             // serve those requests while waiting, without spending a
             // presentation or repaint tick on the acknowledgement.
+            // A listener's alert or confirm waits on this thread too.
             const auto await_input = [&] {
                 for (;;) {
                     std::unique_lock lock(services->mutex);
                     services->wake.wait(lock, [&] {
                         return services->input_handled == services->input_posted || finished ||
-                               services->pending;
+                               services->pending || services->message_box;
                     });
                     if (services->input_handled == services->input_posted || finished)
                         return;
+                    const bool message_box = services->message_box != nullptr;
                     lock.unlock();
-                    if (!update_layout())
+                    if (message_box)
+                        serve_message_box(*services, window.get());
+                    else if (!update_layout())
                         SDL_Delay(1);
                 }
             };
@@ -1306,19 +1691,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             while (running && !finished) {
                 co_yield true;
                 const double started = cpu_profile ? monotonic_milliseconds() : 0;
-                std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
-                {
-                    std::lock_guard lock(services->mutex);
-                    clipboard_writes.swap(services->clipboard_writes);
-                }
-                for (auto& request : clipboard_writes) {
-                    {
-                        const auto text = std::move(request->text);
-                        if (!SDL_SetClipboardText(text.c_str()))
-                            request->error = SDL_GetError();
-                    }
-                    services->inbox->post(std::move(request));
-                }
+                serve_window_requests(*services, window.get(), page_fullscreen);
+                serve_message_box(*services, window.get());
                 SDL_Event event;
                 for (;;) {
                     if (!poll_sdl_event(&event))
@@ -1330,6 +1704,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         running = false;
                     if (frame_options.test_pass && is_platform_input_event(event) &&
                         !is_replayed_ui_event(event))
+                        continue;
+                    if (end_page_fullscreen(*services, window.get(), page_fullscreen, event))
                         continue;
                     end_press_mouse_capture(event);
                     // Mouse motion has no cancelable native default. Keep its
@@ -1394,9 +1770,9 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         if (event.type == SDL_EVENT_FINGER_UP ||
                             event.type == SDL_EVENT_FINGER_CANCELED)
                             touch_captures.erase(found);
-                        if (target.value >= layout->rectangles.size())
+                        if (target.value >= layout->elements.size())
                             continue;
-                        const auto& box = layout->rectangles[target.value];
+                        const auto& box = layout->elements[target.value].rectangle;
                         if (box.width <= 0 || box.height <= 0)
                             continue;
                         auto packet = std::make_unique<WindowPointerEvent>();
@@ -1451,7 +1827,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     auto target = pointer_capture;
                     if (target.value == invalid_handle)
                         target = canvas_at(x * layout->pixel_ratio, y * layout->pixel_ratio);
-                    if (target.value == invalid_handle || target.value >= layout->rectangles.size())
+                    if (target.value == invalid_handle || target.value >= layout->elements.size())
                         continue;
                     if (down) {
                         pointer_capture = target;
@@ -1464,7 +1840,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         if (!pointer_buttons)
                             pointer_capture = {};
                     }
-                    const auto& box = handle_at(layout->rectangles, target);
+                    const auto& box = handle_at(layout->elements, target).rectangle;
                     auto packet = std::make_unique<WindowPointerEvent>();
                     packet->element = target;
                     packet->pointer = event;
@@ -1520,7 +1896,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         if (auto frame = canvas->surface->take_frame())
                             latest.insert_or_assign(index, std::move(*frame));
                         if (const auto found = latest.find(index);
-                            found != latest.end() && index < layout->rectangles.size()) {
+                            found != latest.end() && index < layout->elements.size()) {
                             frames.push_back({UiElementHandle{index}, found->second});
                         }
                     }
@@ -1649,6 +2025,9 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 std::rethrow_exception(application_error);
             if (!services->reload_requested)
                 co_return 0;
+            // The reloaded document starts outside fullscreen.
+            if (const auto error = page_fullscreen.leave(window.get()); !error.empty())
+                throw std::runtime_error("Leaving page fullscreen failed: " + error);
             location->commit_reload();
         }
     } catch (...) {

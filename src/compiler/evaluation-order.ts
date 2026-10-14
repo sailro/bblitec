@@ -1475,6 +1475,18 @@ export class EvaluationOrder {
     }
 }
 
+/** `cpp` evaluated here, in source order, into a temporary named after `label`. */
+export function pinCpp(
+    context: Pick<LoweringServices, "allocateTemporaryCppName" | "emit">,
+    cpp: string,
+    label: string,
+    type = "const auto",
+): string {
+    const name = context.allocateTemporaryCppName(label);
+    context.emit({ kind: "declaration", type, name, initializer: cpp });
+    return name;
+}
+
 /**
  * An operand read where JavaScript reads it: a value the compiler already
  * knows is that value's literal, anything else a temporary.

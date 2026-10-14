@@ -10,6 +10,9 @@
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/features/live_task_add.hpp>
+#include <bblite/features/render_target_disposal.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
 
@@ -222,7 +225,7 @@ std::shared_ptr<GpuRenderTarget> retain_render_target(SDL_GPUDevice* device,
 void release_frame_graph_textures(GpuState& state, const Engine* preserve) {
     for (std::size_t index = 0; index < state.render_targets.size(); ++index) {
         if (preserve && index < preserve->render_targets.size() &&
-            preserve->render_targets[index].lifecycle)
+            preserve->render_targets[index].lifecycle && !preserve->render_targets[index].retired)
             continue;
         release_render_target(state.device, state.render_targets[index]);
     }
@@ -292,6 +295,9 @@ SDL_GPUTextureFormat depth_texture_format(const GpuState& state, const RenderTar
 void create_frame_graph_textures(GpuState& state, const Engine& engine,
                                  SDL_GPUTextureFormat surface_format, std::uint32_t width,
                                  std::uint32_t height) {
+#if BBLITE_RENDER_TARGET_DISPOSAL || BBLITE_LIVE_TASK_ADD
+    require_executable_frame_tasks(engine);
+#endif
     if (state.render_targets_version == engine.render_targets_version &&
         state.render_targets.size() == engine.render_targets.size() &&
         state.frame_graph_width == width && state.frame_graph_height == height &&
@@ -561,6 +567,194 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
                      height, path);
     depth_owner.reset();
     color_owner.reset();
+}
+#endif
+
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
+SDL_GPUGraphicsPipeline* create_fullscreen_pipeline(SDL_GPUDevice* device,
+                                                    const PinnedStage& vertex,
+                                                    const PinnedStage& fragment,
+                                                    SDL_GPUTextureFormat format,
+                                                    const char* label) {
+    SDL_GPUColorTargetDescription target{};
+    target.format = format;
+    SDL_GPUGraphicsPipelineCreateInfo info{};
+    info.fragment_shader = fragment.shader.get();
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    info.target_info.color_target_descriptions = &target;
+    info.target_info.num_color_targets = 1;
+    SDL_GPUGraphicsPipeline* pipeline =
+        create_sdl_gpu_graphics_pipeline(device, vertex.shader, &info);
+    if (!pipeline)
+        gpu_error(label);
+    return pipeline;
+}
+
+void encode_grab_pass(SDL_GPUCommandBuffer* command, SDL_GPUGraphicsPipeline* pipeline,
+                      SDL_GPUTexture* target, const SDL_GPUTextureSamplerBinding* sampled,
+                      SDL_GPUTexture* storage) {
+    SDL_GPUColorTargetInfo color{};
+    color.texture = target;
+    color.load_op = SDL_GPU_LOADOP_CLEAR;
+    color.store_op = SDL_GPU_STOREOP_STORE;
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color, 1, nullptr)};
+    SDL_BindGPUGraphicsPipeline(pass, pipeline);
+    if (storage) {
+        // A Texture2DMS is Load()-ed and carries no sampler: it binds as a
+        // storage texture.
+        SDL_BindGPUFragmentStorageTextures(pass, 0, &storage, 1);
+    } else {
+        SDL_BindGPUFragmentSamplers(pass, 0, sampled, 1);
+    }
+    count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
+}
+#endif
+
+#if BBLITE_RENDER_TASK_TRANSMISSION
+namespace {
+/** A pinned utility module's single-sample pipeline, from its deployed stage pair. */
+SDL_GPUGraphicsPipeline* task_grab_pipeline(GpuState& state, const std::string& stem,
+                                            SDL_GPUTextureFormat format, const char* label) {
+    return create_fullscreen_pipeline(
+        state.device, load_pinned_stage(state.device, stem + ".vert", SDL_GPU_SHADERSTAGE_VERTEX),
+        load_pinned_stage(state.device, stem + ".frag", SDL_GPU_SHADERSTAGE_FRAGMENT), format,
+        label);
+}
+
+/** transmission-depth-grab.ts: the snapshot's nearest, clamped sampler. */
+SDL_GPUSampler* depth_grab_sampler(GpuState& state) {
+    if (state.task_depth_grab_sampler)
+        return state.task_depth_grab_sampler;
+    SDL_GPUSamplerCreateInfo info{};
+    info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    state.task_depth_grab_sampler = SDL_CreateGPUSampler(state.device, &info);
+    if (!state.task_depth_grab_sampler)
+        gpu_error("SDL_CreateGPUSampler render-task depth grab");
+    return state.task_depth_grab_sampler;
+}
+} // namespace
+
+GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Engine& engine,
+                                                      TaskHandle task) {
+    const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
+    if (!record.transmission)
+        throw std::runtime_error("A transmission texture names a task without transmission.");
+    const RenderTaskTransmission& settings = *record.transmission;
+    if (record.render.target.value >= state.render_targets.size())
+        pal::refuse_invalid_frame_handle("A render-task transmission names no render target.");
+    const RenderTargetRecord& target_record =
+        pal::resolve_render_target(engine, record.render.target, pal::task_target_user(record));
+    const GpuRenderTarget& target = handle_at(state.render_targets, record.render.target);
+    (void)task_pass_breaks(
+        record, {.multisampled = target_sample_count(state, target_record) != SDL_GPU_SAMPLECOUNT_1,
+                 .swapchain = target_record.swapchain});
+    if (state.task_transmissions.size() <= task.value)
+        state.task_transmissions.resize(task.value + 1);
+    GpuState::TaskTransmission& grab = state.task_transmissions[task.value];
+    // createRenderTaskTransmission: a fixed square rgba16float, with the
+    // chain transmissionMipLevelCount allows.
+    const std::uint32_t mips = task_transmission_mip_count(settings);
+    if (!grab.color || grab.mip_count != mips) {
+        if (grab.color)
+            SDL_ReleaseGPUTexture(state.device, grab.color);
+        SDL_GPUTextureCreateInfo info{};
+        info.type = SDL_GPU_TEXTURETYPE_2D;
+        info.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+        info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        info.width = settings.grab_size;
+        info.height = settings.grab_size;
+        info.layer_count_or_depth = 1;
+        info.num_levels = mips;
+        info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        grab.color = SDL_CreateGPUTexture(state.device, &info);
+        if (!grab.color)
+            gpu_error("SDL_CreateGPUTexture render-task transmission");
+        grab.mip_count = mips;
+    }
+    // transmission-depth-grab.ts: the target's own extent, r32float.
+    const bool depth = settings.grab_depth.value_or(false) && target_record.has_depth &&
+                       target.depth && target.width > 0 && target.height > 0;
+    if (!depth || grab.depth_width != target.width || grab.depth_height != target.height) {
+        if (grab.depth)
+            SDL_ReleaseGPUTexture(state.device, grab.depth);
+        grab.depth = depth ? create_frame_texture(
+                                 state.device, SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
+                                 SDL_GPU_SAMPLECOUNT_1, target.width, target.height,
+                                 SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER)
+                           : nullptr;
+        if (depth && !grab.depth)
+            gpu_error("SDL_CreateGPUTexture render-task depth grab");
+        grab.depth_width = depth ? target.width : 0;
+        grab.depth_height = depth ? target.height : 0;
+    }
+    return grab;
+}
+
+void encode_task_transmission_grab(GpuState& state, const Engine& engine,
+                                   SDL_GPUCommandBuffer* command, TaskHandle task) {
+    GpuState::TaskTransmission& grab = prepare_task_transmission(state, engine, task);
+    const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
+    const GpuRenderTarget& target = pal::resolve_gpu_target(
+        engine, state.render_targets, record.render.target, pal::task_target_user(record));
+    if (!target.color)
+        pal::fail_render_target_has_no_texture();
+    if (!state.task_grab_pipeline)
+        state.task_grab_pipeline = task_grab_pipeline(
+            state, "transmission-grab-single", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+            "SDL_CreateGPUGraphicsPipeline render-task transmission grab");
+    // blitToTransmission through the bilinear sampler the pin binds.
+    const SDL_GPUTextureSamplerBinding color_source{target.color, state.ground_sampler};
+    encode_grab_pass(command, state.task_grab_pipeline, grab.color, &color_source);
+    if (!record.transmission)
+        throw std::runtime_error(
+            "A render-task transmission grab names a task without transmission.");
+    const auto grab_size = record.transmission->grab_size;
+    generate_texture_mipmaps(state.device, command, grab.color, grab_size, grab_size,
+                             grab.mip_count);
+    if (grab.depth) {
+        if (!state.task_depth_grab_pipeline)
+            state.task_depth_grab_pipeline = task_grab_pipeline(
+                state, "transmission-depth-grab-single", SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
+                "SDL_CreateGPUGraphicsPipeline render-task depth grab");
+        const SDL_GPUTextureSamplerBinding depth_source{target.depth, depth_grab_sampler(state)};
+        encode_grab_pass(command, state.task_depth_grab_pipeline, grab.depth, &depth_source);
+    }
+}
+
+SDL_GPUTextureSamplerBinding task_transmission_binding(GpuState& state, const Engine& engine,
+                                                       const RenderTextureRef& reference) {
+    const GpuState::TaskTransmission& grab =
+        prepare_task_transmission(state, engine, reference.task);
+    if (reference.source == RenderTextureSource::transmission_depth) {
+        if (!grab.depth)
+            pal::fail_render_target_has_no_texture();
+        return {grab.depth, depth_grab_sampler(state)};
+    }
+    return {grab.color, state.transmission_sampler};
+}
+
+void release_task_transmissions(GpuState& state) {
+    for (GpuState::TaskTransmission& grab : state.task_transmissions) {
+        if (grab.color)
+            SDL_ReleaseGPUTexture(state.device, grab.color);
+        if (grab.depth)
+            SDL_ReleaseGPUTexture(state.device, grab.depth);
+    }
+    state.task_transmissions.clear();
+    for (SDL_GPUGraphicsPipeline* pipeline :
+         {state.task_grab_pipeline, state.task_depth_grab_pipeline})
+        if (pipeline)
+            SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
+    if (state.task_depth_grab_sampler)
+        SDL_ReleaseGPUSampler(state.device, state.task_depth_grab_sampler);
+    state.task_grab_pipeline = nullptr;
+    state.task_depth_grab_pipeline = nullptr;
+    state.task_depth_grab_sampler = nullptr;
 }
 #endif
 

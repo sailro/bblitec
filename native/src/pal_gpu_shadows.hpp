@@ -2,6 +2,7 @@
 // casters a directional fit folds, and the generators' refresh.
 #pragma once
 #include "pal_gpu_surface.hpp"
+#include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include <bblite/runtime.hpp>
@@ -23,8 +24,39 @@
 #if BBLITE_SHADOWS_ESM
 #include <bblite/upstream/esm_shadow.hpp>
 #endif
+#if BBLITE_CSM_STATIC_CACHE
+#include <bblite/pal.hpp>
+#include <bblite/upstream/csm_static_cache.hpp>
+#endif
 
 namespace bbl::pal {
+
+#if BBLITE_CSM_STATIC_CACHE
+/**
+ * A cached CSM generator's pass verdict this frame: a static pass when its
+ * cascade's static depth is re-rendered, a dynamic one when its cascade
+ * draws over the copied cache. Any other caster pass takes the render gate.
+ */
+inline bool csm_cache_task_due(const ShadowGeneratorRecord& generator,
+                               const FrameTaskRecord& task) {
+    const CsmStaticCacheState& cache = *generator.csm_cache;
+    const std::uint32_t layer = task.render.depth_layer;
+    const std::vector<bool>& due =
+        task.render.shadow_cache_static ? cache.static_due : cache.dynamic_due;
+    return layer < due.size() && due[layer];
+}
+
+/** The cache layers a cached generator copies into its map before its dynamic passes. */
+inline const std::vector<std::uint32_t>* csm_cache_copies(const Engine& engine,
+                                                          const FrameTaskRecord& task) {
+    const ShadowGeneratorRecord* generator =
+        handle_find(engine.shadow_generators, task.render.shadow_generator);
+    if (!generator || !generator->csm_cache || task.render.shadow_cache_static ||
+        task.render.depth_layer != 0 || generator->csm_cache->copy_layers.empty())
+        return nullptr;
+    return &generator->csm_cache->copy_layers;
+}
+#endif
 
 #if BBLITE_SHADOWS_ESM
 inline void mark_active_esm_maps(const Engine& engine, std::vector<bool>& active,
@@ -128,6 +160,10 @@ ShadowCasterMatrices shadow_caster_matrices(const Engine& engine, const FrameTas
 
 /** The refresh's own carriers, kept by each backend across frames. */
 struct ShadowRefreshState {
+#if BBLITE_CSM_STATIC_CACHE
+    /** The caster passes cached CSM generators refilled during the refresh. */
+    std::vector<TaskHandle> moved_tasks;
+#endif
     /** Refilled per generator by the ESM caster fold, never reallocated. */
     std::vector<upstream::ShadowCaster> casters;
     /**
@@ -164,6 +200,24 @@ struct ShadowRefreshState {
         }
     }
 };
+
+/**
+ * One shadow caster task's work this frame, decided once for both backends:
+ * the cache layers copied into its map before any draw, whether it draws,
+ * and whether that draw loads what the copy left (`renderCsmShadowMapCached`).
+ */
+struct ShadowTaskPass {
+    const std::vector<std::uint32_t>* copy_layers = nullptr;
+    RenderTargetHandle copy_source{};
+    bool draws = false;
+    bool load_depth = false;
+};
+
+ShadowTaskPass shadow_task_pass(const Engine& engine, const ShadowRefreshState& refresh,
+                                const FrameTaskRecord& task);
+
+/** The caster passes the refresh refilled, whose draw lists are rebuilt; they are consumed. */
+std::vector<TaskHandle> take_moved_task_lists(ShadowRefreshState& refresh);
 
 /**
  * Refresh every generator the scene's lights name, then hand each to the
@@ -305,50 +359,94 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
                 camera_key.aspect = aspect;
             }
 #endif
-            // The pin's render gate, ahead of each family's fit exactly as
-            // each `render*ShadowMap` hook tests it ahead of its own. On a
-            // skipped frame the generator's matrices — and so the block
-            // below — keep their last-render values. The verdict lands on
-            // the gate, where each backend's task loop reads it to skip
-            // the caster pass itself.
-            const bool due =
-                shadow_enabled && upstream::shadow_refresh_due(engine, generator, light_record, eye,
-                                                               csm_camera, gate);
-            gate.due = due;
-            if (due) {
-                if (generator.filter == ShadowFilter::pcf_spot) {
-                    upstream::update_pcf_spot_shadow(generator, light_record, eye);
+#if BBLITE_CSM_STATIC_CACHE
+            // `enableCsmStaticCache` replaces the hooks: the refit gate decides
+            // in place of the render gate, the fit runs only on a refit, and
+            // the plan it leaves on the cache names each pass and layer copy
+            // the backend's task loop runs. A disabled generator's task does
+            // not run, and a scene without a camera renders nothing.
+            if (generator.csm_cache) {
+                gate.due = false;
+                bool published = false;
+                if (shadow_enabled && csm_fit) {
+                    published = upstream::csm_static_cache_frame(
+                        engine, scene, handle, light_record, fit_camera,
+                        upstream::scene_camera_change_key(*fit_camera), aspect,
+                        performance_milliseconds(),
+                        [&]() -> const std::vector<upstream::ShadowCaster>& {
+                            fitted_shadow_casters(engine, generator, refresh.casters);
+                            return refresh.casters;
+                        });
                 } else {
-                    // Every directional fit re-reads its casters' world
-                    // bounds; the spot rebuild reads only the light. The
-                    // PCF directional arm needs no define of its own: it
-                    // shares every resource the spot generator builds, and
-                    // what it needs beside them -- the caster fit -- is
-                    // the receiver half's, not the ESM's.
-                    fitted_shadow_casters(engine, generator, refresh.casters);
+                    generator.csm_cache->static_due.assign(generator.csm_num_cascades, false);
+                    generator.csm_cache->dynamic_due.assign(generator.csm_num_cascades, false);
+                    generator.csm_cache->copy_layers.clear();
+                }
+                // The pin applies a frame's transfers before its passes run:
+                // the backend rebuilds the task draw lists the refill moved.
+                if (generator.csm_cache->refilled) {
+                    refresh.moved_tasks.insert(refresh.moved_tasks.end(),
+                                               generator.caster_tasks.begin(),
+                                               generator.caster_tasks.end());
+                    generator.csm_cache->refilled = false;
+                }
+                // Whether any pass of this generator runs this frame: the
+                // backends write caster pass blocks only for a due generator.
+                const CsmStaticCacheState& plan = *generator.csm_cache;
+                gate.due = std::find(plan.static_due.begin(), plan.static_due.end(), true) !=
+                               plan.static_due.end() ||
+                           std::find(plan.dynamic_due.begin(), plan.dynamic_due.end(), true) !=
+                               plan.dynamic_due.end();
+                if (!published && handle_at(refresh.uploaded, handle))
+                    return;
+            } else
+#endif
+            {
+                // The pin's render gate, ahead of each family's fit exactly as
+                // each `render*ShadowMap` hook tests it ahead of its own. On a
+                // skipped frame the generator's matrices — and so the block
+                // below — keep their last-render values. The verdict lands on
+                // the gate, where each backend's task loop reads it to skip
+                // the caster pass itself.
+                const bool due =
+                    shadow_enabled && upstream::shadow_refresh_due(engine, generator, light_record,
+                                                                   eye, csm_camera, gate);
+                gate.due = due;
+                if (due) {
+                    if (generator.filter == ShadowFilter::pcf_spot) {
+                        upstream::update_pcf_spot_shadow(generator, light_record, eye);
+                    } else {
+                        // Every directional fit re-reads its casters' world
+                        // bounds; the spot rebuild reads only the light. The
+                        // PCF directional arm needs no define of its own: it
+                        // shares every resource the spot generator builds, and
+                        // what it needs beside them -- the caster fit -- is
+                        // the receiver half's, not the ESM's.
+                        fitted_shadow_casters(engine, generator, refresh.casters);
 #if BBLITE_SHADOWS_ESM
-                    if (generator.filter == ShadowFilter::esm_directional) {
-                        upstream::update_esm_directional_shadow(generator, light_record,
-                                                                refresh.casters, eye);
-                    } else
+                        if (generator.filter == ShadowFilter::esm_directional) {
+                            upstream::update_esm_directional_shadow(generator, light_record,
+                                                                    refresh.casters, eye);
+                        } else
 #endif
 #if BBLITE_SHADOWS_CSM
-                        if (csm_fit) {
-                        upstream::update_csm_cascades(generator, light_record,
-                                                      handle_at(engine.cameras, scene.camera),
-                                                      aspect, refresh.casters);
-                    } else
+                            if (csm_fit) {
+                            upstream::update_csm_cascades(generator, light_record,
+                                                          handle_at(engine.cameras, scene.camera),
+                                                          aspect, refresh.casters);
+                        } else
 #endif
-                    {
-                        upstream::update_pcf_directional_shadow(generator, light_record,
-                                                                refresh.casters, eye);
+                        {
+                            upstream::update_pcf_directional_shadow(generator, light_record,
+                                                                    refresh.casters, eye);
+                        }
                     }
+                } else if (handle_at(refresh.uploaded, handle)) {
+                    // A gated frame's fit did not run, so the block's bytes
+                    // are provably the ones already uploaded: the pack, the
+                    // compare and the visitor are skipped with the pass.
+                    return;
                 }
-            } else if (handle_at(refresh.uploaded, handle)) {
-                // A gated frame's fit did not run, so the block's bytes
-                // are provably the ones already uploaded: the pack, the
-                // compare and the visitor are skipped with the pass.
-                return;
             }
             const upstream::ShadowReceiverBlock block = upstream::shadow_receiver_block(generator);
             notify_receivers(block);

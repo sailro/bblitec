@@ -1464,6 +1464,10 @@ struct RegExpReplacement {
  * A `unicode` expression is the compiler's rewrite of a `u` pattern over UTF-16
  * units, each atom consuming whole code points: matches start at code point
  * boundaries and an empty match advances by one code point.
+ *
+ * Capture lists hold `Group`: `Nullable<std::string>` keeps an unmatched capture
+ * undefined, as JavaScript does; `std::string` serves a site whose pattern
+ * leaves no capture unmatched, and refuses one that is.
  */
 class RegExp {
 public:
@@ -1480,7 +1484,8 @@ public:
 
     [[nodiscard]] double& last_index() const { return state().last_index; }
 
-    [[nodiscard]] Nullable<Array<std::string>> exec(const std::string& input) const {
+    template <typename Group = std::string>
+    [[nodiscard]] Nullable<Array<Group>> exec(const std::string& input) const {
         const auto units = wide(input);
         const auto requested = state().global && !std::isnan(last_index())
                                    ? std::max(0.0, std::trunc(last_index()))
@@ -1498,56 +1503,57 @@ public:
                 last_index() = 0.0;
             return std::nullopt;
         }
-        Array<std::string> groups;
-        groups.reserve(match.size());
-        for (const auto& group : match) {
-            groups.push_back(group.matched ? narrow(group.str()) : std::string{});
-        }
         if (state().global) {
             last_index() = static_cast<double>(*position + match.length());
         }
-        return groups;
+        return captures<Group>(match);
     }
 
-    [[nodiscard]] Array<std::string> split(const std::string& input) const {
-        Array<std::string> result;
+    /** String.prototype[Symbol.split]: pieces between matches, each match's captures after its piece. */
+    template <typename Group = std::string>
+    [[nodiscard]] Array<Group> split(const std::string& input) const {
+        Array<Group> result;
         const auto units = wide(input);
-        if (state().unicode) {
-            // String.prototype[Symbol.split]: a sticky match at each code point.
-            std::wsmatch match;
-            if (units.empty()) {
-                if (!match_at(units, 0, match))
-                    result.push_back(input);
-                return result;
-            }
-            std::size_t previous = 0;
-            for (std::size_t position = 0; position < units.size();) {
-                if (!match_at(units, position, match)) {
-                    position = advance(units, position);
-                    continue;
-                }
-                const auto end =
-                    std::min(position + static_cast<std::size_t>(match.length()), units.size());
-                if (end == previous) {
-                    position = advance(units, position);
-                    continue;
-                }
-                result.push_back(narrow(units.substr(previous, position - previous)));
-                previous = end;
-                position = end;
-            }
-            result.push_back(narrow(units.substr(previous)));
+        std::wsmatch match;
+        if (units.empty()) {
+            if (!match_at(units, 0, match))
+                result.push_back(Group(input));
             return result;
         }
-        std::wsregex_token_iterator part(units.begin(), units.end(), state().expression, -1);
-        const std::wsregex_token_iterator end;
-        for (; part != end; ++part)
-            result.push_back(narrow(part->str()));
+        std::size_t previous = 0;
+        for (std::size_t position = 0; position < units.size();) {
+            // The first sticky match at or after `position` is the leftmost match there.
+            const auto found = search(units, position, match);
+            if (!found || *found >= units.size())
+                break;
+            position = *found;
+            const auto end =
+                std::min(position + static_cast<std::size_t>(match.length()), units.size());
+            if (end == previous) {
+                position = advance(units, position);
+                continue;
+            }
+            result.push_back(Group(narrow(units.substr(previous, position - previous))));
+            for (std::size_t index = 1; index < match.size(); ++index)
+                result.push_back(capture<Group>(match[index], index));
+            previous = end;
+            position = end;
+        }
+        result.push_back(Group(narrow(units.substr(previous))));
         return result;
     }
 
-    [[nodiscard]] Nullable<Array<std::string>> match(const std::string& input) const {
-        Array<std::string> result;
+    template <typename Group = std::string>
+    [[nodiscard]] Nullable<Array<Group>> match(const std::string& input) const {
+        if (!state().global) {
+            // A non-global match is exec from the start; lastIndex is untouched.
+            std::wsmatch found;
+            const auto units = wide(input);
+            if (!search(units, 0, found))
+                return std::nullopt;
+            return captures<Group>(found);
+        }
+        Array<Group> result;
         const auto units = wide(input);
         if (state().global)
             last_index() = 0.0;
@@ -1557,27 +1563,21 @@ public:
             const auto position = search(units, start, found);
             if (!position)
                 break;
-            if (state().global)
-                result.push_back(narrow(found.str()));
-            else {
-                result.reserve(found.size());
-                for (const auto& group : found)
-                    result.push_back(group.matched ? narrow(group.str()) : std::string{});
-                break;
-            }
+            result.push_back(Group(narrow(found.str())));
             start = *position + static_cast<std::size_t>(found.length());
             if (found.length() == 0)
                 start = advance(units, start);
         }
-        return result.empty() ? Nullable<Array<std::string>>(std::nullopt)
-                              : Nullable<Array<std::string>>(std::move(result));
+        return result.empty() ? Nullable<Array<Group>>(std::nullopt)
+                              : Nullable<Array<Group>>(std::move(result));
     }
 
-    [[nodiscard]] Array<Array<std::string>> match_all(const std::string& input) const {
+    template <typename Group = std::string>
+    [[nodiscard]] Array<Array<Group>> match_all(const std::string& input) const {
         if (!state().global) {
             throw std::runtime_error("String.matchAll requires a global RegExp.");
         }
-        Array<Array<std::string>> result;
+        Array<Array<Group>> result;
         const auto units = wide(input);
         const auto requested =
             std::isnan(last_index()) ? 0.0 : std::max(0.0, std::trunc(last_index()));
@@ -1589,12 +1589,7 @@ public:
             const auto position = search(units, start, found);
             if (!position)
                 break;
-            Array<std::string> groups;
-            groups.reserve(found.size());
-            for (const auto& group : found) {
-                groups.push_back(group.matched ? narrow(group.str()) : std::string{});
-            }
-            result.push_back(std::move(groups));
+            result.push_back(captures<Group>(found));
             start = *position + static_cast<std::size_t>(found.length());
             if (found.length() == 0)
                 start = advance(units, start);
@@ -1660,6 +1655,27 @@ private:
               global(global_), unicode(unicode_) {}
     };
     std::shared_ptr<State> state_;
+
+    /** One capture as `Group`; a string-typed site refuses an unmatched one. */
+    template <typename Group>
+    static Group capture(const std::wssub_match& group, std::size_t index) {
+        if (group.matched)
+            return Group(narrow(group.str()));
+        if constexpr (std::is_same_v<Group, std::string>)
+            throw std::runtime_error("RegExp capture " + std::to_string(index) +
+                                     " did not participate in the match; reading it as a string "
+                                     "is not represented.");
+        else
+            return Group{};
+    }
+
+    template <typename Group> static Array<Group> captures(const std::wsmatch& match) {
+        Array<Group> groups;
+        groups.reserve(match.size());
+        for (std::size_t index = 0; index < match.size(); ++index)
+            groups.push_back(capture<Group>(match[index], index));
+        return groups;
+    }
 
     [[nodiscard]] State& state() const {
         if (!state_)
@@ -2696,12 +2712,13 @@ template <typename K, typename V> [[nodiscard]] inline Array<V> map_values(const
 }
 
 using Date = Ref<double>;
-struct StorageTag {};
-using Storage = Ref<StorageTag>;
-[[nodiscard]] inline Storage local_storage_object() {
-    static thread_local const auto instance = make_ref<StorageTag>();
-    return instance;
-}
+/** A Web Storage area object; js_storage.hpp creates `localStorage` and `sessionStorage`. */
+struct StorageArea {
+    Nullable<std::string> (*get_item)(const std::string&) = nullptr;
+    void (*set_item)(const std::string&, const std::string&) = nullptr;
+    void (*remove_item)(const std::string&) = nullptr;
+};
+using Storage = Ref<StorageArea>;
 using DateTimeFormat = Ref<std::string>;
 #ifdef __ANDROID__
 std::string android_time_zone();
@@ -5431,6 +5448,11 @@ template <typename Lane>
     }
 [[nodiscard]] inline std::uint32_t to_uint32(Lane lane) {
     return lane.bits;
+}
+
+/** An absent number is `undefined`, which converts as NaN: `~~undefined` is 0. */
+[[nodiscard]] inline std::uint32_t to_uint32(const Nullable<double>& value) {
+    return value ? to_uint32(*value) : 0u;
 }
 
 // ECMAScript Math.imul: multiply the two ToUint32 values modulo 2^32,

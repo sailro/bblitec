@@ -110,6 +110,21 @@ template <class T>
                : js::Nullable<T>{};
 }
 
+/** An element that may itself be undefined (a capture) is the same `undefined` past the end. */
+template <class T>
+[[nodiscard]] js::Nullable<T> array_at_optional(const js::Array<js::Nullable<T>>& values,
+                                                double index) {
+    return js::array_has_index(values, index) ? values[static_cast<std::size_t>(index)]
+                                              : js::Nullable<T>{};
+}
+
+/** `array.fill(value)`: every element. */
+template <class T, class V> js::Array<T>& array_fill(js::Array<T>& values, const V& value) {
+    for (std::size_t index = 0; index < values.size(); ++index)
+        values[index] = value;
+    return values;
+}
+
 /** A typed-array read, including views; past the end reads NaN. */
 template <class T> [[nodiscard]] double typed_get(const js::TypedArray<T>& values, double index) {
     return js::array_has_index(values, index)
@@ -146,6 +161,29 @@ template <class... Parts> void console_line(const Parts&... parts) {
     bool first = true;
     ((line += first ? "" : " ", first = false, console_part(line, parts)), ...);
     std::cerr << line << '\n';
+}
+
+template <class T, class Variant> struct IsAlternative : std::false_type {};
+template <class T, class... Members>
+struct IsAlternative<T, std::variant<Members...>>
+    : std::bool_constant<(std::is_same_v<T, Members> || ...)> {};
+
+/**
+ * A union read as another union of its member types: the held member, kept.
+ * A narrowing's excluded members are the ones the checker proved absent, so
+ * holding one is a broken invariant.
+ */
+template <class To, class... From>
+[[nodiscard]] To variant_cast(const std::variant<From...>& value) {
+    return std::visit(
+        [](const auto& held) -> To {
+            using Held = std::decay_t<decltype(held)>;
+            if constexpr (IsAlternative<Held, To>::value)
+                return To(std::in_place_type<Held>, held);
+            else
+                throw std::logic_error("A narrowed pinned union holds an excluded member.");
+        },
+        value);
 }
 
 } // namespace bbl::pinned

@@ -190,12 +190,10 @@ test("markup metadata admission retains behavioral and internal attribute refusa
         ['<div onclick="run()"></div>', /not supported/],
         ['<div data-bbl-node="0"></div>', /not supported/],
         ['<div data-bbl-current-color="true"></div>', /not supported/],
-        ["<div data-mode></div>", /invalid or unquoted/],
         ['<div hidden="until-found"></div>', /find-in-page support/],
         ['<div draggable="true"></div>', /authored drags/],
         ['<img fetchpriority="urgent"/>', /fetchpriority requires/],
         ["<span disabled></span>", /not supported/],
-        ['<div aria-label="a" ARIA-LABEL="b"></div>', /duplicated/],
     ] as const) {
         assert.throws(
             () =>
@@ -205,6 +203,21 @@ test("markup metadata admission retains behavioral and internal attribute refusa
             diagnostic,
         );
     }
+    // The browser parses the markup: a bare attribute is empty, and the first
+    // of two same-named attributes wins.
+    for (const [markup, rml] of [
+        ["<div data-mode></div>", /<div data-mode=\\"\\" data-bbl-node/],
+        [
+            '<div aria-label="a" ARIA-LABEL="b"></div>',
+            /<div aria-label=\\"a\\" data-bbl-node/,
+        ],
+    ] as const)
+        assert.match(
+            compileSource(
+                `const panel=document.createElement("div"); panel.innerHTML=${JSON.stringify(markup)};`,
+            ).cpp,
+            rml,
+        );
     assert.throws(
         () =>
             compileSource(`

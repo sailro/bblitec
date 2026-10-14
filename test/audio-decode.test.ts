@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
     cppFunction,
     cppRecord,
+    nativeFixtureLibrary,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -13,7 +14,7 @@ import { compileSource } from "../src/compiler.js";
 import { AUDIO_CODECS, audioCodecForBytes } from "../src/audio-codecs.js";
 
 const tools = optionalNativeFixtureTools(false);
-const labSound = resolve("artifacts/tools/labsound");
+const labSound = tools && nativeFixtureLibrary("labsound");
 
 test("audio codec signatures distinguish supported containers with bounded reads", () => {
     const cases = [
@@ -104,7 +105,7 @@ function writeWave(output: string): string {
 test(
     "WAVE and Vorbis byte decoding match file PCM and read current ArrayBuffer contents",
     {
-        skip: !tools || !existsSync(resolve(labSound, "lib/LabSound.lib")),
+        skip: !labSound,
     },
     () => {
         const output = resolve("artifacts/audio-decode-check");
@@ -177,14 +178,14 @@ test(
             "/DBBLITE_HAS_AUDIO_DECODE_FILE=1",
             "/DBBLITE_AUDIO_DECODE_WAV=1",
             "/DBBLITE_AUDIO_DECODE_OGG=1",
-            `/external:I${resolve(labSound, "include")}`,
+            `/external:I${resolve(labSound!, "include")}`,
             `/I${resolve("native/src")}`,
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
             source,
             "/link",
-            resolve(labSound, "lib/LabSound.lib"),
-            resolve(labSound, "lib/libnyquist.lib"),
+            resolve(labSound!, "lib/LabSound.lib"),
+            resolve(labSound!, "lib/libnyquist.lib"),
         ]);
         assert.doesNotThrow(() =>
             execFileSync(
@@ -204,7 +205,7 @@ test(
 test(
     "a WAVE-only native decoder omits other decoder entry points and registries",
     {
-        skip: !tools || !existsSync(resolve(labSound, "lib/LabSound.lib")),
+        skip: !labSound,
     },
     () => {
         const output = resolve("artifacts/audio-decode-check");
@@ -232,7 +233,7 @@ test(
         runNativeFixtureCompiler(tools!, [
             "/DBBLITE_AUDIO_DECODE_WAV=1",
             "/O2",
-            `/external:I${resolve(labSound, "include")}`,
+            `/external:I${resolve(labSound!, "include")}`,
             `/I${resolve("native/src")}`,
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
@@ -241,8 +242,8 @@ test(
             "/INCREMENTAL:NO",
             "/OPT:ICF",
             `/MAP:${map}`,
-            resolve(labSound, "lib/LabSound.lib"),
-            resolve(labSound, "lib/libnyquist.lib"),
+            resolve(labSound!, "lib/LabSound.lib"),
+            resolve(labSound!, "lib/libnyquist.lib"),
         ]);
         assert.doesNotThrow(() =>
             execFileSync(executable, [wave], { stdio: "pipe" }),

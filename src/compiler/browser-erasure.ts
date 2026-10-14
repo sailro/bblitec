@@ -1,8 +1,8 @@
 import {
     deferredCapabilityDescriptor,
     deferredPropertyDescriptor,
-    deferredWindowFunctionSymbol,
 } from "./deferred-capabilities.js";
+import { hasDomLowering } from "./dom-lowerings.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { gpuValue } from "./gpu-value.js";
 import {
@@ -93,6 +93,7 @@ const PLATFORM_TIMER_FUNCTIONS: ReadonlySet<string> = new Set([
 const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "record",
     "audio-engine",
+    "audio-element",
     "audio-buffer",
     "audio-context",
     "audio-node",
@@ -122,6 +123,8 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
 
 /** DOM-declared classes with native runtime values (`web-platform.ts`). */
 const NATIVE_PLATFORM_CLASSES: ReadonlySet<string> = new Set([
+    "MediaRecorder",
+    "MediaStream",
     "AbortController",
     "AbortSignal",
     "DOMException",
@@ -1005,22 +1008,96 @@ export class BrowserErasure {
             unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
                 ? this.context.unwrap(unwrapped.left)
                 : unwrapped;
-        if (ts.isCallExpression(candidate)) {
-            if (
-                this.context.options.deferredCapabilities &&
-                deferredCapabilityDescriptor(this.context.checker, candidate)
-            )
-                return false;
-            const callee = this.context.unwrap(candidate.expression);
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "getGamepads" &&
-                this.context.libraryGlobal(callee.expression) === "navigator"
-            ) {
-                return false;
-            }
-        }
+        if (
+            ts.isCallExpression(candidate) &&
+            this.context.options.deferredCapabilities &&
+            deferredCapabilityDescriptor(this.context.checker, candidate)
+        )
+            return false;
+        if (hasDomLowering(this.context.checker, candidate)) return false;
         return this.isBrowserOnlyNode(expression);
+    }
+
+    /**
+     * Whether a receiver is positively browser state, so a DOM call on it may
+     * erase: rooted at a library global, a value the deployment answers, a
+     * browser binding or field, a classified browser helper's result, or a
+     * library construction. A receiver this walk cannot classify is not.
+     */
+    public isBrowserOwner(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isMetaProperty(unwrapped) ||
+            this.browserValueOf(unwrapped) !== undefined
+        )
+            return true;
+        if (ts.isIdentifier(unwrapped)) {
+            if (this.context.libraryGlobal(unwrapped) !== undefined)
+                return true;
+            const bound = this.context.bindings.lookupOptional(unwrapped);
+            if (bound)
+                return (
+                    bound.kind === "browser" ||
+                    (bound.kind === "node-particle-2d-binding" &&
+                        !bound.nodeParticleLive)
+                );
+            const declaration =
+                this.context.symbols.valueSymbol(unwrapped)?.valueDeclaration;
+            return (
+                declaration !== undefined &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer !== undefined &&
+                declaration.initializer !== unwrapped &&
+                this.isBrowserOwner(declaration.initializer)
+            );
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.expression.kind === ts.SyntaxKind.ThisKeyword
+        )
+            return (
+                this.context.resolveThisField(unwrapped.name.text)?.kind ===
+                "browser"
+            );
+        if (
+            ts.isPropertyAccessExpression(unwrapped) ||
+            ts.isElementAccessExpression(unwrapped) ||
+            ts.isNonNullExpression(unwrapped) ||
+            ts.isAwaitExpression(unwrapped)
+        )
+            return this.isBrowserOwner(unwrapped.expression);
+        if (ts.isConditionalExpression(unwrapped))
+            return (
+                this.isBrowserOwner(unwrapped.whenTrue) &&
+                this.isBrowserOwner(unwrapped.whenFalse)
+            );
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken ||
+                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+        )
+            return (
+                this.isBrowserOwner(unwrapped.left) &&
+                this.isBrowserOwner(unwrapped.right)
+            );
+        if (ts.isNewExpression(unwrapped))
+            return (
+                this.context.libraryGlobal(unwrapped.expression) !== undefined
+            );
+        if (!ts.isCallExpression(unwrapped)) return false;
+        const callee = this.context.unwrap(unwrapped.expression);
+        if (
+            ts.isPropertyAccessExpression(callee) ||
+            ts.isElementAccessExpression(callee)
+        )
+            return this.isBrowserOwner(callee.expression);
+        return (
+            this.context.libraryGlobal(callee) !== undefined ||
+            this.isBrowserOnlyLocalCall(unwrapped) ||
+            this.isBrowserOnlyNullableClassFactoryCall(unwrapped) ||
+            this.evaluateBrowserHelperCall(unwrapped) !== undefined
+        );
     }
 
     public isBrowserDomValue(expression: ts.Expression): boolean {
@@ -1108,17 +1185,14 @@ export class BrowserErasure {
     }
 
     /**
-     * The `localStorage` global, or a read or call on it. Spelled through
-     * the same global recognizer as every other host object, so
-     * `window.localStorage` and a lexical shadow answer correctly.
+     * The `localStorage` or `sessionStorage` global, or a read or call on
+     * it. Spelled through the same global recognizer as every other host
+     * object, so `window.localStorage` and a lexical shadow answer correctly.
      */
     private isWebStorageExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
-        if (
-            this.context.libraryGlobal(unwrapped) === "localStorage" ||
-            (this.context.options.deferredCapabilities &&
-                this.context.libraryGlobal(unwrapped) === "sessionStorage")
-        ) {
+        const global = this.context.libraryGlobal(unwrapped);
+        if (global === "localStorage" || global === "sessionStorage") {
             return true;
         }
         const type = this.context.checker.getNonNullableType(
@@ -1210,14 +1284,11 @@ export class BrowserErasure {
     private isBrowserOnlyNodeUncached(expression: ts.Expression): boolean {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
+        if (hasDomLowering(this.context.checker, unwrapped)) return false;
         if (
             this.context.options.deferredCapabilities &&
-            (deferredWindowFunctionSymbol(this.context.checker, unwrapped) ||
-                (ts.isPropertyAccessExpression(unwrapped) &&
-                    deferredPropertyDescriptor(
-                        this.context.checker,
-                        unwrapped,
-                    )))
+            ts.isPropertyAccessExpression(unwrapped) &&
+            deferredPropertyDescriptor(this.context.checker, unwrapped)
         )
             return false;
         if (devicePixelRatioValue(this.context, unwrapped)) return false;
@@ -1598,6 +1669,14 @@ export class BrowserErasure {
             ) {
                 return owner(unwrapped.expression);
             }
+            // A call producing retained UI (a helper or createElement) owns
+            // the members read and called on its result.
+            if (
+                ts.isCallExpression(unwrapped) &&
+                this.context.isNativeUiValueExpression(unwrapped)
+            ) {
+                return { kind: "ui-element", cpp: "" };
+            }
             if (
                 ts.isCallExpression(unwrapped) &&
                 ts.isPropertyAccessExpression(unwrapped.expression)
@@ -1725,10 +1804,6 @@ export class BrowserErasure {
             if (this.isAbsentGlobalMember(unwrapped.expression))
                 return { kind: "string", value: "undefined" };
             const global = this.context.libraryGlobal(unwrapped.expression);
-            // Native has no browser recording pipeline; authored capability
-            // guards can select their own unavailable-recording path.
-            if (global === "MediaRecorder")
-                return { kind: "string", value: "undefined" };
             const windowInterface = windowInterfaceTypeof(
                 global,
                 this.context.options.workers,
@@ -1869,8 +1944,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "tabIndex" &&
-            (!this.context.options.deferredCapabilities ||
-                this.context.isCanvasElement(unwrapped.expression)) &&
+            this.context.isCanvasElement(unwrapped.expression) &&
             this.isBrowserDomValue(unwrapped.expression)
         ) {
             // Native keyboard events target the SDL surface directly. Treat

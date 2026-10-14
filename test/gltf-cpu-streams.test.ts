@@ -4,12 +4,16 @@ import {
     packageGltfMeshPlan,
     packagedGltfMeshPlan,
 } from "../src/gltf-mesh-plan.js";
+import { BinaryBuilder } from "../src/glb-binary-builder.js";
+import { readGlb } from "../src/glb-container.js";
+import { packageGltfLoadPlan } from "../src/gltf-load-plan.js";
 import { GltfGeometryPacker } from "../src/gltf-mesh-geometry.js";
 import { type JsonObject } from "../src/json-fields.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { gltfCpuStreamsCpp } from "../src/lowering/gltf/cpu-streams.js";
 import { doctoredContext } from "./doctored-store.js";
+import { buildGlb } from "./glb-fixture.js";
 import {
     meshPlanFixture,
     readPackedGltfAttribute,
@@ -72,6 +76,36 @@ test("glTF CPU capture uses source owners independently of GPU uploads", async (
         packagedGltfMeshPlan(plain.document).meshes[0]!.cpu,
         undefined,
     );
+});
+
+test("packaged glTF CPU streams carry only their asset's bytes", async () => {
+    // A small binary chunk is what Node would copy into its shared slab.
+    const fixture = meshPlanFixture({
+        nodes: [{ mesh: 0 }],
+        meshes: [{ primitives: [{}] }],
+        scenes: [{ nodes: [0] }],
+    });
+    const glb = buildGlb(fixture.document, Buffer.from(fixture.bin.buffer));
+    const packaged: Buffer[] = [];
+    for (const fill of ["a", "b"]) {
+        // Earlier unrelated allocations differ from run to run (and from
+        // checkout to checkout); the packaged asset must not.
+        for (let length = 1; length < 64; ++length)
+            Buffer.from(fill.repeat(length));
+        packaged.push(
+            Buffer.from(
+                await packageGltfLoadPlan(glb, "small", { cpuGeometry: true }),
+            ),
+        );
+    }
+    assert.deepEqual(packaged[0], packaged[1]);
+    for (const chunk of [
+        readGlb(glb)!.binary,
+        new BinaryBuilder(Buffer.from("tiny")).build(),
+    ]) {
+        assert.equal(chunk.byteOffset, 0);
+        assert.equal(chunk.buffer.byteLength, chunk.byteLength);
+    }
 });
 
 test("glTF CPU transport retains subviews, shared backing bytes and private aliases", (t) => {

@@ -4,7 +4,6 @@ import { SPLAT_STREAM_APPLICATION_ROOTS } from "../../lowering/splat-stream-libr
 import type { LoweringServices } from "../lowering-services.js";
 import type { Value } from "../types.js";
 import { argumentAt } from "../syntax.js";
-import { ApplicationRealmRequired } from "../worker-modules.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     emitPresentOption,
@@ -115,7 +114,6 @@ export function compileSplatStreamIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     if (!SPLAT_STREAM_APPLICATION_ROOTS.has(name)) return undefined;
-    if (!context.options.workers) throw new ApplicationRealmRequired();
     context.reachFeature("loader:splat-stream", call);
     switch (name) {
         case "loadGaussianSplatStream": {

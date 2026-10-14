@@ -3,6 +3,7 @@ import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { lowerSurfaceRenderTargetSize } from "./render-target-size.js";
 import { lowerRenderTargetLifecycle } from "./render-target-lifecycle.js";
+import { lowerRenderTargetDisposal } from "./render-target-disposal.js";
 import { pinnedErrorCode } from "./pinned-error.js";
 import { recordAt } from "../compiler/record-access.js";
 
@@ -14,10 +15,18 @@ export class RenderTargetLowerer {
     /** The pin's code for a sampled depth facade over a multisampled or absent depth attachment. */
     private readonly sampledDepthError: number;
 
+    private readonly surface: boolean;
+    private readonly disposal: boolean;
+
     public constructor(
         private readonly context: LoweringContext,
-        private readonly surface = false,
+        {
+            surface = false,
+            disposal = false,
+        }: { surface?: boolean; disposal?: boolean } = {},
     ) {
+        this.surface = surface;
+        this.disposal = disposal;
         this.context.functionDeclaration(
             renderTargetModule,
             "createRenderTarget",
@@ -236,7 +245,7 @@ RenderTextureRef render_target_texture(RenderTargetHandle target) {
     result.target = target;
     return result;
 }
-
+${this.disposal ? lowerRenderTargetDisposal(this.context, this.surface) : ""}
 } // namespace bbl
 `,
         };

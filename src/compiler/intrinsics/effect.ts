@@ -29,7 +29,11 @@ import type { LoweringServices } from "../lowering-services.js";
 // uniform bytes, the bound textures, and the pass.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type { EffectBindingManifest, Value } from "../types.js";
+import {
+    isStringValue,
+    type EffectBindingManifest,
+    type Value,
+} from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     compileStaticNumber,
@@ -395,18 +399,48 @@ export function compileEffectIntrinsic(
             };
         }
 
+        case "disposeEffectWrapper": {
+            context.expectArgumentCount(call, 1, 1);
+            const wrapper = context.compileValue(argumentAt(call, 0));
+            context.expectKind(wrapper, "effect-wrapper", argumentAt(call, 0));
+            context.reachFeature("effect:wrapper-disposal", call);
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_effect_wrapper(${context.requireEngine(wrapper, call)}, ${wrapper.cpp})`,
+            };
+        }
+
         case "setEffectTexture": {
             context.expectArgumentCount(call, 3, 3);
             const wrapper = context.compileValue(argumentAt(call, 0));
             context.expectKind(wrapper, "effect-wrapper", argumentAt(call, 0));
-            const name = context.compileStaticString(argumentAt(call, 1));
+            // `bindingNameOrIndex`: a number matches the binding, a string its
+            // name or its number as text (`matchesBinding`).
+            const key = context.compileValue(argumentAt(call, 1));
+            const keyCpp =
+                key.kind === "number" || key.dataType?.kind === "number"
+                    ? `bbl::EffectBindingKey{static_cast<double>(${key.cpp})}`
+                    : isStringValue(key)
+                      ? `bbl::EffectBindingKey{std::string(${key.cpp})}`
+                      : context.fail(
+                            argumentAt(call, 1),
+                            "An effect texture binding is a name or a binding number.",
+                        );
             const texture = context.compileValue(argumentAt(call, 2));
-            context.expectKind(texture, "texture", argumentAt(call, 2));
-            if (texture.textureFile) {
-                context.fail(
-                    argumentAt(call, 2),
-                    "Reached effect textures come from createSolidTexture2D.",
-                );
+            if (texture.kind === "render-texture") {
+                if (texture.isDepthTexture)
+                    context.fail(
+                        argumentAt(call, 2),
+                        "Effect textures sample a render target's colour; depth textures are not lowered.",
+                    );
+            } else {
+                context.expectKind(texture, "texture", argumentAt(call, 2));
+                if (texture.textureFile) {
+                    context.fail(
+                        argumentAt(call, 2),
+                        "Reached effect textures come from createSolidTexture2D or a render target.",
+                    );
+                }
             }
             context.expectSameEngine(wrapper, texture, call);
             return {
@@ -414,8 +448,7 @@ export function compileEffectIntrinsic(
                 cpp:
                     `bbl::set_effect_texture(` +
                     `${context.requireEngine(wrapper, call)}, ` +
-                    `${wrapper.cpp}, ${context.cppString(name)}, ` +
-                    `${texture.cpp})`,
+                    `${wrapper.cpp}, ${keyCpp}, ${texture.cpp})`,
             };
         }
 
@@ -522,6 +555,7 @@ export function compileEffectIntrinsic(
                     `${clearFlag(context, object)}, ` +
                     `${clearColor(context, object)}})`,
                 engineCpp: engine,
+                effectTask: true,
             };
         }
 

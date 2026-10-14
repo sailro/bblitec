@@ -3,6 +3,7 @@
 #include <bblite/teardown.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -43,6 +44,19 @@ struct CompletionEvent : ExternalEvent {
 /** A control-flow abort, distinct from a source-language exception. */
 struct WorkerTerminated {};
 
+/** An idle callback's deadline: the end of its idle period, or its call time after a timeout. */
+struct IdleDeadline {
+    std::chrono::steady_clock::time_point deadline;
+    bool did_timeout = false;
+    /** Milliseconds left before the deadline, never negative. */
+    [[nodiscard]] double time_remaining() const {
+        const double left =
+            std::chrono::duration<double, std::milli>(deadline - std::chrono::steady_clock::now())
+                .count();
+        return left > 0 ? left : 0;
+    }
+};
+
 /** An optional native binding restored around a suspended platform operation. */
 struct ContinuationContext {
     virtual ~ContinuationContext() = default;
@@ -58,6 +72,8 @@ public:
     using TimerId = std::uint64_t;
     using AnimationFrameId = std::uint64_t;
     using AnimationCallback = std::function<void(double)>;
+    using IdleCallbackId = std::uint32_t;
+    using IdleCallback = std::function<void(const IdleDeadline&)>;
     using EventHandler = std::function<void(std::unique_ptr<ExternalEvent>)>;
     using ErrorHandler = std::function<void(std::exception_ptr)>;
 
@@ -313,29 +329,9 @@ public:
         if (closed())
             return 0;
         delay = std::max(delay, Clock::duration::zero());
-        const auto nesting = timer_nesting_ + 1;
         if (timer_nesting_ > 5)
             delay = std::max(delay, Clock::duration(std::chrono::milliseconds(4)));
-        const TimerId id = next_timer_++;
-        if (id == 0)
-            throw std::overflow_error("Timer identifiers exhausted.");
-        if (timer_profile())
-            std::fprintf(
-                stderr, "[cpu][timer-set] realm=%p id=%llu repeat=%u delay_ms=%.3f now_ms=%.3f\n",
-                static_cast<void*>(this), static_cast<unsigned long long>(id), repeat ? 1u : 0u,
-                std::chrono::duration<double, std::milli>(delay).count(), profile_milliseconds());
-        if (fixed_frame_delta_) {
-            timers_.emplace(id,
-                            Timer{std::move(task), delay, repeat, nesting,
-                                  fixed_frame_time_ +
-                                      std::chrono::duration<double, std::milli>(delay).count()});
-            std::lock_guard lock(inbox_->mutex_);
-            inbox_->animation_requested_ = true;
-        } else {
-            timers_.emplace(id, Timer{std::move(task), delay, repeat, nesting});
-            deadlines_.push(Deadline{Clock::now() + delay, id});
-        }
-        return id;
+        return add_timer(std::move(task), delay, repeat, timer_nesting_ + 1);
     }
 
     TimerId set_timeout(Task task, double milliseconds, bool repeat = false) {
@@ -393,6 +389,35 @@ public:
         animation_callbacks_.erase(id);
     }
 
+    /**
+     * HTML requestIdleCallback: the callback runs in its own task in a later idle period (the
+     * task queue empty, the deadline bounded by 50 ms, the next due timer and, while a repaint
+     * is pending, the next expected frame), or as a timed-out call `timeout_ms` (> 0) after the
+     * request, whichever comes first. Handles count from 1.
+     */
+    IdleCallbackId request_idle_callback(IdleCallback callback, std::uint32_t timeout_ms) {
+        require_owner();
+        if (!callback)
+            throw std::invalid_argument("Cannot request an empty idle callback.");
+        if (next_idle_callback_ == std::numeric_limits<IdleCallbackId>::max())
+            throw std::overflow_error("Idle callback identifiers exhausted.");
+        const IdleCallbackId id = ++next_idle_callback_;
+        if (closed())
+            return id;
+        IdleRequest request{id, std::move(callback), 0};
+        // The timeout task is not a timer task: its callback runs at nesting level zero.
+        if (timeout_ms > 0)
+            request.timer = add_timer([this, id] { time_out_idle_callback(id); },
+                                      std::chrono::milliseconds(timeout_ms), false, 0);
+        idle_requests_.push_back(std::move(request));
+        return id;
+    }
+    void cancel_idle_callback(IdleCallbackId id) {
+        require_owner();
+        if (auto request = take_idle_request(id); request && request->timer)
+            clear_timer(request->timer);
+    }
+
     /** close() finishes the current task and its microtasks, discarding later tasks. */
     void close() {
         require_owner();
@@ -407,6 +432,9 @@ public:
         }
         timers_.clear();
         animation_callbacks_.clear();
+        idle_requests_.clear();
+        idle_runnable_.clear();
+        idle_invocation_queued_ = false;
         deadlines_ = {};
     }
 
@@ -491,6 +519,12 @@ private:
             return due > other.due || (due == other.due && id > other.id);
         }
     };
+    struct IdleRequest {
+        IdleCallbackId id;
+        IdleCallback callback;
+        /** The timeout's timer, or 0. */
+        TimerId timer;
+    };
 
     void require_owner() const {
         if (owner_ != std::this_thread::get_id())
@@ -520,6 +554,104 @@ private:
     bool closed() const {
         std::lock_guard lock(inbox_->mutex_);
         return inbox_->closed_ || inbox_->terminated();
+    }
+    TimerId add_timer(Task task, Clock::duration delay, bool repeat, unsigned nesting) {
+        const TimerId id = next_timer_++;
+        if (id == 0)
+            throw std::overflow_error("Timer identifiers exhausted.");
+        if (timer_profile())
+            std::fprintf(
+                stderr, "[cpu][timer-set] realm=%p id=%llu repeat=%u delay_ms=%.3f now_ms=%.3f\n",
+                static_cast<void*>(this), static_cast<unsigned long long>(id), repeat ? 1u : 0u,
+                std::chrono::duration<double, std::milli>(delay).count(), profile_milliseconds());
+        if (fixed_frame_delta_) {
+            timers_.emplace(id,
+                            Timer{std::move(task), delay, repeat, nesting,
+                                  fixed_frame_time_ +
+                                      std::chrono::duration<double, std::milli>(delay).count()});
+            std::lock_guard lock(inbox_->mutex_);
+            inbox_->animation_requested_ = true;
+        } else {
+            timers_.emplace(id, Timer{std::move(task), delay, repeat, nesting});
+            deadlines_.push(Deadline{Clock::now() + delay, id});
+        }
+        return id;
+    }
+    std::optional<IdleRequest> take_idle_request(IdleCallbackId id) {
+        for (auto* list : {&idle_requests_, &idle_runnable_}) {
+            const auto found = std::find_if(list->begin(), list->end(),
+                                            [id](const auto& entry) { return entry.id == id; });
+            if (found != list->end()) {
+                auto request = std::move(*found);
+                list->erase(found);
+                return request;
+            }
+        }
+        return std::nullopt;
+    }
+    void time_out_idle_callback(IdleCallbackId id) {
+        if (auto request = take_idle_request(id))
+            request->callback(IdleDeadline{Clock::now(), true});
+    }
+    /** The next repaint the display clock predicts after `now`, from the last two frames. */
+    Clock::time_point next_frame_after(Clock::time_point now) const {
+        const auto interval = frame_interval_.value_or(std::chrono::microseconds(16667));
+        if (!last_frame_)
+            return now + interval;
+        const auto elapsed = now - *last_frame_;
+        return *last_frame_ + interval * (elapsed / interval + 1);
+    }
+    /**
+     * HTML "start an idle period" when the task queue is empty: called with the inbox lock
+     * held. The deadline is 50 ms away, earlier for a due timer or, while a repaint is
+     * pending, the next expected frame; a deadline already reached starts nothing.
+     */
+    void start_idle_period() {
+        if (idle_invocation_queued_ || (idle_requests_.empty() && idle_runnable_.empty()))
+            return;
+        const auto now = Clock::now();
+        auto deadline = now + std::chrono::milliseconds(50);
+        if (!deadlines_.empty())
+            deadline = std::min(deadline, deadlines_.top().due);
+        if (inbox_->animation_requested_ || !animation_callbacks_.empty())
+            deadline = std::min(deadline, next_frame_after(now));
+        if (deadline <= now)
+            return;
+        for (auto& request : idle_requests_)
+            idle_runnable_.push_back(std::move(request));
+        idle_requests_.clear();
+        idle_deadline_ = deadline;
+        idle_invocation_queued_ = true;
+        inbox_->tasks_.emplace_back(Task([this] { invoke_idle_callbacks(); }));
+    }
+    /**
+     * The display interval idle deadlines predict frames with: the shortest of the last four
+     * frame gaps up to 100 ms, so a frame this realm skipped does not double it.
+     */
+    void record_frame(Clock::time_point timestamp) {
+        if (last_frame_ && timestamp > *last_frame_ &&
+            timestamp - *last_frame_ <= std::chrono::milliseconds(100)) {
+            frame_gaps_[frame_gap_count_++ % frame_gaps_.size()] = timestamp - *last_frame_;
+            const auto known = std::min<std::size_t>(frame_gap_count_, frame_gaps_.size());
+            frame_interval_ = *std::min_element(
+                frame_gaps_.begin(), frame_gaps_.begin() + static_cast<std::ptrdiff_t>(known));
+        }
+        last_frame_ = timestamp;
+    }
+    /** HTML "invoke idle callbacks": one callback per task until the period's deadline. */
+    void invoke_idle_callbacks() {
+        idle_invocation_queued_ = false;
+        if (idle_runnable_.empty() || Clock::now() >= idle_deadline_)
+            return;
+        auto request = std::move(idle_runnable_.front());
+        idle_runnable_.pop_front();
+        if (request.timer)
+            clear_timer(request.timer);
+        invoke([&] { request.callback(IdleDeadline{idle_deadline_, false}); });
+        if (!idle_runnable_.empty() && !idle_invocation_queued_) {
+            idle_invocation_queued_ = true;
+            post([this] { invoke_idle_callbacks(); });
+        }
     }
     void discard() {
         discarding_ = true;
@@ -670,6 +802,7 @@ private:
             std::uint64_t serial;
             ~Complete() { inbox.finish_animation_frame(serial); }
         } complete{*inbox_, serial};
+        record_frame(timestamp);
         // A callback requested during this batch belongs to the next repaint.
         std::vector<AnimationFrameId> batch;
         batch.reserve(animation_callbacks_.size());
@@ -721,6 +854,9 @@ private:
             if (inbox_->closed_)
                 return false;
             while (inbox_->tasks_.empty() && !inbox_->closed_ && !inbox_->terminated()) {
+                start_idle_period();
+                if (!inbox_->tasks_.empty())
+                    break;
                 if (!wait)
                     return false;
                 const auto ready = [&] {
@@ -786,6 +922,15 @@ private:
     TimerId next_timer_ = 1;
     AnimationFrameId next_animation_frame_ = 1;
     std::map<AnimationFrameId, AnimationCallback> animation_callbacks_;
+    IdleCallbackId next_idle_callback_ = 0;
+    /** Requested callbacks and those of the current idle period, in request order. */
+    std::deque<IdleRequest> idle_requests_, idle_runnable_;
+    Clock::time_point idle_deadline_{};
+    bool idle_invocation_queued_ = false;
+    std::optional<Clock::time_point> last_frame_;
+    std::array<Clock::duration, 4> frame_gaps_{};
+    std::size_t frame_gap_count_ = 0;
+    std::optional<Clock::duration> frame_interval_;
     unsigned timer_nesting_ = 0;
     bool draining_microtasks_ = false;
     bool discarding_ = false;
@@ -817,6 +962,12 @@ void dispatch_platform_event(EventLoop& loop, Listeners& listeners, Event& event
             loop.dispatch_callback([callback = listener, &value] { callback(value); });
         },
         event);
+}
+
+/** The same, for listeners that take no event. */
+template <typename Listeners> void dispatch_platform_event(EventLoop& loop, Listeners& listeners) {
+    listeners.dispatch_with(
+        [&](auto& listener) { loop.dispatch_callback([callback = listener] { callback(); }); });
 }
 
 } // namespace bbl::pal

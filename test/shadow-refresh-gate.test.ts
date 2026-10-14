@@ -238,21 +238,55 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
         shared,
         /\} else if \(handle_at\(refresh\.uploaded, handle\)\) \{[\s\S]{0,300}return;\s*\}/,
     );
-    // Both backends' shadow arms skip their pass on a gated frame, and a
-    // frame-graph texture recreation clears the rendered sentinels.
+    // A frame-graph texture recreation clears the rendered sentinels.
     for (const backend of [
         sceneBackendSource("sdl"),
         sceneBackendSource("dawn"),
     ]) {
         assert.match(
             backend,
-            /if \(!state\.shadow_refresh\.gates\[\s*task\.render\.shadow_generator\.value\]\s*\.due\) \{\s*continue;\s*\}/,
-        );
-        assert.match(
-            backend,
             /release_frame_graph_textures\((?:state, )?&engine\);[\s\S]{0,400}shadow_refresh\.invalidate_rendered_maps\(\);/,
         );
     }
+});
+
+test("the shared caster plan draws a shadow task only on its generator's due frame", (t) => {
+    // Both backends draw a caster task only when `shadow_task_pass` says so;
+    // the plan reads the verdict the refresh published on the gate.
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("A native fixture compiler is required.");
+        return;
+    }
+    const shared = sharedGpuSource();
+    const shadows = readFileSync("native/src/pal_gpu_shadows.hpp", "utf8");
+    runGeneratedProgram(
+        tools,
+        "shadow-task-pass-gate",
+        `
+#include <bblite/runtime.hpp>
+#include <cassert>
+#include <vector>
+using namespace bbl;
+namespace bbl::pal {
+${cppRecord(header, "struct ShadowRefreshGate {")}
+struct ShadowRefreshState { std::vector<ShadowRefreshGate> gates; };
+${cppRecord(shadows, "struct ShadowTaskPass {")}
+${cppFunction(shared, "ShadowTaskPass shadow_task_pass(")}
+}
+int main() {
+    Engine engine;
+    pal::ShadowRefreshState refresh;
+    refresh.gates.resize(2);
+    FrameTaskRecord task;
+    task.render.shadow_generator.value = 1;
+    refresh.gates[1].due = false;
+    assert(!pal::shadow_task_pass(engine, refresh, task).draws);
+    refresh.gates[1].due = true;
+    assert(pal::shadow_task_pass(engine, refresh, task).draws);
+}`,
+        { flags: ["/DBBLITE_CSM_STATIC_CACHE=0"], expectedOutput: "" },
+    );
 });
 
 test("fits CSM casters to every active non-degenerate thin instance", () => {

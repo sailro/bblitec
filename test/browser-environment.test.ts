@@ -41,8 +41,8 @@ test("local storage can be injected through nullable method records", async (t) 
         optionalStore({storage:optionalStorage});
         if (argumentEffects !== 1) throw new Error("optional service argument evaluation");
     `);
-    assert.match(result.cpp, /local_storage_get_item/);
-    assert.match(result.cpp, /local_storage_set_item/);
+    assert.match(result.cpp, /local_storage_object\(\)[\s\S]*->get_item/);
+    assert.match(result.cpp, /->set_item/);
     assert.ok(result.manifest.features.includes("storage:local"));
     const native = optionalNativeFixtureTools(false);
     await t.test(
@@ -89,15 +89,15 @@ test("retained native service views preserve represented structural identity", (
     );
 });
 
-test("optional browser recording detection preserves native absence and lexical shadows", () => {
+test("browser recording detection finds the native MediaRecorder and keeps lexical shadows", () => {
     const guarded = compileSource(`
-        if (typeof MediaRecorder !== "undefined") throw new Error("recording present");
-        if (typeof window.MediaRecorder !== "undefined") throw new Error("recording present");
-        if (typeof globalThis.MediaRecorder !== "undefined") throw new Error("recording present");
+        if (typeof MediaRecorder !== "function") throw new Error("recording absent");
+        if (typeof window.MediaRecorder !== "function") throw new Error("recording absent");
+        if (typeof globalThis.MediaRecorder !== "function") throw new Error("recording absent");
     `);
     assert.doesNotMatch(
         guarded.cpp,
-        /throw std::runtime_error\("recording present"\)/,
+        /throw std::runtime_error\("recording absent"\)/,
     );
     const local = compileSource(`
         const MediaRecorder = 4;
@@ -119,8 +119,8 @@ test("storage availability guards reach durable native reads", () => {
             const saved = typeof ${storage} !== "undefined" ? ${storage}.getItem("preferences") : null;
             if (saved) ${storage}.setItem("copy", saved);
         `);
-        assert.match(result.cpp, /local_storage_get_item/);
-        assert.match(result.cpp, /local_storage_set_item/);
+        assert.match(result.cpp, /local_storage_object\(\)[\s\S]*->get_item/);
+        assert.match(result.cpp, /->set_item/);
     }
 });
 

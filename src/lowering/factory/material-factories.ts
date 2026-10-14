@@ -11,8 +11,10 @@ import { materialGroupIdentity } from "../material-group-identity.js";
 import { recordAt } from "../../compiler/record-access.js";
 import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
 import { lowerNodeInputScalarSetter } from "../node-input-uniform-lowerer.js";
+import { lowerPixelsTextureWrites } from "../pixels-texture-writes.js";
 import {
     lowerShaderUniformApi,
+    lowerShaderUniformRangeUpdates,
     lowerShaderUniformSnapshot,
 } from "../shader-uniforms.js";
 
@@ -310,7 +312,9 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
         };
     }
 
-    public lowerShaderMaterialFactory(): LoweredSource {
+    public lowerShaderMaterialFactory({
+        rangeUpdates = false,
+    }: { rangeUpdates?: boolean } = {}): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
         const { declaration } = this.context.functionDeclaration(
             modulePath,
@@ -409,11 +413,12 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
 
 #include <algorithm>
 #include <stdexcept>
-
+${rangeUpdates ? "#include <bit>\n#include <iterator>\n#include <utility>\n" : ""}
 namespace bbl {
 
 ${lowerShaderUniformApi(this.context)}
 ${lowerShaderUniformSnapshot(this.context)}
+${rangeUpdates ? lowerShaderUniformRangeUpdates(this.context) : ""}
 
 // The generated shader-variant table carries the pinned fixed-function
 // mapping (needAlphaBlending -> blend alpha mode, backFaceCulling ->
@@ -553,11 +558,40 @@ void set_shader_texture(
     MaterialHandle material,
     std::uint32_t slot,
     FileTexture texture) {
+    // A stored render texture keeps its target: the slot binds it per draw.
+    if (texture.data.render_source) {
+        set_shader_render_texture(engine, material, slot, texture.data.render_source->reference);
+        return;
+    }
     MaterialRecord& record = shader_material(engine, material);
     if (record.shader_textures.size() <= slot) {
         record.shader_textures.resize(slot + 1);
     }
     record.shader_textures[slot] = std::move(texture);
+    if (slot < record.shader_render_textures.size())
+        record.shader_render_textures[slot].reset();
+}
+
+// A render target's colour texture in the same slot: each draw binds the
+// target's current texture, so a rebuilt target or a later write is what the
+// next frame samples.
+void set_shader_render_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    RenderTextureRef texture) {
+    MaterialRecord& record = shader_material(engine, material);
+    const bool transmission = texture.source == RenderTextureSource::transmission_color ||
+                              texture.source == RenderTextureSource::transmission_depth;
+    if ((texture.source != RenderTextureSource::render_target && !transmission) || texture.depth_only)
+        throw std::runtime_error("setShaderTexture samples a render target's colour texture.");
+    if (record.shader_textures.size() <= slot) {
+        record.shader_textures.resize(slot + 1);
+    }
+    if (record.shader_render_textures.size() <= slot) {
+        record.shader_render_textures.resize(slot + 1);
+    }
+    record.shader_render_textures[slot] = texture;
 }
 
 void set_shader_storage_buffer(
@@ -657,8 +691,11 @@ void set_alpha_to_coverage(
      * caller may override and whose defaults are read off the pin's own
      * `?? "…"` rather than restated. A call naming none of them emits the
      * same text it always did, because the defaults ride the signature.
+     * `writes` adds the lowered `updateTexture2DFromPixels`.
      */
-    public lowerPixelsTextureFactory(): LoweredSource {
+    public lowerPixelsTextureFactory({
+        writes = false,
+    }: { writes?: boolean } = {}): LoweredSource {
         const module = "src/texture/pixels-texture.ts";
         const { declaration } = this.context.functionDeclaration(
             module,
@@ -731,12 +768,13 @@ void set_alpha_to_coverage(
             header: "",
             source: `// ${this.context.provenance(module, "createTexture2DFromPixels")}
 #include <bblite/runtime.hpp>
-#include <bblite/features/has_sprites.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
-
+${writes ? "#include <bblite/pal_pixels_texture.hpp>" : ""}
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <variant>
 
 namespace bbl {
 
@@ -803,6 +841,7 @@ PixelsTexture create_texture_2d_from_pixels(
         engine, pixels.to_vector(), width, height, options);
 }
 
+// A whole-texture queue write: every copy and binding shares the texels.
 void update_pixels_texture(
     [[maybe_unused]] Engine& engine,
     PixelsTexture& texture,
@@ -815,18 +854,14 @@ void update_pixels_texture(
             "update pixels texture: data too short");
     }
     texture.rgba = pixels.to_vector();
-    ++texture.version;
-#if BBLITE_HAS_SPRITES
-    for (Sprite2DLayerRecord& layer : engine.sprite_layers) {
-        for (PixelsTexture& bound : layer.custom_textures) {
-            if (bound.identity != texture.identity) continue;
-            bound.rgba = texture.rgba;
-            bound.version = texture.version;
-        }
-    }
-#endif
 }
-
+${
+    writes
+        ? `
+${lowerPixelsTextureWrites(this.context)}
+`
+        : ""
+}
 } // namespace bbl
 `,
         };

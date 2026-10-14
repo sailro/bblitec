@@ -14,6 +14,25 @@ namespace bbl::pal {
 Engine& window_document_engine();
 const void* window_document_identity();
 js::Promise<js::PromiseVoid> window_clipboard_write(std::string text);
+/**
+ * `alert(message)` (`confirm` false) and `confirm(message)`: a modal SDL message box on the
+ * Window thread, parented to the window, blocking this realm until it closes. True when the
+ * user accepted a confirmation.
+ */
+bool window_message_box(bool confirm, std::string message);
+/**
+ * `element.requestFullscreen()` for the document element or the primary canvas: the window
+ * goes fullscreen, then the promise settles and a `fullscreenchange` task follows. Another
+ * element rejects with NotSupportedError; a window that cannot go fullscreen, with TypeError.
+ */
+js::Promise<js::PromiseVoid> window_request_fullscreen(UiElementHandle element);
+/** `document.exitFullscreen()`: TypeError without a fullscreen element. */
+js::Promise<js::PromiseVoid> window_exit_fullscreen();
+js::Nullable<UiElementHandle> window_fullscreen_element();
+/** `fullscreenchange` listeners of the document; false for a duplicate listener. */
+bool window_on_fullscreen_change(std::uint64_t identity, js::Callback<void()> callback, bool once,
+                                 ListenerLeasePtr lease = {});
+void window_off_fullscreen_change(std::uint64_t identity);
 void window_location_reload();
 std::string window_location_search(const std::string& initial);
 void window_location_set_search(const std::string& value);
@@ -35,8 +54,10 @@ ScreenMetrics window_screen_metrics();
 InputCapabilities window_input_capabilities();
 const void* window_screen_identity();
 UiClientRect window_element_size(UiElementHandle element);
-void window_on_application_error(bool rejection, std::uint64_t identity,
-                                 ApplicationErrors::Callback callback, bool once);
+/** False for a duplicate listener. */
+bool window_on_application_error(bool rejection, std::uint64_t identity,
+                                 ApplicationErrors::Callback callback, bool once,
+                                 ListenerLeasePtr lease = {});
 void window_off_application_error(bool rejection, std::uint64_t identity);
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element);
 /** The source's canvas readiness marker gates measured capture, never rendering. */

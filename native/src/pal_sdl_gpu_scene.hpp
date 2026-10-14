@@ -19,6 +19,7 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/workers.hpp>
@@ -761,6 +762,8 @@ struct GpuState : SdlGpuDevice {
     // generation derived from it -- is the authority on its registers.
     std::vector<PinnedStageSlots> shader_vertex_slots;
     std::vector<PinnedStageSlots> shader_fragment_slots;
+    /** Each fragment stage's packed textures as declared sampler slots (npos: undeclared). */
+    std::vector<std::vector<std::size_t>> shader_fragment_texture_slots;
     using StorageBuffer = VersionedGpuBuffer<SDL_GPUBuffer*>;
     std::vector<StorageBuffer> storage_buffers;
     // The mesh buffers a released mesh leaves for the next one's upload;
@@ -790,10 +793,30 @@ struct GpuState : SdlGpuDevice {
     bool per_sample_image_processing = false;
     // Where the compaction left the pin's parameter block `p`.
     int image_processing_params_slot = -1;
-    SDL_GPUSampler* transmission_sampler = nullptr;
     SDL_GPUTexture* transmission_color = nullptr;
     std::uint32_t transmission_width = 0;
     std::uint32_t transmission_height = 0;
+#endif
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
+    /** Every scene-colour grab's `getTrilinearAnisotropicSampler`. */
+    SDL_GPUSampler* transmission_sampler = nullptr;
+#endif
+#if BBLITE_RENDER_TASK_TRANSMISSION
+    /** Each render task's own grab (`enableRenderTaskTransmission`), by task handle. */
+    struct TaskTransmission {
+        SDL_GPUTexture* color = nullptr;
+        std::uint32_t mip_count = 0;
+        /** The `grabDepth` snapshot, sized to the target it was taken from. */
+        SDL_GPUTexture* depth = nullptr;
+        std::uint32_t depth_width = 0;
+        std::uint32_t depth_height = 0;
+    };
+    std::vector<TaskTransmission> task_transmissions;
+    /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
+    SDL_GPUGraphicsPipeline* task_grab_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* task_depth_grab_pipeline = nullptr;
+    /** The depth grab's nearest sampler. */
+    SDL_GPUSampler* task_depth_grab_sampler = nullptr;
 #endif
     std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_pipelines{};
     std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_double_sided_pipelines{};
@@ -1012,6 +1035,15 @@ struct GpuState : SdlGpuDevice {
     std::array<std::array<PickDeformProgram, 2>, upstream::pick_deform_variants.size()>
         pick_deform_programs{};
 #endif
+#if BBLITE_VAT_PICKING
+    /** One advanced module per VAT arm, both stages read by name. */
+    struct PickVatProgram {
+        SDL_GPUGraphicsPipeline* pipeline = nullptr;
+        PinnedStageSlots vertex_slots{};
+        PinnedStageSlots fragment_slots{};
+    };
+    std::array<PickVatProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
+#endif
 #if BBLITE_HAS_SPLATS
     SDL_GPUGraphicsPipeline* pick_cloud_pipeline = nullptr;
     int pick_cloud_scene_slot = -1;
@@ -1098,6 +1130,53 @@ struct GpuState : SdlGpuDevice {
     }
 #endif
 };
+
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
+/** A single-sample fullscreen triangle into one colour target: the pin's utility passes. */
+SDL_GPUGraphicsPipeline* create_fullscreen_pipeline(SDL_GPUDevice* device,
+                                                    const PinnedStage& vertex,
+                                                    const PinnedStage& fragment,
+                                                    SDL_GPUTextureFormat format, const char* label);
+/**
+ * One grab pass (`blitToTransmission`, the depth grab's resolve): the
+ * pipeline's triangle into the target's top level, reading a sampled source
+ * or, for a multisampled one, a loaded storage texture.
+ */
+void encode_grab_pass(SDL_GPUCommandBuffer* command, SDL_GPUGraphicsPipeline* pipeline,
+                      SDL_GPUTexture* target, const SDL_GPUTextureSamplerBinding* sampled,
+                      SDL_GPUTexture* storage = nullptr);
+#endif
+
+#if BBLITE_RENDER_TASK_TRANSMISSION
+/** Create or resize a render task's grab textures for its target, before its pass or a bind. */
+GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Engine& engine,
+                                                      TaskHandle task);
+/**
+ * `updateTransmissionTexture` at a pass break: blit the target's colour into
+ * the grab's top level, build its mip chain when it has one, and snapshot the
+ * depth attachment when `grabDepth` asked for it.
+ */
+void encode_task_transmission_grab(GpuState& state, const Engine& engine,
+                                   SDL_GPUCommandBuffer* command, TaskHandle task);
+/** A material slot's binding of a task grab's colour or depth. */
+SDL_GPUTextureSamplerBinding task_transmission_binding(GpuState& state, const Engine& engine,
+                                                       const RenderTextureRef& reference);
+void release_task_transmissions(GpuState& state);
+#endif
+
+/** A render target's sampled colour, as a material slot reads it. */
+inline SDL_GPUTexture* sdl_render_texture_color(const GpuState& state, const Engine& engine,
+                                                const RenderTextureRef& reference) {
+    if (reference.source != RenderTextureSource::render_target ||
+        reference.target.value >= state.render_targets.size())
+        pal::refuse_invalid_frame_handle("A material render texture names no render target.");
+    if (pal::resolve_render_target(engine, reference.target, pal::frame_pass_target_user).swapchain)
+        throw std::runtime_error("A material cannot sample the swapchain target.");
+    SDL_GPUTexture* texture = handle_at(state.render_targets, reference.target).sampled_color;
+    if (!texture)
+        pal::fail_render_target_has_no_texture();
+    return texture;
+}
 
 void sync_shader_storage_buffers(GpuState& state, const Engine& engine,
                                  GpuBufferUploadBatch& uploads);
@@ -1880,11 +1959,13 @@ prepare_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle,
     PreparedSdlPostProcessPass prepared;
     prepared.task = handle;
     prepared.child = index;
-    PostProcessPassOptions& pass = handle_at(engine.frame_tasks, handle).post_process.passes[index];
+    FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+    PostProcessPassOptions& pass = task.post_process.passes[index];
     const upstream::PostProcessShaderInfo& shader_info =
         upstream::post_process_shader_infos[pass.shader_index];
     GpuPostProcessTask& gpu = handle_at(state.post_process_tasks, handle)[index];
-    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
+    const RenderTargetRecord& output_record =
+        pal::resolve_render_target(engine, pass.output_target, pal::task_target_user(task));
     const PostProcessExtent extent =
         resolve_post_process_extent(output_record, state.render_targets, pass, width, height);
     const std::uint32_t output_width = extent.output_width;
@@ -2017,7 +2098,8 @@ std::size_t screen_space_program(GpuState& state, std::uint32_t stage);
  * depth attachment itself (a depth-only view in the pin, the depth texture's
  * own SRV here), the lit source colour, or one of the task's owned targets.
  */
-SDL_GPUTexture* screen_space_binding_texture(GpuState& state, const ScreenSpaceTaskOptions& task,
+SDL_GPUTexture* screen_space_binding_texture(GpuState& state, const Engine& engine,
+                                             const ScreenSpaceTaskOptions& task,
                                              upstream::ScreenSpaceTextureRole role);
 
 /**
@@ -2033,9 +2115,10 @@ SDL_GPURenderPass* begin_screen_space_pass(SDL_GPUCommandBuffer* command, SDL_GP
  * pin binds one bilinear sampler wherever it samples; each SRV here pairs
  * with it.
  */
-void record_screen_space_stage(GpuState& state, const ScreenSpaceTaskOptions& task,
-                               std::size_t program_index, SDL_GPUCommandBuffer* command,
-                               SDL_GPUTexture* target, const float* uniforms);
+void record_screen_space_stage(GpuState& state, const Engine& engine,
+                               const ScreenSpaceTaskOptions& task, std::size_t program_index,
+                               SDL_GPUCommandBuffer* command, SDL_GPUTexture* target,
+                               const float* uniforms);
 
 /** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
 inline void clear_screen_space_target(SDL_GPUCommandBuffer* command, SDL_GPUTexture* texture) {
@@ -2058,9 +2141,13 @@ void record_screen_space_task(GpuState& state, Engine& engine, TaskHandle handle
                               SourceTexture source_texture, TargetTexture target_texture) {
     FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
-    const GpuRenderTarget& raw = handle_at(state.render_targets, task.raw);
-    const GpuRenderTarget& stable = handle_at(state.render_targets, task.stable);
-    const GpuRenderTarget& history = handle_at(state.render_targets, task.history);
+    const pal::TargetUser user = pal::task_target_user(record);
+    const GpuRenderTarget& raw =
+        pal::resolve_gpu_target(engine, state.render_targets, task.raw, user);
+    const GpuRenderTarget& stable =
+        pal::resolve_gpu_target(engine, state.render_targets, task.stable, user);
+    const GpuRenderTarget& history =
+        pal::resolve_gpu_target(engine, state.render_targets, task.history, user);
     const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
         engine, handle, screen_space_frame_inputs(state.render_targets, task));
     record_screen_space_decision(
@@ -2070,7 +2157,7 @@ void record_screen_space_task(GpuState& state, Engine& engine, TaskHandle handle
         },
         [&](bool producer, const float* uniforms) {
             record_screen_space_stage(
-                state, task,
+                state, engine, task,
                 screen_space_program(state, producer ? task.producer_shader : task.resolve_shader),
                 command, producer ? raw.color : stable.color, uniforms);
         },

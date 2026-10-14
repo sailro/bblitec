@@ -55,8 +55,10 @@ import {
     declaredSymbol,
     enumMemberConstant,
     isAbsentTypeofIdentifier,
+    resolvedDomApi,
     resolvedSymbol,
 } from "./symbols.js";
+import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
 import {
     compileNumberPredicate,
     numberConstant,
@@ -116,9 +118,23 @@ import { compileSearchParams } from "./search-params.js";
 import { compileWebPlatformNew } from "./web-platform.js";
 import { compileHttpFunction, compileHttpCall } from "./http.js";
 import { compileWindowServiceCall } from "./window-events.js";
+import {
+    compileIdleCallbackCall,
+    idleFunctionValue,
+} from "./idle-callbacks.js";
+import { compileMessageBoxCall } from "./message-boxes.js";
+import {
+    compileMediaRecorderStaticCall,
+    compileMediaStreamMethodCall,
+    mediaStreamTypeof,
+} from "./media-streams.js";
 import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
-import { regexpCaptureCount } from "./string-replacement.js";
+import {
+    regexpCaptureCount,
+    regexpCapturesMayBeUnmatched,
+} from "./regexp-grammar.js";
+import { regexpCaptureFacts, regexpGroupsType } from "./string-replacement.js";
 import { compileAtomicsCall } from "./atomics.js";
 import { compileEnumElementAccess, enumObjectSymbol } from "./enum-objects.js";
 import {
@@ -162,8 +178,8 @@ import {
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandleCpp } from "./properties.js";
-import { absenceKind, nullability } from "./type-facts.js";
-import type { Value } from "./types.js";
+import { absenceKind, isNullable, nullability } from "./type-facts.js";
+import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import {
     tryResolveFunctionDeclaration,
@@ -246,8 +262,11 @@ export interface ExpressionContext
         UserFunctionContext,
         Pick<
             LoweringServices,
+            | "noteImpureRead"
             | "compileWorkerValue"
             | "audioSessionCpp"
+            | "staticAssetUrlCandidates"
+            | "sourceFiles"
             | "checker"
             | "program"
             | "sourceFile"
@@ -324,7 +343,6 @@ export interface ExpressionContext
             | "compileStaticFetchMethod"
             | "compilePlatformCall"
             | "reachJson"
-            | "reachLocalStorage"
             | "reachFileReader"
             | "compileAnimationFrameCall"
             | "compileBrowserGeneratedString"
@@ -340,7 +358,17 @@ export interface ExpressionContext
             | "isInNativeFunctionBody"
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
-        > {}
+        > {
+    nullableResourceKind(
+        node: ts.Node,
+        allowDirect?: boolean,
+    ): NullableResourceType | undefined;
+    nullableResourceValue(
+        resource: NullableResourceType,
+        storage: string,
+        source?: Value,
+    ): Value;
+}
 
 /**
  * Whether an expression's value is an object spread's operand, directly or
@@ -643,6 +671,8 @@ export class ExpressionLowerer {
         if (assertedValue) return assertedValue;
         const assertedNonNull = hasNonNullAssertion(expression);
         const unwrapped = this.context.unwrap(expression);
+        const stopped = this.optionalChainStop(unwrapped);
+        if (stopped) return stopped;
 
         if (ts.isCallExpression(unwrapped) || ts.isNewExpression(unwrapped)) {
             const formatter = compileDateTimeFormat(
@@ -658,9 +688,8 @@ export class ExpressionLowerer {
         }
         const storage = compileWebStorageValue(this.context, unwrapped);
         if (storage) return storage;
-        const deferredFunction =
-            this.context.deferredCapabilities.functionValue(unwrapped);
-        if (deferredFunction) return deferredFunction;
+        const idleFunction = idleFunctionValue(this.context, unwrapped);
+        if (idleFunction) return idleFunction;
         const ratio = devicePixelRatioValue(this.context, unwrapped);
         if (ratio) {
             if (ratio.staticNumber === undefined)
@@ -1073,9 +1102,6 @@ export class ExpressionLowerer {
         if (ts.isNewExpression(unwrapped)) {
             const proxy = this.context.recordProxies.construct(unwrapped);
             if (proxy) return proxy;
-            const deferred =
-                this.context.deferredCapabilities.compileConstructor(unwrapped);
-            if (deferred) return deferred;
             const query = this.context.browserErasure.evaluateBrowserValue(
                 unwrapped,
             )
@@ -1145,14 +1171,21 @@ export class ExpressionLowerer {
                 return {
                     kind: "data",
                     dataType: { kind: "regexp" },
-                    regexpUnicode: false,
-                    ...(patternValue.staticString !== undefined
-                        ? {
-                              regexpCaptureCount: regexpCaptureCount(
-                                  patternValue.staticString,
-                              ),
-                          }
-                        : {}),
+                    regexpLayout: {
+                        unicode: false,
+                        global: flags.includes("g"),
+                        ...(patternValue.staticString !== undefined
+                            ? {
+                                  captureCount: regexpCaptureCount(
+                                      patternValue.staticString,
+                                  ),
+                                  optionalCaptures:
+                                      regexpCapturesMayBeUnmatched(
+                                          patternValue.staticString,
+                                      ),
+                              }
+                            : {}),
+                    },
                     cpp:
                         `bbl::js::RegExp(${pattern}, ` +
                         `${flags.includes("g") ? "true" : "false"}, ` +
@@ -1548,7 +1581,9 @@ export class ExpressionLowerer {
                 );
             }
             const expression = this.context.unwrap(unwrapped.expression);
-            const audio = audioTypeof(this.context, expression);
+            const audio =
+                audioTypeof(this.context, expression) ??
+                mediaStreamTypeof(this.context, expression);
             if (audio)
                 return staticStringValue(audio, (text) =>
                     this.context.cppString(text),
@@ -2174,6 +2209,18 @@ export class ExpressionLowerer {
     private compileBrowserValue(expression: ts.Expression): Value {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isCallExpression(unwrapped)) {
+            // A method call erases only on a receiver positively browser
+            // state; an unclassified one would drop its effect silently.
+            const callee = this.context.unwrap(unwrapped.expression);
+            if (
+                (ts.isPropertyAccessExpression(callee) ||
+                    ts.isElementAccessExpression(callee)) &&
+                !this.context.browserErasure.isBrowserOwner(callee.expression)
+            )
+                this.context.fail(
+                    unwrapped,
+                    `'${callee.getText()}' would erase on a receiver that is not browser state; lower or remove the call.`,
+                );
             for (const argument of unwrapped.arguments) {
                 if (
                     !containsEvaluatedCall(argument) &&
@@ -2643,6 +2690,39 @@ export class ExpressionLowerer {
                 ...new Set([...selection.nativeCaptures, ...nativeCaptures]),
             ],
         };
+    }
+
+    /**
+     * A resource the plain-data model does not carry, selected against
+     * `null`: the nullable name's own optional storage holds it
+     * (`nullableResourceKind`), engaged only by the arm that built it.
+     */
+    private nullSelectedResource(
+        condition: string,
+        whenTrue: Value,
+        whenFalse: Value,
+        node: ts.Node,
+    ): Value | undefined {
+        const absent = (value: Value): boolean =>
+            value.kind === "json-null" && value.cpp.length === 0;
+        const [present, found] = absent(whenFalse)
+            ? [whenTrue, condition]
+            : absent(whenTrue)
+              ? [whenFalse, `!(${condition})`]
+              : [undefined, ""];
+        if (!present || present.cpp.length === 0) return undefined;
+        const resource = this.context.nullableResourceKind(node);
+        if (!resource || resource.dataType || present.kind !== resource.kind)
+            return undefined;
+        const storage =
+            this.context.allocateTemporaryCppName("selected_resource");
+        this.context.emit({
+            kind: "declaration",
+            type: `std::optional<${resource.cppType}>`,
+            name: storage,
+            initializer: `${found} ? std::optional<${resource.cppType}>{${present.cpp}} : std::nullopt`,
+        });
+        return this.context.nullableResourceValue(resource, storage, present);
     }
 
     /**
@@ -3123,6 +3203,13 @@ export class ExpressionLowerer {
                 nativeCaptures: guard.nativeCaptures ?? [],
             };
         }
+        const nullSelected = this.nullSelectedResource(
+            condition,
+            whenTrue,
+            whenFalse,
+            node,
+        );
+        if (nullSelected) return nullSelected;
         if (
             whenTrue.kind !== whenFalse.kind ||
             whenTrue.cpp.length === 0 ||
@@ -3333,11 +3420,49 @@ export class ExpressionLowerer {
     }
 
     private isNavigatorGetGamepadsCall(call: ts.CallExpression): boolean {
-        const callee = this.context.unwrap(call.expression);
         return (
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "getGamepads" &&
-            this.context.libraryGlobal(callee.expression) === "navigator"
+            resolvedDomApi(this.context.checker, call) ===
+            NAVIGATOR_GET_GAMEPADS
+        );
+    }
+
+    /**
+     * The undefined an optional chain evaluates to when it stops during
+     * generation: `node` is a link of a chain whose nearest `?.` receiver
+     * is null or undefined at generation (`undefined?.label().trim()`).
+     * Only that receiver compiles, and only when its type admits absence;
+     * a stopping receiver's evaluation is kept, and nothing after the `?.`
+     * evaluates. An earlier stopped link already makes that receiver absent.
+     */
+    public optionalChainStop(node: ts.Expression): Value | undefined {
+        let link: ts.Expression = node;
+        for (;;) {
+            if (!ts.isOptionalChain(link)) return undefined;
+            // `owner.method?.()` tests a method, which is no value to
+            // compile: the chain stopped only if an earlier link did.
+            if (
+                ts.isCallExpression(link) &&
+                link.questionDotToken &&
+                (ts.isPropertyAccessExpression(link.expression) ||
+                    ts.isElementAccessExpression(link.expression))
+            ) {
+                link = link.expression;
+                continue;
+            }
+            if (!ts.isNonNullExpression(link) && link.questionDotToken) break;
+            link = link.expression;
+        }
+        const receiver = link.expression;
+        const type = this.context.checker.getTypeAtLocation(receiver);
+        if (
+            !isNullable(type) &&
+            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0
+        )
+            return undefined;
+        return this.context.probeEmission(() =>
+            this.compileValue(receiver).kind === "json-null"
+                ? { kind: "json-null", cpp: "std::nullopt" }
+                : undefined,
         );
     }
 
@@ -3390,6 +3515,11 @@ export class ExpressionLowerer {
             hostFunction,
         );
         if (windowService) return windowService;
+        const windowServiceCall =
+            compileMessageBoxCall(this.context.dataLowerer, call) ??
+            compileIdleCallbackCall(this.context.dataLowerer, call) ??
+            compileMediaRecorderStaticCall(this.context.dataLowerer, call);
+        if (windowServiceCall) return windowServiceCall;
         const gpuAdapter = compileGpuAdapterCall(
             this.context.dataLowerer,
             call,
@@ -3419,6 +3549,15 @@ export class ExpressionLowerer {
         const worker = this.context.compileWorkerValue(call);
         if (worker) return worker;
         if (this.isNavigatorGetGamepadsCall(call)) {
+            const callee = this.context.unwrap(call.expression);
+            if (
+                !ts.isPropertyAccessExpression(callee) ||
+                this.context.libraryGlobal(callee.expression) !== "navigator"
+            )
+                return this.context.fail(
+                    call,
+                    "getGamepads is lowered on the navigator global.",
+                );
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireDefaultEngine(call);
             this.context.reachFeature("input:gamepad", call);
@@ -4684,18 +4823,10 @@ export class ExpressionLowerer {
      * element it would have read.
      */
     private compileAbsentElementAccess(
-        owner: Value,
         unwrapped: ts.ElementAccessExpression,
     ): Value {
-        if (
-            unwrapped.questionDotToken ||
-            (ts.isOptionalChain(unwrapped) && owner.optionalChainShortCircuited)
-        )
-            return {
-                kind: "json-null",
-                cpp: "std::nullopt",
-                optionalChainShortCircuited: true,
-            };
+        if (unwrapped.questionDotToken)
+            return { kind: "json-null", cpp: "std::nullopt" };
         const type = this.context.dataLowerer.dataTypeAt(unwrapped);
         if (!type)
             return this.context.fail(
@@ -4833,7 +4964,7 @@ export class ExpressionLowerer {
         }
         const owner = this.compileValue(unwrapped.expression);
         if (owner.kind === "json-null")
-            return this.compileAbsentElementAccess(owner, unwrapped);
+            return this.compileAbsentElementAccess(unwrapped);
         const dataElement = this.context.dataLowerer.compileElementFromValue(
             owner,
             unwrapped.argumentExpression,
@@ -6513,8 +6644,12 @@ export class ExpressionLowerer {
         return {
             kind: "data",
             dataType: { kind: "regexp" },
-            regexpCaptureCount: regexpCaptureCount(translated.pattern),
-            regexpUnicode: unicode,
+            regexpLayout: {
+                captureCount: regexpCaptureCount(translated.pattern),
+                unicode,
+                global: flags.includes("g"),
+                optionalCaptures: regexpCapturesMayBeUnmatched(pattern),
+            },
             cpp:
                 `bbl::js::RegExp(${this.context.cppString(translated.pattern)}, ` +
                 `${flags.includes("g") ? "true" : "false"}, ` +
@@ -7001,15 +7136,18 @@ export class ExpressionLowerer {
                     cpp: `${owner.cpp}.test(${input})`,
                 };
             }
+            // An unmatched capture is undefined wherever the pattern allows one.
+            const groups = regexpGroupsType(
+                regexpCaptureFacts(this.context, regexpOwner, callee.expression)
+                    .regexpLayout,
+                (type) => this.context.dataTypes.cppType(type),
+            );
             return {
                 kind: "data",
-                cpp: `${owner.cpp}.exec(${input})`,
+                cpp: `${owner.cpp}.exec${groups.template}(${input})`,
                 dataType: {
                     kind: "optional",
-                    inner: {
-                        kind: "vector",
-                        element: { kind: "string" },
-                    },
+                    inner: { kind: "vector", element: groups.element },
                 },
             };
         }
@@ -7055,6 +7193,12 @@ export class ExpressionLowerer {
         // `node.connect(...)`, `param.setValueAtTime(...)`. Babylon
         // Lite is function-shaped and the browser API is not, so the
         // audio family is the one place a handle carries methods.
+        const media = compileMediaStreamMethodCall(
+            this.context.dataLowerer,
+            call,
+            callee,
+        );
+        if (media) return media;
         const audio = compileAudioMethodCall(this.context, call, callee);
         if (audio) {
             return audio;

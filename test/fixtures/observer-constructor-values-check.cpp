@@ -41,9 +41,7 @@ int fixture_run_window_application(WorkerEntry initialize, EngineOptions options
         assert(owner.observers.size() == 2);
         // Supply the layout snapshot a presentation host would publish.
         auto layout = std::make_shared<LayoutSnapshot>();
-        layout->rectangles.resize(owner.engine.ui_elements.size());
-        layout->content_boxes.resize(owner.engine.ui_elements.size());
-        layout->styles.resize(owner.engine.ui_elements.size());
+        layout->elements.resize(owner.engine.ui_elements.size());
         services->layout = layout;
         owner.published_revision = owner.engine.ui_revision;
         owner.published_text_revision = owner.engine.ui_text_revision;

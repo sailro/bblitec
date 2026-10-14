@@ -71,6 +71,12 @@ test("commands whose inputs or outputs the cache cannot name always compile", ()
         ["/Fo:out/a.obj", "a.cpp", "b.cpp", "/c"],
         ["/c", "/Fo:out/", "a.cpp", "/Yupch.hpp"],
         ["/P", "a.cpp"],
+        // Side outputs the plan cannot name or place.
+        ["/Fe:out/a.exe", "/Fmout/a.map", "a.cpp"],
+        ["/Fe:out/a.exe", "/Fdout/", "a.cpp"],
+        ["/Fe:out/a.exe", "/FAs", "a.cpp"],
+        ["/Fe:out/a.exe", "a.cpp", "/link", "/MAP"],
+        ["/Fe:out/a.exe", "a.cpp", "/link", "/OUT:out/b.exe"],
     ])
         assert.equal(fixtureCompilePlan(args, cwd), undefined, args.join(" "));
     // A compile-only command's objects are what later steps link.
@@ -153,6 +159,45 @@ test("a stored build is restored only while every header it read keeps its bytes
         ),
         cache.commandKey(join(root, "cl.exe"), environment, plan),
     );
+});
+
+test("a linker output the command names is stored and restored with the executable", (t) => {
+    const root = scratch(t);
+    const { header } = checkout(root);
+    const cache = new FixtureBuildCache(join(root, "cache"), root);
+    const plan = fixtureCompilePlan(
+        [...command, "/link", "/MAP:out/check.map"],
+        root,
+    )!;
+    assert.deepEqual(plan.outputs, [
+        join(root, "out", "check.exe"),
+        join(root, "out", "check.map"),
+    ]);
+    // Its path stays out of the key, like the executable's.
+    assert.ok(plan.normalized.includes("/MAP:<output>"));
+    const key = cache.commandKey(join(root, "cl.exe"), environment, plan);
+    mkdirSync(join(root, "out"), { recursive: true });
+    writeFileSync(join(root, "out", "check.exe"), "program");
+    writeFileSync(join(root, "out", "check.map"), "symbols");
+    cache.store(key, plan, [header]);
+    rmSync(join(root, "out"), { recursive: true });
+    assert.equal(cache.restore(key, plan), true);
+    assert.equal(
+        readFileSync(join(root, "out", "check.map"), "utf8"),
+        "symbols",
+    );
+    // A named output the link did not write stores nothing.
+    const missing = fixtureCompilePlan(
+        [...command, "/link", "/PDB:out/check.pdb"],
+        root,
+    )!;
+    const missingKey = cache.commandKey(
+        join(root, "cl.exe"),
+        environment,
+        missing,
+    );
+    cache.store(missingKey, missing, [header]);
+    assert.equal(cache.restore(missingKey, missing), false);
 });
 
 test("worktrees with the same bytes share one stored build", (t) => {

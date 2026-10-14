@@ -1,0 +1,33 @@
+#define main generated_main
+#include "../../artifacts/runtime-selectors/program.hpp"
+#undef main
+#include "pal_ui_rml.cpp"
+#include <cassert>
+#include <cstdio>
+
+namespace bbl::pal {
+std::string asset_path(std::string_view) {
+    throw std::runtime_error("Unexpected fixture asset read");
+}
+std::string environment_variable(const char*) { return {}; }
+double performance_milliseconds() { return 0; }
+Engine& window_document_engine() {
+    static Engine document;
+    return document;
+}
+} // namespace bbl::pal
+#include "realm-application-fixture.hpp"
+
+int main() {
+    assert(generated_main() == 0);
+    auto& engine = bbl::pal::window_document_engine();
+    // Matches (a-i); line breaks (S), quotes, escapes and tabs (N, Q) and an undeclared
+    // choice (C) throw; a declared choice (x); the application's choice (j); disabled,
+    // checked and focus states (k-o); no hover without a UI projection (p); focusables (q).
+    const auto& log =
+        bbl::handle_at(engine.ui_elements, bbl::ui_get_element_by_id(engine, "selector-log")).text;
+    if (log != "abcdefghiSSNNNNQCxjklmnopq") {
+        std::fprintf(stderr, "runtime selector trace: %s\n", log.c_str());
+        return 1;
+    }
+}

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureLibrary,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -48,6 +49,11 @@ test("scheduled audio events retain callbacks through playback and release their
             const later=()=>{throw new Error("removed during dispatch");};
             const handler=()=>{if(order!==1)throw new Error("capture order");order=2;natural++;alias.disconnect();alias.removeEventListener("ended",later);};
             alias.addEventListener("ended",removed);voice.removeEventListener("ended",removed);
+            const early=new AbortController();early.abort();
+            voice.addEventListener("ended",()=>{throw new Error("pre-aborted listener");},{signal:early.signal});
+            const late=new AbortController();
+            voice.addEventListener("ended",()=>{throw new Error("aborted listener");},{signal:late.signal});
+            late.abort();
             voice.addEventListener("ended",handler,{once:true});voice.addEventListener("ended",handler);
             voice.addEventListener("ended",()=>{order=1;},true);voice.addEventListener("ended",later);
             voice.start();
@@ -93,8 +99,8 @@ test("scheduled audio events retain callbacks through playback and release their
     );
     writeFileSync(join(output, "program.hpp"), result.cpp);
     const tools = optionalNativeFixtureTools(),
-        labsound = resolve("artifacts/tools/labsound");
-    if (!tools || !existsSync(join(labsound, "lib/LabSound.lib"))) {
+        labsound = tools && nativeFixtureLibrary("labsound");
+    if (!tools || !labsound) {
         t.skip("Native compiler and pinned LabSound required.");
         return;
     }

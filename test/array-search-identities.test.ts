@@ -79,8 +79,8 @@ test("event target array searches use document-owned identities", (t) => {
                 throw new Error('event path identity');
         });
     `,
-        { deferredCapabilities: "runtime-throw" },
     );
+    assert.equal(result.manifest.deferredCapabilities, undefined);
     assert.match(result.cpp, /array_includes\(/);
     assert.match(result.cpp, /array_last_index_of\(/);
     const native = optionalNativeFixtureTools(false);

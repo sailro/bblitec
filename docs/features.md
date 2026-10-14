@@ -6,10 +6,9 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 ## Deferred capabilities
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
-as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: audio graph
-operations, media streams/recording/streamed audio, script elements, session storage, idle callbacks, dynamic
-pixel ratio, application-realm device recovery, Blob streams/piping/compression, `{ signal }` listeners, and the
-[UI](ui.md) items marked deferred. Unregistered APIs still refuse.
+as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
+buffers, streaming sounds, buses, stereo/analyzer, script elements, `prompt`, application-realm
+device recovery, and the [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
 
 ## Language
 
@@ -23,7 +22,7 @@ pixel ratio, application-realm device recovery, Blob streams/piping/compression,
 | Data | Records, tagged/structural unions, arrays, tuples, dictionaries, Map/Set, JSON documents, record accessors, `{}` identity tokens, phantom brands | Record conversions no single layout can hold; mutation through erased native views; identity comparison of unnamed literals |
 | Async | Promises, async functions, `all`/`allSettled`/`race`/`any` over tuples and sync iterables | Custom thenables, async iterables in combinators, MessageChannel, runtime-sized resource construction |
 | Generators | Sync/async, `for...of`, `for await`, `yield*` over generators/iterators/arrays | `next(value)`, `throw`, return payloads, yield in finally, `yield*` from async generators |
-| Workers | Module workers, structured clone (records, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer | Classic scripts; messages with class instances, Errors, functions, promises, platform objects; listener options except `once` |
+| Workers | Module workers, structured clone and `structuredClone` (records incl. own accessors, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer | Classic scripts; clones of class instances, prototype accessors, Errors, promises, platform objects; functions in messages (`structuredClone` throws DataCloneError); `structuredClone` transfer lists; listener options except `once` |
 
 Rules:
 
@@ -46,7 +45,7 @@ Rules:
 | Map/Set/WeakMap | Full API, live cursors; WeakMap with record, callback or DOM keys | `Set<object>` of Promises; other WeakMap key kinds |
 | Iterators | Arrays, Map/Set cursors, class generator `[Symbol.iterator]` | Other `[Symbol.iterator]` implementations |
 | Strings | UTF-16 API, URI encode/decode, `btoa`/`atob`, tagged templates, `String.raw` | Method tags |
-| RegExp | `g`/`i`/`u`, replacement callbacks; literal non-`g` `test`/`exec` fold at generation | `replaceAll` with string replacement; under `u`: lookbehind, named groups, captured `split`, `i` with backreferences/word boundaries |
+| RegExp | `g`/`i`/`u`, replacement callbacks, captured `split`; unmatched captures are `undefined`; literal non-`g` `test`/`exec` fold at generation | `replaceAll` with string replacement; under `u`: lookbehind, named groups, `i` with backreferences/word boundaries |
 | Unicode/Intl | normalize, `localeCompare`, locale casing, Collator, NumberFormat (decimal/percent), PluralRules, ListFormat, Date `toLocale*String` | DateTimeFormat options/formatting, `resolvedOptions`, `formatToParts`, currency/unit, `dateStyle`/`timeStyle` |
 | Encoding | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`, `stream`), `TextEncoder.encode` | Other encodings, `encodeInto` |
 | Objects | keys/values/entries/assign/fromEntries/hasOwn/is/`create(null)`, literal-descriptor `defineProperty`, spread, rest, `delete`, `in`, `for...in` | Class accessor installation, non-literal rest keys, dynamic class membership |
@@ -62,7 +61,10 @@ Rules:
   `--public-url` serves unmapped root-relative ones, `--site-url` sets the base (default `http://localhost/`);
   registry scenes use the pinned `lab/public`. Dynamic URLs and percent-encoded bodies refuse.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `signal`; streamed
-  `body` reader. Known asset fetches use packaged responses. Request objects, piping, teeing and Headers iteration refuse.
+  `body` reader. Known asset fetches use packaged responses. Request objects, teeing and Headers iteration refuse.
+- Byte streams (application realm): response bodies and `blob.stream()` pipe through `CompressionStream` or
+  `DecompressionStream` (gzip, deflate, deflate-raw; zlib linked only where constructed); `new Response(stream)` reads
+  them. Pipe options, `pipeTo`, other transforms, writable sides, Response init and non-stream Response bodies refuse.
 - `createImageBitmap(blob, options)`: static options through `pal::image_bitmap_options`; WebP via libwebp. Resize/crop
   refuse; orientation metadata is not applied.
 - `setDracoBaseUrl`/`setKtx2DecoderUrl` must be generation-known and precede compressed loads. KTX1 selects a
@@ -79,10 +81,16 @@ Rules:
 
 - One engine per entry setup. Rebinding an engine alias refuses.
 - `msaaSamples`: 1 for numeric 1, else 4; other constants refuse.
-- `resizeEngine` is a no-op; native loops own extent refresh.
+- Native loops own extent refresh; `resizeEngine` runs the pin's `resizeSurface` on an application realm's DOM canvas.
+- `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
+- An application realm's DOM canvas backing store is sized only by the pin's `resizeSurface` (client box, device
+  pixel ratio, `maxDevicePixelRatio` option or write) at `createEngine`, `resizeEngine` and each frame head, on every
+  platform; windows keep native density and composite it scaled. Without a realm the window is the only surface: a
+  static cap of 1 or more applies as below (desktop keeps devicePixelRatio 1); any other cap selects a realm.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
+- `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer
   storage views with cube sampling need Dawn or patched SDL D3D12/Vulkan/Metal.
 
@@ -100,9 +108,9 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 [iOS](development.md#ios).
 
 - Android: ARM64/x86_64 APKs, API 28+ (retained UI 29+), landscape immersive fullscreen, Back exits. Multiple native
-  windows unsupported. `maxDevicePixelRatio` caps the render buffer.
-- iOS: 16+, SDL UIKit. Landscape fullscreen at native density or `maxDevicePixelRatio=1`; other caps refuse. Device
-  bundles are unsigned and unqualified; no signing or App Store flow.
+  windows unsupported. Without a realm, a static `maxDevicePixelRatio` caps the render buffer.
+- iOS: 16+, SDL UIKit. Landscape fullscreen at native density or, without a realm, `maxDevicePixelRatio=1`; other
+  caps refuse. Device bundles are unsigned and unqualified; no signing or App Store flow.
 
 ## Loading
 
@@ -112,8 +120,9 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 | `.babylon` | Parented meshes/nodes, Standard materials, point lights, cameras; no `maxMeshes` |
 | Closed collectors | No rest/default parameters, early break, instanced/splat producers |
 
-`enableGltfCameras` and `enableGltfCpuTangents` must precede loading. Partial/runtime texture uploads and 3D textures
-are unsupported.
+`enableGltfCameras` and `enableGltfCpuTangents` must precede loading. `updateTexture2DFromPixels` and
+`queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
+texels a sprite atlas copied throw. Other runtime texture uploads and 3D textures are unsupported.
 
 ## Meshes and hierarchy
 
@@ -123,14 +132,18 @@ are unsupported.
 - Thin-instance pools with compute tasks, geometry-output tasks or device recovery refuse.
 - Meshes parent to meshes or transform nodes; transform nodes only to transform nodes. Scene writes to imported nodes load
   the pin's glTF node hierarchy; animated/morphed assets, punctual lights and cameras then refuse.
-- A mesh removed from its last scene retires ([fidelity](fidelity.md#semantic-contract)); re-adding or cloning it refuses.
+- A mesh removed from its last scene or passed to `disposeMeshGpu` retires
+  ([fidelity](fidelity.md#semantic-contract)); re-adding or cloning it refuses. `disposeMeshGpu` of a mesh a scene or
+  live render task still lists refuses.
 
 ## Materials
 
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
-- Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions.
-- Shader materials: 2D/array samplers, storage buffers, `get/setShaderUniform` by runtime name. Template text and plugin
-  `getCustomCode` functions run at generation; reaching host/engine APIs, `this`, module `let`, clock or random refuses.
+- Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions, except Standard
+  `diffuseColor` after `enableMaterialTracking` (re-read each frame).
+- Shader materials: 2D/array samplers (render-target colour textures rebind per draw), storage buffers,
+  `get/setShaderUniform` by runtime name, `enableShaderUniformRangeUpdates`. Template text and plugin `getCustomCode`
+  functions run at generation; reaching host/engine APIs, `this`, module `let`, clock or random refuses.
   Alpha-to-coverage only on shader materials.
 - External video textures come from a closed zero-parameter producer before engine start.
 - Node materials: closed NME graphs; scalar inputs writable live; vector writes and topology changes refuse. Geometry MRTs
@@ -143,13 +156,16 @@ are unsupported.
 - Property tracks: numeric leaves, linear/step; easing callbacks refuse. Autonomous managers cannot share a program with
   a persistent application RAF loop.
 - GPU skinning, storage morphs, VAT, thin instances. Direct morphs: one pre-start attachment per mesh.
+- `computeDeformedPositionToRef`: morph then four-joint skinning of one retained CPU vertex, at the pin's float stores.
+- `setVatTime` writes the VAT clock lane until the handle's next `play`/`update`. `setVatInstanceStorage` validates and
+  stores the buffer the thin VAT pick reads.
 
 ## Sprites, picking, flow graphs, gizmos
 
 - Sprite2D, billboards, atlases, Y-sort. Mixed transparent draws tied in depth/order or without a camera refuse.
   Capacities ≤ 4,294,967,295; buffers 32-bit sized.
 - Picking: `createPickingRay` needs no GPU picker; detailed picks skip thin instances, billboards and splats.
-  Filter/ignore predicates refuse.
+  Filter/ignore predicates refuse. VAT meshes pick through their baked pose; a detailed VAT pick refuses.
 - KHR_interactivity blocks: SceneReadyEvent, OnSelect, Sequence, Get/SetVariable, Get/SetProperty, arithmetic, Abs,
   Floor, LessThan, Clamp, Combine/ExtractVector2. Others refuse.
 - Gizmos: display, bounding boxes, rotation editing; no bounding-box/scale drags.
@@ -163,20 +179,61 @@ Heightfields need square ground grids. Contract: [physics](fidelity.md#physics-c
 
 ## Audio
 
-LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling, decoding, ended listeners. Event payloads,
-context options, statechange, output selection, media streams and recording refuse or are absent.
+LabSound/SDL3: no-options AudioContext, reached nodes, AudioParam scheduling (value curves included), decoding, ended
+listeners, `disconnect(destination[, output[, input]])`, equal-power `PannerNode` and the context `listener` (`"HRTF"`
+refuses: no HRTF data is packaged). A buffer source loops its whole buffer only: a `loopStart`/`loopEnd` region inside
+it, or a loop started with a duration, throws at `start`. Event payloads, context options, statechange and output
+selection refuse or are absent; so does any other node, parameter or context property write.
+`createAudioEngineAsync`, `setMasterVolume` and `getMasterVolume` run the pin's lowered engine (`volume`,
+`parameterRampDuration`, an adopted `audioContext`); the resume options refuse (no click or statechange hook).
+
+Media streams: `MediaStream`/`MediaStreamTrack` objects (track sets, `addTrack`/`removeTrack`, `clone`, `stop`,
+`enabled`, `readyState`), `canvas.captureStream(fps)` (one live video track), `createMediaStreamDestination()` (a sink
+rendering its input into its stream's audio track every quantum) and `createMediaStreamSource(stream)` (the first
+audio track by id, from any context at the same sample rate; InvalidStateError without one).
+`MediaRecorder.isTypeSupported` is false and `new MediaRecorder` throws NotSupportedError
+([no encoders](fidelity.md#semantic-contract)).
+
+An audio URL (a static sound or media element source) selects packaged audio; a runtime URL needs inferable candidates.
+
+Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `disposeSound`) run the pin's lowered
+family in an application realm. Sources: an audio URL, an `ArrayBuffer` or an `AudioBuffer`; URL lists, sound buffers
+and `outBus` refuse. A looped sound started while its context is not running throws (no statechange). `enableSpatial`,
+`setSpatialPosition` and `setSpatialListenerPosition` add the pin's panner sub-node and listener; the `position`,
+orientation and attachment options refuse.
+`createAudioEngineMediaStream` taps the engine's master output into a stream destination's stream.
+
+Media elements (application realm): `new Audio(url)` with an audio URL, `play`/`pause`/`load`, `removeAttribute("src")`,
+`loop`, `preload`, `currentTime` (seek), `duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause`
+listeners without payloads.
+An unrouted element plays to the default output; `createMediaElementSource` routes it once (again:
+InvalidStateError), moving its playback into the graph. Other members and attributes refuse.
 
 ## Shadows and navigation
 
 - PCF spot/directional, ESM directional, CSM. Thin-instance contracts refuse.
+- `enableCsmStaticCache` (awaited, before registration): static casters render into a cache texture, copied per layer
+  into the map before dynamic casters draw; refit gate and per-frame cascade budget as pinned.
 - Recast/Detour solo and obstacle tile-cache builds, crowds, obstacles. Tiled builds without obstacles and off-mesh
   connections in tile caches refuse.
 
 ## Frame graph and post-process
 
-- Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup.
+- Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup; `removeMeshFromTask`.
+- `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which
+  refuses to execute until then; the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task
+  cannot be removed.
+- Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
+- `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
+  keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform
+  binding refuses.
 - TAA: one scene, explicit Standard color tasks, engine-format color, depth24plus-stencil8, single-sample inputs.
+- `enableRenderTaskTransmission` with `linear: false` on a single-sample, non-swapchain render task: the pass breaks
+  before transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording);
+  `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm and multisampled targets refuse.
 - Contact shadows, one-bounce GI, EffectWrapper/EffectRenderer with bounded layouts; custom vertices refuse.
+- `setEffectTexture` takes solid or render-target colour textures by binding name or number; render targets bind in
+  frame-graph effect tasks only.
 - Image processing: exposure, contrast, toneMapping, toneMappingEnabled.
 
 ## Text

@@ -44,11 +44,33 @@ test("attribute removal preserves absence, style reset and rendered image update
         picture.setAttribute("width", "24");
         if (picture.getAttribute("width") !== "24") throw new Error("markup image mutation");
         document.body.appendChild(markup);
+        // The attribute list order: markup order, then each new name at
+        // the end; a rewrite keeps its place, a removal drops it, a CSSOM
+        // write creates "style".
+        if (picture.getAttributeNames().join() !== "class,src,alt,width,height")
+            throw new Error("markup attribute names " + picture.getAttributeNames().join());
+        const names = document.createElement("span");
+        names.setAttribute("data-b", "1");
+        names.id = "names";
+        names.setAttribute("TITLE", "x");
+        names.setAttribute("data-b", "2");
+        names.style.height = "4px";
+        names.className = "c";
+        names.removeAttribute("id");
+        names.setAttribute("id", "again");
+        if (names.getAttributeNames().join() !== "data-b,title,style,class,id")
+            throw new Error("attribute names " + names.getAttributeNames().join());
+        names.removeAttribute("style");
+        const bare = document.createElement("p");
+        if (names.getAttributeNames().length !== 4 || bare.getAttributeNames().length !== 0)
+            throw new Error("removed attribute names");
         globalThis.close();
     `,
         { fileName: join(directory, "entry.ts") },
     );
     assert.ok(result.cpp.includes("ui_remove_attribute"));
+    assert.ok(result.cpp.includes("bbl::ui_attribute_names("));
+    assert.equal(result.manifest.deferredCapabilities?.length ?? 0, 0);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     assert.ok(
         result.manifest.assets.some((asset) => asset.output === "tile.png"),

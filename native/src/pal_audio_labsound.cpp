@@ -18,16 +18,28 @@
 #include <bblite/features/has_audio_biquad_filter.hpp>
 #include <bblite/features/has_audio_buffer_source.hpp>
 #include <bblite/features/has_audio_decode_file.hpp>
+#include <bblite/features/has_audio_media_element.hpp>
+#include <bblite/features/has_audio_media_stream.hpp>
 #include <bblite/features/has_audio_oscillator.hpp>
+#include <bblite/features/has_audio_panner.hpp>
 #include <bblite/features/has_audio_stereo_panner.hpp>
 #include <bblite/features/workers.hpp>
 
+#include <bblite/js_error.hpp>
 #include <bblite/pal_audio.hpp>
 #include <bblite/teardown.hpp>
 
 #include <bblite/pal.hpp>
 #if BBLITE_WORKERS
 #include <bblite/pal_event_loop.hpp>
+#endif
+#if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
+#if !BBLITE_WORKERS || !BBLITE_HAS_AUDIO_BUFFER_SOURCE || !BBLITE_HAS_AUDIO_DECODE_FILE
+#error "audio:media-element needs an application realm, buffer sources and decoding."
+#endif
+#include <bblite/pal_audio_element.hpp>
+#include <bblite/pal_native_workers.hpp>
+#include <bblite/pal_packaged_responses.hpp>
 #endif
 
 #include "pal_audio_sdl_device.hpp"
@@ -52,8 +64,17 @@
 #if BBLITE_HAS_AUDIO_OSCILLATOR
 #include "LabSound/core/OscillatorNode.h"
 #endif
+#if BBLITE_HAS_AUDIO_PANNER
+#include "LabSound/core/AudioListener.h"
+#include "LabSound/core/PannerNode.h"
+#endif
 #if BBLITE_HAS_AUDIO_STEREO_PANNER
 #include "LabSound/core/StereoPannerNode.h"
+#endif
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+#include <bblite/pal_media_stream.hpp>
+#include "LabSound/core/AudioNodeInput.h"
+#include <mutex>
 #endif
 #if BBLITE_AUDIO_CAPTURE
 #include "LabSound/extended/RecorderNode.h"
@@ -69,6 +90,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -112,9 +134,70 @@ struct AudioNodeRecord {
 #endif
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     bool source_loop = false;
+    double source_loop_start = 0.0;
+    double source_loop_end = 0.0;
     AudioBufferHandle buffer{};
 #endif
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    /** A MediaStreamAudioDestinationNode's `stream`. */
+    MediaStreamHandle stream;
+#endif
 };
+
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+/**
+ * The stereo samples a stream destination renders, read by the stream sources
+ * of any context (each its own audio thread, or offline renders in turn). A
+ * reader starts at the position it was created at and keeps at most the last
+ * `capacity` frames behind.
+ */
+class MediaStreamAudioTap {
+public:
+    static constexpr std::size_t capacity = std::size_t{1} << 16;
+    explicit MediaStreamAudioTap(double sample_rate)
+        : sample_rate_(sample_rate), samples_(2 * capacity) {}
+    [[nodiscard]] double sample_rate() const noexcept { return sample_rate_; }
+    [[nodiscard]] std::uint64_t position() const {
+        std::lock_guard lock(mutex_);
+        return written_;
+    }
+    /** Appends `frames` stereo frames; null channels write silence. */
+    void write(const float* left, const float* right, int frames) {
+        std::lock_guard lock(mutex_);
+        for (int frame = 0; frame < frames; ++frame) {
+            const auto slot = static_cast<std::size_t>(
+                                  (written_ + static_cast<std::uint64_t>(frame)) % capacity) *
+                              2;
+            samples_[slot] = left ? left[frame] : 0.0f;
+            samples_[slot + 1] = right ? right[frame] : 0.0f;
+        }
+        written_ += static_cast<std::uint64_t>(frames);
+    }
+    /** Copies up to `frames` frames after `cursor` and advances it; returns how many. */
+    int read(std::uint64_t& cursor, float* left, float* right, int frames) {
+        std::lock_guard lock(mutex_);
+        if (written_ - cursor > capacity)
+            cursor = written_ - capacity;
+        const auto count = static_cast<int>(
+            std::min<std::uint64_t>(static_cast<std::uint64_t>(frames), written_ - cursor));
+        for (int frame = 0; frame < count; ++frame) {
+            const auto slot =
+                static_cast<std::size_t>((cursor + static_cast<std::uint64_t>(frame)) % capacity) *
+                2;
+            left[frame] = samples_[slot];
+            right[frame] = samples_[slot + 1];
+        }
+        cursor += static_cast<std::uint64_t>(count);
+        return count;
+    }
+
+private:
+    const double sample_rate_;
+    mutable std::mutex mutex_;
+    std::vector<float> samples_;
+    std::uint64_t written_ = 0;
+};
+#endif
 
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
 struct AudioBufferRecord {
@@ -132,9 +215,15 @@ struct AudioGraphNode {
     std::shared_ptr<lab::AudioNode> node;
     std::weak_ptr<AudioNodeRecord> javascript;
     std::shared_ptr<AudioSourceState> source;
+    /** Every node an edge reaches: the union of the two lists below. */
     std::vector<lab::AudioNode*> outputs;
+    /** Nodes whose input this node feeds, and nodes one of whose parameters it drives. */
+    std::vector<lab::AudioNode*> node_edges;
+    std::vector<lab::AudioNode*> param_edges;
     double retire_after = -1.0;
     bool reached = false;
+    /** A stream destination: the context pulls it every quantum. */
+    bool automatic_pull = false;
 };
 
 struct ContextRecord {
@@ -157,6 +246,11 @@ struct ContextRecord {
             // destination also owns the device, so release this reverse edge
             // while the record and context still retain the destination.
             device->setDestinationNode({});
+        }
+        for (const auto& [identity, entry] : graph) {
+            (void)identity;
+            if (entry.automatic_pull)
+                context->removeAutomaticPullNode(entry.node);
         }
 #if BBLITE_WORKERS
         for (const auto& [identity, entry] : graph) {
@@ -210,7 +304,7 @@ struct ContextRecord {
 void register_graph_node(ContextRecord& context, const AudioNodeHandle& handle) {
     const auto& value = handle.ownership;
     context.graph.emplace(value->node.get(),
-                          AudioGraphNode{value->node, value, value->source, {}, -1.0});
+                          AudioGraphNode{value->node, value, value->source, {}, {}, {}, -1.0});
 }
 
 /** Longest declared tail on the reachable graph. Feedback and unbounded
@@ -254,11 +348,21 @@ double graph_tail(ContextRecord& context, lab::AudioNode* source, lab::ContextRe
     return pending.size() == paths.size() ? maximum : std::numeric_limits<double>::infinity();
 }
 
-void detach_outputs(AudioGraphNode& node, lab::ContextGraphLock& lock) {
+/**
+ * Drop `node`'s rendered edges. A disconnect does so for JavaScript too; the
+ * collector's retirement of a finished source or an unreachable node does
+ * not: the edges stay connected as JavaScript sees them, so a later
+ * `disconnect(destination)` still finds its edge.
+ */
+void detach_outputs(AudioGraphNode& node, lab::ContextGraphLock& lock, bool disconnect = true) {
     for (int index = 0; index < node.node->numberOfOutputs(); ++index) {
         lab::AudioNodeOutput::disconnectAll(lock, node.node->output(index));
     }
     node.outputs.clear();
+    if (disconnect) {
+        node.node_edges.clear();
+        node.param_edges.clear();
+    }
 }
 
 void collect_audio_graph(ContextRecord& context) {
@@ -292,7 +396,7 @@ void collect_audio_graph(ContextRecord& context) {
     {
         lab::ContextGraphLock graph(context.context.get(), "bblite completed audio sources");
         for (auto* identity : pending)
-            detach_outputs(context.graph.at(identity), graph);
+            detach_outputs(context.graph.at(identity), graph, false);
     }
     pending.clear();
     for (auto& [identity, entry] : context.graph) {
@@ -316,9 +420,12 @@ void collect_audio_graph(ContextRecord& context) {
         lab::ContextGraphLock graph(context.context.get(), "bblite discarded audio graph");
         for (auto& [identity, entry] : context.graph) {
             if (!entry.reached)
-                detach_outputs(entry, graph);
+                detach_outputs(entry, graph, false);
         }
     }
+    for (auto& [identity, entry] : context.graph)
+        if (!entry.reached && entry.automatic_pull)
+            context.context->removeAutomaticPullNode(entry.node);
     context.context->handlePostRenderTasks(render);
     std::erase_if(context.graph, [](const auto& item) { return !item.second.reached; });
     pending.clear();
@@ -347,19 +454,29 @@ void invalidate_source_tails(ContextRecord& context, lab::AudioNode* changed) {
     }
 }
 
+/** Add `target` to `edges` once; whether it was added. */
+bool add_edge(std::vector<lab::AudioNode*>& edges, lab::AudioNode* target) {
+    if (std::find(edges.begin(), edges.end(), target) != edges.end())
+        return false;
+    edges.push_back(target);
+    return true;
+}
+
 template <typename Connect>
 void connect_audio_graph(ContextRecord& context, const AudioNodeHandle& source,
-                         const AudioNodeHandle& destination, Connect connect) {
-    auto& outputs = context.graph.at(source.ownership->node.get()).outputs;
+                         const AudioNodeHandle& destination, bool to_parameter, Connect connect) {
+    auto& entry = context.graph.at(source.ownership->node.get());
     auto* target = destination.ownership->node.get();
-    const bool inserted = std::find(outputs.begin(), outputs.end(), target) == outputs.end();
-    if (inserted)
-        outputs.push_back(target);
+    auto& kind = to_parameter ? entry.param_edges : entry.node_edges;
+    const bool inserted = add_edge(entry.outputs, target);
+    const bool kind_inserted = add_edge(kind, target);
     try {
         connect();
     } catch (...) {
         if (inserted)
-            outputs.pop_back();
+            entry.outputs.pop_back();
+        if (kind_inserted)
+            kind.pop_back();
         throw;
     }
     if (inserted)
@@ -424,11 +541,8 @@ void retain_audio_completion(const AudioNodeHandle& node) {
             auto& owner = EventLoop::current();
             // Listener snapshots and removals use the shared DOM registry rules.
             // Delivery is a queued task, outside all audio graph locks/iteration.
-            for (auto& listeners : source.ownership->ended) {
-                listeners.dispatch_with([&](auto& listener) {
-                    owner.dispatch_callback([callback = listener] { callback(); });
-                });
-            }
+            for (auto& listeners : source.ownership->ended)
+                dispatch_platform_event(owner, listeners);
         });
     state->inbox = loop.inbox();
     state->completion =
@@ -567,11 +681,64 @@ constexpr const char* spelling(AudioParamName name) {
         return "pan";
     case AudioParamName::PlaybackRate:
         return "playbackRate";
+    case AudioParamName::PositionX:
+        return "positionX";
+    case AudioParamName::PositionY:
+        return "positionY";
+    case AudioParamName::PositionZ:
+        return "positionZ";
+    case AudioParamName::OrientationX:
+        return "orientationX";
+    case AudioParamName::OrientationY:
+        return "orientationY";
+    case AudioParamName::OrientationZ:
+        return "orientationZ";
+    default:
+        return nullptr;
     }
-    return nullptr;
 }
 
+#if BBLITE_HAS_AUDIO_PANNER
+/** The context listener's parameter a `Listener*` name selects, or none. */
+std::shared_ptr<lab::AudioParam> listener_param(lab::AudioListener& listener, AudioParamName name) {
+    switch (name) {
+    case AudioParamName::ListenerPositionX:
+        return listener.positionX();
+    case AudioParamName::ListenerPositionY:
+        return listener.positionY();
+    case AudioParamName::ListenerPositionZ:
+        return listener.positionZ();
+    case AudioParamName::ListenerForwardX:
+        return listener.forwardX();
+    case AudioParamName::ListenerForwardY:
+        return listener.forwardY();
+    case AudioParamName::ListenerForwardZ:
+        return listener.forwardZ();
+    case AudioParamName::ListenerUpX:
+        return listener.upX();
+    case AudioParamName::ListenerUpY:
+        return listener.upY();
+    case AudioParamName::ListenerUpZ:
+        return listener.upZ();
+    default:
+        return nullptr;
+    }
+}
+#endif
+
 std::shared_ptr<lab::AudioParam> require_param(AudioParamHandle handle) {
+#if BBLITE_HAS_AUDIO_PANNER
+    if (handle.name >= AudioParamName::ListenerPositionX) {
+        require_node(handle.node);
+        auto param = listener_param(
+            *require_context(context_of(handle.node.value)).context->listener(), handle.name);
+        if (!param)
+            throw std::runtime_error("The audio listener has no such parameter.");
+        return param;
+    }
+#endif
+    if (!spelling(handle.name))
+        throw std::runtime_error("Audio node has no such parameter.");
     auto param = require_node(handle.node)->param(spelling(handle.name));
     if (!param) {
         throw std::runtime_error("Audio node has no such parameter.");
@@ -619,6 +786,15 @@ lab::FilterType to_lab(BiquadFilterKind kind) {
 }
 #endif
 
+/** Registers a constructed node in its context's handles and graph. */
+AudioNodeHandle insert_node(AudioContextHandle context, ContextRecord& record,
+                            std::shared_ptr<AudioNodeRecord> value) {
+    auto entry = record.nodes.insert(std::move(value));
+    AudioNodeHandle handle{pack(context.value, entry.index), std::move(entry.ownership)};
+    register_graph_node(record, handle);
+    return handle;
+}
+
 template <typename Node> AudioNodeHandle create_node(AudioContextHandle context) {
     ContextRecord& record = require_context(context.value);
     auto value = js::make_gc_shared<AudioNodeRecord>();
@@ -637,11 +813,85 @@ template <typename Node> AudioNodeHandle create_node(AudioContextHandle context)
             }
         });
     }
-    auto entry = record.nodes.insert(std::move(value));
-    AudioNodeHandle handle{pack(context.value, entry.index), std::move(entry.ownership)};
-    register_graph_node(record, handle);
-    return handle;
+    return insert_node(context, record, std::move(value));
 }
+
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+/** A stereo node descriptor with one output. */
+const lab::AudioNodeDescriptor& stereo_node_descriptor() {
+    static const lab::AudioNodeDescriptor descriptor{nullptr, nullptr, 2};
+    return descriptor;
+}
+
+/**
+ * MediaStreamAudioDestinationNode: a sink that renders its stereo input into
+ * its stream's tap every quantum, connected or not, while the context pulls it.
+ */
+class StreamDestinationNode final : public lab::AudioNode {
+public:
+    StreamDestinationNode(lab::AudioContext& context, std::shared_ptr<MediaStreamAudioTap> tap)
+        : lab::AudioNode(context, stereo_node_descriptor()), tap_(std::move(tap)) {
+        _self->m_channelCount = 2;
+        _self->m_channelCountMode = lab::ChannelCountMode::Explicit;
+        _self->m_channelInterpretation = lab::ChannelInterpretation::Speakers;
+        addInput(std::make_unique<lab::AudioNodeInput>(this));
+        initialize();
+    }
+    ~StreamDestinationNode() override { uninitialize(); }
+    const char* name() const override { return "MediaStreamAudioDestination"; }
+    void process(lab::ContextRenderLock& render, int frames) override {
+        auto* input = this->input(0)->bus(render);
+        const int channels = input && this->input(0)->isConnected() ? input->numberOfChannels() : 0;
+        // Speaker up-mix: mono feeds both channels.
+        if (channels > 0)
+            tap_->write(input->channel(0)->data(), input->channel(channels > 1 ? 1 : 0)->data(),
+                        frames);
+        else
+            tap_->write(nullptr, nullptr, frames);
+        output(0)->bus(render)->zero();
+    }
+    void reset(lab::ContextRenderLock&) override {}
+
+private:
+    double tailTime(lab::ContextRenderLock&) const override { return 0; }
+    double latencyTime(lab::ContextRenderLock&) const override { return 0; }
+    std::shared_ptr<MediaStreamAudioTap> tap_;
+};
+
+/**
+ * MediaStreamAudioSourceNode: its track's destination audio from where the
+ * track's tap stood when the node was created; silence while the track is
+ * disabled or ended, or until audio arrives.
+ */
+class StreamSourceNode final : public lab::AudioNode {
+public:
+    StreamSourceNode(lab::AudioContext& context, MediaStreamTrackHandle track)
+        : lab::AudioNode(context, stereo_node_descriptor()), track_(std::move(track)),
+          cursor_(track_->audio->position()) {
+        _self->m_channelCountMode = lab::ChannelCountMode::Explicit;
+        initialize();
+    }
+    ~StreamSourceNode() override { uninitialize(); }
+    const char* name() const override { return "MediaStreamAudioSource"; }
+    void process(lab::ContextRenderLock& render, int frames) override {
+        auto* bus = output(0)->bus(render);
+        float* left = bus->channel(0)->mutableData();
+        float* right = bus->channel(1)->mutableData();
+        int copied = track_->audio->read(cursor_, left, right, frames);
+        if (!track_->state->live.load() || !track_->state->enabled.load())
+            copied = 0;
+        std::fill(left + copied, left + frames, 0.0f);
+        std::fill(right + copied, right + frames, 0.0f);
+    }
+    void reset(lab::ContextRenderLock&) override {}
+
+private:
+    double tailTime(lab::ContextRenderLock&) const override { return 0; }
+    double latencyTime(lab::ContextRenderLock&) const override { return 0; }
+    MediaStreamTrackHandle track_;
+    std::uint64_t cursor_;
+};
+#endif
 
 /** Peak and RMS in one walk over the captured bus. */
 #if BBLITE_AUDIO_CAPTURE
@@ -898,13 +1148,16 @@ void audio_collect_finished() {
 }
 
 #if BBLITE_WORKERS
-void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
-                              js::Callback<void()> callback, bool capture, bool once) {
+bool audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
+                              js::Callback<void()> callback, bool capture, bool once,
+                              ListenerLeasePtr lease) {
     require_node(node);
     if (!node.ownership->source)
         throw std::runtime_error("Audio node is not a scheduled source.");
-    node.ownership->ended[capture ? 0 : 1].add(identity, std::move(callback), once);
+    const bool added = node.ownership->ended[capture ? 0 : 1].add(identity, std::move(callback),
+                                                                  once, std::move(lease));
     retain_audio_completion(node);
+    return added;
 }
 
 void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture) {
@@ -974,6 +1227,68 @@ AudioNodeHandle audio_create_gain(AudioContextHandle context) {
     return create_node<lab::GainNode>(context);
 }
 
+AudioNodeHandle audio_create_media_stream_destination(AudioContextHandle context) {
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    ContextRecord& record = require_context(context.value);
+    const auto tap = std::make_shared<MediaStreamAudioTap>(record.sample_rate);
+    auto value = js::make_gc_shared<AudioNodeRecord>();
+    value->node = std::make_shared<StreamDestinationNode>(*record.context, tap);
+    js::Array<MediaStreamTrackHandle> tracks;
+    tracks.push_back(create_media_stream_track("audio", tap));
+    value->stream = create_media_stream(tracks);
+    const auto node = value->node;
+    auto handle = insert_node(context, record, std::move(value));
+    record.context->addAutomaticPullNode(node);
+    record.graph.at(node.get()).automatic_pull = true;
+    return handle;
+#else
+    (void)context;
+    throw std::runtime_error("Media stream audio support was not compiled.");
+#endif
+}
+
+std::shared_ptr<MediaStream> audio_destination_stream(AudioNodeHandle node) {
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    require_node(node);
+    if (!node.ownership->stream)
+        throw std::runtime_error("Audio node is not a MediaStreamAudioDestinationNode.");
+    return node.ownership->stream;
+#else
+    (void)node;
+    throw std::runtime_error("Media stream audio support was not compiled.");
+#endif
+}
+
+AudioNodeHandle audio_create_media_stream_source(AudioContextHandle context,
+                                                 const std::shared_ptr<MediaStream>& stream) {
+#if BBLITE_HAS_AUDIO_MEDIA_STREAM
+    ContextRecord& record = require_context(context.value);
+    if (!stream)
+        throw js::NamedError("TypeError", "createMediaStreamSource requires a MediaStream.");
+    // The audio track whose id sorts first.
+    MediaStreamTrackHandle selected;
+    for (const auto& track : stream->tracks)
+        if (track->kind == "audio" && (!selected || track->id < selected->id))
+            selected = track;
+    if (!selected)
+        throw js::make_dom_exception("The MediaStream has no audio track.", "InvalidStateError");
+    if (selected->audio->sample_rate() != record.sample_rate)
+        throw js::make_dom_exception(
+            "The MediaStream audio sample rate differs from the AudioContext sample rate.",
+            "NotSupportedError");
+    auto value = js::make_gc_shared<AudioNodeRecord>();
+    value->node = std::make_shared<StreamSourceNode>(*record.context, selected);
+    // A stream source keeps producing while connected, like a started source.
+    value->source = std::make_shared<AudioSourceState>();
+    value->source->started = true;
+    return insert_node(context, record, std::move(value));
+#else
+    (void)context;
+    (void)stream;
+    throw std::runtime_error("Media stream audio support was not compiled.");
+#endif
+}
+
 AudioNodeHandle audio_create_oscillator(AudioContextHandle context) {
 #if BBLITE_HAS_AUDIO_OSCILLATOR
     return create_node<lab::OscillatorNode>(context);
@@ -1007,6 +1322,159 @@ AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context) {
     (void)context;
     throw std::runtime_error("Stereo panner support was not compiled.");
 #endif
+}
+
+#if BBLITE_HAS_AUDIO_PANNER
+namespace {
+std::shared_ptr<lab::PannerNode> require_panner(AudioNodeHandle node) {
+    auto panner = std::dynamic_pointer_cast<lab::PannerNode>(require_node(node));
+    if (!panner)
+        throw std::runtime_error("Audio node is not a panner.");
+    return panner;
+}
+} // namespace
+#else
+namespace {
+[[noreturn]] void panners_absent() { throw std::runtime_error("Panner support was not compiled."); }
+} // namespace
+#endif
+
+AudioNodeHandle audio_create_panner(AudioContextHandle context) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const AudioNodeHandle node = create_node<lab::PannerNode>(context);
+    const auto panner = require_panner(node);
+    panner->setPanningModel(lab::PanningModel::EQUALPOWER);
+    panner->setDistanceModel(lab::PannerNode::INVERSE_DISTANCE);
+    panner->setRefDistance(1.0f);
+    panner->setMaxDistance(10000.0f);
+    panner->setRolloffFactor(1.0f);
+    panner->setConeInnerAngle(360.0f);
+    panner->setConeOuterAngle(360.0f);
+    panner->setConeOuterGain(0.0f);
+    return node;
+#else
+    (void)context;
+    panners_absent();
+#endif
+}
+
+double audio_panner_property(AudioNodeHandle node, PannerProperty property) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const auto panner = require_panner(node);
+    switch (property) {
+    case PannerProperty::RefDistance:
+        return panner->refDistance();
+    case PannerProperty::MaxDistance:
+        return panner->maxDistance();
+    case PannerProperty::RolloffFactor:
+        return panner->rolloffFactor();
+    case PannerProperty::ConeInnerAngle:
+        return panner->coneInnerAngle();
+    case PannerProperty::ConeOuterAngle:
+        return panner->coneOuterAngle();
+    case PannerProperty::ConeOuterGain:
+        return panner->coneOuterGain();
+    }
+    throw std::logic_error("Unknown panner property.");
+#else
+    (void)node;
+    (void)property;
+    panners_absent();
+#endif
+}
+
+void audio_set_panner_property(AudioNodeHandle node, PannerProperty property, double value) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const auto panner = require_panner(node);
+    if (!std::isfinite(value))
+        throw js::NamedError("TypeError", "A panner attribute takes a finite number.");
+    const auto at_least = [&](double minimum, bool inclusive, const char* name) {
+        if (inclusive ? value < minimum : value <= minimum)
+            throw js::NamedError("RangeError", std::string(name) + " is out of range.");
+    };
+    const auto single = static_cast<float>(value);
+    switch (property) {
+    case PannerProperty::RefDistance:
+        at_least(0.0, true, "refDistance");
+        panner->setRefDistance(single);
+        return;
+    case PannerProperty::MaxDistance:
+        at_least(0.0, false, "maxDistance");
+        panner->setMaxDistance(single);
+        return;
+    case PannerProperty::RolloffFactor:
+        at_least(0.0, true, "rolloffFactor");
+        panner->setRolloffFactor(single);
+        return;
+    case PannerProperty::ConeInnerAngle:
+        panner->setConeInnerAngle(single);
+        return;
+    case PannerProperty::ConeOuterAngle:
+        panner->setConeOuterAngle(single);
+        return;
+    case PannerProperty::ConeOuterGain:
+        if (value < 0.0 || value > 1.0)
+            throw js::make_dom_exception("coneOuterGain must lie in [0, 1].", "InvalidStateError");
+        panner->setConeOuterGain(single);
+        return;
+    }
+#else
+    (void)node;
+    (void)property;
+    (void)value;
+    panners_absent();
+#endif
+}
+
+std::string audio_panner_model(AudioNodeHandle node, PannerModel which) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const auto panner = require_panner(node);
+    if (which == PannerModel::Panning)
+        return panner->panningModel() == lab::PanningModel::HRTF ? "HRTF" : "equalpower";
+    switch (panner->distanceModel()) {
+    case lab::PannerNode::LINEAR_DISTANCE:
+        return "linear";
+    case lab::PannerNode::EXPONENTIAL_DISTANCE:
+        return "exponential";
+    default:
+        return "inverse";
+    }
+#else
+    (void)node;
+    (void)which;
+    panners_absent();
+#endif
+}
+
+void audio_set_panner_model(AudioNodeHandle node, PannerModel which, const std::string& value) {
+#if BBLITE_HAS_AUDIO_PANNER
+    const auto panner = require_panner(node);
+    if (which == PannerModel::Panning) {
+        if (value == "equalpower")
+            panner->setPanningModel(lab::PanningModel::EQUALPOWER);
+        else if (value == "HRTF")
+            throw js::make_dom_exception(
+                "HRTF panning needs an HRTF database, which this build does not package.",
+                "NotSupportedError");
+        return;
+    }
+    if (value == "linear")
+        panner->setDistanceModel(lab::PannerNode::LINEAR_DISTANCE);
+    else if (value == "inverse")
+        panner->setDistanceModel(lab::PannerNode::INVERSE_DISTANCE);
+    else if (value == "exponential")
+        panner->setDistanceModel(lab::PannerNode::EXPONENTIAL_DISTANCE);
+#else
+    (void)node;
+    (void)which;
+    (void)value;
+    panners_absent();
+#endif
+}
+
+AudioParamHandle audio_listener_param(AudioContextHandle context, AudioParamName name) {
+    // Pure, like `audio_node_param`: one listener, one object per name.
+    return AudioParamHandle{audio_destination(context), name};
 }
 
 AudioBufferHandle audio_create_buffer(AudioContextHandle context, std::uint32_t channels,
@@ -1120,6 +1588,14 @@ AudioNodeHandle audio_create_buffer_source(AudioContextHandle context) {
 #endif
 }
 
+AudioNodeHandle audio_create_buffer_source(AudioContextHandle context,
+                                           const AudioBufferSourceInit& options) {
+    auto source = audio_create_buffer_source(context);
+    if (options.buffer)
+        audio_set_buffer(source, *options.buffer);
+    return source;
+}
+
 double audio_buffer_property(AudioBufferHandle buffer, AudioBufferProperty property) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     const auto record = require_buffer(buffer);
@@ -1158,16 +1634,30 @@ void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples, std:
         destination.store(start + index, source.load(index));
 }
 
+namespace {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+AudioNodeRecord& require_buffer_source(AudioNodeHandle source) {
+    ContextRecord& record = require_context(context_of(source.value));
+    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(record, source)))
+        throw std::runtime_error("Audio node is not a buffer source.");
+    return *source.ownership;
+}
+#else
+[[noreturn]] void buffer_sources_absent() {
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+}
+#endif
+} // namespace
+
 bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
-    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source)))
-        throw std::runtime_error("Audio node is not a buffer source.");
-    if (!source.ownership->buffer.value)
+    const auto& buffer = require_buffer_source(source).buffer;
+    if (!buffer.value)
         return std::nullopt;
-    return source.ownership->buffer;
+    return buffer;
 #else
     (void)source;
-    throw std::runtime_error("Audio buffer source support was not compiled.");
+    buffer_sources_absent();
 #endif
 }
 
@@ -1175,10 +1665,8 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     auto& context = require_context(context_of(source.value));
     lab::ContextRenderLock render(context.context.get(), "bblite audio buffer assignment");
-    auto sampled = std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source));
-    if (!sampled) {
-        throw std::runtime_error("Audio node is not a buffer source.");
-    }
+    const auto sampled =
+        std::static_pointer_cast<lab::SampledAudioNode>(require_buffer_source(source).node);
     const auto& buffer_record = require_buffer(buffer);
     // Alias the bus to the buffer owner: LabSound can keep playing after JS
     // releases its AudioBuffer handle, without dangling channel memory.
@@ -1201,21 +1689,68 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer) {
 #else
     (void)source;
     (void)buffer;
-    throw std::runtime_error("Audio buffer source support was not compiled.");
+    buffer_sources_absent();
+#endif
+}
+
+bool audio_loop(AudioNodeHandle source) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    return require_buffer_source(source).source_loop;
+#else
+    (void)source;
+    buffer_sources_absent();
+#endif
+}
+
+double audio_loop_start(AudioNodeHandle source) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    return require_buffer_source(source).source_loop_start;
+#else
+    (void)source;
+    buffer_sources_absent();
+#endif
+}
+
+double audio_loop_end(AudioNodeHandle source) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    return require_buffer_source(source).source_loop_end;
+#else
+    (void)source;
+    buffer_sources_absent();
+#endif
+}
+
+void audio_set_loop_start(AudioNodeHandle source, double seconds) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    if (!std::isfinite(seconds))
+        throw js::NamedError("TypeError", "loopStart must be a finite number.");
+    require_buffer_source(source).source_loop_start = seconds;
+#else
+    (void)source;
+    (void)seconds;
+    buffer_sources_absent();
+#endif
+}
+
+void audio_set_loop_end(AudioNodeHandle source, double seconds) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    if (!std::isfinite(seconds))
+        throw js::NamedError("TypeError", "loopEnd must be a finite number.");
+    require_buffer_source(source).source_loop_end = seconds;
+#else
+    (void)source;
+    (void)seconds;
+    buffer_sources_absent();
 #endif
 }
 
 void audio_set_loop(AudioNodeHandle source, bool enabled) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
-    ContextRecord& record = require_context(context_of(source.value));
-    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(record, source))) {
-        throw std::runtime_error("Audio node is not a buffer source.");
-    }
-    source.ownership->source_loop = enabled;
+    require_buffer_source(source).source_loop = enabled;
 #else
     (void)source;
     (void)enabled;
-    throw std::runtime_error("Audio buffer source support was not compiled.");
+    buffer_sources_absent();
 #endif
 }
 
@@ -1228,7 +1763,7 @@ void audio_connect(AudioNodeHandle source, AudioNodeHandle destination) {
     ContextRecord& record = require_context(context_of(source.value));
     const auto source_node = require_node(record, source);
     const auto destination_node = require_node(record, destination);
-    connect_audio_graph(record, source, destination,
+    connect_audio_graph(record, source, destination, false,
                         [&] { record.context->connect(destination_node, source_node, 0, 0); });
 }
 
@@ -1240,7 +1775,7 @@ void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination) {
     ContextRecord& record = require_context(context_of(source.value));
     const auto source_node = require_node(record, source);
     const auto param = require_param(destination);
-    connect_audio_graph(record, source, destination.node,
+    connect_audio_graph(record, source, destination.node, true,
                         [&] { record.context->connectParam(param, source_node, 0); });
 }
 
@@ -1256,6 +1791,38 @@ void audio_disconnect(AudioNodeHandle node) {
         }
         record.context->handlePostRenderTasks(render);
     }
+    invalidate_source_tails(record, source.get());
+    collect_audio_graph(record);
+}
+
+void audio_disconnect(AudioNodeHandle node, AudioNodeHandle destination,
+                      bbl::js::Nullable<double> output, bbl::js::Nullable<double> input) {
+    if (context_of(node.value) != context_of(destination.value))
+        throw js::make_dom_exception("The destination belongs to another AudioContext.",
+                                     "InvalidAccessError");
+    ContextRecord& record = require_context(context_of(node.value));
+    const auto source = require_node(record, node);
+    const auto target = require_node(record, destination);
+    // WebIDL `unsigned long`, then the node's own output and input counts.
+    const auto index = [](const bbl::js::Nullable<double>& value) {
+        return value ? static_cast<double>(js::to_uint32(*value)) : 0.0;
+    };
+    if (output && index(output) >= static_cast<double>(source->numberOfOutputs()))
+        throw js::make_dom_exception("The output index is out of range.", "IndexSizeError");
+    if (input && index(input) >= static_cast<double>(target->numberOfInputs()))
+        throw js::make_dom_exception("The input index is out of range.", "IndexSizeError");
+    auto& entry = record.graph.at(source.get());
+    const auto edge = std::find(entry.node_edges.begin(), entry.node_edges.end(), target.get());
+    if (edge == entry.node_edges.end())
+        throw js::make_dom_exception("The node is not connected to that destination.",
+                                     "InvalidAccessError");
+    // Every reached node has one output and one input, so the edge is the indexed one.
+    record.context->disconnect(target, source, static_cast<int>(index(input)),
+                               static_cast<int>(index(output)));
+    entry.node_edges.erase(edge);
+    if (std::find(entry.param_edges.begin(), entry.param_edges.end(), target.get()) ==
+        entry.param_edges.end())
+        std::erase(entry.outputs, target.get());
     invalidate_source_tails(record, source.get());
     collect_audio_graph(record);
 }
@@ -1282,6 +1849,24 @@ static void audio_node_start_impl(AudioNodeHandle node, double when, double offs
     // common `start(when)` surface by dispatching this concrete node first.
     if (auto sampled = std::dynamic_pointer_cast<lab::SampledAudioNode>(source)) {
         const bool loop = node.ownership->source_loop;
+        if (loop) {
+            // Web Audio's actual loop is the whole buffer unless the points
+            // select a region inside it; LabSound loops whole grains only.
+            const double start = node.ownership->source_loop_start;
+            const double end = node.ownership->source_loop_end;
+            const double length =
+                node.ownership->buffer.value
+                    ? audio_buffer_property(node.ownership->buffer, AudioBufferProperty::Duration)
+                    : 0.0;
+            if (start >= 0.0 && end > 0.0 && start < end && (start > 0.0 || end < length))
+                throw std::runtime_error(
+                    "A looping AudioBufferSourceNode with a loopStart/loopEnd region inside its "
+                    "buffer is not supported natively.");
+            if (argument_count > 2)
+                throw std::runtime_error(
+                    "A looping AudioBufferSourceNode started with a duration is not supported "
+                    "natively.");
+        }
         if (argument_count == 1) {
             sampled->start(static_cast<float>(when), loop ? -1 : 0);
         } else if (argument_count == 2) {
@@ -1337,6 +1922,14 @@ void audio_node_start(AudioNodeHandle node, double when, double offset) {
 
 void audio_node_start(AudioNodeHandle node, double when, double offset, double duration) {
     audio_node_start_impl(node, when, offset, duration, 3);
+}
+
+void audio_node_start(AudioNodeHandle node, double when, double offset,
+                      bbl::js::Nullable<double> duration) {
+    if (duration)
+        audio_node_start_impl(node, when, offset, *duration, 3);
+    else
+        audio_node_start_impl(node, when, offset, 0.0, 2);
 }
 
 void audio_node_stop(AudioNodeHandle node, double when) {
@@ -1409,6 +2002,602 @@ void audio_param_exponential_ramp(AudioParamHandle param, float value, double ti
 void audio_param_cancel_scheduled_values(AudioParamHandle param, double time) {
     require_param(param)->cancelScheduledValues(static_cast<float>(time));
 }
+
+void audio_param_set_value_curve(AudioParamHandle param, const bbl::js::F32Array& values,
+                                 double start, double duration) {
+    if (!std::isfinite(start) || !std::isfinite(duration))
+        throw js::NamedError("TypeError", "setValueCurveAtTime takes finite times.");
+    if (start < 0.0)
+        throw js::NamedError("RangeError", "setValueCurveAtTime's startTime is negative.");
+    if (duration <= 0.0)
+        throw js::NamedError("RangeError", "setValueCurveAtTime's duration is not positive.");
+    if (values.size() < 2)
+        throw js::make_dom_exception("setValueCurveAtTime needs at least two values.",
+                                     "InvalidStateError");
+    // Web Audio interpolates linearly between the curve's values, which
+    // LabSound's own curve event does not (it holds each value for its
+    // share of the duration): the same timeline as linear ramps between
+    // consecutive values, from the first value at `start`.
+    const auto target = require_param(param);
+    const std::size_t count = values.size();
+    target->setValueAtTime(values.load(0), static_cast<float>(start));
+    for (std::size_t index = 1; index < count; ++index)
+        target->linearRampToValueAtTime(
+            values.load(index), static_cast<float>(start + duration * static_cast<double>(index) /
+                                                               static_cast<double>(count - 1)));
+}
+
+#if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
+/**
+ * An `HTMLAudioElement`'s media state. The packaged source is decoded whole,
+ * at its routing context's rate, by a native job, and plays through the
+ * `MediaElementAudioSourceNode` (a sampled node with no scheduled-source
+ * state) as one segment from `segment_offset` at context time
+ * `segment_start`; the element's clock is that context's clock.
+ */
+struct AudioElementPlayback {
+    /** The URL `new Audio(url)` set; absent after `removeAttribute("src")`. */
+    std::optional<std::string> source;
+    std::string preload = "auto";
+    bool loop = false;
+    bool paused = true;
+    /** The source failed to load since the last `load()`. */
+    bool failed = false;
+    bool loading = false;
+    /** A decode a later `load()` superseded is discarded. */
+    std::uint64_t generation = 0;
+    /** The official playback position while no segment plays. */
+    double position = 0.0;
+    double duration = std::numeric_limits<double>::quiet_NaN();
+    std::shared_ptr<const DecodedAudio> decoded;
+    /** The session whose default output an unrouted element plays to. */
+    std::shared_ptr<AudioSession> session;
+    AudioContextHandle context{};
+    /** The session's default output this element keeps running while it plays there. */
+    AudioContextHandle held_output{};
+    std::optional<AudioNodeHandle> output;
+    /** `createMediaElementSource` made `output`; otherwise it feeds the default output. */
+    bool routed = false;
+    bool playing = false;
+    bool segment_loops = false;
+    double segment_start = 0.0;
+    double segment_offset = 0.0;
+    EventLoop::TimerId timer = 0;
+    std::vector<js::Promise<js::PromiseVoid>> pending_plays;
+    /** Capture and non-capture listeners per `AudioElementEvent`. */
+    std::array<std::array<PlatformEventListeners<void()>, 2>, 4> listeners;
+};
+
+AudioElementState::AudioElementState() : playback(std::make_unique<AudioElementPlayback>()) {}
+
+/**
+ * A session's media element state: the decodes its elements share
+ * (`AudioSession::decoded_`), and the default output's device, which runs
+ * only while an unrouted element plays (`AudioSession::media_playing_`).
+ */
+struct AudioSessionMedia {
+    using Key = std::pair<std::string, double>;
+    static std::shared_ptr<const DecodedAudio> find(AudioSession& session, const Key& key) {
+        const auto found = session.decoded_.find(key);
+        return found == session.decoded_.end() ? nullptr : found->second.lock();
+    }
+    /** Record `decoded`, dropping the entries no element holds any more. */
+    static void keep(AudioSession& session, Key key,
+                     const std::shared_ptr<const DecodedAudio>& decoded) {
+        std::erase_if(session.decoded_, [](const auto& entry) { return entry.second.expired(); });
+        session.decoded_.insert_or_assign(std::move(key), decoded);
+    }
+    /** An element starts playing: on the default output, it keeps that output's device running. */
+    static void hold_output(AudioElementPlayback& playback) {
+        if (playback.held_output.value || !playback.session)
+            return;
+        auto& session = *playback.session;
+        if (playback.context.value != session.media_output_.value)
+            return;
+        playback.held_output = session.media_output_;
+        if (session.media_playing_++ == 0 && audio_state(session.media_output_) != "closed")
+            audio_resume(session.media_output_);
+    }
+    /** The element stops playing there; the last one to stop suspends the output's device. */
+    static void release_output(AudioElementPlayback& playback) {
+        const auto held = std::exchange(playback.held_output, AudioContextHandle{});
+        if (!held.value || !playback.session)
+            return;
+        auto& session = *playback.session;
+        // A hold on an output since closed and replaced counts for nothing.
+        if (held.value != session.media_output_.value || session.media_playing_ == 0)
+            return;
+        if (--session.media_playing_ == 0 && audio_state(held) != "closed")
+            audio_suspend(held);
+    }
+    /** A new default output starts suspended, with nothing playing to it. */
+    static void reset_output(AudioSession& session, AudioContextHandle output) {
+        session.media_output_ = output;
+        session.media_playing_ = 0;
+        audio_suspend(output);
+    }
+};
+
+namespace {
+
+/** Browsers fire `timeupdate` every 15 to 250 ms while playing; Chromium every 250 ms. */
+constexpr double media_time_update_ms = 250.0;
+
+AudioElementPlayback& playback_of(const AudioElement& element) {
+    if (!element || !element->playback)
+        throw std::runtime_error("Invalid HTMLAudioElement handle.");
+    return *element->playback;
+}
+
+std::shared_ptr<lab::SampledAudioNode> element_node(const AudioElementPlayback& playback) {
+    if (!playback.output || !playback.output->ownership)
+        return nullptr;
+    return std::static_pointer_cast<lab::SampledAudioNode>(playback.output->ownership->node);
+}
+
+/** The position the scheduled segment has reached, before looping or clamping. */
+double raw_position(const AudioElementPlayback& playback) {
+    if (!playback.playing)
+        return playback.position;
+    return playback.segment_offset +
+           (audio_current_time(playback.context) - playback.segment_start);
+}
+
+double current_position(const AudioElementPlayback& playback) {
+    const double raw = raw_position(playback);
+    if (!playback.playing)
+        return raw;
+    return playback.segment_loops ? std::fmod(raw, playback.duration)
+                                  : std::min(raw, playback.duration);
+}
+
+void dispatch_element_event(AudioElementPlayback& playback, AudioElementEvent type) {
+    auto& owner = EventLoop::current();
+    for (auto& listeners : playback.listeners[static_cast<std::size_t>(type)])
+        dispatch_platform_event(owner, listeners);
+}
+
+/** One media element task firing `types` in order. */
+void queue_element_events(const AudioElement& element, std::vector<AudioElementEvent> types) {
+    EventLoop::current().post([element, types = std::move(types)] {
+        for (const auto type : types)
+            dispatch_element_event(*element->playback, type);
+    });
+}
+
+void reject_plays(std::vector<js::Promise<js::PromiseVoid>> plays, const char* message,
+                  const char* name) {
+    for (const auto& play : plays)
+        play.reject(js::dom_exception_error(message, name));
+}
+
+std::shared_ptr<lab::AudioBus> decoded_bus(const AudioElementPlayback& playback) {
+    return {playback.decoded, playback.decoded->bus.get()};
+}
+
+/** Drop the node's segments. Clearing also drops a source bus the node has not
+ * taken yet, so the decoded source is queued again behind it. */
+void clear_segments(const AudioElementPlayback& playback) {
+    const auto node = element_node(playback);
+    if (!node)
+        return;
+    node->clearSchedules();
+    if (playback.decoded)
+        node->setBus(decoded_bus(playback));
+}
+
+void stop_segment(AudioElementPlayback& playback) {
+    if (!playback.playing)
+        return;
+    playback.position = current_position(playback);
+    playback.playing = false;
+    AudioSessionMedia::release_output(playback);
+    if (playback.timer)
+        EventLoop::current().clear_timer(std::exchange(playback.timer, 0));
+    clear_segments(playback);
+}
+
+void tick_element(const AudioElement& element);
+
+/** The next tick: the `timeupdate` cadence, or the end of a segment that does not loop. */
+void arm_element_timer(const AudioElement& element) {
+    auto& playback = *element->playback;
+    double delay = media_time_update_ms;
+    if (!playback.segment_loops)
+        delay = std::clamp(std::ceil((playback.duration - raw_position(playback)) * 1000.0), 1.0,
+                           media_time_update_ms);
+    playback.timer = EventLoop::current().set_timeout([element] { tick_element(element); }, delay);
+}
+
+/** Schedule the decoded source from the official position; a loop restarts at zero. */
+void start_segment(const AudioElement& element) {
+    auto& playback = *element->playback;
+    const auto node = element_node(playback);
+    if (!node || audio_state(playback.context) == "closed")
+        return;
+    const double offset = std::clamp(playback.position, 0.0, playback.duration);
+    if (offset < playback.duration)
+        node->schedule(0.0f, static_cast<float>(offset), 0);
+    if (playback.loop)
+        node->schedule(static_cast<float>(playback.duration - offset), 0.0f, -1);
+    AudioSessionMedia::hold_output(playback);
+    playback.playing = true;
+    playback.segment_loops = playback.loop;
+    playback.segment_start = audio_current_time(playback.context);
+    playback.segment_offset = offset;
+    arm_element_timer(element);
+}
+
+/** `timeupdate` while playing; at the end of a segment that does not loop, the ended steps. */
+void tick_element(const AudioElement& element) {
+    auto& playback = *element->playback;
+    playback.timer = 0;
+    if (!playback.playing)
+        return;
+    if (playback.segment_loops || raw_position(playback) < playback.duration) {
+        arm_element_timer(element);
+        dispatch_element_event(playback, AudioElementEvent::TimeUpdate);
+        return;
+    }
+    stop_segment(playback);
+    dispatch_element_event(playback, AudioElementEvent::TimeUpdate);
+    if (!playback.paused) {
+        playback.paused = true;
+        auto plays = std::exchange(playback.pending_plays, {});
+        dispatch_element_event(playback, AudioElementEvent::Pause);
+        reject_plays(std::move(plays), "The play() request was interrupted by the end of playback.",
+                     "AbortError");
+    }
+    dispatch_element_event(playback, AudioElementEvent::Ended);
+}
+
+void resolve_plays(AudioElementPlayback& playback) {
+    for (const auto& play : std::exchange(playback.pending_plays, {}))
+        play.resolve(js::PromiseVoid{});
+}
+
+void fail_element_source(AudioElementPlayback& playback) {
+    playback.loading = false;
+    playback.failed = true;
+    reject_plays(std::exchange(playback.pending_plays, {}),
+                 "Failed to load because no supported source was found.", "NotSupportedError");
+}
+
+/** The output node plays the decoded source, its channels configured before a pull. */
+void bind_decoded_source(const AudioElementPlayback& playback) {
+    const auto node = element_node(playback);
+    auto& context = require_context(context_of(playback.output->value));
+    lab::ContextRenderLock render(context.context.get(), "bblite media element source");
+    node->setBus(decoded_bus(playback));
+    node->output(0)->setNumberOfChannels(render, playback.decoded->bus->numberOfChannels());
+    node->output(0)->updateRenderingState(render);
+}
+
+/** A sampled node in `context` for the element's output, held by the element. */
+AudioNodeHandle create_element_output(AudioContextHandle context) {
+    ContextRecord& record = require_context(context.value);
+    auto value = js::make_gc_shared<AudioNodeRecord>();
+    value->node = std::make_shared<lab::SampledAudioNode>(*record.context);
+    return insert_node(context, record, std::move(value));
+}
+
+void finish_element_load(const AudioElement& element, std::uint64_t generation,
+                         std::shared_ptr<const DecodedAudio> decoded) {
+    auto& playback = *element->playback;
+    if (generation != playback.generation)
+        return;
+    const auto node = element_node(playback);
+    if (!decoded || !node || audio_state(playback.context) == "closed") {
+        fail_element_source(playback);
+        return;
+    }
+    playback.loading = false;
+    playback.decoded = std::move(decoded);
+    playback.duration =
+        static_cast<double>(playback.decoded->bus->length()) / audio_sample_rate(playback.context);
+    bind_decoded_source(playback);
+    // A position set before the source loaded is its default start position.
+    playback.position = std::clamp(playback.position, 0.0, playback.duration);
+    if (!playback.paused) {
+        start_segment(element);
+        resolve_plays(playback);
+    }
+}
+
+/**
+ * Read and decode the packaged source on a native job, settling on the realm;
+ * a source another element of the session holds decoded settles with that.
+ */
+void begin_element_load(const AudioElement& element) {
+    auto& playback = *element->playback;
+    playback.loading = true;
+    const auto generation = playback.generation;
+    auto packaged = packaged_response(*playback.source);
+    if (!packaged) {
+        EventLoop::current().post([element, generation] {
+            if (generation == element->playback->generation)
+                fail_element_source(*element->playback);
+        });
+        return;
+    }
+    using Decoded = std::shared_ptr<const DecodedAudio>;
+    AudioSessionMedia::Key key{std::move(packaged->path), audio_sample_rate(playback.context)};
+    if (auto shared = AudioSessionMedia::find(*playback.session, key)) {
+        EventLoop::current().post([element, generation, shared = std::move(shared)] {
+            finish_element_load(element, generation, shared);
+        });
+        return;
+    }
+    std::weak_ptr<AudioElementState> target = element;
+    std::weak_ptr<AudioSession> session = playback.session;
+    // The work's own copy, taken before the call moves `key` into the completion.
+    auto work = [path = key.first, rate = key.second] {
+        return audio_decode_samples(read_binary_file(path), rate);
+    };
+    start_native_job(std::move(work), [target, session, generation,
+                                       key = std::move(key)](NativeWork<Decoded>& job) mutable {
+        Decoded decoded;
+        try {
+            decoded = job.get();
+        } catch (const WorkerTerminated&) {
+            throw;
+        } catch (...) {
+            // An unreadable file fails the source like an undecodable one.
+        }
+        if (const auto owner = session.lock(); owner && decoded)
+            AudioSessionMedia::keep(*owner, std::move(key), decoded);
+        if (const auto owner = target.lock())
+            finish_element_load(owner, generation, std::move(decoded));
+    });
+}
+
+/** The resource selection an element with a source and an output runs when it may load. */
+void select_element_resource(const AudioElement& element, bool playing) {
+    auto& playback = *element->playback;
+    if (playback.source && playback.output && !playback.decoded && !playback.loading &&
+        !playback.failed && (playing || audio_element_detail::lowered(playback.preload) != "none"))
+        begin_element_load(element);
+}
+
+} // namespace
+
+AudioElementState::~AudioElementState() {
+    if (!playback)
+        return;
+    if (playback->playing)
+        if (const auto node = element_node(*playback))
+            node->clearSchedules();
+    try {
+        AudioSessionMedia::release_output(*playback);
+    } catch (...) {
+        // A device that cannot stop while the session tears down stops with it.
+    }
+}
+
+void AudioElementState::gc_trace(const js::TraceVisitor& visitor) const {
+    if (!playback)
+        return;
+    visitor(playback->pending_plays);
+    visitor(playback->listeners);
+    visitor(playback->output);
+}
+
+AudioElement audio_create_element(std::shared_ptr<AudioSession>& session) {
+    if (!session)
+        session = std::make_shared<AudioSession>();
+    auto element = audio_create_element();
+    element->playback->session = session;
+    return element;
+}
+
+AudioElement audio_create_element(std::shared_ptr<AudioSession>& session, std::string url) {
+    auto element = audio_create_element(session);
+    element->playback->source = std::move(url);
+    return element;
+}
+
+AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session) {
+    if (!session)
+        session = std::make_shared<AudioSession>();
+    if (session->media_output_.value && audio_state(session->media_output_) != "closed")
+        return session->media_output_;
+    const auto output = audio_create_context(session);
+    AudioSessionMedia::reset_output(*session, output);
+#if BBLITE_AUDIO_CAPTURE
+    // A capture recorder renders only while something feeds it, and routed
+    // elements leave this output.
+    if (require_context(output.value).recorder) {
+        session->media_output_feed_ = audio_create_gain(output);
+        audio_connect(session->media_output_feed_, audio_destination(output));
+    }
+#endif
+    return output;
+}
+
+js::Promise<js::PromiseVoid> audio_element_play(const AudioElement& element) {
+    auto& playback = playback_of(element);
+    if (!playback.source || playback.failed)
+        return js::Promise<js::PromiseVoid>::rejected(
+            js::dom_exception_error("The element has no supported sources.", "NotSupportedError"));
+    if (!playback.output) {
+        try {
+            const auto context = audio_media_output(playback.session);
+            const auto output = create_element_output(context);
+            audio_connect(output, audio_destination(context));
+            playback.context = context;
+            playback.output = output;
+        } catch (const WorkerTerminated&) {
+            throw;
+        } catch (...) {
+            return js::Promise<js::PromiseVoid>::rejected(std::current_exception());
+        }
+    }
+    js::Promise<js::PromiseVoid> promise;
+    playback.pending_plays.push_back(promise);
+    select_element_resource(element, true);
+    // Playback that ended restarts from the beginning.
+    if (playback.decoded && !playback.playing && !playback.loop &&
+        playback.position >= playback.duration)
+        playback.position = 0.0;
+    if (playback.paused) {
+        playback.paused = false;
+        queue_element_events(element, {AudioElementEvent::Play});
+        if (playback.decoded)
+            start_segment(element);
+    }
+    if (playback.decoded)
+        EventLoop::current().post([plays = std::exchange(playback.pending_plays, {})] {
+            for (const auto& play : plays)
+                play.resolve(js::PromiseVoid{});
+        });
+    return promise;
+}
+
+void audio_element_pause(const AudioElement& element) {
+    auto& playback = playback_of(element);
+    select_element_resource(element, false);
+    if (playback.paused)
+        return;
+    playback.paused = true;
+    stop_segment(playback);
+    auto plays = std::exchange(playback.pending_plays, {});
+    EventLoop::current().post([element, plays = std::move(plays)]() mutable {
+        dispatch_element_event(*element->playback, AudioElementEvent::TimeUpdate);
+        dispatch_element_event(*element->playback, AudioElementEvent::Pause);
+        reject_plays(std::move(plays), "The play() request was interrupted by a call to pause().",
+                     "AbortError");
+    });
+}
+
+void audio_element_load(const AudioElement& element) {
+    auto& playback = playback_of(element);
+    ++playback.generation;
+    playback.loading = false;
+    stop_segment(playback);
+    const bool moved = playback.position != 0.0;
+    playback.decoded.reset();
+    // The node releases the decoded source once it takes a silent frame in
+    // its place (LabSound cannot render a source-less node it once fed).
+    if (const auto node = element_node(playback))
+        node->setBus(std::make_shared<lab::AudioBus>(1, 1));
+    playback.duration = std::numeric_limits<double>::quiet_NaN();
+    playback.failed = false;
+    playback.paused = true;
+    playback.position = 0.0;
+    if (moved)
+        queue_element_events(element, {AudioElementEvent::TimeUpdate});
+    reject_plays(std::exchange(playback.pending_plays, {}),
+                 "The play() request was interrupted by a new load request.", "AbortError");
+    select_element_resource(element, false);
+}
+
+void audio_element_remove_source(const AudioElement& element) {
+    playback_of(element).source.reset();
+}
+
+double audio_element_duration(const AudioElement& element) { return playback_of(element).duration; }
+
+double audio_element_current_time(const AudioElement& element) {
+    return current_position(playback_of(element));
+}
+
+void audio_element_set_current_time(const AudioElement& element, double seconds) {
+    if (!std::isfinite(seconds))
+        throw js::NamedError("TypeError", "The provided double value is non-finite.");
+    auto& playback = playback_of(element);
+    const bool playing = playback.playing;
+    stop_segment(playback);
+    playback.position =
+        playback.decoded ? std::clamp(seconds, 0.0, playback.duration) : std::max(seconds, 0.0);
+    if (!playback.decoded)
+        return;
+    if (playing)
+        start_segment(element);
+    queue_element_events(element, {AudioElementEvent::TimeUpdate});
+}
+
+bool audio_element_loop(const AudioElement& element) { return playback_of(element).loop; }
+
+void audio_element_set_loop(const AudioElement& element, bool loop) {
+    auto& playback = playback_of(element);
+    if (playback.loop == loop)
+        return;
+    playback.loop = loop;
+    if (playback.playing) {
+        stop_segment(playback);
+        start_segment(element);
+    }
+}
+
+std::string audio_element_preload(const AudioElement& element) {
+    // The enumerated attribute as Chromium reflects it: "" is Automatic, an
+    // invalid value Metadata.
+    std::string value = audio_element_detail::lowered(playback_of(element).preload);
+    if (value == "none" || value == "metadata")
+        return value;
+    return value.empty() || value == "auto" ? "auto" : "metadata";
+}
+
+void audio_element_set_preload(const AudioElement& element, std::string preload) {
+    playback_of(element).preload = std::move(preload);
+    select_element_resource(element, false);
+}
+
+bool audio_element_paused(const AudioElement& element) { return playback_of(element).paused; }
+
+bool audio_element_ended(const AudioElement& element) {
+    const auto& playback = playback_of(element);
+    return playback.decoded && !playback.loop && current_position(playback) >= playback.duration;
+}
+
+bool audio_element_add_listener(const AudioElement& element, AudioElementEvent type,
+                                std::size_t identity, js::Callback<void()> callback, bool capture,
+                                bool once, ListenerLeasePtr lease) {
+    return playback_of(element).listeners[static_cast<std::size_t>(type)][capture ? 0 : 1].add(
+        identity, std::move(callback), once, std::move(lease));
+}
+
+void audio_element_remove_listener(const AudioElement& element, AudioElementEvent type,
+                                   std::size_t identity, bool capture) {
+    playback_of(element).listeners[static_cast<std::size_t>(type)][capture ? 0 : 1].remove(
+        identity);
+}
+
+AudioNodeHandle audio_create_media_element_source(AudioContextHandle context,
+                                                  const AudioElement& element) {
+    auto& playback = playback_of(element);
+    if (playback.routed)
+        throw js::make_dom_exception("HTMLMediaElement already connected previously to a different "
+                                     "MediaElementSourceNode.",
+                                     "InvalidStateError");
+    const auto handle = create_element_output(context);
+    const bool playing = playback.playing;
+    bool rebind = false;
+    if (playback.output) {
+        // Leave the default output, keeping the position.
+        stop_segment(playback);
+        audio_disconnect(*playback.output);
+        // A source decoded (or decoding) at another rate decodes again.
+        rebind =
+            playback.decoded && audio_sample_rate(playback.context) == audio_sample_rate(context);
+        if (!rebind) {
+            ++playback.generation;
+            playback.loading = false;
+            playback.decoded.reset();
+        }
+    }
+    playback.output = handle;
+    playback.context = context;
+    playback.routed = true;
+    if (rebind) {
+        bind_decoded_source(playback);
+        if (playing)
+            start_segment(element);
+    }
+    select_element_resource(element, !playback.paused);
+    return handle;
+}
+#endif
 
 namespace {
 void render_audio_capture([[maybe_unused]] std::uint32_t id) noexcept {

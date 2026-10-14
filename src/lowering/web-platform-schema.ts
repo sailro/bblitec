@@ -13,6 +13,24 @@
 import ts from "typescript";
 import { stringLiteral } from "../cpp-literals.js";
 import { isUtf8Label } from "../compiler/text-codecs.js";
+import {
+    AUDIO_BUFFER_PROPERTIES,
+    AUDIO_CONTEXT_TRANSITIONS,
+    AUDIO_ELEMENT_PROPERTIES,
+    AUDIO_NODE_FACTORIES,
+    BIQUAD_FILTER_KINDS,
+    OSCILLATOR_WAVES,
+    AUDIO_LISTENER_PARAMS,
+    AUDIO_PARAM_NAMES,
+    AUDIO_PARAM_SCHEDULES,
+    MEDIA_STREAM_PROPERTIES,
+    MEDIA_STREAM_TRACK_LISTS,
+    MEDIA_STREAM_TRACK_PROPERTIES,
+    PANNER_MODELS,
+    PANNER_PROPERTIES,
+    SOURCE_LOOP_MEMBERS,
+    listenerParamName,
+} from "../compiler/web-audio-members.js";
 import type {
     CallAdapter,
     MemberSpec,
@@ -225,6 +243,14 @@ export const webPlatformRecords: readonly RecordSpec[] = [
         members: members([
             ["ok", seamRead(boolean, "response_ok")],
             ["status", seamRead(number, "response_status")],
+            ["statusText", seamRead(string, "response_status_text")],
+            [
+                "arrayBuffer",
+                seamCall(
+                    fn([], promise({ kind: "buffer" })),
+                    "response_array_buffer",
+                ),
+            ],
             ["url", seamRead(string, "response_url")],
             // The headers are the response's own.
             ["headers", reads(record("Headers"), (owner) => owner)],
@@ -409,11 +435,11 @@ export const webPlatformGlobals: ReadonlyMap<string, CallAdapter> = new Map<
     ],
     ["performance.now", { cpp: () => `${PLATFORM}::performance_now()` }],
     [
-        // `fetch(url, init)` with a string or a URL object.
+        // `fetch(url, init?)` with a string or a URL object.
         "fetch",
         {
-            cpp: (argument) =>
-                `${PLATFORM}::fetch(${argument(0)}, ${argument(1)})`,
+            cpp: (argument, call) =>
+                `${PLATFORM}::fetch(${argument(0)}, ${(call.arguments?.length ?? 0) > 1 ? argument(1) : `${PLATFORM}::RequestInit{}`})`,
             parameters: [undefined, record("RequestInit")],
         },
     ],
@@ -450,4 +476,698 @@ export const webPlatformInstanceOf: ReadonlyMap<
     (value: string) => string
 > = new Map([
     ["DOMException", (value: string) => `bbl::js::is_dom_exception(${value})`],
+]);
+
+// ── Web Audio ──────────────────────────────────────────────────────────
+
+const AUDIO = "bbl::pal";
+const audioNode = record("AudioNode");
+const audioParam = record("AudioParam");
+
+/** The only event a lowered audio source listens to, checked at generation. */
+function endedType(type: string | undefined): void {
+    if (type !== stringLiteral("ended"))
+        throw new Error(
+            `A lowered audio source listens to "ended" events only, not ${type ?? "nothing"}.`,
+        );
+}
+
+/** `node.<param>`: the node's parameter object, one per name. */
+const param = (name: string): MemberSpec =>
+    reads(
+        audioParam,
+        (owner) =>
+            `${AUDIO}::audio_node_param(${owner}, ${AUDIO}::AudioParamName::${name})`,
+    );
+
+/** A panner's numeric attribute: its PAL read and validated write. */
+const pannerProperty = (property: string): MemberSpec => ({
+    shape: number,
+    access: (owner) =>
+        `${AUDIO}::audio_panner_property(${owner}, ${AUDIO}::PannerProperty::${property})`,
+    assign: (owner, value) =>
+        `${AUDIO}::audio_set_panner_property(${owner}, ${AUDIO}::PannerProperty::${property}, ${value})`,
+});
+
+/** `panningModel` / `distanceModel`: Web Audio's spelling both ways. */
+const pannerModel = (which: string): MemberSpec => ({
+    shape: string,
+    access: (owner) =>
+        `${AUDIO}::audio_panner_model(${owner}, ${AUDIO}::PannerModel::${which})`,
+    assign: (owner, value) =>
+        `${AUDIO}::audio_set_panner_model(${owner}, ${AUDIO}::PannerModel::${which}, ${value})`,
+});
+
+/** A legacy listener setter: the values its parameters take now. */
+const listenerSetter = (
+    names: readonly (typeof AUDIO_LISTENER_PARAMS)[number][],
+): MemberSpec =>
+    spelled(
+        fn(
+            names.map(() => number),
+            none,
+        ),
+        (owner, args) =>
+            `[&](const ${AUDIO}::AudioContextHandle& listener) { ${names
+                .map(
+                    (name, index) =>
+                        `${AUDIO}::audio_param_set_value(${AUDIO}::audio_listener_param(listener, ${AUDIO}::AudioParamName::${listenerParamName(name)}), static_cast<float>(${args[index]}));`,
+                )
+                .join(" ")} }(${owner})`,
+    );
+
+/**
+ * `node.type = "<type>"`: the oscillator wave or filter kind a generation-known
+ * spelling names; a library and an application both write a string literal.
+ */
+function nodeTypeAssign(owner: string, value: string): string {
+    const spelling: unknown = value.startsWith('"')
+        ? JSON.parse(value)
+        : undefined;
+    const wave = OSCILLATOR_WAVES.find(([name]) => name === spelling);
+    if (wave)
+        return `${AUDIO}::audio_set_oscillator_wave(${owner}, ${AUDIO}::OscillatorWave::${wave[1]})`;
+    const kind = BIQUAD_FILTER_KINDS.find(([name]) => name === spelling);
+    if (kind)
+        return `${AUDIO}::audio_set_filter_kind(${owner}, ${AUDIO}::BiquadFilterKind::${kind[1]})`;
+    throw new Error(`${value} is not a lowered oscillator or filter type.`);
+}
+
+/** `buffer.copyFromChannel` / `copyToChannel(samples, channel, offset?)`. */
+const channelCopy = (direction: "FromChannel" | "ToChannel"): MemberSpec =>
+    spelled(
+        fn([{ kind: "typed", element: "f32" }, number, number], none),
+        (owner, [samples, channel, offset]) =>
+            `${AUDIO}::audio_buffer_copy(${owner}, ${samples}, bbl::js::to_uint32(${channel}), ${offset === undefined ? "0u" : `bbl::js::to_uint32(${offset})`}, ${AUDIO}::AudioBufferCopy::${direction})`,
+    );
+
+/** A member table's scalar shape. */
+const scalar = (shape: "boolean" | "number" | "string"): RecordShape =>
+    shape === "boolean" ? boolean : shape === "number" ? number : string;
+
+/** A PAL read `<prefix><native>(owner)`, and its `<prefix>set_<native>` write when writable. */
+const palProperty = (
+    shape: RecordShape,
+    prefix: string,
+    native: string,
+    writable: boolean,
+): MemberSpec => ({
+    shape,
+    access: (owner) => `${AUDIO}::${prefix}${native}(${owner})`,
+    ...(writable
+        ? {
+              assign: (owner: string, value: string) =>
+                  `${AUDIO}::${prefix}set_${native}(${owner}, ${value})`,
+          }
+        : {}),
+});
+
+/**
+ * The Web Audio objects a pinned library reaches, over the application
+ * surface's own PAL (`bblite/pal_audio.hpp`): a node, parameter, context
+ * and buffer are the handles application Web Audio holds, and every member
+ * is the call that surface lowers to.
+ */
+export const webAudioRecords: readonly RecordSpec[] = [
+    {
+        pinned: [
+            "AudioNode",
+            "GainNode",
+            "AudioBufferSourceNode",
+            "AudioScheduledSourceNode",
+            "PannerNode",
+            "MediaStreamAudioDestinationNode",
+        ],
+        cpp: "pal::AudioNodeHandle",
+        reference: false,
+        native: true,
+        members: members([
+            ...AUDIO_PARAM_NAMES.map(
+                ([name, enumerator]) => [name, param(enumerator)] as const,
+            ),
+            ...PANNER_PROPERTIES.map(
+                ([name, enumerator]) =>
+                    [name, pannerProperty(enumerator)] as const,
+            ),
+            ...PANNER_MODELS.map(
+                ([name, which]) => [name, pannerModel(which)] as const,
+            ),
+            // A stream destination's stream, one per destination.
+            [
+                "stream",
+                reads(
+                    record("MediaStream"),
+                    (owner) => `${AUDIO}::audio_destination_stream(${owner})`,
+                ),
+            ],
+            ...SOURCE_LOOP_MEMBERS.map(
+                ([name, shape, native]) =>
+                    [
+                        name,
+                        palProperty(scalar(shape), "audio_", native, true),
+                    ] as const,
+            ),
+            [
+                // `connect(node)` returns the node; `connect(param)` an
+                // automation edge, its result unused.
+                "connect",
+                spelled(
+                    fn([audioNode], audioNode),
+                    (owner, [destination]) =>
+                        `[&](const auto& destination) { ${AUDIO}::audio_connect(${owner}, destination); return destination; }(${destination})`,
+                ),
+            ],
+            [
+                // `disconnect()` drops every edge, `disconnect(node[, output[,
+                // input]])` the edges into that node.
+                "disconnect",
+                spelled(
+                    fn([audioNode, number, number], none),
+                    (owner, args) =>
+                        `${AUDIO}::audio_disconnect(${[owner, ...args].join(", ")})`,
+                ),
+            ],
+            [
+                "buffer",
+                {
+                    shape: optional(record("AudioBuffer")),
+                    access: (owner) =>
+                        `${AUDIO}::audio_source_buffer(${owner})`,
+                    assign: (owner, value) =>
+                        `${AUDIO}::audio_set_buffer(${owner}, ${value})`,
+                },
+            ],
+            [
+                // A handler property: an empty callback clears it.
+                "onended",
+                {
+                    shape: optional(fn([], none)),
+                    assign: (owner, value) =>
+                        `${AUDIO}::audio_set_ended_handler(${owner}, ${value})`,
+                },
+            ],
+            ["type", { shape: string, assign: nodeTypeAssign }],
+            [
+                // `start(when?, offset?, duration?)`, a `duration` that may
+                // be `undefined` included.
+                "start",
+                spelled(
+                    fn([number, number, optional(number)], none),
+                    (owner, args) =>
+                        `${AUDIO}::audio_node_start(${owner}, ${args.length === 0 ? "0.0" : args.join(", ")})`,
+                ),
+            ],
+            [
+                "stop",
+                spelled(
+                    fn([number], none),
+                    (owner, [when]) =>
+                        `${AUDIO}::audio_node_stop(${owner}, ${when ?? "0.0"})`,
+                ),
+            ],
+            [
+                "addEventListener",
+                spelled(
+                    fn(
+                        [
+                            string,
+                            fn([], none),
+                            optional(record("AddEventListenerOptions")),
+                        ],
+                        none,
+                    ),
+                    (owner, [type, listener, options]) => {
+                        endedType(type);
+                        return `[&](const bbl::js::Callback<void()>& listener) { ${AUDIO}::audio_add_ended_listener(${owner}, listener.identity(), listener, false, ${options === undefined ? "false" : `${PLATFORM}::once(${options})`}); }(${listener})`;
+                    },
+                ),
+            ],
+        ]),
+    },
+    {
+        pinned: ["AudioParam"],
+        cpp: "pal::AudioParamHandle",
+        reference: false,
+        native: true,
+        members: members([
+            [
+                "value",
+                {
+                    shape: number,
+                    access: (owner) =>
+                        `static_cast<double>(${AUDIO}::audio_param_value(${owner}))`,
+                    assign: (owner, value) =>
+                        `${AUDIO}::audio_param_set_value(${owner}, static_cast<float>(${value}))`,
+                },
+            ],
+            // The scheduling methods return their parameter, which the pin
+            // never reads: each is its statement.
+            [
+                "cancelScheduledValues",
+                spelled(
+                    fn([number], none),
+                    (owner, [time]) =>
+                        `${AUDIO}::audio_param_cancel_scheduled_values(${owner}, ${time ?? "0.0"})`,
+                ),
+            ],
+            ...AUDIO_PARAM_SCHEDULES.map(
+                ([name, native]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([number, number], none),
+                            (owner, [value, time]) =>
+                                `${AUDIO}::${native}(${owner}, static_cast<float>(${value}), ${time})`,
+                        ),
+                    ] as const,
+            ),
+            [
+                "setValueCurveAtTime",
+                spelled(
+                    fn(
+                        [{ kind: "typed", element: "f32" }, number, number],
+                        none,
+                    ),
+                    (owner, [values, start, duration]) =>
+                        `${AUDIO}::audio_param_set_value_curve(${owner}, ${values}, ${start}, ${duration})`,
+                ),
+            ],
+        ]),
+    },
+    {
+        pinned: ["BaseAudioContext", "AudioContext"],
+        cpp: "pal::AudioContextHandle",
+        reference: false,
+        native: true,
+        members: members([
+            [
+                "currentTime",
+                reads(
+                    number,
+                    (owner) => `${AUDIO}::audio_current_time(${owner})`,
+                ),
+            ],
+            [
+                "destination",
+                reads(
+                    audioNode,
+                    (owner) => `${AUDIO}::audio_destination(${owner})`,
+                ),
+            ],
+            // The context's one listener, seen through the context.
+            ["listener", reads(record("AudioListener"), (owner) => owner)],
+            ...AUDIO_NODE_FACTORIES.map(
+                ([name, factory]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([], audioNode),
+                            (owner) => `${AUDIO}::${factory}(${owner})`,
+                        ),
+                    ] as const,
+            ),
+            [
+                "createBuffer",
+                spelled(
+                    fn([number, number, number], record("AudioBuffer")),
+                    (owner, [channels, frames, rate]) =>
+                        `${AUDIO}::audio_create_buffer(${owner}, static_cast<std::uint32_t>(${channels}), static_cast<std::uint32_t>(${frames}), ${rate})`,
+                ),
+            ],
+            [
+                "createMediaStreamDestination",
+                spelled(
+                    fn([], record("MediaStreamAudioDestinationNode")),
+                    (owner) =>
+                        `${AUDIO}::audio_create_media_stream_destination(${owner})`,
+                ),
+            ],
+            [
+                "createMediaStreamSource",
+                spelled(
+                    fn([record("MediaStream")], audioNode),
+                    (owner, [stream]) =>
+                        `${AUDIO}::audio_create_media_stream_source(${owner}, ${stream})`,
+                ),
+            ],
+            [
+                "createMediaElementSource",
+                spelled(
+                    fn([record("HTMLAudioElement")], audioNode),
+                    (owner, [element]) =>
+                        `${AUDIO}::audio_create_media_element_source(${owner}, ${element})`,
+                ),
+            ],
+            ...AUDIO_CONTEXT_TRANSITIONS.map(
+                ([name, action]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([], promise(none)),
+                            (owner) =>
+                                `${AUDIO}::audio_context_transition(${owner}, ${AUDIO}::AudioContextAction::${action})`,
+                        ),
+                    ] as const,
+            ),
+            [
+                "decodeAudioData",
+                spelled(
+                    fn([{ kind: "buffer" }], promise(record("AudioBuffer"))),
+                    (owner, [encoded]) =>
+                        `${AUDIO}::audio_decode_async(${owner}, ${encoded})`,
+                ),
+            ],
+        ]),
+    },
+    {
+        pinned: ["AudioBuffer"],
+        cpp: "pal::AudioBufferHandle",
+        reference: false,
+        native: true,
+        members: members([
+            ...AUDIO_BUFFER_PROPERTIES.map(
+                ([name, property]) =>
+                    [
+                        name,
+                        reads(
+                            number,
+                            (owner) =>
+                                `${AUDIO}::audio_buffer_property(${owner}, ${AUDIO}::AudioBufferProperty::${property})`,
+                        ),
+                    ] as const,
+            ),
+            [
+                "getChannelData",
+                spelled(
+                    fn([number], { kind: "typed", element: "f32" }),
+                    (owner, [channel]) =>
+                        `${AUDIO}::audio_buffer_channel(${owner}, static_cast<std::uint32_t>(${channel}))`,
+                ),
+            ],
+            ["copyFromChannel", channelCopy("FromChannel")],
+            ["copyToChannel", channelCopy("ToChannel")],
+        ]),
+    },
+    {
+        // `HTMLAudioElement` (`pal_audio_element.hpp`): a library probes it,
+        // an application plays it.
+        pinned: ["HTMLAudioElement", "HTMLMediaElement"],
+        cpp: "pal::AudioElementState",
+        handle: "pal::AudioElement",
+        reference: true,
+        native: true,
+        members: members([
+            ...AUDIO_ELEMENT_PROPERTIES.map(
+                ([name, shape, native, writable]) =>
+                    [
+                        name,
+                        palProperty(
+                            scalar(shape),
+                            "audio_element_",
+                            native,
+                            writable,
+                        ),
+                    ] as const,
+            ),
+            [
+                "canPlayType",
+                spelled(
+                    fn([string], string),
+                    (owner, [type]) =>
+                        `${AUDIO}::audio_can_play_type(${owner}, ${type})`,
+                ),
+            ],
+            [
+                "play",
+                spelled(
+                    fn([], promise(none)),
+                    (owner) => `${AUDIO}::audio_element_play(${owner})`,
+                ),
+            ],
+            [
+                // Only the source attribute is represented.
+                "removeAttribute",
+                spelled(fn([string], none), (owner, [name]) => {
+                    if (name !== stringLiteral("src"))
+                        throw new Error(
+                            'An Audio element removes only its "src" attribute.',
+                        );
+                    return `${AUDIO}::audio_element_remove_source(${owner})`;
+                }),
+            ],
+            ...(["pause", "load"] as const).map(
+                (name) =>
+                    [
+                        name,
+                        spelled(
+                            fn([], none),
+                            (owner) =>
+                                `${AUDIO}::audio_element_${name}(${owner})`,
+                        ),
+                    ] as const,
+            ),
+        ]),
+    },
+    {
+        // `ctx.listener`: its parameters and the legacy setters over them.
+        pinned: ["AudioListener"],
+        cpp: "pal::AudioContextHandle",
+        reference: false,
+        native: true,
+        members: members([
+            ...AUDIO_LISTENER_PARAMS.map(
+                (name) =>
+                    [
+                        name,
+                        reads(
+                            audioParam,
+                            (owner) =>
+                                `${AUDIO}::audio_listener_param(${owner}, ${AUDIO}::AudioParamName::${listenerParamName(name)})`,
+                        ),
+                    ] as const,
+            ),
+            [
+                "setPosition",
+                listenerSetter(["positionX", "positionY", "positionZ"]),
+            ],
+            [
+                "setOrientation",
+                listenerSetter([
+                    "forwardX",
+                    "forwardY",
+                    "forwardZ",
+                    "upX",
+                    "upY",
+                    "upZ",
+                ]),
+            ],
+        ]),
+    },
+    {
+        // `bblite/pal_media_stream.hpp`: a stream and its tracks, as the
+        // application's media streams hold them.
+        pinned: ["MediaStream"],
+        cpp: "pal::MediaStreamHandle",
+        reference: false,
+        native: true,
+        members: members([
+            ...MEDIA_STREAM_PROPERTIES.map(
+                ([name, shape, native]) =>
+                    [
+                        name,
+                        palProperty(
+                            scalar(shape),
+                            "media_stream_",
+                            native,
+                            false,
+                        ),
+                    ] as const,
+            ),
+            ...(["addTrack", "removeTrack"] as const).map(
+                (name) =>
+                    [
+                        name,
+                        spelled(
+                            fn([record("MediaStreamTrack")], none),
+                            (owner, [track]) =>
+                                `${AUDIO}::media_stream_${name === "addTrack" ? "add" : "remove"}_track(${owner}, ${track})`,
+                        ),
+                    ] as const,
+            ),
+            [
+                "getTrackById",
+                spelled(
+                    fn([string], optional(record("MediaStreamTrack"))),
+                    (owner, [id]) =>
+                        `${AUDIO}::media_stream_track_by_id(${owner}, ${id})`,
+                ),
+            ],
+            [
+                "clone",
+                spelled(
+                    fn([], record("MediaStream")),
+                    (owner) => `${AUDIO}::media_stream_clone(${owner})`,
+                ),
+            ],
+            ...MEDIA_STREAM_TRACK_LISTS.map(
+                ([name, kind]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([], array(record("MediaStreamTrack"))),
+                            (owner) =>
+                                `${AUDIO}::media_stream_tracks(${owner}, ${stringLiteral(kind)})`,
+                        ),
+                    ] as const,
+            ),
+        ]),
+    },
+    {
+        pinned: ["MediaStreamTrack"],
+        cpp: "pal::MediaStreamTrackHandle",
+        reference: false,
+        native: true,
+        members: members([
+            ...MEDIA_STREAM_TRACK_PROPERTIES.map(
+                ([name, shape, native]) =>
+                    [
+                        name,
+                        palProperty(
+                            scalar(shape),
+                            "media_stream_track_",
+                            native,
+                            name === "enabled",
+                        ),
+                    ] as const,
+            ),
+            [
+                "stop",
+                spelled(
+                    fn([], none),
+                    (owner) => `${AUDIO}::media_stream_track_stop(${owner})`,
+                ),
+            ],
+            [
+                "clone",
+                spelled(
+                    fn([], record("MediaStreamTrack")),
+                    (owner) => `${AUDIO}::media_stream_track_clone(${owner})`,
+                ),
+            ],
+        ]),
+    },
+    descriptor("AudioBufferSourceOptions", "pal::AudioBufferSourceInit", [
+        ["buffer", field(optional(record("AudioBuffer")))],
+    ]),
+];
+
+/** A Web Audio or media property's native write, as the records above spell it. */
+export function webAudioMemberAssign(
+    record: string,
+    member: string,
+): (owner: string, value: string) => string {
+    const assign = webAudioRecords
+        .find((spec) => spec.pinned.includes(record))
+        ?.members?.get(member)?.assign;
+    if (!assign)
+        throw new Error(
+            `The Web Audio records spell no ${record}.${member} write.`,
+        );
+    return assign;
+}
+
+/** A Web Audio or media property's native read, as the records above spell it. */
+export function webAudioMemberRead(
+    record: string,
+    member: string,
+): (owner: string) => string {
+    const access = webAudioRecords
+        .find((spec) => spec.pinned.includes(record))
+        ?.members?.get(member)?.access;
+    if (!access)
+        throw new Error(`The Web Audio records spell no ${record}.${member}.`);
+    return access;
+}
+
+/**
+ * A Web Audio or media method's native spelling, as the records above spell
+ * it for the pinned libraries; application calls on the same objects take
+ * it too, with their own operands.
+ */
+export function webAudioMemberCall(
+    record: string,
+    member: string,
+): (owner: string, args: readonly string[]) => string {
+    const call = webAudioRecords
+        .find((spec) => spec.pinned.includes(record))
+        ?.members?.get(member)?.call;
+    if (!call)
+        throw new Error(`The Web Audio records spell no ${record}.${member}.`);
+    return call;
+}
+
+/**
+ * `new GainNode(context)` and `new AudioBufferSourceNode(context, {
+ * buffer })`: the factories application Web Audio reaches; any other
+ * option refuses at generation.
+ */
+export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
+    string,
+    CallAdapter
+>([
+    [
+        // A library probes an element; a source to play is the element's.
+        "Audio",
+        {
+            cpp: (_argument, call) => {
+                if ((call.arguments?.length ?? 0) > 0)
+                    throw new Error(
+                        "A lowered Audio element is constructed without a source.",
+                    );
+                return `${AUDIO}::audio_create_element()`;
+            },
+        },
+    ],
+    [
+        "GainNode",
+        {
+            cpp: (argument, call) => {
+                if ((call.arguments?.length ?? 0) > 1)
+                    throw new Error("A lowered GainNode takes no options.");
+                return `${AUDIO}::audio_create_gain(${argument(0)})`;
+            },
+            parameters: [record("BaseAudioContext")],
+        },
+    ],
+    [
+        // The pin builds its panner bare and sets each attribute after.
+        "PannerNode",
+        {
+            cpp: (argument, call) => {
+                if ((call.arguments?.length ?? 0) > 1)
+                    throw new Error("A lowered PannerNode takes no options.");
+                return `${AUDIO}::audio_create_panner(${argument(0)})`;
+            },
+            parameters: [record("BaseAudioContext")],
+        },
+    ],
+    [
+        "AudioBufferSourceNode",
+        {
+            cpp: (argument, call) =>
+                (call.arguments?.length ?? 0) > 1
+                    ? `${AUDIO}::audio_create_buffer_source(${argument(0)}, ${argument(1)})`
+                    : `${AUDIO}::audio_create_buffer_source(${argument(0)})`,
+            parameters: [
+                record("BaseAudioContext"),
+                record("AudioBufferSourceOptions"),
+            ],
+        },
+    ],
+]);
+
+/** The Web Audio classes a pinned library tests for (`typeof AudioBuffer`). */
+export const webAudioClasses: ReadonlyMap<string, RecordShape> = new Map([
+    ["AudioBuffer", record("AudioBuffer")],
+    ["Audio", record("HTMLAudioElement")],
 ]);

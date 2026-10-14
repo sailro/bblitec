@@ -3,8 +3,11 @@
 // and planned target extents, post-process extents and geometry outputs.
 #pragma once
 #include "pal_gpu_surface.hpp"
+#include "pal_gpu_target_lifetimes.hpp"
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/effect_wrapper_disposal.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -16,6 +19,9 @@
 #include <string_view>
 #include <vector>
 #include <bblite/upstream/pinned_texture.hpp>
+#if BBLITE_RENDER_TASK_TRANSMISSION
+#include <bblite/upstream/pinned_task_transmission.hpp>
+#endif
 #if BBLITE_HAS_SCREEN_SPACE
 #include <bblite/upstream/frame_graph_screen_space.hpp>
 #include <bblite/upstream/screen_space_shaders.hpp>
@@ -75,16 +81,14 @@ inline std::uint32_t render_target_requested_samples(const RenderTargetRecord& r
 }
 
 /**
- * The texture `setEffectTexture` stored for one declared binding name.
+ * The texture slot `setEffectTexture` filled for one declared binding number.
  *
- * The walk and the refusal are the pin's own `findTextureSlot` contract:
- * a binding the compiled fragment kept must have been set before the
- * first render, and a name the wrapper never stored fails by name rather
- * than binding a neighbour. Both backends resolve through this.
+ * A binding the compiled fragment kept must have been set before the first
+ * render, and a binding the wrapper never declared fails rather than binding
+ * a neighbour. Both backends resolve through this.
  */
-
-const SolidTexture& effect_texture_for_binding(const EffectWrapperRecord& wrapper,
-                                               std::string_view name);
+const EffectTextureSlot& effect_texture_slot(const EffectWrapperRecord& wrapper,
+                                             std::uint32_t binding);
 
 /**
  * The uniform floats a scene set must fill the block the descriptor
@@ -109,7 +113,112 @@ inline std::uint32_t transmission_grab_mip_count() {
  */
 inline bool transmissive_draw_material(const MaterialRecord* material) {
     return material != nullptr &&
-           (material->transmission_factor > 0.0f || !material->transmission_texture.bytes.empty());
+           (material->transmission_factor > 0.0f || !material->transmission_texture.bytes.empty() ||
+            material->shader_transmissive);
+}
+
+#if BBLITE_RENDER_TASK_TRANSMISSION
+/** A render task's grab mip chain: `transmissionMipLevelCount` over its stored options. */
+inline std::uint32_t task_transmission_mip_count(const RenderTaskTransmission& settings) {
+    return static_cast<std::uint32_t>(upstream::task_transmission_mip_level_count(
+        settings.grab_size, settings.grab_size, settings.generate_mipmaps,
+        settings.mip_level_count));
+}
+#endif
+
+/** What a render task's colour pass is, as the plan below refuses what it cannot split. */
+struct TaskColorPassShape {
+    bool multisampled = false;
+    bool swapchain = false;
+    /** The temporal source arm, whose pass is encoded outside the task. */
+    bool temporal = false;
+    /** Compiler-owned scene stages, whose billboards interleave the transparent list. */
+    bool billboard_stages = false;
+};
+
+/**
+ * A render task's colour-pass plan, the same on both backends
+ * (`executePassWithTransmission`): the transparent list breaks before a
+ * transmissive draw while the copy latch allows (`canUpdateTransmission`:
+ * `copyCount` grabs per execution, or one before every draw when it
+ * normalizes to zero). A task without a grab never breaks.
+ */
+class TaskPassBreaks {
+public:
+    TaskPassBreaks() = default;
+    TaskPassBreaks(const FrameTaskRecord& task, TaskColorPassShape shape) {
+#if BBLITE_RENDER_TASK_TRANSMISSION
+        if (!task.transmission)
+            return;
+        // The pin's multisampled arms (the averaging blit and the sample-0
+        // depth resolve) are not lowered, and a swapchain cannot be sampled.
+        if (shape.multisampled)
+            throw std::runtime_error(
+                "Render-task transmission of a multisampled target is not lowered.");
+        if (shape.swapchain)
+            throw std::runtime_error("Render-task transmission cannot grab the swapchain target.");
+        if (shape.temporal)
+            throw std::runtime_error(
+                "Render-task transmission with temporal anti-aliasing is not lowered.");
+        if (shape.billboard_stages)
+            throw std::runtime_error(
+                "Render-task transmission with billboard scene stages is not lowered.");
+        enabled_ = true;
+        limit_ = static_cast<std::uint32_t>(
+            upstream::task_transmission_copy_count(task.transmission->copy_count));
+#else
+        (void)task;
+        (void)shape;
+#endif
+    }
+    [[nodiscard]] bool enabled() const { return enabled_; }
+    /** Whether the pass breaks before this draw; a break counts as one copy. */
+    bool before(const MaterialRecord* material) {
+        if (!enabled_ || !transmissive_draw_material(material) ||
+            (limit_ != 0 && copies_ >= limit_))
+            return false;
+        ++copies_;
+        return true;
+    }
+
+private:
+    bool enabled_ = false;
+    std::uint32_t limit_ = 0;
+    std::uint32_t copies_ = 0;
+};
+
+/** The plan of one execution of a render task's colour pass, refusing what it cannot split. */
+[[nodiscard]] inline TaskPassBreaks task_pass_breaks(const FrameTaskRecord& task,
+                                                     TaskColorPassShape shape) {
+    return TaskPassBreaks(task, shape);
+}
+
+/**
+ * Draws a transparent list through a pass plan: one segment per break, with
+ * `split()` ending the pass, grabbing and resuming it with load before each.
+ */
+template <class DrawList, class Draw, class Split>
+void draw_split_list(const Engine& engine, TaskPassBreaks& breaks, const DrawList& list,
+                     Draw&& draw, Split&& split) {
+    if (!breaks.enabled()) {
+        draw(list);
+        return;
+    }
+    for (const auto& command : list.commands) {
+        if (breaks.before(handle_find(engine.materials, command.item.material)))
+            split();
+        draw(BorrowedDrawList{command});
+    }
+}
+
+/** `EffectRenderTask.execute`'s preamble: a disposed wrapper's dirty bind group is rebuilt. */
+inline void prepare_effect_task(const Engine& engine, const FrameTaskRecord& task) {
+#if BBLITE_EFFECT_WRAPPER_DISPOSAL
+    require_effect_bind_group(engine, task.effect.effect);
+#else
+    (void)engine;
+    (void)task;
+#endif
 }
 
 /**
@@ -143,8 +252,6 @@ template <class Format> struct RenderTargetPlan {
     std::uint32_t width, height;
     Format color_format;
 };
-
-void synchronize_render_target_lifecycles(const Engine& engine);
 
 /** Resolve source-relative sizes and inherited formats before allocating GPU resources. */
 template <class Format, class Convert>

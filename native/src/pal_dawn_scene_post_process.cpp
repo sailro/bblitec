@@ -35,14 +35,15 @@ std::size_t post_process_program(DawnState& state, const upstream::PostProcessSh
 void write_dawn_post_process_uniforms(DawnState& state, Engine& engine, TaskHandle handle,
                                       std::size_t index, std::uint32_t width, std::uint32_t height,
                                       bool force) {
-    auto& pass = handle_at(engine.frame_tasks, handle).post_process.passes[index];
+    FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+    auto& pass = task.post_process.passes[index];
     auto& gpu = handle_at(state.post_process_tasks, handle)[index];
     if (!gpu.uniforms || (!force && !pass.uniforms_dirty))
         return;
     const auto& program = state.post_process_programs[gpu.program];
-    const auto extent =
-        resolve_post_process_extent(handle_at(engine.render_targets, pass.output_target),
-                                    state.render_targets, pass, width, height);
+    const auto extent = resolve_post_process_extent(
+        pal::resolve_render_target(engine, pass.output_target, pal::task_target_user(task)),
+        state.render_targets, pass, width, height);
     std::vector<float> data(program.uniform_size / sizeof(float), 0.0f);
     upstream::write_post_process_uniforms(engine, pass, extent.output_width, extent.output_height,
                                           extent.source_width, extent.source_height, data.data());
@@ -153,17 +154,22 @@ std::size_t screen_space_program(DawnState& state, std::uint32_t stage) {
         [&] { return build_screen_space_program(state, stage); });
 }
 
-WGPUTextureView screen_space_binding_view(DawnState& state, const ScreenSpaceTaskOptions& task,
+WGPUTextureView screen_space_binding_view(DawnState& state, const Engine& engine,
+                                          const ScreenSpaceTaskOptions& task,
                                           upstream::ScreenSpaceTextureRole role) {
+    const pal::TargetUser user{"Screen-space task", task.name};
+    const auto target = [&](RenderTargetHandle handle) -> const DawnRenderTarget& {
+        return pal::resolve_gpu_target(engine, state.render_targets, handle, user);
+    };
     switch (role) {
     case upstream::ScreenSpaceTextureRole::depth:
-        return handle_at(state.render_targets, task.depth).depth_sampled_view;
+        return target(task.depth).depth_sampled_view;
     case upstream::ScreenSpaceTextureRole::source_color:
-        return handle_at(state.render_targets, task.source).sampled_color_view;
+        return target(task.source).sampled_color_view;
     case upstream::ScreenSpaceTextureRole::raw:
-        return handle_at(state.render_targets, task.raw).sampled_color_view;
+        return target(task.raw).sampled_color_view;
     case upstream::ScreenSpaceTextureRole::history:
-        return handle_at(state.render_targets, task.history).sampled_color_view;
+        return target(task.history).sampled_color_view;
     default:
         dawn_error("A screen-space stage binds a texture role this backend "
                    "does not serve.");
@@ -181,10 +187,10 @@ WGPURenderPassEncoder begin_screen_space_pass(WGPUCommandEncoder encoder, WGPUTe
     return wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
 }
 
-void record_screen_space_stage(DawnState& state, const ScreenSpaceTaskOptions& task,
-                               DawnScreenSpaceStage& stage, std::uint32_t stage_index,
-                               WGPUCommandEncoder encoder, WGPUTextureView target,
-                               const float* uniforms) {
+void record_screen_space_stage(DawnState& state, const Engine& engine,
+                               const ScreenSpaceTaskOptions& task, DawnScreenSpaceStage& stage,
+                               std::uint32_t stage_index, WGPUCommandEncoder encoder,
+                               WGPUTextureView target, const float* uniforms) {
     if (stage.program == npos) {
         stage.program = screen_space_program(state, stage_index);
     }
@@ -207,7 +213,7 @@ void record_screen_space_stage(DawnState& state, const ScreenSpaceTaskOptions& t
             switch (binding.kind) {
             case upstream::ScreenSpaceBindingKind::depth_texture:
             case upstream::ScreenSpaceBindingKind::texture:
-                entry.textureView = screen_space_binding_view(state, task, binding.role);
+                entry.textureView = screen_space_binding_view(state, engine, task, binding.role);
                 break;
             case upstream::ScreenSpaceBindingKind::sampler:
                 // The pin's one bilinear sampler wherever it samples.

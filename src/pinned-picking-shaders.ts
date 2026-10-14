@@ -284,3 +284,147 @@ export async function composeBillboardPickingShader(
         );
     return pinned.makeBillboardPickWgsl(orientation, false, false);
 }
+
+/** The pinned module that builds a VAT mesh's pick projection. */
+const vatProjectionModule = "picking/vat-picking-pipeline.js";
+
+interface VatProjectionExports {
+    getVatPickingProjection(
+        engine: unknown,
+        mesh: unknown,
+    ): {
+        key: string;
+        shader: PickingVertexProjectionShader;
+        vertexBuffers: readonly {
+            arrayStride: number;
+            attributes: readonly {
+                shaderLocation: number;
+                offset: number;
+                format: string;
+            }[];
+        }[];
+    } | null;
+}
+
+interface AdvancedVariantExports {
+    pickingShaderVariantSource(
+        thinInstance: boolean,
+        options: {
+            discardWgsl: undefined;
+            worldAdjustWgsl: undefined;
+            storage: undefined;
+            vertexDataComponents: number;
+            exposeVertexData: boolean;
+            detailed: boolean;
+            _vertexProjection: unknown;
+        },
+    ): string;
+}
+
+/** A reached arm of the pin's VAT pick projection, and its picking module. */
+export interface VatPickingShader {
+    thin: boolean;
+    instanceStorage: boolean;
+    module: string;
+}
+
+/**
+ * Execute the pin's VAT projection factory per reached arm and hand its
+ * shader to the advanced builder, as `createPipeline` does for a basic
+ * (non-detailed, rule-free) pick: a VAT candidate always takes the advanced
+ * pipeline. Native vertices carry four joints, so every arm is the
+ * four-bone one, and its two skin attributes are the native vertex's
+ * joint and weight quads. A thin candidate reads its clip params from the
+ * published instance storage or, without one, the instance texture.
+ */
+export async function composeVatPickingShaders(options: {
+    regular: boolean;
+    thinTexture: boolean;
+    thinStorage: boolean;
+}): Promise<VatPickingShader[]> {
+    const arms = [
+        ...(options.regular ? [[false, false] as const] : []),
+        ...(options.thinTexture ? [[true, false] as const] : []),
+        ...(options.thinStorage ? [[true, true] as const] : []),
+    ];
+    if (arms.length === 0) return [];
+    const projections =
+        await importPinnedModule<VatProjectionExports>(vatProjectionModule);
+    const advanced = await importPinnedModule<AdvancedVariantExports>(
+        advancedMeshShaderModule,
+    );
+    const result: VatPickingShader[] = [];
+    for (const [thin, instanceStorage] of arms) {
+        const projection = projections.getVatPickingProjection(
+            { _device: { createBindGroupLayout: () => ({}) } },
+            {
+                vat: {
+                    joints1Buffer: null,
+                    weights1Buffer: null,
+                    _instanceStorage: instanceStorage ? {} : undefined,
+                    instanceTexture: thin && !instanceStorage ? {} : null,
+                },
+                thinInstances: thin ? {} : null,
+            },
+        );
+        if (!projection)
+            throw new Error(
+                "The pinned VAT projection declined its reached arm.",
+            );
+        const skin = JSON.stringify(projection.vertexBuffers);
+        if (
+            skin !==
+            JSON.stringify([
+                {
+                    arrayStride: 16,
+                    attributes: [
+                        { shaderLocation: 1, offset: 0, format: "uint32x4" },
+                    ],
+                },
+                {
+                    arrayStride: 16,
+                    attributes: [
+                        { shaderLocation: 2, offset: 0, format: "float32x4" },
+                    ],
+                },
+            ])
+        )
+            throw new Error(
+                `The pinned VAT projection reads other skin attributes: ${skin}.`,
+            );
+        result.push({
+            thin,
+            instanceStorage,
+            module: advanced.pickingShaderVariantSource(thin, {
+                discardWgsl: undefined,
+                worldAdjustWgsl: undefined,
+                storage: undefined,
+                vertexDataComponents: 0,
+                exposeVertexData: false,
+                detailed: false,
+                _vertexProjection: projection.shader,
+            }),
+        });
+    }
+    return result;
+}
+
+/** The deployed VAT arms, in the order both PALs select them. */
+export function vatPickingHeader(
+    variants: readonly VatPickingShader[],
+): string {
+    return `#pragma once
+#include <array>
+namespace bbl::upstream {
+struct PickVatVariant {
+    bool thin;
+    bool instance_storage;
+    const char* vertex;
+    const char* fragment;
+};
+inline constexpr std::array<PickVatVariant, ${variants.length}> pick_vat_variants{{
+${variants.map((variant, index) => `    {${variant.thin}, ${variant.instanceStorage}, "picking-vat-${index}.vert", "picking-vat-${index}.frag"},`).join("\n")}
+}};
+}
+`;
+}

@@ -145,7 +145,7 @@ test("surface resize observers match pinned retries, cancellation, reentry and r
         tools,
         "render-target-lifecycle-check",
         lowerGpuRetirement(context).source +
-            new RenderTargetLowerer(context, true).lower().source +
+            new RenderTargetLowerer(context, { surface: true }).lower().source +
             `
 #include <bblite/js_realm_state.hpp>
 #include <cassert>

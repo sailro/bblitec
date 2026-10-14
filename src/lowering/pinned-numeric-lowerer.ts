@@ -3195,6 +3195,15 @@ export class PinnedNumericLowerer {
                 ? `static_cast<double>(${cpp})`
                 : `std::string(${cpp})`;
         const test = this.truthyValue(kind, temporary);
+        // A number the caller holds as possibly undefined: undefined is
+        // falsy, so `a || b` is b without reading a, and `a && b` is
+        // undefined, which no number represents.
+        const nullish = this.binding(unwrapExpression(node.left))?.nullish;
+        if (nullish !== undefined) {
+            if (!or || kind !== "number")
+                return this.fail(node, "'&&' over a possibly undefined value");
+            return `([&]() -> double { if (${nullish}) return ${select(right)}; auto&& ${temporary} = ${left}; return ${test} ? ${select(temporary)} : ${select(right)}; }())`;
+        }
         return `([&]() { auto&& ${temporary} = ${left}; return ${test} ? ${select(or ? temporary : right)} : ${select(or ? right : temporary)}; }())`;
     }
 
@@ -4032,15 +4041,26 @@ export class PinnedNumericLowerer {
     ): string[] {
         const clauses = statement.caseBlock.clauses;
         // A clause's statements without the `break` that closes it, and
-        // whether the clause ends its own control flow.
+        // whether the clause ends its own control flow. A clause written as
+        // one block (`case "linear": { ...; break; }`) is that block's
+        // statements: each clause is its own native block either way.
+        const flattened = (
+            clause: ts.CaseOrDefaultClause,
+        ): readonly ts.Statement[] => {
+            const [only] = clause.statements;
+            return clause.statements.length === 1 && only && ts.isBlock(only)
+                ? only.statements
+                : clause.statements;
+        };
         const body = (clause: ts.CaseOrDefaultClause): ts.Statement[] => {
-            const statements = [...clause.statements];
+            const statements = [...flattened(clause)];
             const last = statements[statements.length - 1];
             if (last && ts.isBreakStatement(last)) statements.pop();
             return statements;
         };
         const ends = (clause: ts.CaseOrDefaultClause): boolean => {
-            const last = clause.statements[clause.statements.length - 1];
+            const statements = flattened(clause);
+            const last = statements[statements.length - 1];
             return (
                 last !== undefined &&
                 (ts.isBreakStatement(last) || this.terminates(last))
@@ -4097,7 +4117,7 @@ export class PinnedNumericLowerer {
             }
             lines.push(
                 `${indent}${lines.length === 0 ? "" : "} else "}if (` +
-                    `${discriminant} == ${this.expression(clause.expression)}) {`,
+                    `${discriminant} == ${this.switchCase(statement, clause.expression)}) {`,
                 ...clauseLines(clause, `${indent}    `),
             );
         });
@@ -4116,6 +4136,14 @@ export class PinnedNumericLowerer {
         }
         if (lines.length > 0) lines.push(`${indent}}`);
         return [`${outer}{`, selection, ...lines, `${outer}}`];
+    }
+
+    /** A run-time switch's case value, as its discriminant compares with it. */
+    protected switchCase(
+        _statement: ts.SwitchStatement,
+        value: ts.Expression,
+    ): string {
+        return this.expression(value);
     }
 
     /** `{ x, y, z }` -- the pin's own positional record, as the caller spells it. */

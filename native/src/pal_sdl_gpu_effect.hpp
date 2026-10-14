@@ -26,8 +26,11 @@
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/effect_variants.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <utility>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -45,6 +48,10 @@ struct EffectResources {
     OwnedSdlPipeline pipeline;
     /** The 1x1 texels `setEffectTexture` stored, in declared binding order. */
     std::vector<SDL_GPUTextureSamplerBinding> textures;
+    /** Positions in `textures` a render target fills at record time, by binding number. */
+    std::vector<std::pair<std::size_t, std::uint32_t>> render_textures;
+    /** `textures` with those positions filled, rewritten in place at each record. */
+    mutable std::vector<SDL_GPUTextureSamplerBinding> bound_textures;
     /**
      * Whether the compiled fragment kept a uniform block at all — the
      * sidecar's answer, not the WGSL's: a block the caller's body never reads
@@ -139,11 +146,23 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
         gpu_error("SDL_CreateGPUGraphicsPipeline effect");
 
     // The textures the caller set, in the order the sidecar kept them: the
-    // fragment names each binding, and a texture the body never samples does
-    // not survive to the compiled stage. The lookup and its not-set
-    // refusal are the shared `effect_texture_for_binding`.
+    // sidecar names each binding's number, and a texture the body never
+    // samples does not survive to the compiled stage. The lookup and its
+    // not-set refusal are the shared `effect_texture_slot`.
     for (const std::string& name : fragment.slots.textures) {
-        append_solid_texture(device, pass.textures, effect_texture_for_binding(wrapper, name));
+        const auto declared =
+            std::find_if(fragment.slots.bindings.begin(), fragment.slots.bindings.end(),
+                         [&](const PinnedStageBinding& binding) { return binding.name == name; });
+        if (declared == fragment.slots.bindings.end())
+            throw std::runtime_error("Effect texture '" + name + "' has no declared binding.");
+        const EffectTextureSlot& slot = effect_texture_slot(wrapper, declared->binding);
+        if (slot.render_texture) {
+            auto& binding = pass.textures.emplace_back();
+            binding.sampler = create_texture_sampler(device, TextureSamplerState{});
+            pass.render_textures.emplace_back(pass.textures.size() - 1, slot.binding);
+        } else {
+            append_solid_texture(device, pass.textures, slot.texture);
+        }
     }
     return pass;
 }
@@ -157,10 +176,14 @@ inline void release_effect_resources([[maybe_unused]] SDL_GPUDevice* device,
 
 inline void release_effect_pass(SDL_GPUDevice*, EffectPass& pass) { pass.reset(); }
 
+/** A frame graph's render-target texture for an effect binding. */
+using EffectRenderTextureSource = std::function<SDL_GPUTexture*(const RenderTextureRef&)>;
+
 /** `_record`: the pin's own three-vertex draw, into an already-open pass. */
 inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
                                const Engine& engine, const EffectPass& pass,
-                               EffectWrapperHandle handle) {
+                               EffectWrapperHandle handle,
+                               const EffectRenderTextureSource& render_texture = {}) {
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
     const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     if (pass.has_uniform_block && !wrapper.uniform_values.empty()) {
@@ -171,8 +194,25 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
                            wrapper.uniform_values.size() * sizeof(float));
     }
     if (!pass.textures.empty()) {
-        SDL_BindGPUFragmentSamplers(render_pass, 0, pass.textures.data(),
-                                    static_cast<Uint32>(pass.textures.size()));
+        // The bind group reads each render target's current texture, so a
+        // rebuilt target (resize) is what the next draw samples.
+        const std::vector<SDL_GPUTextureSamplerBinding>* textures = &pass.textures;
+        if (!pass.render_textures.empty()) {
+            pass.bound_textures = pass.textures;
+            textures = &pass.bound_textures;
+        }
+        for (const auto& [index, binding] : pass.render_textures) {
+            if (!render_texture)
+                throw std::runtime_error(
+                    "An effect renderer samples render-target textures only in a frame graph.");
+            const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding);
+            if (!slot.render_texture)
+                throw std::runtime_error(
+                    "An effect binding changed texture kind after its first draw.");
+            pass.bound_textures[index].texture = render_texture(*slot.render_texture);
+        }
+        SDL_BindGPUFragmentSamplers(render_pass, 0, textures->data(),
+                                    static_cast<Uint32>(textures->size()));
     }
     SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
 }

@@ -49,69 +49,7 @@ test("URI component encoding preserves coercion, UTF-16 and evaluation order", (
     });
 });
 
-test("idle aliases preserve owned callbacks and throw after argument evaluation", () => {
-    const source = `
-        let effects=0; let callbacks=0; let caught=0;
-        const idle = (window as {requestIdleCallback?: (cb:()=>void, options?:{timeout:number})=>number}).requestIdleCallback;
-        if (idle) {
-            try { idle(()=>{ callbacks++; }, {timeout:++effects}); } catch(error) {
-                if (!error.message.includes('dom:Window.requestIdleCallback')) throw error;
-                caught++;
-            }
-        }
-        const request=window.requestIdleCallback;
-        try { request(deadline=>{callbacks++; if(deadline.didTimeout) deadline.timeRemaining();}); } catch { caught++; }
-        const cancel=window.cancelIdleCallback;
-        try { cancel(++effects); } catch(error) {
-            if (!error.message.includes('dom:Window.cancelIdleCallback')) throw error;
-            caught++;
-        }
-        if(effects!==2 || callbacks!==0 || caught!==3) throw new Error('idle boundary');
-        setTimeout(()=>globalThis.close(),0);
-    `;
-    assert.throws(
-        () => compileSource(source),
-        /Browser-dependent condition cannot be determined/,
-    );
-    const result = compileSource(source, { deferredCapabilities });
-    const ids = result.manifest.deferredCapabilities!.map((site) => site.id);
-    assert.ok(ids.includes("dom:Window.requestIdleCallback"));
-    assert.ok(ids.includes("dom:IdleDeadline.didTimeout"));
-    assert.ok(ids.includes("dom:IdleDeadline.timeRemaining"));
-    assert.throws(
-        () =>
-            compileSource(
-                `
-        const readers: Array<(host: EventTarget & {requestIdleCallback?:()=>number})=>void> = [host=>{const idle=host.requestIdleCallback; if(idle)idle();}];
-        readers[0]!(document);
-        setTimeout(()=>globalThis.close(),0);
-    `,
-                { deferredCapabilities },
-            ),
-        /requires a proven Window receiver/,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                source.replace(
-                    "callbacks++; if",
-                    "new FinalizationRegistry(()=>{}); callbacks++; if",
-                ),
-                { deferredCapabilities },
-            ),
-        /Unsupported constructor/,
-    );
-    const tools = optionalNativeFixtureTools(false);
-    assert.ok(tools);
-    runGeneratedProgram(
-        tools,
-        "platform-boundaries/idle",
-        result.cpp + runtime,
-        { flags: ["/DBBLITE_WORKERS=1"], expectedOutput: "" },
-    );
-});
-
-test("session storage has no successful provider and retains method bodies", () => {
+test("session storage is a native provider in both modes and never reaches the durable store", () => {
     const source = `
         let caught=0; let effects=0;
         try {
@@ -120,21 +58,18 @@ test("session storage has no successful provider and retains method bodies", () 
                 storage.setItem('key',String(++effects));
                 const value=storage.getItem('key');
                 storage.removeItem('key');
-                if(value!==null) effects++;
+                if(value==='1' && storage.getItem('key')===null) effects++;
             }
-        } catch(error) {
-            if(!error.message.includes('dom:Window.sessionStorage')) throw error;
+        } catch {
             caught++;
         }
-        if(caught!==1 || effects!==0) throw new Error('storage provider');
+        if(caught!==0 || effects!==2) throw new Error('storage provider');
     `;
-    assert.throws(() => compileSource(source), /sessionStorage/);
-    const result = compileSource(source, { deferredCapabilities });
     assert.ok(
-        result.manifest.deferredCapabilities!.some(
-            (site) => site.id === "dom:Window.sessionStorage",
-        ),
+        compileSource(source).manifest.features.includes("storage:session"),
     );
+    const result = compileSource(source, { deferredCapabilities });
+    assert.equal(result.manifest.deferredCapabilities, undefined);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(
@@ -148,35 +83,6 @@ void write_local_storage(const std::string&,const std::string&) { throw std::run
 void remove_local_storage(const std::string&) { throw std::runtime_error("unexpected storage access"); }
 }
 `,
-        { expectedOutput: "" },
-    );
-});
-
-test("surface pixel ratio boundaries retain owner and RHS effects", () => {
-    const source = `
-        import {createEngine} from '@babylonjs/lite';
-        const engine=await createEngine(document.getElementById('renderCanvas') as HTMLCanvasElement);
-        let effects=0; let caught=0;
-        function owner(){effects++; return engine;}
-        try { owner().maxDevicePixelRatio=++effects; } catch(error) {
-            if(!error.message.includes('babylon:SurfaceContext.maxDevicePixelRatio')) throw error;
-            caught++;
-        }
-        try { if(owner().maxDevicePixelRatio>0) effects++; } catch {caught++;}
-        if(caught!==2 || effects!==3) throw new Error('surface boundary');
-    `;
-    const result = compileSource(source, { deferredCapabilities });
-    assert.deepEqual(
-        result.manifest.deferredCapabilities!.map((site) => site.operation),
-        ["write", "read"],
-    );
-    const tools = optionalNativeFixtureTools(false);
-    assert.ok(tools);
-    runGeneratedProgram(
-        tools,
-        "platform-boundaries/surface",
-        result.cpp +
-            `namespace bbl { Engine create_engine(EngineOptions) { return {}; } }`,
         { expectedOutput: "" },
     );
 });

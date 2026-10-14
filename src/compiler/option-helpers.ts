@@ -15,7 +15,9 @@ import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { argumentAt } from "./syntax.js";
-import { optionalPresentCpp, type Value } from "./types.js";
+import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
+import type { DataType } from "./data-types.js";
+import { pinCpp } from "./evaluation-order.js";
 import { isJsonValue } from "./json-bridge.js";
 import {
     MATH_CONSTANTS,
@@ -79,12 +81,41 @@ export interface BooleanOptionsSpelling {
     readonly temporary: string;
     /** Defaults for undefined members; other members use boolean conversion. */
     readonly undefinedDefaults?: Readonly<Record<string, boolean>>;
-    /** Members that refuse, with their message. */
-    readonly refused?: Readonly<Record<string, string>>;
     /** Additional typed dictionary members read after ordinary object evaluation. */
     readonly consume?: Readonly<
         Record<string, (value: Value, present?: string) => void>
     >;
+}
+
+/**
+ * A dictionary member (a `consume` value) read once, in dictionary order, as
+ * `T | undefined` into a temporary named after `label`: empty while the
+ * options (`present`) or the member are absent. Returns the temporary.
+ */
+export function optionalOptionMember(
+    lowerer: Pick<DataLowerer, "compileKnownValueForSink" | "context">,
+    value: Value,
+    present: string | undefined,
+    inner: DataType,
+    label: string,
+    site: ts.Expression,
+): string {
+    const type: DataType = { kind: "optional", inner };
+    const converted = lowerer.compileKnownValueForSink(value, type, site);
+    const cppType = lowerer.context.dataTypes.cppType(type);
+    return pinCpp(
+        lowerer.context,
+        present
+            ? `${present} ? ${cppType}{${converted}} : ${cppType}{}`
+            : converted,
+        label,
+        `const ${cppType}`,
+    );
+}
+
+/** An `optionalOptionMember` temporary's value, or `fallback` while it is empty. */
+export function optionalOptionValue(held: string, fallback: string): string {
+    return `(${optionalPresentCpp(held)} ? ${optionalValueCpp(held)} : ${fallback})`;
 }
 
 /**
@@ -218,11 +249,6 @@ export function compileBooleanOptions<N extends string>(
                 `if (${present} && !${cpp}.is_object() && !${cpp}.is_array()) std::rethrow_exception(bbl::js::make_error("TypeError", ${context.cppString(`${spelling.subject} require ${spelling.forms}.`)}));`,
             );
             const declared = context.checker.getNonNullableType(type);
-            for (const [name, message] of Object.entries(
-                spelling.refused ?? {},
-            ))
-                if (declared.getProperty(name))
-                    context.fail(expression, message);
             for (const name of new Set([
                 ...names,
                 ...Object.keys(spelling.consume ?? {}).filter((name) =>
@@ -245,8 +271,6 @@ export function compileBooleanOptions<N extends string>(
                 expression,
                 `${spelling.subject} require ${spelling.forms}.`,
             );
-        for (const [name, message] of Object.entries(spelling.refused ?? {}))
-            if (properties[name]) context.fail(expression, message);
         for (const [name, consume] of Object.entries(spelling.consume ?? {}))
             if (properties[name]) consume(properties[name], present);
         for (const name of names) {
@@ -277,8 +301,6 @@ export function compileBooleanOptions<N extends string>(
         const initializer = ts.isShorthandPropertyAssignment(property)
             ? property.name
             : property.initializer;
-        const refusal = spelling.refused?.[name];
-        if (refusal) context.fail(property, refusal);
         const consume = spelling.consume?.[name];
         if (consume) consume(context.compileValue(initializer));
         else if (named(name)) {

@@ -158,6 +158,7 @@ const resourceMetadataFields = {
         "postProcessTask",
         "postProcessComposite",
         "renderTask",
+        "effectTask",
         "screenSpaceTask",
     ],
     "render-target": ["renderTargetSignature"],
@@ -214,8 +215,7 @@ const resourceMetadataFields = {
 export const valueMetadataFields = {
     ...resourceMetadataFields,
     data: [
-        "regexpCaptureCount",
-        "regexpUnicode",
+        "regexpLayout",
         ...new Set(Object.values(resourceMetadataFields).flat()),
         "fetchedBytes",
     ],

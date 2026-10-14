@@ -17,6 +17,7 @@ import {
     composeBillboardPickingShader,
     composeCloudPickingShader,
     composeDeformPickingShaders,
+    composeVatPickingShaders,
     composeDetailedMeshPickingShader,
     composeMeshPickingShader,
     composeThinInstancePickingShader,
@@ -1385,6 +1386,19 @@ async function main(): Promise<void> {
                   detailed:
                       result.manifest.features.includes("picking:detailed"),
               }),
+              // A baked mesh picks through its VAT pose; a thin one only
+              // where its clip params exist (texture or storage).
+              vat: await composeVatPickingShaders({
+                  regular: result.manifest.features.includes("mesh:vat"),
+                  thinTexture:
+                      gpuInstancing &&
+                      result.manifest.features.includes("mesh:vat-instances"),
+                  thinStorage:
+                      gpuInstancing &&
+                      result.manifest.features.includes(
+                          "mesh:vat-instance-storage",
+                      ),
+              }),
               ...(result.manifest.features.includes("loader:splat")
                   ? { cloud: await composeCloudPickingShader() }
                   : {}),
@@ -1562,6 +1576,9 @@ async function main(): Promise<void> {
         // the composition/lowering layer can name the scene call site that
         // pulled the owning feature in.
         featureSites: result.manifest.featureSites,
+        ...(result.manifest.audioLibraryRoots
+            ? { audioLibraryRoots: result.manifest.audioLibraryRoots }
+            : {}),
         sourceMeshWalks: (result.manifest.meshWalks?.length ?? 0) > 0,
         ...(assetJoin.assetLightNodes !== undefined
             ? { assetLightNodes: assetJoin.assetLightNodes }

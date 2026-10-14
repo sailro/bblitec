@@ -112,21 +112,21 @@ test("localStorage lowers to the PAL store behind its own feature", () => {
     assert.match(result.cpp, /#include <bblite\/js_json\.hpp>/);
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*\[\[maybe_unused\]\] bbl::js::Nullable<std::string> \w+ = \1\("sandblox-world"\)/,
+        /const auto (\w+) = bbl::js::local_storage_object\(\);[\s\S]*?const auto (\w+) = bbl::js::snapshot_callback\(\(\1\)->get_item\);\s*\[\[maybe_unused\]\] bbl::js::Nullable<std::string> \w+ = \2\("sandblox-world"\)/,
     );
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_set_item\);\s*\1\("sandblox-world", bbl::js::json_stringify\(/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(\(\w+\)->set_item\);\s*\1\("sandblox-world", bbl::js::json_stringify\(/,
     );
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_remove_item\);\s*\1\("sandblox-world"\)/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(\(\w+\)->remove_item\);\s*\1\("sandblox-world"\)/,
     );
     // The reads and writes are inside the source's own try/catch, so a PAL
     // failure takes the arm the browser's quota error takes.
     assert.match(
         result.cpp,
-        /try \{[\s\S]*local_storage_set_item[\s\S]*\} catch \(\.\.\.\) \{/,
+        /try \{[\s\S]*->set_item[\s\S]*\} catch \(\.\.\.\) \{/,
     );
     assert.deepEqual(
         result.manifest.adaptations
@@ -150,7 +150,7 @@ test("getItem answers a nullable string with JavaScript falsiness", () => {
     `);
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*\[\[maybe_unused\]\] bbl::js::Nullable<std::string> \w+ = \1\(/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(\(\w+\)->get_item\);\s*\[\[maybe_unused\]\] bbl::js::Nullable<std::string> \w+ = \1\(/,
     );
     // Absent AND empty are both falsy, which `has_value()` alone is not.
     assert.match(result.cpp, /if \(bbl::js::nullable_truthy\(\w+\)\)/);
@@ -166,7 +166,7 @@ test("a shadowed localStorage is not the Web Storage global", () => {
         !result.manifest.features.includes("storage:local"),
         "a lexical shadow is the scene's own object, not the host store",
     );
-    assert.doesNotMatch(result.cpp, /local_storage_get_item/);
+    assert.doesNotMatch(result.cpp, /local_storage_object/);
 });
 
 test("an unimplemented Web Storage method refuses by name", () => {

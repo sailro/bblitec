@@ -28,8 +28,9 @@ public:
             loop_.on_unhandled_rejection({});
         });
     }
-    void add(bool rejection, std::uint64_t identity, Callback callback, bool once) {
-        listeners(rejection).add(identity, std::move(callback), once);
+    bool add(bool rejection, std::uint64_t identity, Callback callback, bool once,
+             ListenerLeasePtr lease = {}) {
+        return listeners(rejection).add(identity, std::move(callback), once, std::move(lease));
     }
     void remove(bool rejection, std::uint64_t identity) { listeners(rejection).remove(identity); }
 

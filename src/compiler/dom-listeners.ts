@@ -1,9 +1,14 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
-import { optionalPresentCpp, valueForKind, type Value } from "./types.js";
+import { valueForKind, type Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { documentEngine } from "./window-events.js";
-import { compileBooleanOptions } from "./option-helpers.js";
+import {
+    compileBooleanOptions,
+    optionalOptionMember,
+    optionalOptionValue,
+} from "./option-helpers.js";
+import { pinCpp } from "./evaluation-order.js";
 
 type Context = Pick<
     LoweringServices,
@@ -29,7 +34,6 @@ type Context = Pick<
     | "emit"
     | "emitDiscardedValue"
     | "probeEmission"
-    | "deferredCapabilities"
 >;
 
 const pointerNames = new Set([
@@ -73,6 +77,8 @@ const serviceNames = new Set([
     "rejectionhandled",
     "visibilitychange",
     "pointerlockchange",
+    "fullscreenchange",
+    "fullscreenerror",
     "load",
     "DOMContentLoaded",
     "gamepadconnected",
@@ -202,25 +208,56 @@ export function eventHandlerResult(
     };
 }
 
+type ListenerOptionsContext = Pick<
+    Context,
+    | "unwrap"
+    | "checker"
+    | "conditions"
+    | "compileValue"
+    | "cppString"
+    | "allocateTemporaryCppName"
+    | "emit"
+    | "emitDiscardedValue"
+    | "dataTypes"
+    | "dataLowerer"
+    | "fail"
+>;
+
+/** Flattened listener options: flag conditions and, when present, `signal`. */
+export interface ListenerOptions {
+    capture: string;
+    once: string;
+    passive: string;
+    /** A `bbl::js::AbortSignal`, empty when the member is absent at run time. */
+    signal?: string;
+}
+
+/** Whether a listener options operand's type declares a `signal` member. */
+export function declaresListenerSignal(
+    checker: ts.TypeChecker,
+    expression: ts.Expression | undefined,
+): boolean {
+    const declares = (type: ts.Type): boolean =>
+        type.isUnion()
+            ? type.types.some(declares)
+            : type.getProperty("signal") !== undefined;
+    return (
+        expression !== undefined &&
+        declares(
+            checker.getNonNullableType(checker.getTypeAtLocation(expression)),
+        )
+    );
+}
+
+/**
+ * `addEventListener` options as the DOM flattens them: `capture` alone for a
+ * removal; `capture`, `once`, `passive` and `signal` for an addition.
+ */
 export function listenerOptions(
-    context: Pick<
-        Context,
-        | "unwrap"
-        | "checker"
-        | "conditions"
-        | "compileValue"
-        | "cppString"
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "emitDiscardedValue"
-        | "dataTypes"
-        | "dataLowerer"
-        | "fail"
-    >,
+    context: ListenerOptionsContext,
     expression: ts.Expression | undefined,
     removing: boolean,
-    consumeSignal?: (value: Value, present?: string) => void,
-): { capture: string; once: string; passive: string } {
+): ListenerOptions {
     const result = { capture: "false", once: "false", passive: "false" };
     if (!expression) return result;
     if (
@@ -231,38 +268,47 @@ export function listenerOptions(
         result.capture = context.conditions.compileCondition(expression);
         return result;
     }
-    return {
-        ...result,
-        ...compileBooleanOptions(
-            context,
-            context.dataLowerer,
-            expression,
-            removing
-                ? (["capture"] as const)
-                : (["capture", "once", "passive"] as const),
-            {
-                subject: "Event listener options",
-                member: "event option",
-                forms: "a boolean or a represented options record",
-                temporary: "event_option",
-                ...(removing
-                    ? {}
-                    : consumeSignal
-                      ? { consume: { signal: consumeSignal } }
-                      : {
-                            refused: {
-                                signal: "AbortSignal listener lifetime is not represented yet.",
-                            },
-                        }),
-            },
-        ),
-    };
+    let signal: string | undefined;
+    const flags = compileBooleanOptions(
+        context,
+        context.dataLowerer,
+        expression,
+        removing
+            ? (["capture"] as const)
+            : (["capture", "once", "passive"] as const),
+        {
+            subject: "Event listener options",
+            member: "event option",
+            forms: "a boolean or a represented options record",
+            temporary: "event_option",
+            ...(removing
+                ? {}
+                : {
+                      consume: {
+                          signal: (value: Value, present?: string) => {
+                              signal = listenerSignal(
+                                  context,
+                                  value,
+                                  expression,
+                                  present,
+                              );
+                          },
+                      },
+                  }),
+        },
+    );
+    return { ...result, ...flags, ...(signal ? { signal } : {}) };
 }
 
-/** Convert a reached lifetime operand without fabricating an AbortSignal. */
-function deferredListenerSignal(
+/**
+ * The `signal` member read once, in dictionary order, into a
+ * `bbl::js::AbortSignal` that is empty while the options or the member are
+ * absent; undefined when the member can only be undefined.
+ */
+function listenerSignal(
     context: Pick<
         Context,
+        | "dataLowerer"
         | "dataTypes"
         | "fail"
         | "allocateTemporaryCppName"
@@ -272,11 +318,10 @@ function deferredListenerSignal(
     value: Value,
     site: ts.Expression,
     present?: string,
-): string {
-    const type =
-        value.dataType?.kind === "optional"
-            ? value.dataType.inner
-            : value.dataType;
+): string | undefined {
+    const stored = value.dataType;
+    const optional = stored?.kind === "optional";
+    const type = optional ? stored.inner : stored;
     if (value.kind === "json-null" || type?.kind === "undefined") {
         if (value.kind === "json-null" && value.cpp !== "std::nullopt")
             return context.fail(
@@ -289,111 +334,61 @@ function deferredListenerSignal(
                 code: `if (${present}) { static_cast<void>(${value.cpp}); }`,
             });
         else context.emitDiscardedValue(value);
-        return "false";
+        return undefined;
     }
-    if (type?.kind !== "abort-signal")
+    if (!stored || type?.kind !== "abort-signal")
         return context.fail(
             site,
             "Event listener signal requires the DOM AbortSignal identity.",
         );
-    const name = context.allocateTemporaryCppName("listener_signal");
-    context.emit({
-        kind: "declaration",
-        type: "const auto",
-        name,
-        initializer: present
-            ? `(${present} ? ${value.cpp} : ${context.dataTypes.cppType(value.dataType!)}{})`
-            : value.cpp,
-        attributes: "[[maybe_unused]] ",
-    });
-    const hasValue =
-        value.dataType?.kind === "optional"
-            ? optionalPresentCpp(name)
-            : `static_cast<bool>(${name})`;
-    return present ? `(${present} && ${hasValue})` : hasValue;
+    const signalType = context.dataTypes.cppType(type);
+    const read = optional
+        ? optionalOptionValue(
+              optionalOptionMember(
+                  context.dataLowerer,
+                  value,
+                  present,
+                  type,
+                  "listener_signals",
+                  site,
+              ),
+              `${signalType}{}`,
+          )
+        : present
+          ? `(${present} ? ${value.cpp} : ${signalType}{})`
+          : value.cpp;
+    return pinCpp(context, read, "listener_signal", `const ${signalType}`);
 }
 
-export function hasDeferredListenerSignal(
-    context: Pick<Context, "options" | "checker" | "unwrap">,
-    call: ts.CallExpression,
-): boolean {
-    const callee = context.unwrap(call.expression);
-    const hasSignal = (type: ts.Type): boolean =>
-        type.isUnion()
-            ? type.types.some(hasSignal)
-            : type.getProperty("signal") !== undefined;
-    return Boolean(
-        context.options.deferredCapabilities &&
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "addEventListener" &&
-        call.arguments[2] &&
-        hasSignal(
-            context.checker.getNonNullableType(
-                context.checker.getTypeAtLocation(call.arguments[2]),
-            ),
-        ),
-    );
+/**
+ * Adds a listener through `add(lease)`: plainly, or under `signal`'s lifetime
+ * when the options may carry one (`bbl::js::add_event_listener`). `lease` is
+ * the trailing lease argument, `", <lease>"`, or empty.
+ */
+export function listenerAddition(
+    signal: string | undefined,
+    add: (lease: string) => string,
+): string {
+    return signal
+        ? `bbl::js::add_event_listener(${signal}, [&](bbl::ListenerLeasePtr listener_lease) { return ${add(", std::move(listener_lease)")}; })`
+        : add("");
 }
 
-export function compileDeferredListenerOptions(
-    context: Pick<
-        Context,
-        | "unwrap"
-        | "checker"
-        | "conditions"
-        | "compileValue"
-        | "cppString"
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "emitDiscardedValue"
-        | "dataTypes"
-        | "dataLowerer"
-        | "fail"
-        | "deferredCapabilities"
-    >,
-    call: ts.CallExpression,
+/**
+ * An addition's listener and options in evaluation order: options that may
+ * carry a `signal`, which evaluates after the listener, pin it first.
+ */
+export function signalListener(
+    context: ListenerOptionsContext,
+    options: ts.Expression | undefined,
     listener: string,
-): { listener: string; capture: string; once: string; passive: string } {
-    const name = context.allocateTemporaryCppName("event_listener");
-    context.emit({
-        kind: "declaration",
-        type: "const auto",
-        name,
-        initializer: listener,
-        attributes: "[[maybe_unused]] ",
-    });
-    let signal: string | undefined;
-    const options = listenerOptions(
-        context,
-        call.arguments[2],
-        false,
-        (value, present) => {
-            signal = deferredListenerSignal(
-                context,
-                value,
-                call.arguments[2]!,
-                present,
-            );
-        },
-    );
-    if (signal !== undefined) {
-        const trap = context.deferredCapabilities.emitKnown(call, {
-            id: "dom:EventTarget.addEventListener.signal",
-            origin: "dom",
-            operation: "call",
-            timing: "throw",
-            signature: context.checker.signatureToString(
-                context.checker.getResolvedSignature(call)!,
-                call,
-                ts.TypeFormatFlags.NoTruncation,
-            ),
-        })!;
-        context.emit({
-            kind: "expression",
-            code: `if (${signal}) { ${trap.cpp}; }`,
-        });
-    }
-    return { listener: name, ...options };
+): { listener: string; options: ListenerOptions } {
+    return {
+        listener: declaresListenerSignal(context.checker, options)
+            ? pinCpp(context, listener, "event_listener")
+            : listener,
+        options: listenerOptions(context, options, false),
+    };
 }
 
 export function pinDetached(
@@ -625,33 +620,35 @@ export function emitDomEventListener(
     const callback = call.arguments[1]!;
     context.callbacks.hoistForwardCallbackBindings(callback);
     const removing = callee.name.text === "removeEventListener";
-    let identity: string;
-    let listener: string | undefined;
+    const prefix = `${engine}, ${target}, ${context.cppString(type)}`;
     if (removing) {
         const value = context.compileValue(callback);
         const pinned =
             value.kind === "data"
                 ? pinDetached(context, value, "event_callback", callback)
                 : value;
-        identity = callbackIdentity(pinned, callback);
-    } else {
-        const compiled = compileDomCallback(context, callback, family, engine);
-        identity = compiled.identity;
-        listener = compiled.cpp;
+        const identity = callbackIdentity(pinned, callback);
+        const options = listenerOptions(context, call.arguments[2], true);
+        context.emit({
+            kind: "expression",
+            code: `bbl::off_dom_${family}(${prefix}, ${identity}, ${options.capture});`,
+        });
+        return true;
     }
-    const deferredOptions =
-        hasDeferredListenerSignal(context, call) && listener
-            ? compileDeferredListenerOptions(context, call, listener)
-            : undefined;
-    if (deferredOptions) listener = deferredOptions.listener;
-    const options =
-        deferredOptions ??
-        listenerOptions(context, call.arguments[2], removing);
+    const compiled = compileDomCallback(context, callback, family, engine);
+    const { listener, options } = signalListener(
+        context,
+        call.arguments[2],
+        compiled.cpp,
+    );
     context.emit({
         kind: "expression",
-        code:
-            `bbl::${removing ? "off" : "on"}_dom_${family}(${engine}, ${target}, ${context.cppString(type)}, ${identity}, ` +
-            `${removing ? options.capture : `${listener}, ${options.capture}, ${options.once}, ${options.passive}`});`,
+        code: `${listenerAddition(
+            options.signal,
+            (lease) =>
+                `bbl::on_dom_${family}(${prefix}, ${compiled.identity}, ${listener}, ` +
+                `${options.capture}, ${options.once}, ${options.passive}${lease})`,
+        )};`,
     });
     return true;
 }

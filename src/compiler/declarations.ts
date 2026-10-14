@@ -13,6 +13,7 @@ import {
     isPrimitiveBrowserValue,
 } from "./browser-erasure.js";
 import { CompileError } from "./compile-error.js";
+import { storesAsTexture2D } from "./data-sinks/resources.js";
 import { isNeverResized } from "./data-lowering.js";
 import { isStoringDataCall } from "./receiver-methods.js";
 import { mutatingArrayMethods } from "./receiver-methods.js";
@@ -112,6 +113,7 @@ interface DeclarationContext
         Pick<
             LoweringServices,
             | "absenceTags"
+            | "impureReadCount"
             | "allocateTemporaryCppName"
             | "classLowerer"
             | "callbackIdentity"
@@ -983,7 +985,9 @@ export class DeclarationLowerer {
             cppName,
         );
         const initializerBoundary = this.context.nativeBindingCheckpoint();
+        const impureReads = this.context.impureReadCount;
         let value = this.context.compileValue(declaration.initializer);
+        const readsImpure = this.context.impureReadCount !== impureReads;
         if (
             nullableResource &&
             !this.context.dynamicBindings.has(declaration) &&
@@ -1125,6 +1129,7 @@ export class DeclarationLowerer {
         }
         if (
             value.impure ||
+            readsImpure ||
             this.expressionHasObservableEvaluation(declaration.initializer)
         ) {
             // A `const` bound to a clock is a snapshot of it, so later
@@ -3001,6 +3006,29 @@ export class DeclarationLowerer {
                 this.context.dataTypes.markStoredObjectReferences(annotated);
         }
         const initializerLiteral = this.context.unwrap(declaration.initializer);
+        // Texture2D's stored variant holds a nullable local only when it
+        // represents the initializer's texture; a sprite render texture keeps
+        // its producer's storage, as a search's handle does.
+        const producerTexture =
+            annotated?.kind === "optional" &&
+            annotated.inner.kind === "handle" &&
+            annotated.inner.handle === "texture" &&
+            this.context.probeEmission(
+                () => {
+                    try {
+                        const value = this.context.compileValue(initializer);
+                        return (
+                            (value.kind === "texture" ||
+                                value.kind === "render-texture") &&
+                            !storesAsTexture2D(value)
+                        );
+                    } catch (error) {
+                        if (error instanceof CompileError) return false;
+                        throw error;
+                    }
+                },
+                () => false,
+            );
         if (
             !annotated ||
             annotated.kind === "number" ||
@@ -3011,7 +3039,8 @@ export class DeclarationLowerer {
             annotated.kind === "table" ||
             (annotated.kind === "optional" &&
                 annotated.inner.kind === "handle" &&
-                annotated.inner.handle !== "worker-media-query") ||
+                annotated.inner.handle !== "worker-media-query" &&
+                (annotated.inner.handle !== "texture" || producerTexture)) ||
             (annotated.kind === "tuple" &&
                 !ts.isArrayLiteralExpression(initializerLiteral) &&
                 !ts.isConditionalExpression(initializerLiteral))
@@ -3023,7 +3052,9 @@ export class DeclarationLowerer {
             // search) keeps the value path too: a handle a search
             // produced carries its found flag, which is this port's
             // representation of that optionality. Media queries instead own
-            // a shared runtime object and can use ordinary nullable storage.
+            // a shared runtime object and can use ordinary nullable storage,
+            // and so does a Texture2D: its stored variant is the nullable
+            // storage a field or a grab read already holds it in.
             //
             // A HANDLE annotation is carried by the value the initializer
             // produces rather than by this declaration: `const box: Mesh =
@@ -4551,6 +4582,9 @@ export class DeclarationLowerer {
                 initializer: owner.cpp,
             });
             const consumed = new EmissionSet<string>();
+            const omits = pattern.elements.some(
+                (element) => element.dotDotDotToken,
+            );
             for (const element of pattern.elements) {
                 if (element.dotDotDotToken) {
                     this.bindStructRest(
@@ -4678,6 +4712,8 @@ export class DeclarationLowerer {
                     type: `${this.context.dataTypes.cppType(field.type)}${aliases ? "&" : ""}`,
                     name: cppName,
                     initializer: fieldCpp,
+                    // `{ omitted: _, ...rest }` binds a property only to leave it out.
+                    ...(omits ? { attributes: "[[maybe_unused]] " } : {}),
                 });
                 const fieldValue = this.context.dataLowerer.leafValue(
                     cppName,

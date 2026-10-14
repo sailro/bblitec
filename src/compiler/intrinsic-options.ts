@@ -205,6 +205,7 @@ export class IntrinsicOptions {
     public compileShaderMaterialOptions(expression: ts.Expression): {
         name: string;
         id: number;
+        transmissive: boolean;
         dynamicUniforms?: Array<{
             offset: number;
             components: string[];

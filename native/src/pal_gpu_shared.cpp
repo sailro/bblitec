@@ -2,6 +2,7 @@
 // section per concern header. They read the
 // scene's generated headers, so this unit compiles once per scene -- once,
 // rather than in every backend unit that includes the headers.
+#include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -1451,6 +1452,35 @@ ShadowCasterMatrices shadow_caster_matrices(const Engine& engine, const FrameTas
 #endif
     return {generator.caster_view_projection, generator.caster_view};
 }
+
+ShadowTaskPass shadow_task_pass(const Engine& engine, const ShadowRefreshState& refresh,
+                                const FrameTaskRecord& task) {
+    ShadowTaskPass pass;
+#if BBLITE_CSM_STATIC_CACHE
+    const ShadowGeneratorRecord& generator =
+        handle_at(engine.shadow_generators, task.render.shadow_generator);
+    // `renderCsmShadowMapCached`: the copied cache layers reach the map before
+    // any dynamic pass draws over it, which then loads them.
+    pass.copy_layers = csm_cache_copies(engine, task);
+    if (pass.copy_layers)
+        pass.copy_source = generator.csm_cache->cache_target;
+    pass.draws = generator.csm_cache ? csm_cache_task_due(generator, task)
+                                     : refresh.gates[task.render.shadow_generator.value].due;
+    pass.load_depth = !task.render.depth_clear;
+#else
+    (void)engine;
+    pass.draws = refresh.gates[task.render.shadow_generator.value].due;
+#endif
+    return pass;
+}
+
+std::vector<TaskHandle> take_moved_task_lists([[maybe_unused]] ShadowRefreshState& refresh) {
+#if BBLITE_CSM_STATIC_CACHE
+    return std::exchange(refresh.moved_tasks, {});
+#else
+    return {};
+#endif
+}
 #endif
 
 // ---------------------------------------------------------------------------
@@ -1800,6 +1830,24 @@ int pick_mesh_projection(const Engine& engine, const MeshRecord& mesh) {
 }
 #endif
 
+#if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING && BBLITE_VAT_PICKING
+int pick_vat_projection(const MeshRecord& mesh, bool thin) {
+    if (!mesh.has_vat)
+        return -1;
+    // A thin candidate reads its clip params from the published storage,
+    // else from the instance texture; with neither the pin draws it affine.
+    const bool instance_storage = mesh.vat.instance_storage.has_value();
+    if (thin && !instance_storage && mesh.vat.instance_texels == 0)
+        return -1;
+    for (std::size_t index = 0; index < upstream::pick_vat_variants.size(); ++index) {
+        const auto& variant = upstream::pick_vat_variants[index];
+        if (variant.thin == thin && (!thin || variant.instance_storage == instance_storage))
+            return static_cast<int>(index);
+    }
+    throw std::runtime_error("pick candidate reached an uncomposed VAT projection");
+}
+#endif
+
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
 std::optional<std::size_t> picker_scene_index(const Engine& engine, GpuPickerHandle picker,
                                               const std::vector<std::shared_ptr<Scene>>& scenes) {
@@ -1894,17 +1942,17 @@ bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task) {
     return false;
 }
 
-const SolidTexture& effect_texture_for_binding(const EffectWrapperRecord& wrapper,
-                                               std::string_view name) {
+const EffectTextureSlot& effect_texture_slot(const EffectWrapperRecord& wrapper,
+                                             std::uint32_t binding) {
     for (const EffectTextureSlot& candidate : wrapper.textures) {
-        if (candidate.name != name)
+        if (candidate.binding != binding)
             continue;
         if (!candidate.set)
             break;
-        return candidate.texture;
+        return candidate;
     }
-    throw std::runtime_error("Effect texture binding '" + std::string(name) +
-                             "' was not set before the first render.");
+    throw std::runtime_error("Effect texture binding " + std::to_string(binding) +
+                             " was not set before the first render.");
 }
 
 void require_effect_uniform_size(const EffectWrapperRecord& wrapper, std::uint32_t uniform_bytes) {
@@ -1936,15 +1984,6 @@ ScaledExtents scaled_target_extents(const RenderTargetRecord& record, std::uint3
     }
     return ScaledExtents{scaled_target_extent(source_width, record.width_ratio),
                          scaled_target_extent(source_height, record.height_ratio)};
-}
-
-void synchronize_render_target_lifecycles(const Engine& engine) {
-    const auto count = engine.render_targets.size();
-    for (std::size_t index = 0; index < count; ++index) {
-        const auto lifecycle = engine.render_targets[index].lifecycle;
-        if (lifecycle)
-            lifecycle->synchronize();
-    }
 }
 
 TextureFormatClass geometry_format_class(const GeometryTextureDescription& description) {

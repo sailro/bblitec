@@ -21,7 +21,17 @@ import {
     visitUiStyleSheetDeclarations,
 } from "../deferred-ui-style.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
+import {
+    unrepresentedUiAnimation,
+    unrepresentedUiEasing,
+} from "../ui-motion.js";
 import { uiGradientBackground } from "../ui-gradient-background.js";
+import { unresolvableUiVariableMathUnit } from "../ui-variable-math.js";
+import {
+    parseHtmlFragment,
+    parseHtmlFragments,
+    type HtmlFragmentNode,
+} from "../host-page-parser.js";
 import { supportedUiGridPlacement, supportedUiGridTracks } from "../ui-grid.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
 import {
@@ -100,6 +110,11 @@ import type { LoweringServices } from "./lowering-services.js";
 import { declaredInDomLibrary, declaredSymbol } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
+import {
+    createsFormControls,
+    parseAuthoredMarkup,
+    type UiAuthoredMarkupNode,
+} from "./ui-authored-markup.js";
 import { argumentAt } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
@@ -110,7 +125,7 @@ import {
 
 /** Browser markup whose renderer exists but retained DOM state has no bridge. */
 class DeferredMarkupBridge extends Error {
-    constructor(readonly capability: "svg-image" | "form-controls") {
+    constructor(readonly capability: "svg-image") {
         super(`Retained markup requires the ${capability} bridge.`);
     }
 }
@@ -149,6 +164,58 @@ type UiMarkupPart =
           yes: UiMarkupPart[];
           no: UiMarkupPart[];
       };
+
+/** The placeholder a runtime value takes in a markup source, by its order. */
+function uiMarkupHole(index: number): string {
+    return `__BBLITE_UI_MARKUP_${index}__`;
+}
+
+/**
+ * The markup sources `parts` assemble, one per branch path (at most `limit`):
+ * runtime text takes the next hole, stored markup its fixed fragments around
+ * one, as the structured lowering spells them.
+ */
+function uiMarkupSources(
+    parts: readonly UiMarkupPart[],
+    limit: number,
+    prefix = "",
+    holes = 0,
+): string[] {
+    let source = prefix;
+    let next = holes;
+    for (let index = 0; index < parts.length; index++) {
+        const part = parts[index]!;
+        if (typeof part === "string") source += part;
+        else if (part.kind === "text") source += uiMarkupHole(next++);
+        else if (part.kind === "stored") {
+            const hole = part.shape.indexOf(null);
+            source +=
+                hole < 0
+                    ? part.shape.join("")
+                    : part.shape.slice(0, hole).join("") +
+                      uiMarkupHole(next++) +
+                      part.shape.slice(hole + 1).join("");
+        } else {
+            const rest = parts.slice(index + 1);
+            const yes = uiMarkupSources(
+                [...part.yes, ...rest],
+                limit,
+                source,
+                next,
+            );
+            return [
+                ...yes,
+                ...uiMarkupSources(
+                    [...part.no, ...rest],
+                    limit - yes.length,
+                    source,
+                    next,
+                ),
+            ].slice(0, Math.max(limit, 0));
+        }
+    }
+    return limit > 0 ? [source] : [];
+}
 
 /** Compiler state: written in place only through `writable()`; its sets are journaled. */
 interface UiStaticElement {
@@ -287,6 +354,12 @@ export class UiProjection {
 
     private readonly uiMarkupAlternativeOwners = new EmissionSet<number>();
     private readonly uiMarkupNodeIds = new EmissionMap<number, number>();
+    /**
+     * @unjournaled Whether the program's candidate markup was parsed together
+     * (`prefetchUiMarkup`): a cache of fragments keyed by their source text,
+     * filled once per compile whatever a transaction later keeps.
+     */
+    private uiMarkupPrefetched = false;
 
     private uiRuleSuffix(
         rule: Pick<
@@ -1043,7 +1116,8 @@ export class UiProjection {
         const value = this.context.unwrap(expression);
         if (
             ts.isPropertyAccessExpression(value) &&
-            value.name.text === "activeElement" &&
+            (value.name.text === "activeElement" ||
+                value.name.text === "fullscreenElement") &&
             this.context.libraryGlobal(value.expression) === "document"
         )
             return true;
@@ -1140,10 +1214,20 @@ export class UiProjection {
         }
     }
 
-    private collectUiStringParts(
+    /**
+     * The static texts and operands of a template or `+` concatenation, in
+     * order, or undefined for any other expression. Template spans are
+     * operands; with `runtimeOperands`, a string `+` admits runtime operands
+     * too, and nested templates and concatenations in operands are collected.
+     */
+    public collectUiStringParts(
         expression: ts.Expression,
+        runtimeOperands = false,
     ): Array<string | ts.Expression> | undefined {
         const parts: Array<string | ts.Expression> = [];
+        const operand = (node: ts.Expression): void => {
+            if (!collect(node)) parts.push(node);
+        };
         const collect = (node: ts.Expression): boolean => {
             const value = this.tryUiStaticString(node);
             if (value !== undefined) {
@@ -1154,16 +1238,28 @@ export class UiProjection {
             if (ts.isTemplateExpression(current)) {
                 parts.push(current.head.text);
                 for (const span of current.templateSpans) {
-                    parts.push(span.expression, span.literal.text);
+                    if (runtimeOperands) operand(span.expression);
+                    else parts.push(span.expression);
+                    parts.push(span.literal.text);
                 }
                 return true;
             }
-            return (
-                ts.isBinaryExpression(current) &&
-                current.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-                collect(current.left) &&
-                collect(current.right)
-            );
+            if (
+                !ts.isBinaryExpression(current) ||
+                current.operatorToken.kind !== ts.SyntaxKind.PlusToken
+            )
+                return false;
+            if (!runtimeOperands)
+                return collect(current.left) && collect(current.right);
+            if (
+                (this.context.checker.getTypeAtLocation(current).flags &
+                    ts.TypeFlags.StringLike) ===
+                0
+            )
+                return false;
+            operand(current.left);
+            operand(current.right);
+            return true;
         };
         return collect(expression) ? parts : undefined;
     }
@@ -1434,6 +1530,30 @@ export class UiProjection {
         parentElement.children.add(child.uiStaticId);
     }
 
+    /**
+     * A child joining `reference`'s parent beside it. A reference without a
+     * recorded parent leaves the model unchanged, as an unknown receiver's
+     * insertBefore does.
+     */
+    public recordUiStaticSiblingInsertion(
+        reference: Value,
+        child: Value,
+    ): void {
+        const id = reference.uiStaticId;
+        if (id === undefined) return;
+        if (this.uiStaticRootOrder.includes(id)) {
+            this.recordUiStaticRootAppend(child);
+            return;
+        }
+        for (const [parentId, parent] of [...this.uiStaticElements])
+            if (parent.children.has(id))
+                this.recordUiStaticAppend(
+                    { kind: "ui-element", cpp: "", uiStaticId: parentId },
+                    child,
+                    false,
+                );
+    }
+
     public recordUiStaticReplaceChildren(parent: Value): void {
         const element = this.uiStaticElement(parent);
         if (!element) return;
@@ -1509,6 +1629,9 @@ export class UiProjection {
      * none of the four sets refuses at generation naming itself, so an
      * unreviewed declaration can never silently drop into the projection.
      */
+    /** Closed markup alternatives one innerHTML write lowers beyond its first. */
+    private static readonly UI_MARKUP_ALTERNATIVES = 32;
+
     private static readonly PROJECTED_UI_STYLE_PROPERTIES =
         new EmissionSet<string>([
             ...uiLogicalSpacingProperties,
@@ -1519,6 +1642,7 @@ export class UiProjection {
             "align-items",
             "align-self",
             "animation",
+            "animation-delay",
             "background",
             "background-color",
             "background-clip",
@@ -1628,6 +1752,7 @@ export class UiProjection {
             "transform",
             "transform-origin",
             "transition",
+            "transition-delay",
             "vertical-align",
             "visibility",
             "white-space",
@@ -1951,6 +2076,21 @@ export class UiProjection {
         return { uiCanvas: true, uiCanvasId: this.retainedCanvasId(id) };
     }
 
+    /** Math over var() resolves natively after substitution only in the units the PAL math reads. */
+    private refuseUnresolvableVariableMath(
+        property: string,
+        value: string,
+        site: ts.Node | undefined,
+    ): void {
+        const unit = unresolvableUiVariableMathUnit(value);
+        if (unit !== undefined)
+            this.uiStyleRefusal(
+                site,
+                property,
+                `CSS math over var() resolves px/rem/viewport lengths, times and angles; '${unit}' is not represented`,
+            );
+    }
+
     private uiStyleRefusal(
         site: ts.Node | undefined,
         property: string,
@@ -1999,6 +2139,7 @@ export class UiProjection {
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            this.refuseUnresolvableVariableMath(property, literalValue, site);
             if (UiProjection.isCustomStyleProperty(property)) return;
             if (
                 property === "place-items" &&
@@ -2041,6 +2182,14 @@ export class UiProjection {
                         "only auto or an opaque literal hex, rgb() or named color is represented",
                     );
                 return;
+            }
+            if (property === "transition" || property === "animation") {
+                const reason =
+                    unrepresentedUiEasing(literalValue) ??
+                    (property === "animation"
+                        ? unrepresentedUiAnimation(literalValue)
+                        : undefined);
+                if (reason) this.uiStyleRefusal(site, property, reason);
             }
             if (property === "scale") {
                 if (
@@ -2683,6 +2832,39 @@ export class UiProjection {
             );
         }
         if (name !== "style") return value;
+        // Importance outranks order, so important declarations lower as a
+        // group after the normal ones, each native declaration keeping the
+        // mark (private PAL metadata excepted).
+        const normal: string[] = [];
+        const important: string[] = [];
+        UiProjection.forEachUiStyleDeclaration(value, (declaration) => {
+            const unmarked = declaration.replace(/\s*!\s*important\s*$/i, "");
+            (unmarked === declaration ? normal : important).push(unmarked);
+        });
+        if (important.length > 0) {
+            const marked: string[] = [];
+            UiProjection.forEachUiStyleDeclaration(
+                this.lowerUiAttributeLiteral(
+                    "style",
+                    important.join(";"),
+                    site,
+                ),
+                (declaration) => {
+                    if (!declaration.trim()) return;
+                    marked.push(
+                        declaration.trim().startsWith("--bbl-")
+                            ? declaration
+                            : `${declaration} !important`,
+                    );
+                },
+            );
+            return [
+                this.lowerUiAttributeLiteral("style", normal.join(";"), site),
+                ...marked,
+            ]
+                .filter((declarations) => declarations.trim())
+                .join(";");
+        }
         const customDeclarations: string[] = [];
         const authoredDeclarations: string[] = [];
         UiProjection.forEachUiStyleDeclaration(value, (declaration) => {
@@ -2697,6 +2879,14 @@ export class UiProjection {
             );
         });
         value = authoredDeclarations.join(";");
+        for (const declaration of customDeclarations) {
+            const colon = declaration.indexOf(":");
+            this.refuseUnresolvableVariableMath(
+                declaration.slice(0, colon).trim(),
+                declaration.slice(colon + 1).toLowerCase(),
+                site,
+            );
+        }
         const authoredDisplay = /(?:^|;)\s*display\s*:/i.test(value);
         this.auditUiStyleDeclarations(value, site);
         {
@@ -3881,35 +4071,79 @@ export class UiProjection {
         return true;
     }
 
+    /**
+     * Parse, in one browser session per compile, every markup source the
+     * program's innerHTML writes can lower (`uiMarkupForm`, each branch of
+     * structured markup), and every string literal that opens a tag, which
+     * a write reaches through a parameter or binding. A write whose form
+     * refuses is left to its own lowering, which reports it.
+     */
+    private prefetchUiMarkup(): void {
+        if (this.uiMarkupPrefetched) return;
+        this.uiMarkupPrefetched = true;
+        const candidates: string[] = [];
+        const visit = (node: ts.Node): void => {
+            if (
+                (ts.isStringLiteral(node) ||
+                    ts.isNoSubstitutionTemplateLiteral(node)) &&
+                /<[A-Za-z!/]/.test(node.text)
+            )
+                candidates.push(node.text);
+            else if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isPropertyAccessExpression(node.left) &&
+                node.left.name.text === "innerHTML"
+            ) {
+                try {
+                    const form = this.uiMarkupForm(node.right);
+                    candidates.push(
+                        ...(form.kind === "structured"
+                            ? uiMarkupSources(
+                                  this.uiMarkupParts(node.right),
+                                  UiProjection.UI_MARKUP_ALTERNATIVES + 1,
+                              )
+                            : [form.source]),
+                    );
+                } catch (error) {
+                    if (!(error instanceof CompileError)) throw error;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const source of this.context.sourceFiles()) visit(source);
+        parseHtmlFragments(candidates);
+    }
+
     private lowerUiMarkupLiteral(
         value: string,
         site?: ts.Node,
         ownerId?: number,
     ): string {
+        this.prefetchUiMarkup();
         const fail = (message: string): never => {
             if (site) this.context.fail(site, `Native UI innerHTML ${message}`);
             this.context.failAtFile(`Native UI innerHTML ${message}`);
         };
         const roots: UiStaticMarkupNode[] = [];
-        const stack: UiStaticMarkupNode[] = [];
-        const output: string[] = [];
         let nextMarkupNodeId =
             ownerId === undefined
                 ? 0
                 : (this.uiMarkupNodeIds.get(ownerId) ?? 0);
-        const svgPaintStack: Array<{
+        interface SvgPaint {
             usesCurrentColor: boolean;
             usesLiteralPaint: boolean;
             fill: string;
             stroke: string;
-            openingOutputIndex?: number;
-        }> = [];
+        }
         const escapeAttribute = (text: string): string =>
             text
                 .replaceAll("&", "&amp;")
                 .replaceAll('"', "&quot;")
                 .replaceAll("<", "&lt;")
                 .replaceAll(">", "&gt;");
+        const escapeText = (text: string): string =>
+            text.replaceAll("&", "&amp;").replaceAll("<", "&lt;");
         const numeric = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
         const color =
             /^(?:none|currentColor|#[0-9a-f]{3,8}|rgba?\([^)]*\)|[a-z][a-z0-9-]*)$/i;
@@ -3970,110 +4204,51 @@ export class UiProjection {
                 ]),
             },
         };
-        let cursor = 0;
-        while (cursor < value.length) {
-            const opening = value.indexOf("<", cursor);
-            if (opening < 0) {
-                const text = value.slice(cursor);
-                if (
-                    stack.some((node) => node.tag === "svg") &&
-                    text.trim().length > 0
-                ) {
-                    fail("does not support text inside <svg>.");
-                }
-                output.push(text);
-                break;
-            }
-            const text = value.slice(cursor, opening);
-            if (
-                stack.some((node) => node.tag === "svg") &&
-                text.trim().length > 0
-            ) {
-                fail("does not support text inside <svg>.");
-            }
-            output.push(text);
-
-            if (value.startsWith("<!--", opening)) {
-                const end = value.indexOf("-->", opening + 4);
-                if (end < 0) fail("contains an unterminated comment.");
+        const markupHole = /__BBLITE_UI_MARKUP_\d+__/i;
+        // The browser's tree for the markup; a runtime operand stands in it as
+        // a text placeholder, which may sit only where text does.
+        const lowerNodes = (
+            nodes: readonly HtmlFragmentNode[],
+            parent: UiStaticMarkupNode | undefined,
+            svgPaint: SvgPaint | undefined,
+        ): string =>
+            nodes.map((node) => lowerNode(node, parent, svgPaint)).join("");
+        const lowerNode = (
+            node: HtmlFragmentNode,
+            parent: UiStaticMarkupNode | undefined,
+            insideSvgPaint: SvgPaint | undefined,
+        ): string => {
+            const insideSvg = insideSvgPaint !== undefined;
+            if ("comment" in node) {
                 // Keep the source so comment-only markup still refuses DOM
                 // traversal: the retained tree has no comment-node records.
-                output.push(
-                    `<!--${escapeAttribute(value.slice(opening + 4, end))}-->`,
+                return `<!--${escapeAttribute(node.comment)}-->`;
+            }
+            if (node.tag === undefined) {
+                if (insideSvg && node.text.trim().length > 0)
+                    fail("does not support text inside <svg>.");
+                if (/<\/?__BBLITE_UI_MARKUP_\d+__/.test(node.text))
+                    fail("requires a static tag name.");
+                return escapeText(node.text);
+            }
+            const tag = node.tag.toLowerCase();
+            // RmlUi can draw SVG images, but their references do not yet
+            // retain browser state; only that named bridge defers.
+            if (
+                this.context.options.deferredCapabilities &&
+                insideSvg &&
+                tag === "image"
+            )
+                throw new DeferredMarkupBridge("svg-image");
+            // Controls own state only as retained elements (`emitUiAuthoredMarkup`).
+            if (
+                !insideSvg &&
+                ["input", "select", "option", "textarea"].includes(tag)
+            )
+                fail(
+                    `form control <${tag}> requires static markup assigned to innerHTML.`,
                 );
-                cursor = end + 3;
-                continue;
-            }
-
-            let quote = "";
-            let closing = opening + 1;
-            for (; closing < value.length; closing++) {
-                const character = value[closing]!;
-                if (quote) {
-                    if (character === quote && value[closing - 1] !== "\\") {
-                        quote = "";
-                    }
-                } else if (character === "'" || character === '"') {
-                    quote = character;
-                } else if (character === ">") {
-                    break;
-                }
-            }
-            if (closing >= value.length) fail("contains an unterminated tag.");
-            let token = value.slice(opening + 1, closing).trim();
-            cursor = closing + 1;
-            if (token.startsWith("!") || token.startsWith("?")) {
-                fail(`does not support '<${token}>'.`);
-            }
-            if (token.startsWith("/")) {
-                const tag = token.slice(1).trim().toLowerCase();
-                if (
-                    !/^(?:div|span|h1|h2|p|button|b|strong|a|label|svg)$/.test(
-                        tag,
-                    )
-                ) {
-                    fail(`does not support closing tag '</${tag}>'.`);
-                }
-                const current = stack.pop();
-                if (!current || current.tag !== tag) {
-                    fail(`has mismatched closing tag '</${tag}>'.`);
-                }
-                if (tag === "svg") {
-                    const paint = svgPaintStack.pop()!;
-                    if (
-                        paint.usesCurrentColor &&
-                        paint.openingOutputIndex !== undefined
-                    ) {
-                        const openingTag = output[paint.openingOutputIndex]!;
-                        output[paint.openingOutputIndex] =
-                            openingTag.slice(0, -1) +
-                            ' data-bbl-current-color="true">';
-                    }
-                }
-                output.push(`</${tag}>`);
-                continue;
-            }
-
-            const selfClosing = /\/\s*$/.test(token);
-            if (selfClosing) token = token.replace(/\/\s*$/, "").trim();
-            const tagMatch =
-                token.match(/^([A-Za-z][A-Za-z0-9-]*)/) ??
-                fail(`contains invalid tag '<${token}>'.`);
-            const tag = tagMatch[1]!.toLowerCase();
-            const insideSvg = stack.some((node) => node.tag === "svg");
-            // RmlUi can draw these elements, but image references in SVG and
-            // markup-created controls do not yet retain browser state/ownership.
-            // Only these named bridges defer; malformed or unrelated tags refuse.
-            if (this.context.options.deferredCapabilities) {
-                if (insideSvg && tag === "image")
-                    throw new DeferredMarkupBridge("svg-image");
-                if (
-                    !insideSvg &&
-                    ["input", "select", "option", "textarea"].includes(tag)
-                )
-                    throw new DeferredMarkupBridge("form-controls");
-            }
-            const svgPaint =
+            const svgPaint: SvgPaint | undefined =
                 tag === "svg"
                     ? {
                           usesCurrentColor: false,
@@ -4081,9 +4256,7 @@ export class UiProjection {
                           fill: "black",
                           stroke: "none",
                       }
-                    : insideSvg
-                      ? svgPaintStack[svgPaintStack.length - 1]
-                      : undefined;
+                    : insideSvgPaint;
             if (
                 (!insideSvg &&
                     !/^(?:div|span|h1|h2|p|button|b|strong|a|label|img|svg)$/.test(
@@ -4093,46 +4266,9 @@ export class UiProjection {
             ) {
                 fail(`tag '<${tag}>' is outside the bounded HTML/SVG subset.`);
             }
-            if (
-                tag !== "img" &&
-                (tag === "path" || tag === "rect") !== selfClosing
-            ) {
-                fail(`<${tag}> must use the self-closing form.`);
-            }
-            if (
-                /^(?:div|span|h1|h2|p|button|b|strong|a|label|svg)$/.test(
-                    tag,
-                ) &&
-                selfClosing
-            ) {
-                fail(`<${tag}> must have an explicit closing tag.`);
-            }
-
-            const attributes: Array<{ name: string; value: string }> = [];
-            let attributeText = token.slice(tagMatch[0].length);
-            while (attributeText.trim().length > 0) {
-                attributeText = attributeText.trimStart();
-                const attribute =
-                    attributeText.match(
-                        /^([A-Za-z_:][A-Za-z0-9_:.-]*)(?:\s*=\s*(["'])([\s\S]*?)\2|(?=\s|$))/,
-                    ) ??
-                    fail(
-                        `tag '<${tag}>' has an invalid or unquoted attribute.`,
-                    );
-                if (
-                    attribute[3] === undefined &&
-                    !/^(?:hidden|disabled)$/i.test(attribute[1]!)
-                )
-                    fail(
-                        `tag '<${tag}>' has an invalid or unquoted attribute.`,
-                    );
-                attributes.push({
-                    name: attribute[1]!,
-                    value: attribute[3] ?? "",
-                });
-                attributeText = attributeText.slice(attribute[0].length);
-            }
-
+            const attributes = Object.entries(node.attributes ?? {}).map(
+                ([name, attributeValue]) => ({ name, value: attributeValue }),
+            );
             const classes = new EmissionSet<string>();
             const attributeNames = new EmissionSet<string>();
             const loweredAttributes: Array<{ name: string; value: string }> =
@@ -4171,10 +4307,9 @@ export class UiProjection {
             for (const attribute of attributes) {
                 const name = attribute.name;
                 const lowerName = name.toLowerCase();
-                if (attributeNames.has(lowerName)) {
-                    fail(`attribute '${name}' is duplicated on <${tag}>.`);
-                }
                 attributeNames.add(lowerName);
+                if (markupHole.test(name))
+                    fail(`requires static attribute names on <${tag}>.`);
                 if (attribute.value.includes("__BBLITE_UI_MARKUP_")) {
                     fail(`requires static attribute '${name}' on <${tag}>.`);
                 }
@@ -4366,7 +4501,7 @@ export class UiProjection {
             ) {
                 fail("<rect> requires static x, y, width, and height.");
             }
-            const node: UiStaticMarkupNode = {
+            const lowered: UiStaticMarkupNode = {
                 id: nextMarkupNodeId++,
                 tag,
                 classes,
@@ -4378,55 +4513,55 @@ export class UiProjection {
                 ),
                 children: [],
             };
-            const parent = stack[stack.length - 1];
-            if (parent) parent.children.push(node);
-            else roots.push(node);
+            if (parent) parent.children.push(lowered);
+            else roots.push(lowered);
+            if (tag === "svg") this.context.reachFeature("ui:inline-svg", site);
+            const children = lowerNodes(node.children ?? [], lowered, svgPaint);
             const renderedAttributes = loweredAttributes
                 .map(
                     ({ name, value: attributeValue }) =>
                         ` ${name}="${escapeAttribute(attributeValue)}"`,
                 )
                 .join("");
-            output.push(
-                `<${tag}${renderedAttributes} data-bbl-node="${node.id}"${selfClosing || tag === "img" ? "/" : ""}>`,
-            );
-            if (tag === "svg") {
-                svgPaint!.openingOutputIndex = output.length - 1;
-            }
-            if (!selfClosing && tag !== "img") {
-                stack.push(node);
-                if (tag === "svg") svgPaintStack.push(svgPaint!);
-            }
-            if (tag === "svg") {
-                this.context.reachFeature("ui:inline-svg", site);
-            }
-        }
-        if (stack.length > 0) {
-            fail(
-                `is missing closing tag '</${stack[stack.length - 1]!.tag}>'.`,
-            );
-        }
+            const currentColor =
+                tag === "svg" && svgPaint?.usesCurrentColor
+                    ? ' data-bbl-current-color="true"'
+                    : "";
+            const opening = `<${tag}${renderedAttributes} data-bbl-node="${lowered.id}"`;
+            // Void elements and SVG shapes close themselves, as RML spells them.
+            if (tag === "img" || tag === "path" || tag === "rect")
+                return `${opening}/>${children}`;
+            return `${opening}${currentColor}>${children}</${tag}>`;
+        };
+        const output = lowerNodes(
+            parseHtmlFragment(value),
+            undefined,
+            undefined,
+        );
         if (ownerId !== undefined)
             this.uiMarkupNodeIds.set(ownerId, nextMarkupNodeId);
         this.recordUiStaticMarkup(ownerId, roots);
-        return output.join("");
+        return output;
     }
 
-    private compileUiMarkupString(
+    /**
+     * How an innerHTML value lowers: a static string, a flat template or
+     * concatenation whose runtime operands become holes, or structured
+     * markup (choices or stored markup).
+     */
+    private uiMarkupForm(
         expression: ts.Expression,
-        ownerId?: number,
-    ): string {
+    ):
+        | { kind: "static"; source: string }
+        | { kind: "flat"; source: string; substitutions: ts.Expression[] }
+        | { kind: "structured" } {
         const staticValue = this.tryUiStaticString(expression);
-        if (staticValue !== undefined) {
-            return this.context.cppString(
-                this.lowerUiMarkupLiteral(staticValue, expression, ownerId),
-            );
-        }
+        if (staticValue !== undefined)
+            return { kind: "static", source: staticValue };
         const unwrapped = this.context.unwrap(expression);
-        if (ts.isConditionalExpression(unwrapped)) {
-            return this.compileUiStructuredMarkup(expression, ownerId);
-        }
-        const sourceParts = this.collectUiStringParts(unwrapped);
+        const sourceParts = ts.isConditionalExpression(unwrapped)
+            ? undefined
+            : this.collectUiStringParts(unwrapped);
         if (
             !sourceParts ||
             sourceParts.some(
@@ -4436,17 +4571,32 @@ export class UiProjection {
                         this.uiStoredMarkupShape(part)),
             )
         )
-            return this.compileUiStructuredMarkup(expression, ownerId);
+            return { kind: "structured" };
         const substitutions: ts.Expression[] = [];
         let source = "";
         for (const part of sourceParts) {
             if (typeof part === "string") {
                 source += part;
             } else {
-                source += `__BBLITE_UI_MARKUP_${substitutions.length}__`;
+                source += uiMarkupHole(substitutions.length);
                 substitutions.push(part);
             }
         }
+        return { kind: "flat", source, substitutions };
+    }
+
+    private compileUiMarkupString(
+        expression: ts.Expression,
+        ownerId?: number,
+    ): string {
+        const form = this.uiMarkupForm(expression);
+        if (form.kind === "static")
+            return this.context.cppString(
+                this.lowerUiMarkupLiteral(form.source, expression, ownerId),
+            );
+        if (form.kind === "structured")
+            return this.compileUiStructuredMarkup(expression, ownerId);
+        const { source, substitutions } = form;
         const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
         this.context.reachJsData();
         return this.uiMarkupConcat(lowered, (index) =>
@@ -4476,6 +4626,95 @@ export class UiProjection {
             );
         }
         return `bbl::js::concat(${parts.join(", ")})`;
+    }
+
+    /** Static markup creating form controls, parsed into its element tree. */
+    private uiAuthoredMarkup(
+        expression: ts.Expression,
+    ): UiAuthoredMarkupNode[] | undefined {
+        const source = this.tryUiStaticString(expression);
+        if (source === undefined) return undefined;
+        this.prefetchUiMarkup();
+        if (!createsFormControls(source)) return undefined;
+        return parseAuthoredMarkup(source, (message) =>
+            this.context.fail(expression, `Native UI innerHTML ${message}`),
+        );
+    }
+
+    /**
+     * Builds static form-control markup as the retained elements createElement
+     * would create, so its controls own value, checkedness, selectedness and
+     * listeners. Each element is complete before it joins its parent.
+     */
+    private emitUiAuthoredMarkup(
+        receiver: Value,
+        engine: string,
+        nodes: readonly UiAuthoredMarkupNode[],
+        site: ts.Expression,
+    ): void {
+        this.recordUiStaticReplaceChildren(receiver);
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::ui_set_inner_rml(${engine}, ${receiver.cpp}, "");`,
+        });
+        const emit = (code: string): void =>
+            this.context.emit({ kind: "expression", code: `${code};` });
+        const build = (parent: Value, node: UiAuthoredMarkupNode): void => {
+            if (node.kind === "text") {
+                this.recordUiStaticAppend(parent, {
+                    kind: "ui-element",
+                    cpp: "",
+                    uiStaticId: this.createUiStaticElement("#text"),
+                });
+                emit(
+                    `bbl::ui_append_text(${engine}, ${parent.cpp}, ${this.context.cppString(node.text)})`,
+                );
+                return;
+            }
+            const name =
+                this.context.allocateTemporaryCppName("markup_element");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name,
+                initializer: `bbl::ui_create_element(${engine}, ${this.context.cppString(node.tag)})`,
+            });
+            const element: Value = {
+                kind: "ui-element",
+                cpp: name,
+                engineCpp: engine,
+                uiTag: node.tag,
+                uiStaticId: this.createUiStaticElement(node.tag),
+            };
+            for (const attribute of node.attributes) {
+                const value = this.lowerUiAttributeLiteral(
+                    attribute.name,
+                    attribute.value,
+                    site,
+                );
+                if (attribute.name === "class" || attribute.name === "id")
+                    this.recordUiStaticAttribute(
+                        element,
+                        attribute.name,
+                        site,
+                        value,
+                    );
+                emit(
+                    `bbl::ui_set_attribute(${engine}, ${name}, ${this.context.cppString(attribute.name)}, ${this.context.cppString(value)})`,
+                );
+            }
+            const [text] = node.children;
+            if (node.children.length === 1 && text?.kind === "text")
+                emit(
+                    `bbl::ui_set_text(${engine}, ${name}, ${this.context.cppString(text.text)})`,
+                );
+            else for (const child of node.children) build(element, child);
+            emit(
+                `static_cast<void>(bbl::ui_append_child(${engine}, ${parent.cpp}, ${name}))`,
+            );
+            this.recordUiStaticAppend(parent, element);
+        };
+        for (const node of nodes) build(receiver, node);
     }
 
     /** A selected unsupported markup arm throws before the setter mutates its owner. */
@@ -4515,52 +4754,57 @@ export class UiProjection {
             : undefined;
     }
 
+    /** The closed markup parts of an innerHTML source: text, runtime text, stored markup and choices. */
+    private uiMarkupParts(source: ts.Expression): UiMarkupPart[] {
+        const exact = this.tryUiStaticString(source);
+        if (exact !== undefined) return [exact];
+        const node = this.context.unwrap(source);
+        if (ts.isTemplateExpression(node))
+            return [
+                node.head.text,
+                ...node.templateSpans.flatMap((span) => [
+                    ...this.uiMarkupParts(span.expression),
+                    span.literal.text,
+                ]),
+            ];
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            (this.context.checker.getTypeAtLocation(node).flags &
+                ts.TypeFlags.StringLike) !==
+                0
+        )
+            return [
+                ...this.uiMarkupParts(node.left),
+                ...this.uiMarkupParts(node.right),
+            ];
+        if (ts.isConditionalExpression(node))
+            return [
+                {
+                    kind: "choice",
+                    condition: node.condition,
+                    yes: this.uiMarkupParts(node.whenTrue),
+                    no: this.uiMarkupParts(node.whenFalse),
+                },
+            ];
+        const shape = this.uiStoredMarkupShape(node);
+        if (shape) {
+            if (shape.filter((part) => part === null).length > 1)
+                this.context.fail(
+                    source,
+                    "Native UI stored markup requires one runtime text span within fixed authored fragments.",
+                );
+            return [{ kind: "stored", expression: source, shape }];
+        }
+        return [{ kind: "text", expression: source }];
+    }
+
     /** Closed structure is parsed after branches are selected; runtime text remains escaped. */
     private compileUiStructuredMarkup(
         expression: ts.Expression,
         ownerId?: number,
     ): string {
-        const collect = (source: ts.Expression): UiMarkupPart[] => {
-            const exact = this.tryUiStaticString(source);
-            if (exact !== undefined) return [exact];
-            const node = this.context.unwrap(source);
-            if (ts.isTemplateExpression(node))
-                return [
-                    node.head.text,
-                    ...node.templateSpans.flatMap((span) => [
-                        ...collect(span.expression),
-                        span.literal.text,
-                    ]),
-                ];
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-                (this.context.checker.getTypeAtLocation(node).flags &
-                    ts.TypeFlags.StringLike) !==
-                    0
-            )
-                return [...collect(node.left), ...collect(node.right)];
-            if (ts.isConditionalExpression(node))
-                return [
-                    {
-                        kind: "choice",
-                        condition: node.condition,
-                        yes: collect(node.whenTrue),
-                        no: collect(node.whenFalse),
-                    },
-                ];
-            const shape = this.uiStoredMarkupShape(node);
-            if (shape) {
-                if (shape.filter((part) => part === null).length > 1)
-                    this.context.fail(
-                        source,
-                        "Native UI stored markup requires one runtime text span within fixed authored fragments.",
-                    );
-                return [{ kind: "stored", expression: source, shape }];
-            }
-            return [{ kind: "text", expression: source }];
-        };
-        const sourceParts = collect(expression);
+        const sourceParts = this.uiMarkupParts(expression);
         if (
             sourceParts.length === 1 &&
             typeof sourceParts[0] !== "string" &&
@@ -4570,7 +4814,7 @@ export class UiProjection {
                 expression,
                 "Native UI innerHTML requires closed authored markup provenance.",
             );
-        let remaining = 32;
+        let remaining = UiProjection.UI_MARKUP_ALTERNATIVES;
         const hasChoices = (parts: readonly UiMarkupPart[]): boolean =>
             parts.some(
                 (part) => typeof part !== "string" && part.kind === "choice",
@@ -4598,7 +4842,7 @@ export class UiProjection {
             let source = prefix;
             const values = [...substitutions];
             const text = (cpp: string): void => {
-                source += `__BBLITE_UI_MARKUP_${values.length}__`;
+                source += uiMarkupHole(values.length);
                 values.push(cpp);
             };
             for (let index = 0; index < pending.length; index++) {
@@ -5060,6 +5304,38 @@ export class UiProjection {
                 });
                 return true;
             }
+            if (property === "tabIndex") {
+                if (
+                    directElement.uiCanvas ||
+                    directElement.uiTag === "canvas" ||
+                    this.context.isCanvasElement(expression.left.expression)
+                )
+                    this.context.fail(
+                        expression.left,
+                        "A native canvas keeps tabIndex 0: keyboard focus targets the SDL surface.",
+                    );
+                const receiver = pinDetached(
+                    this.context,
+                    directElement,
+                    "tab_index_receiver",
+                    expression.left.expression,
+                );
+                const order = this.context.compileValue(expression.right);
+                if (
+                    order.staticNumber !== undefined &&
+                    order.staticNumber > 0 &&
+                    order.staticNumber < 2 ** 31
+                )
+                    this.context.fail(
+                        expression.right,
+                        "Positive tabIndex values are not supported: native sequential focus navigation follows tree order.",
+                    );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_set_tab_index(${this.context.requireEngine(receiver, expression.left)}, ${receiver.cpp}, ${this.context.dataLowerer.compileKnownValueForSink(order, { kind: "number" }, expression.right)});`,
+                });
+                return true;
+            }
             if (property === "selected") {
                 if (directElement.uiTag && directElement.uiTag !== "option")
                     this.context.fail(
@@ -5286,6 +5562,16 @@ export class UiProjection {
                     "markup_receiver",
                     expression.left.expression,
                 );
+                const authored = this.uiAuthoredMarkup(expression.right);
+                if (authored) {
+                    this.emitUiAuthoredMarkup(
+                        receiver,
+                        engine,
+                        authored,
+                        expression.right,
+                    );
+                    return true;
+                }
                 let markup: string;
                 try {
                     markup = this.context.probeEmission(() => {
@@ -5474,6 +5760,8 @@ export class UiProjection {
                 "overflow-wrap",
                 "word-break",
                 "transform-origin",
+                "transition",
+                "animation",
             ].includes(nativeProperty) ||
             isUiLayoutProperty(nativeProperty)
         ) {

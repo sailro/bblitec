@@ -6,6 +6,7 @@
 #include "pal_sdl_gpu_commands.hpp"
 #include "pal_dawn_resources.hpp"
 #include <cassert>
+#include <functional>
 #include <optional>
 #include <tuple>
 
@@ -158,6 +159,12 @@ void record_dawn_billboard_pass(WGPURenderPassEncoder, const auto&, const Fixtur
     draws.push_back("billboard-transparent");
 }
 int dawn_billboard_task_scene(const FixtureBillboardPass&, std::uint32_t) { return 0; }
+// A task's colour-pass plan (pal_gpu_targets.hpp): these passes never split.
+struct FixturePassBreaks {};
+template <class List, class Draw, class Split>
+void draw_split_list(const auto&, FixturePassBreaks&, const List& list, Draw&& draw, Split&&) {
+    draw(list);
+}
 struct Stages {
     Engine engine;
     Scene scene;
@@ -298,14 +305,18 @@ struct SdlGraph : Graph {
     static void draw_task_billboards(int, BillboardDepthMode mode, int) {
         Graph::draw_task_billboards(mode);
     }
+    FixturePassBreaks pass_breaks;
+    std::function<int()> resume_pass = [] { return 0; };
     template <class... Args> void draw_scene(Args... args) {
         const auto parameters = std::tuple{args...};
-        const auto profile = std::get<sizeof...(Args) - 1>(parameters);
+        constexpr std::size_t last = sizeof...(Args) - 1;
+        const auto profile = std::get<last - 2>(parameters);
         assert(profile.color == target.color_format);
         assert(profile.depth ==
                (task_depth_pointer ? state.depth_format : SDL_GPU_TEXTUREFORMAT_INVALID));
         assert(profile.samples == target_record.samples);
-        graph_mesh_stages(std::get<sizeof...(Args) - 2>(parameters));
+        graph_mesh_stages(std::get<last - 3>(parameters), std::get<last - 1>(parameters),
+                          std::get<last>(parameters));
     }
 #include "SdlGraphStages.hpp"
 };
@@ -316,10 +327,18 @@ struct DawnGraph : Graph {
     struct {
         WGPUTextureFormat color_format = WGPUTextureFormat_RGBA8Unorm,
                           depth_format = WGPUTextureFormat_Depth32Float;
+        unsigned width = 640, height = 480;
     } target;
     bool borrowed_depth_view = false;
-    WGPURenderPassEncoder task_pass = nullptr;
+    DawnRenderPass task_pass;
     unsigned samples = 4;
+    // What the split hook resumes, which these passes never call.
+    FixturePassBreaks pass_breaks;
+    WGPUCommandEncoder encoder = nullptr;
+    WGPURenderPassColorAttachment color_attachment{};
+    WGPURenderPassDepthStencilAttachment depth_attachment{};
+    WGPURenderPassDescriptor pass_descriptor{};
+    static void set_task_camera_viewport(WGPURenderPassEncoder, const int*, unsigned, unsigned) {}
     WGPURenderPipeline bound_pipeline = nullptr;
     bool pass_has_depth = true;
     int engine = 0;

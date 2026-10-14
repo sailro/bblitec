@@ -65,6 +65,7 @@ const everyFeature = [
     "text:layout",
     "data:locale",
     "platform:http",
+    "platform:compression",
     "audio:engine",
 ];
 
@@ -205,6 +206,8 @@ test("notices follow the reached features, the trimmed SDL and the codecs the bu
         "libpng.txt",
         "zlib.txt",
     ]);
+    // Compression streams link zlib on every platform.
+    assert.deepEqual(names(request(["platform:compression"])), ["zlib.txt"]);
 });
 
 test("package notices copy the artifacts' own notices and every transitive vcpkg port", (t) => {

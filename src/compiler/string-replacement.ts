@@ -1,13 +1,15 @@
 import ts from "typescript";
+import { constInitializer } from "./browser-erasure.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
-import type { Value } from "./types.js";
-import { argumentAt } from "./syntax.js";
-
-/** The empty first alternative exposes every capture without needing a matching input. */
-export function regexpCaptureCount(pattern: string): number {
-    return new RegExp(`|(?:${pattern})`).exec("")!.length - 1;
-}
+import type { LoweringServices } from "./lowering-services.js";
+import {
+    regexpCaptureCount,
+    regexpCapturesMayBeUnmatched,
+    type RegExpLayout,
+} from "./regexp-grammar.js";
+import { valueForKind, type Value } from "./types.js";
+import { argumentAt, regularExpressionParts } from "./syntax.js";
 
 /** Both replacement overloads use the ordinary inline/stored callback invocation path. */
 export function replacementCallback(
@@ -41,7 +43,7 @@ export function replacementCallback(
     // template name.
     if (pattern) {
         parameters = `[[maybe_unused]] const bbl::js::RegExpReplacement& ${packet}`;
-        const captures = pattern.regexpCaptureCount;
+        const captures = pattern.regexpLayout?.captureCount;
         if (captures !== undefined) {
             supplied = [
                 lowerer.leafValue(`*${packet}.groups[0]`, { kind: "string" }),
@@ -155,4 +157,79 @@ export function replacementCallback(
     }
     context.emit("};");
     return adapter;
+}
+
+/**
+ * A RegExp's capture lists: strings when no capture can be unmatched,
+ * else `string | undefined`, with the runtime's matching template argument.
+ */
+export function regexpGroupsType(
+    layout: RegExpLayout | undefined,
+    cppType: (type: DataType) => string,
+): { element: DataType; template: string } {
+    if (layout?.optionalCaptures === false)
+        return { element: { kind: "string" }, template: "" };
+    const element: DataType = {
+        kind: "optional",
+        inner: { kind: "string" },
+        undefinedOnly: true,
+    };
+    return { element, template: `<${cppType(element)}>` };
+}
+
+/**
+ * The pattern and flags a RegExp expression has at generation: a literal,
+ * `new RegExp` of literal text, or a `const` bound to one.
+ */
+function staticRegExpSource(
+    context: Pick<LoweringServices, "symbols" | "unwrap">,
+    expression: ts.Expression,
+    depth = 0,
+): { pattern: string; flags: string } | undefined {
+    const node = context.unwrap(expression);
+    if (ts.isRegularExpressionLiteral(node))
+        return regularExpressionParts(node);
+    if (
+        ts.isNewExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "RegExp" &&
+        node.arguments?.[0] &&
+        ts.isStringLiteralLike(node.arguments[0]) &&
+        (!node.arguments[1] || ts.isStringLiteralLike(node.arguments[1]))
+    )
+        return {
+            pattern: node.arguments[0].text,
+            flags: node.arguments[1]?.text ?? "",
+        };
+    if (!ts.isIdentifier(node) || depth > 4) return undefined;
+    const initializer = constInitializer(context, node);
+    return initializer
+        ? staticRegExpSource(context, initializer, depth + 1)
+        : undefined;
+}
+
+/**
+ * A RegExp value's capture facts: its own metadata, else the generation-known
+ * source of the expression that produced it.
+ */
+export function regexpCaptureFacts(
+    context: Pick<LoweringServices, "symbols" | "unwrap">,
+    value: Value,
+    expression: ts.Expression,
+): Value {
+    if (value.regexpLayout?.optionalCaptures !== undefined) return value;
+    const source = staticRegExpSource(context, expression);
+    return source
+        ? valueForKind(value.kind, {
+              ...value,
+              regexpLayout: {
+                  ...value.regexpLayout,
+                  global: source.flags.includes("g"),
+                  captureCount: regexpCaptureCount(source.pattern),
+                  optionalCaptures: regexpCapturesMayBeUnmatched(
+                      source.pattern,
+                  ),
+              },
+          })
+        : value;
 }

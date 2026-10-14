@@ -762,6 +762,36 @@ function compileAddVec3ToRef(
     return output;
 }
 
+/**
+ * `computeDeformedPositionToRef(mesh, vertexIndex, out)`: the pin writes
+ * `out` only when the vertex resolves, so the native call returns the lanes
+ * it was handed on a miss and every lane is written back either way.
+ */
+function compileComputeDeformedPositionToRef(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const mesh = context.compileValue(argumentAt(call, 0));
+    context.expectKind(mesh, "mesh", argumentAt(call, 0));
+    const index = context.compileNumber(argumentAt(call, 1), "double");
+    const output = context.compileValue(argumentAt(call, 2));
+    context.reachFeature("mesh:deformed-position", call);
+    const result = context.allocateTemporaryCppName("deformed_position");
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::DeformedPosition",
+        name: result,
+        initializer: `bbl::compute_deformed_position(${context.requireEngine(mesh, call)}, ${mesh.cpp}, ${index}, ${context.vec3FromRecord(output, argumentAt(call, 2), "double")})`,
+    });
+    writeVec3Lanes(context, output, argumentAt(call, 2), [
+        `${result}.position.x`,
+        `${result}.position.y`,
+        `${result}.position.z`,
+    ]);
+    return { kind: "boolean", cpp: `${result}.found` };
+}
+
 function compileScaleVec3(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
@@ -1763,6 +1793,25 @@ function compileMarkMeshRenderableDirty(
     return {
         kind: "void",
         cpp: `bbl::mark_mesh_renderable_dirty(${context.requireEngine(mesh, call)}, ${mesh.cpp})`,
+    };
+}
+
+/**
+ * The pinned `disposeMeshGpu`: the mesh releases its claims once and is
+ * retired for good (`src/lowering/mesh-gpu-disposal.ts`).
+ */
+function compileDisposeMeshGpu(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const mesh = context.compileValue(argumentAt(call, 0));
+    context.expectKind(mesh, "mesh", call);
+    context.reachFeature("renderer:scene", call);
+    context.reachFeature("mesh:dispose-gpu", call);
+    return {
+        kind: "void",
+        cpp: `bbl::dispose_mesh_gpu(${context.requireEngine(mesh, call)}, ${mesh.cpp})`,
     };
 }
 
@@ -3354,6 +3403,7 @@ const meshIntrinsicHandlers = new EmissionMap<
         (context, call) => compileAddVec3ToRef(context, call, "crossVec3ToRef"),
     ],
     ["scaleVec3", compileScaleVec3],
+    ["computeDeformedPositionToRef", compileComputeDeformedPositionToRef],
     ["scaleVec3ToRef", compileScaleVec3ToRef],
     ["lerpVec3ToRef", compileLerpVec3ToRef],
     ["lengthVec3", compileLengthVec3],
@@ -3421,6 +3471,7 @@ const meshIntrinsicHandlers = new EmissionMap<
         (context, call) => compileResizeMeshGeometry(context, call, true),
     ],
     ["markMeshRenderableDirty", compileMarkMeshRenderableDirty],
+    ["disposeMeshGpu", compileDisposeMeshGpu],
     ["invalidateRenderBundles", compileInvalidateRenderBundles],
     ["createHierarchyInstancePool", compileCreateHierarchyInstancePool],
     [

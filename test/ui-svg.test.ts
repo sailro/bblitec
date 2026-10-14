@@ -74,8 +74,12 @@ test("image markup accepts void tags and refuses dynamic sources or unrepresente
         );
     for (const markup of ['<img alt="">', '<img alt=""/>'])
         assert.match(compile(JSON.stringify(markup)).cpp, /<img[^\n]+\/>/);
+    // The browser parses the markup: an img is void, so the span follows it.
+    assert.match(
+        compile(JSON.stringify("<img><span></span></img>")).cpp,
+        /<img data-bbl-node=\\"0\\"\/><span data-bbl-node=\\"1\\"><\/span>/,
+    );
     for (const [markup, message] of [
-        ["<img><span></span></img>", /closing tag/],
         ['<img onload="run()">', /attribute 'onload'/],
         ['<img srcset="tile.png 2x">', /attribute 'srcset'/],
         ['<img width="20%">', /nonnegative integer/],

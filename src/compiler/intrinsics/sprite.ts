@@ -10,6 +10,7 @@ import {
     isDataTuple,
     isUndefinedDataType,
     tupleComponents,
+    type DataType,
 } from "../data-types.js";
 import { handleCppType } from "../data-types/handles.js";
 import { retainedOptions, emitPresentOption } from "./retained-options.js";
@@ -70,6 +71,7 @@ export interface SpriteIntrinsicContext
             | "useNativeValue"
             | "propertyName"
             | "fail"
+            | "admissions"
         > {}
 
 /**
@@ -1958,6 +1960,91 @@ function compileCreateTexture2DFromPixels(
     };
 }
 
+/**
+ * `updateTexture2DFromPixels` (pixels-texture.ts): the lowered pinned body
+ * validates, then writes a region of the texture's shared texels. Arguments
+ * evaluate once, in source order; an omitted or `undefined` origin or extent
+ * takes the pin's default inside that body.
+ */
+function compileUpdateTexture2DFromPixels(
+    context: SpriteIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 3, 7);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    const engineCpp = context.bindings.pinValueToTemporary(
+        engine,
+        "pixels_engine",
+        argumentAt(call, 0),
+    ).cpp;
+    const texture = context.compileValue(argumentAt(call, 1));
+    context.expectKind(texture, "texture", argumentAt(call, 1));
+    if (
+        texture.textureStorage !== "pixels" &&
+        !(
+            texture.dataType?.kind === "handle" &&
+            texture.dataType.handle === "texture"
+        )
+    ) {
+        context.fail(
+            argumentAt(call, 1),
+            "updateTexture2DFromPixels writes createTexture2DFromPixels textures; " +
+                "loadTexture2D, solid and render textures are not represented.",
+        );
+    }
+    context.expectSameEngine(engine, texture, call);
+    const textureCpp = context.bindings.pinValueToTemporary(
+        texture,
+        "pixels_texture",
+        argumentAt(call, 1),
+    ).cpp;
+    const data = context.compileValue(argumentAt(call, 2));
+    if (data.kind !== "data" || data.dataType?.kind !== "u8array") {
+        context.fail(
+            argumentAt(call, 2),
+            "updateTexture2DFromPixels data must evaluate to a native Uint8Array.",
+        );
+    }
+    const dataCpp = context.bindings.pinValueToTemporary(
+        data,
+        "pixels_data",
+        argumentAt(call, 2),
+    ).cpp;
+    const region = [3, 4, 5, 6].map((index) => {
+        const argument = call.arguments[index];
+        if (!argument) return "std::nullopt";
+        const type: DataType = {
+            kind: "optional",
+            inner: { kind: "number" },
+            undefinedOnly: true,
+        };
+        const value = context.dataLowerer.compileForSink(argument, type);
+        return (
+            context.bindings.pinValueToTemporary(
+                context.dataLowerer.leafValue(
+                    `${context.dataTypes.cppType(type)}{${value}}`,
+                    type,
+                ),
+                "pixels_region",
+                argument,
+            ).cpp + ".to_optional()"
+        );
+    });
+    context.reachFeature("texture:pixels-writes", call);
+    context.admissions.noteNodeInputAdmissionFailure(
+        call,
+        "Node input bindings do not represent later GPU writes to a texture producer.",
+    );
+    return {
+        kind: "void",
+        cpp:
+            "bbl::update_texture_2d_from_pixels(" +
+            [engineCpp, textureCpp, dataCpp, ...region].join(", ") +
+            ")",
+    };
+}
+
 function compileCreateSprite2DCustomShader(
     context: SpriteIntrinsicContext,
     call: ts.CallExpression,
@@ -2398,6 +2485,7 @@ const spriteIntrinsicHandlers = new EmissionMap<
     ["removeBillboardSprite", compileRemoveBillboardSprite],
     ["clearBillboardSprites", compileClearBillboardSprites],
     ["createTexture2DFromPixels", compileCreateTexture2DFromPixels],
+    ["updateTexture2DFromPixels", compileUpdateTexture2DFromPixels],
     [
         "createSprite2DCustomShader",
         (context, call) =>

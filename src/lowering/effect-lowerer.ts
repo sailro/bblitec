@@ -18,6 +18,9 @@ import { renderingContextKind } from "./rendering-context-kind.js";
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
+import { lowerEffectWrapperDisposal } from "./effect-wrapper-disposal.js";
+import { lowerEffectTaskDisposal } from "./frame-graph-task-disposal.js";
+import { pinnedErrorCode, pinnedErrorMessageCpp } from "./pinned-error.js";
 
 const effectModule = "src/effect/effect-renderer.ts";
 const uniformEffectModule = "src/effect/uniform-effect-renderer.ts";
@@ -144,6 +147,13 @@ export function effectStageStems(index: number): {
     };
 }
 
+/** The reached effect-wrapper features its factory lowers with; each defaults to off. */
+export interface EffectFactoryOptions {
+    readonly disposal?: boolean;
+    readonly taskBuild?: boolean;
+    readonly taskDisposal?: boolean;
+}
+
 export class EffectLowerer {
     /**
      * The pin's own fullscreen-triangle stage, lifted once.
@@ -180,7 +190,11 @@ export class EffectLowerer {
      * wrapper a renderer or task draws, its clear state, and the uniform and
      * texture slots the setters write.
      */
-    public lowerFactory(): LoweredSource {
+    public lowerFactory({
+        disposal = false,
+        taskBuild = false,
+        taskDisposal = false,
+    }: EffectFactoryOptions = {}): LoweredSource {
         return {
             modulePath: effectModule,
             symbolName: "createEffectWrapper,createEffectRenderer",
@@ -191,6 +205,7 @@ export class EffectLowerer {
 
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <utility>
 
 namespace bbl {
@@ -212,6 +227,7 @@ EffectWrapperHandle create_effect_wrapper(
         if (binding.kind != upstream::EffectBindingKind::texture) continue;
         EffectTextureSlot slot;
         slot.name = std::string(binding.name);
+        slot.binding = binding.binding;
         wrapper.textures.push_back(std::move(slot));
     }
     engine.effect_wrappers.push_back(std::move(wrapper));
@@ -237,7 +253,7 @@ void set_effect_uniforms(
         bytes = binding.uniform_bytes;
         break;
     }
-    if (bytes == 0) {
+    if (bytes == 0${disposal ? " || wrapper.uniform_slots_released" : ""}) {
         throw std::runtime_error(
             "setEffectUniforms: wrapper has no uniform binding.");
     }
@@ -250,21 +266,31 @@ void set_effect_uniforms(
     wrapper.uniforms_dirty = true;
 }
 
-// setEffectTexture: the slot the binding name owns.
+${this.lowerTextureSlotLookup()}
+// setEffectTexture: the slot findTextureSlot matches, by name or binding.
 void set_effect_texture(
     Engine& engine,
     EffectWrapperHandle effect,
-    const std::string& name,
+    const EffectBindingKey& key,
     SolidTexture texture) {
-    EffectWrapperRecord& wrapper = ${recordAt("engine.effect_wrappers", "effect")};
-    for (EffectTextureSlot& slot : wrapper.textures) {
-        if (slot.name != name) continue;
-        slot.texture = texture;
-        slot.set = true;
-        return;
-    }
-    throw std::runtime_error(
-        "setEffectTexture: unknown texture binding '" + name + "'.");
+    EffectTextureSlot& slot =
+        find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
+    slot.texture = texture;
+    slot.render_texture.reset();
+    slot.set = true;
+}
+
+void set_effect_texture(
+    Engine& engine,
+    EffectWrapperHandle effect,
+    const EffectBindingKey& key,
+    RenderTextureRef texture) {
+    EffectTextureSlot& slot =
+        find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
+    if (texture.source != RenderTextureSource::render_target || texture.depth_only)
+        throw std::runtime_error("setEffectTexture samples a render target's colour texture.");
+    slot.render_texture = texture;
+    slot.set = true;
 }
 
 EffectRendererHandle create_effect_renderer(
@@ -285,7 +311,13 @@ EffectRendererHandle create_effect_renderer(
 void register_effect_renderer(
     Engine& engine,
     EffectRendererHandle renderer) {
-    for (const EffectRendererHandle& registered :
+${
+    disposal
+        ? `    // prepareEffectRenderer builds the wrapper's bind group first.
+    require_effect_bind_group(engine, ${recordAt("engine.effect_renderers", "renderer")}.effect);
+`
+        : ""
+}    for (const EffectRendererHandle& registered :
          engine.effect_renderer_contexts()) {
         if (registered.value == renderer.value) return;
     }
@@ -305,7 +337,7 @@ TaskHandle create_effect_render_task(
     return TaskHandle{
         static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
 }
-
+${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context) : ""}
 } // namespace bbl
 `,
         };
@@ -317,6 +349,60 @@ TaskHandle create_effect_render_task(
             "createEffectWrapper",
             "DEFAULT_VERTEX_WGSL",
         );
+    }
+
+    /** `findTextureSlot`/`matchesBinding`: a number names a binding, a string its name or number. */
+    private lowerTextureSlotLookup(): string {
+        const { declaration: setter } = this.context.functionDeclaration(
+            effectModule,
+            "setEffectTexture",
+        );
+        this.context.assertStatementShapes(
+            setter,
+            setter.body!.statements,
+            "const internal = wrapper as EffectWrapperInternal; const slot = findTextureSlot(internal, bindingNameOrIndex); if (!slot) { ThrowLiteError(36, String(bindingNameOrIndex)); } slot.texture = texture; internal._bindGroupDirty = true;",
+            "setEffectTexture slot lookup",
+        );
+        const { declaration: find } = this.context.functionDeclaration(
+            effectModule,
+            "findTextureSlot",
+        );
+        this.context.assertStatementShapes(
+            find,
+            find.body!.statements,
+            "return wrapper._textures.find((slot) => matchesBinding(slot.layout, bindingNameOrIndex));",
+            "Effect texture slot search",
+        );
+        const { declaration: matches } = this.context.functionDeclaration(
+            effectModule,
+            "matchesBinding",
+        );
+        this.context.assertStatementShapes(
+            matches,
+            matches.body!.statements,
+            'if (typeof bindingNameOrIndex === "number") { return layout.binding === bindingNameOrIndex; } return layout.name === bindingNameOrIndex || String(layout.binding) === bindingNameOrIndex;',
+            "Effect binding match",
+        );
+        const message = pinnedErrorMessageCpp(
+            this.context,
+            pinnedErrorCode(this.context, setter),
+            [{ cpp: "key_text" }],
+        );
+        return `// ${this.context.provenance(effectModule, "setEffectTexture, findTextureSlot, matchesBinding")}
+static EffectTextureSlot& find_effect_texture_slot(
+    EffectWrapperRecord& wrapper,
+    const EffectBindingKey& key) {
+    const double* index = std::get_if<double>(&key);
+    for (EffectTextureSlot& slot : wrapper.textures) {
+        if (index ? static_cast<double>(slot.binding) == *index
+                  : slot.name == std::get<std::string>(key) ||
+                        std::to_string(slot.binding) == std::get<std::string>(key))
+            return slot;
+    }
+    const std::string key_text = index ? js::number_to_string(*index) : std::get<std::string>(key);
+    throw std::runtime_error(${message});
+}
+`;
     }
 
     /**

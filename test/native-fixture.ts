@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
     existsSync,
@@ -19,9 +19,12 @@ import type { TestContext } from "node:test";
 
 import type { Feature } from "../src/compiler/types.js";
 import {
+    discoverDevelopmentTools,
     discoverWindowsBuildTools,
+    type DevelopmentTools,
     type WindowsBuildTools,
 } from "../src/development-tools.js";
+import { artifactPatchState } from "../src/patch-inventory.js";
 import {
     featureMacros,
     featureMacroValue,
@@ -38,6 +41,75 @@ export function developmentVcpkgRoot(triplet = "x64-windows"): string {
 }
 
 export const nativeFixtureVcpkgRoot = developmentVcpkgRoot();
+
+let developmentTools: DevelopmentTools | undefined;
+const fixtureLibraries = new Map<"labsound" | "rmlui", string | undefined>();
+
+/**
+ * The pinned library install fixtures link, as the native configure finds
+ * it (`BBLITE_LABSOUND_DIR`, `BBLITE_RMLUI_DIR`), or undefined when it is
+ * absent. A present install not recorded as built from the pin's source
+ * and patch series throws: a fixture would otherwise test a library no
+ * scene links (a LabSound without 0007-output-in-place-bus corrupts the
+ * heap intermittently).
+ */
+export function nativeFixtureLibrary(
+    library: "labsound" | "rmlui",
+): string | undefined {
+    if (fixtureLibraries.has(library)) return fixtureLibraries.get(library);
+    const tools = (developmentTools ??= discoverDevelopmentTools());
+    const [installed, directory, script] =
+        library === "labsound"
+            ? [tools.labSoundInstalled, tools.labSoundDirectory, "labsound"]
+            : [tools.rmlUiInstalled, tools.rmlUiDirectory, "rmlui"];
+    if (installed) {
+        if (!tools.cmake)
+            throw new Error(
+                `CMake is required to verify the ${library} record.`,
+            );
+        // The variants each library records, as `dependencyPatchRecords` checks them.
+        const record = artifactPatchState(
+            tools.cmake,
+            library,
+            directory,
+            library === "rmlui" ? [] : undefined,
+        );
+        if (record.state !== "current")
+            throw new Error(
+                `${library} at ${directory} ${record.detail}; rebuild it with tools/build-${script}.ps1 or point its BBLITE_*_DIR at a current build.`,
+            );
+    }
+    fixtureLibraries.set(library, installed ? directory : undefined);
+    return fixtureLibraries.get(library);
+}
+
+/** A mono 16-bit 48 kHz WAVE file of `seconds`, holding `level` (at each time). */
+export function wave(
+    seconds: number,
+    level: number | ((time: number) => number),
+): Buffer {
+    const frames = Math.round(seconds * 48000);
+    const data = Buffer.alloc(frames * 2);
+    for (let index = 0; index < frames; index++) {
+        const value = typeof level === "number" ? level : level(index / 48000);
+        data.writeInt16LE(Math.round(value * 32767), index * 2);
+    }
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0);
+    header.writeUInt32LE(36 + data.length, 4);
+    header.write("WAVE", 8);
+    header.write("fmt ", 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(48000, 24);
+    header.writeUInt32LE(96000, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write("data", 36);
+    header.writeUInt32LE(data.length, 40);
+    return Buffer.concat([header, data]);
+}
 
 /** Isolate contiguous emitted helpers, refusing a missing or reversed boundary. */
 export function cppSection(
@@ -444,6 +516,104 @@ export function runNativeFixtureCompiler(
 }
 
 /**
+ * Runs a fixture executable and returns its stdout. A nonzero exit, a
+ * signal or a timeout throws with the exit code (NTSTATUS in hex: a crash
+ * prints nothing itself), stderr and stdout, so a failure is diagnosable.
+ */
+export function runFixtureExecutable(
+    executable: string,
+    options: {
+        cwd?: string;
+        args?: readonly string[];
+        env?: NodeJS.ProcessEnv;
+        timeoutMs?: number;
+    } = {},
+): string {
+    const result = spawnSync(executable, options.args ?? [], {
+        cwd: options.cwd,
+        env: options.env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: options.timeoutMs ?? 0,
+        maxBuffer: 64 * 1024 * 1024,
+    });
+    if (result.error === undefined && result.status === 0) return result.stdout;
+    const status =
+        result.status === null
+            ? `signal ${result.signal ?? "none"}`
+            : `exit ${result.status} (0x${(result.status >>> 0).toString(16).toUpperCase()})`;
+    throw new Error(
+        [
+            `${executable} failed: ${status}${result.error ? `, ${result.error.message}` : ""}`,
+            `stderr:\n${result.stderr || "(empty)"}`,
+            `stdout:\n${result.stdout || "(empty)"}`,
+        ].join("\n"),
+    );
+}
+
+/**
+ * Compiles a LabSound fixture in `output` (its `source`, any further
+ * `sources`, and with `webPlatform` the web platform seam's units) against
+ * the pinned LabSound and SDL, then runs it there on SDL's dummy audio
+ * driver, with live capture off unless `env` sets it. Returns its stdout.
+ */
+export function runLabSoundFixture(options: {
+    output: string;
+    source: string;
+    flags?: readonly string[];
+    sources?: readonly string[];
+    webPlatform?: boolean;
+    args?: readonly string[];
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+}): string {
+    const tools = optionalNativeFixtureTools();
+    const labSound = nativeFixtureLibrary("labsound");
+    if (!tools || !labSound)
+        throw new Error(
+            "A LabSound fixture needs the native compiler and LabSound.",
+        );
+    const executable = join(options.output, "check.exe");
+    runNativeFixtureCompiler(tools, [
+        "/O2",
+        ...(options.flags ?? []),
+        `/Fo:${options.output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/src",
+        `/external:I${join(labSound, "include")}`,
+        options.source,
+        ...(options.sources ?? []),
+        ...(options.webPlatform
+            ? [
+                  "native/src/pal_web_platform.cpp",
+                  "native/src/pal_http.cpp",
+                  "native/src/pal.cpp",
+              ]
+            : []),
+        "/link",
+        `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
+        `/LIBPATH:${join(labSound, "lib")}`,
+        "LabSound.lib",
+        "libnyquist.lib",
+        "SDL3.lib",
+        ...(options.webPlatform ? ["winhttp.lib"] : []),
+    ]);
+    return runFixtureExecutable(executable, {
+        cwd: options.output,
+        args: options.args ?? [],
+        timeoutMs: options.timeoutMs ?? 60000,
+        env: {
+            ...tools.environment,
+            BBLITE_AUDIO_CAPTURE: "",
+            ...options.env,
+            SDL_AUDIODRIVER: "dummy",
+            PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools.environment.PATH ?? ""}`,
+        },
+    });
+}
+
+/**
  * Compiles one generated translation unit in `artifacts/<name>` with the
  * fixture's own `flags` and runs it: a failed assertion or an uncaught throw
  * in the program fails the caller. Returns what the program printed.
@@ -469,14 +639,30 @@ export function runGeneratedProgram(
         `/Fe:${executable}`,
         source,
     ]);
-    const output = execFileSync(executable, {
-        stdio: "pipe",
-        windowsHide: true,
-        timeout: options.timeoutMs ?? 0,
+    const output = runFixtureExecutable(executable, {
+        timeoutMs: options.timeoutMs ?? 0,
     });
     if (options.expectedOutput !== undefined)
-        assert.equal(output.toString("utf8"), options.expectedOutput);
-    return output.toString("utf8");
+        assert.equal(output, options.expectedOutput);
+    return output;
+}
+
+/**
+ * The window application a generated program's `main` runs in, as C++ to
+ * append to it (test/fixtures/realm-application-fixture.hpp): `errors`
+ * routes the window's error listeners through ApplicationErrors instead of
+ * failing the run, and `timeoutMs` closes a loop that does not finish.
+ */
+export function windowApplicationHost(
+    options: { errors?: boolean; timeoutMs?: number } = {},
+): string {
+    return [
+        ...(options.errors ? ["#define FIXTURE_APPLICATION_ERRORS"] : []),
+        ...(options.timeoutMs === undefined
+            ? []
+            : [`#define FIXTURE_APPLICATION_TIMEOUT_MS ${options.timeoutMs}`]),
+        readFileSync("test/fixtures/realm-application-fixture.hpp", "utf8"),
+    ].join("\n");
 }
 
 /** Preserve object paths when distinct source folders contain equal basenames. */
@@ -511,10 +697,8 @@ export function runRmlUiFixture(
     } = {},
 ): void {
     const tools = optionalNativeFixtureTools();
-    const rml = resolve(
-        process.env.BBLITE_RMLUI_DIR ?? "artifacts/tools/rmlui",
-    );
-    if (!tools || !existsSync(join(rml, "lib/rmlui.lib"))) {
+    const rml = nativeFixtureLibrary("rmlui");
+    if (!tools || !rml) {
         t.skip("The native compiler and pinned RmlUi library are required.");
         return;
     }
@@ -570,9 +754,7 @@ export function runRmlUiFixture(
         "user32.lib",
     ]);
     assert.equal(
-        execFileSync(executable, {
-            encoding: "utf8",
-            windowsHide: true,
+        runFixtureExecutable(executable, {
             env: {
                 ...tools.environment,
                 PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools.environment.PATH ?? ""}`,

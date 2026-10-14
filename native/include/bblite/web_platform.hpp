@@ -131,16 +131,20 @@ struct ReadResult {
 /**
  * `fetch(url, { signal })`: fulfills once the response head arrives, its body
  * streaming; a network failure rejects with a TypeError; an abort rejects with
- * the signal's reason (and errors a body still streaming).
+ * the signal's reason (and errors a body still streaming). A URL the program
+ * packaged (`pal_packaged_responses.hpp`) is its packaged file instead.
  */
 [[nodiscard]] js::Promise<Response> fetch(const std::string& url, const RequestInit& init);
 [[nodiscard]] inline js::Promise<Response> fetch(const js::Url& url, const RequestInit& init) {
     return fetch(url.href(), init);
 }
-/** `response.ok`, `response.status`, `response.url`. */
+/** `response.ok`, `response.status`, `response.statusText` (empty), `response.url`. */
 [[nodiscard]] bool response_ok(const Response& response);
 [[nodiscard]] double response_status(const Response& response);
+[[nodiscard]] std::string response_status_text(const Response& response);
 [[nodiscard]] std::string response_url(const Response& response);
+/** `response.arrayBuffer()`: the whole body, within the buffered-body bound. */
+[[nodiscard]] js::Promise<js::ArrayBuffer> response_array_buffer(const Response& response);
 /** `response.headers.get(name)`: null when absent. */
 [[nodiscard]] js::Nullable<std::string> response_header(const Response& response,
                                                         const std::string& name);

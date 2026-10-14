@@ -35,6 +35,7 @@ export interface PinnedUtilityModule {
 
 const mipModule = "src/texture/generate-mipmaps.ts";
 const transmissionModule = "src/frame-graph/transmission.ts";
+const depthGrabModule = "src/frame-graph/transmission-depth-grab.ts";
 const imageProcessingTask = "src/frame-graph/image-processing-task.ts";
 
 /** A module-constant shader, as the packaged module ships it. */
@@ -129,5 +130,26 @@ export function pinnedTransmissionModules(): PinnedUtilityModule[] {
         ),
         imageProcessingModule(true),
         imageProcessingModule(false),
+    ];
+}
+
+/**
+ * What a render task's own grab adds (`enableRenderTaskTransmission`): the
+ * colour grab and the `grabDepth` snapshot in the pin's single-sample arms,
+ * the only ones the backends execute (a multisampled task target refuses).
+ * The raw mode composes no image processing.
+ */
+export function pinnedTaskTransmissionModules(): PinnedUtilityModule[] {
+    return [
+        packagedShader(
+            "transmission-grab-single",
+            transmissionModule,
+            "BLIT_SHADER",
+        ),
+        packagedShader(
+            "transmission-depth-grab-single",
+            depthGrabModule,
+            "DEPTH_GRAB_SHADER",
+        ),
     ];
 }

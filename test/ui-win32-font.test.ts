@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
+    nativeFixtureLibrary,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -11,14 +12,8 @@ import {
 
 test("Windows UI fonts preserve OpenType shaping, browser coverage, accumulated lines and texture lifetime", (t) => {
     const tools = optionalNativeFixtureTools();
-    const rml = resolve(
-        process.env.BBLITE_RMLUI_DIR ?? "artifacts/tools/rmlui",
-    );
-    if (
-        process.platform !== "win32" ||
-        !tools ||
-        !existsSync(join(rml, "lib/rmlui.lib"))
-    ) {
+    const rml = tools && nativeFixtureLibrary("rmlui");
+    if (process.platform !== "win32" || !tools || !rml) {
         t.skip("Windows native RmlUi fixture dependencies unavailable.");
         return;
     }

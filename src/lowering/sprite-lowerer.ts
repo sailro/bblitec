@@ -1403,7 +1403,7 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     const PixelsTexture& texture,
     GridSpriteAtlasOptions options) {
     SpriteAtlasRecord atlas;
-    atlas.rgba = share_texels(texture.rgba);
+    atlas.rgba = share_texels(texture.rgba.snapshot());
     atlas.width = texture.width;
     atlas.height = texture.height;
     atlas.mip_maps = texture.sampler.max_lod > 0.0f;

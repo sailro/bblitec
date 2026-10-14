@@ -1,28 +1,25 @@
 #pragma once
 
+#include <exception>
 #include <stdexcept>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace bbl {
 
-// Nominal storage for deferred platform APIs. There is no successful producer.
-class DeferredMediaRecorder final {
-    DeferredMediaRecorder() = delete;
-};
-class DeferredBlobEvent final {
-    DeferredBlobEvent() = delete;
-};
-class DeferredIdleDeadline final {
-    DeferredIdleDeadline() = delete;
-};
-class DeferredCompressionStream final {
-    DeferredCompressionStream() = delete;
-};
-class DeferredDecompressionStream final {
-    DeferredDecompressionStream() = delete;
-};
+/**
+ * Throws `error` from a call typed as returning T that optimizers cannot see
+ * through, so the authored statements after it are not diagnosed as
+ * unreachable. No T is ever constructed.
+ */
+template <typename T> T opaque_throw(std::exception_ptr error) {
+    T (*volatile rethrow)(std::exception_ptr) = [](std::exception_ptr value) -> T {
+        std::rethrow_exception(value);
+    };
+    return rethrow(std::move(error));
+}
 
 class DeferredCapabilityError final : public std::runtime_error {
 public:
@@ -33,13 +30,7 @@ public:
 
 // T is the authored result type. No successful result is ever constructed.
 template <typename T> T deferred_capability(std::string_view capability, std::string_view site) {
-    // Keep the call opaque: optimizers must not diagnose following authored
-    // statements as unreachable merely because this runtime bridge is deferred.
-    T (*volatile invoke)(std::string_view, std::string_view) =
-        [](std::string_view current_capability, std::string_view current_site) -> T {
-        throw DeferredCapabilityError(current_capability, current_site);
-    };
-    return invoke(capability, site);
+    return opaque_throw<T>(std::make_exception_ptr(DeferredCapabilityError(capability, site)));
 }
 
 } // namespace bbl

@@ -9,8 +9,10 @@
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
+#include <bblite/features/refreshed_task_overrides.hpp>
 #include <bblite/features/shader_external_textures.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
+#include <bblite/features/texture_pixel_writes.hpp>
 #include <bblite/features/workers.hpp>
 
 #include <bblite/runtime.hpp>
@@ -43,6 +45,24 @@
 #endif
 
 namespace bbl::pal {
+
+/**
+ * A scene task's draw lists, recorded as both backends record them: a
+ * refreshed task orders its rebind's renderables first, and the record
+ * marks the task built.
+ */
+inline upstream::RenderDrawLists record_task_draw_lists(const upstream::RenderPlan& plan,
+                                                        const Engine& engine,
+                                                        FrameTaskRecord& task) {
+#if BBLITE_REFRESHED_TASK_OVERRIDES
+    order_refreshed_render_task(task);
+#endif
+    upstream::RenderDrawLists lists = upstream::build_render_task_draw_lists(plan, engine, task);
+    if (task.record_state == FrameTaskRecordState::queued)
+        task.record_state = FrameTaskRecordState::recorded;
+    task.render_meshes_dirty = false;
+    return lists;
+}
 
 /**
  * Jobs contain native GPU data only; their owner outlives this preparation.
@@ -222,7 +242,7 @@ Iteration<bool> prepare_scene_pipeline_draws(Engine& engine, const Scene& scene,
                                              const upstream::RenderPlan& plan, TaskLists task_lists,
                                              Prepare prepare) {
     StartupWorkBudget budget;
-    auto tasks = scene.tasks;
+    auto tasks = scene.frame_passes();
     if (tasks.empty())
         tasks.push_back({});
     for (const TaskHandle handle : tasks) {
@@ -494,6 +514,7 @@ struct SceneSyncOutcome {
  * `reject_unbuilt_family_growth(families)`, `shared_shader_geometry_count()`,
  * `shared_shader_material_count()`, `rebuild_task_draw_lists()`,
  * `mesh_rows()` (the `sync_plan_mesh_rows` writes), `publish_storage()`,
+ * `upload_pixels_texture_writes()` (pixels-texture writes builds only),
  * `submit_uploads()`, `mark_uploaded()`, `settle_pass(outcome)` (the
  * frame's own copy of the pass, which the later steps and the encode read),
  * `stream_bone_palettes()`, `mark_capture(topology_updated)`,
@@ -574,6 +595,10 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     // RAF callbacks write ShaderMaterial storage: publish it with the
     // frame's other uploads, before anything binds it.
     backend.publish_storage();
+#if BBLITE_TEXTURE_PIXEL_WRITES
+    // Their pixels-texture writes, likewise ahead of every draw that samples one.
+    backend.upload_pixels_texture_writes();
+#endif
     backend.submit_uploads();
     backend.mark_uploaded();
     // Control hooks ran in the source scene callback list.

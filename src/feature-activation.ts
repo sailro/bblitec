@@ -160,6 +160,12 @@ export interface FeatureActivationInputs {
 interface RuntimeFeatureEntry {
     provenance: string;
     consumers: readonly FeatureActivationConsumer[];
+    /**
+     * Reaching the feature needs an application realm (its scheduler, Window
+     * host or owned engines): a strict-entry compile replays as one. An
+     * implied reach from `except` does not.
+     */
+    applicationRealm?: true | { readonly except: Feature };
 }
 
 const CMAKE: readonly FeatureActivationConsumer[] = ["features.cmake"];
@@ -297,6 +303,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "engine:gpu-retirement": {
         provenance: "src/engine/gpu-resource-retirement.ts",
         consumers: CMAKE,
+        applicationRealm: { except: "mesh:thin-instances" },
     },
     "engine:gpu-task-timing": {
         provenance:
@@ -318,6 +325,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/resource/compute-storage-texture.ts + src/resource/compute-storage-texture-view.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:texture-mipmaps": {
         provenance: "src/compute/compute-storage-texture-mipmaps.ts",
@@ -326,6 +334,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "compute:storage-buffer": {
         provenance: "src/resource/storage-buffer.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:storage-readback": {
         provenance: "src/resource/storage-buffer.ts#readStorageBuffer",
@@ -338,6 +347,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "compute:shader": {
         provenance: "src/compute/compute-shader.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:dispatch": {
         provenance:
@@ -356,6 +366,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "compute:task": {
         provenance: "src/compute/compute-task.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:task-execution": {
         provenance:
@@ -370,6 +381,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "compute:uniform-buffer": {
         provenance: "src/compute/compute-uniform-buffer.ts",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "compute:uniform-arena": {
         provenance: "src/compute/compute-uniform-arena.ts",
@@ -469,6 +481,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/loader-env/procedural-sky-environment.ts (load and update)",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "environment:hdr": {
         provenance:
@@ -619,6 +632,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/loader-splat-stream/splat-stream-material.ts + " +
             "src/collision/splat-voxel-collision.ts",
         consumers: ["features.cmake", "deployed shaders"],
+        applicationRealm: true,
     },
     "loader:splat-sh": {
         provenance:
@@ -735,6 +749,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/shader/shader-material.ts",
         consumers: CMAKE,
     },
+    "material:shader-uniform-ranges": {
+        provenance: "src/material/shader/shader-uniform-range.ts",
+        consumers: CMAKE,
+    },
     "material:shader-storage": {
         provenance:
             "src/material/shader/storage-buffer.ts + " +
@@ -810,6 +828,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "mesh:update-attributes": {
         provenance:
             "src/mesh/mesh-factories.ts (updateMeshPositions, updateMeshUvs, updateMeshNormals, updateMeshColors, updateMeshTangents, updateMeshUv2)",
+        consumers: CMAKE,
+    },
+    "mesh:dispose-gpu": {
+        provenance: "src/mesh/mesh-dispose.ts disposeMeshGpu",
         consumers: CMAKE,
     },
     "mesh:update-geometry": {
@@ -925,6 +947,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "mesh:vat-instances": {
         provenance: "src/vat/vat-baker.ts (setInstances)",
         consumers: ["features.cmake", "render_capabilities.hpp"],
+    },
+    "mesh:deformed-position": {
+        provenance:
+            "src/picking/deformed-vertex.ts computeDeformedPositionToRef",
+        consumers: CMAKE,
+    },
+    "mesh:vat-time": {
+        provenance: "src/vat/vat-baker.ts setVatTime",
+        consumers: CMAKE,
+    },
+    "mesh:vat-instance-storage": {
+        provenance: "src/vat/vat-baker.ts setVatInstanceStorage",
+        consumers: CMAKE,
     },
     "mesh:skeleton": {
         provenance:
@@ -1075,6 +1110,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/shadow/csm-directional-shadow-generator.ts",
         consumers: CMAKE,
     },
+    "shadow:csm-static-cache": {
+        provenance:
+            "src/shadow/enable-csm-static-cache.ts enableCsmStaticCache " +
+            "(src/shadow/csm-shadow-cache.ts, src/shadow/csm-refit-gate.ts)",
+        consumers: CMAKE,
+    },
     // The scheduler alone owns no generator, so no build rule tests it:
     // the compiler emits the registration where it is reached.
     "shadow:task": {
@@ -1199,6 +1240,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/texture/pixels-texture.ts",
         consumers: CMAKE,
     },
+    "texture:pixels-writes": {
+        provenance:
+            "src/texture/pixels-texture.ts (updateTexture2DFromPixels, queue.writeTexture)",
+        consumers: CMAKE,
+    },
     "sprite:custom-shader": {
         provenance:
             "src/sprite/sprite-custom-shader.ts + src/sprite/custom-shader-core.ts",
@@ -1318,9 +1364,55 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the reached Web Audio graph calls AudioContext.createBiquadFilter()",
         consumers: CMAKE,
     },
+    "audio:media-element": {
+        provenance:
+            "new Audio(url) plays a packaged source through " +
+            "AudioContext.createMediaElementSource",
+        consumers: CMAKE,
+    },
+    "audio:pinned-engine": {
+        provenance:
+            "src/audio/audio-engine.ts createAudioEngineAsync/setMasterVolume/" +
+            "getMasterVolume with the main output and bus, ramped parameters " +
+            "and signals they reach, lowered from the pin over the engine's " +
+            "native handle",
+        consumers: CMAKE,
+    },
+    "audio:static-sound": {
+        provenance:
+            "src/audio/static-sound.ts createSoundAsync/playSound/stopSound/" +
+            "setSoundVolume/disposeSound with the sound buffer, sub-graph, " +
+            "ramped parameters, signals and fetch they reach, lowered whole",
+        consumers: CMAKE,
+        applicationRealm: true,
+    },
+    "audio:media-stream": {
+        provenance:
+            "the reached Web Audio graph calls AudioContext.createMediaStreamDestination() or createMediaStreamSource()",
+        consumers: CMAKE,
+    },
     "audio:stereo-panner": {
         provenance:
             "the reached Web Audio graph calls AudioContext.createStereoPanner()",
+        consumers: CMAKE,
+    },
+    "audio:engine-media-stream": {
+        provenance:
+            "src/audio/media-stream-output.ts createAudioEngineMediaStream, " +
+            "lowered with the static-sound family over the engine's main output",
+        consumers: INVENTORY,
+    },
+    "audio:spatial-sound": {
+        provenance:
+            "src/audio/spatial.ts enableSpatial/setSpatialPosition/" +
+            "setSpatialListenerPosition with the panner sub-node and " +
+            "listener they reach, lowered with the static-sound family",
+        consumers: INVENTORY,
+    },
+    "audio:panner": {
+        provenance:
+            "the reached Web Audio graph calls AudioContext.createPanner() or " +
+            "constructs a PannerNode (src/audio/spatial.ts createSpatialSubNode)",
         consumers: CMAKE,
     },
     "physics:world": {
@@ -1421,6 +1513,51 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/texture/rtt-surface.ts createSurfaceRenderTargetTexture/onRenderTargetTextureResize",
         consumers: CMAKE,
+        applicationRealm: true,
+    },
+    "frame-graph:target-disposal": {
+        provenance:
+            "src/texture/rtt.ts disposeRenderTargetTexture " +
+            "(src/engine/render-target.ts disposeRenderTarget)",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-mesh-removal": {
+        provenance:
+            "src/frame-graph/render-task.ts removeMeshFromTask " +
+            "(src/frame-graph/render-task-base.ts _removeMeshFromRenderTask)",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-mesh-refresh": {
+        provenance:
+            "src/frame-graph/render-task-mesh-refresh.ts enableRenderTaskMeshRefresh",
+        consumers: CMAKE,
+    },
+    "frame-graph:render-task-transmission": {
+        provenance:
+            "src/frame-graph/transmission.ts enableRenderTaskTransmission " +
+            "(executePassWithTransmission, transmission-depth-grab.ts)",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-material-override": {
+        provenance:
+            "src/frame-graph/render-task.ts addMeshToTask (opts.material)",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-build": {
+        provenance: "src/frame-graph/frame-graph.ts buildFrameGraphTask",
+        consumers: CMAKE,
+    },
+    "frame-graph:live-task-add": {
+        provenance:
+            "src/frame-graph/frame-graph-actions.ts addTask on a built graph " +
+            "(src/frame-graph/frame-graph.ts buildFrameGraphTask)",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-disposal": {
+        provenance:
+            "src/frame-graph/render-task-base.ts RenderTask.dispose + " +
+            "src/effect/effect-renderer.ts EffectRenderTask.dispose",
+        consumers: CMAKE,
     },
     "frame-graph:resources": {
         provenance:
@@ -1438,6 +1575,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/effect/effect-renderer.ts createEffectWrapper " +
             "(DEFAULT_VERTEX_WGSL plus the caller's fragment)",
+        consumers: CMAKE,
+    },
+    "effect:wrapper-disposal": {
+        provenance: "src/effect/effect-renderer.ts disposeEffectWrapper",
         consumers: CMAKE,
     },
     "effect:task": {
@@ -1520,21 +1661,41 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "runtime HTTP(S) requests and response data through native platform transport",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "platform:packaged-fetch": {
         provenance:
             "owned fetch responses from the closed packaged asset manifest, without network transport",
         consumers: INVENTORY,
     },
+    "platform:compression": {
+        provenance:
+            "the Compression Streams CompressionStream and DecompressionStream transforms through zlib",
+        consumers: CMAKE,
+        applicationRealm: true,
+    },
+    "platform:media-stream": {
+        provenance:
+            "MediaStream and MediaStreamTrack objects, canvas capture streams and the encoder-less MediaRecorder",
+        consumers: INVENTORY,
+    },
+    "platform:idle-callbacks": {
+        provenance:
+            "the HTML requestIdleCallback idle periods and IdleDeadline over the realm event loop",
+        consumers: INVENTORY,
+        applicationRealm: true,
+    },
     "image:runtime-decode": {
         provenance:
             "the HTML createImageBitmap decode of run-time image bytes; generation adds the WebP codec it links (image-codecs.ts)",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "platform:window": {
         provenance:
             "the Window document, layout observers and native presentation host, independent of application and worker execution",
         consumers: CMAKE,
+        applicationRealm: true,
     },
     "ui:rml": {
         provenance:
@@ -1578,12 +1739,32 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "from a Babylon declaration",
         consumers: CMAKE,
     },
+    "storage:session": {
+        provenance:
+            "the Web Storage sessionStorage object -- process memory shared " +
+            "by the realms one window recreates, never written to disk",
+        consumers: ["fidelity.json"],
+    },
 };
 
 /** The runtime features the inventory maps, in emission order. */
 export const inventoriedRuntimeFeatures: readonly Feature[] = Object.keys(
     runtimeFeatureTable,
 ) as Feature[];
+
+/**
+ * Whether reaching `feature` (implied by `impliedBy`, when it is) needs an
+ * application realm.
+ */
+export function featureRequiresApplicationRealm(
+    feature: Feature,
+    impliedBy?: Feature,
+): boolean {
+    const realm = runtimeFeatureTable[feature].applicationRealm;
+    return (
+        realm === true || (realm !== undefined && realm.except !== impliedBy)
+    );
+}
 
 function runtimeEntry(name: string): RuntimeFeatureEntry | undefined {
     return Object.prototype.hasOwnProperty.call(runtimeFeatureTable, name)
@@ -1957,6 +2138,22 @@ function capabilityRows(
                 "its own bone and morph bindings; picking_projection.hpp carries " +
                 "that layout independently of the wider GPU_MORPH_STORAGE gate.",
             ["render_capabilities.hpp", "variant table"],
+        ),
+        checkedRow(
+            "BBLITE_VAT_PICKING",
+            "capability",
+            (emit.pickingShaders?.vat?.length ?? 0) > 0,
+            [
+                [
+                    (emit.pickingShaders?.vat?.length ?? 0) > 0,
+                    "a GPU pick composes at least one VAT projection arm",
+                ],
+            ],
+            "no GPU pick reaches a baked mesh",
+            "src/picking/vat-picking-pipeline.ts: a VAT candidate takes the " +
+                "advanced pipeline with the bake's projection; a thin one reads " +
+                "its clip params from the instance storage or texture.",
+            ["render_capabilities.hpp", "variant table", "deployed shaders"],
         ),
         checkedRow(
             "BBLITE_VAT",

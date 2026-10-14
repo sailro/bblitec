@@ -13,6 +13,7 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
@@ -280,14 +281,11 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
         return;
     state.shader_texture_binding_scratch.assign(uploaded.begin(), uploaded.end());
     const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
+    // The packed texture's declared slot, resolved once per program.
+    const std::vector<std::size_t>& declared_slots = state.shader_fragment_texture_slots[variant];
 #if BBLITE_SHADOWS_CSM
     for (std::size_t packed = 0; packed < names.size(); ++packed) {
-        const auto declared =
-            std::find_if(info.samplers.begin(), info.samplers.end(),
-                         [&](const char* candidate) { return names[packed] == candidate; });
-        if (declared == info.samplers.end())
-            continue;
-        const std::size_t slot = static_cast<std::size_t>(declared - info.samplers.begin());
+        const std::size_t slot = declared_slots[packed];
         if (slot >= material.shader_csm_textures.size())
             continue;
         const ShadowGeneratorHandle generator = material.shader_csm_textures[slot];
@@ -308,6 +306,27 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
 #endif
     }
 #endif
+    // A render target's slot binds the target's current texture, so a rebuilt
+    // target is what this draw samples.
+    for (std::size_t packed = 0; !material.shader_render_textures.empty() && packed < names.size();
+         ++packed) {
+        const std::size_t slot = declared_slots[packed];
+        if (slot >= material.shader_render_textures.size() ||
+            !material.shader_render_textures[slot] ||
+            packed >= state.shader_texture_binding_scratch.size())
+            continue;
+        const RenderTextureRef& reference = *material.shader_render_textures[slot];
+#if BBLITE_RENDER_TASK_TRANSMISSION
+        if (reference.source == RenderTextureSource::transmission_color ||
+            reference.source == RenderTextureSource::transmission_depth) {
+            state.shader_texture_binding_scratch[packed] =
+                task_transmission_binding(state, engine, reference);
+            continue;
+        }
+#endif
+        state.shader_texture_binding_scratch[packed] = {
+            sdl_render_texture_color(state, engine, reference), state.ground_sampler};
+    }
     if (state.shader_texture_binding_scratch.size() != names.size()) {
         gpu_error((std::string("Shader material texture binding count is stale for '") + info.name +
                    "' (uploaded " + std::to_string(state.shader_texture_binding_scratch.size()) +

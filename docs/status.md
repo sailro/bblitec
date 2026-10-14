@@ -310,6 +310,10 @@ Repository fixtures against pinned Babylon Lite.
 | engine-calls | <img src="images/scenes/regression-engine-calls.png" alt="Engine calls rendering" width="160"> | pixel‑perfect | pixel‑perfect | Engine Calls |
 | no-camera-floating-origin | <img src="images/scenes/regression-no-camera-floating-origin.png" alt="No camera floating origin rendering" width="160"> | pixel‑perfect | pixel‑perfect | No Camera Floating Origin |
 | compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | pixel‑perfect | pixel‑perfect | Compiler State |
+| texture-region-writes | <img src="images/scenes/regression-texture-region-writes.png" alt="Texture region writes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Texture Region Writes |
+| vat-time | <img src="images/scenes/regression-vat-time.png" alt="VAT time rendering" width="160"> | pixel‑perfect | pixel‑perfect | VAT Time |
+| csm-static-cache | <img src="images/scenes/regression-csm-static-cache.png" alt="CSM static cache rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | CSM Static Cache |
+| render-task-transmission | <img src="images/scenes/regression-render-task-transmission.png" alt="Render task transmission rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Task Transmission |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Track Clamp |
 | shader-frame-graph | <img src="images/scenes/audit-shader-frame-graph.png" alt="Shader frame graph rendering" width="160"> | pixel‑perfect | pixel‑perfect | Shader Frame Graph |
 | runtime-sweep | <img src="images/scenes/regression-runtime-sweep.png" alt="Runtime sweep rendering" width="160"> | pixel‑perfect | pixel‑perfect | Runtime Sweep |

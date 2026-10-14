@@ -95,7 +95,7 @@ inline bool surface_targets_changed(const Engine& engine, const Targets& targets
                                     std::uint32_t width, std::uint32_t height) {
     for (std::size_t i = 0; i < engine.render_targets.size(); ++i) {
         const auto& record = engine.render_targets[i];
-        if (!record.surface_canvas)
+        if (!record.surface_canvas || record.retired)
             continue;
         const auto [expected_width, expected_height] =
             surface_target_extent(engine, record, width, height);

@@ -7,6 +7,8 @@
 #include <bblite/thin_instance.hpp>
 
 #include <bblite/js_callback.hpp>
+#include <bblite/listener_lease.hpp>
+#include <bblite/platform_event_listeners.hpp>
 #include <bblite/snapshot_list.hpp>
 #include <bblite/rendering_contexts.hpp>
 #include <bblite/dom_event_state.hpp>
@@ -297,140 +299,6 @@ struct PlatformMouseEvent {
 };
 
 /**
- * DOM event listeners keyed by JavaScript callback identity.
- *
- * List nodes stay stable while callbacks add or remove listeners. Each
- * dispatch records the next sequence number and ignores later additions;
- * removals tombstone entries until the outermost dispatch finishes. A
- * one-shot listener is tombstoned before invocation, matching DOM reentrancy.
- */
-template <typename Signature> class PlatformEventListeners;
-
-template <typename... Args> class PlatformEventListeners<void(Args...)> {
-public:
-    using Callback = js::Callback<void(Args...)>;
-
-    void add(std::size_t identity, Callback callback, bool once = false) {
-        const auto duplicate =
-            std::find_if(entries_.begin(), entries_.end(), [identity](const auto& entry) {
-                return entry.active && !entry.handler && entry.identity == identity;
-            });
-        if (duplicate != entries_.end())
-            return;
-        entries_.push_back(
-            Entry{identity, next_sequence_++, std::move(callback), true, once, false});
-    }
-
-    void remove(std::size_t identity) {
-        for (Entry& entry : entries_) {
-            if (!entry.handler && entry.identity == identity && entry.active) {
-                entry.active = false;
-                needs_compaction_ = true;
-            }
-        }
-        compact_if_idle();
-    }
-
-    /** Replacements retain the event handler's original listener position. */
-    void set_handler(Callback callback) {
-        for (Entry& entry : entries_) {
-            if (!entry.handler || !entry.active)
-                continue;
-            if (callback) {
-                entry.callback = std::move(callback);
-            } else {
-                entry.active = false;
-                needs_compaction_ = true;
-                compact_if_idle();
-            }
-            return;
-        }
-        if (callback)
-            entries_.push_back(Entry{0, next_sequence_++, std::move(callback), true, false, true});
-    }
-
-    void clear() {
-        for (Entry& entry : entries_) {
-            if (!entry.active)
-                continue;
-            entry.active = false;
-            needs_compaction_ = true;
-        }
-        compact_if_idle();
-    }
-
-    [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
-
-    void add(Callback callback, bool once = false) {
-        const auto identity = callback.identity();
-        add(identity, std::move(callback), once);
-    }
-
-    void gc_trace(const js::TraceVisitor& visitor) const {
-        for (const Entry& entry : entries_)
-            visitor(entry.callback);
-    }
-
-    void dispatch(Args... args) {
-        dispatch_with([](Callback& callback, Args... values) { callback(values...); }, args...);
-    }
-
-    /** The owning event loop supplies exception reporting and callback cleanup. */
-    template <typename Invoke> void dispatch_with(Invoke&& invoke, Args... args) {
-        dispatch_while([] { return true; }, std::forward<Invoke>(invoke), args...);
-    }
-
-    /** A stopped dispatch must not consume a later once-listener. */
-    template <typename Continue, typename Invoke>
-    void dispatch_while(Continue&& proceed, Invoke&& invoke, Args... args) {
-        const std::size_t boundary = next_sequence_;
-        ++dispatch_depth_;
-        try {
-            for (Entry& entry : entries_) {
-                if (entry.sequence >= boundary)
-                    break;
-                if (!entry.active)
-                    continue;
-                if (!proceed())
-                    break;
-                if (entry.once) {
-                    entry.active = false;
-                    needs_compaction_ = true;
-                }
-                invoke(entry.callback, args...);
-            }
-        } catch (...) {
-            --dispatch_depth_;
-            compact_if_idle();
-            throw;
-        }
-        --dispatch_depth_;
-        compact_if_idle();
-    }
-
-private:
-    struct Entry {
-        std::size_t identity = 0;
-        std::size_t sequence = 0;
-        Callback callback;
-        bool active = true;
-        bool once = false;
-        bool handler = false;
-    };
-    void compact_if_idle() {
-        if (dispatch_depth_ != 0 || !needs_compaction_)
-            return;
-        std::erase_if(entries_, [](const Entry& entry) { return !entry.active; });
-        needs_compaction_ = false;
-    }
-
-    std::list<Entry> entries_;
-    std::size_t next_sequence_ = 0;
-    std::size_t dispatch_depth_ = 0;
-    bool needs_compaction_ = false;
-};
-
-/**
  * Stable identity for one node in the scene-created, browser-neutral UI IR.
  * The handle is declared outside the UI feature guard because a materialized
  * module may hold an empty `std::optional<UiElementHandle>` (a browser-only
@@ -530,6 +398,14 @@ struct UiComputedStyle {
     std::string visibility;
     std::string z_index;
     [[nodiscard]] bool operator==(const UiComputedStyle&) const = default;
+};
+
+/** An Element.scrollIntoView request; the projection applies each sequence once, in order. */
+struct UiScrollIntoView {
+    enum class Alignment : std::uint8_t { Start, Center, End, Nearest };
+    Alignment block = Alignment::Start;
+    Alignment inline_axis = Alignment::Nearest;
+    bool smooth = false;
 };
 
 struct MeshHandle {
@@ -774,6 +650,8 @@ struct VatData {
     std::vector<float> instance_params;
     std::uint32_t instance_texels = 0;
     std::uint64_t instance_version = 0;
+    /** `setVatInstanceStorage`: the published dual-clip params buffer, or none. */
+    std::optional<StorageBufferHandle> instance_storage;
 };
 
 struct BillboardSpriteHandle {
@@ -1191,6 +1069,10 @@ enum class RenderTextureSource {
     /** A geometry task's own depth attachment, aliased by the pin's eager
      *  wrapper target: a later pass binds and loads it rather than owning it. */
     geometry_depth,
+    /** A render task's transmission grab of its opaque colour (`enableRenderTaskTransmission`). */
+    transmission_color,
+    /** The same grab's single-sample `r32float` depth snapshot (`grabDepth`). */
+    transmission_depth,
 };
 
 struct RenderTextureRef {
@@ -1200,6 +1082,23 @@ struct RenderTextureRef {
     GeometryTextureType geometry_type = GeometryTextureType::irradiance;
     /** Explicit depth facade of a color/depth render target. */
     bool depth_only = false;
+};
+
+/** `enableRenderTaskTransmission`'s raw-mode settings, stored on the render task. */
+struct RenderTaskTransmission {
+    /** The pin's square grab extent (`createRenderTaskTransmission`). */
+    std::uint32_t grab_size = 0;
+    /** Each option the pin's `applyTransmissionOptions` sets only when given. */
+    std::optional<double> copy_count;
+    std::optional<bool> generate_mipmaps;
+    std::optional<double> mip_level_count;
+    std::optional<bool> grab_depth;
+};
+
+/** A render task's `SceneColorGrab`: its texture reads resolve live. */
+struct TransmissionGrab {
+    TaskHandle task{};
+    [[nodiscard]] bool operator==(const TransmissionGrab&) const = default;
 };
 
 struct RenderTaskOptions {
@@ -1260,6 +1159,12 @@ struct RenderTaskOptions {
     std::uint32_t depth_layer = 0;
     bool depth_clear = true;
     bool shared_target = false;
+    /**
+     * A cached CSM generator's static caster pass, which renders into the
+     * cache texture's layer; the dynamic pass of the same cascade renders
+     * into the map over the copied cache (`depth_clear` false).
+     */
+    bool shadow_cache_static = false;
 };
 
 struct RenderTaskMesh {
@@ -1632,6 +1537,9 @@ struct RenderTargetRecord {
     DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;
     /** A retired internal target keeps its handle slot without retaining attachments. */
     bool retired = false;
+    /** The CSM static cache copies this depth into another target, or out of one. */
+    bool copy_source = false;
+    bool copy_destination = false;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -1652,6 +1560,18 @@ struct PersistentSceneUniforms {
     std::vector<float> drawn{};
 };
 
+/**
+ * A task against the pin's record: registration's build records every
+ * queued task, and one added to a registered scene's built graph waits for
+ * `buildFrameGraphTask` (its execute fails until then). A backend's first
+ * draw-list build records a queued task the build did not.
+ */
+enum class FrameTaskRecordState : std::uint8_t {
+    queued,
+    pending_build,
+    recorded,
+};
+
 struct FrameTaskRecord {
     FrameTaskKind kind = FrameTaskKind::render;
     std::optional<bool> execution_enabled;
@@ -1659,8 +1579,17 @@ struct FrameTaskRecord {
     RenderTaskOptions render;
     std::vector<RenderTaskMesh> render_meshes;
     bool render_mesh_refresh = false;
-    bool render_recorded = false;
+    FrameTaskRecordState record_state = FrameTaskRecordState::queued;
+    std::optional<RenderTaskTransmission> transmission;
     bool render_meshes_dirty = false;
+    /** A backend built this task's draw lists once: the recorded generation is drawn. */
+    bool render_generation_built = false;
+    /**
+     * `dispose()` ran. A render task stays disposed and keeps its record
+     * state; an effect task's `dispose` only clears its pipeline, which its
+     * next record restores.
+     */
+    bool disposed = false;
     mutable double shader_packet_scene_version = -1;
     mutable bool shader_packet_rebuild_pending = false;
     GeometryTaskOptions geometry;
@@ -1880,6 +1809,14 @@ public:
 
     [[nodiscard]] operator const Storage&() const { return *storage_; }
 
+    /**
+     * The one buffer every holder shares, written in place: a pixels
+     * texture's texels, which every copy and binding of the texture sees as
+     * the pin's one GPUTexture serves every reference.
+     */
+    [[nodiscard]] std::uint8_t* shared_data() { return storage_->data(); }
+    void assign_shared(Storage bytes) { *storage_ = std::move(bytes); }
+
 private:
     void detach() {
         if (storage_.use_count() != 1) {
@@ -1930,8 +1867,106 @@ inline SharedTexels share_texels(std::vector<std::uint8_t> texels) {
     return std::make_shared<const std::vector<std::uint8_t>>(std::move(texels));
 }
 
+/**
+ * The texels of one `createTexture2DFromPixels` texture object (pixels-texture.ts).
+ *
+ * Every copy of the texture value and every binding of it share them, so a
+ * runtime write (`updateTexture2DFromPixels`, `queue.writeTexture`) reaches
+ * all of them, as the pin's one GPUTexture serves every reference. They also
+ * stand for the pin's device-recovery record (`_dlr.p`, `_dlr.w`): a rebuilt
+ * renderer uploads the latest bytes.
+ */
+class PixelsTexels {
+public:
+    using Storage = SharedTextureBytes::Storage;
+    /** A texel rectangle; an empty one stands for the whole texture. */
+    struct Region {
+        std::uint32_t x = 0;
+        std::uint32_t y = 0;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        [[nodiscard]] bool whole() const { return width == 0 || height == 0; }
+    };
+    struct State {
+        SharedTextureBytes rgba;
+        /** Advanced by every write; a binding's bytes record the version they hold. */
+        std::uint64_t version = 1;
+        /** Each write's region and the version it produced, oldest first. */
+        std::vector<std::pair<std::uint64_t, Region>> writes;
+        /** A consumer copied the texels (`snapshot`); a later write would miss that copy. */
+        bool snapshotted = false;
+
+        void require_writable() const {
+            if (snapshotted)
+                throw std::runtime_error(
+                    "Writes to a pixels texture whose texels a sprite atlas copied are not "
+                    "represented.");
+        }
+        /** Logs one write. Past the bound, the oldest two merge: a superset stays correct. */
+        void note_write(Region region) {
+            writes.emplace_back(++version, region);
+            if (writes.size() > 16u) {
+                writes[1].second = merge(writes[0].second, writes[1].second);
+                writes.erase(writes.begin());
+            }
+        }
+        /** What the writes after `since` cover: the region a holder of `since` uploads. */
+        [[nodiscard]] Region written_since(std::uint64_t since) const {
+            std::optional<Region> covered;
+            for (const auto& [written, region] : writes)
+                if (written > since)
+                    covered = covered ? merge(*covered, region) : region;
+            return covered.value_or(Region{});
+        }
+
+    private:
+        static Region merge(Region a, Region b) {
+            if (a.whole() || b.whole())
+                return {};
+            const std::uint32_t x = std::min(a.x, b.x), y = std::min(a.y, b.y);
+            return {x, y, std::max(a.x + a.width, b.x + b.width) - x,
+                    std::max(a.y + a.height, b.y + b.height) - y};
+        }
+    };
+
+    PixelsTexels() : state_(std::make_shared<State>()) {}
+    PixelsTexels(const PixelsTexels&) = default;
+    PixelsTexels& operator=(const PixelsTexels&) = default;
+    /** Replaces every texel in place, as a whole-texture write does. */
+    PixelsTexels& operator=(Storage texels) {
+        state_->require_writable();
+        state_->rgba.assign_shared(std::move(texels));
+        state_->note_write({});
+        return *this;
+    }
+
+    [[nodiscard]] const SharedTextureBytes& bytes() const { return state_->rgba; }
+    [[nodiscard]] bool empty() const { return bytes().empty(); }
+    [[nodiscard]] std::size_t size() const { return bytes().size(); }
+    [[nodiscard]] const std::uint8_t* data() const { return bytes().data(); }
+    [[nodiscard]] const std::uint8_t& operator[](std::size_t index) const { return bytes()[index]; }
+    [[nodiscard]] SharedTextureBytes::const_iterator begin() const { return bytes().begin(); }
+    [[nodiscard]] SharedTextureBytes::const_iterator end() const { return bytes().end(); }
+    [[nodiscard]] operator const Storage&() const { return bytes(); }
+    [[nodiscard]] std::uint64_t version() const { return state_->version; }
+    [[nodiscard]] const std::shared_ptr<State>& state() const { return state_; }
+    /** The texels now, for a consumer that keeps its own copy; later writes refuse. */
+    [[nodiscard]] Storage snapshot() const {
+        state_->snapshotted = true;
+        return bytes();
+    }
+
+private:
+    std::shared_ptr<State> state_;
+};
+
 struct TextureData {
     SharedTextureBytes bytes;
+    // A `createTexture2DFromPixels` texture's shared texels and the version
+    // `bytes` hold: runtime writes advance the texels past it, and the
+    // backends upload what they wrote since (pixels-texture.ts).
+    std::shared_ptr<const PixelsTexels::State> pixels;
+    std::uint64_t pixels_version = 0;
     // When both are non-zero, `bytes` are RGBA texels at this size rather
     // than an encoded image. `createTexture2DFromPixels` hands over the
     // caller's own bytes where every loader hands over a file, and the pin
@@ -2026,15 +2061,14 @@ inline std::string file_texture_cache_key(const std::string& path,
  * the caller's rather than an image header's.
  */
 struct PixelsTexture {
-    SharedTextureBytes rgba;
+    /** Shared by every copy; queue writes advance their version. */
+    PixelsTexels rgba;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     /** Whether the RGBA8 bytes are sampled through the sRGB format view. */
     bool srgb = false;
     /** Object identity shared by copies bound into sprite descriptors. */
     std::uint64_t identity = 0;
-    /** Incremented whenever a reached queue write replaces the texels. */
-    std::uint64_t version = 1;
     TextureSamplerState sampler{};
     // The `Texture2D` properties a scene writes on the result before binding
     // it: the per-texture transform `enableMaterialUvTransform` reads, and
@@ -2047,7 +2081,9 @@ struct PixelsTexture {
 /** The texture record a `PixelsTexture` binds as: its texels, sampler, transform and encoding. */
 inline TextureData pixels_texture_data(const PixelsTexture& texture) {
     TextureData data;
-    data.bytes = texture.rgba;
+    data.bytes = texture.rgba.bytes();
+    data.pixels = texture.rgba.state();
+    data.pixels_version = texture.rgba.version();
     data.rgba_width = texture.width;
     data.rgba_height = texture.height;
     data.sampler = texture.sampler;
@@ -2715,7 +2751,11 @@ struct SplatMeshRecord {
 
 struct EffectTextureSlot {
     std::string name;
+    /** The descriptor's binding number, which `setEffectTexture` also matches. */
+    std::uint32_t binding = 0;
     SolidTexture texture{};
+    /** A render target's texture, resolved where a frame graph records the pass. */
+    std::optional<RenderTextureRef> render_texture;
     bool set = false;
 };
 
@@ -2740,6 +2780,13 @@ struct EffectWrapperRecord {
      */
     bool uniforms_dirty = false;
     std::vector<EffectTextureSlot> textures;
+    /**
+     * `disposeEffectWrapper` emptied the pin's `_uniforms`; the texture
+     * slots it emptied are `textures`. Creation fills every slot the
+     * descriptor declares and nothing else removes one, so this is the
+     * whole uniform-slot state.
+     */
+    bool uniform_slots_released = false;
 };
 
 /** An `EffectRenderer`: one wrapper drawn to the swapchain each frame. */
@@ -3110,6 +3157,10 @@ struct MaterialRecord {
     // bindings resolved against the scene's `textures` record. Empty for
     // every other family, and for a program that samples nothing.
     std::vector<FileTexture> shader_textures;
+    /** Shader slots a render target fills, resolved where each draw binds them. */
+    std::vector<std::optional<RenderTextureRef>> shader_render_textures;
+    /** A shader material's `transmissive` option: its draws wait for a transmission grab. */
+    bool shader_transmissive = false;
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;
     // The pin's 2D reflection slot: the non-cube arm of the same
@@ -3123,6 +3174,9 @@ struct MaterialRecord {
     // 2 only for coordinatesMode === 2 (planar), load-babylon.ts.
     float reflection_coord_mode = 1.0f;
 };
+
+/** createShaderMaterial's `transmissive: true`. */
+inline MaterialHandle mark_shader_material_transmissive(Engine& engine, MaterialHandle material);
 
 inline std::uint32_t material_family_bit(const MaterialRecord& record) {
     if (record.shader_material)
@@ -3856,6 +3910,8 @@ struct UiElementRecord {
     /** Static markup assigned through the reached element.innerHTML surface. */
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
+    /** The element's attribute list order: first added first, a removal drops its name. */
+    std::vector<std::string> attribute_order;
     /** Current input state after a property write or user activation. */
     std::optional<bool> checked;
     /** Current option selection, independent of its default selected attribute. */
@@ -3901,7 +3957,10 @@ struct UiElementRecord {
     std::optional<CanvasState> canvas;
     bool external_gpu_canvas = false;
     bool attached_to_root = false;
+    /** `ui_pointer_hover`/`ui_pointer_active` as the UI projection's last update applied them. */
+    std::uint8_t pointer_states = 0;
 };
+inline constexpr std::uint8_t ui_pointer_hover = 1, ui_pointer_active = 2;
 
 /**
  * The pixels of a `width` x `height` target that a canvas laid out in a
@@ -4202,6 +4261,10 @@ struct Engine {
     double canvas_client_height = 720.0;
     /** SDL window coordinates to browser client coordinates (CSS pixels). */
     double canvas_window_to_client_scale = 1.0;
+    /** The engine draws into a Window realm's DOM canvas (the pin's `isDomCanvas`). */
+    bool dom_canvas = false;
+    /** The pin's `resizeSurface`, installed on every realm engine; frame heads run it. */
+    std::function<void(Engine&)> resize_surface;
     /** Retained primary-canvas dataset, including the harness readiness handshake. */
     std::unordered_map<std::string, std::string> canvas_dataset;
     /**
@@ -4299,6 +4362,8 @@ struct Engine {
     /** The control whose text select() last selected; the projection applies each revision. */
     UiElementHandle ui_text_selection{};
     std::uint64_t ui_text_selection_revision = 0;
+    /** scrollIntoView requests the projection has not applied yet, in call order. */
+    std::vector<std::pair<UiElementHandle, UiScrollIntoView>> ui_scroll_requests;
     /** Direct document children in live DOM attachment order. */
     std::vector<UiElementHandle> ui_root_children;
     struct DocumentRoots {
@@ -4308,10 +4373,14 @@ struct Engine {
     /** Audited host-page rules, preceding scene-created sheets in cascade. */
     std::vector<UiStyleRule> ui_host_style_rules;
     std::function<void(UiElementHandle, const std::string&)> ui_attribute_changed;
+    /** A Window display's details `open` change goes to the realm, whose change fires `toggle`. */
+    std::function<void(UiElementHandle)> ui_details_toggled;
     /** A link's default action (`ui_set_link_navigation`); set by a program with links. */
     void (*ui_link_navigation)(const std::string& url) = nullptr;
     /** A realm host can synchronously publish pending edits before a source layout read. */
     UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
+    /** A realm host adopts its display's latest `pointer_states` before a selector reads them. */
+    void (*ui_adopt_pointer_states)(Engine&) = nullptr;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
     std::uint64_t ui_revision = 0;
     std::uint64_t ui_text_revision = 0;
@@ -4380,6 +4449,8 @@ struct Engine {
     /** The last `SourceMaterialDraw::identity` this engine published. */
     std::uint64_t source_output_identity = 0;
     std::vector<MaterialRecord> materials;
+    /** Source materials `enableMaterialTracking` installed observable colors on. */
+    std::vector<MaterialHandle> tracked_materials;
     struct StorageBufferRecord {
         std::vector<std::uint8_t> bytes;
         std::shared_ptr<pal::StorageBufferOwner> gpu;
@@ -4619,14 +4690,23 @@ inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget targe
 
 /** Preserve the Texture2D identity when a render-target facade enters plain data. */
 inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef reference) {
-    if (reference.source != RenderTextureSource::render_target)
+    const bool transmission = reference.source == RenderTextureSource::transmission_color ||
+                              reference.source == RenderTextureSource::transmission_depth;
+    if (reference.source != RenderTextureSource::render_target && !transmission)
         throw std::runtime_error("Stored render textures require a render-target owner.");
+    if (transmission) {
+        const auto& task = handle_at(engine.frame_tasks, reference.task);
+        if (!task.transmission)
+            throw std::runtime_error("A transmission texture names a task without transmission.");
+        reference.target = task.render.target;
+    }
     const auto& target = handle_at(engine.render_targets, reference.target);
-    if (!target.has_color)
+    if (!transmission && !target.has_color)
         reference.depth_only = true;
     for (const auto& facade : engine.render_texture_facades) {
         const auto& previous = facade.data.render_source->reference;
-        if (previous.target.value == reference.target.value &&
+        if (previous.source == reference.source && previous.task.value == reference.task.value &&
+            previous.target.value == reference.target.value &&
             previous.depth_only == reference.depth_only)
             return facade;
     }
@@ -4634,11 +4714,80 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
     facade.identity = engine.next_file_texture_identity++;
     facade.width = target.width;
     facade.height = target.height;
-    facade.data.uv_invert_y = target.has_color && !reference.depth_only;
+    if (reference.source == RenderTextureSource::transmission_color) {
+        // createRenderTaskTransmission's square grab, sampled without a Y flip.
+        const auto& grab = handle_at(engine.frame_tasks, reference.task).transmission;
+        if (!grab)
+            throw std::runtime_error(
+                "A transmission grab texture names a render task without transmission.");
+        const auto size = grab->grab_size;
+        facade.width = size;
+        facade.height = size;
+    }
+    facade.data.uv_invert_y = !transmission && target.has_color && !reference.depth_only;
     facade.data.render_source = std::make_shared<RenderTextureData>(
         RenderTextureData{&engine, engine.lifetime.token(), reference, target.lifecycle});
     engine.render_texture_facades.push_back(facade);
     return facade;
+}
+
+/** `enableRenderTaskTransmission`: the settings a later call merges, as the pin's `applyTransmissionOptions`. */
+inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHandle task,
+                                                        RenderTaskTransmission options) {
+    auto& record = handle_at(engine.frame_tasks, task);
+    if (record.kind != FrameTaskKind::render)
+        throw std::runtime_error("enableRenderTaskTransmission requires a render task.");
+    if (!record.transmission) {
+        record.transmission = options;
+    } else {
+        auto& merged = *record.transmission;
+        if (options.copy_count)
+            merged.copy_count = options.copy_count;
+        if (options.generate_mipmaps)
+            merged.generate_mipmaps = options.generate_mipmaps;
+        if (options.mip_level_count)
+            merged.mip_level_count = options.mip_level_count;
+        if (options.grab_depth)
+            merged.grab_depth = options.grab_depth;
+    }
+    // grabDepth samples the task's depth attachment at the pass break.
+    if (record.transmission->grab_depth.value_or(false) &&
+        record.render.target.value != invalid_handle) {
+        auto& target = handle_at(engine.render_targets, record.render.target);
+        if (target.has_depth && !target.sampled_depth) {
+            if (record.record_state == FrameTaskRecordState::recorded)
+                throw std::runtime_error(
+                    "enableRenderTaskTransmission's grabDepth must precede the task's recording.");
+            target.sampled_depth = true;
+        }
+    }
+    return TransmissionGrab{task};
+}
+
+/** `SceneColorGrab.texture`: null until the task's frame graph built it (registration). */
+inline js::Nullable<StoredTexture> transmission_grab_texture(Engine& engine,
+                                                             const TransmissionGrab& grab) {
+    const auto& record = handle_at(engine.frame_tasks, grab.task);
+    if (record.record_state != FrameTaskRecordState::recorded)
+        return {};
+    RenderTextureRef reference;
+    reference.source = RenderTextureSource::transmission_color;
+    reference.task = grab.task;
+    return StoredTexture{retained_render_texture(engine, reference)};
+}
+
+/** `SceneColorGrab.depthTexture`: null as well when `grabDepth` is off or the target has no depth. */
+inline js::Nullable<StoredTexture> transmission_grab_depth_texture(Engine& engine,
+                                                                   const TransmissionGrab& grab) {
+    const auto& record = handle_at(engine.frame_tasks, grab.task);
+    if (record.record_state != FrameTaskRecordState::recorded || !record.transmission ||
+        !record.transmission->grab_depth.value_or(false) ||
+        !handle_at(engine.render_targets, record.render.target).has_depth)
+        return {};
+    RenderTextureRef reference;
+    reference.source = RenderTextureSource::transmission_depth;
+    reference.task = grab.task;
+    return StoredTexture{retained_render_texture(engine, reference)};
 }
 
 /** A `loadTexture2D` record before its image is read: sampler, upload flags and identity. */
@@ -5231,6 +5380,56 @@ inline void project_material_source_colors(MaterialRecord& material) {
     }
 }
 
+/** `SurfaceContext.maxDevicePixelRatio`: createEngine's option until a write replaces it. */
+[[nodiscard]] inline double surface_max_device_pixel_ratio(const Engine& engine) {
+    return engine.options.max_device_pixel_ratio;
+}
+
+/** A cap write; the installed resize applies it where the pin's `resizeSurface` runs. */
+inline void set_surface_max_device_pixel_ratio(Engine& engine, double cap,
+                                               void (*resize_surface)(Engine&)) {
+    engine.options.max_device_pixel_ratio = cap;
+    if (!engine.resize_surface)
+        engine.resize_surface = resize_surface;
+}
+
+/** A realm engine's surface resize, which the pin's createEngine runs once. */
+inline void install_surface_resize(Engine& engine, void (*resize_surface)(Engine&)) {
+    if (!engine.resize_surface)
+        engine.resize_surface = resize_surface;
+    engine.resize_surface(engine);
+}
+
+/** `resizeEngine`: native frame heads refresh extents; an installed resize runs here too. */
+inline void resize_engine(Engine& engine) {
+    if (engine.resize_surface)
+        engine.resize_surface(engine);
+}
+
+inline MaterialHandle mark_shader_material_transmissive(Engine& engine, MaterialHandle material) {
+    handle_at(engine.materials, material).shader_transmissive = true;
+    return material;
+}
+
+/** A tracked color element write marks the source UBO dirty; the next draw reads the array. */
+inline void project_tracked_material_colors(Engine& engine) {
+    for (const MaterialHandle handle : engine.tracked_materials) {
+        MaterialRecord& record = handle_at(engine.materials, handle);
+        if (!record.source_diffuse_color)
+            continue;
+        const auto& source = *record.source_diffuse_color;
+        if (source.size() != 3)
+            throw std::runtime_error("Material diffuseColor requires three numeric channels.");
+        const Color3 next{static_cast<float>(source[0]), static_cast<float>(source[1]),
+                          static_cast<float>(source[2])};
+        if (next.r == record.diffuse_color.r && next.g == record.diffuse_color.g &&
+            next.b == record.diffuse_color.b)
+            continue;
+        record.diffuse_color = next;
+        ++record.ubo_version;
+    }
+}
+
 template <typename Array = js::Array<double>>
 [[nodiscard]] js::Nullable<Array> material_color(const Engine& engine, MaterialHandle material,
                                                  MaterialColorSlot slot) {
@@ -5459,6 +5658,13 @@ using SourceMaterialGroups = js::Map<std::uint64_t, std::shared_ptr<SourceMateri
 /** The mutable state shared by every native copy of one SceneContext. */
 using PbrTransmissionTransaction = std::array<js::Callback<void()>, 2>;
 
+/** A pass native rendering schedules beside the pin's tasks. */
+struct SceneInternalPass {
+    TaskHandle task;
+    /** The task it follows; none: it precedes every task. */
+    TaskHandle after{};
+};
+
 struct SceneState {
     bool source_material_publication = false;
     SourceMaterialOutputs material_outputs;
@@ -5483,7 +5689,15 @@ struct SceneState {
     CameraHandle camera{};
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
+    /** The pin's `FrameGraph._tasks`, in its order. */
     std::vector<TaskHandle> tasks;
+    /**
+     * What native rendering adds to those tasks: shadow caster passes ahead
+     * of every task (the pin's one "shadow" task), and the default render
+     * task's resolve and present copies right after it (the pin resolves
+     * inside the task).
+     */
+    std::vector<SceneInternalPass> internal_passes;
     /** Source shadow scheduler identity, including scenes with no caster passes. */
     std::optional<std::string> shadow_task_name;
     /** Shadow generators retired only after a replacement rebuild succeeds. */
@@ -5596,6 +5810,40 @@ struct SceneState {
 };
 
 /**
+ * Every pass a scene's frame graph executes, in order: the internal passes
+ * ahead of every task, then each task followed by the passes it anchors.
+ */
+[[nodiscard]] inline std::vector<TaskHandle> scene_frame_passes(const SceneState& state) {
+    std::vector<TaskHandle> passes;
+    passes.reserve(state.tasks.size() + state.internal_passes.size());
+    for (const SceneInternalPass& pass : state.internal_passes)
+        if (pass.after.value == invalid_handle)
+            passes.push_back(pass.task);
+    for (const TaskHandle task : state.tasks) {
+        passes.push_back(task);
+        for (const SceneInternalPass& pass : state.internal_passes)
+            if (pass.after.value != invalid_handle && pass.after == task)
+                passes.push_back(pass.task);
+    }
+    return passes;
+}
+
+/** Whether a scene executes a frame graph at all. */
+[[nodiscard]] inline bool scene_has_frame_passes(const SceneState& state) noexcept {
+    return !state.tasks.empty() || !state.internal_passes.empty();
+}
+
+/** A pass ahead of every task; the latest added runs first. */
+inline void add_leading_pass(SceneState& state, TaskHandle task) {
+    state.internal_passes.insert(state.internal_passes.begin(), SceneInternalPass{task, {}});
+}
+
+/** A pass right after `after`, behind those already following it. */
+inline void add_pass_after(SceneState& state, TaskHandle task, TaskHandle after) {
+    state.internal_passes.push_back(SceneInternalPass{task, after});
+}
+
+/**
  * A JavaScript SceneContext is an object identity, not a value aggregate.
  *
  * Generated code deliberately uses ordinary C++ value syntax for scene
@@ -5671,6 +5919,12 @@ struct Scene {
     [[nodiscard]] bool shares_identity(const Scene& other) const noexcept {
         return state == other.state;
     }
+
+    /** `scene_frame_passes`: every pass this scene's frame graph executes. */
+    [[nodiscard]] std::vector<TaskHandle> frame_passes() const {
+        return scene_frame_passes(*state);
+    }
+    [[nodiscard]] bool has_frame_passes() const noexcept { return scene_has_frame_passes(*state); }
 
     [[nodiscard]] const SceneState* identity() const noexcept { return state.get(); }
 
@@ -6297,6 +6551,8 @@ void set_shader_external_texture(Engine& engine, MaterialHandle material, std::u
                                  ExternalTextureHandle texture);
 void set_shader_storage_buffer(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                StorageBufferHandle buffer);
+void set_shader_render_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
+                               RenderTextureRef texture);
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                             ShadowGeneratorHandle generator);
 void set_shadow_caster_material(Engine& engine, MaterialHandle material, MaterialHandle caster);
@@ -6564,6 +6820,9 @@ std::array<double, 2> resolve_surface_render_target_size(double width, double he
                                                          double surface_scale);
 js::Callback<void()> on_render_target_texture_resize(Engine& engine, RenderTargetTexture result,
                                                      std::function<void()> callback);
+void dispose_render_target_texture(Engine& engine, RenderTargetTexture result);
+/** The pin's `disposeRenderTarget`: releases a target unless it is the swapchain's. */
+void dispose_render_target(Engine& engine, RenderTargetHandle target);
 RenderTargetHandle swapchain_render_target(Engine& engine);
 TaskHandle create_render_task(Engine& engine, Scene& scene, RenderTaskOptions options);
 TaskHandle create_geometry_renderer_task(Engine& engine, Scene& scene, GeometryTaskOptions options);
@@ -6584,6 +6843,12 @@ RenderTextureRef geometry_task_depth_texture(TaskHandle task);
 void add_task(Scene& scene, TaskHandle task);
 void add_task_at_start(Scene& scene, TaskHandle task);
 void add_task_after(Scene& scene, TaskHandle task, TaskHandle after);
+/** `buildFrameGraphTask(getFrameGraph(scene), task)`: record a task added to a live scene. */
+void build_frame_graph_task(Scene& scene, TaskHandle task);
+/** `addTask`/`addTaskAtStart` where the scene may already be registered. */
+void add_live_task(Scene& scene, TaskHandle task, bool at_start);
+/** Refuses an executed task that is disposed or waits for its build, as the pin fails. */
+void require_executable_task(const FrameTaskRecord& task);
 void add_task(FrameGraphContext& context, TaskHandle task);
 void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 void add_task_after(FrameGraphContext& context, TaskHandle task, TaskHandle after);
@@ -6712,12 +6977,42 @@ ShadowGeneratorHandle create_pcf_directional_shadow_generator(Engine& engine, Li
                                                               PcfDirectionalShadowOptions options);
 ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               CsmDirectionalShadowOptions options);
+/** `enableCsmStaticCache`: the error its promise rejects with, or none when it resolves. */
+std::optional<js::Error> enable_csm_static_cache(Engine& engine, ShadowGeneratorHandle generator,
+                                                 double refit_angle,
+                                                 std::optional<double> refit_max_interval_ms,
+                                                 std::optional<double> static_cascades_per_frame);
+/** `getCsmReceiverTexture`: the generator's receiver texture, which it keeps (`sg._csmReceiverTexture`). */
+inline ShadowGeneratorHandle get_csm_receiver_texture(Engine& engine,
+                                                      ShadowGeneratorHandle generator) {
+    handle_at(engine.shadow_generators, generator).csm_receiver_texture_read = true;
+    return generator;
+}
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void enable_skeleton_shadows(Engine& engine, ShadowGeneratorHandle generator);
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
+void remove_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh);
+/** `computeDeformedPositionToRef`: whether the vertex resolved, and `out` as the pin leaves it. */
+struct DeformedPosition {
+    bool found = false;
+    Vec3d position{};
+};
+DeformedPosition compute_deformed_position(const Engine& engine, MeshHandle mesh,
+                                           double vertex_index, Vec3d out);
+/** `setVatTime`: the settings block's clock lane, apart from the handle's own clock. */
+void set_vat_time(Engine& engine, MeshHandle mesh, double seconds);
+/** `setVatInstanceStorage`. */
+void set_vat_instance_storage(Engine& engine, MeshHandle mesh,
+                              std::optional<StorageBufferHandle> buffer);
+/** `RenderTask.dispose()`. */
+void dispose_render_task(Engine& engine, TaskHandle task);
+/** `EffectRenderTask.dispose()`. */
+void dispose_effect_render_task(Engine& engine, TaskHandle task);
+/** A refreshed task's rebind publishes its generation in the pin's renderable order. */
+void order_refreshed_render_task(FrameTaskRecord& task);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);
 
 void add_to_scene(Scene& scene, MeshHandle mesh);
@@ -6810,6 +7105,7 @@ void set_scene_node_rotation_quaternion_component(Engine& engine, const SceneNod
                                                   std::size_t component, float value);
 void remove_from_scene(Scene& scene, MeshHandle mesh);
 void remove_from_scene(Scene& scene, LightHandle light);
+void dispose_mesh_gpu(Engine& engine, MeshHandle mesh);
 void remove_from_scene(Scene& scene, const SceneNodeHandle& node);
 void on_before_render(Scene& scene, js::Callback<void(double)> callback);
 void run_scene_before_render(Scene& scene, double delta_ms);
@@ -6989,6 +7285,15 @@ struct PixelsTextureOptions {
 PixelsTexture create_texture_2d_from_pixels(Engine& engine, const std::string& path, double width,
                                             double height, PixelsTextureOptions options = {});
 void update_pixels_texture(Engine& engine, PixelsTexture& texture, const js::U8Array& pixels);
+/** `updateTexture2DFromPixels`; an absent origin or extent takes the pin's default. */
+void update_texture_2d_from_pixels(Engine& engine, const PixelsTexture& tex,
+                                   const js::U8Array& data, std::optional<double> x,
+                                   std::optional<double> y, std::optional<double> width,
+                                   std::optional<double> height);
+void update_texture_2d_from_pixels(Engine& engine, const StoredTexture& tex,
+                                   const js::U8Array& data, std::optional<double> x,
+                                   std::optional<double> y, std::optional<double> width,
+                                   std::optional<double> height);
 PixelsTexture create_texture_2d_from_pixels(Engine& engine, const js::U8Array& pixels, double width,
                                             double height, PixelsTextureOptions options = {});
 
@@ -7021,8 +7326,17 @@ bool sprite_2d_id_alive(const Engine& engine, Sprite2DLayerHandle layer, std::ui
 EffectWrapperHandle create_effect_wrapper(Engine& engine, std::uint32_t variant);
 void set_effect_uniforms(Engine& engine, EffectWrapperHandle effect,
                          const std::vector<float>& values);
-void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const std::string& name,
+/** `setEffectTexture`'s binding: a number, or a name or number as a string. */
+using EffectBindingKey = std::variant<std::string, double>;
+void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
                         SolidTexture texture);
+void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
+                        RenderTextureRef texture);
+void dispose_effect_wrapper(Engine& engine, EffectWrapperHandle effect);
+/** The pin's bind-group build for the wrapper's declared bindings; refuses a released slot. */
+void require_effect_bind_group(const Engine& engine, EffectWrapperHandle effect);
+/** A registered renderer's kept bind group must not name uniform storage disposal destroyed. */
+void require_effect_renderer_storage(const Engine& engine, EffectWrapperHandle effect);
 EffectRendererHandle create_effect_renderer(Engine& engine, EffectWrapperHandle effect,
                                             EffectRendererOptions options);
 void register_effect_renderer(Engine& engine, EffectRendererHandle renderer);

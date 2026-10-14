@@ -9,6 +9,10 @@ import {
     buildNativeFixture,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import {
+    audioLibraryInclude,
+    ENGINE_PARAMETER_STUBS,
+} from "./static-sound-fixture.js";
 
 test("stored audio APIs preserve routing, optional node calls, and source disposal ownership", (t) => {
     const result = compileSource(`
@@ -30,9 +34,9 @@ test("stored audio APIs preserve routing, optional node calls, and source dispos
             const api = apis.get(1)!;
             const engine = await api.create();
             let refused = 0;
-            try { await api.create({volume: 0.5}); }
+            try { await api.create({resumeOnPause: false}); }
             catch (error) {
-                if (!error.message.includes("options are not lowered")) throw error;
+                if (!error.message.includes("option 'resumeOnPause' is not lowered")) throw error;
                 ++refused;
             }
             if (refused !== 1) throw new Error("present options require support");
@@ -67,6 +71,7 @@ test("stored audio APIs preserve routing, optional node calls, and source dispos
             std::vector<unsigned int> disconnected;
             std::vector<std::pair<unsigned int, unsigned int>> edges; }
         namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+        ${ENGINE_PARAMETER_STUBS}
         namespace bbl::pal {
             AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&) { return {1}; }
             AudioNodeHandle audio_create_gain(AudioContextHandle context) { assert(context.value == 1); return {++nodes, {}}; }
@@ -84,7 +89,14 @@ test("stored audio APIs preserve routing, optional node calls, and source dispos
             assert(nodes == 6 && closed && disconnected == expectedDisconnects && edges == expectedEdges);
         }
     `,
-        { timeoutMs: 10000, expectedOutput: "" },
+        {
+            flags: audioLibraryInclude(
+                "audio-source-lifecycle-check",
+                result.manifest,
+            ),
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
 });
 
@@ -132,6 +144,7 @@ test("imported audio callbacks declare every shared disposal helper in their sou
         `
         #include <bblite/pal_audio.hpp>
         #include <cassert>
+        ${ENGINE_PARAMETER_STUBS}
         namespace {
             bool closed = false;
             struct CheckClose { ~CheckClose() { assert(closed); } } check;
@@ -157,7 +170,10 @@ test("imported audio callbacks declare every shared disposal helper in their sou
             stubs,
         ],
         executable,
-        [],
+        audioLibraryInclude(
+            "audio-source-lifecycle-check/split",
+            result.manifest,
+        ),
     );
     assert.equal(
         execFileSync(executable, { encoding: "utf8", timeout: 10000 }),

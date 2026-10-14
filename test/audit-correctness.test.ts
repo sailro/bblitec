@@ -533,6 +533,7 @@ test(
             `
         #define BBLITE_GPU_INSTANCING 1
         #define BBLITE_DEFORM_PICKING 0
+        #define BBLITE_VAT_PICKING 0
         #include <bblite/runtime.hpp>
         #include <cassert>
         namespace bbl::upstream {
@@ -1004,6 +1005,7 @@ test(
             "void ui_clear_style_rules(",
             "void ui_add_style_rule(",
             "void ui_add_host_style_rule(",
+            "void require_insertable(",
             "UiElementHandle ui_append_child(",
             "UiElementHandle ui_append_to_root(",
             "void ui_remove(",
@@ -1163,16 +1165,16 @@ test(
                 case 0: assert(event->checked.has_value() && !*event->checked); break;
                 case 1: assert(event->form_value == "12.5"); break;
                 case 2: assert(event->selected_option == UiElementHandle{4}); break;
-                case 5: assert(event->open.has_value() && *event->open); break;
+                case 5: assert(event->toggle_open); break;
                 default: assert(false);
                 }
                 if (++delivered == 4) loop.close();
             });
             loop.run([&] {
-                for (unsigned index : {0u, 1u, 2u, 5u}) {
-                    const auto& callbacks = target.ui_elements[index].event_callbacks.at(index == 5 ? "toggle" : "input");
-                    callbacks->dispatch(PlatformMouseEvent{});
-                }
+                for (unsigned index : {0u, 1u, 2u})
+                    target.ui_elements[index].event_callbacks.at("input")->dispatch(PlatformMouseEvent{});
+                assert(!target.ui_elements[5].event_callbacks.contains("toggle"));
+                target.ui_details_toggled(UiElementHandle{5});
                 target.ui_elements[0].checked = true;
                 target.ui_elements[1].attributes["value"] = "99";
                 target.ui_elements[3].selected = true;

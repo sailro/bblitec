@@ -92,7 +92,7 @@ test("unrepresented retained element writes refuse instead of erasing", () => {
         ],
         [
             `const canvas = document.createElement("canvas"); canvas.tabIndex = 1;`,
-            /Retained element property 'tabIndex' assignment is not lowered natively/,
+            /A native canvas keeps tabIndex 0: keyboard focus targets the SDL surface/,
         ],
         [
             `const field = output("s"); (field.value ? field : null)!.scrollTop = 5;`,

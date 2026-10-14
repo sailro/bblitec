@@ -724,12 +724,22 @@ inline bool update_engine_canvas_metrics(Engine& engine, int width, int height,
  */
 inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
     if (const auto* offscreen = OffscreenRun::current()) {
+        // The pin's render loop resizes each surface at the head of every frame.
+        if (engine.resize_surface)
+            engine.resize_surface(engine);
         const auto extent = offscreen->extent();
         const int width = static_cast<int>(extent.width);
         const int height = static_cast<int>(extent.height);
         const bool changed = engine.options.width != width || engine.options.height != height;
         engine.options.width = width;
         engine.options.height = height;
+        if (runtime_trace_enabled()) {
+            thread_local std::pair<int, int> traced{};
+            if (traced != std::pair{width, height}) {
+                traced = {width, height};
+                std::cerr << "[bblite trace] canvas backing " << width << 'x' << height << '\n';
+            }
+        }
         return changed;
     }
     int width = 0;
@@ -790,6 +800,20 @@ inline void update_tracked_mouse_button(const SDL_MouseButtonEvent& event) {
 inline void end_press_mouse_capture(const SDL_Event& event) {
     if (event.type == SDL_EVENT_MOUSE_BUTTON_UP)
         SDL_CaptureMouse(false);
+}
+
+/**
+ * A captured mouse keeps its drag beyond the window, as the browser's does:
+ * SDL captures the mouse while a pointer capture target holds it, whatever
+ * SDL_HINT_MOUSE_AUTO_CAPTURE says (pointer lock turns it off). Where SDL has
+ * no global capture (Wayland, mobile) the press's implicit grab still holds.
+ */
+inline void sync_dom_mouse_capture(DomInput& input) {
+    const bool captured = input.capture_overrides.contains(dom_mouse_pointer_id);
+    if (!captured && !input.platform_mouse_capture)
+        return;
+    static_cast<void>(SDL_CaptureMouse(captured));
+    input.platform_mouse_capture = captured;
 }
 
 /** A release whose default was prevented never reaches retained UI; end its press there. */
@@ -1340,6 +1364,7 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
         return dom_drag_input(engine, event);
     } else
         return {};
+    sync_dom_mouse_capture(input);
     return batch;
 }
 

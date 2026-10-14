@@ -50,7 +50,8 @@ struct Engine {
  std::vector<LightRecord> lights{{{0}},{{1}}};
  std::uint64_t render_targets_version = 0;
 };
-struct Scene { Engine* engine; std::vector<LightHandle> lights; std::vector<TaskHandle> tasks; std::vector<ShadowGeneratorHandle> pending_shadow_retirements; };
+struct SceneInternalPass { TaskHandle task; TaskHandle after{}; };
+struct Scene { Engine* engine; std::vector<LightHandle> lights; std::vector<TaskHandle> tasks; std::vector<ShadowGeneratorHandle> pending_shadow_retirements; std::vector<SceneInternalPass> internal_passes; Scene* state = this; };
 ${cppFunction(generated, "void retire_scene_shadow_states(Scene& scene)")}
 int main() {
  Engine engine;
@@ -62,9 +63,9 @@ int main() {
  engine.shadow_generators[1].map_target = {1};
  auto payload=std::make_shared<int>(42); std::weak_ptr<int> retained=payload;
  engine.frame_tasks[0].payload=payload; engine.render_targets[0].payload=payload; payload.reset();
- Scene scene{&engine, {{1}}, {{0},{1},{2}}, {{0},{0},{1}}};
+ Scene scene{&engine, {{1}}, {}, {{0},{0},{1}}, {{{0},{}},{{1},{}},{{2},{}}}};
  retire_scene_shadow_states(scene);
- assert(retained.expired() && scene.tasks.size()==1 && scene.tasks[0].value==1);
+ assert(retained.expired() && scene.internal_passes.size()==1 && scene.internal_passes[0].task.value==1);
  assert(engine.render_targets.size()==2 && engine.render_targets[0].retired && !engine.render_targets[1].retired);
  assert(engine.frame_tasks.size()==3 && !engine.frame_tasks[0].execution_enabled && engine.frame_tasks[1].execution_enabled && !engine.frame_tasks[2].execution_enabled);
  assert(engine.shadow_generators.size()==2 && engine.shadow_generators[0].map_target.value==999);

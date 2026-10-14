@@ -99,6 +99,7 @@ import {
 } from "./compiler/text-surface.js";
 import { promoteLiveTextData } from "./compiler/intrinsics/text.js";
 import { emitSplatStreamAssignment } from "./compiler/splat-stream-surface.js";
+import { surfaceResizeFunction } from "./compiler/surface-pixel-ratio.js";
 import { retainedOptions } from "./compiler/intrinsics/retained-options.js";
 import { compileNodeInputMutation } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
@@ -118,6 +119,7 @@ import {
     nullableResourceEngine,
 } from "./compiler/window-events.js";
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
+import { featureRequiresApplicationRealm } from "./feature-activation.js";
 import { WindowProperties } from "./compiler/window-properties.js";
 import { AsyncLowerer, PendingActivationsRequired } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
@@ -393,7 +395,7 @@ const CANVAS_SIZE_AXES = new EmissionMap<string, CanvasSizeProperty>([
  */
 const NULLABLE_RESOURCE_TYPES = new EmissionMap<
     string,
-    { origin: DeclarationOrigin; kind: ValueKind; cppType: string }
+    { origin: DeclarationOrigin } & NullableResourceType
 >([
     [
         "AudioEngine",
@@ -414,6 +416,17 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
     [
         "AssetContainer",
         { origin: "babylon", kind: "asset", cppType: handleCppType("asset") },
+    ],
+    // Only `createRenderTask` returns the pin's `RenderTask`, so the type
+    // proves its factory's `renderTask` fact even for a name never assigned.
+    [
+        "RenderTask",
+        {
+            origin: "babylon",
+            kind: "task",
+            cppType: "bbl::TaskHandle",
+            implied: { renderTask: true },
+        },
     ],
 ]);
 
@@ -939,6 +952,17 @@ class Compiler implements LoweringServices {
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
     /** @unjournaled `moduleConstantIsWritten` answers, a function of the program. */
     private readonly writtenModuleConstants = new Map<ts.Symbol, boolean>();
+    /**
+     * @unjournaled Only compared before and after one initializer's compile; a
+     * discarded attempt can only over-count, which keeps a `const` a snapshot.
+     */
+    private impureReads = 0;
+    public get impureReadCount(): number {
+        return this.impureReads;
+    }
+    public noteImpureRead(): void {
+        this.impureReads++;
+    }
     /** @unjournaled Results of closed generation runs, a function of their inputs alone. */
     private readonly generationRuns = new Map<
         ExecutedTarget,
@@ -1978,6 +2002,7 @@ class Compiler implements LoweringServices {
                           this.options.workers,
                           this.defaultEngineCpp,
                       )),
+                  ...resource.implied,
                   cpp: `(*${storage})`,
               });
         return {
@@ -1990,7 +2015,7 @@ class Compiler implements LoweringServices {
     private rawNullableResourceKind(
         node: ts.Node,
         allowDirect: boolean,
-    ): { kind: ValueKind; cppType: string } | undefined {
+    ): NullableResourceType | undefined {
         const type = this.checker.getTypeAtLocation(node);
         const present = presentMembers(type);
         if (present.length !== 1 || (!allowDirect && !isNullable(type)))
@@ -2010,6 +2035,7 @@ class Compiler implements LoweringServices {
             case "scene":
             case "gaussian-splat-stream":
             case "splat-voxel-collision":
+            case "static-sound":
                 return { kind: pinned, cppType: handleCppType(pinned) };
         }
         const audio = domAudioHandleKind(member);
@@ -2017,12 +2043,18 @@ class Compiler implements LoweringServices {
             case "audio-context":
             case "audio-param":
             case "audio-buffer":
+            case "media-stream":
+            case "media-stream-track":
                 return { kind: audio, cppType: handleCppType(audio) };
         }
         const name = member.symbol?.name;
         const named = name ? NULLABLE_RESOURCE_TYPES.get(name) : undefined;
         if (named && declaredIn(member.symbol, named.origin)) {
-            return { kind: named.kind, cppType: named.cppType };
+            return {
+                kind: named.kind,
+                cppType: named.cppType,
+                ...(named.implied ? { implied: named.implied } : {}),
+            };
         }
         // `createRenderTexture2D` returns the pin's ordinary `Texture2D`, so
         // the type cannot tell its offscreen target from a loaded texture;
@@ -2627,6 +2659,10 @@ class Compiler implements LoweringServices {
         expression: ts.BinaryExpression,
     ): boolean {
         return this.windowProperties.assignLogical(expression);
+    }
+
+    public optionalChainStop(node: ts.Expression): Value | undefined {
+        return this.expressions.optionalChainStop(node);
     }
 
     public compileValue(expression: ts.Expression): Value {
@@ -3415,6 +3451,7 @@ class Compiler implements LoweringServices {
             );
         }
         this.reachFeature("texture:pixels", call);
+        this.reachFeature("texture:pixels-writes", call);
         this.admissions.noteNodeInputAdmissionFailure(
             call,
             "Node input bindings do not represent later GPU writes to a texture producer.",
@@ -4231,7 +4268,7 @@ class Compiler implements LoweringServices {
         }
         let msaaSamples: 1 | 4 | "runtime" = 4;
         let sampleOverride: string | undefined;
-        let pixelRatioCap: number | undefined;
+        let pixelRatioCap: string | undefined;
         let highPrecisionMatrix = false;
         let floatingOrigin = false;
         let requiredLimits: string | undefined;
@@ -4310,8 +4347,7 @@ class Compiler implements LoweringServices {
         ];
         if (sampleOverride || pixelRatioCap !== undefined)
             engineOptions.push(sampleOverride ?? "0");
-        if (pixelRatioCap !== undefined)
-            engineOptions.push(String(pixelRatioCap));
+        if (pixelRatioCap !== undefined) engineOptions.push(pixelRatioCap);
         let engineOptionsCpp = `bbl::EngineOptions{${engineOptions.join(", ")}}`;
         if (requiredLimits) {
             const named = this.allocateTemporaryCppName("engine_options");
@@ -4339,6 +4375,14 @@ class Compiler implements LoweringServices {
                 ? "std::shared_ptr<bbl::Engine>"
                 : "bbl::Engine",
         );
+        // The pin's createEngine resizes its surface once, and every frame
+        // head and cap write runs the same resize: a DOM canvas's backing
+        // store has this one writer.
+        if (this.options.workers)
+            this.emit({
+                kind: "expression",
+                code: `bbl::install_surface_resize(*${cppName}, &${surfaceResizeFunction(this)});`,
+            });
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers)
             this.engineCreationExecution = {
@@ -5045,10 +5089,6 @@ class Compiler implements LoweringServices {
 
     public reachJson(): void {
         this.reachFeature("data:json");
-    }
-
-    public reachLocalStorage(): void {
-        this.reachFeature("storage:local");
     }
 
     public reachImageDecode(): void {
@@ -6323,6 +6363,10 @@ class Compiler implements LoweringServices {
             ["true", "false", "nullptr"].includes(storage)
         )
             return;
+        // A texture held in typed storage (a shared call's result) keeps its
+        // producer's storage fact, but its C++ is the storage's type.
+        const producerTexture =
+            value.kind === "texture" && value.dataType?.kind !== "handle";
         const cppType =
             counter !== undefined && storage === counter
                 ? "std::int64_t"
@@ -6330,13 +6374,11 @@ class Compiler implements LoweringServices {
                   ? value.ownedEngineCpp
                       ? "std::shared_ptr<bbl::Engine>"
                       : "bbl::Engine"
-                  : value.kind === "texture" && value.textureStorage === "solid"
+                  : producerTexture && value.textureStorage === "solid"
                     ? "bbl::SolidTexture"
-                    : value.kind === "texture" &&
-                        value.textureStorage === "file"
+                    : producerTexture && value.textureStorage === "file"
                       ? "bbl::FileTexture"
-                      : value.kind === "texture" &&
-                          value.textureStorage === "pixels"
+                      : producerTexture && value.textureStorage === "pixels"
                         ? "bbl::PixelsTexture"
                         : value.absenceTagType
                           ? this.dataTypes.cppType(value.absenceTagType)
@@ -9106,15 +9148,7 @@ class Compiler implements LoweringServices {
         }
         if (
             !this.options.workers &&
-            (feature === "frame-graph:surface-target" ||
-                feature === "environment:procedural-sky" ||
-                feature === "compute:storage-texture" ||
-                feature === "compute:storage-buffer" ||
-                feature === "compute:task" ||
-                feature === "compute:shader" ||
-                feature === "compute:uniform-buffer" ||
-                (feature === "engine:gpu-retirement" &&
-                    impliedBy !== "mesh:thin-instances"))
+            featureRequiresApplicationRealm(feature, impliedBy)
         )
             throw new ApplicationRealmRequired();
         if (
@@ -9206,11 +9240,11 @@ class Compiler implements LoweringServices {
                     "        auto resolve_task = bbl::create_copy_to_texture_task(engine, scene, " +
                         'bbl::CopyTaskOptions{"default-resolve", bbl::render_target_texture(target), ' +
                         "bbl::RenderTargetHandle{}, resolve_target, false, bbl::NormalizedViewport{}});",
-                    "        bbl::add_task(scene, resolve_task);",
+                    "        bbl::add_pass_after(*scene.state, resolve_task, render_task);",
                     "        auto present_task = bbl::create_copy_to_texture_task(engine, scene, " +
                         'bbl::CopyTaskOptions{"default-present", bbl::render_target_texture(resolve_target), ' +
                         "bbl::swapchain_render_target(engine), bbl::RenderTargetHandle{}, false, bbl::NormalizedViewport{}});",
-                    "        bbl::add_task(scene, present_task);",
+                    "        bbl::add_pass_after(*scene.state, present_task, render_task);",
                     "        scene.state->default_render_task_created = true;",
                     "    }",
                     "}",
@@ -9487,8 +9521,7 @@ class Compiler implements LoweringServices {
             features,
             jsDataReached: this.jsDataReached,
             deferredCapabilitiesReached:
-                this.deferredCapabilities.sites.length > 0 ||
-                this.dataTypes.usesDeferredPlatformStorage(),
+                this.deferredCapabilities.sites.length > 0,
             windowStorageReached: this.dataTypes.usesWindowStorage(),
             responseStorageReached: this.dataTypes.usesResponseStorage(),
             webPlatformHeaders: this.dataTypes.webPlatformHeaders(),

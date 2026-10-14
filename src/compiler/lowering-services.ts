@@ -190,6 +190,8 @@ export interface LoweringServices {
     ): void;
     emitWindowLogicalAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
+    /** The undefined an optional chain link is, when its chain stopped at generation. */
+    optionalChainStop(node: ts.Expression): Value | undefined;
     compileWorkerValue(expression: ts.Expression): Value | undefined;
     withOwnedCallbackBody<T>(body: () => T): T;
     isNativeWorkerExpression(expression: ts.Expression): boolean;
@@ -330,6 +332,10 @@ export interface LoweringServices {
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined;
     sourceFiles(): readonly ts.SourceFile[];
+    /** Count a read whose value can change without a program write (`Value.impure`). */
+    noteImpureRead(): void;
+    /** Reads noted so far: compared around a `const` initializer, which then snapshots. */
+    readonly impureReadCount: number;
     reachThrow(): void;
     emitDataVectorOfStructs(
         node: ts.Node,
@@ -340,7 +346,6 @@ export interface LoweringServices {
     constructsLocalClass(expression: ts.NewExpression): boolean;
     reachJson(): void;
     reachFileReader(): void;
-    reachLocalStorage(): void;
     reachImageDecode(): void;
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;

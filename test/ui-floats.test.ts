@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    nativeFixtureLibrary,
     optionalNativeFixtureTools,
     runRmlUiFixture,
 } from "./native-fixture.js";
@@ -57,14 +56,6 @@ test("logical float and clear keywords keep the explicit admission boundary", ()
 
 test("RmlUi float and clear layout responds to live CSSOM writes and removal", (t) => {
     assert.ok(optionalNativeFixtureTools(), "Native fixture compiler required");
-    assert.ok(
-        existsSync(
-            resolve(
-                process.env.BBLITE_RMLUI_DIR ?? "artifacts/tools/rmlui",
-                "lib/rmlui.lib",
-            ),
-        ),
-        "Pinned RmlUi library required",
-    );
+    assert.ok(nativeFixtureLibrary("rmlui"), "Pinned RmlUi library required");
     runRmlUiFixture(t, "ui-floats");
 });

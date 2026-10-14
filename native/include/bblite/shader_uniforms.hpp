@@ -14,10 +14,16 @@ struct ShaderUniformSlot {
     double version = 0;
 };
 
+/** `enableShaderUniformRangeUpdates`: the before-render callback each scene received. */
+struct ShaderUniformRangeUpdates {
+    std::vector<std::pair<std::weak_ptr<const SceneState>, js::Callback<void(double)>>> scenes;
+};
+
 struct ShaderUniformState {
     std::vector<ShaderUniformSlot> slots;
     double version = 0;
     double ubo_version = 0;
+    std::shared_ptr<ShaderUniformRangeUpdates> range_updates;
 };
 
 /** Live aliases never invalidate this per-material serialized packet themselves. */
@@ -40,6 +46,7 @@ ShaderUniformRead get_shader_uniform(Engine& engine, MaterialHandle material,
 void set_shader_uniform_input(Engine& engine, MaterialHandle material, const std::string& name,
                               const ShaderUniformInput& input);
 const std::vector<float>& shader_uniform_render_values(const MaterialRecord& material);
+void enable_shader_uniform_range_updates(Engine& engine, Scene& scene, MaterialHandle material);
 
 template <class Value>
 void set_shader_uniform(Engine& engine, MaterialHandle material, const std::string& name,

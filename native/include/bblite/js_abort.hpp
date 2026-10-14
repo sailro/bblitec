@@ -6,6 +6,8 @@
 #include <bblite/js_data.hpp>
 #include <bblite/js_error.hpp>
 #include <bblite/js_gc.hpp>
+#include <bblite/listener_lease.hpp>
+#include <bblite/platform_event_listeners.hpp>
 #if BBLITE_WORKERS
 #include <bblite/pal_event_loop.hpp>
 #endif
@@ -29,14 +31,14 @@ namespace bbl::js {
 
 /**
  * A realm-owned AbortSignal (DOM Standard). Copies share one signal object. Abort runs the
- * native abort algorithms (transport cancellation) first, then the `abort` listeners in
- * registration order, synchronously and once; a listener added after abort never runs.
+ * native abort algorithms (transport cancellation, listener removal) first, then the `abort`
+ * listeners in registration order, synchronously and once; a listener added after abort never runs.
  * Listeners are keyed by (callback identity, capture), as `addEventListener` keys them.
  */
 class AbortSignal {
 public:
     using Listener = Callback<void()>;
-    /** A native abort algorithm: transport-side data only, no JavaScript values. */
+    /** A native abort algorithm: native data only, no JavaScript values. */
     using Algorithm = std::function<void(const Error&)>;
     using AlgorithmId = std::uint64_t;
 
@@ -63,14 +65,16 @@ public:
      * listener's function identity, which `remove_abort_listener` names. */
     void add_abort_listener(std::size_t identity, Listener listener, bool once = false,
                             bool capture = false) const {
+        static_cast<void>(add_abort_listener(identity, std::move(listener), once, capture, {}));
+    }
+    /** The same with `lease`, linking another signal that removes the listener; false for a
+     * duplicate. */
+    bool add_abort_listener(std::size_t identity, Listener listener, bool once, bool capture,
+                            ListenerLeasePtr lease) const {
         if (!listener)
-            return;
-        auto& current = state();
-        for (const auto& entry : current.listeners)
-            if (!entry->removed && entry->identity == identity && entry->capture == capture)
-                return;
-        current.listeners.push_back(
-            make_gc_shared<Entry>(Entry{identity, std::move(listener), once, capture, false}));
+            return false;
+        return state().listeners.add({identity, capture}, std::move(listener), once,
+                                     std::move(lease));
     }
     void add_abort_listener(const Listener& listener, bool once = false,
                             bool capture = false) const {
@@ -78,15 +82,7 @@ public:
     }
     /** `signal.removeEventListener("abort", listener, { capture })`. */
     void remove_abort_listener(std::size_t identity, bool capture = false) const {
-        auto& current = state();
-        const auto found = std::find_if(
-            current.listeners.begin(), current.listeners.end(), [&](const auto& entry) {
-                return !entry->removed && entry->identity == identity && entry->capture == capture;
-            });
-        if (found == current.listeners.end())
-            return;
-        (*found)->removed = true;
-        current.listeners.erase(found);
+        state().listeners.remove({identity, capture});
     }
     void remove_abort_listener(const Listener& listener, bool capture = false) const {
         remove_abort_listener(listener.identity(), capture);
@@ -102,12 +98,15 @@ public:
         return id;
     }
     void remove_algorithm(AlgorithmId id) const {
-        if (!state_)
-            return;
-        auto& algorithms = state_->algorithms;
-        algorithms.erase(std::remove_if(algorithms.begin(), algorithms.end(),
-                                        [&](const auto& entry) { return entry.first == id; }),
-                         algorithms.end());
+        if (state_)
+            erase_algorithm(*state_, id);
+    }
+    /** `remove_algorithm` through a weak reference: it never keeps the signal alive. */
+    [[nodiscard]] std::function<void()> algorithm_release(AlgorithmId id) const {
+        return [weak = std::weak_ptr<State>(state_), id] {
+            if (const auto current = weak.lock())
+                erase_algorithm(*current, id);
+        };
     }
 
     /** The DOM's "signal abort": a missing reason is a new AbortError DOMException. */
@@ -124,17 +123,8 @@ public:
             static_cast<void>(id);
             algorithm(settled);
         }
-        // Dispatch walks a snapshot; a listener removed by an earlier one does not run.
-        const auto listeners = current.listeners;
-        for (const auto& entry : listeners) {
-            if (entry->removed)
-                continue;
-            if (entry->once) {
-                entry->removed = true;
-                std::erase(current.listeners, entry);
-            }
-            invoke(entry->callback);
-        }
+        // A listener removed by an earlier one, or by an abort algorithm above, does not run.
+        current.listeners.dispatch_with([](Listener& listener) { invoke(listener); });
     }
 
     [[nodiscard]] const void* get() const noexcept { return state_.get(); }
@@ -145,23 +135,21 @@ public:
     void gc_trace(const TraceVisitor& visitor) const { visitor(state_); }
 
 private:
-    struct Entry {
+    /** `addEventListener` keys a listener by its callback and capture flag. */
+    struct ListenerKey {
         std::size_t identity = 0;
-        Listener callback;
-        bool once = false;
         bool capture = false;
-        bool removed = false;
-        void gc_trace(const TraceVisitor& visitor) const { visitor(callback); }
+        [[nodiscard]] bool operator==(const ListenerKey&) const = default;
     };
     struct State {
         bool aborted = false;
         std::optional<Error> reason;
-        std::vector<std::shared_ptr<Entry>> listeners;
+        PlatformEventListeners<void(), ListenerKey> listeners;
         std::vector<std::pair<AlgorithmId, Algorithm>> algorithms;
         AlgorithmId next_algorithm = 1;
         void gc_trace(const TraceVisitor& visitor) const {
             visitor(reason);
-            visitor(listeners);
+            listeners.gc_trace(visitor);
         }
     };
 
@@ -169,6 +157,9 @@ private:
         if (!state_)
             throw std::runtime_error("AbortSignal receiver is absent.");
         return *state_;
+    }
+    static void erase_algorithm(State& current, AlgorithmId id) {
+        std::erase_if(current.algorithms, [id](const auto& entry) { return entry.first == id; });
     }
     static void invoke(const Listener& listener) {
 #if BBLITE_WORKERS
@@ -215,5 +206,31 @@ public:
 private:
     AbortSignal signal_;
 };
+
+/**
+ * DOM "add an event listener" with a `signal` option. An empty signal (the option absent) adds
+ * plainly; an aborted one adds nothing. Otherwise `add(lease)` adds the listener (false for a
+ * duplicate, which the signal never removes) and abort removes exactly that listener, before the
+ * signal's own `abort` listeners run.
+ */
+template <typename Add> void add_event_listener(const AbortSignal& signal, Add&& add) {
+    if (!signal) {
+        static_cast<void>(add(ListenerLeasePtr{}));
+        return;
+    }
+    if (signal.aborted())
+        return;
+    auto lease = std::make_shared<ListenerLease>();
+    if (!add(lease))
+        return;
+    const auto algorithm =
+        signal.add_algorithm([weak = std::weak_ptr<ListenerLease>(lease)](const Error&) {
+            if (const auto held = weak.lock()) {
+                held->removed = true;
+                held->release = nullptr;
+            }
+        });
+    lease->release = signal.algorithm_release(algorithm);
+}
 
 } // namespace bbl::js

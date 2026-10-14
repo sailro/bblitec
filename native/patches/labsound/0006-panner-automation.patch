@@ -1,0 +1,92 @@
+PannerNode read its own and the listener's positions and orientations as intrinsic
+values only, so a scheduled ramp or curve on them never moved the source or the
+listener. Their timelines are now evaluated once per render quantum before the
+azimuth, elevation and distance are computed (control rate, as the rest of the
+node already is). The listener, which every panner reads, evaluates its own
+(AudioListener::updateParams) at most once per quantum, keyed by the frame.
+
+diff --git a/include/LabSound/core/AudioListener.h b/include/LabSound/core/AudioListener.h
+index 379e2ee..0489463 100644
+--- a/include/LabSound/core/AudioListener.h
++++ b/include/LabSound/core/AudioListener.h
+@@ -6,11 +6,14 @@
+ 
+ #include "LabSound/core/AudioParam.h"
+ #include "LabSound/core/FloatPoint3D.h"
++#include <cstdint>
++#include <limits>
+ #include <memory>
+ 
+ namespace lab
+ {
+ class AudioParam;
++class ContextRenderLock;
+ 
+ // AudioListener maintains the state of the listener in the audio scene as defined in the OpenAL specification.
+ class AudioListener
+@@ -29,11 +32,16 @@ class AudioListener
+     std::shared_ptr<AudioParam> m_positionX;
+     std::shared_ptr<AudioParam> m_positionY;
+     std::shared_ptr<AudioParam> m_positionZ;
++    uint64_t m_evaluatedFrame = std::numeric_limits<uint64_t>::max();
+ 
+ public:
+     AudioListener();
+     ~AudioListener() = default;
+ 
++    // Evaluates the position, forward and up timelines for this render quantum:
++    // once, however many panners read the listener during it.
++    void updateParams(ContextRenderLock & r);
++
+     // Position
+     void setPosition(float x, float y, float z) { setPosition({x, y, z}); }
+     void setPosition(const FloatPoint3D & position);
+diff --git a/src/core/AudioListener.cpp b/src/core/AudioListener.cpp
+index 69fd122..a61a09d 100644
+--- a/src/core/AudioListener.cpp
++++ b/src/core/AudioListener.cpp
+@@ -2,6 +2,8 @@
+ // Copyright (C) 2018, The LabSound Authors. All rights reserved.
+ 
+ #include "LabSound/core/AudioListener.h"
++#include "LabSound/core/AudioContext.h"
++#include "LabSound/extended/AudioContextLock.h"
+ 
+ namespace lab
+ {
+@@ -67,4 +69,16 @@ void AudioListener::setVelocity(const FloatPoint3D & velocity)
+     m_velocityY->setValue(velocity.y);
+     m_velocityZ->setValue(velocity.z);
+ }
++
++void AudioListener::updateParams(ContextRenderLock & r)
++{
++    const uint64_t frame = r.context()->currentSampleFrame();
++    if (frame == m_evaluatedFrame)
++        return;
++    m_evaluatedFrame = frame;
++    for (auto & param : {m_positionX, m_positionY, m_positionZ, m_forwardX, m_forwardY, m_forwardZ,
++                         m_upX, m_upY, m_upZ})
++        param->finalValue(r);
++}
++
+ }
+diff --git a/src/core/PannerNode.cpp b/src/core/PannerNode.cpp
+index c7ba03c..2af58f3 100755
+--- a/src/core/PannerNode.cpp
++++ b/src/core/PannerNode.cpp
+@@ -260,6 +260,14 @@ void PannerNode::process(ContextRenderLock & r, int bufferSize)
+     }
+ 
+ 
++    // The panner's and the listener's positions and orientations are automatable:
++    // evaluate their timelines for this render quantum, so the value() reads below
++    // see a scheduled ramp or curve rather than only the last value set directly.
++    // The listener, shared by every panner, evaluates once per quantum.
++    for (auto & param : {m_positionX, m_positionY, m_positionZ, m_orientationX, m_orientationY, m_orientationZ})
++        param->finalValue(r);
++    r.context()->listener()->updateParams(r);
++
+     // Apply the panning effect.
+     double azimuth;
+     double elevation;

@@ -12,6 +12,7 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_dawn_scene.hpp"
@@ -178,9 +179,39 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         material_handle.value,
         vertex_uniforms,
     };
+    // A render target's slot binds the target's current view: a rebuilt target
+    // rebuilds the groups that named the old one.
+    std::vector<WGPUTextureView>& render_views = state.shader_render_views;
+    std::vector<WGPUSampler>& render_samplers = state.shader_render_samplers;
+    render_views.assign(material.shader_render_textures.size(), nullptr);
+    render_samplers.assign(render_views.size(), nullptr);
+    for (std::size_t slot = 0; slot < render_views.size(); ++slot) {
+        if (const auto& reference = material.shader_render_textures[slot]) {
+#if BBLITE_RENDER_TASK_TRANSMISSION
+            if (reference->source == RenderTextureSource::transmission_color ||
+                reference->source == RenderTextureSource::transmission_depth) {
+                const auto [view, sampler] = task_transmission_binding(state, engine, *reference);
+                // A slot declared unfilterable takes a non-filtering sampler.
+                const bool unfilterable = slot < info.sampler_shapes.size() &&
+                                          info.sampler_shapes[slot].sample_type ==
+                                              upstream::ShaderSamplerSampleType::unfilterable_float;
+                render_views[slot] = view;
+                render_samplers[slot] = unfilterable ? state.nearest_sampler : sampler;
+                continue;
+            }
+#endif
+            if (reference->source != RenderTextureSource::render_target || reference->depth_only)
+                throw std::runtime_error("A shader slot samples a render target's colour.");
+            render_views[slot] =
+                dawn_render_target_texture(state, engine, reference->target, false).second;
+        }
+    }
     const auto existing = mesh.shader_bindings.find(key);
-    if (existing != mesh.shader_bindings.end())
-        return existing->second;
+    if (existing != mesh.shader_bindings.end()) {
+        if (existing->second.render_views == render_views)
+            return existing->second;
+        mesh.shader_bindings.erase(existing);
+    }
 
     shader_pipeline_layout_for(state, variant);
     const std::array<WGPUBindGroupLayout, 4> layouts{
@@ -271,7 +302,10 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
 #endif
         } else
 #endif
-        {
+            if (slot < render_views.size() && render_views[slot]) {
+            view = render_views[slot];
+            sampler = render_samplers[slot] ? render_samplers[slot] : state.ground_sampler;
+        } else {
             if (slot >= textures.size()) {
                 dawn_error(shader_sampler_shortfall(info, textures.size()));
             }
@@ -329,6 +363,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
             dawn_error("Shader fragment bind group creation failed.");
         }
     }
+    bindings.render_views = render_views;
     return mesh.shader_bindings.emplace(key, std::move(bindings)).first->second;
 }
 #endif

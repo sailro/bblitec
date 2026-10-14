@@ -102,6 +102,18 @@ export function retainedOptions(
         });
 }
 
+/**
+ * Whether a retained member is present, where that is a run-time fact: an
+ * optional member's value, an optional reference record's pointer.
+ */
+export function retainedOptionPresent(
+    member: RetainedOption,
+): string | undefined {
+    return member.type?.kind === "optional"
+        ? optionalPresentCpp(member.cpp)
+        : member.present;
+}
+
 /** Preserve absence so the source factory owns default application. */
 export function emitPresentOption(
     context: RetainedOptionsContext,
@@ -109,8 +121,7 @@ export function emitPresentOption(
     emit: (member: RetainedOption) => void,
 ): void {
     let { cpp, type } = member;
-    const guard =
-        type?.kind === "optional" ? optionalPresentCpp(cpp) : member.present;
+    const guard = retainedOptionPresent(member);
     if (type?.kind === "optional") {
         cpp = `${cpp}.value()`;
         type = type.inner;

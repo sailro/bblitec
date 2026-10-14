@@ -9,6 +9,7 @@
 // generates no camera math and no render plan, so `pal_sdl_gpu.cpp` cannot be
 // compiled for it at all.
 #include <bblite/upstream/pinned_surface.hpp>
+#include <bblite/features/effect_wrapper_disposal.hpp>
 #include <bblite/features/has_effect_renderer.hpp>
 
 #include <bblite/pal.hpp>
@@ -162,6 +163,9 @@ public:
             if (renderer == contexts.end())
                 throw std::out_of_range("Rendering context index.");
             const EffectRendererRecord& record = engine.effect_renderers[renderer->value];
+#if BBLITE_EFFECT_WRAPPER_DISPOSAL
+            require_effect_renderer_storage(engine, record.effect);
+#endif
             record_effect_pass(command, render_pass, engine, passes[index], record.effect);
         }
         render_pass.end();

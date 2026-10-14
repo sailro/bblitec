@@ -1,75 +1,71 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { LoweringContext } from "../src/lowering/context.js";
-import { AudioLowerer } from "../src/lowering/audio-lowerer.js";
+import { sharedPinnedContext } from "../src/lowering/context.js";
+import {
+    ENGINE_ROOTS,
+    staticSoundLibraryHeader,
+} from "../src/lowering/static-sound-library.js";
 
 /**
  * The focused test `docs/fidelity.md` requires for a high-risk
- * adaptation, plus the two structural contracts the audio slice stands
- * on.
+ * adaptation, plus the structural contracts the audio slice stands on.
  *
  * `substituted-audio-engine` cannot be gated by a pixel, so what has to
- * be pinned is everything the port DOES take from upstream: the folded
- * engine graph asserts against the pinned declarations, and the refusals
- * that keep an unlowered behaviour from compiling to a plausible
- * substitute.
+ * be pinned is everything the port DOES take from upstream: the engine
+ * lowered from the pinned declarations, and the refusals that keep an
+ * unlowered behaviour from compiling to a plausible substitute.
  */
 
 function source(path: string): string {
     return readFileSync(path, "utf8");
 }
 
-test("the folded engine graph asserts against the pinned declarations", () => {
-    // The whole point of the lowerer: it emits nothing, and it either
-    // agrees with the pin or throws. Running it against the real pinned
-    // source is the assertion.
-    assert.doesNotThrow(() => {
-        new AudioLowerer(new LoweringContext()).assertEngineGraphContract();
-    });
-});
-
-test("the fold is gated on every statement it restates", () => {
-    const lowerer = source("src/lowering/audio-lowerer.ts");
-    // The two constructions the intrinsic emits...
-    assert.match(lowerer, /engine\._mainOut = createMainOut\(ctx, engine\)/);
-    assert.match(lowerer, /engine\._mainBus = createMainBus\("default"/);
-    // ...the edges they build...
-    assert.match(lowerer, /gain\.connect\(ctx\.destination\)/);
-    assert.match(lowerer, /volume\.connect\(mainOut\._gain\)/);
-    // ...and the statement the fold OMITS, with the default that is the
-    // only reason omitting it is faithful.
-    assert.match(
-        lowerer,
-        /setMainOutVolume\(engine\._mainOut, engine\._volume\)/,
+test("the engine and its master volume lower from the pin, ramps and all", () => {
+    const header = staticSoundLibraryHeader(
+        sharedPinnedContext(),
+        ENGINE_ROOTS,
     );
-    assert.match(lowerer, /options\.volume \?\? 1/);
-});
-
-test("setMasterVolume refuses, because the pin has no un-ramped form", () => {
-    // `setMainOutVolume` -> `setRampTarget` defaults to a linear curve
-    // over `_rampDuration` (0.01 s), which is above `MinRampDuration` --
-    // so even a no-options call schedules a curve. Emitting an
-    // instantaneous write would be a substitution, not a subset.
-    const intrinsic = source("src/compiler/intrinsics/audio.ts");
-    assert.match(intrinsic, /setMasterVolume:/);
-    assert.doesNotMatch(intrinsic, /audio_param_set_value\(/);
+    // The pin's construction: main out, its volume through the ramp, then
+    // the main bus into it.
+    const creation = header.slice(
+        header.indexOf(
+            "create_audio_engine_async(bbl::AudioEngineOptions options) {",
+        ),
+    );
+    const out = creation.indexOf("engine.set_main_out(bbl::create_main_out(");
+    const volume = creation.indexOf("bbl::set_main_out_volume(");
+    const bus = creation.indexOf(
+        'engine.set_main_bus(bbl::create_main_bus("default"',
+    );
+    assert.ok(out >= 0 && out < volume && volume < bus, "construction order");
+    // `setMasterVolume` has no un-ramped form: it goes through
+    // `setRampTarget`, whose default is a linear curve over the engine's
+    // ramp duration.
+    assert.match(
+        header,
+        /void set_master_volume\([^)]*\) \{\n {4}\(\*engine\.volume\) = value;\n {4}bbl::set_main_out_volume\(/,
+    );
+    assert.match(header, /bbl::pal::audio_param_set_value_curve\(/);
+    assert.match(
+        header,
+        /double get_master_volume\([^)]*\) \{\n {4}return \(\*engine\.volume\);/,
+    );
+    // Only the engine's part: no sound is reached.
+    assert.doesNotMatch(header, /struct StaticSound\b/);
 });
 
 test("the Babylon sound families refuse by name rather than no-op", () => {
     const intrinsic = source("src/compiler/intrinsics/audio.ts");
     for (const name of [
-        "createSoundAsync",
         "createSoundBufferAsync",
         "createStreamingSoundAsync",
         "createAudioBusAsync",
-        "enableSpatial",
         "enableStereo",
         "enableAnalyzer",
         "createMicrophoneSoundSourceAsync",
         "createUnmuteUI",
         "createAudioVisualizer",
-        "createAudioEngineMediaStream",
     ]) {
         assert.match(
             intrinsic,
@@ -87,7 +83,6 @@ test("the PAL header declares only what a generated scene can call", () => {
     for (const absent of [
         "audio_buffer_channel_data",
         "audio_set_source_buffer",
-        "audio_param_set_value_curve",
         "audio_flush_connections",
     ]) {
         assert.doesNotMatch(
@@ -101,6 +96,7 @@ test("the PAL header declares only what a generated scene can call", () => {
         "audio_buffer_channel",
         "audio_create_buffer_source",
         "audio_set_buffer",
+        "audio_param_set_value_curve",
     ]) {
         assert.match(
             header,

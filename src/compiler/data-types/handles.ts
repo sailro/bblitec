@@ -33,6 +33,8 @@ const handleCppTypes: Record<HandleKind, string> = {
     "audio-buffer": "bbl::pal::AudioBufferHandle",
     "audio-engine": "bbl::AudioEngineHandle",
     "audio-source": "bbl::AudioSourceHandle",
+    "static-sound": "std::shared_ptr<bbl::StaticSound>",
+    "audio-element": "bbl::pal::AudioElement",
     "audio-context": "bbl::pal::AudioContextHandle",
     "audio-node": "bbl::pal::AudioNodeHandle",
     "audio-param": "bbl::pal::AudioParamHandle",
@@ -47,6 +49,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "gamepad-button": "bbl::GamepadButtonHandle",
     scene: "bbl::Scene",
     "render-target": "bbl::RenderTargetHandle",
+    "transmission-grab": "bbl::TransmissionGrab",
     "scene-node": "bbl::SceneNodeHandle",
     light: "bbl::LightHandle",
     "shadow-generator": "bbl::ShadowGeneratorHandle",
@@ -115,6 +118,7 @@ const engineScopedHandleKinds = new Set<HandleKind>([
     "scene-node",
     "hierarchy-instance-pool",
     "render-target",
+    "transmission-grab",
     "sprite-atlas",
     "sprite-layer",
     "billboard-system",
@@ -189,6 +193,7 @@ const resourceValueCppTypes: ReadonlyMap<string, string> = new Map([
     ["camera-gizmo", "bbl::CameraGizmoHandle"],
     ["light-gizmo", "bbl::LightGizmoHandle"],
     ["asset-root", "bbl::AssetHandle"],
+    ["frame-graph", "bbl::Scene"],
 ]);
 
 export function resourceValueCppType(kind: string): string | undefined {

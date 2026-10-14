@@ -61,12 +61,13 @@ create_custom_event(std::string type, js::JsonValue detail = js::JsonValue::null
                                options.get("composed").truthy());
 }
 
-inline void on_dom_custom(Engine& engine, DomEventTarget target, std::string type,
+inline bool on_dom_custom(Engine& engine, DomEventTarget target, std::string type,
                           std::size_t identity,
                           DomEventListeners<PlatformCustomEvent>::Callback callback,
-                          bool capture = false, bool once = false, bool passive = false) {
-    dom_input(engine).custom.add(target, std::move(type), identity, std::move(callback), capture,
-                                 once, passive);
+                          bool capture = false, bool once = false, bool passive = false,
+                          ListenerLeasePtr lease = {}) {
+    return dom_input(engine).custom.add(target, std::move(type), identity, std::move(callback),
+                                        capture, once, passive, std::move(lease));
 }
 
 inline void off_dom_custom(Engine& engine, DomEventTarget target, std::string type,

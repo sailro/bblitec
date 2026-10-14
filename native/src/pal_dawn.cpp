@@ -1,4 +1,5 @@
 #include <bblite/features/gpu_retirement.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The Dawn scene renderer's driver: the pass helpers, the pipelines the
 // frame run builds and the frame run itself. The feature families it draws
@@ -36,6 +37,7 @@
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/features/texture_pixel_writes.hpp>
 #include <bblite/features/workers.hpp>
 
 #include "pal_dawn_scene.hpp"
@@ -692,7 +694,8 @@ class DawnSceneRun {
     /** The run scene's `scene_camera`. */
     CameraRecord* active_camera() { return scene_camera(data_.engine, data_.scene); }
 
-    void rebuild_task_draw_lists() {
+    /** Every task's draw lists, or only those of `only`. */
+    void rebuild_task_draw_lists(const std::vector<TaskHandle>* only = nullptr) {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& state = data_.state;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
@@ -704,10 +707,12 @@ class DawnSceneRun {
         for (std::size_t layer = 0; layer < data_.active_registered_scenes.size(); ++layer) {
             const Scene& task_scene = *data_.active_registered_scenes[layer];
             const auto& task_plan = layer == 0 ? render_plan : overlay_plans[layer - 1];
-            for (const TaskHandle handle : task_scene.tasks) {
+            for (const TaskHandle handle : task_scene.frame_passes()) {
                 if (handle.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error("Scene frame task handle is invalid.");
                 }
+                if (only && std::find(only->begin(), only->end(), handle) == only->end())
+                    continue;
                 FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                 if (task.kind != FrameTaskKind::render && task.kind != FrameTaskKind::geometry) {
                     continue;
@@ -717,10 +722,7 @@ class DawnSceneRun {
                     render_task.view_projection =
                         create_buffer(state, WGPUBufferUsage_Uniform, nullptr, 64);
                 }
-                render_task.draw_lists =
-                    upstream::build_render_task_draw_lists(task_plan, engine, task);
-                task.render_recorded = true;
-                task.render_meshes_dirty = false;
+                render_task.draw_lists = record_task_draw_lists(task_plan, engine, task);
             }
         }
     }
@@ -1107,7 +1109,7 @@ public:
         // may replace the root or finish registering an awaited auxiliary scene;
         // either change rebuilds the backend before stale plans are used again.
 
-        if (scene.transmission_enabled && !scene.tasks.empty()) {
+        if (scene.transmission_enabled && scene.has_frame_passes()) {
             dawn_error("transmission combined with frame-graph tasks is not "
                        "implemented yet.");
         }
@@ -1349,7 +1351,7 @@ public:
         const auto initialize_render_tasks = [&] {
             state.release_render_tasks();
             state.render_tasks.resize(engine.frame_tasks.size());
-            for (const TaskHandle handle : scene.tasks) {
+            for (const TaskHandle handle : scene.frame_passes()) {
                 const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                 if (task.kind == FrameTaskKind::render) {
                     DawnRenderTask& render_task = handle_at(state.render_tasks, handle);
@@ -1408,7 +1410,7 @@ public:
             // the surface format and the target's sample count.
             std::vector<std::function<void()>> blit_jobs;
             for (const auto& layer_scene : active_registered_scenes) {
-                for (const TaskHandle handle : layer_scene->tasks) {
+                for (const TaskHandle handle : layer_scene->frame_passes()) {
                     const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                     if (task.kind != FrameTaskKind::copy ||
                         task.copy.target.value == invalid_handle ||
@@ -1816,6 +1818,25 @@ public:
 
         void publish_storage() { sync_shader_storage_buffers(rows.state, rows.engine); }
 
+#if BBLITE_TEXTURE_PIXEL_WRITES
+        // Queue writes, which land before the frame's submit.
+        void upload_pixels_texture_writes() {
+            rows.state.shared_material_images.upload_pixels_writes(
+                [&](DawnTexture& image, std::span<const std::uint8_t> texels,
+                    PixelsTexels::Region region) {
+                    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+                    destination.texture = image.get();
+                    destination.origin = {region.x, region.y, 0};
+                    WGPUTexelCopyBufferLayout layout{};
+                    layout.bytesPerRow = region.width * 4u;
+                    layout.rowsPerImage = region.height;
+                    const WGPUExtent3D size{region.width, region.height, 1};
+                    DawnGpuDevice{rows.state.queue}.write_texture(&destination, texels.data(),
+                                                                  texels.size(), &layout, &size);
+                });
+        }
+#endif
+
         // Queue writes land with the next submit; there is no batch to close.
         void submit_uploads() {}
 
@@ -1997,6 +2018,9 @@ public:
         for (const auto& registered_scene : engine.scenes()) {
             write_shadow_generators(state, *registered_scene, engine);
         }
+        if (const std::vector<TaskHandle> moved = take_moved_task_lists(state.shadow_refresh);
+            !moved.empty())
+            rebuild_task_draw_lists(&moved);
 #endif
 #endif
         // Sampled render targets must exist before material bind groups are built.
@@ -2017,7 +2041,7 @@ public:
         pass_scene = &scene;
         pass_meshes = &state.meshes;
 
-        if (!scene.tasks.empty()) {
+        if (scene.has_frame_passes()) {
 #if !BBLITE_HAS_TAA
             for (std::size_t graph_layer = 0; graph_layer < data_.active_registered_scenes.size();
                  ++graph_layer) {
@@ -2031,7 +2055,7 @@ public:
                 if (graph_layer > 0)
                     graph_lights = state.overlay_frames[graph_layer - 1].lights_uniforms;
 #endif
-                for (const TaskHandle handle : graph_scene.tasks) {
+                for (const TaskHandle handle : graph_scene.frame_passes()) {
                     const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                     if (task.execution_enabled == false)
                         continue;
@@ -2093,8 +2117,8 @@ public:
                     if (task.kind != FrameTaskKind::render)
                         continue;
                     DawnRenderTask& render_task = handle_at(state.render_tasks, handle);
-                    const RenderTargetRecord& target_record =
-                        handle_at(engine.render_targets, task.render.target);
+                    const RenderTargetRecord& target_record = pal::resolve_render_target(
+                        engine, task.render.target, pal::task_target_user(task));
                     const DawnRenderTarget& target =
                         handle_at(state.render_targets, task.render.target);
                     CameraRecord* const task_camera = task_pass_camera(engine, task);
@@ -2299,6 +2323,9 @@ public:
             encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
         }
 #endif
+        // The first encoder submitted carries the opening marker.
+        if (const auto frame_timer = gpu_frame_timer_begin(engine))
+            encode_dawn_gpu_timestamp(encoder, *frame_timer);
         capture_source = surface_texture.texture;
         // Meaningful only under the frame-graph arm, where the default
         // above is a never-rendered surface: set by the same two arms
@@ -2308,7 +2335,7 @@ public:
         // instead of reading the raw surface back.
         frame_graph_presented = false;
 #if BBLITE_SHADOW_RECEIVERS
-        std::vector<bool> wrote_caster_blocks(engine.shadow_generators.size(), false);
+        std::vector<bool> wrote_caster_blocks(engine.shadow_generators.size() * 2u, false);
 #endif
         const auto draw_list_into = [&](WGPURenderPassEncoder list_pass, const auto& list,
                                         std::uint32_t samples, WGPURenderPipeline& bound_pipeline,
@@ -2535,11 +2562,11 @@ public:
             }
         };
 #if BBLITE_EXTERNAL_RENDERABLES
-        if (!scene.tasks.empty() && !scene.state->external_renderables.empty())
+        if (scene.has_frame_passes() && !scene.state->external_renderables.empty())
             dawn_error("External renderables draw in the scene's own pass; a scene with render "
                        "tasks refuses them.");
 #endif
-        if (scene.tasks.empty()) {
+        if (!scene.has_frame_passes()) {
             write_material_uniforms(render_plan.draw_lists.opaque,
                                     current_frame().frame_pass_matrices);
             write_material_uniforms(render_plan.draw_lists.transparent,
@@ -2877,8 +2904,11 @@ public:
         } else {
             // Frame-graph execution replaces the main pass entirely,
             // mirroring the SDL task loop.
+            // The task encoding now: every target lookup below resolves
+            // through `pal::resolve_render_target` naming it.
+            pal::TargetUser target_user = pal::frame_pass_target_user;
             const auto render_target_texture = [&](RenderTargetHandle target_handle) {
-                return dawn_render_target_texture(state, engine, target_handle);
+                return dawn_render_target_texture(state, engine, target_handle, false, target_user);
             };
             /** The depth view a reference names, or null when it names none. */
             const auto task_depth_view = [&](const RenderTextureRef& reference) -> WGPUTextureView {
@@ -2897,7 +2927,7 @@ public:
                 [&](const RenderTextureRef& reference) -> std::pair<WGPUTexture, WGPUTextureView> {
                 if (reference.source == RenderTextureSource::render_target) {
                     return dawn_render_target_texture(state, engine, reference.target,
-                                                      reference.depth_only);
+                                                      reference.depth_only, target_user);
                 }
                 const FrameTaskRecord& source_task = handle_at(engine.frame_tasks, reference.task);
                 if (source_task.kind != FrameTaskKind::geometry) {
@@ -2926,7 +2956,7 @@ public:
 #if BBLITE_HAS_TAA
             if (!engine.stopped) {
                 for (const auto& registered : engine.scenes()) {
-                    for (const TaskHandle handle : registered->tasks) {
+                    for (const TaskHandle handle : registered->frame_passes()) {
                         auto& task = handle_at(engine.frame_tasks, handle);
                         if (!task.post_process.taa)
                             continue;
@@ -2955,10 +2985,12 @@ public:
                     pass_scene = &graph_scene;
                     pass_meshes = &graph_meshes;
                     GpuTaskTimingSequence timing_sequence(engine, &graph_scene);
-                    for (const TaskHandle handle : graph_scene.tasks) {
+                    for (const TaskHandle handle : graph_scene.frame_passes()) {
                         FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                         if (task.execution_enabled == false)
                             continue;
+                        const pal::ScopedTargetUser task_target_user(target_user,
+                                                                     pal::task_target_user(task));
                         const auto timing_scope = timing_sequence.scoped_task(engine, handle);
 #if BBLITE_COMPUTE_FRAME_GRAPH
                         if (task.kind == FrameTaskKind::compute) {
@@ -2981,9 +3013,9 @@ public:
 #endif
                         if (task.kind == FrameTaskKind::render) {
                             const RenderTargetRecord& target_record =
-                                handle_at(engine.render_targets, task.render.target);
-                            DawnRenderTarget& target =
-                                handle_at(state.render_targets, task.render.target);
+                                pal::resolve_render_target(engine, task.render.target, target_user);
+                            DawnRenderTarget& target = pal::resolve_gpu_target(
+                                engine, state.render_targets, task.render.target, target_user);
                             DawnRenderTask& render_task = handle_at(state.render_tasks, handle);
                             const std::uint32_t samples = target_sample_count(state, target_record);
                             // The camera the task's pass renders through: its
@@ -3018,6 +3050,7 @@ public:
                             }
 #endif
 #if BBLITE_HAS_TAA
+                            (void)pal::task_pass_breaks(task, {.temporal = true});
                             if (task.source_scene != graph_scene.state ||
                                 task.render.scene_stages ||
                                 task.render.shadow_generator.value != invalid_handle ||
@@ -3073,10 +3106,28 @@ public:
                                 // receiver keeps sampling last render's bit-identical
                                 // content. The verdict was written onto the gate by
                                 // `refresh_shadow_generators` earlier this frame.
-                                if (!state.shadow_refresh.gates[task.render.shadow_generator.value]
-                                         .due) {
-                                    continue;
+                                const pal::ShadowTaskPass caster_plan =
+                                    pal::shadow_task_pass(engine, state.shadow_refresh, task);
+                                if (caster_plan.copy_layers) {
+                                    const auto& cache_target = pal::resolve_gpu_target(
+                                        engine, state.render_targets, caster_plan.copy_source,
+                                        target_user);
+                                    for (const std::uint32_t layer : *caster_plan.copy_layers) {
+                                        WGPUTexelCopyTextureInfo copy_source{};
+                                        copy_source.texture = cache_target.depth;
+                                        copy_source.origin = {0, 0, layer};
+                                        copy_source.aspect = WGPUTextureAspect_All;
+                                        WGPUTexelCopyTextureInfo copy_destination{};
+                                        copy_destination.texture = target.depth;
+                                        copy_destination.origin = {0, 0, layer};
+                                        copy_destination.aspect = WGPUTextureAspect_All;
+                                        const WGPUExtent3D extent{target.width, target.height, 1u};
+                                        wgpuCommandEncoderCopyTextureToTexture(
+                                            encoder, &copy_source, &copy_destination, &extent);
+                                    }
                                 }
+                                if (!caster_plan.draws)
+                                    continue;
                                 const auto caster = shadow_caster_matrices(engine, task);
                                 ShaderPassMatrices caster_pass{caster.view_projection.data(),
                                                                &caster.view, nullptr};
@@ -3085,7 +3136,12 @@ public:
                                 caster_pass.camera_position =
                                     &binding_camera.matrices.camera_position;
 #endif
-                                const auto generator_index = task.render.shadow_generator.value;
+                                // Each caster list writes its draws' blocks once; a
+                                // cached generator's static and dynamic passes draw
+                                // different casters, so each list keeps its own mark.
+                                const auto generator_index =
+                                    task.render.shadow_generator.value * 2u +
+                                    (task.render.shadow_cache_static ? 1u : 0u);
                                 const bool later_cascade = wrote_caster_blocks[generator_index];
                                 wrote_caster_blocks[generator_index] = true;
                                 write_material_uniforms(render_task.draw_lists.opaque, caster_pass,
@@ -3101,7 +3157,8 @@ public:
                                 // a cascaded one is the single layer 0.
                                 shadow_attachment.view =
                                     target.depth_layer_views[task.render.depth_layer];
-                                shadow_attachment.depthLoadOp = WGPULoadOp_Clear;
+                                shadow_attachment.depthLoadOp =
+                                    caster_plan.load_depth ? WGPULoadOp_Load : WGPULoadOp_Clear;
                                 // The pin's own shadow target clears to ITS far value,
                                 // which standard-Z puts at 1 where this port's reverse-Z
                                 // puts it at 0.
@@ -3375,13 +3432,14 @@ public:
                             // outright when the task's own target is single-sample. That
                             // is the count the target was *allocated* at, not the one it
                             // asked for: a run forced to one sample resolves nothing.
-                            const std::uint32_t resolve = task.render.resolve_target.value;
-                            if (resolve < state.render_targets.size() &&
+                            const RenderTargetHandle resolve = task.render.resolve_target;
+                            if (resolve.value < state.render_targets.size() &&
                                 target_sample_count(state, target_record) > 1) {
                                 color_attachment.resolveTarget =
-                                    engine.render_targets[resolve].swapchain
+                                    pal::resolve_render_target(engine, resolve, target_user)
+                                            .swapchain
                                         ? surface_view
-                                        : state.render_targets[resolve].color_view;
+                                        : handle_at(state.render_targets, resolve).color_view;
                             }
                             WGPURenderPassDepthStencilAttachment depth_attachment{};
                             WGPURenderPassDescriptor pass_descriptor =
@@ -3428,6 +3486,13 @@ public:
                             set_task_camera_viewport(task_pass, pass_camera, target.width,
                                                      target.height);
                             WGPURenderPipeline bound_pipeline = nullptr;
+                            // The task's colour-pass plan (`_copies` reset per execution).
+                            pal::TaskPassBreaks pass_breaks = pal::task_pass_breaks(
+                                task,
+                                {.multisampled = target_sample_count(state, target_record) > 1,
+                                 .swapchain = target_record.swapchain,
+                                 .billboard_stages =
+                                     BBLITE_HAS_BILLBOARDS && task.render.scene_stages});
 #if BBLITE_HAS_BILLBOARDS
                             const auto draw_task_billboards = [&](BillboardDepthMode mode) {
                                 for (const DawnBillboardPass& billboard : state.billboard_passes) {
@@ -3520,7 +3585,32 @@ public:
                                 }
                             } else
 #endif
-                                draw_transparent(render_task.draw_lists.transparent);
+                                // The plan's break: end the pass, grab, and resume
+                                // loading what the first segment stored.
+                                pal::draw_split_list(
+                                    engine, pass_breaks, render_task.draw_lists.transparent,
+                                    draw_transparent, [&] {
+                                        wgpuRenderPassEncoderEnd(task_pass);
+                                        task_pass.reset();
+#if BBLITE_RENDER_TASK_TRANSMISSION
+                                        encode_task_transmission_grab(state, engine, encoder,
+                                                                      handle);
+#endif
+                                        color_attachment.loadOp = WGPULoadOp_Load;
+                                        if (pass_descriptor.depthStencilAttachment) {
+                                            depth_attachment.depthLoadOp = WGPULoadOp_Load;
+                                            if (depth_attachment.stencilLoadOp !=
+                                                WGPULoadOp_Undefined)
+                                                depth_attachment.stencilLoadOp = WGPULoadOp_Load;
+                                        }
+                                        // The pass's timestamps stay on its first segment.
+                                        pass_descriptor.timestampWrites = nullptr;
+                                        task_pass = wgpuCommandEncoderBeginRenderPass(
+                                            encoder, &pass_descriptor);
+                                        set_task_camera_viewport(task_pass, pass_camera,
+                                                                 target.width, target.height);
+                                        bound_pipeline = nullptr;
+                                    });
 #if BBLITE_HAS_TEXT
                             // The scene's text, bound for this pass's
                             // attachments (`validate_text_scene`).
@@ -3545,7 +3635,7 @@ public:
                                 for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
                                     const Scene& utility =
                                         *data_.active_registered_scenes[layer + 1];
-                                    if (utility.surface_canvas || !utility.tasks.empty())
+                                    if (utility.surface_canvas || utility.has_frame_passes())
                                         continue;
                                     color_attachment.loadOp = WGPULoadOp_Load;
                                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
@@ -3642,7 +3732,8 @@ public:
                             }
                             if (task.geometry.target.value != invalid_handle) {
                                 DawnRenderTarget& output_target =
-                                    handle_at(state.render_targets, task.geometry.target);
+                                    pal::resolve_gpu_target(engine, state.render_targets,
+                                                            task.geometry.target, target_user);
                                 WGPURenderPassColorAttachment attachment =
                                     WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
                                 attachment.view = output_target.color_view;
@@ -3838,6 +3929,7 @@ public:
                         }
 #if BBLITE_HAS_EFFECT_TASK
                         if (task.kind == FrameTaskKind::effect) {
+                            pal::prepare_effect_task(engine, task);
                             // The same two halves the swapchain renderer draws through,
                             // recorded into the frame graph's encoder instead: the pin
                             // ships two entry points over one pass, not two passes.
@@ -3846,15 +3938,20 @@ public:
                             }
                             DawnEffectPass& pass = handle_at(state.effect_tasks, handle);
                             const RenderTargetRecord& target_record =
-                                handle_at(engine.render_targets, task.effect.target);
-                            DawnRenderTarget& target =
-                                handle_at(state.render_targets, task.effect.target);
+                                pal::resolve_render_target(engine, task.effect.target, target_user);
+                            DawnRenderTarget& target = pal::resolve_gpu_target(
+                                engine, state.render_targets, task.effect.target, target_user);
                             if (!pass.pipeline) {
                                 pass = create_dawn_effect_pass(
                                     state, engine, task.effect.effect, target.color_format,
                                     target_sample_count(state, target_record));
                             }
                             upload_dawn_effect_pass(state.queue, engine, pass, task.effect.effect);
+                            bind_dawn_effect_render_textures(
+                                state.device, engine, pass, task.effect.effect,
+                                [&](const RenderTextureRef& reference) {
+                                    return source_texture_view(reference).second;
+                                });
                             WGPURenderPassColorAttachment attachment =
                                 WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
                             attachment.view =
@@ -3922,8 +4019,8 @@ public:
                                         [&](TaaPostProcessState& value) {
                                             const auto& blend = task.post_process.passes.at(0);
                                             const auto extent = resolve_post_process_extent(
-                                                handle_at(engine.render_targets,
-                                                          blend.output_target),
+                                                pal::resolve_render_target(
+                                                    engine, blend.output_target, target_user),
                                                 state.render_targets, blend, width, height);
                                             advance_temporal_jitter(
                                                 value, *source.scene_uniforms, extent.source_width,
@@ -3956,8 +4053,9 @@ public:
                                     state, engine, handle, encoder, surface_view, width, height,
                                     index, source_texture_view, post_process_timestamps.get());
                                 const RenderTargetRecord& output_record =
-                                    engine.render_targets[task.post_process.passes[index]
-                                                              .output_target.value];
+                                    pal::resolve_render_target(
+                                        engine, task.post_process.passes[index].output_target,
+                                        target_user);
                                 if (output_record.swapchain) {
                                     frame_graph_presented = true;
                                 }
@@ -3986,10 +4084,10 @@ public:
                             if (copy.source.source != RenderTextureSource::render_target) {
                                 throw std::runtime_error("Resolve source must be a render target.");
                             }
-                            DawnRenderTarget& resolve_source =
-                                handle_at(state.render_targets, copy.source.target);
-                            DawnRenderTarget& resolve_target =
-                                handle_at(state.render_targets, copy.resolve_target);
+                            DawnRenderTarget& resolve_source = pal::resolve_gpu_target(
+                                engine, state.render_targets, copy.source.target, target_user);
+                            DawnRenderTarget& resolve_target = pal::resolve_gpu_target(
+                                engine, state.render_targets, copy.resolve_target, target_user);
                             if (!state.multisampled()) {
                                 // Nothing to average: the pinned resolve of a
                                 // single-sample source is the source, so the frame
@@ -4028,8 +4126,9 @@ public:
                             continue;
                         }
                         const RenderTargetRecord& target_record =
-                            handle_at(engine.render_targets, copy.target);
-                        DawnRenderTarget& target = handle_at(state.render_targets, copy.target);
+                            pal::resolve_render_target(engine, copy.target, target_user);
+                        DawnRenderTarget& target = pal::resolve_gpu_target(
+                            engine, state.render_targets, copy.target, target_user);
                         const auto [source_texture, source_view] = source_texture_view(copy.source);
                         std::optional<PixelViewport> surface_pane;
                         if (target_record.swapchain && !force_full_viewport) {
@@ -4209,18 +4308,21 @@ public:
 #endif
         DawnSurfaceCapture capture;
         if (capture_frame) {
-            if (!scene.tasks.empty() && !frame_graph_presented) {
+            if (scene.has_frame_passes() && !frame_graph_presented) {
                 throw std::runtime_error("Frame graph did not present a capture source.");
             }
             capture =
                 begin_dawn_surface_capture(state.device, encoder, capture_source, width, height);
         }
+        if (const auto frame_timer = gpu_frame_timer_end(engine))
+            encode_dawn_gpu_timestamp(encoder, *frame_timer);
         DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
         submit_dawn_command(state.queue, command);
         command.reset();
         encoder.reset();
         flush_frame_gpu_retirements(engine);
         finish_gpu_task_timing_frame(engine);
+        resolve_gpu_frame_timer(engine);
 #if BBLITE_COMPUTE_FRAME_GRAPH
         finish_compute_frame_prefix(engine);
 #endif

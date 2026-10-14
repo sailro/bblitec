@@ -1859,10 +1859,18 @@ export class StatementLowerer {
         const effect = ts.isVoidExpression(expression)
             ? context.unwrap(expression.expression)
             : expression;
+        const callee =
+            ts.isCallExpression(effect) && context.unwrap(effect.expression);
         if (
             ts.isCallExpression(effect) &&
             effect.arguments.length === 0 &&
-            context.browserErasure.isBrowserOnlyExpression(effect)
+            context.browserErasure.isBrowserOnlyExpression(effect) &&
+            (!callee ||
+                !(
+                    ts.isPropertyAccessExpression(callee) ||
+                    ts.isElementAccessExpression(callee)
+                ) ||
+                context.browserErasure.isBrowserOwner(callee.expression))
         ) {
             // Pointer-lock and similar zero-argument DOM effects are often
             // written behind their own browser-only state guard, sometimes
@@ -5592,7 +5600,11 @@ export class StatementLowerer {
         if (!exported && (!member || !ts.isIdentifier(member.expression)))
             return false;
         const method = exported ? "addMesh" : member!.name.text;
-        if (method !== "addMesh" && method !== "updateUniforms") {
+        if (
+            method !== "addMesh" &&
+            method !== "updateUniforms" &&
+            method !== "dispose"
+        ) {
             return false;
         }
         const task = context.compileValue(
@@ -5600,6 +5612,22 @@ export class StatementLowerer {
         );
         if (task.kind !== "task") {
             return false;
+        }
+        if (method === "dispose") {
+            context.expectArgumentCount(call, 0, 0);
+            if (!task.renderTask && !task.effectTask)
+                context.fail(
+                    call,
+                    "Task dispose() lowers render tasks and effect render tasks.",
+                );
+            // Disposal releases the targets the task owns.
+            context.reachFeature("frame-graph:task-disposal", call);
+            context.reachFeature("frame-graph:target-disposal", call);
+            context.emit({
+                kind: "expression",
+                code: `bbl::${task.renderTask ? "dispose_render_task" : "dispose_effect_render_task"}(${context.requireEngine(task, call)}, ${task.cpp});`,
+            });
+            return true;
         }
         if (method === "updateUniforms") {
             if (!task.postProcessTask && !task.postProcessComposite) {
@@ -5647,6 +5675,7 @@ export class StatementLowerer {
             context.expectSameEngine(task, material, call);
             materialCpp = material.cpp;
             materialOverride = true;
+            context.reachFeature("frame-graph:task-material-override", call);
         }
         context.emit({
             kind: "expression",

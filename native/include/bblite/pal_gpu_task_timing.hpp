@@ -135,7 +135,25 @@ struct GpuTaskTimer {
     }
 };
 
+/** `GpuFrameTimer`: the frame's query pair and its in-flight readbacks. */
+struct GpuFrameTimer {
+    std::shared_ptr<GpuTimestampQuerySet> query_set;
+    std::vector<std::shared_ptr<GpuTimestampReadback>> pending;
+    double last_ms = 0;
+    double in_flight = 0;
+};
+
 struct GpuTaskTimingState {
+    /** `setGpuTimingEnabled`: wanted state, the timer (unset, null or live) and its frame hooks. */
+    bool frame_timer_wanted = false;
+    std::optional<std::shared_ptr<GpuFrameTimer>> frame_timer;
+    std::function<GpuTimestampWrite()> frame_timer_begin;
+    std::function<GpuTimestampWrite()> frame_timer_end;
+    std::function<void()> frame_timer_resolve;
+    /** `engine.gpuFrameTimeMs`. */
+    double gpu_frame_time_ms = 0;
+    /** The frame in flight carries the opening marker. */
+    bool frame_timer_begun = false;
     bool supported = false;
     bool wanted = false;
     double epoch = 0;
@@ -229,6 +247,32 @@ inline void finish_gpu_task_timing_frame(Engine& engine) {
         timer->finish_frame();
 }
 
+/** The frame timer's opening marker, written first into the frame's commands. */
+inline std::optional<GpuTimestampWrite> gpu_frame_timer_begin(Engine& engine) {
+    if (!engine.gpu_task_timing)
+        return std::nullopt;
+    auto& state = *engine.gpu_task_timing;
+    state.frame_timer_begun = static_cast<bool>(state.frame_timer_begin);
+    return state.frame_timer_begun ? std::optional(state.frame_timer_begin()) : std::nullopt;
+}
+
+/** The closing marker, written last before the frame's commands are submitted. */
+inline std::optional<GpuTimestampWrite> gpu_frame_timer_end(Engine& engine) {
+    if (!engine.gpu_task_timing || !engine.gpu_task_timing->frame_timer_begun ||
+        !engine.gpu_task_timing->frame_timer_end)
+        return std::nullopt;
+    return engine.gpu_task_timing->frame_timer_end();
+}
+
+/** After the frame's submission, as the source's `_gpuTimerResolve`. */
+inline void resolve_gpu_frame_timer(Engine& engine) {
+    if (!engine.gpu_task_timing)
+        return;
+    auto& state = *engine.gpu_task_timing;
+    if (std::exchange(state.frame_timer_begun, false) && state.frame_timer_resolve)
+        state.frame_timer_resolve();
+}
+
 /**
  * Native execution of one frame graph's source tasks. `scoped_task` brackets a
  * task as `gpuTaskTimerExecute` does, and native code asks `pass` for the
@@ -241,12 +285,12 @@ public:
         : timer_(active_gpu_task_timer(engine)), scene_(scene) {
         if (!timer_ || !scene || !scene->state->shadow_task_name)
             return;
-        const bool has_casters =
-            std::any_of(scene->tasks.begin(), scene->tasks.end(), [&](TaskHandle handle) {
-                const auto& task = handle_at(engine.frame_tasks, handle);
-                return task.kind == FrameTaskKind::render &&
-                       task.render.shadow_generator.value != invalid_handle;
-            });
+        const std::vector<TaskHandle> passes = scene->frame_passes();
+        const bool has_casters = std::any_of(passes.begin(), passes.end(), [&](TaskHandle handle) {
+            const auto& task = handle_at(engine.frame_tasks, handle);
+            return task.kind == FrameTaskKind::render &&
+                   task.render.shadow_generator.value != invalid_handle;
+        });
         // The source's shadow task still runs; with no generator to render
         // it opens no pass.
         if (!has_casters) {
@@ -348,6 +392,9 @@ private:
 /** Builds without `engine:gpu-task-timing` time nothing. */
 inline void begin_gpu_task_timing_frame(Engine&) {}
 inline void finish_gpu_task_timing_frame(Engine&) {}
+inline std::optional<GpuTimestampWrite> gpu_frame_timer_begin(Engine&) { return std::nullopt; }
+inline std::optional<GpuTimestampWrite> gpu_frame_timer_end(Engine&) { return std::nullopt; }
+inline void resolve_gpu_frame_timer(Engine&) {}
 
 class GpuTaskTimingSequence {
 public:

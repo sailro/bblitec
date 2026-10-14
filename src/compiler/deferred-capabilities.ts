@@ -4,20 +4,17 @@ import { sceneRelativeSourceLabel } from "../source-location.js";
 import { SourceSiteRegistry } from "./source-coverage.js";
 import { EmissionMap } from "./emission-transaction.js";
 import type { DataType } from "./data-types.js";
-import { DEFERRED_DOM_OBJECTS } from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
+    declarationApi,
     declarationOrigin,
     resolvedSymbol,
-    declaredInDomLibrary,
 } from "./symbols.js";
 import { presenceCpp, type Value } from "./types.js";
 import { isNullable } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinDetached } from "./dom-listeners.js";
-import { nativeFunctionValue } from "./native-function-values.js";
-import { nativeWindowMember } from "./window-properties.js";
-import { isDomReceiver } from "./dom-targets.js";
+import { isWindowReceiver } from "./window-members.js";
 
 export interface DeferredCapabilitySite {
     id: string;
@@ -42,163 +39,39 @@ export type DeferredCapabilityEmission = Pick<
 >;
 
 interface Descriptor {
-    origin: "dom" | "babylon" | "default-lib";
+    origin: "dom" | "babylon";
     api: string;
     timing: DeferredCapabilitySite["timing"];
 }
 
-/** Explicit missing public operations; existing admitted adapters remain authoritative. */
+/** Explicit missing public operations only: `compile` runs before admitted lowering, so a registered API shadows it. */
 const deferredCapabilityDescriptors: readonly Descriptor[] = [
     ...[
-        "atob",
-        "btoa",
-        "alert",
-        "confirm",
         "prompt",
-        "structuredClone",
-        "requestIdleCallback",
-        "cancelIdleCallback",
-        "Window.requestIdleCallback",
-        "Window.cancelIdleCallback",
-        "IdleDeadline.didTimeout",
-        "IdleDeadline.timeRemaining",
-        "Window.atob",
-        "Window.btoa",
-        "Window.alert",
-        "Window.confirm",
         "Window.prompt",
-        "Window.structuredClone",
-        "WindowOrWorkerGlobalScope.atob",
-        "WindowOrWorkerGlobalScope.btoa",
-        "WindowOrWorkerGlobalScope.structuredClone",
-        "Element.scrollIntoView",
-        "Element.insertAdjacentElement",
-        "Element.getAttributeNames",
-        "Event.composedPath",
-        "Element.setPointerCapture",
-        "Element.releasePointerCapture",
-        "Element.hasPointerCapture",
-        "Element.innerHTML.svg-image",
-        "Element.innerHTML.form-controls",
-        "ChildNode.replaceWith",
-        "HTMLOrSVGElement.tabIndex",
-        "EventTarget.addEventListener.signal",
-        "MediaStream.constructor",
-        "MediaStream.getTracks",
-        "MediaStream.getAudioTracks",
-        "MediaStream.addTrack",
-        "MediaStreamTrack.stop",
-        "MediaStreamTrack.clone",
-        "MediaRecorder.constructor",
-        "MediaRecorder.isTypeSupported",
-        "MediaRecorder.start",
-        "MediaRecorder.stop",
-        "MediaRecorder.state",
-        "MediaRecorder.addEventListener",
-        "BlobEvent.data",
-        "Response.headers",
-        "Body.body",
-        "Blob.stream",
-        "ReadableStream.pipeThrough",
-        "CompressionStream.constructor",
-        "DecompressionStream.constructor",
-        "CompressionStream.readable",
-        "DecompressionStream.readable",
-        "Response.constructor",
-        "HTMLCanvasElement.captureStream",
-        "AudioContext.createMediaStreamSource",
-        "AudioContext.createMediaStreamDestination",
-        "AudioContext.createMediaElementSource",
-        "MediaStreamAudioDestinationNode.stream",
-        "AudioNode.disconnect",
-        "Audio.constructor",
-        "HTMLMediaElement.pause",
-        "HTMLMediaElement.load",
-        "HTMLMediaElement.preload",
-        "HTMLMediaElement.loop",
-        "HTMLMediaElement.duration",
-        "HTMLMediaElement.currentTime",
-        "HTMLAudioElement.addEventListener",
         "HTMLScriptElement.src",
         "HTMLScriptElement.async",
         "HTMLScriptElement.addEventListener",
         "HTMLScriptElement.removeEventListener",
     ].map((api): Descriptor => ({ origin: "dom", api, timing: "throw" })),
     ...[
-        "Document.exitFullscreen",
-        "Element.requestFullscreen",
-        "HTMLMediaElement.play",
-    ].map((api): Descriptor => ({ origin: "dom", api, timing: "reject" })),
-    ...[
-        "createAudioEngineAsync.options",
         "createSoundSourceAsync.options",
-        "createSoundAsync",
         "createSoundBufferAsync",
         "createStreamingSoundAsync",
         "createAudioBusAsync",
         "createMicrophoneSoundSourceAsync",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "reject" })),
     ...[
-        "enableSpatial",
-        "SurfaceContext.maxDevicePixelRatio",
         "enableStereo",
         "enableAnalyzer",
         "createUnmuteUI",
         "createAudioVisualizer",
-        "createAudioEngineMediaStream",
-        "setMasterVolume",
-        "getMasterVolume",
-        "computeDeformedPositionToRef",
-        "disposeEffectWrapper",
-        "disposeMeshGpu",
-        "disposeRenderTargetTexture",
-        "disposeSound",
-        "enableAsyncShaderPipelineCompilation",
-        "enableCsmStaticCache",
-        "enableMaterialTracking",
-        "enableRenderTaskTransmission",
-        "enableShaderUniformRangeUpdates",
-        "playSound",
-        "removeMeshFromTask",
-        "setGpuTimingEnabled",
-        "setSoundVolume",
-        "setSpatialListenerPosition",
-        "setSpatialPosition",
-        "setVatInstanceStorage",
-        "setVatTime",
-        "stopSound",
-        "updateTexture2DFromPixels",
     ].map((api): Descriptor => ({ origin: "babylon", api, timing: "throw" })),
 ];
 
 const descriptors = new Map(
     deferredCapabilityDescriptors.map((d) => [`${d.origin}:${d.api}`, d]),
 );
-
-function declarationApi(
-    declaration: ts.SignatureDeclaration,
-): string | undefined {
-    const name = declaration.name;
-    if (!name || !ts.isIdentifier(name)) return undefined;
-    const parent = declaration.parent;
-    if (
-        ts.isTypeLiteralNode(parent) &&
-        ts.isVariableDeclaration(parent.parent) &&
-        ts.isIdentifier(parent.parent.name)
-    )
-        return `${parent.parent.name.text}.${name.text}`;
-    if (ts.isInterfaceDeclaration(parent) || ts.isClassLike(parent)) {
-        const namespace = parent.parent;
-        const prefix =
-            ts.isModuleBlock(namespace) &&
-            ts.isIdentifier(namespace.parent.name) &&
-            namespace.parent.name.text === "Intl"
-                ? "Intl."
-                : "";
-        return `${prefix}${parent.name?.text}.${name.text}`;
-    }
-    return name.text;
-}
 
 export function deferredCapabilityDescriptor(
     checker: ts.TypeChecker,
@@ -223,33 +96,6 @@ export function deferredPropertyDescriptor(
     );
 }
 
-export function deferredWindowFunctionSymbol(
-    checker: ts.TypeChecker,
-    node: ts.Expression,
-): ts.Symbol | undefined {
-    const symbol = ts.isPropertyAccessExpression(node)
-        ? nativeWindowMember(checker, node)
-        : resolvedSymbol(checker, node);
-    if (!(
-        symbol &&
-        ["requestIdleCallback", "cancelIdleCallback"].includes(symbol.name) &&
-        declaredInDomLibrary(symbol)
-    ))
-        return undefined;
-    const window = checker.resolveName(
-        "Window",
-        undefined,
-        ts.SymbolFlags.Type,
-        false,
-    );
-    return window
-        ? checker.getPropertyOfType(
-              checker.getDeclaredTypeOfSymbol(window),
-              symbol.name,
-          )
-        : undefined;
-}
-
 type Context = Pick<
     LoweringServices,
     | "checker"
@@ -268,7 +114,6 @@ type Context = Pick<
     | "symbols"
     | "probeEmission"
     | "captureEmittedLines"
-    | "callbackIdentity"
 >;
 
 export class DeferredCapabilities {
@@ -281,146 +126,6 @@ export class DeferredCapabilities {
     constructor(private readonly context: Context) {}
     get sites(): readonly DeferredCapabilitySite[] {
         return [...this.reached.values()];
-    }
-
-    /** Known Window functions retain their typed callable surface through aliases. */
-    functionValue(node: ts.Expression): Value | undefined {
-        const context = this.context;
-        if (!context.options.deferredCapabilities) return undefined;
-        const property = ts.isPropertyAccessExpression(node) ? node : undefined;
-        const name = property?.name.text ?? context.libraryGlobal(node);
-        if (name !== "requestIdleCallback" && name !== "cancelIdleCallback")
-            return undefined;
-        const symbol = deferredWindowFunctionSymbol(context.checker, node);
-        if (!symbol) return undefined;
-        if (property) {
-            const owner = context.probeEmission(() => {
-                const value = context.compileValue(property.expression);
-                return value.domEventTargetCpp ===
-                    "bbl::DomEventTarget::window()" ||
-                    value.dataType?.kind === "event-target"
-                    ? value
-                    : undefined;
-            });
-            if (!owner) return undefined;
-            if (!this.windowReceiver(owner, property.expression))
-                return context.fail(
-                    property.expression,
-                    `Deferred Window member '${name}' requires a proven Window receiver.`,
-                );
-            context.emitDiscardedValue(
-                pinDetached(context, owner, "idle_owner", property.expression),
-            );
-        }
-        let sourceType = context.checker.getNonNullableType(
-            context.checker.getTypeAtLocation(node),
-        );
-        const signatures = sourceType.getCallSignatures();
-        const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
-        if (
-            sourceType.isIntersection() &&
-            signatures.length > 0 &&
-            declaration &&
-            signatures.every(
-                (signature) =>
-                    context.checker.signatureToString(signature) ===
-                    context.checker.signatureToString(signatures[0]!),
-            )
-        )
-            sourceType = context.checker.getTypeAtLocation(declaration);
-        const type = context.dataTypes.fromStoredTsType(sourceType, node);
-        if (type?.kind !== "function")
-            return context.fail(
-                node,
-                "Idle callback functions require an owned callable signature.",
-            );
-        const deferred = this.emitKnown(
-            node,
-            {
-                id: `dom:Window.${name}`,
-                origin: "dom",
-                operation: "call",
-                timing: "throw",
-                signature: context.checker.typeToString(
-                    context.checker.getTypeAtLocation(node),
-                    node,
-                    ts.TypeFormatFlags.NoTruncation,
-                ),
-            },
-            type.result,
-        )!;
-        const discarded = type.parameters
-            .map((_, index) => `static_cast<void>(argument_${index});`)
-            .join(" ");
-        return nativeFunctionValue(
-            context,
-            node,
-            { ...type, identity: true },
-            `${discarded} return ${deferred.cpp};`,
-            declaration,
-        );
-    }
-
-    compileConstructor(node: ts.NewExpression): Value | undefined {
-        const context = this.context;
-        if (!context.options.deferredCapabilities) return undefined;
-        const callee = context.unwrap(node.expression);
-        const intl =
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Intl";
-        const name = intl
-            ? `Intl.${callee.name.text}`
-            : context.libraryGlobal(callee);
-        const origin = intl ? "default-lib" : "dom";
-        if (!name || !descriptors.has(`${origin}:${name}.constructor`))
-            return undefined;
-        const signature = context.checker.getResolvedSignature(node);
-        if (
-            !signature?.declaration ||
-            declarationOrigin(signature.declaration) !== origin
-        )
-            return undefined;
-        if (name === "Response") {
-            const body = node.arguments?.[0];
-            const bodyType =
-                body &&
-                context.dataTypes.fromTsType(
-                    context.checker.getTypeAtLocation(body),
-                    body,
-                );
-            if (bodyType?.kind !== "byte-stream") return undefined;
-        }
-        const type = context.dataTypes.fromTsType(
-            context.checker.getTypeAtLocation(node),
-            node,
-        );
-        if (!type)
-            return context.fail(
-                node,
-                `Deferred constructor '${name}' requires an owned result.`,
-            );
-        if (
-            type.kind === "handle" &&
-            type.handle === "ui-element" &&
-            !context.options.workers
-        )
-            throw new ApplicationRealmRequired();
-        this.arguments(node, signature, `${name}.constructor`);
-        return this.emitKnown(
-            node,
-            {
-                id: `${origin}:${name}.constructor`,
-                origin,
-                operation: "construct",
-                timing: "throw",
-                signature: context.checker.signatureToString(
-                    signature,
-                    node,
-                    ts.TypeFormatFlags.NoTruncation,
-                ),
-            },
-            type,
-        );
     }
 
     property(
@@ -495,60 +200,17 @@ export class DeferredCapabilities {
         );
     }
 
-    private windowReceiver(value: Value, node: ts.Expression): boolean {
-        const context = this.context;
-        const receiver = context.unwrap(node);
-        const global = context.libraryGlobal(receiver);
-        return (
-            value.domEventTargetCpp === "bbl::DomEventTarget::window()" ||
-            global === "window" ||
-            global === "globalThis" ||
-            isDomReceiver(context, receiver, "Window")
-        );
-    }
-
     private receiverMatches(
         api: string,
         value: Value,
         node: ts.Expression,
     ): boolean {
-        const owner = api.startsWith("Intl.")
-            ? api.split(".")[1]!
-            : api.split(".")[0];
-        if (owner === "Window") return this.windowReceiver(value, node);
-        const type = value.dataType;
-        if (DEFERRED_DOM_OBJECTS.some((name) => name === owner))
-            return (
-                type?.kind === "deferred-platform-object" && type.name === owner
-            );
-        const handle = type?.kind === "handle" ? type.handle : value.kind;
-        if (owner === "SurfaceContext") return value.kind === "engine";
-        if (owner === "ReadableStream") return type?.kind === "byte-stream";
-        // A runtime Response's headers and body are native; a folded packaged one has neither.
-        if (owner === "Response" || owner === "Body")
-            return value.kind === "static-fetch-response";
-        if (owner === "MediaStream") return handle === "media-stream";
-        if (owner === "MediaStreamTrack")
-            return handle === "media-stream-track";
-        if (owner === "AudioContext") return handle === "audio-context";
-        if (
-            owner === "AudioNode" ||
-            owner === "MediaStreamAudioDestinationNode"
-        )
-            return handle === "audio-node";
-        if (owner === "Blob")
-            return [value.kind, type?.kind].some(
-                (kind) => kind === "blob" || kind === "file",
-            );
-        if (owner === "Event")
-            return (
-                value.kind === "platform-mouse-event" ||
-                value.kind === "platform-keyboard-event" ||
-                type?.kind === "borrowed-platform-event" ||
-                (type?.kind === "handle" &&
-                    ["dom-event", "custom-event"].includes(type.handle))
-            );
-        return value.kind === "ui-element" || type?.kind === "event-target";
+        if (api.split(".")[0] === "Window")
+            return isWindowReceiver(this.context, value, node);
+        return (
+            value.kind === "ui-element" ||
+            value.dataType?.kind === "event-target"
+        );
     }
 
     /** Opaque capabilities retain arguments without projecting object properties. */
@@ -724,11 +386,6 @@ export class DeferredCapabilities {
         if (!context.options.deferredCapabilities) return undefined;
         const descriptor = deferredCapabilityDescriptor(context.checker, call);
         if (!descriptor) return undefined;
-        if (
-            descriptor.api === "AudioNode.disconnect" &&
-            call.arguments.length === 0
-        )
-            return undefined;
         const target = context.unwrap(call.expression);
         if (
             descriptor.origin !== "babylon" &&
@@ -849,14 +506,12 @@ export class DeferredCapabilities {
                     );
                     return invoke();
                 };
-                return target.questionDotToken
-                    ? context.dataLowerer.optionalAccess(owner, call, run)
-                    : run(
-                          context.dataLowerer.narrowOptional(
-                              owner,
-                              target.expression,
-                          ),
-                      );
+                return context.dataLowerer.chainReceiverCall(
+                    owner,
+                    target,
+                    call,
+                    run,
+                );
             });
         }
         if (!ts.isIdentifier(target) && descriptor.origin === "dom")

@@ -66,20 +66,27 @@
 #include <bblite/features/workers.hpp>
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <bblite/js_data.hpp>
 #include <bblite/pal_audio_types.hpp>
 #include <bblite/js_callback.hpp>
+#include <bblite/listener_lease.hpp>
 
 namespace bbl::pal {
 
 #if BBLITE_WORKERS
-/** Scheduled-source callbacks run through their owning realm's event queue. */
-void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
+/**
+ * Scheduled-source callbacks run through their owning realm's event queue. An
+ * addition under an AbortSignal holds its `lease` (`bbl::js::add_event_listener`);
+ * false for a listener already added.
+ */
+bool audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
                               js::Callback<void()> callback, bool capture = false,
-                              bool once = false);
+                              bool once = false, ListenerLeasePtr lease = {});
 void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture = false);
 void audio_set_ended_handler(AudioNodeHandle node, js::Callback<void()> callback);
 #endif
@@ -89,6 +96,8 @@ class AudioDeviceSdl3;
 }
 /** A real-time context's open playback device (`audio_open_device`); native data only. */
 using AudioPlaybackDevice = detail::AudioDeviceSdl3;
+
+struct DecodedAudio;
 
 /** Context ownership follows the generated engine, including failed startup. */
 class AudioSession {
@@ -101,9 +110,25 @@ public:
 
 private:
     std::vector<AudioContextHandle> contexts_;
+    /** The default output unrouted media elements share, once one plays. */
+    AudioContextHandle media_output_{};
+    /** A silent input keeping that output's capture recorder fed once elements leave it. */
+    AudioNodeHandle media_output_feed_{};
+    /**
+     * Packaged sources decoded for media elements, by file and sample rate: the
+     * elements playing one share its decode, which lives while one holds it.
+     */
+    std::map<std::pair<std::string, double>, std::weak_ptr<const DecodedAudio>> decoded_;
+    /** Unrouted elements playing to the default output: its device runs while one does. */
+    std::size_t media_playing_ = 0;
+    friend struct AudioSessionMedia;
     friend AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session,
                                                    std::shared_ptr<AudioPlaybackDevice> device);
+    friend AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session);
 };
+
+/** The session's media element output context, created on first use. */
+AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session);
 
 /** `OscillatorNode.type`. */
 enum class OscillatorWave : std::uint8_t {
@@ -194,6 +219,51 @@ AudioNodeHandle audio_create_gain(AudioContextHandle context);
 AudioNodeHandle audio_create_oscillator(AudioContextHandle context);
 AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context);
 AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context);
+/**
+ * `ctx.createMediaStreamDestination()`: a sink the context renders every
+ * quantum into its `stream`'s one audio track (`bblite/pal_media_stream.hpp`).
+ */
+AudioNodeHandle audio_create_media_stream_destination(AudioContextHandle context);
+std::shared_ptr<MediaStream> audio_destination_stream(AudioNodeHandle node);
+/**
+ * `ctx.createMediaStreamSource(stream)`: the stream's first audio track by id,
+ * the destination audio it carries from any context at the same sample rate.
+ * InvalidStateError without an audio track.
+ */
+AudioNodeHandle audio_create_media_stream_source(AudioContextHandle context,
+                                                 const std::shared_ptr<MediaStream>& stream);
+
+/**
+ * `ctx.createPanner()` / `new PannerNode(ctx)`, with Web Audio's defaults:
+ * equal-power panning, the inverse distance model, refDistance 1,
+ * maxDistance 10000, rolloffFactor 1, a full cone.
+ */
+AudioNodeHandle audio_create_panner(AudioContextHandle context);
+
+/** A PannerNode's numeric attributes. */
+enum class PannerProperty : std::uint8_t {
+    RefDistance,
+    MaxDistance,
+    RolloffFactor,
+    ConeInnerAngle,
+    ConeOuterAngle,
+    ConeOuterGain,
+};
+double audio_panner_property(AudioNodeHandle panner, PannerProperty property);
+/** A write the attribute rejects throws as Web Audio does (RangeError, InvalidStateError). */
+void audio_set_panner_property(AudioNodeHandle panner, PannerProperty property, double value);
+
+/** `panner.panningModel` and `panner.distanceModel`, as Web Audio spells them. */
+enum class PannerModel : std::uint8_t { Panning, Distance };
+std::string audio_panner_model(AudioNodeHandle panner, PannerModel which);
+/**
+ * A value outside the enumeration is ignored, as WebIDL ignores it; `"HRTF"`
+ * throws, since this build packages no HRTF database.
+ */
+void audio_set_panner_model(AudioNodeHandle panner, PannerModel which, const std::string& value);
+
+/** `ctx.listener.<name>`: a listener parameter (the `Listener*` names). */
+AudioParamHandle audio_listener_param(AudioContextHandle context, AudioParamName name);
 
 /** `ctx.createBuffer(channels, frames, sampleRate)`. */
 AudioBufferHandle audio_create_buffer(AudioContextHandle context, std::uint32_t channels,
@@ -228,11 +298,27 @@ bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source)
 /** `ctx.createBufferSource()`. */
 AudioNodeHandle audio_create_buffer_source(AudioContextHandle context);
 
+/** `AudioBufferSourceOptions`: the members a lowered library passes. */
+struct AudioBufferSourceInit {
+    bbl::js::Nullable<AudioBufferHandle> buffer;
+};
+
+/** `new AudioBufferSourceNode(ctx, { buffer })`. */
+AudioNodeHandle audio_create_buffer_source(AudioContextHandle context,
+                                           const AudioBufferSourceInit& options);
+
 /** `source.buffer = buffer`. */
 void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer);
 
 /** `source.loop = enabled`. */
 void audio_set_loop(AudioNodeHandle source, bool enabled);
+
+/** `source.loop`, `source.loopStart`, `source.loopEnd`, and their writes. */
+bool audio_loop(AudioNodeHandle source);
+double audio_loop_start(AudioNodeHandle source);
+double audio_loop_end(AudioNodeHandle source);
+void audio_set_loop_start(AudioNodeHandle source, double seconds);
+void audio_set_loop_end(AudioNodeHandle source, double seconds);
 
 // -- graph ---------------------------------------------------------------
 
@@ -247,8 +333,22 @@ void audio_connect(AudioNodeHandle source, AudioNodeHandle destination);
 /** `source.connect(destinationParam)` -- an audio-rate modulation edge. */
 void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination);
 
+/** `connect` spelled once for both destinations: a parameter's edge. */
+inline void audio_connect(AudioNodeHandle source, AudioParamHandle destination) {
+    audio_connect_param(std::move(source), std::move(destination));
+}
+
 /** `node.disconnect()` -- every outgoing edge. */
 void audio_disconnect(AudioNodeHandle node);
+
+/**
+ * `node.disconnect(destination[, output[, input]])` -- the edges into
+ * `destination`'s input (never its parameters). An index the nodes do not
+ * have is an IndexSizeError; no such edge is an InvalidAccessError.
+ */
+void audio_disconnect(AudioNodeHandle node, AudioNodeHandle destination,
+                      bbl::js::Nullable<double> output = std::nullopt,
+                      bbl::js::Nullable<double> input = std::nullopt);
 
 /** `source.start(when)`, in context time. */
 void audio_node_start(AudioNodeHandle node, double when);
@@ -258,6 +358,10 @@ void audio_node_start(AudioNodeHandle node, double when, double offset);
 
 /** `source.start(when, offset, duration)`, all values in seconds. */
 void audio_node_start(AudioNodeHandle node, double when, double offset, double duration);
+
+/** `source.start(when, offset, duration)` where `duration` may be `undefined`. */
+void audio_node_start(AudioNodeHandle node, double when, double offset,
+                      bbl::js::Nullable<double> duration);
 
 /** `source.stop(when)`, in context time. */
 void audio_node_stop(AudioNodeHandle node, double when);
@@ -292,6 +396,14 @@ void audio_param_exponential_ramp(AudioParamHandle param, float value, double ti
 
 /** `param.cancelScheduledValues(t)`. */
 void audio_param_cancel_scheduled_values(AudioParamHandle param, double time);
+
+/**
+ * `param.setValueCurveAtTime(values, startTime, duration)`: the values are
+ * copied at the call. Fewer than two values is an InvalidStateError; a
+ * negative start or a non-positive duration a RangeError.
+ */
+void audio_param_set_value_curve(AudioParamHandle param, const bbl::js::F32Array& values,
+                                 double start, double duration);
 
 /** Reclaim discarded graphs at a control-thread frame boundary. */
 void audio_collect_finished();

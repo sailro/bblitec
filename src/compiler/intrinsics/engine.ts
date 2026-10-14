@@ -66,7 +66,42 @@ function assertPinnedUniformCaching(): void {
     );
     uniformCachingAnchored = true;
 }
-import { validateObjectProperties } from "../option-helpers.js";
+/**
+ * `enableAsyncShaderPipelineCompilation` installs, once per engine, the
+ * preparation `registerScene` awaits before building its frame graph. Native
+ * scene preparation compiles every reached pipeline before the scene's first
+ * frame, and later renderables compile at their first draw on both sides.
+ */
+let asyncShaderPipelinesAnchored = false;
+function assertPinnedAsyncShaderPipelines(): void {
+    if (asyncShaderPipelinesAnchored) return;
+    const context = sharedPinnedContext();
+    const { declaration } = context.functionDeclaration(
+        "src/material/shader/enable-async-shader-pipeline-compilation.ts",
+        "enableAsyncShaderPipelineCompilation",
+    );
+    context.assertStatementShapes(
+        declaration,
+        declaration.body!.statements,
+        "if (_recipesByEngine?.has(engine)) { return; } if (!_recipesByEngine) { _recipesByEngine = new WeakMap(); _installAsyncShaderPipelineRegistrar(_registerAsyncShaderPipelineRecipe); _installAsyncShaderPipelinePreparation(_prepareAsyncShaderPipelinesForScene); } const recipes = new WeakMap<object, PrepareRecipe>(); _recipesByEngine.set(engine, recipes);",
+        "Async ShaderMaterial pipeline opt-in",
+    );
+    const { declaration: register } = context.functionDeclaration(
+        "src/scene/scene-core.ts",
+        "registerScene",
+    );
+    context.expectShapeCount(
+        register,
+        "_prepareShaderPipelines(ctx)",
+        "registration pipeline preparation",
+    );
+    asyncShaderPipelinesAnchored = true;
+}
+import {
+    compileOptionalStaticBoolean,
+    validateObjectProperties,
+} from "../option-helpers.js";
+import { pinnedTransmissionGrabSize } from "../../lowering/pinned-texture.js";
 import {
     compileGpuTaskTimingIntrinsic,
     type GpuTaskTimingIntrinsicContext,
@@ -80,6 +115,7 @@ export interface EngineIntrinsicContext
         Pick<
             LoweringServices,
             | "admissions"
+            | "options"
             | "emit"
             | "emitDiscardedValue"
             | "fail"
@@ -147,6 +183,81 @@ function reachRenderer(
 ): void {
     context.reachFeature("renderer:scene", call);
     context.reachFeature("renderer:geometry-output", call);
+}
+
+/**
+ * `enableRenderTaskTransmission(task, engine, options)` in the pin's raw
+ * mode: `applyTransmissionOptions` stores each given option on the task and
+ * the grab reads stay live. The linear arm retargets the task to an
+ * offscreen HDR target with a trailing tone-map pass, which is not lowered.
+ */
+function compileRenderTaskTransmission(
+    context: EngineIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 3);
+    const task = context.compileValue(argumentAt(call, 0));
+    context.expectKind(task, "task", argumentAt(call, 0));
+    if (!task.renderTask)
+        context.fail(
+            argumentAt(call, 0),
+            "enableRenderTaskTransmission requires a render task.",
+        );
+    const engine = context.compileValue(argumentAt(call, 1));
+    context.expectKind(engine, "engine", argumentAt(call, 1));
+    context.expectSameEngine(task, engine, call);
+    const optionsExpression = call.arguments[2];
+    const object = optionsExpression
+        ? context.expectObjectLiteral(optionsExpression)
+        : undefined;
+    if (object)
+        validateObjectProperties(
+            context,
+            object,
+            [
+                "linear",
+                "copyCount",
+                "generateMipmaps",
+                "mipLevelCount",
+                "grabDepth",
+            ],
+            "Render-task transmission supports linear, copyCount, generateMipmaps, mipLevelCount, and grabDepth.",
+        );
+    const linear = object && context.objectProperty(object, "linear");
+    if (
+        compileOptionalStaticBoolean(
+            context,
+            linear,
+            true,
+            "Render-task transmission's linear option",
+        )
+    )
+        context.fail(
+            linear ?? call,
+            "Render-task transmission requires linear: false; the linear offscreen retarget and its tone-map pass are not lowered.",
+        );
+    const optional = (
+        name: string,
+        compile: (expression: ts.Expression) => string,
+    ): string => {
+        const expression = object && context.objectProperty(object, name);
+        return expression ? compile(expression) : "std::nullopt";
+    };
+    const engineCpp = context.requireEngine(task, call);
+    reachRenderer(context, call);
+    context.reachFeature("frame-graph:render-task-transmission", call);
+    return {
+        kind: "transmission-grab",
+        cpp:
+            `bbl::enable_render_task_transmission(${engineCpp}, ${task.cpp}, ` +
+            `bbl::RenderTaskTransmission{` +
+            `${pinnedTransmissionGrabSize(sharedPinnedContext())}u, ` +
+            `${optional("copyCount", (e) => context.compileNumber(e, "double"))}, ` +
+            `${optional("generateMipmaps", (e) => context.compileBoolean(e))}, ` +
+            `${optional("mipLevelCount", (e) => context.compileNumber(e, "double"))}, ` +
+            `${optional("grabDepth", (e) => context.compileBoolean(e))}})`,
+        engineCpp,
+    };
 }
 
 export function compileEngineIntrinsic(
@@ -238,8 +349,21 @@ export function compileEngineIntrinsic(
         case "resizeEngine": {
             // The pin's render loop runs this at the head of every frame;
             // native frame loops already refresh every surface's extent from
-            // its window, so the call only evaluates its engine.
+            // its window. A cap write (application realm only) installs the
+            // lowered `resizeSurface`, which this call also runs.
             assertPinnedResizeEngine();
+            context.expectArgumentCount(call, 1, 1);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            if (!context.options.workers) {
+                context.emitDiscardedValue(engine);
+                return { kind: "void", cpp: "" };
+            }
+            return { kind: "void", cpp: `bbl::resize_engine(${engine.cpp})` };
+        }
+
+        case "enableAsyncShaderPipelineCompilation": {
+            assertPinnedAsyncShaderPipelines();
             context.expectArgumentCount(call, 1, 1);
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));
@@ -461,6 +585,18 @@ export function compileEngineIntrinsic(
             };
         }
 
+        case "disposeRenderTargetTexture": {
+            context.expectArgumentCount(call, 1, 1);
+            const target = context.compileValue(argumentAt(call, 0));
+            context.expectKind(target, "render-target-texture", call);
+            context.reachFeature("frame-graph:resources", call);
+            context.reachFeature("frame-graph:target-disposal", call);
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_render_target_texture(${context.requireEngine(target, call)}, ${target.cpp})`,
+            };
+        }
+
         case "enableRenderTaskMeshRefresh": {
             context.expectArgumentCount(call, 1, 1);
             const task = context.compileValue(argumentAt(call, 0));
@@ -471,9 +607,28 @@ export function compileEngineIntrinsic(
                     "Mesh refresh requires a retained render task.",
                 );
             reachRenderer(context, call);
+            context.reachFeature("frame-graph:task-mesh-refresh", call);
             return {
                 kind: "void",
                 cpp: `bbl::enable_render_task_mesh_refresh(${context.requireEngine(task, call)}, ${task.cpp})`,
+            };
+        }
+
+        case "enableRenderTaskTransmission":
+            return compileRenderTaskTransmission(context, call);
+
+        case "removeMeshFromTask": {
+            context.expectArgumentCount(call, 2, 2);
+            const task = context.compileValue(argumentAt(call, 0));
+            context.expectKind(task, "task", argumentAt(call, 0));
+            const mesh = context.compileValue(argumentAt(call, 1));
+            context.expectKind(mesh, "mesh", argumentAt(call, 1));
+            context.expectSameEngine(task, mesh, call);
+            reachRenderer(context, call);
+            context.reachFeature("frame-graph:task-mesh-removal", call);
+            return {
+                kind: "void",
+                cpp: `bbl::remove_render_task_mesh(${context.requireEngine(task, call)}, ${task.cpp}, ${mesh.cpp})`,
             };
         }
 

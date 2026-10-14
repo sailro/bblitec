@@ -47,6 +47,7 @@ import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
 import type { NativeHostUiStyleSource } from "../ui-style-rule.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
+import type { RegExpLayout } from "./regexp-grammar.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import type { CompiledTextData } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
@@ -225,6 +226,8 @@ export interface CompileManifest {
     geometryOutputTasks: GeometryOutputTaskManifest[];
     /** Every copy task's name, in the order the scene creates them. */
     copyTasks?: string[];
+    /** The pinned audio functions the program calls, in reach order. */
+    audioLibraryRoots?: string[];
     postProcessTasks: PostProcessTaskManifest[];
     postProcessComposites: PostProcessCompositeManifest[];
     screenSpaceTasks: ScreenSpaceTaskManifest[];
@@ -1579,6 +1582,8 @@ export type ValueKind =
     // back, which every reached demo builds its own graph on.
     | "audio-engine"
     | "audio-source"
+    | "static-sound"
+    | "audio-element"
     | "audio-buffer"
     | "audio-context"
     | "audio-node"
@@ -1588,10 +1593,14 @@ export type ValueKind =
     | "render-target"
     | "render-target-texture"
     | "render-texture"
+    /** `enableRenderTaskTransmission`'s `SceneColorGrab`, held as its render task. */
+    | "transmission-grab"
     | "record"
     | "scene"
     | "surface"
     | "frame-graph-context"
+    /** `getFrameGraph(scene)`: the scene's live task list, held by its scene. */
+    | "frame-graph"
     | "sprite-atlas"
     | "sprite-layer"
     | "sprite-blend"
@@ -2130,6 +2139,8 @@ export interface NullableResourceType {
     kind: ValueKind;
     cppType: string;
     dataType?: DataType<"handle">;
+    /** Facts the declared type proves for every value the name holds. */
+    implied?: Pick<Value, "renderTask">;
 }
 
 /** Storage, capture and expression facts shared by value kinds. */
@@ -2314,10 +2325,8 @@ export interface ValueFields {
     nativeGpu?: true;
     /** Reading this host capability requires realm-owned native service state. */
     requiresApplicationRealm?: true;
-    /** Known RegExp grammar determines the positional replacement callback arguments. */
-    regexpCaptureCount?: number;
-    /** Known `u` flag; absent when storage erased the pattern's grammar. */
-    regexpUnicode?: boolean;
+    /** A RegExp's known flags and captures; absent when storage erased its grammar. */
+    regexpLayout?: RegExpLayout;
     callbackDeclaration?:
         | ts.Identifier
         | ts.FunctionDeclaration
@@ -2698,6 +2707,8 @@ export interface ValueFields {
     postProcessComposite?: PostProcessCompositeManifest;
     /** Proven scene-render task factory result, including its constant aliases. */
     renderTask?: true;
+    /** Proven `createEffectRenderTask` result. */
+    effectTask?: true;
     /** Proven target descriptor retained by aliases for pass-signature admission. */
     renderTargetSignature?: {
         readonly surfaceFormat: boolean;
@@ -2878,8 +2889,6 @@ export interface ValueFields {
     spriteLayerCpp?: string;
     /** A synchronous application error event; its native payload cannot escape dispatch. */
     nativeErrorEvent?: true;
-    /** A known absent receiver stopped this optional chain before member evaluation. */
-    optionalChainShortCircuited?: true;
     browserValue?:
         | { readonly kind: "boolean"; readonly value: boolean }
         | { readonly kind: "number"; readonly value: number }
@@ -2912,6 +2921,9 @@ export interface ValueFields {
 export type Feature =
     | "platform:http"
     | "platform:packaged-fetch"
+    | "platform:compression"
+    | "platform:idle-callbacks"
+    | "platform:media-stream"
     | "image:runtime-decode"
     | "text:data"
     | "text:layout"
@@ -3022,6 +3034,7 @@ export type Feature =
     | "material:node"
     | "material:node-inputs"
     | "material:shader"
+    | "material:shader-uniform-ranges"
     | "material:shader-storage"
     | "material:shader-external-texture"
     | "material:standard"
@@ -3034,6 +3047,7 @@ export type Feature =
     | "mesh:csg2"
     | "mesh:from-data"
     | "mesh:update-attributes"
+    | "mesh:dispose-gpu"
     | "mesh:update-geometry"
     | "mesh:resize-geometry"
     | "mesh:render-bundle-invalidation"
@@ -3069,6 +3083,9 @@ export type Feature =
     // that also thin-instances the baked mesh allocates one.
     | "mesh:vat"
     | "mesh:vat-instances"
+    | "mesh:vat-time"
+    | "mesh:deformed-position"
+    | "mesh:vat-instance-storage"
     // A skeleton a scene authored in code rather than one the glTF loader
     // built from a skin. `createSkeleton` is the pin's own resource factory
     // and `mesh.skeleton = ...` is what puts the mesh on the skinned arm.
@@ -3091,6 +3108,13 @@ export type Feature =
     | "audio:oscillator"
     | "audio:biquad-filter"
     | "audio:stereo-panner"
+    | "audio:panner"
+    | "audio:media-stream"
+    | "audio:pinned-engine"
+    | "audio:static-sound"
+    | "audio:spatial-sound"
+    | "audio:engine-media-stream"
+    | "audio:media-element"
     | "physics:world"
     | "physics:aggregate"
     | "physics:queries"
@@ -3169,6 +3193,7 @@ export type Feature =
     | "shadow:pcf"
     | "shadow:pcf-directional"
     | "shadow:csm"
+    | "shadow:csm-static-cache"
     | "shadow:task"
     // `enableMorphTargetShadows`, the caster fit's morph-expanded bounds
     // (upstream's own `shadow/enable-morph-target-shadows.ts` module).
@@ -3196,6 +3221,7 @@ export type Feature =
     | "texture:file"
     | "texture:compressed"
     | "texture:pixels"
+    | "texture:pixels-writes"
     | "sprite:billboard"
     | "sprite:billboard-axis-locked"
     | "sprite:billboard-cutout"
@@ -3205,8 +3231,17 @@ export type Feature =
     | "renderer:effect"
     | "frame-graph:resources"
     | "frame-graph:surface-target"
+    | "frame-graph:target-disposal"
+    | "frame-graph:task-mesh-removal"
+    | "frame-graph:task-mesh-refresh"
+    | "frame-graph:render-task-transmission"
+    | "frame-graph:task-material-override"
+    | "frame-graph:task-build"
+    | "frame-graph:task-disposal"
+    | "frame-graph:live-task-add"
     | "renderer:frame-graph"
     | "effect:wrapper"
+    | "effect:wrapper-disposal"
     | "effect:task"
     | "renderer:scene"
     | "renderer:transmission"
@@ -3258,6 +3293,8 @@ export type Feature =
     | "data:tagged-template"
     /** Web Storage: the durable per-user key/value store behind `localStorage`. */
     | "storage:local"
+    /** Web Storage: the session key/value store behind `sessionStorage`, in process memory. */
+    | "storage:session"
     | "platform:workers"
     | "platform:window";
 

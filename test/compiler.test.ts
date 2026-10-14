@@ -256,7 +256,11 @@ test("connects an audio node to an AudioParam modulation target", () => {
 
     assert.ok(result.manifest.features.includes("audio:engine"));
     assert.ok(result.manifest.features.includes("audio:oscillator"));
-    assert.match(result.cpp, /bbl::pal::audio_connect_param\(/);
+    // `connect(param)` as the Web Audio records spell it.
+    assert.match(
+        result.cpp,
+        /bbl::pal::audio_connect\([^\n]*\(bbl::pal::audio_node_param\(v_output, bbl::pal::AudioParamName::Gain\)\)/,
+    );
 });
 
 test("folds feature detection for supported Web Audio factories", () => {
@@ -278,7 +282,10 @@ test("folds feature detection for supported Web Audio factories", () => {
 
     assert.ok(result.manifest.features.includes("audio:stereo-panner"));
     assert.match(result.cpp, /audio_create_stereo_panner\(/);
-    assert.match(result.cpp, /audio_param_set_value\([^;]*, \(-0\.25f\)\);/);
+    assert.match(
+        result.cpp,
+        /audio_param_set_value\([^;]*, static_cast<float>\(\(-0\.25\)\)\);/,
+    );
     assert.match(result.cpp, /v_tail = v_block\d+_panner;/);
 });
 
@@ -349,7 +356,10 @@ test("runs successful nullable audio constructors and preserves source loops", (
 
     assert.match(result.cpp, /bbl::on_dom_keyboard\([^\n]*"keydown"/);
     assert.match(result.cpp, /bbl::pal::audio_set_loop\([^;]*, true\);/);
-    assert.match(result.cpp, /AudioParamName::PlaybackRate\), 0\.75f\);/);
+    assert.match(
+        result.cpp,
+        /AudioParamName::PlaybackRate\), static_cast<float>\(0\.75\)\);/,
+    );
     assert.match(
         result.cpp,
         /if \(v_fn\d+_ctx\.has_value\(\)\) \{\s+v_bblite_class_field__ctx_\d+ = \*v_fn\d+_ctx;/,
@@ -386,7 +396,10 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
         void graph.start();
     `);
 
-    assert.match(result.cpp, /audio_param_set_value\([^;]*, 0\.6f\);/);
+    assert.match(
+        result.cpp,
+        /audio_param_set_value\([^;]*, static_cast<float>\(0\.6\)\);/,
+    );
     assert.match(
         result.cpp,
         /\(\*v_bblite_class_field_context_\d+\) = v_[^;]*engine\.context;/,
@@ -395,7 +408,10 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
         result.cpp,
         /\(\*v_bblite_class_field_output_\d+\) = v_[^;]*output;/,
     );
-    assert.match(result.cpp, /audio_param_set_value\([^;]*, 0\.4f\);/);
+    assert.match(
+        result.cpp,
+        /audio_param_set_value\([^;]*, static_cast<float>\(0\.4\)\);/,
+    );
 });
 
 test("copies an empty nullable audio resource without dereferencing it", () => {
@@ -13717,6 +13733,29 @@ test("refuses to erase an optional numeric mesh expando that is read", () => {
     );
 });
 
+test("refuses to erase a DOM call on a receiver erasure cannot classify", () => {
+    for (const call of [
+        `active().style.setProperty("color", "red")`,
+        `active().classList.add("busy")`,
+    ])
+        assert.throws(
+            () =>
+                compileSource(`
+                    import { createEngine, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
+                    function active(): HTMLElement { return document.activeElement as HTMLElement; }
+                    async function main() {
+                        const engine = await createEngine({});
+                        const scene = createSceneContext(engine);
+                        ${call};
+                        await registerScene(scene);
+                        await startEngine(engine);
+                    }
+                    void main();
+                `),
+            /would erase on a receiver that is not browser state/,
+        );
+});
+
 test("lowers setMeshVisible through the pinned subtree visibility helper", () => {
     const result = compileSource(`
         import { createBox, createEngine, setMeshVisible } from "@babylonjs/lite";
@@ -15838,26 +15877,29 @@ test("rejects unsupported dynamic engine and scene options", () => {
     `);
     assert.doesNotMatch(pixelRatio.cpp, /maxDevicePixelRatio|MAX_DPR/);
     assert.match(pixelRatio.cpp, /EngineOptions\{[^}]*, 0, 1\}/);
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine } from "@babylonjs/lite";
-                async function main(cap: number) {
-                    await createEngine({}, { maxDevicePixelRatio: cap });
-                }
-            `),
-        /maxDevicePixelRatio must be a static number/,
-    );
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine } from "@babylonjs/lite";
-                async function main() {
-                    await createEngine({}, { maxDevicePixelRatio: 0.5 });
-                }
-            `),
-        /support maxDevicePixelRatio values of 1 or greater/,
-    );
+    // Without a realm only a static cap of 1 or more sizes the window; any
+    // other cap selects the application realm and the pinned resize.
+    for (const [cap, realm] of [
+        ["cap", true],
+        ["0.5", true],
+        ["0", true],
+        ["3", false],
+    ] as const) {
+        const compiled = compileSource(`
+            import { createEngine } from "@babylonjs/lite";
+            const cap: number = JSON.parse("0.75");
+            async function main() {
+                const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+                await createEngine(canvas, { maxDevicePixelRatio: ${cap} });
+            }
+            void main();
+        `);
+        assert.equal(
+            compiled.manifest.features.includes("platform:window"),
+            realm,
+        );
+        assert.equal(/bbl::install_surface_resize\(/.test(compiled.cpp), realm);
+    }
     assert.throws(
         () =>
             compileSource(`
@@ -17710,7 +17752,7 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     assert.match(result.cpp, /bbl::create_geometry_renderer_task/);
     assert.match(result.cpp, /bbl::geometry_task_texture/);
     assert.match(result.cpp, /bbl::create_copy_to_texture_task/);
-    assert.match(result.cpp, /bbl::add_task_at_start/);
+    assert.match(result.cpp, /bbl::add_live_task\([^;]*, true\)/);
     assert.match(result.cpp, /scene146-impostor-worldPosition/);
     // The loop-built names are folded, so the manifest carries every copy
     // task in the order the scene adds them.
@@ -17810,6 +17852,7 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
         "loader:babylon",
         "material:standard",
         "frame-graph:resources",
+        "frame-graph:live-task-add",
         "renderer:scene",
         "renderer:geometry-output",
     ]);

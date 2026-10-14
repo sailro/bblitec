@@ -92,7 +92,7 @@ inline ComputeFramePrefix collect_compute_frame_prefix(const Engine& engine) {
             pal::active_gpu_task_timer(engine))
             prefix.leading_shadows = true;
 #endif
-        for (const auto handle : scene->tasks) {
+        for (const auto handle : scene->frame_passes()) {
             const auto& record = handle_at(engine.frame_tasks, handle);
             if (record.execution_enabled == false)
                 continue;

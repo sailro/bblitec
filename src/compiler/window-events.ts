@@ -4,7 +4,6 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { RuntimeSearchParamsRequired } from "./search-params.js";
-import { ApplicationRealmRequired } from "./worker-modules.js";
 import { deploymentUrl } from "./deployment.js";
 
 type WindowContext = Pick<
@@ -54,7 +53,6 @@ export function emitWindowLocationAssignment(
             expression,
             `Location ${left.name.text} supports direct assignment only.`,
         );
-    if (!context.options.workers) throw new ApplicationRealmRequired();
     requireWindowHost(context, expression);
     if (!context.options.runtimeLocationSearch)
         throw new RuntimeSearchParamsRequired(true);
@@ -82,7 +80,6 @@ export function linkNavigationCpp(
     engine: string,
     site: ts.Node,
 ): string {
-    if (!context.options.workers) throw new ApplicationRealmRequired();
     requireWindowHost(context, site);
     if (!context.options.runtimeLocationSearch)
         throw new RuntimeSearchParamsRequired(true);
@@ -159,8 +156,9 @@ export function requireWindowHost(
 
 /**
  * The engine a nullable resource binding records: DOM handles belong to the
- * Window document in an application realm (a worker has none), pointer drags
- * and synchronous scenes' handles to the default engine. Reaches nothing.
+ * Window document in an application realm (a worker has none), pointer drags,
+ * render tasks and synchronous scenes' handles to the default engine (one per
+ * entry point). Reaches nothing.
  */
 export function nullableResourceEngine(
     kind: string,
@@ -172,7 +170,9 @@ export function nullableResourceEngine(
             ? workers.namespace
                 ? undefined
                 : "bbl::pal::window_document_engine()"
-            : kind === "ui-element" || kind === "pointer-drag"
+            : kind === "ui-element" ||
+                kind === "pointer-drag" ||
+                kind === "task"
               ? defaultEngineCpp
               : undefined;
     return engineCpp ? { engineCpp } : {};

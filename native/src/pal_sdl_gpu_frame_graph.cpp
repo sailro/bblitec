@@ -5,6 +5,8 @@
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_frame_graph_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
+#include <bblite/features/live_task_add.hpp>
+#include <bblite/features/render_target_disposal.hpp>
 
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
@@ -148,6 +150,9 @@ void release(State& state) {
 }
 
 void build_graph(State& state, const Engine& engine, std::uint32_t width, std::uint32_t height) {
+#if BBLITE_RENDER_TARGET_DISPOSAL || BBLITE_LIVE_TASK_ADD
+    require_executable_frame_tasks(engine);
+#endif
     if (state.render_targets_version == engine.render_targets_version &&
         state.targets.size() == engine.render_targets.size() && state.width == width &&
         state.height == height) {
@@ -203,8 +208,8 @@ void build_graph(State& state, const Engine& engine, std::uint32_t width, std::u
 }
 
 SDL_GPUTexture* target_texture(State& state, const Engine& engine, RenderTargetHandle handle,
-                               SDL_GPUTexture* swapchain, bool sampled) {
-    const RenderTargetRecord& record = handle_at(engine.render_targets, handle);
+                               SDL_GPUTexture* swapchain, bool sampled, TargetUser user) {
+    const RenderTargetRecord& record = resolve_render_target(engine, handle, user);
     if (record.swapchain)
         return swapchain;
     const Target& target = state.targets.at(handle.value);
@@ -213,15 +218,15 @@ SDL_GPUTexture* target_texture(State& state, const Engine& engine, RenderTargetH
 
 #if BBLITE_HAS_POST_PROCESS
 SDL_GPUTexture* source_texture(State& state, const Engine& engine, const RenderTextureRef& source,
-                               SDL_GPUTexture* swapchain) {
+                               SDL_GPUTexture* swapchain, TargetUser user) {
     if (source.source != RenderTextureSource::render_target) {
         throw std::runtime_error("A standalone frame graph cannot sample a scene geometry task.");
     }
-    const RenderTargetRecord& record = handle_at(engine.render_targets, source.target);
+    const RenderTargetRecord& record = resolve_render_target(engine, source.target, user);
     if (record.swapchain) {
         throw std::runtime_error("A post-process pass cannot sample the swapchain target.");
     }
-    return target_texture(state, engine, source.target, swapchain, true);
+    return target_texture(state, engine, source.target, swapchain, true, user);
 }
 
 // The find-or-create walk is the shared `find_or_create_program`; only
@@ -244,12 +249,14 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
                          std::size_t pass_index, SDL_GPUCommandBuffer* command,
                          SDL_GPUTexture* swapchain, std::uint32_t width, std::uint32_t height,
                          SDL_GPUTexture*& capture_texture) {
-    PostProcessPassOptions& pass =
-        handle_at(engine.frame_tasks, task_handle).post_process.passes.at(pass_index);
+    FrameTaskRecord& task = handle_at(engine.frame_tasks, task_handle);
+    const TargetUser user = task_target_user(task);
+    PostProcessPassOptions& pass = task.post_process.passes.at(pass_index);
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos.at(pass.shader_index);
     PostProcessPass& gpu = state.post_processes.at(task_handle.value).at(pass_index);
-    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
+    const RenderTargetRecord& output_record =
+        resolve_render_target(engine, pass.output_target, user);
     const Target& output = state.targets.at(pass.output_target.value);
     const std::uint32_t output_width = output_record.swapchain ? width : output.width;
     const std::uint32_t output_height = output_record.swapchain ? height : output.height;
@@ -297,8 +304,9 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
         }
     }
     SDL_GPUColorTargetInfo target{};
-    target.texture = presents ? state.present_copy
-                              : target_texture(state, engine, pass.output_target, swapchain, false);
+    target.texture =
+        presents ? state.present_copy
+                 : target_texture(state, engine, pass.output_target, swapchain, false, user);
     target.load_op = pass.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
     target.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
     target.store_op = SDL_GPU_STOREOP_STORE;
@@ -329,7 +337,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
             source_texture(state, engine,
                            source < 0 ? pass.source
                                       : pass.extra_textures.at(static_cast<std::size_t>(source)),
-                           swapchain),
+                           swapchain, user),
             sampler};
     }
     if (!gpu.texture_sources.empty()) {
@@ -426,6 +434,8 @@ public:
     void synchronize() { build_graph(state, engine, width, height); }
     void encode() {
         capture_texture = nullptr;
+        if (const auto frame_timer = gpu_frame_timer_begin(engine))
+            encode_sdl_gpu_timestamp(command, *frame_timer);
         GpuTaskTimingSequence timing_sequence(engine);
         for (const TaskHandle handle : context->tasks) {
             FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
@@ -435,9 +445,11 @@ public:
             const auto timing_scope = timing_sequence.scoped_task(engine, handle);
 #if BBLITE_HAS_EFFECT_TASK
             if (task.kind == FrameTaskKind::effect) {
+                prepare_effect_task(engine, task);
+                const TargetUser user = task_target_user(task);
                 EffectPass& pass = state.effects.at(handle.value);
                 const RenderTargetRecord& record =
-                    handle_at(engine.render_targets, task.effect.target);
+                    resolve_render_target(engine, task.effect.target, user);
                 const Target& output = state.targets.at(task.effect.target.value);
                 if (!pass.pipeline) {
                     pass = create_effect_pass(
@@ -446,7 +458,7 @@ public:
                 }
                 SDL_GPUColorTargetInfo target{};
                 target.texture =
-                    target_texture(state, engine, task.effect.target, swapchain, false);
+                    target_texture(state, engine, task.effect.target, swapchain, false, user);
                 target.clear_color =
                     SDL_FColor{task.effect.clear_color.r, task.effect.clear_color.g,
                                task.effect.clear_color.b, task.effect.clear_color.a};
@@ -459,7 +471,14 @@ public:
                 }
                 const auto effect_timing = sdl_timed_pass(command, timing_sequence.pass());
                 SdlRenderPass render_pass{SDL_BeginGPURenderPass(command, &target, 1, nullptr)};
-                record_effect_pass(command, render_pass, engine, pass, task.effect.effect);
+                record_effect_pass(
+                    command, render_pass, engine, pass, task.effect.effect,
+                    [&](const RenderTextureRef& source) -> SDL_GPUTexture* {
+                        if (resolve_render_target(engine, source.target, user).swapchain)
+                            throw std::runtime_error(
+                                "An effect cannot sample the swapchain target.");
+                        return target_texture(state, engine, source.target, swapchain, true, user);
+                    });
                 render_pass.end();
                 if (record.swapchain)
                     capture_texture = swapchain;
@@ -482,6 +501,8 @@ public:
         }
     }
     void present() {
+        if (const auto frame_timer = gpu_frame_timer_end(engine))
+            encode_sdl_gpu_timestamp(command, *frame_timer);
         const bool capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("sdl_gpu", engine, width, height, frame);
         if (capture_frame) {
@@ -496,6 +517,7 @@ public:
             gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
         }
         finish_gpu_task_timing_frame(engine);
+        resolve_gpu_frame_timer(engine);
     }
     void finish_run() {
         if (!SDL_WaitForGPUIdle(state.gpu.device))

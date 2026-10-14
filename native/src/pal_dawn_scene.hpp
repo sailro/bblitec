@@ -7,6 +7,7 @@
 
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
 #include <bblite/features/has_effect_task.hpp>
@@ -145,6 +146,8 @@ struct DawnShaderBindings {
     DawnBindGroup scene{};
     DawnBindGroup resources{};
     DawnBindGroup material{};
+    /** The render-target views the resource group was built from, by sampler slot. */
+    std::vector<WGPUTextureView> render_views;
 };
 
 struct DawnShaderBindingKey {
@@ -861,6 +864,16 @@ struct DawnState : DawnDevice {
     WGPUBindGroupLayout pick_deform_empty_layout = nullptr;
     WGPUBindGroup pick_deform_empty_group = nullptr;
 #endif
+#if BBLITE_VAT_PICKING
+    /** One advanced module per VAT arm: its empty group 2 and its bake group 3. */
+    struct PickVatProgram {
+        WGPURenderPipeline pipeline = nullptr;
+        WGPUBindGroupLayout empty_layout = nullptr;
+        WGPUBindGroup empty_group = nullptr;
+        WGPUBindGroupLayout layout = nullptr;
+    };
+    std::array<PickVatProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
+#endif
     WGPUBindGroupLayout pick_scene_layout = nullptr;
     WGPUBindGroupLayout pick_mesh_layout = nullptr;
     WGPUBuffer pick_scene_buffer = nullptr;
@@ -886,11 +899,38 @@ struct DawnState : DawnDevice {
     WGPUTexture transmission_color = nullptr;
     WGPUTextureView transmission_color_view = nullptr;
     std::uint32_t transmission_mip_count = 1;
-    WGPUShaderModule transmission_grab_module = nullptr;
-    // The single-sample grab arm's bilinear sampler; the multisampled arm
-    // loads its texels and binds none.
+    // Every single-sample grab's bilinear source sampler; the multisampled
+    // arm loads its texels and binds none.
     WGPUSampler transmission_grab_sampler = nullptr;
     WGPURenderPipeline transmission_grab_pipeline = nullptr;
+    /** A shader draw's render-slot views and samplers, resolved in place at each draw. */
+    std::vector<WGPUTextureView> shader_render_views;
+    std::vector<WGPUSampler> shader_render_samplers;
+#if BBLITE_RENDER_TASK_TRANSMISSION
+    /** Each render task's own grab (`enableRenderTaskTransmission`), by task handle. */
+    struct TaskTransmission {
+        DawnTexture color;
+        DawnTextureView color_view;
+        /** Mip 0, which the grab renders into before the chain is built. */
+        DawnTextureView level_view;
+        std::uint32_t mip_count = 0;
+        /** The `grabDepth` snapshot, sized to the target it was taken from. */
+        DawnTexture depth;
+        DawnTextureView depth_view;
+        std::uint32_t depth_width = 0;
+        std::uint32_t depth_height = 0;
+        /** The grab's chain, and each pass's group over the source view it was built for. */
+        DawnMipChain mips;
+        DawnBindGroup color_group;
+        WGPUTextureView color_group_source = nullptr;
+        DawnBindGroup depth_group;
+        WGPUTextureView depth_group_source = nullptr;
+    };
+    std::vector<TaskTransmission> task_transmissions;
+    /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
+    DawnRenderPipeline task_grab_pipeline;
+    DawnRenderPipeline task_depth_grab_pipeline;
+#endif
     WGPUShaderModule image_processing_module = nullptr;
     WGPURenderPipeline image_processing_pipeline = nullptr;
     WGPUBuffer image_processing_params = nullptr;
@@ -1259,7 +1299,8 @@ struct DawnState : DawnDevice {
 #endif
         for (std::size_t index = 0; index < render_targets.size(); ++index) {
             if (preserve && index < preserve->render_targets.size() &&
-                preserve->render_targets[index].lifecycle)
+                preserve->render_targets[index].lifecycle &&
+                !preserve->render_targets[index].retired)
                 continue;
             render_targets[index] = {};
         }
@@ -1592,6 +1633,18 @@ struct DawnState : DawnDevice {
             wgpuBindGroupLayoutRelease(pick_deform_empty_layout);
         }
 #endif
+#if BBLITE_VAT_PICKING
+        for (auto& program : pick_vat_programs) {
+            if (program.pipeline)
+                wgpuRenderPipelineRelease(program.pipeline);
+            if (program.empty_group)
+                wgpuBindGroupRelease(program.empty_group);
+            if (program.empty_layout)
+                wgpuBindGroupLayoutRelease(program.empty_layout);
+            if (program.layout)
+                wgpuBindGroupLayoutRelease(program.layout);
+        }
+#endif
         if (pick_scene_layout)
             wgpuBindGroupLayoutRelease(pick_scene_layout);
         if (pick_mesh_layout)
@@ -1704,9 +1757,6 @@ struct DawnState : DawnDevice {
         }
         if (transmission_grab_sampler) {
             wgpuSamplerRelease(transmission_grab_sampler);
-        }
-        if (transmission_grab_module) {
-            wgpuShaderModuleRelease(transmission_grab_module);
         }
         if (transmission_color_view) {
             wgpuTextureViewRelease(transmission_color_view);
@@ -1939,6 +1989,11 @@ inline void record_mipmaps(DawnState& state, WGPUCommandEncoder encoder, WGPUTex
     record_mipmaps(state.device, state.mips, encoder, texture, format, mip_count, face);
 }
 
+inline DawnMipChain prepare_mip_chain(DawnState& state, WGPUTexture texture,
+                                      WGPUTextureFormat format, std::uint32_t mip_count) {
+    return prepare_mip_chain(state.device, state.mips, texture, format, mip_count);
+}
+
 inline void generate_mipmaps(DawnState& state, WGPUTexture texture, WGPUTextureFormat format,
                              std::uint32_t mip_count, std::int32_t face = -1) {
     generate_mipmaps(state.device, state.queue, state.mips, texture, format, mip_count, face);
@@ -2155,10 +2210,9 @@ WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state);
                                                              WGPUBindGroupLayout shadow_layout);
 
 #if BBLITE_PBR_VARIANTS > 0
-std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& state,
-                                                                   const Engine& engine,
-                                                                   RenderTargetHandle target_handle,
-                                                                   bool depth_only);
+std::pair<WGPUTexture, WGPUTextureView>
+dawn_render_target_texture(DawnState& state, const Engine& engine, RenderTargetHandle target_handle,
+                           bool depth_only, pal::TargetUser user);
 /**
  * Group 1 for one variant: the mesh block, the material block, then exactly the
  * resources that variant's fragment declares.
@@ -2464,10 +2518,10 @@ void encode_variant_draw(WGPURenderPassEncoder pass, WGPURenderPipeline pipeline
  * Deriving it from whether a depth copy happens to exist would part from
  * that for a target carrying both.
  */
-std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& state,
-                                                                   const Engine& engine,
-                                                                   RenderTargetHandle target_handle,
-                                                                   bool depth_only = false);
+std::pair<WGPUTexture, WGPUTextureView>
+dawn_render_target_texture(DawnState& state, const Engine& engine, RenderTargetHandle target_handle,
+                           bool depth_only = false,
+                           pal::TargetUser user = pal::frame_pass_target_user);
 
 // The receiver's shared machinery: the samplers, the map view, and the two
 // builders that read a composed group-2 row span. Both material families wrap
@@ -3028,6 +3082,23 @@ WGPURenderPipeline depth_only_pipeline_for(DawnState& state, bool double_sided,
 // transmission mip 0 followed by the standard blit mip chain.
 void encode_transmission_grab(DawnState& state, WGPUCommandEncoder encoder);
 
+#if BBLITE_RENDER_TASK_TRANSMISSION
+/** Create or resize a render task's grab textures for its target, before its pass or a bind. */
+DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const Engine& engine,
+                                                       TaskHandle task);
+/**
+ * `updateTransmissionTexture` at a pass break: blit the target's colour into
+ * the grab's top level, build its mip chain when it has one, and snapshot the
+ * depth attachment when `grabDepth` asked for it.
+ */
+void encode_task_transmission_grab(DawnState& state, const Engine& engine,
+                                   WGPUCommandEncoder encoder, TaskHandle task);
+/** A material slot's view and sampler of a task grab's colour or depth. */
+std::pair<WGPUTextureView, WGPUSampler>
+task_transmission_binding(DawnState& state, const Engine& engine,
+                          const RenderTextureRef& reference);
+#endif
+
 // The pinned final pass: per-sample image processing of the linear
 // multisampled frame straight into the surface.
 void encode_image_processing(DawnState& state, WGPUCommandEncoder encoder,
@@ -3167,11 +3238,13 @@ PreparedDawnPostProcessPass
 prepare_dawn_post_process_pass(DawnState& state, Engine& engine, TaskHandle handle,
                                std::uint32_t width, std::uint32_t height, std::size_t index,
                                SourceTextureView source_texture_view, bool write_uniforms = true) {
-    PostProcessPassOptions& pass = handle_at(engine.frame_tasks, handle).post_process.passes[index];
+    FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+    PostProcessPassOptions& pass = task.post_process.passes[index];
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos[pass.shader_index];
     DawnPostProcessTask& gpu = handle_at(state.post_process_tasks, handle)[index];
-    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
+    const RenderTargetRecord& output_record =
+        pal::resolve_render_target(engine, pass.output_target, pal::task_target_user(task));
     DawnRenderTarget& output = handle_at(state.render_targets, pass.output_target);
     const PostProcessExtent extent =
         resolve_post_process_extent(output_record, state.render_targets, pass, width, height);
@@ -3261,7 +3334,8 @@ std::size_t screen_space_program(DawnState& state, std::uint32_t stage);
  * depth attachment's depth-only view, the lit source colour, or one of the
  * task's owned targets.
  */
-WGPUTextureView screen_space_binding_view(DawnState& state, const ScreenSpaceTaskOptions& task,
+WGPUTextureView screen_space_binding_view(DawnState& state, const Engine& engine,
+                                          const ScreenSpaceTaskOptions& task,
                                           upstream::ScreenSpaceTextureRole role);
 
 /**
@@ -3277,10 +3351,10 @@ WGPURenderPassEncoder begin_screen_space_pass(WGPUCommandEncoder encoder, WGPUTe
  * the frame-graph rebuild answers by resetting the stage), then the pin's
  * clear-and-draw over a fullscreen triangle.
  */
-void record_screen_space_stage(DawnState& state, const ScreenSpaceTaskOptions& task,
-                               DawnScreenSpaceStage& stage, std::uint32_t stage_index,
-                               WGPUCommandEncoder encoder, WGPUTextureView target,
-                               const float* uniforms);
+void record_screen_space_stage(DawnState& state, const Engine& engine,
+                               const ScreenSpaceTaskOptions& task, DawnScreenSpaceStage& stage,
+                               std::uint32_t stage_index, WGPUCommandEncoder encoder,
+                               WGPUTextureView target, const float* uniforms);
 
 /** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
 void clear_screen_space_target(WGPUCommandEncoder encoder, WGPUTextureView view);
@@ -3301,9 +3375,13 @@ void record_screen_space_task(DawnState& state, Engine& engine, TaskHandle handl
     FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
     DawnScreenSpaceTask& gpu = handle_at(state.screen_space_tasks, handle);
-    const DawnRenderTarget& raw = handle_at(state.render_targets, task.raw);
-    const DawnRenderTarget& stable = handle_at(state.render_targets, task.stable);
-    const DawnRenderTarget& history = handle_at(state.render_targets, task.history);
+    const pal::TargetUser user = pal::task_target_user(record);
+    const DawnRenderTarget& raw =
+        pal::resolve_gpu_target(engine, state.render_targets, task.raw, user);
+    const DawnRenderTarget& stable =
+        pal::resolve_gpu_target(engine, state.render_targets, task.stable, user);
+    const DawnRenderTarget& history =
+        pal::resolve_gpu_target(engine, state.render_targets, task.history, user);
     const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
         engine, handle, screen_space_frame_inputs(state.render_targets, task));
     record_screen_space_decision(
@@ -3312,7 +3390,7 @@ void record_screen_space_task(DawnState& state, Engine& engine, TaskHandle handl
             clear_screen_space_target(encoder, previous ? history.color_view : stable.color_view);
         },
         [&](bool producer, const float* uniforms) {
-            record_screen_space_stage(state, task, producer ? gpu.producer : gpu.resolve,
+            record_screen_space_stage(state, engine, task, producer ? gpu.producer : gpu.resolve,
                                       producer ? task.producer_shader : task.resolve_shader,
                                       encoder, producer ? raw.color_view : stable.color_view,
                                       uniforms);

@@ -14,6 +14,7 @@
 // `billboard_system.hpp`, which the billboard lowerer generates out of the
 // pinned pipeline module. Nothing here decides a number.
 
+#include <bblite/features/texture_pixel_writes.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/billboard_system.hpp>
@@ -59,6 +60,8 @@ struct BillboardResources {
     // fragment sidecar and can omit resources the shader did not keep.
     std::vector<SDL_GPUTextureSamplerBinding> textures;
     std::vector<SDL_GPUTextureSamplerBinding> bound_textures;
+    // The texel version each extra's upload holds, in extras order.
+    std::vector<std::uint64_t> extra_versions;
     BillboardSystemHandle system{};
     // The reordered upload, kept so an unchanged view re-uploads nothing.
     std::vector<float> sorted;
@@ -243,6 +246,8 @@ inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, const Billboar
     pass.textures[0].sampler = create_texture_sampler(device, system.atlas_sampler);
     append_sprite_fragment_textures(device, pass.textures, system.custom_textures,
                                     "billboard custom texture");
+    for (const PixelsTexture& extra : system.custom_textures)
+        pass.extra_versions.push_back(extra.rgba.version());
     pass.bound_textures = select_sprite_fragment_textures(
         slots, pass.textures, system.custom_texture_names, "billboard fragment shader");
     return pass;
@@ -291,6 +296,18 @@ inline void upload_billboard_pass(SDL_GPUDevice* device, const Scene& scene, Eng
         SDL_ReleaseGPUBuffer(device, pass.instances);
         pass.instances = grown;
     });
+#if BBLITE_TEXTURE_PIXEL_WRITES
+    // A custom texture a pixels write reached since its upload.
+    for (std::size_t index = 0; index < system.custom_textures.size(); ++index) {
+        const PixelsTexture& extra = system.custom_textures[index];
+        if (pass.extra_versions.at(index) == extra.rgba.version())
+            continue;
+        upload_2d_texture_into(device, pass.textures.at(index + 1u).texture, extra.rgba.data(),
+                               extra.rgba.size(), extra.width, extra.height,
+                               "billboard custom texture update");
+        pass.extra_versions[index] = extra.rgba.version();
+    }
+#endif
     // One gating rule for both backends (`billboard_needs_upload`):
     // `update_buffer` creates a transfer buffer and submits a command
     // buffer of its own, so re-uploading an identical buffer every frame

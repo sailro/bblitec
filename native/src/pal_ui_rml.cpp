@@ -71,11 +71,13 @@
 #include <cstring>
 #include <cstdio>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -106,12 +108,66 @@ bool ascii_iequals(std::string_view left, std::string_view right) {
                       [](char lhs, char rhs) { return ascii_lower(lhs) == ascii_lower(rhs); });
 }
 
+/** HTML's rules for parsing integers within a WebIDL long; nothing when the text is invalid. */
+std::optional<std::int32_t> html_integer(std::string_view text) {
+    std::size_t cursor = text.find_first_not_of(" \t\n\f\r");
+    if (cursor == std::string_view::npos)
+        return std::nullopt;
+    const bool negative = text[cursor] == '-';
+    if (negative || text[cursor] == '+')
+        ++cursor;
+    const std::size_t digits = cursor;
+    std::int64_t value = 0;
+    for (; cursor < text.size() && text[cursor] >= '0' && text[cursor] <= '9'; ++cursor) {
+        value = value * 10 + (text[cursor] - '0');
+        if (value > (std::int64_t{1} << 31))
+            return std::nullopt;
+    }
+    if (cursor == digits)
+        return std::nullopt;
+    value = negative ? -value : value;
+    if (value > std::numeric_limits<std::int32_t>::max())
+        return std::nullopt;
+    return static_cast<std::int32_t>(value);
+}
+
+/** A retained HTML element's tabindex attribute, when it holds a valid integer. */
+std::optional<std::int32_t> ui_tab_order(const UiElementRecord& record) {
+    if (record.svg_namespace)
+        return std::nullopt;
+    const auto found = record.attributes.find("tabindex");
+    return found == record.attributes.end() ? std::nullopt : html_integer(found->second);
+}
+
+/** RmlUi's sequential navigation is tree order only: a positive order cannot be honoured. */
+void require_tree_tab_order(std::optional<std::int32_t> order) {
+    if (order && *order > 0)
+        throw js::make_dom_exception("Positive tabIndex values are not supported: native "
+                                     "sequential focus navigation follows tree order.",
+                                     "NotSupportedError");
+}
+
 std::string_view trim_css_token(std::string_view value) {
     const std::size_t first = value.find_first_not_of(" \t\r\n");
     if (first == std::string_view::npos)
         return {};
     const std::size_t last = value.find_last_not_of(" \t\r\n");
     return value.substr(first, last - first + 1);
+}
+
+/** A declaration value without its trailing `!important`, and whether it carried one. */
+std::pair<std::string_view, bool> split_css_important(std::string_view value) {
+    value = trim_css_token(value);
+    constexpr std::string_view keyword = "important";
+    if (value.size() <= keyword.size() ||
+        !ascii_iequals(value.substr(value.size() - keyword.size()), keyword))
+        return {value, false};
+    auto mark = value.size() - keyword.size();
+    while (mark > 0 && std::isspace(static_cast<unsigned char>(value[mark - 1])))
+        --mark;
+    if (mark == 0 || value[mark - 1] != '!')
+        return {value, false};
+    return {trim_css_token(value.substr(0, mark - 1)), true};
 }
 
 // CSS Backgrounds 3 `box-shadow: none | <shadow>#`: each shadow is an optional `inset`, two to four
@@ -204,15 +260,29 @@ bool css_property_name_equals(std::string_view left, std::string_view right) {
     return right.starts_with("--") ? left == right : ascii_iequals(left, right);
 }
 
+/**
+ * Each declaration of a declaration list as `callback(declaration)`, or `callback(declaration,
+ * end)` with the offset of its terminator in `source`. Quotes, escapes, comments and nested
+ * brackets do not end a declaration. With `rule_blocks`, `source` is a sheet: a rule block's `}`
+ * also ends one, and the selectors and at-rule preludes before a `{` are not declarations.
+ */
 template <typename Callback>
-void for_each_css_declaration(std::string_view source, Callback&& callback) {
+void for_each_css_declaration(std::string_view source, Callback&& callback,
+                              bool rule_blocks = false) {
     std::size_t start = 0;
     std::string closing_brackets;
     char quote = 0;
     for (std::size_t index = 0; index <= source.size(); ++index) {
         const char token = index < source.size() ? source[index] : ';';
-        if (index == source.size() || (!quote && closing_brackets.empty() && token == ';')) {
-            callback(source.substr(start, index - start));
+        const bool top = !quote && closing_brackets.empty();
+        if (index == source.size() || (top && (token == ';' || (rule_blocks && token == '}')))) {
+            const auto declaration = source.substr(start, index - start);
+            if constexpr (std::is_invocable_v<Callback&, std::string_view, std::size_t>)
+                callback(declaration, index);
+            else
+                callback(declaration);
+            start = index + 1;
+        } else if (top && rule_blocks && token == '{') {
             start = index + 1;
         } else if (token == '\\') {
             if (index + 1 < source.size())
@@ -277,6 +347,13 @@ UiElementRecord& ui_element(Engine& engine, UiElementHandle handle) {
     return handle_at(engine.ui_elements, handle);
 }
 
+/** An attribute joins the element's attribute list at its end the first time it is set. */
+void note_attribute_order(UiElementRecord& record, const std::string& name) {
+    if (std::find(record.attribute_order.begin(), record.attribute_order.end(), name) ==
+        record.attribute_order.end())
+        record.attribute_order.push_back(name);
+}
+
 void mark_ui_changed(Engine& engine) { ++engine.ui_revision; }
 
 void mark_ui_changed(Engine& engine, const UiElementRecord& record) {
@@ -318,9 +395,18 @@ bool ui_record_has_class(const UiElementRecord& record, std::string_view class_n
     return false;
 }
 
+/** The form controls a `disabled` attribute disables, matching `:disabled`. */
+bool ui_activation_disabled(const UiElementRecord& record) {
+    return (record.tag == "button" || record.tag == "input" || record.tag == "textarea" ||
+            record.tag == "select" || record.tag == "option") &&
+           record.attributes.contains("disabled");
+}
+
 struct RetainedUiSelectorTree {
     using Node = UiElementHandle;
     Engine& engine;
+    /** The focused element, for a tree that reads interaction states. */
+    std::optional<Node> focused{};
     static constexpr Node document{invalid_handle - 1};
     bool root(Node node) const { return node == engine.ui_document_roots.html; }
     bool valid(Node node) const {
@@ -377,8 +463,42 @@ struct RetainedUiSelectorTree {
         }
         return true;
     }
-    bool state(Node, UiSelectorTestKind) const {
-        throw std::runtime_error("Interaction states require a retained DOM query snapshot.");
+    /** Focus, `:checked` and `:disabled` are the document's own state; hover and active
+     * the UI projection's, as its last update applied them to the styles. */
+    bool state(Node node, UiSelectorTestKind kind) const {
+        if (!focused)
+            throw std::runtime_error("Interaction state selectors on SVG shapes require SVG DOM "
+                                     "projection.");
+        const auto& record = ui_element(engine, node);
+        switch (kind) {
+        case UiSelectorTestKind::Hover:
+            return (record.pointer_states & ui_pointer_hover) != 0;
+        case UiSelectorTestKind::Active:
+            return (record.pointer_states & ui_pointer_active) != 0;
+        case UiSelectorTestKind::Focus:
+            return node == *focused;
+        case UiSelectorTestKind::FocusVisible:
+            return node == *focused && engine.ui_focus_visible;
+        case UiSelectorTestKind::FocusWithin:
+            for (auto cursor = *focused; valid(cursor) && cursor != document;
+                 cursor = parent(cursor))
+                if (cursor == node)
+                    return true;
+            return false;
+        case UiSelectorTestKind::Disabled:
+            return ui_activation_disabled(record);
+        case UiSelectorTestKind::Checked: {
+            if (record.tag == "option")
+                return ui_get_selected(engine, node);
+            const auto type = record.attributes.find("type");
+            return record.tag == "input" && type != record.attributes.end() &&
+                   (ascii_iequals(type->second, "checkbox") ||
+                    ascii_iequals(type->second, "radio")) &&
+                   ui_get_checked(engine, node);
+        }
+        default:
+            throw std::logic_error("A selector test is not an interaction state.");
+        }
     }
 };
 
@@ -390,7 +510,21 @@ ui_query_elements(Engine& engine, UiElementHandle root,
     if (selectors.empty())
         throw std::runtime_error("A DOM query needs a selector.");
     static_cast<void>(ui_document_root(engine, UiDocumentPart::Html));
-    const RetainedUiSelectorTree tree{engine};
+    const auto reads = [&](UiSelectorTestKind kind) {
+        return std::any_of(selectors.begin(), selectors.end(), [&](const auto& sequence) {
+            return pal::ui_selector_uses_test(sequence, kind);
+        });
+    };
+    if (engine.ui_adopt_pointer_states &&
+        (reads(UiSelectorTestKind::Hover) || reads(UiSelectorTestKind::Active)))
+        engine.ui_adopt_pointer_states(engine);
+    // Only a focus state asks for the active element, which drops a focus
+    // that is no longer focusable as `document.activeElement` does.
+    const bool focus = reads(UiSelectorTestKind::Focus) ||
+                       reads(UiSelectorTestKind::FocusVisible) ||
+                       reads(UiSelectorTestKind::FocusWithin);
+    const RetainedUiSelectorTree tree{engine, focus ? ui_active_element(engine)
+                                                    : engine.ui_focused_element};
     const pal::UiSelectorMatcher matcher{tree};
     js::Array<UiElementHandle> result;
     const auto accept = [&](UiElementHandle candidate) {
@@ -432,6 +566,41 @@ ui_query_element(Engine& engine, UiElementHandle root,
 bool ui_matches_element(Engine& engine, UiElementHandle element,
                         const std::vector<std::vector<UiSelectorStep>>& selectors) {
     return !ui_query_elements(engine, element, selectors, UiQueryMode::Matches).empty();
+}
+
+std::string ui_selector_value(std::string value, char quote) {
+    // The first character that can end the quoted string decides; CSS
+    // preprocessing turns CR and FF into line feeds.
+    const char ends[] = {'\n', '\r', '\f', '\\', quote};
+    const auto end = value.find_first_of(std::string_view(ends, sizeof ends));
+    const auto text = "'" + value + "'";
+    if (end != std::string::npos && value[end] != '\\' && value[end] != quote)
+        throw js::make_dom_exception("A selector attribute value " + text +
+                                         " holds a line break, which ends its quoted string: "
+                                         "the selector is not valid.",
+                                     "SyntaxError");
+    if (end != std::string::npos)
+        throw js::make_dom_exception(
+            "A selector attribute value " + text + " holds " +
+                (value[end] == '\\' ? std::string("a CSS escape") : "its own quote") +
+                ", which runtime selector text is not admitted to contain.",
+            "NotSupportedError");
+    if (value.find_first_of(std::string_view("\t\0", 2)) != std::string::npos)
+        throw js::make_dom_exception("A selector attribute value " + text +
+                                         " holds a tab or NUL, which runtime selector text is "
+                                         "not admitted to contain.",
+                                     "NotSupportedError");
+    return value;
+}
+
+std::size_t ui_selector_choice(std::string_view text,
+                               std::initializer_list<std::string_view> candidates) {
+    const auto found = std::find(candidates.begin(), candidates.end(), text);
+    if (found == candidates.end())
+        throw js::make_dom_exception("The selector '" + std::string(text) + "'" +
+                                         " is none of the literal selectors its type declares.",
+                                     "NotSupportedError");
+    return static_cast<std::size_t>(found - candidates.begin());
 }
 
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
@@ -963,6 +1132,9 @@ UiElementRecord ui_markup_record(Engine& engine, UiElementHandle owner, std::uin
             }
         }
         if (!name.empty()) {
+            // The node marker is the compiler's, not an attribute of the page's markup.
+            if (name != "data-bbl-node")
+                note_attribute_order(record, name);
             record.attributes.insert_or_assign(std::move(name), std::move(value));
         }
     }
@@ -1170,9 +1342,14 @@ namespace {
 /**
  * HTML's details notification steps: a change of a details element's `open` attribute queues a
  * task firing a non-bubbling, non-cancelable `toggle` at it (each change its own task; a
- * synchronous program dispatches at once).
+ * synchronous program dispatches at once). A Window display runs no script: it hands the change
+ * to the realm owning the document.
  */
 void queue_details_toggle(Engine& engine, UiElementHandle element) {
+    if (engine.ui_details_toggled) {
+        engine.ui_details_toggled(element);
+        return;
+    }
     const auto fire = [&engine, element] {
         if (!engine.dom_input || element.value >= engine.ui_elements.size())
             return;
@@ -1203,6 +1380,8 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     if (name == "hidden" && ascii_iequals(value, "until-found")) {
         throw std::runtime_error("Native UI hidden='until-found' requires find-in-page support.");
     }
+    if (name == "tabindex" && !record.svg_namespace)
+        require_tree_tab_order(html_integer(value));
     const auto existing = record.attributes.find(name);
 #if BBLITE_HAS_BROWSER_FILE
     if (name == "type" && record.file_input && !ascii_iequals(value, "file"))
@@ -1240,6 +1419,7 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     const bool opens_details =
         record.tag == "details" && name == "open" && existing == record.attributes.end();
     const auto updated = record.attributes.insert_or_assign(std::move(name), std::move(value));
+    note_attribute_order(record, updated.first->first);
     if (engine.ui_attribute_changed)
         engine.ui_attribute_changed(element, updated.first->first);
     if (opens_details)
@@ -1249,6 +1429,14 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
         static_cast<void>(image_request(engine, element));
 #endif
     mark_ui_changed(engine);
+}
+
+js::Array<std::string> ui_attribute_names(Engine& engine, UiElementHandle element) {
+    const auto& record = ui_element(engine, element);
+    js::Array<std::string> names;
+    for (const std::string& name : record.attribute_order)
+        names.push_back(name);
+    return names;
 }
 
 bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
@@ -1266,6 +1454,8 @@ void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_vi
         throw std::runtime_error("Removing the type of a native file input is not represented.");
 #endif
     bool changed = record.attributes.erase(normalized) != 0;
+    // A CSSOM-only `style` attribute leaves the list with the others.
+    std::erase(record.attribute_order, normalized);
     if (changed && engine.ui_attribute_changed)
         engine.ui_attribute_changed(element, normalized);
     if (changed && normalized == "open" && record.tag == "details")
@@ -1326,6 +1516,8 @@ void ui_set_style_property(Engine& engine, UiElementHandle element, std::string 
     std::erase(record.style_property_order, name);
     record.style_property_order.push_back(name);
     record.style_properties.insert_or_assign(std::move(name), std::move(value));
+    // A CSSOM write creates the element's `style` attribute.
+    note_attribute_order(record, "style");
     mark_ui_changed(engine);
 }
 
@@ -1389,6 +1581,7 @@ bool toggle_ui_class(Engine& engine, UiElementHandle element, std::string name,
         joined += token;
     }
     record.attributes.insert_or_assign("class", std::move(joined));
+    note_attribute_order(record, "class");
     mark_ui_changed(engine);
     return enabled;
 }
@@ -1495,26 +1688,30 @@ js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
     return result;
 }
 
-UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child) {
-    UiElementRecord& parent_record = ui_element(engine, parent);
-    UiElementRecord& child_record = ui_element(engine, child);
-    if (child_record.markup_owner.value != invalid_handle ||
-        parent_record.markup_owner.value != invalid_handle)
+namespace {
+/** Pre-insertion validity, checked before any node moves. */
+void require_insertable(Engine& engine, UiElementHandle parent, UiElementHandle node) {
+    const UiElementRecord& record = ui_element(engine, node);
+    if (record.markup_owner.value != invalid_handle)
         throw std::runtime_error(
             "Reparenting queried innerHTML nodes requires an authored markup tree.");
-    if (parent.value == child.value) {
-        throw std::runtime_error("A native UI element cannot contain itself.");
-    }
-    for (UiElementHandle ancestor = parent; ancestor.value != invalid_handle;
-         ancestor = ui_element(engine, ancestor).parent) {
-        if (ancestor.value == child.value) {
-            throw std::runtime_error("A native UI element cannot contain one of its ancestors.");
-        }
-    }
+    if (ui_contains(engine, node, parent))
+        throw js::make_dom_exception("The new child element contains the parent.",
+                                     "HierarchyRequestError");
     if (engine.ui_document_roots.active() &&
-        (child == engine.ui_document_roots.html || child == engine.ui_document_roots.head ||
-         child == engine.ui_document_roots.body))
+        (node == engine.ui_document_roots.html || node == engine.ui_document_roots.head ||
+         node == engine.ui_document_roots.body))
         throw std::runtime_error("Reparenting document roots is not supported.");
+}
+} // namespace
+
+UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child) {
+    if (ui_element(engine, parent).markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Reparenting queried innerHTML nodes requires an authored markup tree.");
+    require_insertable(engine, parent, child);
+    UiElementRecord& parent_record = ui_element(engine, parent);
+    UiElementRecord& child_record = ui_element(engine, child);
     if (child_record.parent.value != invalid_handle) {
         const auto previous_parent = child_record.parent;
         std::erase(ui_element(engine, previous_parent).children, child);
@@ -1673,6 +1870,163 @@ void ui_remove(Engine& engine, UiElementHandle element) {
     mark_ui_changed(engine, record);
 }
 
+namespace {
+/** The parent a sibling insertion uses: a document child belongs to the body, html to none. */
+UiElementHandle ui_sibling_parent(Engine& engine, UiElementHandle node) {
+    const UiElementRecord& record = ui_element(engine, node);
+    if (record.markup_owner.value != invalid_handle)
+        throw std::runtime_error(
+            "Inserting beside queried innerHTML nodes requires an authored markup tree.");
+    if (engine.ui_document_roots.active() && node == engine.ui_document_roots.html)
+        throw js::make_dom_exception("The document element cannot have siblings.",
+                                     "HierarchyRequestError");
+    if (record.attached_to_root)
+        return ui_document_root(engine, UiDocumentPart::Body);
+    return record.parent;
+}
+
+} // namespace
+
+void ui_replace_with(Engine& engine, UiElementHandle node,
+                     std::initializer_list<UiElementHandle> nodes) {
+    const auto parent = ui_sibling_parent(engine, node);
+    if (parent.value == invalid_handle)
+        return;
+    for (const auto inserted : nodes)
+        require_insertable(engine, parent, inserted);
+    const auto listed = [&](UiElementHandle candidate) {
+        return std::find(nodes.begin(), nodes.end(), candidate) != nodes.end();
+    };
+    // The viable next sibling: the first following sibling that is not itself inserted.
+    UiElementHandle next{};
+    const auto& siblings = ui_element(engine, parent).children;
+    for (auto cursor = std::next(std::find(siblings.begin(), siblings.end(), node));
+         cursor != siblings.end(); ++cursor)
+        if (!listed(*cursor)) {
+            next = *cursor;
+            break;
+        }
+    if (!listed(node))
+        ui_remove(engine, node);
+    for (const auto inserted : nodes)
+        static_cast<void>(ui_insert_child(engine, parent, inserted, next));
+}
+
+js::Nullable<UiElementHandle> ui_insert_adjacent_element(Engine& engine, UiElementHandle target,
+                                                         std::string_view where,
+                                                         UiElementHandle element) {
+    if (ascii_iequals(where, "beforebegin") || ascii_iequals(where, "afterend")) {
+        const auto parent = ui_sibling_parent(engine, target);
+        if (parent.value == invalid_handle)
+            return std::nullopt;
+        require_insertable(engine, parent, element);
+        UiElementHandle reference = target;
+        if (ascii_iequals(where, "afterend")) {
+            const auto& siblings = ui_element(engine, parent).children;
+            const auto after = std::next(std::find(siblings.begin(), siblings.end(), target));
+            reference = after == siblings.end() ? UiElementHandle{} : *after;
+        }
+        return ui_insert_child(engine, parent, element, reference);
+    }
+    if (ascii_iequals(where, "afterbegin")) {
+        require_insertable(engine, target, element);
+        return ui_insert_child(engine, target, element,
+                               ui_first_child_node(engine, target, {element}));
+    }
+    if (ascii_iequals(where, "beforeend")) {
+        require_insertable(engine, target, element);
+        return ui_append_child(engine, target, element);
+    }
+    throw js::make_dom_exception("The value provided ('" + std::string(where) +
+                                     "') is not one of 'beforeBegin', 'afterBegin', "
+                                     "'beforeEnd', or 'afterEnd'.",
+                                 "SyntaxError");
+}
+
+namespace {
+UiScrollIntoView::Alignment scroll_alignment(std::string_view value) {
+    using Alignment = UiScrollIntoView::Alignment;
+    if (value == "start")
+        return Alignment::Start;
+    if (value == "center")
+        return Alignment::Center;
+    if (value == "end")
+        return Alignment::End;
+    if (value == "nearest")
+        return Alignment::Nearest;
+    throw js::NamedError("TypeError", "The provided value '" + std::string(value) +
+                                          "' is not a valid enum value of type "
+                                          "ScrollLogicalPosition.");
+}
+
+void request_scroll_into_view(Engine& engine, UiElementHandle element, UiScrollIntoView request) {
+    mark_ui_changed(engine, ui_element(engine, element));
+    engine.ui_scroll_requests.emplace_back(element, request);
+}
+} // namespace
+
+void ui_scroll_into_view(Engine& engine, UiElementHandle element, std::string_view block,
+                         std::string_view inline_axis, std::string_view behavior) {
+    // WebIDL converts dictionary members in lexicographic order.
+    if (behavior != "auto" && behavior != "instant" && behavior != "smooth")
+        throw js::NamedError("TypeError", "The provided value '" + std::string(behavior) +
+                                              "' is not a valid enum value of type "
+                                              "ScrollBehavior.");
+    UiScrollIntoView request;
+    request.block = scroll_alignment(block);
+    request.inline_axis = scroll_alignment(inline_axis);
+    // `auto` follows the scrolling box's scroll-behavior, which the projection never sets.
+    request.smooth = behavior == "smooth";
+    request_scroll_into_view(engine, element, request);
+}
+
+void ui_scroll_into_view(Engine& engine, UiElementHandle element, bool align_to_top) {
+    UiScrollIntoView request;
+    request.block =
+        align_to_top ? UiScrollIntoView::Alignment::Start : UiScrollIntoView::Alignment::End;
+    request_scroll_into_view(engine, element, request);
+}
+
+double ui_tab_index(Engine& engine, UiElementHandle element) {
+    const UiElementRecord& record = ui_element(engine, element);
+    // The canvas keeps the SDL surface's focus order.
+    if (record.tag == "canvas")
+        return 0;
+    if (const auto order = ui_tab_order(record))
+        return *order;
+    static constexpr std::string_view controls[] = {
+        "a", "area", "button", "frame", "iframe", "input", "object", "select", "textarea"};
+    if (!record.svg_namespace &&
+        std::find(std::begin(controls), std::end(controls), record.tag) != std::end(controls))
+        return 0;
+    // A summary is focusable as its details' first summary.
+    if (record.tag == "summary" && record.parent.value != invalid_handle &&
+        ui_element(engine, record.parent).tag == "details") {
+        const auto& siblings = ui_element(engine, record.parent).children;
+        const auto first = std::find_if(siblings.begin(), siblings.end(), [&](auto child) {
+            return ui_element(engine, child).tag == "summary";
+        });
+        if (first != siblings.end() && *first == element)
+            return 0;
+    }
+    return -1;
+}
+
+void ui_set_tab_index(Engine& engine, UiElementHandle element, double value) {
+    const std::int32_t order = js::to_int32(value);
+    const UiElementRecord& record = ui_element(engine, element);
+    if (record.svg_namespace)
+        throw std::runtime_error("SVG tabIndex focus navigation is not represented.");
+    if (record.tag == "canvas") {
+        if (order != 0)
+            throw std::runtime_error(
+                "A native canvas keeps tabIndex 0: keyboard focus targets the SDL surface.");
+        return;
+    }
+    require_tree_tab_order(order);
+    ui_set_attribute(engine, element, "tabindex", std::to_string(order));
+}
+
 void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> callback) {
     if (!callback) {
         throw std::runtime_error("Native UI click callback is empty.");
@@ -1680,14 +2034,6 @@ void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> 
     ui_element(engine, element).click_callbacks.push_back(std::move(callback));
     mark_ui_changed(engine);
 }
-
-namespace {
-bool ui_activation_disabled(const UiElementRecord& record) {
-    return (record.tag == "button" || record.tag == "input" || record.tag == "textarea" ||
-            record.tag == "select" || record.tag == "option") &&
-           record.attributes.contains("disabled");
-}
-} // namespace
 
 namespace {
 /** A link: an anchor with a string href (a download anchor's object URL is no attribute). */
@@ -1915,7 +2261,8 @@ void ui_set_file_input(Engine& engine, UiElementHandle element) {
         throw std::runtime_error("Native file input type may be assigned only to an <input>.");
     }
     record.file_input = true;
-    record.attributes["type"] = "file";
+    record.attributes.insert_or_assign("type", "file");
+    note_attribute_order(record, "type");
     // Listeners stay on the element: its change listeners become the picker's.
     if (const auto change = record.event_callbacks.find("change");
         change != record.event_callbacks.end()) {
@@ -1931,7 +2278,8 @@ void ui_set_file_accept(Engine& engine, UiElementHandle element, std::string acc
         throw std::runtime_error("Native file accept requires an <input type=\"file\">.");
     }
     record.file_accept = std::move(accept);
-    record.attributes["accept"] = record.file_accept;
+    record.attributes.insert_or_assign("accept", record.file_accept);
+    note_attribute_order(record, "accept");
     mark_ui_changed(engine);
 }
 
@@ -2689,10 +3037,12 @@ std::string rml_css_font_families(std::string value, std::string_view property) 
             else if (character == ';' || character == '}')
                 break;
         }
-        const auto family = trim_css_token(std::string_view(value).substr(start, end - start));
+        const auto [family, important] =
+            split_css_important(std::string_view(value).substr(start, end - start));
         if (family.find(',') != std::string_view::npos) {
             // RmlUi parses a string property as one token; our font engine owns the CSS list.
-            const auto quoted = quote_css_font_family(std::string(family));
+            const auto quoted =
+                quote_css_font_family(std::string(family)) + (important ? " !important" : "");
             value.replace(start, end - start, quoted);
             end = start + quoted.size();
         }
@@ -2732,28 +3082,37 @@ void replace_css_identifier(std::string& text, std::string_view identifier,
     }
 }
 
-std::string rml_css_animation_easing(std::string value) {
-    // RmlUi exposes the same animation shorthand, but names its tween curves
-    // differently and does not implement CSS steps(). Translate the browser
-    // timing vocabulary reached by the demos. A linear interpolation across
-    // the platformer's adjacent 49%/50% opacity keys remains an effectively
-    // instantaneous blink while preserving the declared period.
-    std::size_t position = 0;
-    while ((position = value.find("steps(", position)) != std::string::npos) {
-        const std::size_t end = value.find(')', position + 6);
-        if (end == std::string::npos)
-            break;
-        value.replace(position, end - position + 1, "linear-in-out");
-        position += 13;
-    }
-    replace_css_identifier(value, "step-start", "linear-in-out");
-    replace_css_identifier(value, "step-end", "linear-in-out");
-    replace_css_identifier(value, "ease-in-out", "sine-in-out");
-    replace_css_identifier(value, "ease-in", "sine-in");
-    replace_css_identifier(value, "ease-out", "sine-out");
-    replace_css_identifier(value, "ease", "sine-in-out");
-    replace_css_identifier(value, "linear", "linear-in-out");
-    return value;
+/**
+ * RmlUi's transition-delay and animation-delay replace the delays their shorthand lists, and a CSS
+ * shorthand declaration resets its longhands: follow each transition/animation declaration of a
+ * declaration list or sheet with its delay longhand's 'auto', which keeps the shorthand's delays.
+ */
+std::string rml_css_delay_resets(std::string_view source) {
+    std::string result;
+    std::size_t copied = 0;
+    for_each_css_declaration(
+        source,
+        [&](std::string_view declaration, std::size_t end) {
+            const std::size_t colon = declaration.find(':');
+            if (colon == std::string_view::npos)
+                return;
+            const auto name = trim_css_token(declaration.substr(0, colon));
+            const std::string_view reset = ascii_iequals(name, "transition")  ? "transition-delay"
+                                           : ascii_iequals(name, "animation") ? "animation-delay"
+                                                                              : "";
+            if (reset.empty())
+                return;
+            result.append(source.substr(copied, end - copied));
+            result += ';';
+            result += reset;
+            result += ":auto";
+            if (split_css_important(declaration.substr(colon + 1)).second)
+                result += " !important";
+            copied = end;
+        },
+        true);
+    result.append(source.substr(copied));
+    return result;
 }
 
 std::string rml_css_filter_arguments(std::string value) {
@@ -2844,6 +3203,69 @@ std::string rml_css_color_alpha(std::string value, bool clamp_channels = false) 
         } else {
             position = end + 1;
         }
+    }
+    return value;
+}
+
+/** rgb()/rgba() over var() keep CSS channel ranges until var() substitution resolves them. */
+std::string rml_css_variable_colors(std::string value) {
+    constexpr std::string_view marker = "bbl-css-color";
+    for (std::size_t position = 0; (position = value.find("rgb", position)) != std::string::npos;) {
+        const bool alpha = value.compare(position, 5, "rgba(") == 0;
+        const std::size_t open = position + (alpha ? 4 : 3);
+        if ((!alpha && value.compare(position, 4, "rgb(") != 0) ||
+            (position && css_identifier_character(value[position - 1]))) {
+            position += 3;
+            continue;
+        }
+        const std::size_t end = pal::detail::css_function_end(value, open);
+        if (std::string_view(value).substr(open, end - open).find("var(") == std::string::npos) {
+            position = end;
+            continue;
+        }
+        value.replace(position, open - position, marker);
+        position += marker.size();
+    }
+    return value;
+}
+
+/** Substituted rgb()/rgba() over var(): CSS channels and alpha to RmlUi's 0..255 channels. */
+std::string rml_css_resolve_variable_colors(std::string value) {
+    constexpr std::string_view marker = "bbl-css-color(";
+    for (std::size_t position = 0;
+         (position = value.find(marker, position)) != std::string::npos;) {
+        const std::size_t open = position + marker.size();
+        const std::size_t end = value.find(')', open);
+        const auto refuse = [&] {
+            throw std::runtime_error(
+                "Unsupported retained UI colour after variable substitution: " +
+                value.substr(position));
+        };
+        if (end == std::string::npos)
+            refuse();
+        Rml::StringList arguments;
+        Rml::StringUtilities::ExpandString(arguments, value.substr(open, end - open), ',');
+        if (arguments.size() != 3 && arguments.size() != 4)
+            refuse();
+        std::string resolved = arguments.size() == 4 ? "rgba(" : "rgb(";
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
+            const std::string_view argument = trim_css_token(arguments[index]);
+            const bool negative = !argument.empty() && argument.front() == '-';
+            std::size_t offset = !argument.empty() && (negative || argument.front() == '+') ? 1 : 0;
+            const auto number = pal::detail::css_decimal(argument, offset);
+            const bool percent = offset + 1 == argument.size() && argument[offset] == '%';
+            if (!number || (offset != argument.size() && !percent))
+                refuse();
+            const double signed_number = negative ? -*number : *number;
+            const double channel =
+                index == 3
+                    ? std::clamp(percent ? signed_number / 100 : signed_number, 0.0, 1.0) * 255
+                    : std::clamp(percent ? signed_number * 2.55 : signed_number, 0.0, 255.0);
+            resolved += std::to_string(std::lround(channel));
+            resolved += index + 1 == arguments.size() ? ")" : ",";
+        }
+        value.replace(position, end + 1 - position, resolved);
+        position += resolved.size();
     }
     return value;
 }
@@ -3241,16 +3663,19 @@ struct CascadedUiDeclaration {
     std::uint32_t specificity = 0;
     std::size_t source_order = 0;
     std::string value;
+    bool important = false;
 };
 
-void consider_cascaded_declaration(CascadedUiDeclaration& current, std::string value,
+/** Importance, then specificity, then source order. */
+void consider_cascaded_declaration(CascadedUiDeclaration& current, std::string_view value,
                                    std::uint32_t specificity, std::size_t source_order) {
-    if (value.empty() || (!current.value.empty() && (specificity < current.specificity ||
-                                                     (specificity == current.specificity &&
-                                                      source_order < current.source_order)))) {
+    const auto [declared, important] = split_css_important(value);
+    if (declared.empty() ||
+        (!current.value.empty() &&
+         std::tuple(important, specificity, source_order) <
+             std::tuple(current.important, current.specificity, current.source_order)))
         return;
-    }
-    current = {specificity, source_order, std::move(value)};
+    current = {specificity, source_order, std::string(declared), important};
 }
 
 struct ProjectedUiStyleSource {
@@ -4445,6 +4870,11 @@ public:
     }
 };
 
+struct UiRmlRuntime;
+/** The one live runtime, whose viewport and root font complete math after var() substitution. */
+UiRmlRuntime* substitution_runtime = nullptr;
+void substitute_css(const Rml::String& property, Rml::String& value);
+
 struct UiRmlRuntime {
     UiRmlRuntime(Engine& engine, SDL_Window* window, std::uint32_t width, std::uint32_t height,
                  bool (*read_motion_preference)() = system_reduced_motion)
@@ -4458,6 +4888,8 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi initialization failed.");
             }
             initialized = true;
+            substitution_runtime = this;
+            Rml::StyleSheetSpecification::SetSubstitutionFilter(&substitute_css);
             register_ui_style_properties();
             for (const auto* name : {"brightness", "contrast", "grayscale", "invert", "opacity",
                                      "saturate", "sepia", "hue-rotate", "blur", "drop-shadow"}) {
@@ -4668,6 +5100,8 @@ struct UiRmlRuntime {
 #endif
         } catch (...) {
             if (initialized) {
+                Rml::StyleSheetSpecification::SetSubstitutionFilter(nullptr);
+                substitution_runtime = nullptr;
                 style_selectors.clear();
                 background_styles.clear();
                 Rml::Shutdown();
@@ -4685,6 +5119,8 @@ struct UiRmlRuntime {
             engine.dom_input->end_withheld_press = {};
         }
         if (initialized) {
+            Rml::StyleSheetSpecification::SetSubstitutionFilter(nullptr);
+            substitution_runtime = nullptr;
             style_selectors.clear();
             background_styles.clear();
             Rml::Shutdown();
@@ -4742,9 +5178,9 @@ struct UiRmlRuntime {
         if (property == "filter")
             return value;
         if (property.empty())
-            return project_css_outside_filters(value, [this](std::string part) {
-                return project_css_fragment(std::move(part), {});
-            });
+            return project_css_outside_filters(
+                rml_css_delay_resets(value),
+                [this](std::string part) { return project_css_fragment(std::move(part), {}); });
         return project_css_fragment(std::move(value), property);
     }
 
@@ -4755,16 +5191,54 @@ struct UiRmlRuntime {
         replace_all(value, "ui-monospace", css_monospace_family);
         replace_all(value, "monospace", css_monospace_family);
         value = rml_css_font_families(std::move(value), property);
-        value = rml_css_animation_easing(std::move(value));
         value = rml_css_filter_arguments(std::move(value));
         value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
                                     viewport_height / density_ratio, root_font_size, property);
         value = rml_css_density_units(std::move(value));
-        return rml_css_color_alpha(std::move(value));
+        return rml_css_color_alpha(rml_css_variable_colors(std::move(value)));
+    }
+
+    /** Completes the math and colours the projection left over var() once it is substituted. */
+    std::string project_substituted_css(std::string value, std::string_view property) const {
+        // Filter arguments resolve their own arithmetic (UiResolvedFilter).
+        if (property == "filter" || property == "backdrop-filter")
+            return value;
+        value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
+                                    viewport_height / density_ratio, root_font_size, property);
+        return rml_css_resolve_variable_colors(rml_css_density_units(std::move(value)));
+    }
+
+    /**
+     * RmlUi's parser is the motion grammar: a sheet's transition or animation it rejects refuses
+     * here, as a retained style write does, rather than leaving the sheet.
+     */
+    void require_parsed_motion(std::string_view style) const {
+        for_each_css_declaration(style, [&](std::string_view declaration) {
+            const std::size_t colon = declaration.find(':');
+            if (colon == std::string_view::npos)
+                return;
+            const std::string name =
+                js::string_lower(std::string(trim_css_token(declaration.substr(0, colon))));
+            if (name != "transition" && name != "animation")
+                return;
+            const std::string value(
+                trim_css_token(split_css_important(declaration.substr(colon + 1)).first));
+            Rml::PropertyDictionary properties;
+            if (!Rml::StyleSheetSpecification::ParsePropertyDeclaration(properties, name,
+                                                                        project_css(value, name)))
+                throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
+        });
     }
 
     void set_projected_property(Rml::Element& element, const std::string& name,
                                 const std::string& value) const {
+        if (name == "transition" || name == "animation") {
+            // The shorthand resets its delay longhand; 'auto' keeps the shorthand's own delays.
+            if (value.empty())
+                element.RemoveProperty(name + "-delay");
+            else
+                element.SetProperty(name + "-delay", "auto");
+        }
         if (value.empty()) {
             element.RemoveProperty(name);
             if (name == "display")
@@ -4780,12 +5254,15 @@ struct UiRmlRuntime {
             name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
             name == "margin-left" || name == "margin-right" || name == "box-shadow" ||
             name == "accent-color" || name == "color-scheme" || name == "text-decoration";
+        // Motion values keep their case (keyframes names) and refuse rather than drop.
+        const bool motion = name == "transition" || name == "animation" ||
+                            name == "transition-delay" || name == "animation-delay";
         const bool accepted = element.SetProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
                                   : value,
                               name));
-        if (checked && !accepted)
+        if ((checked || motion) && !accepted)
             throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
     }
 
@@ -4964,6 +5441,7 @@ struct UiRmlRuntime {
                 ui_selector_uses_test(rule.sequence, UiSelectorTestKind::FocusWithin);
             observes_generated_content = observes_generated_content || rule.content.has_value();
             const std::string public_style = filter_private_ui_declarations(rule.style, false);
+            require_parsed_motion(public_style);
             // Empty conditional nodes still register thresholds used by native
             // presentation adaptations and content-only generated parts.
             if (public_style.empty() && rule.container_max_width < 0.0)
@@ -5126,6 +5604,9 @@ struct UiRmlRuntime {
              (engine.dom_input && engine.dom_input->pointer_elements.contains(handle.value)))) {
             append("pointer-events:auto;");
         }
+        // A negative tabindex keeps an element focusable but out of Tab navigation.
+        if (const auto order = ui_tab_order(record); order && record.tag != "canvas")
+            append(*order < 0 ? "tab-index:none;" : "tab-index:auto;");
         return projected_attribute_value("style", style);
     }
 
@@ -6000,20 +6481,26 @@ struct UiRmlRuntime {
     }
 
     bool sync_hover_states() {
+        static_assert(ui_pointer_hover == 1 && ui_pointer_active == 2);
         bool changed = false;
-        for (ProjectedUiElement& projected : projected_elements) {
-            if (!projected.element)
-                continue;
+        const auto count = std::max(engine.ui_elements.size(), projected_elements.size());
+        for (std::size_t index = 0; index < count; ++index) {
+            auto* element =
+                index < projected_elements.size() ? projected_elements[index].element : nullptr;
             std::uint8_t states = 0, bit = 1;
             for (const auto* state : {"hover", "active", "focus", "focus-visible", "disabled",
                                       "checked", "focus-within"}) {
-                if (projected.element->IsPseudoClassSet(state))
+                if (element && element->IsPseudoClassSet(state))
                     states |= bit;
                 bit <<= 1;
             }
-            if (projected.interaction_states == states)
+            // Selectors read the pointer states, the first two bits, this update styles with.
+            if (index < engine.ui_elements.size())
+                engine.ui_elements[index].pointer_states =
+                    static_cast<std::uint8_t>(states & (ui_pointer_hover | ui_pointer_active));
+            if (!element || projected_elements[index].interaction_states == states)
                 continue;
-            projected.interaction_states = states;
+            projected_elements[index].interaction_states = states;
             changed = true;
         }
         return changed;
@@ -6117,6 +6604,39 @@ struct UiRmlRuntime {
         else
             return false;
         return true;
+    }
+
+    /** Applies the pending scrollIntoView requests in call order. */
+    bool sync_scroll_requests() {
+        if (engine.ui_scroll_requests.empty())
+            return false;
+        const auto pending = std::exchange(engine.ui_scroll_requests, {});
+        const auto alignment = [](UiScrollIntoView::Alignment value) {
+            switch (value) {
+            case UiScrollIntoView::Alignment::Start:
+                return Rml::ScrollAlignment::Start;
+            case UiScrollIntoView::Alignment::Center:
+                return Rml::ScrollAlignment::Center;
+            case UiScrollIntoView::Alignment::End:
+                return Rml::ScrollAlignment::End;
+            case UiScrollIntoView::Alignment::Nearest:
+                return Rml::ScrollAlignment::Nearest;
+            }
+            throw std::logic_error("Unknown scrollIntoView alignment.");
+        };
+        bool scrolled = false;
+        for (const auto& [target, request] : pending) {
+            auto* element = target.value < projected_elements.size()
+                                ? projected_elements[target.value].element
+                                : nullptr;
+            if (!element)
+                continue;
+            element->ScrollIntoView(Rml::ScrollIntoViewOptions(
+                alignment(request.block), alignment(request.inline_axis),
+                request.smooth ? Rml::ScrollBehavior::Smooth : Rml::ScrollBehavior::Instant));
+            scrolled = true;
+        }
+        return scrolled;
     }
 
     bool sync_focus_within() {
@@ -6801,6 +7321,18 @@ struct UiRmlRuntime {
     double canvas_render_ms = 0;
 };
 
+void substitute_css(const Rml::String& property, Rml::String& value) {
+    if (!substitution_runtime)
+        throw std::runtime_error("CSS variable substitution needs the retained UI runtime.");
+    // Substituted values were projected when set: only math and colours over var() remain.
+    constexpr std::string_view pending[] = {"calc(", "min(", "max(", "clamp(", "bbl-css-color("};
+    if (std::none_of(std::begin(pending), std::end(pending), [&](std::string_view token) {
+            return value.find(token) != Rml::String::npos;
+        }))
+        return;
+    value = substitution_runtime->project_substituted_css(std::move(value), property);
+}
+
 // A canvas is a replaced element: its backing size, in CSS pixels, is its
 // intrinsic size and ratio wherever CSS leaves a dimension auto.
 bool UiCanvasElement::GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& ratio) {
@@ -7086,7 +7618,11 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     if (layout_changed)
         runtime.update_intrinsic_widths();
     cpu.split(cpu.sample.intrinsic, checkpoint);
-    runtime.sync_client_rects(layout_changed);
+    // Scrolling needs the settled layout; client rectangles then report the scrolled boxes.
+    const bool scrolled = runtime.sync_scroll_requests();
+    if (scrolled)
+        runtime.context->Update();
+    runtime.sync_client_rects(layout_changed || scrolled);
     cpu.split(cpu.sample.rectangles, checkpoint);
     if (layout_changed || focus_changed) {
         runtime.sync_outlines(!text_only || focus_changed || hover_changed || containers_changed ||

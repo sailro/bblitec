@@ -208,6 +208,7 @@ export const nativeDataIterationIntrinsics: ReadonlySet<string> =
 export const sharedBodyIntrinsics: ReadonlySet<string> = new EmissionSet([
     ...nativeDataIterationIntrinsics,
     "createTexture2DFromPixels",
+    "updateTexture2DFromPixels",
     "getViewMatrix",
     "getProjectionMatrix",
     "getViewProjectionMatrix",

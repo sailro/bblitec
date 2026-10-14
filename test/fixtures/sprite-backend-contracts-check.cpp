@@ -356,7 +356,7 @@ void upload_2d_texture_into(Resource*, Resource*, const std::uint8_t*, std::size
 }
 void update_dawn_extra_texture(Resource*, DawnSampledTexture& gpu, const PixelsTexture& texture) {
     ++capture::texture_uploads;
-    gpu.uploaded_version = texture.version;
+    gpu.uploaded_version = texture.rgba.version();
 }
 void push_stage_uniform(Resource*, int, const void*, std::size_t) {}
 void push_vertex_stage_uniform(Resource*, int, const void*, std::size_t) {}
@@ -393,7 +393,7 @@ Buffer* upload_buffer(Resource*, int, const void*, std::size_t bytes) {
     return capture::allocate(bytes);
 }
 DawnSampledTexture upload_dawn_extra_texture(Resource*, Resource*, const PixelsTexture& texture) {
-    return {texture.version};
+    return {texture.rgba.version()};
 }
 void release_dawn_extra_textures(std::vector<DawnSampledTexture>& extras) { extras.clear(); }
 void append_sprite_fragment_textures(Resource*, std::vector<SDL_GPUTextureSamplerBinding>& textures,

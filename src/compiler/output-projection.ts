@@ -43,6 +43,9 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:workers": [],
     "platform:http": ["src/pal_http.cpp"],
     "platform:packaged-fetch": [],
+    "platform:compression": ["src/pal_compression.cpp"],
+    "platform:idle-callbacks": [],
+    "platform:media-stream": [],
     "image:runtime-decode": [],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
@@ -134,6 +137,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:node": [],
     "material:node-inputs": [],
     "material:shader": [],
+    "material:shader-uniform-ranges": [],
     // Storage buffers are owned by the common runtime record and uploaded by
     // whichever already-reached scene renderer is selected.
     "material:shader-storage": [],
@@ -160,6 +164,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:csg2": [],
     "mesh:from-data": [],
     "mesh:update-attributes": [],
+    "mesh:dispose-gpu": [],
     "mesh:update-geometry": [],
     "mesh:resize-geometry": [],
     "mesh:render-bundle-invalidation": [],
@@ -171,6 +176,9 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:pickable": [],
     "mesh:vat": [],
     "mesh:vat-instances": [],
+    "mesh:vat-time": [],
+    "mesh:deformed-position": [],
+    "mesh:vat-instance-storage": [],
     "mesh:skeleton": [],
     "mesh:transform-node": [],
     "mesh:mirrored": [],
@@ -219,6 +227,7 @@ export const featureSources: Record<Feature, string[]> = {
     "shadow:pcf": [],
     "shadow:pcf-directional": [],
     "shadow:csm": [],
+    "shadow:csm-static-cache": [],
     "shadow:task": [],
     "shadow:morph-bounds": [],
     "shadow:skeleton-bounds": [],
@@ -230,6 +239,7 @@ export const featureSources: Record<Feature, string[]> = {
     "texture:file": [],
     "texture:compressed": [],
     "texture:pixels": [],
+    "texture:pixels-writes": [],
     "sprite:billboard": [],
     // A frozen node-particle system draws through the billboard family; the
     // simulation itself is baked at generation, so nothing of the pin's own
@@ -290,6 +300,17 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:oscillator": [],
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],
+    "audio:panner": [],
+    "audio:media-stream": [],
+    // The pin's audio engine, lowered into the generated library header.
+    "audio:pinned-engine": [],
+    // The pin's static-sound family, lowered whole; it fetches its sources
+    // through the web platform seam.
+    "audio:static-sound": ["src/pal_web_platform.cpp"],
+    "audio:spatial-sound": [],
+    "audio:engine-media-stream": [],
+    // HTMLAudioElement playback lives in the engine PAL's unit.
+    "audio:media-element": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
     "sprite:billboard-custom-shader": [],
@@ -304,10 +325,19 @@ export const featureSources: Record<Feature, string[]> = {
     // the implementation is generated and therefore adds no PAL source.
     "frame-graph:resources": [],
     "frame-graph:surface-target": [],
+    "frame-graph:target-disposal": [],
+    "frame-graph:task-mesh-removal": [],
+    "frame-graph:task-mesh-refresh": [],
+    "frame-graph:render-task-transmission": [],
+    "frame-graph:task-material-override": [],
+    "frame-graph:task-build": [],
+    "frame-graph:task-disposal": [],
+    "frame-graph:live-task-add": [],
     // A standalone FrameGraphContext has its own task-only driver. It does
     // not pull the scene renderer, camera math, mesh upload, or image loader.
     "renderer:frame-graph": ["src/pal_sdl_gpu_frame_graph.cpp"],
     "effect:wrapper": [],
+    "effect:wrapper-disposal": [],
     "effect:task": [],
     "renderer:scene": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
@@ -345,6 +375,8 @@ export const featureSources: Record<Feature, string[]> = {
     // executable carries neither the filesystem code nor the preference
     // directory it would create.
     "storage:local": ["src/pal_storage.cpp"],
+    // Session storage is process memory: header-only.
+    "storage:session": [],
 };
 
 export const featureOrder = Object.keys(featureSources) as Feature[];
@@ -380,6 +412,25 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         // Its renderable binds and draws in the scene's own pass.
         "renderer:external-renderables",
     ],
+    // A static sound plays decoded buffers through buffer sources on the
+    // pinned engine, and fetches its URLs (packaged ones first) over HTTP.
+    "audio:static-sound": [
+        "audio:pinned-engine",
+        "audio:buffer-source",
+        "audio:decoded-buffer",
+        "platform:http",
+    ],
+    // Spatial audio is a static sound's panner sub-node.
+    "audio:spatial-sound": ["audio:static-sound", "audio:panner"],
+    // The engine's tap lowers with the family, into a stream destination.
+    "audio:engine-media-stream": [
+        "audio:static-sound",
+        "audio:media-stream",
+        "platform:media-stream",
+    ],
+    // An element decodes its packaged source and plays it through a
+    // sampled node.
+    "audio:media-element": ["audio:buffer-source", "audio:decoded-buffer"],
     // Bindings build pipelines on the engine's WebGPU device; replaced
     // update batches retire behind the GPU.
     "renderer:external-renderables": [
@@ -568,6 +619,29 @@ function markUnreferencedLocals(
 }
 
 /**
+ * The web platform headers a program includes, once each: those its reached
+ * features call into, then those its stored kinds name (`stored`, in table
+ * order). A header both name keeps its stored position.
+ */
+function webPlatformHeaders(
+    features: readonly Feature[],
+    stored: readonly string[],
+): string[] {
+    const headers = [
+        ...(features.includes("platform:media-stream")
+            ? ["pal_media_stream"]
+            : []),
+        ...(features.includes("platform:idle-callbacks")
+            ? ["pal_idle_callbacks"]
+            : []),
+        ...stored,
+    ];
+    return headers.filter(
+        (header, index) => headers.lastIndexOf(header) === index,
+    );
+}
+
+/**
  * What the main.cpp render reads off the finished walk. The two function
  * members keep their calls at the exact point in the render where the
  * orchestrator used to make them: the data-type preamble renders after
@@ -688,9 +762,8 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     const navigationInclude = features.includes("navigation:recast")
         ? "#include <bblite/upstream/navigation.hpp>\n"
         : "";
-    // The audio family: main.cpp reaches the PAL's Web Audio surface
-    // directly for now -- the pinned engine/bus/sub-graph modules are not
-    // lowered yet (TODO), so the intrinsics emit `bbl::pal::audio_*`.
+    // The Web Audio surface: a program's own graph calls `bbl::pal::audio_*`
+    // directly; the pin's engine and sounds are the generated library's.
     const audioInclude = features.includes("audio:engine")
         ? "#include <bblite/pal_audio.hpp>\n" +
           (projection.workers ? "#include <bblite/pal_audio_async.hpp>\n" : "")
@@ -785,6 +858,15 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("loader:splat-stream")
             ? "#include <bblite/upstream_splat_stream.hpp>\n"
             : "") +
+        (features.includes("audio:media-element")
+            ? "#include <bblite/pal_audio_element.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"
+            : "") +
+        (features.includes("audio:pinned-engine")
+            ? "#include <bblite/upstream_static_sound.hpp>\n"
+            : "") +
+        (features.includes("audio:static-sound")
+            ? "#include <bblite/pal_packaged_responses.hpp>\n"
+            : "") +
         (features.includes("platform:http")
             ? "#include <bblite/pal_http.hpp>\n"
             : projection.responseStorageReached &&
@@ -794,10 +876,14 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("platform:packaged-fetch")
             ? "#include <bblite/pal_packaged_fetch.hpp>\n"
             : "") +
-        (projection.webPlatformHeaders ?? [])
+        (features.includes("platform:compression")
+            ? "#include <bblite/pal_compression.hpp>\n"
+            : "") +
+        webPlatformHeaders(features, projection.webPlatformHeaders ?? [])
             .map((header) => `#include <bblite/${header}.hpp>\n`)
             .join("") +
-        (features.includes("storage:local")
+        (features.includes("storage:local") ||
+        features.includes("storage:session")
             ? "#include <bblite/js_storage.hpp>\n"
             : "") +
         (features.includes("browser:file")

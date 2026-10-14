@@ -54,6 +54,18 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { webPlatformProperty } from "./web-platform.js";
+import { webAudioMemberRead } from "../lowering/web-platform-schema.js";
+import {
+    AUDIO_BUFFER_PROPERTIES,
+    AUDIO_ELEMENT_PROPERTIES,
+    AUDIO_PARAM_NAMES,
+    MEDIA_STREAM_PROPERTIES,
+    MEDIA_STREAM_TRACK_PROPERTIES,
+    PANNER_MODELS,
+    PANNER_PROPERTIES,
+    SOURCE_LOOP_MEMBERS,
+} from "./web-audio-members.js";
+import { fullscreenElementValue } from "./fullscreen.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
@@ -70,6 +82,7 @@ import { recordAt } from "./record-access.js";
 import { staticFetchProperty } from "./static-fetch.js";
 import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { readSplatStreamProperty } from "./splat-stream-surface.js";
 import {
     contextCanvas,
@@ -181,6 +194,8 @@ interface PropertyRead {
      * other helpers take, plus the enumerator that says which parameter.
      */
     helperArgument?: string;
+    /** The read spelled over the owner expression by its record (`webAudioMemberRead`). */
+    access?: (owner: string) => string;
     /**
      * This read is a clock rather than a constant: see `Value.impure`.
      */
@@ -350,23 +365,7 @@ export function isHandleCollectionProperty(property: string): boolean {
     );
 }
 
-/**
- * `node.<name>` for every automatable parameter the PAL serves. A node
- * and a source both carry them, so each name yields two rows -- the
- * enumerator is spelled once.
- */
-const AUDIO_PARAM_NAMES: readonly (readonly [
-    property: string,
-    enumerator: string,
-])[] = [
-    ["gain", "Gain"],
-    ["frequency", "Frequency"],
-    ["detune", "Detune"],
-    ["Q", "Q"],
-    ["pan", "Pan"],
-    ["playbackRate", "PlaybackRate"],
-];
-
+/** `node.<name>`: every automatable parameter the PAL serves (`web-audio-members.ts`). */
 const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
     ([property, enumerator]) => ({
         owner: "audio-node" as const,
@@ -794,20 +793,56 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "audio:engine",
     },
     ...AUDIO_PARAM_RULES,
-    ...(
-        [
-            ["duration", "Duration"],
-            ["length", "Length"],
-            ["sampleRate", "SampleRate"],
-            ["numberOfChannels", "NumberOfChannels"],
-        ] as const
-    ).map(([property, member]): PropertyRead => ({
+    // An HTMLAudioElement's media state: written by the program and advanced
+    // by its context's clock, so two reads are two.
+    ...AUDIO_ELEMENT_PROPERTIES.map(
+        ([property, shape, member]): PropertyRead => ({
+            owner: "audio-element",
+            property,
+            ...(shape === "string"
+                ? { value: "data", dataType: { kind: "string" } }
+                : { value: shape }),
+            helper: `bbl::pal::audio_element_${member}`,
+            feature: "audio:media-element",
+            impure: true,
+        }),
+    ),
+    ...AUDIO_BUFFER_PROPERTIES.map(([property, member]): PropertyRead => ({
         owner: "audio-buffer",
         property,
         value: "number",
         helper: "bbl::pal::audio_buffer_property",
         helperArgument: `bbl::pal::AudioBufferProperty::${member}`,
         feature: "audio:buffer-source",
+    })),
+    // A buffer source's loop flag and points: written by the program, so
+    // two reads are two.
+    ...SOURCE_LOOP_MEMBERS.map(([property, value, native]): PropertyRead => ({
+        owner: "audio-node",
+        property,
+        value,
+        helper: `bbl::pal::audio_${native}`,
+        feature: "audio:buffer-source",
+        impure: true,
+    })),
+    // A panner's attributes and models, as the program last wrote them.
+    ...PANNER_PROPERTIES.map(([property, member]): PropertyRead => ({
+        owner: "audio-node",
+        property,
+        value: "number",
+        helper: "bbl::pal::audio_panner_property",
+        helperArgument: `bbl::pal::PannerProperty::${member}`,
+        feature: "audio:panner",
+        impure: true,
+    })),
+    ...PANNER_MODELS.map(([property, which]): PropertyRead => ({
+        owner: "audio-node",
+        property,
+        value: "string",
+        helper: "bbl::pal::audio_panner_model",
+        helperArgument: `bbl::pal::PannerModel::${which}`,
+        feature: "audio:panner",
+        impure: true,
     })),
     {
         owner: "audio-node",
@@ -823,12 +858,45 @@ export const propertyRules: readonly PropertyRule[] = [
         impure: true,
     },
     {
+        // A float the automation timeline advances, read once as the
+        // float-rounded double JavaScript sees.
         owner: "audio-param",
         property: "value",
         value: "number",
-        helper: "bbl::pal::audio_param_value",
+        access: webAudioMemberRead("AudioParam", "value"),
         feature: "audio:engine",
+        impure: true,
     },
+    // MediaStreamAudioDestinationNode.stream: one stream per node.
+    {
+        owner: "audio-node",
+        property: "stream",
+        value: "media-stream",
+        helper: "bbl::pal::audio_destination_stream",
+        feature: "audio:media-stream",
+    },
+    // MediaStream and MediaStreamTrack (`bblite/pal_media_stream.hpp`).
+    ...MEDIA_STREAM_PROPERTIES.map(
+        ([property, value, native, impure]): PropertyRead => ({
+            owner: "media-stream",
+            property,
+            value,
+            helper: `bbl::pal::media_stream_${native}`,
+            feature: "platform:media-stream",
+            ...(impure ? { impure: true as const } : {}),
+        }),
+    ),
+    ...MEDIA_STREAM_TRACK_PROPERTIES.map(
+        ([property, value, native, impure]): PropertyRead => ({
+            owner: "media-stream-track",
+            property,
+            value,
+            helper: `bbl::pal::media_stream_track_${native}`,
+            feature: "platform:media-stream",
+            ...(impure ? { impure: true as const } : {}),
+        }),
+    ),
+
     {
         // Device generation is observable by recovery. Queue uploads still
         // use their structurally checked transport instead of exposing a GPU API.
@@ -1476,6 +1544,25 @@ export const propertyRules: readonly PropertyRule[] = [
         optionalFound: (owner) =>
             `${owner}.depth_texture.target.value != bbl::invalid_handle`,
     },
+    // SceneColorGrab's live getters: null until the task's frame graph
+    // built it, and a new identity whenever the task rebuilds.
+    ...(
+        [
+            ["texture", "bbl::transmission_grab_texture"],
+            ["depthTexture", "bbl::transmission_grab_depth_texture"],
+        ] as const
+    ).map(([property, helper]): PropertyRead => ({
+        owner: "transmission-grab",
+        property,
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "handle", handle: "texture" },
+        },
+        helper,
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+    })),
 ];
 
 /**
@@ -1512,6 +1599,7 @@ export interface PropertyContext extends Pick<
     | "fail"
     | "sceneManifest"
     | "dataValue"
+    | "noteImpureRead"
 > {}
 
 /**
@@ -1631,6 +1719,7 @@ export function readProperty(
         rule.dataType?.kind === "optional" && rule.knownPresent?.(owner)
             ? rule.dataType.inner
             : rule.dataType;
+    if (rule.impure) context.noteImpureRead();
     const read = (cpp: string): Value =>
         dataType?.kind === "promise"
             ? context.dataValue(cpp, dataType)
@@ -1735,6 +1824,7 @@ export function readProperty(
             ),
         );
     }
+    if (rule.access) return read(rule.access(owner.cpp));
     if (rule.helper) {
         const receiver = rule.helperOwnerField
             ? `(${owner.cpp}).${rule.helperOwnerField}`
@@ -1794,6 +1884,7 @@ interface PropertyAccessContext
             | "defaultEngine"
             | "deferredCapabilities"
             | "handleCollections"
+            | "optionalChainStop"
             | "platformDocumentHidden"
             | "useNativeValue"
         > {
@@ -2005,6 +2096,16 @@ export class PropertyAccessLowerer {
         );
     }
 
+    /** Whether the checker types an owner as a canvas. */
+    private declaresCanvas(ownerExpression: ts.Expression): boolean {
+        const type = this.context.checker.getTypeAtLocation(ownerExpression);
+        return (type.isUnion() ? type.types : [type]).some(
+            (member) =>
+                member.getSymbol()?.getName() === "HTMLCanvasElement" ||
+                member.getSymbol()?.getName() === "OffscreenCanvas",
+        );
+    }
+
     /** Element state, tree, form and layout reads. */
     private elementProperty(
         owner: Value,
@@ -2102,6 +2203,20 @@ export class PropertyAccessLowerer {
                     dataType: { kind: "string" },
                     freshData: true,
                 };
+            if (property === "tabIndex") {
+                // Native keyboard input targets the always-focusable SDL surface.
+                if (
+                    owner.uiTag === "canvas" ||
+                    this.declaresCanvas(ownerExpression)
+                )
+                    return numberConstantValue(0);
+                return {
+                    kind: "number",
+                    cpp: `bbl::ui_tab_index(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    dataType: { kind: "number" },
+                    impure: true,
+                };
+            }
             if (property === "isConnected")
                 return {
                     kind: "boolean",
@@ -2346,6 +2461,8 @@ export class PropertyAccessLowerer {
     public compilePropertyAccess(
         expression: ts.PropertyAccessExpression,
     ): Value {
+        const stopped = this.context.optionalChainStop(expression);
+        if (stopped) return stopped;
         const collection = this.context.unwrap(expression.expression);
         if (
             expression.name.text === "length" &&
@@ -2411,6 +2528,11 @@ export class PropertyAccessLowerer {
                 dataType: { kind: "handle", handle: "ui-element" },
             };
         }
+        const fullscreen = fullscreenElementValue(
+            this.context.dataLowerer,
+            expression,
+        );
+        if (fullscreen) return fullscreen;
         if (
             expression.questionDotToken &&
             expression.name.text === "direction" &&
@@ -2606,18 +2728,8 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (platformProperty) return platformProperty;
-        if (
-            owner.kind === "json-null" &&
-            (expression.questionDotToken ||
-                (ts.isOptionalChain(expression) &&
-                    owner.optionalChainShortCircuited))
-        ) {
-            return {
-                kind: "json-null",
-                cpp: "std::nullopt",
-                optionalChainShortCircuited: true,
-            };
-        }
+        if (owner.kind === "json-null" && expression.questionDotToken)
+            return { kind: "json-null", cpp: "std::nullopt" };
         const property = expression.name.text;
         if (owner.kind === "dom-event") {
             if (property === "target" || property === "currentTarget")
@@ -2726,6 +2838,22 @@ export class PropertyAccessLowerer {
                 },
             };
         }
+        if (owner.kind === "engine" && property === "gpuFrameTimeMs") {
+            if (!owner.ownedEngineCpp) throw new ApplicationRealmRequired();
+            this.context.reachFeature("engine:gpu-task-timing", expression);
+            return {
+                kind: "number",
+                cpp: `bbl::pal::gpu_task_timing_state(${owner.cpp})->gpu_frame_time_ms`,
+                impure: true,
+            };
+        }
+        if (owner.kind === "engine" && property === "maxDevicePixelRatio") {
+            return {
+                kind: "number",
+                cpp: `bbl::surface_max_device_pixel_ratio(${owner.cpp})`,
+                impure: true,
+            };
+        }
         if (owner.kind === "engine" && property === "drawCallCount") {
             // A JavaScript number read of the native counter.
             return {
@@ -2808,25 +2936,7 @@ export class PropertyAccessLowerer {
         if (browserFileProperty) {
             return browserFileProperty;
         }
-        const ownerTsType =
-            this.context.checker.getTypeAtLocation(ownerExpression);
-        const ownerTsMembers =
-            (ownerTsType.flags & ts.TypeFlags.Union) !== 0
-                ? (ownerTsType as ts.UnionType).types
-                : [ownerTsType];
-        const sourceIsCanvas = ownerTsMembers.some(
-            (member) =>
-                member.getSymbol()?.getName() === "HTMLCanvasElement" ||
-                member.getSymbol()?.getName() === "OffscreenCanvas",
-        );
-        if (
-            owner.kind === "ui-element" &&
-            (owner.uiTag === "canvas" || sourceIsCanvas) &&
-            property === "tabIndex"
-        ) {
-            // Native keyboard input targets the always-focusable SDL surface.
-            return numberConstantValue(0);
-        }
+        const sourceIsCanvas = this.declaresCanvas(ownerExpression);
         const deferredProperty = this.context.deferredCapabilities.property(
             expression,
             owner,
@@ -2980,11 +3090,15 @@ export class PropertyAccessLowerer {
                 this.declaredEventInterface(ownerExpression) !== "KeyboardEvent"
             ) {
                 const payload = `${owner.cpp}.as<bbl::PlatformStorageEvent>()`;
-                if (property === "storageArea")
+                if (property === "storageArea") {
+                    // A storage event's area is `localStorage`: one window
+                    // shares no session.
+                    this.context.reachFeature("storage:local", expression);
                     return this.context.dataLowerer.leafValue(
                         `(${payload}.has_storage_area ? bbl::js::Nullable<bbl::js::Storage>{bbl::js::local_storage_object()} : bbl::js::Nullable<bbl::js::Storage>{})`,
                         { kind: "optional", inner: { kind: "storage" } },
                     );
+                }
                 if (property === "url")
                     return this.context.dataLowerer.leafValue(
                         `${payload}.url`,
@@ -3605,6 +3719,14 @@ export class PropertyAccessLowerer {
         ) {
             return owner;
         }
+        // The native list holds the pin's tasks only, but the pin's also
+        // holds its shadow task and its transmission image-processing task,
+        // which native passes replace, so its indices still differ.
+        if (owner.kind === "frame-graph" && expression.name.text === "_tasks")
+            this.context.fail(
+                expression,
+                "FrameGraph._tasks is private and is not represented: the pin's list holds a shadow task and a transmission image-processing task the native scene task list does not, so its indices differ. Removing a task from a live graph is refused.",
+            );
         if (
             owner.kind === "utility-layer" &&
             expression.name.text === "scene"

@@ -331,6 +331,34 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("storage:session")) {
+        adaptations.push({
+            id: "native-session-storage",
+            category: "browser-erasure",
+            sourceSemantics:
+                "sessionStorage is the top-level browsing session's storage: it survives reloads and same-document navigation of that tab, ends with the tab, and is absent in workers.",
+            nativeSemantics:
+                "The three reached methods read and write one process-memory map shared by every realm the window recreates; nothing is written to disk and the process exit ends the session. Worker realms refuse the global and read its typeof as undefined.",
+            risk: "low",
+            validation: [
+                "Web Storage compiler tests",
+                "native realm-recreation session storage check",
+            ],
+        });
+    }
+    if (features.includes("platform:compression"))
+        adaptations.push({
+            id: "native-compression-streams",
+            category: "platform",
+            sourceSemantics:
+                "CompressionStream and DecompressionStream run Chromium's zlib fork at level 6 and enqueue 64 KiB output chunks; invalid, truncated or trailing input errors the readable side with a TypeError.",
+            nativeSemantics:
+                "Canonical zlib at level 6 with the same window bits, 64 KiB output chunks and TypeError messages. The gzip header is equal; the deflate data can differ from Chromium's bytes and decompresses identically.",
+            risk: "low",
+            validation: [
+                "native compression-stream fixture: application byte pipelines, standard-tool decompression and Chromium's measured errors",
+            ],
+        });
     if (features.includes("platform:http"))
         adaptations.push({
             id: "native-http-transport",
@@ -676,10 +704,10 @@ export function compileAdaptations(
                 "and their siblings, implemented by whatever engine the " +
                 "page runs on -- Blink's for the reference captures.",
             nativeSemantics:
-                "The pinned engine's own output graph is folded from " +
-                "`bus.ts`'s declarations (and `src/lowering/" +
-                "audio-lowerer.ts` refuses generation if any of them " +
-                "moves), but the Web Audio API under it is LabSound's, " +
+                "The pinned engine, its buses and ramped parameters " +
+                "are lowered from their own declarations " +
+                "(`audio-engine.ts`, `bus.ts`, `audio-param.ts`), but " +
+                "the Web Audio API under them is LabSound's, " +
                 "reached through `bblite/pal_audio.hpp` over an SDL3 " +
                 "device. LabSound is a fork of WebKit's own WebAudio " +
                 "implementation with the copyleft code removed, so the " +

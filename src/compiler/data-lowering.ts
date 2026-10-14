@@ -29,7 +29,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { storageValue } from "./web-storage.js";
+import { STORAGE_METHODS, storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import {
     belongsToEntryEngine,
@@ -522,6 +522,8 @@ export function isNeverResized(
 
 interface DataLoweringContext extends Pick<
     LoweringServices,
+    | "symbols"
+    | "optionalChainStop"
     | "moduleNamespaces"
     | "recordProxies"
     | "options"
@@ -2513,11 +2515,30 @@ export class DataLowerer {
             const bound = ts.isIdentifier(receiver)
                 ? this.context.bindings.lookupOptional(receiver)
                 : undefined;
+            // A chain that stopped at generation is undefined.
+            const stopped =
+                mode === "read" && ts.isOptionalChain(unwrapped)
+                    ? this.context.optionalChainStop(unwrapped)
+                    : undefined;
+            if (stopped) return stopped;
+            // A chain continuation (`a?.list()[0]`) indexes the value the
+            // chain produced.
+            const chainOwner =
+                unwrapped.questionDotToken ||
+                (mode === "read" &&
+                    ts.isOptionalChain(unwrapped) &&
+                    ts.isCallExpression(receiver));
             const owner =
                 this.compileDataPath(unwrapped.expression, mode, true) ??
-                (unwrapped.questionDotToken &&
-                !this.namesHandleCollection(unwrapped.expression)
-                    ? this.context.compileValue(unwrapped.expression)
+                (chainOwner && !this.namesHandleCollection(unwrapped.expression)
+                    ? this.context.probeEmission(() => {
+                          const value = this.context.compileValue(
+                              unwrapped.expression,
+                          );
+                          // An absent receiver of a running chain is the
+                          // element reader's TypeError to raise.
+                          return value.kind === "json-null" ? undefined : value;
+                      })
                     : undefined) ??
                 (this.isStaticIndex(unwrapped.argumentExpression)
                     ? undefined
@@ -3942,6 +3963,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * captureAfterFrames` after `captureAfterFrames !== null` is how
      * every physics scene compares its freeze counter.
      */
+    /**
+     * A member call `run` lowers on its evaluated receiver `owner`: under
+     * the chain's guard when the call is `owner?.m()` or continues a chain
+     * whose absence reached `owner` (`a?.b.stream.getTracks()`), else on
+     * the receiver narrowed present.
+     */
+    public chainReceiverCall(
+        owner: Value,
+        callee: ts.PropertyAccessExpression,
+        call: ts.CallExpression,
+        run: (present: Value) => Value | undefined,
+    ): Value | undefined {
+        return callee.questionDotToken ||
+            (ts.isOptionalChain(callee) && owner.dataType?.kind === "optional")
+            ? this.optionalAccess(owner, call, run)
+            : run(this.narrowOptional(owner, callee.expression));
+    }
+
     public narrowOptional(
         value: Value,
         expression: ts.Expression,
@@ -4666,10 +4705,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                           fallbackLines,
                       )
                     : undefined;
+            // A Texture2D has several native storages; a stored texture's
+            // fallback is stored the same way, whichever factory made it.
+            const storedTexture =
+                left.dataType?.kind === "handle" &&
+                left.dataType.handle === "texture"
+                    ? left.dataType
+                    : undefined;
             return valueForKind(left.kind, {
                 cpp: pair
                     ? `${pair.name}.first`
-                    : `(${leftFound} ? ${left.cpp} : ${fallbackArm(left.dataType, () => fallback.cpp)})`,
+                    : `(${leftFound} ? ${left.cpp} : ${fallbackArm(
+                          left.dataType,
+                          () =>
+                              storedTexture
+                                  ? this.compileKnownValueForSink(
+                                        fallback,
+                                        storedTexture,
+                                        expression.right,
+                                    )
+                                  : fallback.cpp,
+                      )})`,
                 ...(pair
                     ? { nativeBinding: true, nativeCaptures: [pair.binding] }
                     : {}),
@@ -4935,12 +4991,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (platform) return platform;
         const gpu = gpuAdapterProperty(this, owner, property);
         if (gpu) return gpu;
-        if (owner.dataType?.kind === "storage") {
-            const method = storageValue(owner.cpp).recordProperties?.[property];
-            if (method) {
-                this.context.emitDiscardedValue(owner);
-                return method;
-            }
+        if (
+            owner.dataType?.kind === "storage" &&
+            STORAGE_METHODS.has(property)
+        ) {
+            // The method reads its operation from the area, evaluated once.
+            const area = this.context.bindings.pinValueToTemporary(
+                owner,
+                "storage_area",
+                access.expression,
+            );
+            return storageValue(area.cpp).recordProperties?.[property];
         }
         const deferred = this.context.deferredCapabilities.property(
             access,
@@ -14000,10 +14061,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         )
             return undefined;
         const type = this.dataTypeAt(expression);
+        const scalars = ["boolean", "number", "string", "enum"];
+        // `maybe || fallback` with a present fallback is present: the left
+        // value when truthy (so present), the fallback otherwise. Strings
+        // take compileStringLogicalValue.
+        const leftType = this.dataTypeAt(expression.left);
         if (
-            type?.kind !== "optional" ||
-            !["boolean", "number", "string", "enum"].includes(type.inner.kind)
+            operator === ts.SyntaxKind.BarBarToken &&
+            type !== undefined &&
+            ["boolean", "number", "enum"].includes(type.kind) &&
+            leftType?.kind === "optional" &&
+            leftType.inner.kind === type.kind
         )
+            return this.leafValue(
+                this.compileLogicalSelection(
+                    expression,
+                    type,
+                    "logical_value",
+                    (left, condition) => {
+                        const present =
+                            left.dataType?.kind === "optional"
+                                ? this.leafValue(
+                                      optionalValueCpp(left.cpp),
+                                      left.dataType.inner,
+                                  )
+                                : left;
+                        return `(${condition} ? ${this.compileKnownValueForSink(present, type, expression.left)} : ${this.context.dataTypes.cppType(type)}{})`;
+                    },
+                ),
+                type,
+            );
+        if (type?.kind !== "optional" || !scalars.includes(type.inner.kind))
             return undefined;
         // A truthy present value contributes only its absent state to `&&`;
         // this includes unions of object shapes and nonempty literal types.

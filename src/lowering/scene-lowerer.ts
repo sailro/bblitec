@@ -13,11 +13,17 @@ import {
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 import { lowerAssetSceneAttachment } from "./asset-scene-attachment.js";
 import { lowerMeshMaterialSetter } from "./mesh-material-setter.js";
+import { lowerMeshGpuDisposal } from "./mesh-gpu-disposal.js";
 import { lowerPbrMaterialGroups } from "./pbr-material-groups.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerMeshGeometryAccess } from "./mesh-geometry-access.js";
 import { lowerSceneNodeRemoval } from "./scene-node-removal.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
+import {
+    lowerFrameGraphTaskBuild,
+    lowerTaskExecutionCheck,
+} from "./frame-graph-task-build.js";
+import { lowerDeformedVertex } from "./deformed-vertex.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -112,6 +118,20 @@ interface SceneCoreOptions {
     pbrSceneHooks?: boolean;
     gltfSceneHooks?: boolean;
     thinBindings?: boolean;
+    /** The scene reaches `disposeMeshGpu`. */
+    meshGpuDisposal?: boolean;
+    /** The scene reaches `buildFrameGraphTask`. */
+    taskBuild?: boolean;
+    /** The scene reaches `createEffectRenderTask`. */
+    effectTasks?: boolean;
+    /** A task may be added to a registered scene. */
+    liveTaskAdd?: boolean;
+    /** A render or effect task may be disposed. */
+    taskDisposal?: boolean;
+    /** The program reads a deformed vertex (`computeDeformedPositionToRef`). */
+    deformedPosition?: boolean;
+    /** A CSM generator keeps a static cache target (`enableCsmStaticCache`). */
+    csmStaticCache?: boolean;
 }
 
 export class SceneLowerer {
@@ -731,6 +751,41 @@ export class SceneLowerer {
             "scene.meshes.indexOf(mesh)",
             "Pinned mesh-removal index",
         );
+        // The task share: every task's \`_removeMesh\`, then every render
+        // task's built-entry removal. Neither drops a queued request.
+        this.context.expectShapeCount(
+            meshRemoval,
+            "task._removeMesh?.(mesh)",
+            "scene task mesh-removal hooks",
+        );
+        this.context.expectShapeCount(
+            meshRemoval,
+            "_removeMeshFromRenderTask(task, mesh)",
+            "scene render-task built-entry removal",
+        );
+        const { declaration: taskRemoval } = this.context.functionDeclaration(
+            "src/frame-graph/render-task-base.ts",
+            "_removeMeshFromRenderTask",
+        );
+        this.context.expectShapeCount(
+            taskRemoval,
+            "task._lastVersion = -1",
+            "removed-generation version reset",
+        );
+        for (const root of [meshRemoval, taskRemoval]) {
+            if (
+                this.context.hasNode(
+                    root,
+                    (node) =>
+                        ts.isPropertyAccessExpression(node) &&
+                        node.name.text === "_pendingMeshes",
+                )
+            )
+                this.context.contractError(
+                    root,
+                    "Scene mesh removal now drops queued task requests.",
+                );
+        }
         // A manager created with this engine owns animation time for the
         // groups attached to it, and a scene it drives has no other way to
         // reach them: the measured seek walks the scene's seekers, so a
@@ -759,6 +814,7 @@ ${options.geometryAccess ? "#include <bblite/mesh_cpu_streams.hpp>" : ""}
 #include <bblite/features/has_sprites.hpp>
 ${options.text ? "#include <bblite/upstream_text_records.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
+#include <bblite/upstream/render_task_removal.hpp>
 #include <bblite/upstream/thin_instance_sync.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
@@ -2039,33 +2095,50 @@ void clear_mesh_parent(Engine& engine, MeshHandle mesh) {
 // ${this.context.provenance("src/scene/scene-remove.ts", "removeFromScene")}
 //
 // removeMeshFromScene in the pin's order, then the mesh's own children.
-// Every scene render task drops the mesh's entries (\`task._removeMesh\` and
-// \`_removeMeshFromRenderTask\`: native \`render_meshes\` holds both the
-// tracked and the bound entries), the scene list and its renderables drop
-// it, every material group and the material swap queue drop it, and its
-// parent link clears. Leaving its last scene -- or none, for a mesh never
-// added -- disposes it (\`disposeMeshGpu\`), which \`retire_mesh_record\`
-// stands for: the geometry goes with the last claim and the record's slot
-// is offered to the next mesh. Tables the pin leaves naming the mesh (a
+// Every scene render task runs \`_removeMeshFromRenderTask\`: a refreshed
+// task drops the mesh from its tracked list and goes dirty
+// (\`task._removeMesh\`), and a recorded task drops its built entries.
+// Queued requests (\`_pendingMeshes\`) stay: only removeMeshFromTask drops
+// them. A recorded explicit task already took the pin's \`autoMirror\`
+// write, so emptying it draws nothing rather than the scene. A shadow
+// generator's caster passes and the non-render tasks drop every entry of
+// the mesh. The scene list and its renderables drop it, every material
+// group and the material swap queue drop it, and its parent link clears.
+// Leaving its last scene -- or none, for a mesh never added -- disposes it
+// (\`disposeMeshGpu\`), which \`retire_mesh_record\` stands for: the
+// geometry goes with the last claim and the record's slot is offered to
+// the next mesh. Tables the pin leaves naming the mesh (a
 // physics body, an animation target, a light's include list, a shadow
 // caster array, a parent's traversal list) keep its handle, whose
 // generation tells it apart from the slot's next occupant. The
 // material-family mask stays monotonic: it gates which pipelines the
 // backend created, and a removal never invalidates one.
+namespace {
+/** Every scene task's share of removeMeshFromScene; whether a non-render entry went. */
+bool remove_mesh_from_scene_tasks(Engine& engine, Scene& scene, MeshHandle mesh) {
+    bool task_mesh_removed = false;
+    for (const TaskHandle task_handle : scene.frame_passes()) {
+        FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "task_handle")};
+        if (task.kind != FrameTaskKind::render || task.render.shadow_generator.value != invalid_handle) {
+            task_mesh_removed |= std::erase_if(task.render_meshes, [mesh](const RenderTaskMesh& entry) {
+                return entry.mesh == mesh;
+            }) != 0;
+            continue;
+        }
+        remove_mesh_from_render_task(engine, task, mesh);
+    }
+    return task_mesh_removed;
+}
+} // namespace
+
 void remove_from_scene(Scene& scene, MeshHandle mesh) {
     require_scene_engine(scene);
     Engine& engine = *scene.engine;
     // A disposed mesh whose slot another mesh took: removing it again
     // changes nothing upstream.
     if (!mesh_handle_current(engine, mesh)) return;
-    bool task_mesh_removed = false;
-    for (const TaskHandle task : scene.tasks) {
-        task_mesh_removed |= std::erase_if(
-            ${recordAt("engine.frame_tasks", "task")}.render_meshes,
-            [mesh](const RenderTaskMesh& entry) { return entry.mesh == mesh; }) != 0;
-    }
     // Native rows also own explicit task meshes that were never scene members.
-    if (task_mesh_removed) ++engine.draw_list_epoch;
+    if (remove_mesh_from_scene_tasks(engine, scene, mesh)) ++engine.draw_list_epoch;
     const auto listed = std::find(scene.meshes.begin(), scene.meshes.end(), mesh);
     if (listed != scene.meshes.end()) {
         scene.meshes.erase(listed);
@@ -2085,7 +2158,7 @@ ${options.nodeMaterials ? "    for (const auto& group : scene.state->node_materi
     const std::vector<MeshHandle> children = ${recordAt("engine.meshes", "mesh")}.children;
     for (const MeshHandle child : children) remove_from_scene(scene, child);
 }
-
+${options.meshGpuDisposal ? lowerMeshGpuDisposal(this.context, options.thinBindings ?? false) : ""}
 
 // Light removal is a topology mutation rather than a light-record disposal:
 // handles stay stable in the engine, while the scene list and receiver render
@@ -2525,6 +2598,46 @@ void off_visibility_change(Engine& engine, std::size_t identity) {
 `;
     }
 
+    /** A task added to a registered scene waits for its record. */
+    private liveTaskAddSource(): string {
+        return `// ${this.context.provenance("src/scene/scene-core.ts", "registerScene", "src/frame-graph/frame-graph.ts#buildFrameGraphTask")}
+void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
+    if (at_start)
+        add_task_at_start(scene, task);
+    else
+        add_task(scene, task);
+    auto& record = ${recordAt("scene.engine->frame_tasks", "task")};
+    const auto& scenes = scene.engine->scenes();
+    if (record.record_state == FrameTaskRecordState::queued &&
+        std::any_of(scenes.begin(), scenes.end(), [&scene](const std::shared_ptr<Scene>& registered) {
+            return registered && registered->shares_identity(scene);
+        }))
+        record.record_state = FrameTaskRecordState::pending_build;
+}
+
+`;
+    }
+
+    /**
+     * Registration's record of one queued explicit render task `task`:
+     * resolvePendingTaskMeshes constructs each renderable, publishing a
+     * shader material's uniforms and packet state for the task's scene.
+     */
+    private renderTaskRecordSource(options: SceneCoreOptions): string {
+        return `        const auto task_scene = Scene::from_state(task.source_scene ? task.source_scene : scene.state);
+        for (const auto& entry : task.render_meshes) {
+            const auto material = render_task_mesh_material(*scene.engine, entry);
+            if (material.value >= scene.engine->materials.size()) continue;
+            const auto& record = ${recordAt("scene.engine->materials", "material")};
+            ${shaderUniformPublication(this.context, "record", "task_scene")}
+            if (record.shader_uniform_snapshot || record.shader_packet_initialize)
+                entry.shader_packet = std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
+${options.thinBindings ? "            entry.thin_binding = create_thin_material_binding(*scene.engine, entry.mesh, material);" : ""}
+        }
+        task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
+        task.record_state = FrameTaskRecordState::recorded;`;
+    }
+
     private sceneLifecycleSource(
         managerSeek: string,
         vatSeek: string,
@@ -2622,23 +2735,24 @@ ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
         }
     }
     scene.material_family_mask = scene_material_families(scene);
+${
+    options.liveTaskAdd
+        ? `    // \`ctx._frameGraph.build()\` records every task, including those
+    // added while the scene was registered before.
+    for (const auto task_handle : scene.frame_passes()) {
+        auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
+        if (task.record_state == FrameTaskRecordState::pending_build)
+            task.record_state = FrameTaskRecordState::queued;
+    }
+`
+        : ""
+}\
     // registerScene builds the frame graph after the scene's material groups.
     // resolvePendingTaskMeshes constructs the queued explicit task renderables there.
-    for (const auto task_handle : scene.tasks) {
+    for (const auto task_handle : scene.frame_passes()) {
         auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
-        if (task.kind != FrameTaskKind::render || task.render_recorded) continue;
-        const auto task_scene = Scene::from_state(task.source_scene ? task.source_scene : scene.state);
-        for (const auto& entry : task.render_meshes) {
-            const auto material = render_task_mesh_material(*scene.engine, entry);
-            if (material.value >= scene.engine->materials.size()) continue;
-            const auto& record = ${recordAt("scene.engine->materials", "material")};
-            ${shaderUniformPublication(this.context, "record", "task_scene")}
-            if (record.shader_uniform_snapshot || record.shader_packet_initialize)
-                entry.shader_packet = std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
-${options.thinBindings ? "            entry.thin_binding = create_thin_material_binding(*scene.engine, entry.mesh, material);" : ""}
-        }
-        task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
-        task.render_recorded = true;
+        if (task.kind != FrameTaskKind::render || task.record_state == FrameTaskRecordState::recorded) continue;
+${this.renderTaskRecordSource(options)}
     }
 ${
     options.text
@@ -2680,19 +2794,11 @@ void retire_scene_shadow_states(Scene& scene) {
         // Every caster pass the generator built: one for a single-map
         // generator, one per cascade layer for a cascaded one.
         const std::vector<TaskHandle> retired = shadow.caster_tasks;
-        scene.tasks.erase(
-            std::remove_if(
-                scene.tasks.begin(),
-                scene.tasks.end(),
-                [&retired](const TaskHandle candidate) {
-                    return std::any_of(
-                        retired.begin(),
-                        retired.end(),
-                        [candidate](const TaskHandle task) {
-                            return candidate.value == task.value;
-                        });
-                }),
-            scene.tasks.end());
+        std::erase_if(scene.state->internal_passes, [&retired](const SceneInternalPass& pass) {
+            return std::any_of(retired.begin(), retired.end(), [&pass](const TaskHandle task) {
+                return pass.task.value == task.value;
+            });
+        });
         for (const TaskHandle task : retired) {
             if (auto* record = bbl::handle_find(scene.engine->frame_tasks, task)) {
                 *record = FrameTaskRecord{};
@@ -2703,6 +2809,20 @@ void retire_scene_shadow_states(Scene& scene) {
             *target = RenderTargetRecord{};
             target->retired = true;
             ++scene.engine->render_targets_version;
+        }${
+            options.csmStaticCache
+                ? `
+        // The cached state's \`csm-static-cache\` texture goes with its passes.
+        if (shadow.csm_cache) {
+            if (auto* cache_target = bbl::handle_find(scene.engine->render_targets,
+                                                      shadow.csm_cache->cache_target)) {
+                *cache_target = RenderTargetRecord{};
+                cache_target->retired = true;
+                ++scene.engine->render_targets_version;
+            }
+            shadow.csm_cache->cache_target = RenderTargetHandle{};
+        }`
+                : ""
         }
         shadow.caster_tasks = std::vector<TaskHandle>{};
         shadow.csm_cascades = std::vector<ShadowCascade>{};
@@ -2730,6 +2850,7 @@ void dispose_scene(Scene& scene) {
     scene.meshes.clear();
     scene.lights.clear();
     scene.tasks.clear();
+    scene.state->internal_passes.clear();
 #if BBLITE_HAS_SHADOWS
     retire_scene_shadow_states(scene);
 #endif
@@ -2764,7 +2885,19 @@ ${
     scene.camera = {};
 }
 
-void rebuild_scene_renderables(Scene& scene) {
+${
+    options.taskBuild
+        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false)}
+`
+        : ""
+}${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${
+            options.liveTaskAdd || options.taskDisposal
+                ? lowerTaskExecutionCheck(this.context, {
+                      disposal: options.taskDisposal ?? false,
+                      pendingBuild: options.liveTaskAdd ?? false,
+                  })
+                : ""
+        }${options.deformedPosition ? `${lowerDeformedVertex(this.context)}\n` : ""}void rebuild_scene_renderables(Scene& scene) {
     require_scene_engine(scene);
 ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
 #if BBLITE_HAS_SHADOWS

@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
+#include <numbers>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -55,14 +56,27 @@ inline std::optional<double> css_decimal(std::string_view source, std::size_t& o
     return number;
 }
 
+/** The index of the `)` closing the parenthesis at `open`, or the size when it is unclosed. */
+inline std::size_t css_function_end(std::string_view value, std::size_t open) {
+    std::size_t end = open;
+    for (int depth = 0; end < value.size(); ++end) {
+        depth += value[end] == '(' ? 1 : value[end] == ')' ? -1 : 0;
+        if (depth == 0)
+            break;
+    }
+    return end;
+}
+
 } // namespace detail
 
 // Root-relative lengths reproject when the document's computed font changes.
 // Containing-block and element-relative units still require a later layout stage.
+// Lengths resolve to CSS px (dp, the projected CSS px, included), times to s, angles to deg.
 class UiLengthMath {
+    enum class Dimension { Number, Length, Time, Angle };
     struct Value {
         double number;
-        bool length;
+        Dimension dimension;
     };
     std::string_view source;
     std::size_t offset = 0;
@@ -72,7 +86,8 @@ class UiLengthMath {
 
     [[noreturn]] void refuse() const {
         throw std::runtime_error(
-            "UI CSS math requires finite px/rem/vw/vh/vmin/vmax lengths and scalar arithmetic: " +
+            "UI CSS math requires finite px/rem/viewport lengths, s/ms times, deg/rad/turn angles and "
+            "scalar arithmetic: " +
             std::string(source));
     }
     void space() {
@@ -125,15 +140,15 @@ class UiLengthMath {
                 if (!take(','))
                     refuse();
                 const auto maximum = sum();
-                if (!take(')') || value.length != preferred.length ||
-                    value.length != maximum.length)
+                if (!take(')') || value.dimension != preferred.dimension ||
+                    value.dimension != maximum.dimension)
                     refuse();
                 value.number = std::max(value.number, std::min(preferred.number, maximum.number));
                 return value;
             }
             while (take(',')) {
                 const auto other = sum();
-                if (value.length != other.length)
+                if (value.dimension != other.dimension)
                     refuse();
                 value.number = name == "min" ? std::min(value.number, other.number)
                                              : std::max(value.number, other.number);
@@ -151,24 +166,38 @@ class UiLengthMath {
             ++offset;
         const auto unit = source.substr(unit_start, offset - unit_start);
         if (unit.empty())
-            return {number, false};
-        if (unit == "px")
-            return {number, true};
+            return {number, Dimension::Number};
+        if (unit == "px" || unit == "dp")
+            return {number, Dimension::Length};
         if (unit == "rem") {
             if (!root_font_size || !std::isfinite(*root_font_size) || *root_font_size <= 0)
                 throw std::runtime_error(
                     "Root-relative CSS math requires the computed root font size.");
             root_relative = true;
-            return {number * *root_font_size, true};
+            return {number * *root_font_size, Dimension::Length};
         }
-        if (unit == "vw")
-            return {number * width / 100, true};
-        if (unit == "vh")
-            return {number * height / 100, true};
-        if (unit == "vmin")
-            return {number * std::min(width, height) / 100, true};
-        if (unit == "vmax")
-            return {number * std::max(width, height) / 100, true};
+        // Without browser toolbars the small, large and dynamic viewports are the viewport.
+        const auto viewport = [&](std::string_view base) {
+            return unit == base || unit == std::string("s") + std::string(base) ||
+                   unit == std::string("l") + std::string(base) ||
+                   unit == std::string("d") + std::string(base);
+        };
+        if (viewport("vw"))
+            return {number * width / 100, Dimension::Length};
+        if (viewport("vh"))
+            return {number * height / 100, Dimension::Length};
+        if (viewport("vmin"))
+            return {number * std::min(width, height) / 100, Dimension::Length};
+        if (viewport("vmax"))
+            return {number * std::max(width, height) / 100, Dimension::Length};
+        if (unit == "s" || unit == "ms")
+            return {unit == "s" ? number : number / 1000, Dimension::Time};
+        if (unit == "deg" || unit == "rad" || unit == "turn" || unit == "grad")
+            return {unit == "deg"    ? number
+                    : unit == "rad"  ? number * 180 / std::numbers::pi
+                    : unit == "turn" ? number * 360
+                                     : number * 0.9,
+                    Dimension::Angle};
         refuse();
     }
     Value product() {
@@ -178,11 +207,13 @@ class UiLengthMath {
             if (!multiply && !take('/'))
                 return value;
             const auto other = atom();
-            if ((multiply && value.length && other.length) ||
-                (!multiply && (other.length || other.number == 0)))
+            if ((multiply && value.dimension != Dimension::Number &&
+                 other.dimension != Dimension::Number) ||
+                (!multiply && (other.dimension != Dimension::Number || other.number == 0)))
                 refuse();
             value.number = multiply ? value.number * other.number : value.number / other.number;
-            value.length = value.length || other.length;
+            if (value.dimension == Dimension::Number)
+                value.dimension = other.dimension;
         }
     }
     Value sum() {
@@ -192,7 +223,7 @@ class UiLengthMath {
             if (!add && !take('-'))
                 return value;
             const auto other = product();
-            if (value.length != other.length)
+            if (value.dimension != other.dimension)
                 refuse();
             value.number += add ? other.number : -other.number;
         }
@@ -208,7 +239,11 @@ public:
         const auto value = atom();
         if (!std::isfinite(value.number))
             refuse();
-        return {std::to_string(value.number) + (value.length ? "px" : ""), offset};
+        const char* unit = value.dimension == Dimension::Length  ? "px"
+                           : value.dimension == Dimension::Time  ? "s"
+                           : value.dimension == Dimension::Angle ? "deg"
+                                                                 : "";
+        return {std::to_string(value.number) + unit, offset};
     }
 };
 
@@ -256,6 +291,12 @@ inline std::string rml_css_length_math(std::string value, double width, double h
         if (!tail.starts_with("calc(") && !tail.starts_with("min(") && !tail.starts_with("max(") &&
             !tail.starts_with("clamp("))
             continue;
+        // Math over var() resolves once the style engine substitutes the variables.
+        const std::size_t end = detail::css_function_end(value, value.find('(', index));
+        if (std::string_view(value).substr(index, end - index).find("var(") != std::string::npos) {
+            index = end;
+            continue;
+        }
         UiLengthMath math(tail, width, height, root_font);
         const auto [replacement, consumed] = math.resolve();
         if (math.uses_root_font() &&

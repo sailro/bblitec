@@ -25,26 +25,31 @@ import {
     windowErrorEventValue,
 } from "./window-events.js";
 import {
+    declaresListenerSignal,
     emitDomEventListener,
-    hasDeferredListenerSignal,
-    compileDeferredListenerOptions,
+    listenerAddition,
     pinDetached,
+    signalListener,
 } from "./dom-listeners.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { compileFullscreenCall } from "./fullscreen.js";
+import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
-import { isPinnedType, type DataType } from "./data-types.js";
-import { compileBooleanOptions } from "./option-helpers.js";
-import { compileCustomEventDispatch } from "./custom-events.js";
-import { compileDateParse, compileDateUtc } from "./dates.js";
+import { isPinnedType } from "./data-types.js";
 import {
-    parseUiSelectorSequence,
-    splitUiSelectorList,
-    uiSelectorSequenceCpp,
-    uiSelectorSequenceTests,
-    isUiSelectorState,
-    uiSelectorId,
-} from "../ui-selector.js";
+    compileBooleanOptions,
+    optionalOptionMember,
+    optionalOptionValue,
+} from "./option-helpers.js";
+import { compileCustomEventDispatch } from "./custom-events.js";
+import { compilePointerCapture } from "./pointer-capture.js";
+import { compileDateParse, compileDateUtc } from "./dates.js";
+import { uiSelectorId } from "../ui-selector.js";
+import {
+    classifyUiQuerySelector,
+    uiQuerySelectorCpp,
+} from "./ui-query-selectors.js";
 
 type PlatformEventTarget = "window" | "document" | "canvas";
 
@@ -104,6 +109,7 @@ interface PlatformCallContext
         CharacterIntrinsicContext,
         Pick<
             LoweringServices,
+            | "absenceTags"
             | "assets"
             | "assetOutputs"
             | "assetPayloads"
@@ -226,6 +232,82 @@ export class PlatformCalls {
     }
 
     /**
+     * `element.scrollIntoView(alignToTop | options)`: the options' string
+     * members are read once in source order; the native call converts them
+     * as WebIDL enums, throwing TypeError for other values.
+     */
+    private compileScrollIntoView(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+        element: Value,
+    ): Value {
+        const target = pinDetached(
+            this.context,
+            element,
+            "scroll_target",
+            callee.expression,
+        );
+        const engine = this.context.requireEngine(target, call);
+        const argument = call.arguments[0];
+        const type = argument
+            ? this.context.checker.getTypeAtLocation(argument)
+            : undefined;
+        if (!argument || (type && type.flags & ts.TypeFlags.BooleanLike)) {
+            const top = argument
+                ? this.context.compileBoolean(argument)
+                : "true";
+            return {
+                kind: "void",
+                cpp: `bbl::ui_scroll_into_view(${engine}, ${target.cpp}, ${top})`,
+            };
+        }
+        const defaults = {
+            block: "start",
+            inline: "nearest",
+            behavior: "auto",
+        };
+        const members: Partial<Record<keyof typeof defaults, string>> = {};
+        const consume =
+            (name: keyof typeof defaults) =>
+            (value: Value, present?: string): void => {
+                members[name] = optionalOptionValue(
+                    optionalOptionMember(
+                        this.context.dataLowerer,
+                        value,
+                        present,
+                        { kind: "string" },
+                        "scroll_option",
+                        argument,
+                    ),
+                    `std::string(${this.context.cppString(defaults[name])})`,
+                );
+            };
+        compileBooleanOptions(
+            this.context,
+            this.context.dataLowerer,
+            argument,
+            [] as const,
+            {
+                subject: "scrollIntoView options",
+                member: "scrollIntoView option",
+                forms: "a represented options record",
+                temporary: "scroll_options",
+                consume: {
+                    block: consume("block"),
+                    inline: consume("inline"),
+                    behavior: consume("behavior"),
+                },
+            },
+        );
+        const member = (name: keyof typeof defaults): string =>
+            members[name] ?? this.context.cppString(defaults[name]);
+        return {
+            kind: "void",
+            cpp: `bbl::ui_scroll_into_view(${engine}, ${target.cpp}, ${member("block")}, ${member("inline")}, ${member("behavior")})`,
+        };
+    }
+
+    /**
      * `scene._beforeRender.push(callback)`, `.indexOf(callback)` and
      * `.splice(index, count)`: the scene's before-render list
      * (`SceneState::before_render`), its entries keyed by callback identity,
@@ -308,6 +390,12 @@ export class PlatformCalls {
         if (beforeRender) return beforeRender;
         const web = compileWebPlatformCall(this.context, call);
         if (web) return web;
+        const fullscreen = compileFullscreenCall(
+            this.context.dataLowerer,
+            this.ui,
+            call,
+        );
+        if (fullscreen) return fullscreen;
         if (this.emitPlatformEventListener(call))
             return { kind: "void", cpp: "" };
         const styled = computedStyleElement(this.context, call);
@@ -410,7 +498,8 @@ export class PlatformCalls {
         if (ts.isPropertyAccessExpression(callee)) {
             const dispatched =
                 compileSyntheticEventDispatch(this.context, call) ??
-                compileCustomEventDispatch(this.context, call);
+                compileCustomEventDispatch(this.context, call) ??
+                compilePointerCapture(this.context, this.ui, call);
             if (dispatched) return dispatched;
             const value = this.compileUiCall(call, callee);
             if (value) return value;
@@ -534,7 +623,8 @@ export class PlatformCalls {
         if (
             callee.name.text === "preventDefault" ||
             callee.name.text === "stopPropagation" ||
-            callee.name.text === "stopImmediatePropagation"
+            callee.name.text === "stopImmediatePropagation" ||
+            callee.name.text === "composedPath"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
                 ? this.context.bindings.lookupOptional(receiver)
@@ -542,6 +632,26 @@ export class PlatformCalls {
                     ts.isElementAccessExpression(receiver)
                   ? this.context.compileValue(receiver)
                   : undefined;
+            if (
+                callee.name.text === "composedPath" &&
+                (platformEvent?.kind === "platform-keyboard-event" ||
+                    platformEvent?.kind === "platform-mouse-event" ||
+                    platformEvent?.kind === "custom-event" ||
+                    platformEvent?.kind === "dom-event")
+            ) {
+                this.context.expectArgumentCount(call, 0, 0);
+                this.context.reachFeature("input:dom", call);
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: `bbl::dom_event_composed_path(${platformEvent.cpp})`,
+                    dataType: {
+                        kind: "vector",
+                        element: { kind: "event-target" },
+                    },
+                    impure: true,
+                };
+            }
             if (
                 platformEvent?.kind === "platform-keyboard-event" ||
                 platformEvent?.kind === "platform-mouse-event" ||
@@ -847,8 +957,7 @@ export class PlatformCalls {
                       ? "mouseup"
                       : event === "pointermove"
                         ? "mousemove"
-                        : event === "pointercancel" ||
-                            event === "lostpointercapture"
+                        : event === "pointercancel"
                           ? "mouseout"
                           : event;
             if (
@@ -859,7 +968,6 @@ export class PlatformCalls {
                 event !== "pointerup" &&
                 event !== "pointermove" &&
                 event !== "pointercancel" &&
-                event !== "lostpointercapture" &&
                 event !== "change" &&
                 event !== "input" &&
                 event !== "contextmenu"
@@ -919,8 +1027,11 @@ export class PlatformCalls {
         const callback = argumentAt(call, 1);
         this.context.callbacks.hoistForwardCallbackBindings(callback);
         let once = false;
-        const deferredSignal = hasDeferredListenerSignal(this.context, call);
-        if (!removing && call.arguments[2] && !deferredSignal) {
+        // Options that may carry a signal lower as a dictionary; others stay static.
+        const signalOptions =
+            !removing &&
+            declaresListenerSignal(this.context.checker, call.arguments[2]);
+        if (!removing && call.arguments[2] && !signalOptions) {
             const options = this.context.unwrap(call.arguments[2]);
             if (!ts.isObjectLiteralExpression(options)) {
                 this.context.fail(
@@ -965,18 +1076,55 @@ export class PlatformCalls {
                     { cppType: "bbl::pal::ApplicationErrorEvent&", name },
                     [windowErrorEventValue(this.context, name, rejection)],
                 );
-                const deferredOptions = deferredSignal
-                    ? compileDeferredListenerOptions(
+                const added = signalOptions
+                    ? signalListener(
                           this.context,
-                          call,
+                          call.arguments[2],
                           listener.cpp,
                       )
                     : undefined;
                 this.context.emit({
                     kind: "expression",
-                    code: `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${deferredOptions?.listener ?? listener.cpp}, ${deferredOptions?.once ?? once});`,
+                    code: `${listenerAddition(
+                        added?.options.signal,
+                        (lease) =>
+                            `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ` +
+                            `${added?.listener ?? listener.cpp}, ${added?.options.once ?? once}${lease})`,
+                    )};`,
                 });
             }
+            return true;
+        }
+        if (target === "document" && event === "fullscreenchange") {
+            requireWindowHost(this.context, call);
+            if (removing) {
+                const identity = this.platformEventCallbackIdentity(
+                    this.context.compileValue(callback),
+                    callback,
+                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::pal::window_off_fullscreen_change(${identity});`,
+                });
+                return true;
+            }
+            const listener = this.context.callbacks.compilePlatformCallback(
+                callback,
+                undefined,
+                [],
+            );
+            const added = signalOptions
+                ? signalListener(this.context, call.arguments[2], listener.cpp)
+                : undefined;
+            this.context.emit({
+                kind: "expression",
+                code: `${listenerAddition(
+                    added?.options.signal,
+                    (lease) =>
+                        `bbl::pal::window_on_fullscreen_change(${listener.identity}, ` +
+                        `${added?.listener ?? listener.cpp}, ${added?.options.once ?? once}${lease})`,
+                )};`,
+            });
             return true;
         }
         // A Window application's document reports its own visibility.
@@ -1039,15 +1187,19 @@ export class PlatformCalls {
             values,
             documentHiddenCpp,
         );
-        const deferredOptions = deferredSignal
-            ? compileDeferredListenerOptions(this.context, call, listener.cpp)
+        const added = signalOptions
+            ? signalListener(this.context, call.arguments[2], listener.cpp)
             : undefined;
         this.context.emit({
             kind: "expression",
-            code:
-                `bbl::on_${descriptor.channel}(` +
-                `${engine}, ${listener.identity}, ${deferredOptions?.listener ?? listener.cpp}` +
-                `${deferredOptions ? `, ${deferredOptions.once}` : once ? ", true" : ""});`,
+            // A leased listener joins its channel's registry directly.
+            code: `${listenerAddition(added?.options.signal, (lease) =>
+                lease && added
+                    ? `${engine}.${descriptor.channel}_callbacks.add(${listener.identity}, ${added.listener}, ${added.options.once}${lease})`
+                    : `bbl::on_${descriptor.channel}(` +
+                      `${engine}, ${listener.identity}, ${added?.listener ?? listener.cpp}` +
+                      `${added ? `, ${added.options.once}` : once ? ", true" : ""})`,
+            )};`,
         });
         return true;
     }
@@ -1163,7 +1315,7 @@ export class PlatformCalls {
             const element = retainedStyle?.uiStyle
                 ? retainedStyle
                 : ts.isPropertyAccessExpression(style)
-                  ? this.ui.uiElementValue(style.expression)
+                  ? this.ui.compileUiElementReceiver(style.expression)
                   : undefined;
             if (element) {
                 const setting = callee.name.text === "setProperty";
@@ -1650,6 +1802,10 @@ export class PlatformCalls {
                     };
             }
         }
+        const captured =
+            element &&
+            compileCanvasCaptureStream(this.context.dataLowerer, call, element);
+        if (captured) return captured;
         if (element && callee.name.text === "decode") {
             if (!this.context.options.workers)
                 this.context.fail(
@@ -1738,6 +1894,21 @@ export class PlatformCalls {
             }
             return this.elementBoolean(presenceFlagCpp(element), call, result);
         }
+        if (element && callee.name.text === "getAttributeNames") {
+            this.context.expectArgumentCount(call, 0, 0);
+            if (ts.isOptionalChain(call))
+                this.context.fail(
+                    call,
+                    "An optional getAttributeNames call on an absent element is not lowered.",
+                );
+            this.context.reachJsData();
+            return {
+                kind: "data",
+                cpp: `bbl::ui_attribute_names(${this.context.requireEngine(element, call)}, ${element.cpp})`,
+                dataType: { kind: "vector", element: { kind: "string" } },
+                freshData: true,
+            };
+        }
         if (element && callee.name.text === "click") {
             this.context.expectArgumentCount(call, 0, 0);
             if (element.uiTag === "input") {
@@ -1779,6 +1950,7 @@ export class PlatformCalls {
                 this.context.requireEngine(element, call),
                 element.cpp,
                 presenceFlagCpp(element),
+                element,
             );
         }
         if (element && callee.name.text === "querySelector") {
@@ -2096,6 +2268,96 @@ export class PlatformCalls {
                 cpp: `bbl::ui_insert_child(${engine}, ${receiver.cpp}, ${child.cpp}, ${reference.kind === "json-null" ? "bbl::UiElementHandle{}" : optional ? `${reference.cpp}.value_or(bbl::UiElementHandle{})` : reference.cpp})`,
             };
         }
+        if (element && callee.name.text === "replaceWith") {
+            const node = pinDetached(
+                this.context,
+                element,
+                "replace_node",
+                callee.expression,
+            );
+            const nodes = call.arguments.map((argument) => {
+                if (ts.isSpreadElement(argument))
+                    return this.context.fail(
+                        argument,
+                        "replaceWith requires individual element arguments; spread lists are not represented.",
+                    );
+                const value = this.context.compileValue(argument);
+                if (isStringValue(value))
+                    this.context.fail(
+                        argument,
+                        "replaceWith text arguments are not represented; pass elements.",
+                    );
+                this.context.expectKind(value, "ui-element", argument);
+                return pinDetached(
+                    this.context,
+                    value,
+                    "replace_argument",
+                    argument,
+                );
+            });
+            const engine = this.context.requireEngine(node, call);
+            for (const value of nodes) {
+                this.context.expectSameEngine(node, value, call);
+                this.ui.recordUiStaticSiblingInsertion(node, value);
+            }
+            if (!nodes.some((value) => value.uiStaticId === node.uiStaticId))
+                this.ui.recordUiStaticRemoval(node);
+            return {
+                kind: "void",
+                cpp: `bbl::ui_replace_with(${engine}, ${node.cpp}, {${nodes.map((value) => value.cpp).join(", ")}})`,
+            };
+        }
+        if (element && callee.name.text === "insertAdjacentElement") {
+            this.context.expectArgumentCount(call, 2, 2);
+            const target = pinDetached(
+                this.context,
+                element,
+                "adjacent_target",
+                callee.expression,
+            );
+            const where = this.ui.tryUiStaticString(argumentAt(call, 0));
+            if (where === undefined)
+                this.context.fail(
+                    argumentAt(call, 0),
+                    "insertAdjacentElement requires a literal position.",
+                );
+            const inserted = pinDetached(
+                this.context,
+                this.context.compileValue(argumentAt(call, 1)),
+                "adjacent_element",
+                argumentAt(call, 1),
+            );
+            this.context.expectKind(
+                inserted,
+                "ui-element",
+                argumentAt(call, 1),
+            );
+            this.context.expectSameEngine(target, inserted, call);
+            const engine = this.context.requireEngine(target, call);
+            const position = where.toLowerCase();
+            if (position === "afterbegin" || position === "beforeend")
+                this.ui.recordUiStaticAppend(
+                    target,
+                    inserted,
+                    position === "beforeend",
+                );
+            else if (position === "beforebegin" || position === "afterend")
+                this.ui.recordUiStaticSiblingInsertion(target, inserted);
+            return {
+                kind: "data",
+                cpp: `bbl::ui_insert_adjacent_element(${engine}, ${target.cpp}, ${this.context.cppString(where)}, ${inserted.cpp})`,
+                dataType: {
+                    kind: "optional",
+                    inner: { kind: "handle", handle: "ui-element" },
+                },
+                engineCpp: engine,
+                impure: true,
+            };
+        }
+        if (element && callee.name.text === "scrollIntoView") {
+            this.context.expectArgumentCount(call, 0, 1);
+            return this.compileScrollIntoView(call, callee, element);
+        }
         if (element && callee.name.text === "appendChild") {
             this.context.expectArgumentCount(call, 1, 1);
             const child = this.context.compileValue(argumentAt(call, 0));
@@ -2311,23 +2573,6 @@ export class PlatformCalls {
                 },
             };
         }
-        if (
-            element &&
-            (callee.name.text === "setPointerCapture" ||
-                callee.name.text === "releasePointerCapture")
-        ) {
-            this.context.expectArgumentCount(call, 1, 1);
-            // RmlUi owns pointer capture while dispatching a pressed
-            // control. The DOM call has no additional native action.
-            return { kind: "void", cpp: "" };
-        }
-        if (element && callee.name.text === "hasPointerCapture") {
-            this.context.expectArgumentCount(call, 1, 1);
-            // RmlUi dispatches captured pointer motion back to the pressed
-            // element. Reaching this callback is therefore the native
-            // equivalent of the DOM capture predicate used by the demos.
-            return { kind: "boolean", cpp: "true" };
-        }
         if (element && callee.name.text === "animate") {
             this.context.expectArgumentCount(call, 2, 2);
             // Web Animations remains outside this retained UI slice. The
@@ -2490,118 +2735,62 @@ export class PlatformCalls {
         );
     }
 
-    private deferUiQuery(
-        call: ts.CallExpression,
-        method: string,
-        engine: string,
-        root: string,
-        capability: "dynamic-selector" | "interaction-selector",
-    ): Value {
-        // Receiver and argument effects precede the missing selector capability.
-        this.context.emit({
-            kind: "expression",
-            code: `static_cast<void>(${engine});`,
-        });
-        if (root !== "{}")
-            this.context.emit({
-                kind: "expression",
-                code: `static_cast<void>(${root});`,
-            });
-        this.context.emitDiscardedValue({
-            kind: "string",
-            cpp: this.ui.uiStringCpp(argumentAt(call, 0), "DOM selector"),
-        });
-        const type: DataType =
-            method === "matches"
-                ? { kind: "boolean" }
-                : method === "querySelectorAll"
-                  ? {
-                        kind: "vector",
-                        element: { kind: "handle", handle: "ui-element" },
-                    }
-                  : {
-                        kind: "optional",
-                        inner: { kind: "handle", handle: "ui-element" },
-                    };
-        const trap = this.context.deferredCapabilities.emitKnown(
-            call,
-            {
-                id: `dom:${method}.${capability}`,
-                origin: "dom",
-                operation: "call",
-                signature: this.context.checker.signatureToString(
-                    this.context.checker.getResolvedSignature(call) ??
-                        this.context.fail(
-                            call,
-                            "A deferred DOM query requires its declared signature.",
-                        ),
-                    call,
-                ),
-                timing: "throw",
-            },
-            type,
-        );
-        return { ...trap!, engineCpp: engine };
-    }
-
     private compileUiQuery(
         call: ts.CallExpression,
         method: string,
         engine: string,
         root: string,
         found?: string,
+        receiver?: Value,
     ): Value {
         this.context.expectArgumentCount(call, 1, 1);
-        if (
-            this.context.options.deferredCapabilities &&
-            this.ui.tryUiStaticString(argumentAt(call, 0)) === undefined
-        )
-            return this.deferUiQuery(
-                call,
-                method,
-                engine,
-                root,
-                "dynamic-selector",
-            );
-        const source = this.context.compileStringLiteral(argumentAt(call, 0));
-        const sequences = splitUiSelectorList(source).map((part) => {
-            const sequence = parseUiSelectorSequence(part, {
-                preserveNames: true,
-            });
-            if (!sequence)
-                this.context.fail(
-                    call,
-                    `Retained DOM query selector '${part}' is not lowered.`,
-                );
-            return sequence;
-        });
-        const state = sequences
-            .flatMap((sequence) => [...uiSelectorSequenceTests(sequence)])
-            .find((test) => isUiSelectorState(test.kind));
-        if (state) {
-            if (this.context.options.deferredCapabilities)
-                return this.deferUiQuery(
-                    call,
-                    method,
-                    engine,
-                    root,
-                    "interaction-selector",
-                );
-            this.context.fail(
-                call,
-                `Retained DOM query state ':${state.kind}' requires an interaction snapshot.`,
-            );
-        }
-        const selectors = sequences.map((sequence) =>
-            uiSelectorSequenceCpp(sequence, (text) =>
-                this.context.cppString(text),
-            ),
+        const argument = argumentAt(call, 0);
+        const selector = classifyUiQuerySelector(
+            this.context,
+            this.ui,
+            argument,
+            call,
         );
-        if (!selectors.length)
-            this.context.fail(call, "Retained DOM query requires a selector.");
+        if (selector.kind !== "literal" && receiver) {
+            // The selector's runtime text is evaluated after its receiver,
+            // and only when an optional chain finds one.
+            if (found && ts.isOptionalChain(call))
+                return (
+                    this.context.dataLowerer.optionalAccess(
+                        receiver,
+                        call,
+                        (present) =>
+                            this.compileUiQuery(
+                                call,
+                                method,
+                                engine,
+                                present.cpp,
+                                undefined,
+                                present,
+                            ),
+                    ) ??
+                    this.context.fail(
+                        call,
+                        "A retained DOM query through an optional chain requires an element receiver.",
+                    )
+                );
+            root = pinDetached(
+                this.context,
+                receiver,
+                "query_root",
+                ts.isPropertyAccessExpression(call.expression)
+                    ? call.expression.expression
+                    : undefined,
+            ).cpp;
+        }
+        const terms = uiQuerySelectorCpp(
+            this.context,
+            this.ui,
+            selector,
+            argument,
+        );
         this.context.reachFeature("ui:rml", call);
         this.context.reachJsData();
-        const terms = `{${selectors.join(", ")}}`;
         if (method === "matches")
             return this.elementBoolean(
                 found,

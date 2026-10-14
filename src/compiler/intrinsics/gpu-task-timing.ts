@@ -5,13 +5,21 @@ import type { DataType } from "../data-types.js";
 import { argumentAt } from "../syntax.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { ApplicationRealmRequired } from "../worker-modules.js";
+import { sharedPinnedContext } from "../../lowering/context.js";
+import { lowerGpuFrameTimer } from "../../lowering/gpu-frame-timer.js";
 
 export interface GpuTaskTimingIntrinsicContext
     extends
         IntrinsicCallContext,
         Pick<
             LoweringServices,
-            "dataLowerer" | "dataTypes" | "fail" | "reachJsData" | "bindings"
+            | "dataLowerer"
+            | "dataTypes"
+            | "fail"
+            | "reachJsData"
+            | "bindings"
+            | "nativeEmission"
+            | "allocateTemporaryCppName"
         > {}
 
 /** Convert PAL timestamp results to the reached, pinned public record types. */
@@ -69,11 +77,47 @@ function timingProjection(
     );
 }
 
+/** `setGpuTimingEnabled` and `isGpuTimingSupported` over the task timing device. */
+function compileGpuFrameTimingIntrinsic(
+    context: GpuTaskTimingIntrinsicContext,
+    name: string,
+    call: ts.CallExpression,
+): Value | undefined {
+    if (!["setGpuTimingEnabled", "isGpuTimingSupported"].includes(name))
+        return undefined;
+    const setting = name === "setGpuTimingEnabled";
+    context.expectArgumentCount(call, setting ? 2 : 1, setting ? 2 : 1);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", call);
+    if (!engine.ownedEngineCpp) throw new ApplicationRealmRequired();
+    context.reachFeature("backend:sdl", call);
+    context.reachFeature("engine:gpu-task-timing", call);
+    const pinned = context.bindings.pinValueToTemporary(
+        engine,
+        "timing_engine",
+        call,
+    );
+    const state = `bbl::pal::gpu_task_timing_state(${pinned.cpp})`;
+    if (!setting) return booleanValue(`${state}->supported`);
+    const enabled = context.compileValue(argumentAt(call, 1));
+    context.expectKind(enabled, "boolean", call);
+    const timer = context.nativeEmission.lowerOnce(
+        "set_gpu_timing_enabled",
+        (helper) => lowerGpuFrameTimer(sharedPinnedContext(), helper),
+    );
+    return {
+        kind: "void",
+        cpp: `${timer}(${state}, ${enabled.cpp})`,
+    };
+}
+
 export function compileGpuTaskTimingIntrinsic(
     context: GpuTaskTimingIntrinsicContext,
     name: string,
     call: ts.CallExpression,
 ): Value | undefined {
+    const frame = compileGpuFrameTimingIntrinsic(context, name, call);
+    if (frame) return frame;
     if (
         ![
             "isRenderTaskGpuTimingSupported",

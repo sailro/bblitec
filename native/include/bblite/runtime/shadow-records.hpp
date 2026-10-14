@@ -40,6 +40,42 @@ struct ShadowCascade {
     double frustum_length = 0.0;
 };
 
+/** The options `sg._csmCache` keeps (`enableCsmStaticCache`). */
+struct CsmStaticCacheOptions {
+    double refit_angle = 0.0;
+    double refit_max_interval_ms = 0.0;
+    std::uint32_t static_cascades_per_frame = 0;
+};
+
+/**
+ * `enableCsmStaticCache`: the options `sg._csmCache` keeps, and the cached
+ * task state's CPU side (`ensureCsmShadowCacheState`): the refit gate and
+ * static refit scheduler lowered from the pin (`csm_static_cache.hpp`), the
+ * cascades fitted at the last refit and this frame's plan. The cache
+ * texture is a render target; the static caster passes ride the
+ * generator's `caster_tasks` ahead of the dynamic ones.
+ */
+struct CsmStaticCacheState {
+    CsmStaticCacheOptions options;
+    RenderTargetHandle cache_target{};
+    /** `_gate` and `_staticScheduler`: the generated `CsmRefitRuntime`. */
+    std::shared_ptr<void> refit;
+    // renderCsmShadowMapCached
+    double last_camera_version = -1.0;
+    double last_camera_aspect = -1.0;
+    double cached_content_version = -1.0;
+    /** `_pendingCascades`: the last refit's fit, published cascade by cascade. */
+    std::vector<ShadowCascade> pending;
+    /** Membership moved: the static and dynamic caster passes are refilled. */
+    bool membership_dirty = true;
+    /** This frame refilled them, after the frame's draw lists were built. */
+    bool refilled = false;
+    // This frame's plan, read by both backends' task loops.
+    std::vector<bool> static_due;
+    std::vector<bool> dynamic_due;
+    std::vector<std::uint32_t> copy_layers;
+};
+
 /**
  * One `ShadowGenerator`, as the three pinned factories build it.
  *
@@ -134,6 +170,10 @@ struct ShadowGeneratorRecord {
     std::vector<ShadowCascade> csm_cascades;
     /** Subscribers to the exact packed CSM receiver block for this frame. */
     std::shared_ptr<PlatformEventListeners<void(const js::F32Array&)>> csm_receiver_callbacks;
+    /** `sg._csmCache`, set by `enableCsmStaticCache`. */
+    std::shared_ptr<CsmStaticCacheState> csm_cache;
+    /** `sg._csmReceiverTexture`: `getCsmReceiverTexture` ran for this generator. */
+    bool csm_receiver_texture_read = false;
     /**
      * ESM only: this generator's ordinal among the ESM ones, which is the
      * row generation emitted its recorded resources under.

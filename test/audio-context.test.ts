@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureVcpkgRoot,
+    nativeFixtureLibrary,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runLabSoundFixture,
 } from "./native-fixture.js";
 
 test("direct audio contexts preserve owned aliases and lifecycle promises", (t) => {
@@ -84,7 +83,7 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", (t) 
             if (typeof context.setSinkId !== "undefined") throw new Error("sink capability");
             let inspected = 0;
             function inspect(): AudioContext { inspected++; return context; }
-            if (typeof inspect().createMediaStreamDestination === "function") throw new Error("recording capability");
+            if (typeof inspect().createMediaStreamDestination !== "function") throw new Error("recording capability");
             if (inspected !== 1) throw new Error("capability receiver evaluation");
             async function load(frames:number):Promise<AudioBuffer> {
                 await Promise.resolve();
@@ -227,45 +226,22 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", (t) 
         copyFileSync(resolve(output, asset.source), destination);
     }
     writeFileSync(join(output, "program.hpp"), result.cpp);
-    const tools = optionalNativeFixtureTools();
-    const labsound = resolve("artifacts/tools/labsound");
-    if (!tools || !existsSync(join(labsound, "lib/LabSound.lib"))) {
+    if (!optionalNativeFixtureTools() || !nativeFixtureLibrary("labsound")) {
         t.skip("The native compiler and pinned LabSound library are required.");
         return;
     }
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, [
-        "/DBBLITE_WORKERS=1",
-        "/DBBLITE_OFFSCREEN_SURFACES=1",
-        "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
-        "/DBBLITE_HAS_AUDIO_DECODE_FILE=1",
-        "/DBBLITE_AUDIO_DECODE_WAV=1",
-        "/O2",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/src",
-        `/external:I${join(labsound, "include")}`,
-        "test/fixtures/audio-context-check.cpp",
-        "test/fixtures/packaged-fetch-check.cpp",
-        "/link",
-        `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
-        `/LIBPATH:${join(labsound, "lib")}`,
-        "LabSound.lib",
-        "libnyquist.lib",
-        "SDL3.lib",
-    ]);
     assert.equal(
-        execFileSync(executable, {
-            cwd: output,
-            encoding: "utf8",
-            timeout: 30000,
-            env: {
-                ...tools.environment,
-                SDL_AUDIODRIVER: "dummy",
-                BBLITE_AUDIO_CAPTURE: "",
-                PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools.environment.PATH ?? ""}`,
-            },
+        runLabSoundFixture({
+            output,
+            source: "test/fixtures/audio-context-check.cpp",
+            sources: ["test/fixtures/packaged-fetch-check.cpp"],
+            flags: [
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
+                "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
+                "/DBBLITE_HAS_AUDIO_DECODE_FILE=1",
+                "/DBBLITE_AUDIO_DECODE_WAV=1",
+            ],
         }),
         "",
     );
@@ -276,7 +252,6 @@ test("audio capability guards and constructor boundaries", () => {
         const prototype = typeof AudioContext === "undefined" ? null : AudioContext.prototype;
         if (typeof AudioContext !== "function") throw new Error("constructor capability");
         if (typeof prototype?.setSinkId === "function") throw new Error("unavailable sink");
-        if (typeof prototype?.createMediaStreamDestination === "function") throw new Error("unavailable recording");
     `);
     assert.doesNotMatch(
         guarded.cpp,
@@ -284,14 +259,14 @@ test("audio capability guards and constructor boundaries", () => {
     );
     assert.doesNotMatch(
         guarded.cpp,
-        /throw std::runtime_error\("(?:constructor capability|unavailable recording)"\)/,
+        /throw std::runtime_error\("constructor capability"\)/,
     );
     assert.throws(
         () =>
             compileSource(
-                "const context = new AudioContext(); context.createMediaStreamDestination();",
+                'const context = new AudioContext(); void context.setSinkId("speakers");',
             ),
-        /native recording streams are unavailable/,
+        /native output-device selection is unavailable/,
     );
     assert.throws(
         () =>
