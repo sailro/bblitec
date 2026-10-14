@@ -46,14 +46,11 @@ interface Descriptor {
 
 /** Explicit missing public operations only: `compile` runs before admitted lowering, so a registered API shadows it. */
 const deferredCapabilityDescriptors: readonly Descriptor[] = [
-    ...[
-        "prompt",
-        "Window.prompt",
-        "HTMLScriptElement.src",
-        "HTMLScriptElement.async",
-        "HTMLScriptElement.addEventListener",
-        "HTMLScriptElement.removeEventListener",
-    ].map((api): Descriptor => ({ origin: "dom", api, timing: "throw" })),
+    ...["prompt", "Window.prompt"].map((api): Descriptor => ({
+        origin: "dom",
+        api,
+        timing: "throw",
+    })),
     ...[
         "createSoundSourceAsync.options",
         "createSoundBufferAsync",

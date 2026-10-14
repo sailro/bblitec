@@ -10,6 +10,7 @@
 #include <bblite/js_file.hpp>
 #endif
 #include <bblite/js_data.hpp>
+#include <bblite/js_url.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/pal_system_fonts.hpp>
@@ -612,6 +613,8 @@ UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
     element.tag = std::string(tag);
     if (tag == "canvas")
         element.canvas.emplace();
+    if (tag == "script")
+        engine.ui_has_scripts = true;
     engine.ui_elements.push_back(std::move(element));
     mark_ui_changed(engine);
     return handle;
@@ -810,8 +813,21 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
     record.client_rect_requested = true;
     const double scale = engine.canvas_client_width / engine.options.width;
     const auto& rect = record.client_rect;
-    return {rect.left * scale,   rect.top * scale,          rect.width * scale,
-            rect.height * scale, rect.offset_width * scale, rect.offset_height * scale};
+    return {rect.left * scale,        rect.top * scale,          rect.width * scale,
+            rect.height * scale,      rect.offset_width * scale, rect.offset_height * scale,
+            rect.scroll_left * scale, rect.scroll_top * scale};
+}
+
+double ui_scroll_offset(Engine& engine, UiElementHandle element, bool left) {
+    const auto rect = ui_get_client_rect(engine, element);
+    return left ? rect.scroll_left : rect.scroll_top;
+}
+
+void ui_set_scroll_offset(Engine& engine, UiElementHandle element, bool left, double value) {
+    // WebIDL unrestricted double: a non-finite offset scrolls to the start.
+    mark_ui_changed(engine, ui_element(engine, element));
+    engine.ui_scroll_requests.emplace_back(
+        element, UiScrollOffset{left, std::isfinite(value) ? value : 0.0});
 }
 
 std::string ui_computed_style(Engine& engine, UiElementHandle element, std::string_view property) {
@@ -978,6 +994,10 @@ bool ui_prepare_content_replacement(Engine& engine, UiElementRecord& record) {
 }
 } // namespace
 
+namespace {
+void prepare_script(Engine& engine, UiElementHandle element);
+} // namespace
+
 void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
     UiElementRecord& record = ui_element(engine, element);
     const bool replaces_markup = ui_prepare_content_replacement(engine, record);
@@ -1003,6 +1023,8 @@ void ui_set_text(Engine& engine, UiElementHandle element, std::string text) {
     mark_ui_changed(engine, record);
     if (text_only)
         record.text_revision = ++engine.ui_text_revision;
+    // Replacing a connected script's children prepares it.
+    prepare_script(engine, element);
 }
 
 void ui_set_inner_rml(Engine& engine, UiElementHandle element, std::string markup) {
@@ -1367,6 +1389,176 @@ void queue_details_toggle(Engine& engine, UiElementHandle element) {
 }
 } // namespace
 
+namespace {
+/** A script block's type string matches a JavaScript MIME type essence (HTML). */
+bool javascript_mime_type(std::string_view type) {
+    static constexpr std::string_view essences[] = {"application/ecmascript",
+                                                    "application/javascript",
+                                                    "application/x-ecmascript",
+                                                    "application/x-javascript",
+                                                    "text/ecmascript",
+                                                    "text/javascript",
+                                                    "text/javascript1.0",
+                                                    "text/javascript1.1",
+                                                    "text/javascript1.2",
+                                                    "text/javascript1.3",
+                                                    "text/javascript1.4",
+                                                    "text/javascript1.5",
+                                                    "text/jscript",
+                                                    "text/livescript",
+                                                    "text/x-ecmascript",
+                                                    "text/x-javascript"};
+    return std::any_of(std::begin(essences), std::end(essences),
+                       [type](std::string_view essence) { return ascii_iequals(type, essence); });
+}
+
+/**
+ * HTML's "prepare the script element" once a script is connected. No JavaScript engine runs
+ * script text, so an external script of any script type fails to load as in a browser that
+ * blocks it: a task fires a non-bubbling `error` at it, never `load`. Inline script text throws.
+ */
+void prepare_script(Engine& engine, UiElementHandle element) {
+    UiElementRecord& record = ui_element(engine, element);
+    if (record.tag != "script" || record.svg_namespace || record.script_started)
+        return;
+    const bool external = record.attributes.contains("src");
+    if ((!external && ui_text_content(engine, element).empty()) ||
+        !ui_is_connected(engine, element))
+        return;
+    const auto type = record.attributes.find("type");
+    const auto language = record.attributes.find("language");
+    // An empty type, an empty language or neither names JavaScript.
+    std::string block = "text/javascript";
+    if (type != record.attributes.end() && !type->second.empty())
+        block = std::string(trim_css_token(type->second));
+    else if (type == record.attributes.end() && language != record.attributes.end() &&
+             !language->second.empty())
+        block = "text/" + language->second;
+    const bool classic = javascript_mime_type(block);
+    if (!classic && !ascii_iequals(block, "module") && !ascii_iequals(block, "importmap"))
+        return; // A data block.
+    record.script_started = true;
+    if (!external)
+        throw js::make_dom_exception(
+            "Inline script text does not run natively: there is no JavaScript engine.",
+            "NotSupportedError");
+#if BBLITE_WORKERS
+    pal::EventLoop::current().post([&engine, element] {
+        if (!engine.dom_input || element.value >= engine.ui_elements.size())
+            return;
+        PlatformMouseEvent payload;
+        payload.payload_kind = DomInputEventKind::Event;
+        const auto event = dom_event(payload, "error", dom_ui_path(engine, element), false, false);
+        event.dom->trusted = true;
+        dispatch_dom_pointer(engine, event);
+    });
+#else
+    throw std::logic_error("External scripts load in an application realm.");
+#endif
+}
+
+/** Prepares the scripts of a subtree that just became connected, in tree order. */
+void prepare_connected_scripts(Engine& engine, UiElementHandle node) {
+    if (!engine.ui_has_scripts || !ui_is_connected(engine, node))
+        return;
+    prepare_script(engine, node);
+    // Preparing a script runs no code, so the children cannot change underneath.
+    for (const auto child : ui_element(engine, node).children)
+        prepare_connected_scripts(engine, child);
+}
+
+UiElementRecord& script_record(Engine& engine, UiElementHandle element) {
+    UiElementRecord& record = ui_element(engine, element);
+    if (record.tag != "script" || record.svg_namespace)
+        throw std::runtime_error("Script state requires a script element.");
+    return record;
+}
+} // namespace
+
+bool ui_script_async(Engine& engine, UiElementHandle element) {
+    const UiElementRecord& record = script_record(engine, element);
+    return record.script_force_async || record.attributes.contains("async");
+}
+
+void ui_set_script_async(Engine& engine, UiElementHandle element, bool async) {
+    script_record(engine, element).script_force_async = false;
+    ui_set_boolean_attribute(engine, element, "async", async);
+}
+
+std::string ui_get_url_attribute(Engine& engine, UiElementHandle element, std::string_view name,
+                                 std::string_view base) {
+    const UiElementRecord& record = ui_element(engine, element);
+    const auto found = record.attributes.find(std::string(name));
+    if (found == record.attributes.end())
+        return {};
+    try {
+        return js::Url(found->second, base).href();
+    } catch (const js::NamedError&) {
+        return found->second;
+    }
+}
+
+std::string ui_get_enumerated_attribute(Engine& engine, UiElementHandle element,
+                                        std::string_view name,
+                                        std::initializer_list<std::string_view> keywords) {
+    const UiElementRecord& record = ui_element(engine, element);
+    const auto found = record.attributes.find(std::string(name));
+    if (found != record.attributes.end())
+        for (const std::string_view keyword : keywords)
+            if (ascii_iequals(found->second, keyword))
+                return std::string(keyword);
+    return {};
+}
+
+namespace {
+/** A true/false enumerated attribute's state: nothing for the missing or invalid default. */
+std::optional<bool> true_false_state(const UiElementRecord& record, const std::string& name,
+                                     bool empty_is_true) {
+    const auto found = record.attributes.find(name);
+    if (found == record.attributes.end())
+        return std::nullopt;
+    if (ascii_iequals(found->second, "true") || (empty_is_true && found->second.empty()))
+        return true;
+    if (ascii_iequals(found->second, "false"))
+        return false;
+    return std::nullopt;
+}
+} // namespace
+
+bool ui_get_draggable(Engine& engine, UiElementHandle element) {
+    const UiElementRecord& record = ui_element(engine, element);
+    if (const auto state = true_false_state(record, "draggable", false))
+        return *state;
+    // The auto state: images and links with an href drag by default.
+    return !record.svg_namespace &&
+           (record.tag == "img" || (record.tag == "a" && record.attributes.contains("href")));
+}
+
+bool ui_get_spellcheck(Engine& engine, UiElementHandle element) {
+    // Every element inherits by default; the document default is to check (as Chromium).
+    for (UiElementHandle node = element; node.value != invalid_handle;
+         node = ui_tree_parent(ui_element(engine, node)))
+        if (const auto state = true_false_state(ui_element(engine, node), "spellcheck", true))
+            return *state;
+    return true;
+}
+
+double ui_get_max_length(Engine& engine, UiElementHandle element) {
+    const UiElementRecord& record = ui_element(engine, element);
+    const auto found = record.attributes.find("maxlength");
+    const auto parsed =
+        found == record.attributes.end() ? std::nullopt : html_integer(found->second);
+    return parsed && *parsed >= 0 ? *parsed : -1;
+}
+
+void ui_set_max_length(Engine& engine, UiElementHandle element, double value) {
+    const std::int32_t length = js::to_int32(value);
+    if (length < 0)
+        throw js::make_dom_exception(
+            "The value provided (" + std::to_string(length) + ") is negative.", "IndexSizeError");
+    ui_set_attribute(engine, element, "maxlength", std::to_string(length));
+}
+
 void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
                       std::string value) {
     if (name.empty()) {
@@ -1418,6 +1610,11 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
 #endif
     const bool opens_details =
         record.tag == "details" && name == "open" && existing == record.attributes.end();
+    const bool script = record.tag == "script" && !record.svg_namespace;
+    // Adding async ends a script's force async; adding src to a connected one prepares it.
+    if (script && name == "async")
+        record.script_force_async = false;
+    const bool prepares_script = script && name == "src" && existing == record.attributes.end();
     const auto updated = record.attributes.insert_or_assign(std::move(name), std::move(value));
     note_attribute_order(record, updated.first->first);
     if (engine.ui_attribute_changed)
@@ -1429,6 +1626,8 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
         static_cast<void>(image_request(engine, element));
 #endif
     mark_ui_changed(engine);
+    if (prepares_script)
+        prepare_script(engine, element);
 }
 
 js::Array<std::string> ui_attribute_names(Engine& engine, UiElementHandle element) {
@@ -1727,6 +1926,9 @@ UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElemen
         child_record.tag == "option" && ui_get_selected(engine, child) ? child : UiElementHandle{});
     ++engine.ui_style_revision;
     mark_ui_changed(engine);
+    prepare_connected_scripts(engine, child);
+    // A node inserted into a connected script is its children changing.
+    prepare_script(engine, parent);
     return child;
 }
 
@@ -1806,6 +2008,7 @@ UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle child) {
     record.attached_to_root = true;
     engine.ui_root_children.push_back(child);
     mark_ui_changed(engine, record);
+    prepare_connected_scripts(engine, child);
     return child;
 }
 
@@ -2068,6 +2271,26 @@ void activate_ui_link(const UiElementRecord& record, void (*navigate)(const std:
 /** A link this browsing context activates: clicks reach it as they reach a listener. */
 bool ui_activates_link(const UiElementRecord& record) {
     return ui_is_link(record) && ui_link_targets_this_context(record);
+}
+
+/**
+ * A label naming a control (`for`) or holding one activates it (RmlUi's label element): clicks
+ * reach it as they reach a listener.
+ */
+bool ui_activates_label(const Engine& engine, const UiElementRecord& record) {
+    if (record.tag != "label" || record.svg_namespace)
+        return false;
+    if (record.attributes.contains("for"))
+        return true;
+    const auto holds_control = [&engine](const auto& self, const UiElementRecord& node) -> bool {
+        return std::any_of(node.children.begin(), node.children.end(), [&](UiElementHandle child) {
+            const auto& descendant = handle_at(engine.ui_elements, child);
+            return descendant.tag == "input" || descendant.tag == "textarea" ||
+                   descendant.tag == "select" || descendant.tag == "button" ||
+                   self(self, descendant);
+        });
+    };
+    return holds_control(holds_control, record);
 }
 
 bool ui_needs_click_listener(const Engine& engine, const UiElementRecord& record) {
@@ -2890,10 +3113,70 @@ private:
     bool previous;
 };
 
+/** The platform text input a focused control opens: its keyboard and autocorrection. */
+struct UiTextInputProperties {
+    SDL_TextInputType type = SDL_TEXTINPUT_TYPE_TEXT;
+    bool autocorrect = true;
+};
+
+/**
+ * `inputmode` (a known keyword) selects the keyboard, else the input `type`; a password stays
+ * hidden. Autocorrection follows the inherited `spellcheck` state, as on mobile browsers.
+ */
+UiTextInputProperties ui_text_input_properties(const Rml::Element& control) {
+    const auto lower = [](Rml::String value) {
+        std::transform(value.begin(), value.end(), value.begin(), ascii_lower);
+        return value;
+    };
+    const auto mode = lower(control.GetAttribute<Rml::String>("inputmode", ""));
+    const auto type = lower(control.GetAttribute<Rml::String>("type", ""));
+    const bool password = control.GetTagName() == "input" && type == "password";
+    UiTextInputProperties result;
+    if (mode == "numeric")
+        result.type =
+            password ? SDL_TEXTINPUT_TYPE_NUMBER_PASSWORD_HIDDEN : SDL_TEXTINPUT_TYPE_NUMBER;
+    else if (password)
+        result.type = SDL_TEXTINPUT_TYPE_TEXT_PASSWORD_HIDDEN;
+    else if (mode == "email" ||
+             (type == "email" && mode != "none" && mode != "text" && mode != "tel" &&
+              mode != "url" && mode != "decimal" && mode != "search"))
+        result.type = SDL_TEXTINPUT_TYPE_TEXT_EMAIL;
+    for (const Rml::Element* node = &control; node; node = node->GetParentNode()) {
+        if (!node->HasAttribute("spellcheck"))
+            continue;
+        const auto state = lower(node->GetAttribute<Rml::String>("spellcheck", ""));
+        if (state == "false") {
+            result.autocorrect = false;
+            break;
+        }
+        if (state.empty() || state == "true")
+            break;
+    }
+    return result;
+}
+
 /** Keep RmlUi animations on the same clock as browser-facing scene time. */
 class UiSystemInterface final : public SystemInterface_SDL {
 public:
-    explicit UiSystemInterface(SDL_Window* window) : SystemInterface_SDL(window) {}
+    explicit UiSystemInterface(SDL_Window* window) : SystemInterface_SDL(window), window(window) {}
+
+    /** The projection's context, whose focused control opens the platform text input. */
+    Rml::Context* context = nullptr;
+
+    void ActivateKeyboard(Rml::Vector2f caret_position, float line_height) override {
+        const SDL_Rect area{static_cast<int>(caret_position.x), static_cast<int>(caret_position.y),
+                            1, static_cast<int>(line_height)};
+        SDL_SetTextInputArea(window, &area, 0);
+        const SDL_PropertiesID properties = SDL_CreateProperties();
+        if (const auto* focus = context ? context->GetFocusElement() : nullptr) {
+            const auto input = ui_text_input_properties(*focus);
+            SDL_SetNumberProperty(properties, SDL_PROP_TEXTINPUT_TYPE_NUMBER, input.type);
+            SDL_SetBooleanProperty(properties, SDL_PROP_TEXTINPUT_AUTOCORRECT_BOOLEAN,
+                                   input.autocorrect);
+        }
+        SDL_StartTextInputWithProperties(window, properties);
+        SDL_DestroyProperties(properties);
+    }
 
     double GetElapsedTime() override { return ::bbl::pal::performance_milliseconds() / 1000.0; }
 
@@ -2908,6 +3191,9 @@ public:
                       << " visible=" << SDL_CursorVisible() << '\n';
         }
     }
+
+private:
+    SDL_Window* window;
 };
 
 [[maybe_unused]] std::optional<SystemFontFace>
@@ -5029,6 +5315,7 @@ struct UiRmlRuntime {
             if (!context) {
                 throw std::runtime_error("RmlUi context creation failed.");
             }
+            system_interface.context = context;
             update_density_ratio();
             context->SetDocumentsBaseTag("html");
             document = context->CreateDocument();
@@ -5600,7 +5887,7 @@ struct UiRmlRuntime {
             source_declares_pointer_events;
         if (!has_pointer_events &&
             (!record.click_callbacks.empty() || !record.event_callbacks.empty() ||
-             ui_activates_link(record) ||
+             ui_activates_link(record) || ui_activates_label(engine, record) ||
              (engine.dom_input && engine.dom_input->pointer_elements.contains(handle.value)))) {
             append("pointer-events:auto;");
         }
@@ -6606,7 +6893,7 @@ struct UiRmlRuntime {
         return true;
     }
 
-    /** Applies the pending scrollIntoView requests in call order. */
+    /** Applies the pending scroll requests in call order. */
     bool sync_scroll_requests() {
         if (engine.ui_scroll_requests.empty())
             return false;
@@ -6631,9 +6918,20 @@ struct UiRmlRuntime {
                                 : nullptr;
             if (!element)
                 continue;
-            element->ScrollIntoView(Rml::ScrollIntoViewOptions(
-                alignment(request.block), alignment(request.inline_axis),
-                request.smooth ? Rml::ScrollBehavior::Smooth : Rml::ScrollBehavior::Instant));
+            if (const auto* offset = std::get_if<UiScrollOffset>(&request)) {
+                // RmlUi clamps to the scroll range in its own pixels.
+                const auto value =
+                    static_cast<float>(offset->value) * context->GetDensityIndependentPixelRatio();
+                if (offset->left)
+                    element->SetScrollLeft(value);
+                else
+                    element->SetScrollTop(value);
+            } else {
+                const auto& into_view = std::get<UiScrollIntoView>(request);
+                element->ScrollIntoView(Rml::ScrollIntoViewOptions(
+                    alignment(into_view.block), alignment(into_view.inline_axis),
+                    into_view.smooth ? Rml::ScrollBehavior::Smooth : Rml::ScrollBehavior::Instant));
+            }
             scrolled = true;
         }
         return scrolled;
@@ -7206,7 +7504,9 @@ struct UiRmlRuntime {
                                   static_cast<double>(element->GetClientWidth()),
                                   static_cast<double>(element->GetClientHeight()),
                                   static_cast<double>(element->GetOffsetWidth()),
-                                  static_cast<double>(element->GetOffsetHeight())};
+                                  static_cast<double>(element->GetOffsetHeight()),
+                                  static_cast<double>(element->GetScrollLeft()),
+                                  static_cast<double>(element->GetScrollTop())};
             const Rml::Vector2f content = element->GetAbsoluteOffset(Rml::BoxArea::Content);
             const Rml::Vector2f content_size = element->GetBox().GetSize(Rml::BoxArea::Content);
             record.content_box = {static_cast<double>(content.x), static_cast<double>(content.y),

@@ -49,7 +49,8 @@ int main() {
         const auto requested =
             std::find_if(engine.ui_scroll_requests.begin(), engine.ui_scroll_requests.end(),
                          [&](const auto& request) { return request.first == row2; });
-        assert(requested != engine.ui_scroll_requests.end() && !requested->second.smooth);
+        assert(requested != engine.ui_scroll_requests.end() &&
+               !std::get<UiScrollIntoView>(requested->second).smooth);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(engine.ui_scroll_requests.empty());

@@ -379,6 +379,8 @@ struct UiClientRect {
     double height = 0.0;
     double offset_width = 0.0;
     double offset_height = 0.0;
+    double scroll_left = 0.0;
+    double scroll_top = 0.0;
     [[nodiscard]] bool operator==(const UiClientRect&) const = default;
 };
 
@@ -407,6 +409,15 @@ struct UiScrollIntoView {
     Alignment inline_axis = Alignment::Nearest;
     bool smooth = false;
 };
+
+/** A scrollLeft/scrollTop write in CSS pixels; the projection clamps it to the scroll range. */
+struct UiScrollOffset {
+    bool left = false;
+    double value = 0.0;
+};
+
+/** Scroll requests the projection applies once each, in call order. */
+using UiScrollRequest = std::variant<UiScrollIntoView, UiScrollOffset>;
 
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
@@ -3904,6 +3915,9 @@ struct UiElementRecord {
     };
     std::string tag;
     bool svg_namespace = false;
+    /** A script element's "already started" and "force async" flags (HTML). */
+    bool script_started = false;
+    bool script_force_async = true;
     std::string text;
     /** Last plain-text change in the owning engine's UI text sequence. */
     std::uint64_t text_revision = 0;
@@ -4362,8 +4376,10 @@ struct Engine {
     /** The control whose text select() last selected; the projection applies each revision. */
     UiElementHandle ui_text_selection{};
     std::uint64_t ui_text_selection_revision = 0;
-    /** scrollIntoView requests the projection has not applied yet, in call order. */
-    std::vector<std::pair<UiElementHandle, UiScrollIntoView>> ui_scroll_requests;
+    /** Scroll requests the projection has not applied yet, in call order. */
+    std::vector<std::pair<UiElementHandle, UiScrollRequest>> ui_scroll_requests;
+    /** Whether a script element exists, so insertions look for scripts to prepare. */
+    bool ui_has_scripts = false;
     /** Direct document children in live DOM attachment order. */
     std::vector<UiElementHandle> ui_root_children;
     struct DocumentRoots {

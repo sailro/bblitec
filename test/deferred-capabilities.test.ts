@@ -476,7 +476,7 @@ test("worker application manifests join all deferred realm sites", () => {
     );
 });
 
-test("deferred script members retain exact typed sites", () => {
+test("script members lower natively, also with deferred capabilities", () => {
     const result = compileSource(
         `
         const script = document.createElement('script');
@@ -487,14 +487,9 @@ test("deferred script members retain exact typed sites", () => {
     `,
         { deferredCapabilities },
     );
-    const ids = new Set(
-        result.manifest.deferredCapabilities?.map((site) => site.id),
-    );
-    for (const id of [
-        "HTMLScriptElement.src",
-        "HTMLScriptElement.async",
-        "HTMLScriptElement.addEventListener",
-        "HTMLScriptElement.removeEventListener",
-    ])
-        assert.ok(ids.has(`dom:${id}`), id);
+    assert.equal(result.manifest.deferredCapabilities, undefined);
+    assert.match(result.cpp, /bbl::ui_set_script_async\(/);
+    assert.match(result.cpp, /bbl::ui_get_url_attribute\([^;]+"src"/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^;]+"error"/);
+    assert.match(result.cpp, /bbl::off_dom_pointer\([^;]+"error"/);
 });

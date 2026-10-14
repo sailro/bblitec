@@ -1,7 +1,8 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { valueForKind, type Value } from "./types.js";
-import { domTargetIdentity } from "./dom-targets.js";
+import { domTargetIdentity, elementInterfaceTag } from "./dom-targets.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { documentEngine } from "./window-events.js";
 import {
     compileBooleanOptions,
@@ -601,8 +602,24 @@ export function emitDomEventListener(
                 target === "bbl::DomEventTarget::canvas()"))
     )
         return false;
-    // Page transitions dispatch through the pointer family's Window path.
-    const family = pageLifecycle ? "pointer" : domListenerFamily(type);
+    // A script element's load and error are task-queued, non-bubbling events
+    // the application realm fires; page transitions dispatch through the
+    // pointer family's Window path.
+    const scriptLoad =
+        (type === "error" || type === "load") &&
+        element?.kind === "ui-element" &&
+        (element.uiTag ??
+            elementInterfaceTag(
+                context.checker
+                    .getNonNullableType(
+                        context.checker.getTypeAtLocation(callee.expression),
+                    )
+                    .getSymbol()?.name ?? "",
+            )) === "script";
+    if (scriptLoad && !context.options.workers)
+        throw new ApplicationRealmRequired();
+    const family =
+        pageLifecycle || scriptLoad ? "pointer" : domListenerFamily(type);
     if (!family) return false;
     const custom = family === "custom";
     if (

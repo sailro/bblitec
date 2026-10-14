@@ -2190,6 +2190,13 @@ export class PropertyAccessLowerer {
                     type,
                 );
             }
+            const idl = this.context.ui.uiIdlAttributeRead(
+                owner,
+                property,
+                ownerExpression,
+                expression,
+            );
+            if (idl) return idl;
             const reflected = this.context.ui.reflectedUiAttribute(
                 owner,
                 property,
