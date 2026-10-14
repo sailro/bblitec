@@ -12,17 +12,17 @@ recovery, and the [UI](ui.md) items marked deferred. Unregistered APIs still ref
 
 ## Language
 
-| Area | Admitted | Refuses |
-| --- | --- | --- |
-| Modules | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization | Runtime-selected modules, top-level await, `var`, writes through `N.member`, namespace/enum objects as values, dependencies on the entry |
-| Control flow | All statements, labels, switch fallthrough, try/catch/finally (also suspending) | Cleanup across `startEngine`; labeled jumps out of statically unrolled loops |
-| Functions | Generics, defaults, rest, destructuring, recursion, `call`/`apply`/`bind`, function objects with properties, extra arguments ignored | Unresolved type arguments, stored generic `this`, Arguments mutation, narrowing a stored function's signature, unions with several function arms, extracted methods without receiver |
-| Classes | Fields, accessors, private names, generics, local inheritance (`super`, abstract, `instanceof`), Error subclasses, static fields/blocks, generator methods, `#x in v` | Non-local bases, static accessors, private names redeclared in subclasses, inherited static writes through a subclass, generic or mixed-type fields in a stored hierarchy |
-| Closures | Shared mutable cells, TDZ, recursive groups | Captures without owned representation; borrowed input events escaping dispatch |
-| Data | Records, tagged/structural unions, arrays, tuples, dictionaries, Map/Set, JSON documents, record accessors, `{}` identity tokens, phantom brands | Record conversions no single layout can hold; mutation through erased native views; identity comparison of unnamed literals |
-| Async | Promises, async functions, `all`/`allSettled`/`race`/`any` over tuples and sync iterables | Custom thenables, async iterables in combinators, MessageChannel, runtime-sized resource construction |
-| Generators | Sync/async, `for...of`, `for await`, `yield*` over generators/iterators/arrays | `next(value)`, `throw`, return payloads, yield in finally, `yield*` from async generators |
-| Workers | Module workers, structured clone and `structuredClone` (records incl. own accessors, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer | Classic scripts; clones of class instances, prototype accessors, Errors, promises, platform objects; functions in messages (`structuredClone` throws DataCloneError); `structuredClone` transfer lists; listener options except `once` |
+| Area         | Admitted                                                                                                                                                              | Refuses                                                                                                                                                                                                                                |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Modules      | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization                                              | Runtime-selected modules, top-level await, `var`, writes through `N.member`, namespace/enum objects as values, dependencies on the entry                                                                                               |
+| Control flow | All statements, labels, switch fallthrough, try/catch/finally (also suspending)                                                                                       | Cleanup across `startEngine`; labeled jumps out of statically unrolled loops                                                                                                                                                           |
+| Functions    | Generics, defaults, rest, destructuring, recursion, `call`/`apply`/`bind`, function objects with properties, extra arguments ignored                                  | Unresolved type arguments, stored generic `this`, Arguments mutation, narrowing a stored function's signature, unions with several function arms, extracted methods without receiver                                                   |
+| Classes      | Fields, accessors, private names, generics, local inheritance (`super`, abstract, `instanceof`), Error subclasses, static fields/blocks, generator methods, `#x in v` | Non-local bases, static accessors, private names redeclared in subclasses, inherited static writes through a subclass, generic or mixed-type fields in a stored hierarchy                                                              |
+| Closures     | Shared mutable cells, TDZ, recursive groups                                                                                                                           | Captures without owned representation; borrowed input events escaping dispatch                                                                                                                                                         |
+| Data         | Records, tagged/structural unions, arrays, tuples, dictionaries, Map/Set, JSON documents, record accessors, `{}` identity tokens, phantom brands                      | Record conversions no single layout can hold; mutation through erased native views; identity comparison of unnamed literals                                                                                                            |
+| Async        | Promises, async functions, `all`/`allSettled`/`race`/`any` over tuples and sync iterables                                                                             | Custom thenables, async iterables in combinators, MessageChannel, runtime-sized resource construction                                                                                                                                  |
+| Generators   | Sync/async, `for...of`, `for await`, `yield*` over generators/iterators/arrays                                                                                        | `next(value)`, `throw`, return payloads, yield in finally, `yield*` from async generators                                                                                                                                              |
+| Workers      | Module workers, structured clone and `structuredClone` (records incl. own accessors, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer         | Classic scripts; clones of class instances, prototype accessors, Errors, promises, platform objects; functions in messages (`structuredClone` throws DataCloneError); `structuredClone` transfer lists; listener options except `once` |
 
 Rules:
 
@@ -38,22 +38,22 @@ Rules:
 
 ## Standard library
 
-| Area | Admitted | Refuses |
-| --- | --- | --- |
-| Numbers | Math, Number predicates/coercions, `**`, BigInt (incl. `asIntN`/`asUintN`) | BigInt mixed with Number, BigInt JSON/clone/`toLocaleString` |
-| Arrays/tuples | ES2023 methods incl. `toSorted`/`with`/`flat`/`flatMap`, typed `Array.from` | Callback `thisArg`; callbacks removing unvisited elements (runtime) |
-| Map/Set/WeakMap | Full API, live cursors; WeakMap with record, callback or DOM keys | `Set<object>` of Promises; other WeakMap key kinds |
-| Iterators | Arrays, Map/Set cursors, class generator `[Symbol.iterator]` | Other `[Symbol.iterator]` implementations |
-| Strings | UTF-16 API, URI encode/decode, `btoa`/`atob`, tagged templates, `String.raw` | Method tags |
-| RegExp | `g`/`i`/`u`, replacement callbacks, captured `split`; unmatched captures are `undefined`; literal non-`g` `test`/`exec` fold at generation | `replaceAll` with string replacement; under `u`: lookbehind, named groups, `i` with backreferences/word boundaries |
-| Unicode/Intl | normalize, `localeCompare`, locale casing, Collator, NumberFormat (decimal/percent), PluralRules, ListFormat, Date `toLocale*String` | DateTimeFormat options/formatting, `resolvedOptions`, `formatToParts`, currency/unit, `dateStyle`/`timeStyle` |
-| Encoding | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`, `stream`), `TextEncoder.encode` | Other encodings, `encodeInto` |
-| Objects | keys/values/entries/assign/fromEntries/hasOwn/is/`create(null)`, literal-descriptor `defineProperty`, spread, rest, `delete`, `in`, `for...in` | Class accessor installation, non-literal rest keys, dynamic class membership |
-| JSON | parse (reviver), stringify | Replacers, cycles, Map/Set values |
-| Date | ISO parsing, getters, `setTime`, `Date.UTC` | Field setters, legacy formats |
-| URL | `URL`, `URLSearchParams` (get/has/set), `AbortController`, `DOMException` | IDNA hosts (TypeError), `append`/`delete`/`sort`, `AbortSignal.timeout`/`any` |
-| Binary | ArrayBuffer, SharedArrayBuffer, Atomics, DataView, all typed arrays incl. BigInt64 | `from` over buffers/numbers/strings, element writes through a union, `Atomics.wait` |
-| Reflection | Finite record Proxy get/set traps, `Reflect.get`, Symbols | Other traps, FinalizationRegistry |
+| Area            | Admitted                                                                                                                                       | Refuses                                                                                                            |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Numbers         | Math, Number predicates/coercions, `**`, BigInt (incl. `asIntN`/`asUintN`)                                                                     | BigInt mixed with Number, BigInt JSON/clone/`toLocaleString`                                                       |
+| Arrays/tuples   | ES2023 methods incl. `toSorted`/`with`/`flat`/`flatMap`, typed `Array.from`                                                                    | Callback `thisArg`; callbacks removing unvisited elements (runtime)                                                |
+| Map/Set/WeakMap | Full API, live cursors; WeakMap with record, callback or DOM keys                                                                              | `Set<object>` of Promises; other WeakMap key kinds                                                                 |
+| Iterators       | Arrays, Map/Set cursors, class generator `[Symbol.iterator]`                                                                                   | Other `[Symbol.iterator]` implementations                                                                          |
+| Strings         | UTF-16 API, URI encode/decode, `btoa`/`atob`, tagged templates, `String.raw`                                                                   | Method tags                                                                                                        |
+| RegExp          | `g`/`i`/`u`, replacement callbacks, captured `split`; unmatched captures are `undefined`; literal non-`g` `test`/`exec` fold at generation     | `replaceAll` with string replacement; under `u`: lookbehind, named groups, `i` with backreferences/word boundaries |
+| Unicode/Intl    | normalize, `localeCompare`, locale casing, Collator, NumberFormat (decimal/percent), PluralRules, ListFormat, Date `toLocale*String`           | DateTimeFormat options/formatting, `resolvedOptions`, `formatToParts`, currency/unit, `dateStyle`/`timeStyle`      |
+| Encoding        | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`, `stream`), `TextEncoder.encode`                                                                     | Other encodings, `encodeInto`                                                                                      |
+| Objects         | keys/values/entries/assign/fromEntries/hasOwn/is/`create(null)`, literal-descriptor `defineProperty`, spread, rest, `delete`, `in`, `for...in` | Class accessor installation, non-literal rest keys, dynamic class membership                                       |
+| JSON            | parse (reviver), stringify                                                                                                                     | Replacers, cycles, Map/Set values                                                                                  |
+| Date            | ISO parsing, getters, `setTime`, `Date.UTC`                                                                                                    | Field setters, legacy formats                                                                                      |
+| URL             | `URL`, `URLSearchParams` (get/has/set), `AbortController`, `DOMException`                                                                      | IDNA hosts (TypeError), `append`/`delete`/`sort`, `AbortSignal.timeout`/`any`                                      |
+| Binary          | ArrayBuffer, SharedArrayBuffer, Atomics, DataView, all typed arrays incl. BigInt64                                                             | `from` over buffers/numbers/strings, element writes through a union, `Atomics.wait`                                |
+| Reflection      | Finite record Proxy get/set traps, `Reflect.get`, Symbols                                                                                      | Other traps, FinalizationRegistry                                                                                  |
 
 ## Assets and I/O
 
@@ -114,11 +114,11 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 
 ## Loading
 
-| Format | Limits |
-| --- | --- |
-| glTF | Contiguous FLOAT MAT4 inverse binds; contiguous animation accessors; fixed light capacity; raw bytes self-contained; orthographic cameras and distinct-image ORM refuse |
-| `.babylon` | Parented meshes/nodes, Standard materials, point lights, cameras; no `maxMeshes` |
-| Closed collectors | No rest/default parameters, early break, instanced/splat producers |
+| Format            | Limits                                                                                                                                                                  |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| glTF              | Contiguous FLOAT MAT4 inverse binds; contiguous animation accessors; fixed light capacity; raw bytes self-contained; orthographic cameras and distinct-image ORM refuse |
+| `.babylon`        | Parented meshes/nodes, Standard materials, point lights, cameras; no `maxMeshes`                                                                                        |
+| Closed collectors | No rest/default parameters, early break, instanced/splat producers                                                                                                      |
 
 `enableGltfCameras` and `enableGltfCpuTangents` must precede loading. `updateTexture2DFromPixels` and
 `queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
