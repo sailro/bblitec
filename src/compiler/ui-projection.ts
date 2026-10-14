@@ -289,6 +289,7 @@ interface UiProjectionContext extends Pick<
     | "expectSameEngine"
     | "fail"
     | "failAtFile"
+    | "refuseLoweredSite"
     | "hasFeature"
     | "hasPresentationHost"
     | "isCanvasElement"
@@ -3860,10 +3861,12 @@ export class UiProjection {
     public validateUiStaticProjection(): void {
         for (const query of this.uiPendingClassQueries) {
             if (query.root.uiStaticId === undefined) {
-                this.context.fail(
+                this.context.refuseLoweredSite(
                     query.site,
                     "Retained UI querySelectorAll requires a statically-known retained root.",
+                    query.site,
                 );
+                continue;
             }
             const descendants = this.uiStaticDescendants(query.root.uiStaticId);
             const unknownClass = [...descendants.elements].some(
@@ -3885,12 +3888,13 @@ export class UiProjection {
                 retainedMatches.length === 0 ||
                 markupMatches.length > 0
             ) {
-                this.context.fail(
+                this.context.refuseLoweredSite(
                     query.site,
                     `Retained UI querySelectorAll('.${query.className}') ` +
                         "requires a complete statically-known retained subtree " +
                         "with at least one matching retained element and no " +
                         "matching innerHTML-only node.",
+                    query.site,
                 );
             }
         }

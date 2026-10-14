@@ -12,8 +12,9 @@
  * Refusals raised inside speculative probes are the probe's to decide, not
  * the survey's, and the statement lowerer stands aside while one is open.
  * A compile attempt that restarts for a storage replay discards its realm's
- * records; a refusal raised outside statement lowering ends the survey as
- * incomplete.
+ * records. A site refusal decided after lowering is recorded against the
+ * site's statement; any other refusal raised outside statement lowering
+ * ends the survey as incomplete.
  */
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
@@ -146,6 +147,19 @@ export class SurveyCollector {
             if (!(error instanceof CompileError)) throw error;
             this.record(attempt, context.checker, statement, error);
         }
+    }
+
+    /**
+     * Records a refusal decided after `statement` lowered (a check at the
+     * end of the realm naming its site); outside an attempt it stands.
+     */
+    public refuseLowered(
+        checker: ts.TypeChecker,
+        statement: ts.Statement,
+        error: CompileError,
+    ): void {
+        if (!this.current) throw error;
+        this.record(this.current, checker, statement, error);
     }
 
     private record(
