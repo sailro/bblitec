@@ -26,6 +26,8 @@ namespace bbl {
 enum class UiDocumentPart { Html, Head, Body };
 UiElementHandle ui_document_root(Engine& engine, UiDocumentPart part);
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag);
+/** A parser script whose checked startup body is dispatched by generated code. */
+UiElementHandle ui_create_compiled_script(Engine& engine);
 UiElementHandle ui_create_svg_element(Engine& engine, std::string_view tag);
 #if BBLITE_WORKERS
 bool ui_image_complete(Engine&, UiElementHandle);
@@ -99,6 +101,29 @@ js::Array<UiElementHandle> ui_query_markup_all(Engine&, UiElementHandle,
                                                std::initializer_list<UiMarkupNode>,
                                                const UiSelectorTest&);
 std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::string_view name);
+/** A URL-reflecting attribute: its value parsed against `base`, the value if that fails, else "". */
+std::string ui_get_url_attribute(Engine& engine, UiElementHandle element, std::string_view name,
+                                 std::string_view base);
+/** An enumerated attribute limited to known keywords: the matching keyword, else "". */
+std::string ui_get_enumerated_attribute(Engine& engine, UiElementHandle element,
+                                        std::string_view name,
+                                        std::initializer_list<std::string_view> keywords);
+/** `draggable`: the true/false state, else whether the element drags by default. */
+bool ui_get_draggable(Engine& engine, UiElementHandle element);
+/** `spellcheck`: the nearest true/false state of the element and its ancestors, else true. */
+bool ui_get_spellcheck(Engine& engine, UiElementHandle element);
+/** `maxLength`: the non-negative `maxlength`, else -1; a negative write throws IndexSizeError. */
+double ui_get_max_length(Engine& engine, UiElementHandle element);
+void ui_set_max_length(Engine& engine, UiElementHandle element, double value);
+/** `scrollLeft`/`scrollTop` in CSS pixels; a write applies, clamped, at the next layout. */
+double ui_scroll_offset(Engine& engine, UiElementHandle element, bool left);
+void ui_set_scroll_offset(Engine& engine, UiElementHandle element, bool left, double value);
+/**
+ * HTMLScriptElement.async: force async (set at creation) or the async attribute. A connected
+ * external script fails to load: a task fires `error` at it.
+ */
+bool ui_script_async(Engine& engine, UiElementHandle element);
+void ui_set_script_async(Engine& engine, UiElementHandle element, bool async);
 js::Nullable<std::string> ui_dataset_value(Engine& engine, UiElementHandle element,
                                            std::string_view name);
 bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name);

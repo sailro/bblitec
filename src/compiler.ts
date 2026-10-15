@@ -84,6 +84,7 @@ import {
     type DynamicBindingStorage,
 } from "./compiler/dynamic-binding-storage.js";
 import {
+    activeStorageDemandPlanner,
     isStorageDemand,
     recordStorageCompileAttempt,
     storageDemandPlanningEnabled,
@@ -944,7 +945,10 @@ class Compiler implements LoweringServices {
     public readonly erasedBrowserExpressions = new EmissionSet<number>();
     public readonly erasedBrowserInstrumentation = new EmissionSet<number>();
     /** Erased writes through DOM element receivers, refused with retained UI. */
-    private readonly erasedElementWrites = new EmissionMap<number, ts.Node>();
+    private readonly erasedElementWrites = new EmissionMap<
+        number,
+        { site: ts.Node; element: ts.Expression }
+    >();
     public readonly unwrappedAwaitExpressions = new EmissionSet<number>();
     public readonly localCubemapState: { maxCandidates?: number } =
         emissionRecord({});
@@ -968,6 +972,9 @@ class Compiler implements LoweringServices {
         ExecutedTarget,
         Map<string, unknown>
     >();
+    /** @unjournaled Module constants generation cannot run, a function of the program. */
+    private readonly unrunnableModuleConstants =
+        new Set<ts.VariableDeclaration>();
     @journaled public accessor hasMainEntry = false;
     @journaled public accessor defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
@@ -1077,6 +1084,7 @@ class Compiler implements LoweringServices {
             },
             (expression) => this.generationText(expression),
             (object) => this.objectProperties(object),
+            (identifier) => this.inlinedArgumentText(identifier),
         );
     }
 
@@ -1106,14 +1114,6 @@ class Compiler implements LoweringServices {
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
         if (this.features.has("engine:device-recovery")) {
-            if (
-                this.features.has("platform:workers") ||
-                this.features.has("platform:window")
-            )
-                this.fail(
-                    this.sourceFile,
-                    "Device recovery does not represent Window/worker application realms or shared offscreen device ownership.",
-                );
             if (this.admissions.temporalRegisteredScenes.length > 1)
                 this.fail(
                     this.sourceFile,
@@ -2036,6 +2036,9 @@ class Compiler implements LoweringServices {
             case "gaussian-splat-stream":
             case "splat-voxel-collision":
             case "static-sound":
+            case "audio-bus":
+            case "sound-buffer":
+            case "streaming-sound":
                 return { kind: pinned, cppType: handleCppType(pinned) };
         }
         const audio = domAudioHandleKind(member);
@@ -4645,7 +4648,11 @@ class Compiler implements LoweringServices {
             );
         });
         if (carried !== undefined) return carried;
-        if (ts.isIdentifier(expression))
+        if (
+            ts.isIdentifier(expression) ||
+            ts.isPropertyAccessExpression(expression) ||
+            ts.isElementAccessExpression(expression)
+        )
             return this.moduleConstantText(expression);
         return ts.isCallExpression(expression)
             ? this.runGenerationBuilder(expression)
@@ -4653,23 +4660,59 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The text of a module-scope string `const` whose binding carries none
-     * at generation (its module is materialized, or its initializer lowers
-     * to a concatenation): the constant run at generation (`runModuleConstant`).
-     * A `const` string cannot change after its initializer.
+     * The text a read-only parameter of an inlined call holds: its argument
+     * (`UserFunctionLowerer.inlinedArgument`) folded as a string literal
+     * position folds it. The binding drops the argument's expression, so a
+     * text the call site can read but its value does not carry (a module
+     * constant run at generation) is read here.
      */
-    private moduleConstantText(identifier: ts.Identifier): string | undefined {
-        const constant = this.moduleConstantDeclaration(identifier);
-        if (
-            !constant ||
-            (this.checker.getTypeAtLocation(constant.name).flags &
-                ts.TypeFlags.StringLike) ===
-                0
-        ) {
-            return undefined;
+    private inlinedArgumentText(identifier: ts.Identifier): string | undefined {
+        const argument = this.userFunctions.inlinedArgument(
+            identifier,
+            (name) => this.bindings.scopeOf(name),
+        );
+        if (!argument) return undefined;
+        try {
+            return this.evaluator.compileStringLiteral(argument);
+        } catch (error) {
+            if (error instanceof CompileError) return undefined;
+            throw error;
         }
-        const text = this.runModuleConstant(constant.declaration);
-        return typeof text === "string" ? text : undefined;
+    }
+
+    /**
+     * Required text from an unwritten module constant or its plain-data
+     * fields, evaluated by the same generation executor as its initializer.
+     */
+    private moduleConstantText(expression: ts.Expression): string | undefined {
+        const keys: string[] = [];
+        let root = this.unwrap(expression);
+        while (
+            ts.isPropertyAccessExpression(root) ||
+            ts.isElementAccessExpression(root)
+        ) {
+            const key = ts.isPropertyAccessExpression(root)
+                ? root.name.text
+                : this.evaluator.staticTextValue(root.argumentExpression);
+            if (key === undefined) return undefined;
+            keys.unshift(key);
+            root = this.unwrap(root.expression);
+        }
+        if (!ts.isIdentifier(root)) return undefined;
+        const constant = this.moduleConstantDeclaration(root);
+        if (!constant) return undefined;
+        let value = this.runModuleConstant(constant.declaration);
+        for (const key of keys) {
+            if (value === null || typeof value !== "object") return undefined;
+            const member: unknown = Object.getOwnPropertyDescriptor(
+                value,
+                key,
+            )?.value;
+            value = member;
+        }
+        return typeof value === "string" || typeof value === "number"
+            ? String(value)
+            : undefined;
     }
 
     /**
@@ -4729,6 +4772,7 @@ class Compiler implements LoweringServices {
      * data, which leaves the value to the static evaluator.
      */
     private runModuleConstant(declaration: ts.VariableDeclaration): unknown {
+        if (this.unrunnableModuleConstants.has(declaration)) return undefined;
         try {
             return this.runGenerationFunction(
                 declaration,
@@ -4736,8 +4780,9 @@ class Compiler implements LoweringServices {
                 `Module constant '${declaration.name.getText()}'`,
             );
         } catch (error) {
-            if (error instanceof CompileError) return undefined;
-            throw error;
+            if (!(error instanceof CompileError)) throw error;
+            this.unrunnableModuleConstants.add(declaration);
+            return undefined;
         }
     }
 
@@ -9313,7 +9358,10 @@ class Compiler implements LoweringServices {
         while (owner) {
             const value = this.unwrap(owner);
             if (isElement(owner)) {
-                this.erasedElementWrites.set(site.pos, site);
+                this.erasedElementWrites.set(site.pos, {
+                    site,
+                    element: owner,
+                });
                 return;
             }
             owner =
@@ -9331,12 +9379,26 @@ class Compiler implements LoweringServices {
      */
     private refuseErasedElementWrites(): void {
         if (!this.features.has("ui:rml")) return;
-        const [site] = this.erasedElementWrites.values();
-        if (site)
-            this.fail(
+        for (const { site, element } of this.erasedElementWrites.values())
+            this.refuseLoweredSite(
                 site,
                 "A write through a DOM element that the retained UI does not represent cannot be erased in a program with retained UI.",
+                element,
             );
+    }
+
+    public refuseLoweredSite(
+        site: ts.Node,
+        message: string,
+        subject: ts.Node,
+    ): void {
+        const error = this.refusal(site, message, "unsupported", subject);
+        const survey = activeStorageDemandPlanner()
+            ? undefined
+            : activeSurvey();
+        const statement = ts.findAncestor(site, ts.isStatement);
+        if (!survey || !statement) throw error;
+        survey.refuseLowered(this.checker, statement, error);
     }
 
     public expectArgumentCount(
@@ -9560,14 +9622,23 @@ class Compiler implements LoweringServices {
         message: string,
         reason: CompileError["reason"] = "unsupported",
     ): never {
-        const { file, line, character } = sourceLocation(node);
-        throw new CompileError(
+        throw this.refusal(node, message, reason, node);
+    }
+
+    private refusal(
+        site: ts.Node,
+        message: string,
+        reason: CompileError["reason"],
+        subject: ts.Node,
+    ): CompileError {
+        const { file, line, character } = sourceLocation(site);
+        return new CompileError(
             file === this.sourceFile ? this.options.fileName : file.fileName,
             line,
             character,
             message,
             reason,
-            node,
+            subject,
         );
     }
 

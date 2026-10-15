@@ -566,6 +566,7 @@ test("the fixed clock starts and freezes for legacy canvases, HTML canvases and 
             performance,
             document: {
                 documentElement: marks,
+                getAnimations: () => [],
                 getElementById: () => (convention === "legacy" ? canvas : null),
                 querySelector: () => (convention === "entry" ? null : canvas),
             },

@@ -215,7 +215,9 @@ export interface RecordSchema {
     readonly constructors?: ReadonlyMap<string, CallAdapter>;
     /**
      * Tests `error instanceof C` of platform error classes, keyed by the
-     * library global (`DOMException`), over the error's native spelling.
+     * library global (`DOMException`), over the error's native spelling;
+     * and `value instanceof C` of a platform class whose instances share a
+     * wider class's shape (`MediaStreamAudioSourceNode`), over the value's.
      */
     readonly instanceOf?: ReadonlyMap<string, (error: string) => string>;
     /**
@@ -5508,6 +5510,44 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     : `return ${this.coerce(call, from.result, to.result, site)};`;
             return `${this.cpp(to)}(bbl::js::make_closure(std::tuple{${value}}, [](auto& captured${parameters.map((parameter) => `, ${parameter}`).join("")}) -> ${this.cpp(to.result)} { ${body} }))`;
         }
+        // A function taking more parameters than its caller passes, each
+        // extra one optional (`(reason?: unknown) => void` as a payload-less
+        // listener): the same function, its extra arguments absent, as
+        // JavaScript leaves them.
+        if (
+            from.kind === "function" &&
+            to.kind === "function" &&
+            from.parameters.length > to.parameters.length &&
+            from.parameters
+                .slice(to.parameters.length)
+                .every(
+                    (parameter) =>
+                        parameter.kind === "optional" ||
+                        parameter.kind === "json",
+                ) &&
+            to.parameters.every((parameter, index) =>
+                this.same(parameter, from.parameters[index]!),
+            ) &&
+            (this.same(from.result, to.result) || to.result.kind === "void")
+        ) {
+            const parameters = to.parameters.map(
+                (parameter, index) =>
+                    `, [[maybe_unused]] ${this.cpp(parameter)} argument_${index}`,
+            );
+            const call = `callback(${[
+                ...to.parameters.map(
+                    (_parameter, index) => `argument_${index}`,
+                ),
+                ...from.parameters
+                    .slice(to.parameters.length)
+                    .map((parameter) => this.model.absent(parameter, site)),
+            ].join(", ")})`;
+            const body =
+                to.result.kind === "void"
+                    ? `static_cast<void>(${call});`
+                    : `return ${call};`;
+            return `bbl::js::adapt_callback<${this.cpp(to)}>(${value}, [](auto& callback${parameters.join("")}) -> ${this.cpp(to.result)} { ${body} })`;
+        }
         if (to.kind === "native" || to.kind === "function")
             return `${this.cpp(to)}(${value})`;
         // A record passed where one of its bases is expected is that base.
@@ -5614,6 +5654,19 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         }
         if (this.isAbsentLiteral(unwrapped))
             return this.model.absent(to, unwrapped);
+        // `undefined as unknown as T`: the pin's placeholder for a reference
+        // it assigns before reading, the native empty handle.
+        const placeholder = stripOptional(to);
+        if (
+            ts.isAsExpression(unwrapped) &&
+            placeholder.kind === "record" &&
+            this.model.record(placeholder.name).spec.reference
+        ) {
+            let inner = this.skipParentheses(unwrapped.expression);
+            while (ts.isAsExpression(inner))
+                inner = this.skipParentheses(inner.expression);
+            if (this.isAbsentLiteral(inner)) return `${this.cpp(to)}{}`;
+        }
         if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped))
             return this.closure(
                 unwrapped,
@@ -6426,7 +6479,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const library = this.libraryName(target);
         const instances =
             library !== undefined ? this.classShape(library) : undefined;
+        const platform =
+            library !== undefined
+                ? this.model.schema.instanceOf?.get(library)
+                : undefined;
         if (instances !== undefined) {
+            // A narrower platform class over the same native handle
+            // (`MediaStreamAudioSourceNode` among `AudioNode`s) asks the
+            // platform.
+            if (platform && this.same(shape, instances)) return platform(value);
             if (shape.kind === "variant") {
                 return this.holdsAny(
                     shape.members.filter((member) =>
@@ -6437,10 +6498,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             }
             return this.same(shape, instances) ? "true" : "false";
         }
-        const platform =
-            library !== undefined
-                ? this.model.schema.instanceOf?.get(library)
-                : undefined;
         if (platform) return `(${isError()} && ${platform(error())})`;
         if (library === "Error") return isError();
         if (library === "RangeError" || library === "TypeError")
@@ -6517,6 +6574,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         // AudioBuffer !== "undefined"`), or of the language's own buffer.
         const library = this.libraryName(operand);
         if (library !== undefined && this.classShape(library) !== undefined)
+            return expected === "function" ? "true" : "false";
+        // A thenable check of a promise (`typeof result.then === "function"`).
+        const member = this.skipParentheses(operand);
+        if (
+            ts.isPropertyAccessExpression(member) &&
+            member.name.text === "then" &&
+            stripOptional(this.shapeAt(member.expression)).kind === "promise"
+        )
             return expected === "function" ? "true" : "false";
         const shape = this.shapeAt(operand);
         if (shape.kind === "json") {
@@ -8121,6 +8186,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "console":
                 return `bbl::pinned::console_line(${node.arguments.map((argument) => this.value(argument)).join(", ")})`;
             case "Promise": {
+                // `Promise.all(promises)` over an array of promises: the
+                // runtime's combinator, settling in the language's order.
+                if (name === "all" && first && node.arguments.length === 1) {
+                    const input = stripOptional(this.shapeAt(first));
+                    if (
+                        input.kind !== "array" ||
+                        stripOptional(input.element).kind !== "promise"
+                    )
+                        return this.refuse(
+                            node,
+                            "Pinned Promise.all over anything but an array of promises.",
+                        );
+                    this.model.include("bblite/js_promise_all.hpp");
+                    return `bbl::js::promise_all(${this.value(first)})`;
+                }
                 // `Promise.resolve(value)` / `Promise.reject(reason)`, of
                 // the promise type the sink holds.
                 const shape = stripOptional(to ?? this.shapeAt(node));

@@ -60,17 +60,11 @@ test("document lookup activates retained ownership before construction and prese
             value.textContent = ".marked{color:rgb(255,0,0)}";
         }];
         install[0]!(retained[0]!);
-        let effects = 0;
-        let catches = 0;
-        function css(): string { ++effects; return ".marked{color:blue}"; }
+        function css(): string { return ".marked{color:rgb(0,0,255)}"; }
         const replace: Array<(value: HTMLStyleElement) => void> = [value => {
             value.textContent = css();
         }];
-        try { replace[0]!(retained[0]!); } catch (error) {
-            if (!error.message.includes("css:runtime-stylesheet-installation-bridge")) throw error;
-            ++catches;
-        }
-        if (effects !== 1 || catches !== 1) throw new Error("style boundary effects");
+        replace[0]!(retained[0]!);
         const panel = document.createElement("div");
         panel.id = "metadata-root";
         panel.innerHTML = '<div id="metadata" ROLE="status" aria-live="polite" aria-hidden="false" DATA-mode="ready"><strong id="emphasis" class="marked">Ready</strong><button id="inactive" type="button" disabled data-action="wait">Wait</button><span id="concealed" hidden>Later</span><img id="hint" alt="" draggable="false" fetchpriority="high"/></div>';
@@ -136,10 +130,7 @@ test("document lookup activates retained ownership before construction and prese
     `,
         { deferredCapabilities: "runtime-throw" },
     );
-    assert.deepEqual(
-        result.manifest.deferredCapabilities?.map((entry) => entry.id),
-        ["css:runtime-stylesheet-installation-bridge"],
-    );
+    assert.equal(result.manifest.deferredCapabilities, undefined);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-registration-boundaries", {
         imageDecoder: true,

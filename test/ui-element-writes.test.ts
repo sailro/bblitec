@@ -83,8 +83,8 @@ test("writes through stored retained elements lower inside runtime iteration", (
 test("unrepresented retained element writes refuse instead of erasing", () => {
     for (const [body, pattern] of [
         [
-            `const stored = [output("s")]; for (const field of stored) field.scrollTop = 5;`,
-            /Retained element property 'scrollTop' assignment is not lowered natively/,
+            `const stored = [output("s")]; for (const field of stored) field.accessKey = "k";`,
+            /Retained element property 'accessKey' assignment is not lowered natively/,
         ],
         [
             `const field = output("s"); field.scrollTop += 5;`,

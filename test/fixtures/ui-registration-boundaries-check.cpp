@@ -57,7 +57,7 @@ int run() {
         auto* emphasis = runtime.document->GetElementById("emphasis");
         expect(emphasis &&
                emphasis->GetComputedValues().font_weight() == Rml::Style::FontWeight::Bold);
-        expect(emphasis->GetComputedValues().color() == Rml::Colourb(255, 0, 0, 255));
+        expect(emphasis->GetComputedValues().color() == Rml::Colourb(0, 0, 255, 255));
         auto* inactive = runtime.document->GetElementById("inactive");
         expect(inactive && inactive->HasAttribute("disabled"));
         auto* interactive = runtime.document->GetElementById("interactive");

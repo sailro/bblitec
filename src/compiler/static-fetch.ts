@@ -63,7 +63,7 @@ export function compileStaticFetch(
     const discovery = discoverPackagedAssets(
         context,
         url,
-        "binary",
+        registerAs(context, "binary"),
         () => true,
     );
     if (discovery)
@@ -121,7 +121,7 @@ export function compileDynamicPackagedAsset(
     const discovery = discoverPackagedAssets(
         context,
         expression,
-        kind,
+        registerAs(context, kind),
         accepts,
     );
     return discovery && packagedAssetFetch(context, expression, discovery);
@@ -135,6 +135,36 @@ export interface PackagedUrlAsset {
     readonly output: string;
     /** The source file, for a consumer reading its bytes at generation. */
     readonly file: string;
+}
+
+/**
+ * Packages one discovered file and returns its output path: `source` is the
+ * file as the asset registry resolves it, `logicalSource` the URL selecting it.
+ */
+export type PackagedAssetRegistration = (
+    source: string,
+    logicalSource: string,
+) => string;
+
+/** Packages each discovered file as `kind` under the registry's output path. */
+function registerAs(
+    context: StaticFetchContext,
+    kind: CompileAsset["kind"],
+): PackagedAssetRegistration {
+    return (source) => context.assetRegistry.registerAsset(source, kind).output;
+}
+
+/** Readability is shared by literal, candidate-table and directory discovery. */
+function readablePackagedAsset(
+    context: StaticFetchContext,
+    source: string,
+): boolean {
+    try {
+        readAssetBytesSync(source, context.options.fileName);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /** The closed set of packaged files a runtime URL selects among. */
@@ -151,15 +181,22 @@ interface PackagedDiscovery {
 function discoverPackagedAssets(
     context: StaticFetchContext,
     expression: ts.Expression,
-    kind: CompileAsset["kind"],
+    register: PackagedAssetRegistration,
     accepts: (source: string) => boolean,
+    unpackaged?: (url: string) => boolean,
 ): PackagedDiscovery | undefined {
     return (
         context.probeEmission(() =>
-            discoverPackagedDirectory(context, expression, kind, accepts),
+            discoverPackagedDirectory(context, expression, register, accepts),
         ) ??
         context.probeEmission(() =>
-            discoverPackagedCandidates(context, expression, kind, accepts),
+            discoverPackagedCandidates(
+                context,
+                expression,
+                register,
+                accepts,
+                unpackaged,
+            ),
         )
     );
 }
@@ -191,19 +228,24 @@ function packagedAssetFetch(
  * The packaged files a URL expression may select, each registered as `kind`:
  * the one a generation-known URL names, or the closed candidate set a
  * runtime URL's inference finds (a candidate table, or a directory under a
- * known prefix), limited to what `accepts`. `selected` is the compiled URL.
+ * known prefix), limited to what `accepts`. `selected` is the compiled URL;
+ * a generation-known URL `accepts` rejects selects no asset.
  */
 export function packagedUrlAssets(
     context: StaticFetchContext,
     expression: ts.Expression,
-    kind: CompileAsset["kind"],
+    kind: CompileAsset["kind"] | PackagedAssetRegistration,
     accepts: (source: string) => boolean,
+    unpackaged?: (url: string) => boolean,
 ): { assets: readonly PackagedUrlAsset[]; selected: Value } | undefined {
+    const register =
+        typeof kind === "function" ? kind : registerAs(context, kind);
     const discovery = discoverPackagedAssets(
         context,
         expression,
-        kind,
+        register,
         accepts,
+        unpackaged,
     );
     if (discovery)
         return {
@@ -221,13 +263,14 @@ export function packagedUrlAssets(
         context.options.fileName,
         context.options,
     );
-    if (!accepts(source)) return undefined;
+    // A generation-known URL the consumer does not accept packages nothing.
+    if (!accepts(source) || !readablePackagedAsset(context, source))
+        return { assets: [], selected };
     return {
         assets: [
             {
                 logicalSource: selected.staticString,
-                output: context.assetRegistry.registerAsset(source, kind)
-                    .output,
+                output: register(source, selected.staticString),
                 file: source,
             },
         ],
@@ -245,14 +288,15 @@ export function packagedUrlAssets(
 function discoverPackagedCandidates(
     context: StaticFetchContext,
     expression: ts.Expression,
-    kind: CompileAsset["kind"],
+    register: PackagedAssetRegistration,
     accepts: (source: string) => boolean,
+    unpackaged?: (url: string) => boolean,
 ): PackagedDiscovery | undefined {
     const selected = context.compileValue(expression);
     if (selected.staticString !== undefined || !isStringValue(selected)) {
         return undefined;
     }
-    const domain = assetUrlDomain(context, expression);
+    const domain = assetUrlDomain(context, expression, unpackaged);
     const discovered = (domain ?? context.staticAssetUrlCandidates())
         .flatMap((logicalSource) => {
             const source = resolveBundledAsset(
@@ -273,17 +317,23 @@ function discoverPackagedCandidates(
                     const logicalBase = logicalSource.endsWith("/")
                         ? logicalSource
                         : `${logicalSource}/`;
-                    return listFiles(directory).map((file) => ({
-                        logicalSource:
-                            logicalBase +
-                            relative(directory, file).split(sep).join("/"),
-                        // Keep filesystem discoveries entry-relative: on Unix
-                        // a leading slash otherwise denotes a browser public URL.
-                        source: canonicalLocalAssetSource(
-                            file,
-                            context.options.fileName,
-                        ),
-                    }));
+                    return listFiles(directory)
+                        .map((file) => ({
+                            logicalSource:
+                                logicalBase +
+                                relative(directory, file).split(sep).join("/"),
+                            // Keep filesystem discoveries entry-relative: on Unix
+                            // a leading slash otherwise denotes a browser public URL.
+                            source: canonicalLocalAssetSource(
+                                file,
+                                context.options.fileName,
+                            ),
+                        }))
+                        .filter(
+                            ({ source }) =>
+                                accepts(source) &&
+                                readablePackagedAsset(context, source),
+                        );
                 } catch {
                     return [];
                 }
@@ -304,7 +354,7 @@ function discoverPackagedCandidates(
         assets: [...candidates.values()].map(({ logicalSource, source }) => ({
             key: logicalSource,
             logicalSource,
-            output: context.assetRegistry.registerAsset(source, kind).output,
+            output: register(source, logicalSource),
             file: source,
         })),
         selected,
@@ -428,7 +478,7 @@ export function compileStaticFetchMethod(
 function discoverPackagedDirectory(
     context: StaticFetchContext,
     expression: ts.Expression,
-    kind: CompileAsset["kind"],
+    register: PackagedAssetRegistration,
     accepts: (source: string) => boolean,
 ): PackagedDiscovery | undefined {
     const unwrapped = context.unwrap(expression);
@@ -490,7 +540,19 @@ function discoverPackagedDirectory(
     );
     let files: string[];
     try {
-        files = listFiles(directory).filter(accepts).sort();
+        files = listFiles(directory)
+            .filter(
+                (file) =>
+                    accepts(file) &&
+                    readablePackagedAsset(
+                        context,
+                        canonicalLocalAssetSource(
+                            file,
+                            context.options.fileName,
+                        ),
+                    ),
+            )
+            .sort();
     } catch (error: unknown) {
         context.fail(
             prefixNode,
@@ -507,14 +569,11 @@ function discoverPackagedDirectory(
     }
     const assets = files.map((file) => {
         const key = relative(directory, file).split(sep).join("/");
-        const asset = context.assetRegistry.registerAsset(
-            `${logicalBase}${key}`,
-            kind,
-        );
+        const logicalSource = `${logicalBase}${key}`;
         return {
             key,
-            logicalSource: `${logicalBase}${key}`,
-            output: asset.output,
+            logicalSource,
+            output: register(logicalSource, logicalSource),
             file,
         };
     });

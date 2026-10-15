@@ -21,6 +21,8 @@ test("native grid track admission composes across selectors and responsive rules
         "minmax(0,280px) minmax(auto,100px)",
         "repeat(auto-fit,minmax(70px,1fr))",
         "20px repeat(auto-fill,30px minmax(20px,auto)) 10px",
+        "2em minmax(1rem,1fr) 5vw 4vh",
+        "repeat(auto-fit,minmax(2em,1fr))",
     ]) {
         const result = compile(
             `.grid{display:inline-grid}.grid{grid-template-columns:${tracks};grid-template-rows:repeat(2,30px)}@media(max-width:480px){.grid{grid-template-columns:1fr}}.grid > .cell{justify-self:end}`,
@@ -45,6 +47,9 @@ test("grid track admission rejects unsupported placement and malformed sizing", 
         "subgrid",
         "masonry",
         "20% 1fr",
+        "1ch 1fr",
+        "-2em",
+        "1e999rem",
         "-1fr",
         "1e999px",
         "minmax(1fr,2fr)",
@@ -69,11 +74,11 @@ test("grid track admission rejects unsupported placement and malformed sizing", 
     }
     for (const property of [
         "grid-auto-flow:column",
-        "grid-row:header",
+        "grid-row:span header",
         "grid-auto-rows:repeat(2,20px)",
         "grid-auto-columns:none",
         "isolation:inherit",
-        "grid-template-areas:'header'",
+        "grid-template-areas:'header' 'a b'",
     ])
         assert.throws(
             () => compile(`.grid{display:grid;${property}}`),
@@ -83,6 +88,9 @@ test("grid track admission rejects unsupported placement and malformed sizing", 
 
 test("native grid tracks preserve sizing, rows, identity and live cascades", (t) =>
     runRmlUiFixture(t, "ui-grid-tracks"));
+
+test("relative grid tracks follow font changes, viewport resizing and implicit placement", (t) =>
+    runRmlUiFixture(t, "ui-grid-relative-lengths"));
 
 test("grid placement composes numeric lines and spans on both axes", () => {
     for (const placement of [
@@ -100,6 +108,8 @@ test("grid placement composes numeric lines and spans on both axes", () => {
         "2/2",
         "3/1",
         "span 2 / span 3",
+        "header",
+        "header / -1",
     ])
         assert.match(
             compile(`.range{grid-column:${placement};grid-row:${placement}}`)
@@ -114,7 +124,8 @@ test("grid placement composes numeric lines and spans on both axes", () => {
         "span -2",
         "span 257",
         "1 / 2 / 3",
-        "header",
+        "span header",
+        "2 header",
     ])
         assert.throws(
             () => compile(`.range{grid-column:${placement}}`),

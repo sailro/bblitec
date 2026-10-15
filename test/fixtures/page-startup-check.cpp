@@ -32,6 +32,19 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
 int main() {
     try {
         assert(generated_main() == 0);
+        auto& engine = bbl::pal::window_document_engine();
+        std::size_t scripts = 0;
+        for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index) {
+            const auto& record = engine.ui_elements[index];
+            if (record.tag != "script")
+                continue;
+            assert(record.script_started && !record.script_force_async);
+            const bbl::UiElementHandle script{index};
+            bbl::ui_remove(engine, script);
+            bbl::ui_append_to_root(engine, script);
+            ++scripts;
+        }
+        assert(scripts == 3);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
         return 1;

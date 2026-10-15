@@ -28,6 +28,9 @@ import {
     MEDIA_STREAM_TRACK_PROPERTIES,
     PANNER_MODELS,
     PANNER_PROPERTIES,
+    ANALYSER_PROPERTIES,
+    AUDIO_ELEMENT_EVENTS,
+    ANALYSER_READOUTS,
     SOURCE_LOOP_MEMBERS,
     listenerParamName,
 } from "../compiler/web-audio-members.js";
@@ -509,6 +512,19 @@ const pannerProperty = (property: string): MemberSpec => ({
         `${AUDIO}::audio_set_panner_property(${owner}, ${AUDIO}::PannerProperty::${property}, ${value})`,
 });
 
+/** An analyser's numeric attribute: its PAL read and, when writable, its validated write. */
+const analyserProperty = (property: string, writable: boolean): MemberSpec => ({
+    shape: number,
+    access: (owner) =>
+        `${AUDIO}::audio_analyser_property(${owner}, ${AUDIO}::AnalyserProperty::${property})`,
+    ...(writable
+        ? {
+              assign: (owner: string, value: string) =>
+                  `${AUDIO}::audio_set_analyser_property(${owner}, ${AUDIO}::AnalyserProperty::${property}, ${value})`,
+          }
+        : {}),
+});
+
 /** `panningModel` / `distanceModel`: Web Audio's spelling both ways. */
 const pannerModel = (which: string): MemberSpec => ({
     shape: string,
@@ -551,6 +567,21 @@ function nodeTypeAssign(owner: string, value: string): string {
     if (kind)
         return `${AUDIO}::audio_set_filter_kind(${owner}, ${AUDIO}::BiquadFilterKind::${kind[1]})`;
     throw new Error(`${value} is not a lowered oscillator or filter type.`);
+}
+
+/** An element event's `AudioElementEvent`, from the type's literal spelling. */
+function elementEvent(type: string | undefined): string {
+    const spelling: unknown =
+        type?.startsWith('"') === true ? JSON.parse(type) : undefined;
+    const event =
+        typeof spelling === "string"
+            ? AUDIO_ELEMENT_EVENTS[spelling]
+            : undefined;
+    if (!event)
+        throw new Error(
+            `A lowered Audio element listens to ${Object.keys(AUDIO_ELEMENT_EVENTS).join(", ")} events only, not ${type ?? "nothing"}.`,
+        );
+    return `${AUDIO}::AudioElementEvent::${event}`;
 }
 
 /** `buffer.copyFromChannel` / `copyToChannel(samples, channel, offset?)`. */
@@ -596,7 +627,11 @@ export const webAudioRecords: readonly RecordSpec[] = [
             "AudioBufferSourceNode",
             "AudioScheduledSourceNode",
             "PannerNode",
+            "StereoPannerNode",
+            "AnalyserNode",
             "MediaStreamAudioDestinationNode",
+            "MediaStreamAudioSourceNode",
+            "MediaElementAudioSourceNode",
         ],
         cpp: "pal::AudioNodeHandle",
         reference: false,
@@ -612,12 +647,35 @@ export const webAudioRecords: readonly RecordSpec[] = [
             ...PANNER_MODELS.map(
                 ([name, which]) => [name, pannerModel(which)] as const,
             ),
+            ...ANALYSER_PROPERTIES.map(
+                ([name, enumerator, writable]) =>
+                    [name, analyserProperty(enumerator, writable)] as const,
+            ),
+            ...ANALYSER_READOUTS.map(
+                ([name, element, data]) =>
+                    [
+                        name,
+                        spelled(
+                            fn([{ kind: "typed", element }], none),
+                            (owner, [out]) =>
+                                `${AUDIO}::audio_analyser_${element === "u8" ? "byte" : "float"}_data(${owner}, ${AUDIO}::AnalyserData::${data}, ${out})`,
+                        ),
+                    ] as const,
+            ),
             // A stream destination's stream, one per destination.
             [
                 "stream",
                 reads(
                     record("MediaStream"),
                     (owner) => `${AUDIO}::audio_destination_stream(${owner})`,
+                ),
+            ],
+            // A stream source's stream, the one it was created from.
+            [
+                "mediaStream",
+                reads(
+                    record("MediaStream"),
+                    (owner) => `${AUDIO}::audio_source_stream(${owner})`,
                 ),
             ],
             ...SOURCE_LOOP_MEMBERS.map(
@@ -926,6 +984,74 @@ export const webAudioRecords: readonly RecordSpec[] = [
                         ),
                     ] as const,
             ),
+            // Packaged media has no origin and a native element no
+            // controls: both writes are kept, neither changes playback.
+            [
+                "crossOrigin",
+                {
+                    shape: optional(string),
+                    assign: (owner, value) =>
+                        `${AUDIO}::audio_element_set_cross_origin(${owner}, ${value})`,
+                },
+            ],
+            [
+                "controls",
+                {
+                    shape: boolean,
+                    assign: (owner, value) =>
+                        `${AUDIO}::audio_element_set_controls(${owner}, ${value})`,
+                },
+            ],
+            [
+                "addEventListener",
+                spelled(
+                    fn(
+                        [
+                            string,
+                            fn([], none),
+                            optional(record("AddEventListenerOptions")),
+                        ],
+                        none,
+                    ),
+                    (owner, [type, listener, options]) =>
+                        `[&](const bbl::js::Callback<void()>& listener) { ${AUDIO}::audio_element_add_listener(${owner}, ${elementEvent(type)}, listener.identity(), listener, false, ${options === undefined ? "false" : `${PLATFORM}::once(${options})`}); }(${listener})`,
+                ),
+            ],
+            [
+                // A source child, tried when the element has no `src`.
+                "appendChild",
+                spelled(
+                    fn([record("HTMLSourceElement")], none),
+                    (owner, [source]) =>
+                        `${AUDIO}::audio_element_append_source(${owner}, ${source})`,
+                ),
+            ],
+            [
+                "removeEventListener",
+                spelled(
+                    fn([string, fn([], none)], none),
+                    (owner, [type, listener]) =>
+                        `[&](const bbl::js::Callback<void()>& listener) { ${AUDIO}::audio_element_remove_listener(${owner}, ${elementEvent(type)}, listener.identity(), false); }(${listener})`,
+                ),
+            ],
+        ]),
+    },
+    {
+        // `<source>`: a candidate URL an Audio element tries in order.
+        pinned: ["HTMLSourceElement"],
+        cpp: "pal::AudioSourceElementState",
+        handle: "pal::AudioSourceElement",
+        reference: true,
+        native: true,
+        members: members([
+            [
+                "src",
+                {
+                    shape: string,
+                    assign: (owner, value) =>
+                        `${AUDIO}::audio_source_element_set_src(${owner}, ${value})`,
+                },
+            ],
         ]),
     },
     {
@@ -1059,6 +1185,11 @@ export const webAudioRecords: readonly RecordSpec[] = [
     descriptor("AudioBufferSourceOptions", "pal::AudioBufferSourceInit", [
         ["buffer", field(optional(record("AudioBuffer")))],
     ]),
+    descriptor(
+        "MediaElementAudioSourceOptions",
+        "pal::MediaElementAudioSourceInit",
+        [["mediaElement", field(record("HTMLAudioElement"), "media_element")]],
+    ),
 ];
 
 /** A Web Audio or media property's native write, as the records above spell it. */
@@ -1116,16 +1247,16 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
     CallAdapter
 >([
     [
-        // A library probes an element; a source to play is the element's.
+        // A library probes an element bare; a streaming sound's element
+        // plays the packaged URL its call site registered, in an audio
+        // session of its own (it plays only through its source node).
         "Audio",
         {
-            cpp: (_argument, call) => {
-                if ((call.arguments?.length ?? 0) > 0)
-                    throw new Error(
-                        "A lowered Audio element is constructed without a source.",
-                    );
-                return `${AUDIO}::audio_create_element()`;
-            },
+            cpp: (argument, call) =>
+                (call.arguments?.length ?? 0) > 0
+                    ? `[](std::string url) { std::shared_ptr<${AUDIO}::AudioSession> session; return ${AUDIO}::audio_create_element(session, std::move(url)); }(${argument(0)})`
+                    : `${AUDIO}::audio_create_element()`,
+            parameters: [string],
         },
     ],
     [
@@ -1152,6 +1283,43 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
         },
     ],
     [
+        // `new MediaElementAudioSourceNode(ctx, { mediaElement })`.
+        "MediaElementAudioSourceNode",
+        {
+            cpp: (argument) =>
+                `${AUDIO}::audio_create_media_element_source(${argument(0)}, ${argument(1)})`,
+            parameters: [
+                record("BaseAudioContext"),
+                record("MediaElementAudioSourceOptions"),
+            ],
+        },
+    ],
+    [
+        // The pin builds its analyser bare and sets each attribute after.
+        "AnalyserNode",
+        {
+            cpp: (argument, call) => {
+                if ((call.arguments?.length ?? 0) > 1)
+                    throw new Error("A lowered AnalyserNode takes no options.");
+                return `${AUDIO}::audio_create_analyser(${argument(0)})`;
+            },
+            parameters: [record("BaseAudioContext")],
+        },
+    ],
+    [
+        "StereoPannerNode",
+        {
+            cpp: (argument, call) => {
+                if ((call.arguments?.length ?? 0) > 1)
+                    throw new Error(
+                        "A lowered StereoPannerNode takes no options.",
+                    );
+                return `${AUDIO}::audio_create_stereo_panner(${argument(0)})`;
+            },
+            parameters: [record("BaseAudioContext")],
+        },
+    ],
+    [
         "AudioBufferSourceNode",
         {
             cpp: (argument, call) =>
@@ -1166,8 +1334,37 @@ export const webAudioConstructors: ReadonlyMap<string, CallAdapter> = new Map<
     ],
 ]);
 
+/** The document calls a pinned audio library makes: an Audio element's source children. */
+export const webAudioAdapters: ReadonlyMap<string, CallAdapter> = new Map([
+    [
+        "document.createElement",
+        {
+            cpp: (_argument, call) => {
+                const [tag] = call.arguments ?? [];
+                if (!tag || !ts.isStringLiteral(tag) || tag.text !== "source")
+                    throw new Error(
+                        'A lowered audio library creates only "source" elements.',
+                    );
+                return `${AUDIO}::audio_create_source_element()`;
+            },
+        },
+    ],
+]);
+
+/** `node instanceof MediaStreamAudioSourceNode`. */
+export const webAudioInstanceOf: ReadonlyMap<
+    string,
+    (value: string) => string
+> = new Map([
+    [
+        "MediaStreamAudioSourceNode",
+        (value: string) => `${AUDIO}::audio_is_media_stream_source(${value})`,
+    ],
+]);
+
 /** The Web Audio classes a pinned library tests for (`typeof AudioBuffer`). */
 export const webAudioClasses: ReadonlyMap<string, RecordShape> = new Map([
     ["AudioBuffer", record("AudioBuffer")],
+    ["MediaStreamAudioSourceNode", record("AudioNode")],
     ["Audio", record("HTMLAudioElement")],
 ]);

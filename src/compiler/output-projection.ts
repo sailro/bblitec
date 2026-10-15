@@ -300,6 +300,7 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:oscillator": [],
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],
+    "audio:analyser": [],
     "audio:panner": [],
     "audio:media-stream": [],
     // The pin's audio engine, lowered into the generated library header.
@@ -308,6 +309,7 @@ export const featureSources: Record<Feature, string[]> = {
     // through the web platform seam.
     "audio:static-sound": ["src/pal_web_platform.cpp"],
     "audio:spatial-sound": [],
+    "audio:streaming-sound": [],
     "audio:engine-media-stream": [],
     // HTMLAudioElement playback lives in the engine PAL's unit.
     "audio:media-element": [],
@@ -359,6 +361,8 @@ export const featureSources: Record<Feature, string[]> = {
     // Selects the SVG-enabled pinned RmlUi artifact; rendering remains in the
     // same UI PAL translation unit.
     "ui:inline-svg": [],
+    // The UI PAL inlines packaged SVG <image> rasters (BBLITE_UI_SVG_IMAGES).
+    "ui:svg-image": [],
     // The JSON bridge is header-only: the writer, the dynamic parsed value
     // and the codecs generated beside the records they serialize. What the
     // feature brings is the parser library CMake links behind it.
@@ -420,6 +424,8 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "audio:decoded-buffer",
         "platform:http",
     ],
+    // A streaming sound plays packaged media elements through the engine.
+    "audio:streaming-sound": ["audio:pinned-engine", "audio:media-element"],
     // Spatial audio is a static sound's panner sub-node.
     "audio:spatial-sound": ["audio:static-sound", "audio:panner"],
     // The engine's tap lowers with the family, into a stream destination.

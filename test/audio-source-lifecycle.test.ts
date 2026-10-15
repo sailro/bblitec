@@ -52,8 +52,9 @@ test("stored audio APIs preserve routing, optional node calls, and source dispos
         }
         void main();
     `);
-    assert.match(result.cpp, /sound-source\.ts.*disposeSoundSource/);
-    assert.match(result.cpp, /sound-sub-graph\.ts.*disposeSoundSubGraph/);
+    // The pin's own source functions, in the program's library header.
+    for (const root of ["createSoundSourceAsync", "disposeSoundSource"])
+        assert.ok(result.manifest.audioLibraryRoots?.includes(root), root);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("Native fixture compiler unavailable.");
@@ -126,7 +127,7 @@ test("imported audio callbacks declare every shared disposal helper in their sou
     assert.ok(module);
     assert.match(
         module,
-        /void \w+_engine_sources\(bbl::AudioEngineHandle engine\);/,
+        /void \w*dispose_engine_sounds\w*\(bbl::AudioEngineHandle engine\);/,
     );
     for (const [path, cpp] of result.cppFiles) {
         const file = resolve(directory, path);

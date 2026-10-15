@@ -1269,6 +1269,8 @@ export class UserFunctionLowerer {
         {
             call: ts.CallExpression;
             arguments: readonly Value[];
+            /** The scope binding the call's parameters. */
+            scope: object;
         }
     >();
 
@@ -1276,6 +1278,75 @@ export class UserFunctionLowerer {
         declaration: SupportedFunction,
     ): { call: ts.CallExpression; arguments: readonly Value[] } | undefined {
         return this.invocations.get(declaration);
+    }
+
+    /**
+     * The argument the innermost active inlined call of a function passed
+     * the read-only parameter an identifier reads, when the identifier sits
+     * in that function's own body and reads that call's binding. The
+     * argument is the call site's expression: it is returned only when it
+     * names nothing the function declares and no invocation context, so it
+     * reads the same bindings from inside the body.
+     */
+    public inlinedArgument(
+        identifier: ts.Identifier,
+        scopeOf: (identifier: ts.Identifier) => object | undefined,
+    ): ts.Expression | undefined {
+        const parameter = resolvedSymbol(
+            this.checker,
+            identifier,
+        )?.valueDeclaration;
+        const declaration = parameter?.parent;
+        if (
+            !parameter ||
+            !ts.isParameter(parameter) ||
+            !ts.isIdentifier(parameter.name) ||
+            parameter.dotDotDotToken ||
+            !isSupportedFunction(declaration) ||
+            ts.findAncestor(identifier.parent, ts.isFunctionLike) !==
+                declaration
+        )
+            return undefined;
+        const invocation = this.invocations.get(declaration);
+        const index = declaration.parameters.indexOf(parameter);
+        const argument = invocation?.call.arguments[index];
+        if (
+            !invocation ||
+            !argument ||
+            scopeOf(identifier) !== invocation.scope ||
+            this.checker.getResolvedSignature(invocation.call)?.declaration !==
+                declaration ||
+            invocation.call.arguments
+                .slice(0, index + 1)
+                .some(ts.isSpreadElement) ||
+            !parameterIsReadOnly(this.checker, declaration, parameter.name)
+        )
+            return undefined;
+        const foreign = someAnalysisNode(
+            argument,
+            (node) => {
+                if (
+                    node.kind === ts.SyntaxKind.ThisKeyword ||
+                    node.kind === ts.SyntaxKind.SuperKeyword ||
+                    (ts.isMetaProperty(node) &&
+                        node.keywordToken === ts.SyntaxKind.NewKeyword)
+                )
+                    return true;
+                if (!ts.isIdentifier(node)) return false;
+                const binding = resolvedSymbol(
+                    this.checker,
+                    node,
+                )?.valueDeclaration;
+                return binding
+                    ? ts.findAncestor(
+                          binding,
+                          (owner) => owner === declaration,
+                      ) !== undefined
+                    : node.text === "arguments";
+            },
+            { types: "skip", memberNames: "skip" },
+        );
+        return foreign ? undefined : argument;
     }
 
     private readonly directCallCache = new EmissionMap<
@@ -5578,12 +5649,13 @@ export class UserFunctionLowerer {
         this.active.add(ir.declaration);
         this.activeCallSites.add(callNode);
         const enclosingInvocation = this.invocations.get(ir.declaration);
+        context.bindings.pushScope(context.allocateUserFunctionPrefix());
         if (ts.isCallExpression(callNode))
             this.invocations.set(ir.declaration, {
                 call: callNode,
                 arguments: arguments_,
+                scope: context.bindings.variableScopes.at(-1)!,
             });
-        context.bindings.pushScope(context.allocateUserFunctionPrefix());
         try {
             if (!body?.generator)
                 this.bindCallParameters(context, ir, arguments_, callNode);

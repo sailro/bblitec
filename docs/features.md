@@ -6,30 +6,31 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 ## Deferred capabilities
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
-as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon sound
-buffers, streaming sounds, buses, stereo/analyzer, script elements, `prompt`, application-realm
-device recovery, and the [UI](ui.md) items marked deferred. Unregistered APIs still refuse.
+as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon microphone
+sources, the unmute UI and the visualizer, `prompt`, and the [UI](ui.md) items
+marked deferred. Unregistered APIs still refuse.
 
 ## Language
 
-| Area | Admitted | Refuses |
-| --- | --- | --- |
-| Modules | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization | Runtime-selected modules, top-level await, `var`, writes through `N.member`, namespace/enum objects as values, dependencies on the entry |
-| Control flow | All statements, labels, switch fallthrough, try/catch/finally (also suspending) | Cleanup across `startEngine`; labeled jumps out of statically unrolled loops |
-| Functions | Generics, defaults, rest, destructuring, recursion, `call`/`apply`/`bind`, function objects with properties, extra arguments ignored | Unresolved type arguments, stored generic `this`, Arguments mutation, narrowing a stored function's signature, unions with several function arms, extracted methods without receiver |
-| Classes | Fields, accessors, private names, generics, local inheritance (`super`, abstract, `instanceof`), Error subclasses, static fields/blocks, generator methods, `#x in v` | Non-local bases, static accessors, private names redeclared in subclasses, inherited static writes through a subclass, generic or mixed-type fields in a stored hierarchy |
-| Closures | Shared mutable cells, TDZ, recursive groups | Captures without owned representation; borrowed input events escaping dispatch |
-| Data | Records, tagged/structural unions, arrays, tuples, dictionaries, Map/Set, JSON documents, record accessors, `{}` identity tokens, phantom brands | Record conversions no single layout can hold; mutation through erased native views; identity comparison of unnamed literals |
-| Async | Promises, async functions, `all`/`allSettled`/`race`/`any` over tuples and sync iterables | Custom thenables, async iterables in combinators, MessageChannel, runtime-sized resource construction |
-| Generators | Sync/async, `for...of`, `for await`, `yield*` over generators/iterators/arrays | `next(value)`, `throw`, return payloads, yield in finally, `yield*` from async generators |
-| Workers | Module workers, structured clone and `structuredClone` (records incl. own accessors, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer | Classic scripts; clones of class instances, prototype accessors, Errors, promises, platform objects; functions in messages (`structuredClone` throws DataCloneError); `structuredClone` transfer lists; listener options except `once` |
+| Area         | Admitted                                                                                                                                                              | Refuses                                                                                                                                                                                                                                |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Modules      | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization                                              | Runtime-selected modules, top-level await, `var`, writes through `N.member`, namespace/enum objects as values, dependencies on the entry                                                                                               |
+| Control flow | All statements, labels, switch fallthrough, try/catch/finally (also suspending)                                                                                       | Cleanup across `startEngine`; labeled jumps out of statically unrolled loops                                                                                                                                                           |
+| Functions    | Generics, defaults, rest, destructuring, recursion, `call`/`apply`/`bind`, function objects with properties, extra arguments ignored                                  | Unresolved type arguments, stored generic `this`, Arguments mutation, narrowing a stored function's signature, unions with several function arms, extracted methods without receiver                                                   |
+| Classes      | Fields, accessors, private names, generics, local inheritance (`super`, abstract, `instanceof`), Error subclasses, static fields/blocks, generator methods, `#x in v` | Non-local bases, static accessors, private names redeclared in subclasses, inherited static writes through a subclass, generic or mixed-type fields in a stored hierarchy                                                              |
+| Closures     | Shared mutable cells, TDZ, recursive groups                                                                                                                           | Captures without owned representation; borrowed input events escaping dispatch                                                                                                                                                         |
+| Data         | Records, tagged/structural unions, arrays, tuples, dictionaries, Map/Set, JSON documents, record accessors, `{}` identity tokens, phantom brands                      | Record conversions no single layout can hold; mutation through erased native views; identity comparison of unnamed literals                                                                                                            |
+| Async        | Promises, async functions, `all`/`allSettled`/`race`/`any` over tuples and sync iterables                                                                             | Custom thenables, async iterables in combinators, MessageChannel, runtime-sized resource construction                                                                                                                                  |
+| Generators   | Sync/async, `for...of`, `for await`, `yield*` over generators/iterators/arrays                                                                                        | `next(value)`, `throw`, return payloads, yield in finally, `yield*` from async generators                                                                                                                                              |
+| Workers      | Module workers, structured clone and `structuredClone` (records incl. own accessors, Date, Map, Set, buffers, typed arrays, cycles), OffscreenCanvas transfer         | Classic scripts; clones of class instances, prototype accessors, Errors, promises, platform objects; functions in messages (`structuredClone` throws DataCloneError); `structuredClone` transfer lists; listener options except `once` |
 
 Rules:
 
 - Operands that touch the same state evaluate left to right; the compiler pins them into temporaries.
 - Loose equality across types refuses. Telling `null` from `undefined` needs tagged storage; otherwise strict comparison refuses.
-- Generation-known positions fold through `const` literals, settled conditionals, spreads and parameterless literal-returning
-  functions. A fold reaching the host, clock, `Math.random`, locale or a written constant refuses.
+- Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
+  functions, module `const`s run at generation, and an inlined call's argument for a parameter its body never
+  rebinds. A fold reaching the host, clock, `Math.random`, locale or a written constant refuses.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
 - `import.meta.env`: `MODE="production"`, `PROD=true`, `DEV=false`, `SSR=false`, `BASE_URL` from deployment; custom
@@ -38,22 +39,22 @@ Rules:
 
 ## Standard library
 
-| Area | Admitted | Refuses |
-| --- | --- | --- |
-| Numbers | Math, Number predicates/coercions, `**`, BigInt (incl. `asIntN`/`asUintN`) | BigInt mixed with Number, BigInt JSON/clone/`toLocaleString` |
-| Arrays/tuples | ES2023 methods incl. `toSorted`/`with`/`flat`/`flatMap`, typed `Array.from` | Callback `thisArg`; callbacks removing unvisited elements (runtime) |
-| Map/Set/WeakMap | Full API, live cursors; WeakMap with record, callback or DOM keys | `Set<object>` of Promises; other WeakMap key kinds |
-| Iterators | Arrays, Map/Set cursors, class generator `[Symbol.iterator]` | Other `[Symbol.iterator]` implementations |
-| Strings | UTF-16 API, URI encode/decode, `btoa`/`atob`, tagged templates, `String.raw` | Method tags |
-| RegExp | `g`/`i`/`u`, replacement callbacks, captured `split`; unmatched captures are `undefined`; literal non-`g` `test`/`exec` fold at generation | `replaceAll` with string replacement; under `u`: lookbehind, named groups, `i` with backreferences/word boundaries |
-| Unicode/Intl | normalize, `localeCompare`, locale casing, Collator, NumberFormat (decimal/percent), PluralRules, ListFormat, Date `toLocale*String` | DateTimeFormat options/formatting, `resolvedOptions`, `formatToParts`, currency/unit, `dateStyle`/`timeStyle` |
-| Encoding | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`, `stream`), `TextEncoder.encode` | Other encodings, `encodeInto` |
-| Objects | keys/values/entries/assign/fromEntries/hasOwn/is/`create(null)`, literal-descriptor `defineProperty`, spread, rest, `delete`, `in`, `for...in` | Class accessor installation, non-literal rest keys, dynamic class membership |
-| JSON | parse (reviver), stringify | Replacers, cycles, Map/Set values |
-| Date | ISO parsing, getters, `setTime`, `Date.UTC` | Field setters, legacy formats |
-| URL | `URL`, `URLSearchParams` (get/has/set), `AbortController`, `DOMException` | IDNA hosts (TypeError), `append`/`delete`/`sort`, `AbortSignal.timeout`/`any` |
-| Binary | ArrayBuffer, SharedArrayBuffer, Atomics, DataView, all typed arrays incl. BigInt64 | `from` over buffers/numbers/strings, element writes through a union, `Atomics.wait` |
-| Reflection | Finite record Proxy get/set traps, `Reflect.get`, Symbols | Other traps, FinalizationRegistry |
+| Area            | Admitted                                                                                                                                       | Refuses                                                                                                            |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Numbers         | Math, Number predicates/coercions, `**`, BigInt (incl. `asIntN`/`asUintN`)                                                                     | BigInt mixed with Number, BigInt JSON/clone/`toLocaleString`                                                       |
+| Arrays/tuples   | ES2023 methods incl. `toSorted`/`with`/`flat`/`flatMap`, typed `Array.from`                                                                    | Callback `thisArg`; callbacks removing unvisited elements (runtime)                                                |
+| Map/Set/WeakMap | Full API, live cursors; WeakMap with record, callback or DOM keys                                                                              | `Set<object>` of Promises; other WeakMap key kinds                                                                 |
+| Iterators       | Arrays, Map/Set cursors, class generator `[Symbol.iterator]`                                                                                   | Other `[Symbol.iterator]` implementations                                                                          |
+| Strings         | UTF-16 API, URI encode/decode, `btoa`/`atob`, tagged templates, `String.raw`                                                                   | Method tags                                                                                                        |
+| RegExp          | `g`/`i`/`u`, replacement callbacks, captured `split`; unmatched captures are `undefined`; literal non-`g` `test`/`exec` fold at generation     | `replaceAll` with string replacement; under `u`: lookbehind, named groups, `i` with backreferences/word boundaries |
+| Unicode/Intl    | normalize, `localeCompare`, locale casing, Collator, NumberFormat (decimal/percent), PluralRules, ListFormat, Date `toLocale*String`           | DateTimeFormat options/formatting, `resolvedOptions`, `formatToParts`, currency/unit, `dateStyle`/`timeStyle`      |
+| Encoding        | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`, `stream`), `TextEncoder.encode`                                                                     | Other encodings, `encodeInto`                                                                                      |
+| Objects         | keys/values/entries/assign/fromEntries/hasOwn/is/`create(null)`, literal-descriptor `defineProperty`, spread, rest, `delete`, `in`, `for...in` | Class accessor installation, non-literal rest keys, dynamic class membership                                       |
+| JSON            | parse (reviver), stringify                                                                                                                     | Replacers, cycles, Map/Set values                                                                                  |
+| Date            | ISO parsing, getters, `setTime`, `Date.UTC`                                                                                                    | Field setters, legacy formats                                                                                      |
+| URL             | `URL`, `URLSearchParams` (get/has/set), `AbortController`, `DOMException`                                                                      | IDNA hosts (TypeError), `append`/`delete`/`sort`, `AbortSignal.timeout`/`any`                                      |
+| Binary          | ArrayBuffer, SharedArrayBuffer, Atomics, DataView, all typed arrays incl. BigInt64                                                             | `from` over buffers/numbers/strings, element writes through a union, `Atomics.wait`                                |
+| Reflection      | Finite record Proxy get/set traps, `Reflect.get`, Symbols                                                                                      | Other traps, FinalizationRegistry                                                                                  |
 
 ## Assets and I/O
 
@@ -89,6 +90,7 @@ Rules:
   static cap of 1 or more applies as below (desktop keeps devicePixelRatio 1); any other cap selects a realm.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
+- Recovery registers before `startEngine` in the entry, anywhere in an application realm.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
 - `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer
@@ -114,11 +116,11 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 
 ## Loading
 
-| Format | Limits |
-| --- | --- |
-| glTF | Contiguous FLOAT MAT4 inverse binds; contiguous animation accessors; fixed light capacity; raw bytes self-contained; orthographic cameras and distinct-image ORM refuse |
-| `.babylon` | Parented meshes/nodes, Standard materials, point lights, cameras; no `maxMeshes` |
-| Closed collectors | No rest/default parameters, early break, instanced/splat producers |
+| Format            | Limits                                                                                                                                                                  |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| glTF              | Contiguous FLOAT MAT4 inverse binds; contiguous animation accessors; fixed light capacity; raw bytes self-contained; orthographic cameras and distinct-image ORM refuse |
+| `.babylon`        | Parented meshes/nodes, Standard materials, point lights, cameras; no `maxMeshes`                                                                                        |
+| Closed collectors | No rest/default parameters, early break, instanced/splat producers                                                                                                      |
 
 `enableGltfCameras` and `enableGltfCpuTangents` must precede loading. `updateTexture2DFromPixels` and
 `queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
@@ -197,15 +199,21 @@ audio track by id, from any context at the same sample rate; InvalidStateError w
 An audio URL (a static sound or media element source) selects packaged audio; a runtime URL needs inferable candidates.
 
 Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `disposeSound`) run the pin's lowered
-family in an application realm. Sources: an audio URL, an `ArrayBuffer` or an `AudioBuffer`; URL lists, sound buffers
-and `outBus` refuse. A looped sound started while its context is not running throws (no statechange). `enableSpatial`,
-`setSpatialPosition` and `setSpatialListenerPosition` add the pin's panner sub-node and listener; the `position`,
-orientation and attachment options refuse.
+family in an application realm. Sources: an audio URL, an array literal of them, an `ArrayBuffer`, an `AudioBuffer` or a
+sound buffer (`createSoundBufferAsync`, over the same sources). A looped sound started while its context is not running
+throws (no statechange). Sound sources (`createSoundSourceAsync` with its options, `setSoundSourceVolume`,
+`disposeSoundSource`) route a caller-built node through the same sub-graph, in any realm. Streaming sounds
+(`createStreamingSoundAsync` and the streaming-sound functions) play a media element per instance: an audio URL, an
+array literal of them (source children, tried in order) or an Audio element. Buses (`createAudioBusAsync`,
+`setBusVolume`, `disposeAudioBus`, the `outBus` option) run the pin's mixer. `enableSpatial`, `setSpatialPosition` and
+`setSpatialListenerPosition` add the pin's panner sub-node and listener; the `position`, orientation and attachment
+options refuse. `enableStereo` and `setStereoPan` add its stereo panner sub-node, `enableAnalyzer` and the `get*Data`
+readouts its analyser tap. Sub-node hosts are static sounds.
 `createAudioEngineMediaStream` taps the engine's master output into a stream destination's stream.
 
 Media elements (application realm): `new Audio(url)` with an audio URL, `play`/`pause`/`load`, `removeAttribute("src")`,
-`loop`, `preload`, `currentTime` (seek), `duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause`
-listeners without payloads.
+`loop`, `preload`, `currentTime` (seek), `duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause`/
+`canplaythrough`/`error` listeners without payloads.
 An unrouted element plays to the default output; `createMediaElementSource` routes it once (again:
 InvalidStateError), moving its playback into the graph. Other members and attributes refuse.
 

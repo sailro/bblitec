@@ -1,0 +1,374 @@
+Transitions for author inline declarations: Element::SetInlineProperty and the style
+attribute start the transitions the after-change list covers from the current value, a
+transition ending at an inline declaration restores it instead of removing it, the after-change
+style of class changes keeps inline declarations, and a running transition already ending at
+the after-change value continues (CSS Transitions 1 §3).
+
+diff --git a/Include/RmlUi/Core/Element.h b/Include/RmlUi/Core/Element.h
+index 78dbe49..bf6f4ae 100644
+--- a/Include/RmlUi/Core/Element.h
++++ b/Include/RmlUi/Core/Element.h
+@@ -186,6 +186,10 @@ public:
+ 	/// @param[in] value The new property to set.
+ 	/// @return True if the property parsed successfully, false otherwise.
+ 	bool SetProperty(const String& name, const String& value);
++	/// Sets an author inline declaration, or removes it for an empty value. Properties the element's transition list
++	/// covers animate from their current values to the declared ones (CSS Transitions 1 §3).
++	/// @return True if the declaration parsed successfully, false otherwise.
++	bool SetInlineProperty(const String& name, const String& value);
+ 	/// Sets a local property override on the element to a pre-parsed value.
+ 	/// @param[in] id The id of the new property.
+ 	/// @param[in] property The parsed property to set.
+@@ -711,6 +715,8 @@ private:
+ 
+ 	/// Removes all transitions that are no longer part of the element's 'transition' property.
+ 	void HandleTransitionProperty();
++	/// Ends an animation's hold on its property, restoring the inline declaration a transition ran towards.
++	void ReleaseAnimatedProperty(const ElementAnimation& animation);
+ 
+ 	/// Starts new animations and removes animations no longer part of the element's 'animation' property.
+ 	void HandleAnimationProperty();
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 301b795..2f11975 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1802,8 +1802,13 @@ void Element::OnAttributeChange(const ElementAttributes& changed_attributes)
+ 				StyleSheetParser parser;
+ 				parser.ParseProperties(properties, value.GetReference<String>());
+ 
++				PropertyIdSet changed;
+ 				for (const auto& name_value : properties.GetProperties())
+-					meta->style.SetProperty(name_value.first, name_value.second);
++					changed.Insert(name_value.first);
++				meta->style.ApplyInlineChange(changed, [&] {
++					for (const auto& name_value : properties.GetProperties())
++						meta->style.SetProperty(name_value.first, name_value.second);
++				});
+ 
+ 				for (const auto& name_value : properties.GetCustomProperties())
+ 					meta->style.SetCustomProperty(name_value.first, name_value.second);
+@@ -2733,6 +2738,15 @@ bool Element::StartTransition(const Transition& transition, const Property& star
+ 	if (it != animations.end() && !it->IsTransition())
+ 		return false;
+ 
++	// CSS Transitions 1 §3: a running transition already ending at the after-change value continues unchanged.
++	std::optional<Property> declared;
++	if (it != animations.end())
++	{
++		if (it->GetTarget() == target_value)
++			return true;
++		declared = it->GetDeclared();
++	}
++
+ 	float duration = transition.duration;
+ 	// A negative delay starts the transition now, part-way through.
+ 	double start_time = Clock::GetElapsedTime() + (double)Math::Max(transition.delay, 0.0f);
+@@ -2758,6 +2772,8 @@ bool Element::StartTransition(const Transition& transition, const Property& star
+ 
+ 	if (result)
+ 	{
++		it->SetTarget(target_value);
++		it->SetDeclared(std::move(declared));
+ 		Property start = start_value;
+ 		start.important = true;
+ 		SetProperty(transition.id, start);
+@@ -2768,6 +2784,42 @@ bool Element::StartTransition(const Transition& transition, const Property& star
+ 	return result;
+ }
+ 
++void Element::ReleaseAnimatedProperty(const ElementAnimation& animation)
++{
++	// The inline declaration a transition animated towards holds its value again.
++	if (const auto& declared = animation.GetDeclared())
++		meta->style.SetProperty(animation.GetPropertyId(), *declared);
++	else
++		RemoveProperty(animation.GetPropertyId());
++}
++
++bool Element::SetInlineProperty(const String& name, const String& value)
++{
++	PropertyDictionary properties;
++	PropertyIdSet changed;
++	if (value.empty())
++	{
++		const PropertyId id = StyleSheetSpecification::GetPropertyId(name);
++		const ShorthandId shorthand = StyleSheetSpecification::GetShorthandId(name);
++		if (id != PropertyId::Invalid)
++			changed.Insert(id);
++		else if (shorthand != ShorthandId::Invalid)
++			changed = StyleSheetSpecification::GetShorthandUnderlyingProperties(shorthand);
++		meta->style.ApplyInlineChange(changed, [&] { RemoveProperty(name); });
++		return true;
++	}
++	if (!StyleSheetSpecification::ParsePropertyDeclaration(properties, name, value))
++	{
++		Log::Message(Log::LT_WARNING, "Syntax error parsing inline property declaration '%s: %s;'.", name.c_str(), value.c_str());
++		return false;
++	}
++	for (const auto& id_property : properties.GetProperties())
++		changed.Insert(id_property.first);
++	bool result = true;
++	meta->style.ApplyInlineChange(changed, [&] { result = SetProperty(name, value); });
++	return result;
++}
++
+ void Element::HandleTransitionProperty()
+ {
+ 	if (dirty_transition)
+@@ -2808,7 +2860,7 @@ void Element::HandleTransitionProperty()
+ 
+ 		// We can decide what to do with canceled transitions here.
+ 		for (auto it = it_remove; it != animations.end(); ++it)
+-			RemoveProperty(it->GetPropertyId());
++			ReleaseAnimatedProperty(*it);
+ 
+ 		animations.erase(it_remove, animations.end());
+ 	}
+@@ -2962,7 +3014,7 @@ void Element::AdvanceAnimations()
+ 			// Remove completed transition- and animation-initiated properties.
+ 			// Should behave like in HandleTransitionProperty() and HandleAnimationProperty() respectively.
+ 			if (it->GetOrigin() != ElementAnimationOrigin::User)
+-				RemoveProperty(it->GetPropertyId());
++				ReleaseAnimatedProperty(*it);
+ 		}
+ 
+ 		// Need to erase elements before submitting event, as iterators might be invalidated when calling external code.
+diff --git a/Source/Core/ElementAnimation.h b/Source/Core/ElementAnimation.h
+index 39a0beb..27e56d7 100644
+--- a/Source/Core/ElementAnimation.h
++++ b/Source/Core/ElementAnimation.h
+@@ -3,6 +3,7 @@
+ #include "../../Include/RmlUi/Core/Header.h"
+ #include "../../Include/RmlUi/Core/Property.h"
+ #include "../../Include/RmlUi/Core/Tween.h"
++#include <optional>
+ 
+ namespace Rml {
+ 
+@@ -42,6 +43,9 @@ private:
+ 	bool fill_forwards = false;
+ 	bool started = false;
+ 	bool end_reported = false;
++	// A transition's after-change value, and the author inline declaration that holds it once the transition ends.
++	Property target;
++	std::optional<Property> declared;
+ 
+ 	bool InternalAddKey(float time, const Property& property, Element& element, Tween tween);
+ 
+@@ -77,6 +81,11 @@ public:
+ 	bool IsInitalized() const { return !keys.empty(); }
+ 	float GetInterpolationFactor() const { return GetInterpolationFactorAndKeys(nullptr, nullptr); }
+ 	ElementAnimationOrigin GetOrigin() const { return origin; }
++
++	void SetTarget(const Property& value) { target = value; }
++	const Property& GetTarget() const { return target; }
++	void SetDeclared(std::optional<Property> value) { declared = std::move(value); }
++	const std::optional<Property>& GetDeclared() const { return declared; }
+ };
+ 
+ } // namespace Rml
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index b7efc27..6e54ec0 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -18,6 +18,7 @@
+ #include "../../Include/RmlUi/Core/TransformPrimitive.h"
+ #include "ComputeProperty.h"
+ #include "ControlledLifetimeResource.h"
++#include "ElementAnimation.h"
+ #include "ElementDefinition.h"
+ #include "PropertiesIterator.h"
+ #include "PropertyParserAnimation.h"
+@@ -386,16 +387,19 @@ void ElementStyle::TransitionPropertyChanges(const PropertySources& sources, Pro
+ 	if (!sources.definition || !new_definition || changed_properties.Empty())
+ 		return;
+ 
+-	// We get the local property directly here to intercept property changes even before the computed values are ready.
+-	const Property* transition_property = GetLocalProperty(PropertyId::Transition, sources.inline_properties, new_definition);
+-	if (!transition_property)
+-		return;
+-	if (transition_property->value.GetType() != Variant::TRANSITIONLIST)
+-		return;
+-
+-	const TransitionList& transition_list = transition_property->value.GetReference<TransitionList>();
+-	if (transition_list.none)
+-		return;
++	// The after-change inline declarations: an animated frame yields to the declaration a transition runs towards,
++	// or to none.
++	PropertyDictionary after_inline = sources.inline_properties;
++	for (const ElementAnimation& animation : sources.element->animations)
++	{
++		if (animation.GetOrigin() == ElementAnimationOrigin::User)
++			continue;
++		if (animation.GetDeclared())
++			after_inline.SetProperty(animation.GetPropertyId(), *animation.GetDeclared());
++		else
++			after_inline.RemoveProperty(animation.GetPropertyId());
++	}
++	const PropertySources new_sources{sources.element, new_definition, after_inline};
+ 
+ 	SmallUnorderedSet<String> variable_dependencies;
+ 
+@@ -404,26 +408,6 @@ void ElementStyle::TransitionPropertyChanges(const PropertySources& sources, Pro
+ 	std::optional<PropertyDictionary> substituted_shorthands_old;
+ 	std::optional<PropertyDictionary> substituted_shorthands_new;
+ 
+-	PropertySources new_sources{sources.element, new_definition, element_style_data->empty_property_dictionary};
+-
+-	// A declared transition-delay list replaces the delays of the after-change transition list, item by item.
+-	Vector<float> delays;
+-	{
+-		const PropertySources delay_sources{sources.element, new_definition, sources.inline_properties};
+-		const Property* declared = GetLocalProperty(PropertyId::TransitionDelay, sources.inline_properties, new_definition);
+-		Property delay_storage;
+-		std::optional<PropertyDictionary> delay_shorthands;
+-		SmallUnorderedSet<String> delay_dependencies;
+-		delays = PropertyParserAnimation::GetDelays(declared,
+-			ResolveVariablesWithShorthandExpansion(delay_sources, PropertyId::TransitionDelay, declared, delay_shorthands, delay_dependencies,
+-				delay_storage));
+-	}
+-	auto delayed = [&delays](Transition transition) {
+-		if (!delays.empty())
+-			transition.delay = delays[size_t(transition.list_index) % delays.size()];
+-		return transition;
+-	};
+-
+ 	auto add_transition = [&](const Transition& transition) {
+ 		const Property* start_value = GetSpecifiedProperty(sources, transition.id).property;
+ 		start_value = ResolveVariablesWithShorthandExpansion(sources, transition.id, start_value, substituted_shorthands_old, variable_dependencies,
+@@ -440,28 +424,95 @@ void ElementStyle::TransitionPropertyChanges(const PropertySources& sources, Pro
+ 		return transition_added;
+ 	};
+ 
+-	if (transition_list.all)
++	const Vector<float> delays = TransitionDelays(new_sources);
++	for (auto it = changed_properties.begin(); it != changed_properties.end();)
+ 	{
+-		Transition transition = delayed(transition_list.transitions[0]);
+-		for (auto it = changed_properties.begin(); it != changed_properties.end();)
+-		{
+-			transition.id = *it;
+-			if (add_transition(transition))
+-				it = changed_properties.Erase(it);
+-			else
+-				++it;
+-		}
++		const std::optional<Transition> transition = FindTransition(new_sources, *it, delays);
++		if (transition && add_transition(*transition))
++			it = changed_properties.Erase(it);
++		else
++			++it;
+ 	}
++}
++
++std::optional<Transition> ElementStyle::FindTransition(const PropertySources& after, PropertyId id, const Vector<float>& delays)
++{
++	// The local property, readable before the computed values are ready.
++	const Property* transition_property = GetLocalProperty(PropertyId::Transition, after.inline_properties, after.definition);
++	if (!transition_property || transition_property->value.GetType() != Variant::TRANSITIONLIST)
++		return std::nullopt;
++	const TransitionList& transition_list = transition_property->value.GetReference<TransitionList>();
++	if (transition_list.none || transition_list.transitions.empty())
++		return std::nullopt;
++	Transition transition;
++	if (transition_list.all)
++		transition = transition_list.transitions[0];
+ 	else
+ 	{
+-		for (const Transition& transition : transition_list.transitions)
++		const auto found = std::find_if(transition_list.transitions.begin(), transition_list.transitions.end(),
++			[id](const Transition& candidate) { return candidate.id == id; });
++		if (found == transition_list.transitions.end())
++			return std::nullopt;
++		transition = *found;
++	}
++	transition.id = id;
++	if (!delays.empty())
++		transition.delay = delays[size_t(transition.list_index) % delays.size()];
++	return transition;
++}
++
++Vector<float> ElementStyle::TransitionDelays(const PropertySources& after)
++{
++	// A declared transition-delay list replaces the delays of the transition list, item by item.
++	const Property* declared = GetLocalProperty(PropertyId::TransitionDelay, after.inline_properties, after.definition);
++	Property delay_storage;
++	std::optional<PropertyDictionary> delay_shorthands;
++	SmallUnorderedSet<String> delay_dependencies;
++	return PropertyParserAnimation::GetDelays(declared,
++		ResolveVariablesWithShorthandExpansion(after, PropertyId::TransitionDelay, declared, delay_shorthands, delay_dependencies, delay_storage));
++}
++
++void ElementStyle::ApplyInlineChange(const PropertyIdSet& changed, const Function<void()>& apply)
++{
++	// No before-change style exists before the element first computes its values.
++	if (element->computed_values_are_default_initialized || changed.Empty())
++	{
++		apply();
++		return;
++	}
++	Vector<std::pair<PropertyId, Property>> before;
++	for (const PropertyId id : changed)
++		if (const Property* value = GetProperty(id))
++			before.emplace_back(id, *value);
++	apply();
++	const auto sources = GetPropertySources();
++	const Vector<float> delays = TransitionDelays(sources);
++	for (const auto& [id, start] : before)
++	{
++		const PropertyId property_id = id;
++		const std::optional<Transition> transition = FindTransition(sources, property_id, delays);
++		const Property* after = GetProperty(property_id);
++		if (!transition || !after)
++			continue;
++		const Property target = *after;
++		const Property* declaration = inline_properties.GetProperty(property_id);
++		std::optional<Property> declared = declaration ? std::optional<Property>(*declaration) : std::nullopt;
++		auto running = std::find_if(element->animations.begin(), element->animations.end(),
++			[property_id](const ElementAnimation& animation) { return animation.GetPropertyId() == property_id && animation.IsTransition(); });
++		// A transition runs only for a changed value and a positive combined duration (CSS Transitions 1 §3); a running
++		// transition to another value then ends, leaving the declaration.
++		if (start == target || Math::Max(transition->duration, 0.f) + transition->delay <= 0.f)
+ 		{
+-			if (changed_properties.Contains(transition.id))
+-			{
+-				if (add_transition(delayed(transition)))
+-					changed_properties.Erase(transition.id);
+-			}
++			if (running != element->animations.end() && running->GetTarget() != target)
++				element->animations.erase(running);
++			continue;
+ 		}
++		if (!element->StartTransition(*transition, start, target))
++			continue;
++		running = std::find_if(element->animations.begin(), element->animations.end(),
++			[property_id](const ElementAnimation& animation) { return animation.GetPropertyId() == property_id && animation.IsTransition(); });
++		if (running != element->animations.end())
++			running->SetDeclared(std::move(declared));
+ 	}
+ }
+ 
+diff --git a/Source/Core/ElementStyle.h b/Source/Core/ElementStyle.h
+index 7c6429f..f921b32 100644
+--- a/Source/Core/ElementStyle.h
++++ b/Source/Core/ElementStyle.h
+@@ -65,6 +65,9 @@ public:
+ 	/// @param[in] id The ID  of the new property.
+ 	/// @param[in] property The parsed property to set.
+ 	bool SetProperty(PropertyId id, const Property& property);
++	/// Applies an author change to inline declarations of `changed`: those the after-change transition list covers
++	/// animate from their before-change values, ending at the declarations (CSS Transitions 1 §3).
++	void ApplyInlineChange(const PropertyIdSet& changed, const Function<void()>& apply);
+ 	/// Sets a local custom property override on the element to a pre-parsed value.
+ 	/// @param[in] name The name of the new property.
+ 	/// @param[in] property The parsed property to set.
+@@ -214,6 +217,9 @@ private:
+ 		std::optional<DirtyPropertiesRef> dirty_properties);
+ 
+ 	static void TransitionPropertyChanges(const PropertySources& sources, PropertyIdSet& changed_properties, const ElementDefinition* new_definition);
++	// The transition the after-change transition list gives `id`, its transition-delay applied.
++	static std::optional<Transition> FindTransition(const PropertySources& after, PropertyId id, const Vector<float>& delays);
++	static Vector<float> TransitionDelays(const PropertySources& after);
+ 
+ 	// Element these properties belong to
+ 	Element* element;

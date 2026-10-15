@@ -41,6 +41,23 @@ export const PANNER_MODELS = [
     ["distanceModel", "Distance"],
 ] as const;
 
+/** An analyser's numeric attributes: its `AnalyserProperty` enumerator, and whether it is writable. */
+export const ANALYSER_PROPERTIES = [
+    ["fftSize", "FftSize", true],
+    ["frequencyBinCount", "FrequencyBinCount", false],
+    ["minDecibels", "MinDecibels", true],
+    ["maxDecibels", "MaxDecibels", true],
+    ["smoothingTimeConstant", "SmoothingTimeConstant", true],
+] as const;
+
+/** An analyser's readouts: the element type each writes and its `AnalyserData` enumerator. */
+export const ANALYSER_READOUTS = [
+    ["getByteFrequencyData", "u8", "Frequency"],
+    ["getFloatFrequencyData", "f32", "Frequency"],
+    ["getByteTimeDomainData", "u8", "TimeDomain"],
+    ["getFloatTimeDomainData", "f32", "TimeDomain"],
+] as const;
+
 /** A buffer source's loop flag and points: `audio_<native>` reads, `audio_set_<native>` writes. */
 export const SOURCE_LOOP_MEMBERS = [
     ["loop", "boolean", "loop"],
@@ -95,6 +112,16 @@ export const AUDIO_ELEMENT_PROPERTIES = [
     ["ended", "boolean", "ended", false],
     ["preload", "string", "preload", true],
 ] as const;
+
+/** `HTMLAudioElement` event types and their `AudioElementEvent`. */
+export const AUDIO_ELEMENT_EVENTS: Readonly<Record<string, string>> = {
+    timeupdate: "TimeUpdate",
+    ended: "Ended",
+    play: "Play",
+    pause: "Pause",
+    canplaythrough: "CanPlayThrough",
+    error: "Error",
+};
 
 /** `MediaStream` reads: `media_stream_<native>`; a changing one is impure. */
 export const MEDIA_STREAM_PROPERTIES = [

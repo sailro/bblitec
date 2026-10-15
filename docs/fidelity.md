@@ -38,6 +38,7 @@ anything not listed here must match it.
 | Dialogs, fullscreen | `alert`/`confirm` are SDL message boxes; fullscreen needs no user activation and keeps the document layout (a fullscreen primary canvas is exact only when it fills the window) |
 | Pointer capture | Window applications: a capture a pointermove listener sets targets from a later motion packet; pointer lock does not make `setPointerCapture` throw |
 | Skinning | Eight influences reduced to four |
+| Scripts, forms | External scripts never execute: they fail to load. No autofill, spell checking or constraint validation (`pattern`); a label's own click is not dispatched, only its control's |
 | Video textures | One frame from Chromium's WebGPU import, baked RGBA8, sampled as 2D |
 | Thin-instance culling | May use the pin's all-active fallback |
 | Splats | Synchronous render-thread sorting |
@@ -102,6 +103,7 @@ Arbitrary async text builders refuse.
 - LabSound plays without an autoplay gate.
 - SDL audio initializes once on the main thread (the Window host at realm start); devices never quit it.
 - Topology agreement does not establish PCM fidelity.
+- An analyser frequency readout runs its FFT and smoothing at every call; Chromium analyses once per render quantum.
 - A media element decodes its whole source at its context's rate when routed (or at `play()` with `preload="none"`)
   and holds it until `load()` or its release: 4 bytes per sample and channel, about 23 MB per stereo minute at
   48 kHz. Its clock is that context's; unrouted elements share one default-output context per audio session.

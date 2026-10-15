@@ -61,6 +61,8 @@ test(
             "0005-param-timeline-lock.patch",
             "0006-panner-automation.patch",
             "0007-output-in-place-bus.patch",
+            "0008-explicit-channel-inputs.patch",
+            "0009-analyser-max-decibels.patch",
         ];
         assert.deepEqual(names("labsound", []), [
             "0001-lazy-decoders.patch",
@@ -100,7 +102,7 @@ test(
             "subpixel-rendering.patch",
         );
         const rmlui = names("rmlui", []);
-        assert.equal(rmlui.length, 40);
+        assert.equal(rmlui.length, 45);
         assert.deepEqual(
             rmlui.map((name) => Number(name.slice(0, 4))),
             rmlui.map((_, index) => index + 1),
@@ -115,7 +117,7 @@ test(
             runPatchIdentity(tools.cmake!, "record", "labsound", {
                 variants: ["core-only"],
             }),
-            /^set\(BBLITE_LABSOUND_SOURCE "[0-9a-f]{40}"\)\nset\(BBLITE_LABSOUND_PATCHES "0001-lazy-decoders\.patch=[0-9a-f]{64};0002-core-only\.patch=[0-9a-f]{64}(?:;000[3-7]-[a-z-]+\.patch=[0-9a-f]{64}){5}"\)\nset\(BBLITE_LABSOUND_VARIANTS "core-only"\)\n$/,
+            /^set\(BBLITE_LABSOUND_SOURCE "[0-9a-f]{40}"\)\nset\(BBLITE_LABSOUND_PATCHES "0001-lazy-decoders\.patch=[0-9a-f]{64};0002-core-only\.patch=[0-9a-f]{64}(?:;000[3-9]-[a-z-]+\.patch=[0-9a-f]{64}){7}"\)\nset\(BBLITE_LABSOUND_VARIANTS "core-only"\)\n$/,
         );
     },
 );

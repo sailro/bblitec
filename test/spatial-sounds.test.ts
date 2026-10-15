@@ -251,7 +251,11 @@ test("a spatial sound pans and attenuates with its place around the listener in 
     const lines = runAudioProgram(
         output,
         "test/fixtures/spatial-sound-capture-check.cpp",
-        ["/DBBLITE_AUDIO_CAPTURE=1", "/DBBLITE_HAS_AUDIO_PANNER=1"],
+        [
+            "/DBBLITE_AUDIO_CAPTURE=1",
+            "/DBBLITE_HAS_AUDIO_PANNER=1",
+            "/DBBLITE_HAS_AUDIO_MEDIA_ELEMENT=1",
+        ],
         [wav],
     )
         .replaceAll("\r\n", "\n")
@@ -332,6 +336,7 @@ test("the engine media-stream tap carries the master mix to another context", (t
             "/DBBLITE_AUDIO_CAPTURE=1",
             "/DBBLITE_HAS_AUDIO_PANNER=1",
             "/DBBLITE_HAS_AUDIO_MEDIA_STREAM=1",
+            "/DBBLITE_HAS_AUDIO_MEDIA_ELEMENT=1",
         ],
         [wav],
     )

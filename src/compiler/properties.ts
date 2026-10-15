@@ -748,6 +748,43 @@ export const propertyRules: readonly PropertyRule[] = [
         dataType: { kind: "string" },
         impure: true,
     },
+    // The lowered bus and source records' own names
+    // (`bblite/upstream_static_sound.hpp`).
+    ...(["audio-bus", "audio-source"] as const).map((owner): PropertyRead => ({
+        owner,
+        property: "name",
+        value: "data",
+        access: (record) => `${record}->name`,
+        dataType: { kind: "string" },
+    })),
+    // A lowered streaming sound's getters, over its changing playback.
+    ...(
+        [
+            ["state", "state"],
+            ["instanceCount", "instance_count"],
+            ["preloadCompletedCount", "preload_completed_count"],
+        ] as const
+    ).map(([property, native]): PropertyRead => ({
+        owner: "streaming-sound",
+        property,
+        value: "number",
+        access: (owner) => `${owner}->get_${native}()`,
+        impure: true,
+    })),
+    // A lowered sound buffer's getters over its decoded buffer.
+    ...(
+        [
+            ["duration", "duration"],
+            ["sampleRate", "sample_rate"],
+            ["channelCount", "channel_count"],
+            ["length", "length"],
+        ] as const
+    ).map(([property, native]): PropertyRead => ({
+        owner: "sound-buffer",
+        property,
+        value: "number",
+        access: (owner) => `${owner}->get_${native}()`,
+    })),
     {
         owner: "audio-engine",
         property: "onStateChanged",
@@ -2190,6 +2227,13 @@ export class PropertyAccessLowerer {
                     type,
                 );
             }
+            const idl = this.context.ui.uiIdlAttributeRead(
+                owner,
+                property,
+                ownerExpression,
+                expression,
+            );
+            if (idl) return idl;
             const reflected = this.context.ui.reflectedUiAttribute(
                 owner,
                 property,

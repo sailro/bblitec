@@ -54,10 +54,10 @@ test("audio option capabilities retain strict refusals and supported defaults", 
     assert.equal(authored.manifest.deferredCapabilities, undefined);
 });
 
-test("audio engine options adopt a context and refuse other present members once", () => {
+test("audio engine options adopt a context and refuse other present members once; source options lower", () => {
     const result = compileSource(
         `
-        import {createAudioEngineAsync,createSoundSourceAsync,type AudioEngineOptions,type SoundSourceOptions} from "@babylonjs/lite";
+        import {createAudioBusAsync,createAudioEngineAsync,createSoundSourceAsync,type AudioEngineOptions,type SoundSourceOptions} from "@babylonjs/lite";
         async function run():Promise<void>{
             let argumentsRun=0;let accepted=0;let rejected=0;let synchronous=true;
             function options():AudioEngineOptions {++argumentsRun;return {volume:0.5,resumeOnInteraction:false};}
@@ -76,32 +76,27 @@ test("audio engine options adopt a context and refuse other present members once
                     const engine=await createAudioEngineAsync(choices[i]);
                     if((i===1)!==(engine.audioContext===context))throw new Error("selected context");
                     ++accepted;
-                    const sourceOptions:Array<SoundSourceOptions|undefined>=[undefined,{volume:0.5}];
+                    // A bus settles on the realm's loop: the program runs in one.
+                    const bus=await createAudioBusAsync(engine,"mix");
+                    const sourceOptions:Array<SoundSourceOptions|undefined>=[undefined,{volume:0.5,outBus:bus,name:"input"}];
                     for(let j=0;j<sourceOptions.length;j++) {
-                        try {
-                            await createSoundSourceAsync(engine,engine.audioContext.createGain(),sourceOptions[j]);
-                            ++accepted;
-                        }catch(error){
-                            if(!error.message.includes("babylon:createSoundSourceAsync.options"))throw error;
-                            ++rejected;
-                        }
+                        const source=await createSoundSourceAsync(engine,engine.audioContext.createGain(),sourceOptions[j]);
+                        if(source.name!==(j===0?"":"input"))throw new Error("source name");
+                        ++accepted;
                     }
                 } catch(error) {
                     if(!error.message.includes("option 'resumeOnPause' is not lowered"))throw error;
                     ++rejected;
                 }
             }
-            if(argumentsRun!==1||accepted!==4||rejected!==4)throw new Error("option branches");
+            if(argumentsRun!==1||accepted!==6||rejected!==2)throw new Error("option branches");
             globalThis.close();
         }
         run();
     `,
         { deferredCapabilities },
     );
-    assert.deepEqual(
-        result.manifest.deferredCapabilities?.map((site) => site.id),
-        ["babylon:createSoundSourceAsync.options"],
-    );
+    assert.equal(result.manifest.deferredCapabilities, undefined);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(
@@ -139,27 +134,19 @@ test("audio engine options adopt a context and refuse other present members once
 test("missing audio graph operations retain declared results and later authored bodies", () => {
     const result = compileSource(
         `
-        import {createAudioEngineAsync,createSoundBufferAsync,createStreamingSoundAsync,createAudioBusAsync,createMicrophoneSoundSourceAsync,enableStereo,enableAnalyzer,type StaticSound} from "@babylonjs/lite";
+        import {createAudioEngineAsync,createMicrophoneSoundSourceAsync} from "@babylonjs/lite";
         async function run(){
             try {
                 const engine=await createAudioEngineAsync();
-                const sounds=new Map<number,StaticSound>();
-                await createSoundBufferAsync(engine,"sound.wav");
-                await createStreamingSoundAsync(engine,"sound.wav");
-                await createAudioBusAsync(engine,"bus");
                 await createMicrophoneSoundSourceAsync(engine);
-                for(const sound of sounds.values()){
-                    enableStereo(sound,{pan:0.5});
-                    enableAnalyzer(sound);
-                }
-            }catch(error){if(!error.message.includes("babylon:createSoundBufferAsync"))throw error;}
+            }catch(error){if(!error.message.includes("babylon:createMicrophoneSoundSourceAsync"))throw error;}
             globalThis.close();
         }
         run();
     `,
         { deferredCapabilities },
     );
-    assert.equal(result.manifest.deferredCapabilities?.length, 6);
+    assert.equal(result.manifest.deferredCapabilities?.length, 1);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(

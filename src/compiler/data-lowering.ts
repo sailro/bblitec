@@ -5064,8 +5064,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         }
         if (dataType.kind === "event-target") {
+            // The owner as the checker narrowed it: a stored nullable
+            // Document is present behind its guard.
             const element = this.context.propertyAccess.narrowedTargetProperty(
-                ownerValue,
+                owner,
                 access,
             );
             if (element) return element;

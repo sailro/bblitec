@@ -1583,6 +1583,9 @@ export type ValueKind =
     | "audio-engine"
     | "audio-source"
     | "static-sound"
+    | "audio-bus"
+    | "sound-buffer"
+    | "streaming-sound"
     | "audio-element"
     | "audio-buffer"
     | "audio-context"
@@ -3108,10 +3111,12 @@ export type Feature =
     | "audio:oscillator"
     | "audio:biquad-filter"
     | "audio:stereo-panner"
+    | "audio:analyser"
     | "audio:panner"
     | "audio:media-stream"
     | "audio:pinned-engine"
     | "audio:static-sound"
+    | "audio:streaming-sound"
     | "audio:spatial-sound"
     | "audio:engine-media-stream"
     | "audio:media-element"
@@ -3275,6 +3280,8 @@ export type Feature =
     | "ui:rml"
     // The bounded inline svg/path/rect grammar rendered by RmlUi's SVG plugin.
     | "ui:inline-svg"
+    // Packaged rasters an inline SVG <image> draws, inlined for the SVG plugin.
+    | "ui:svg-image"
     | "background:image-skybox"
     | "background:solid-skybox"
     /**

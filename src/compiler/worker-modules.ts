@@ -168,7 +168,9 @@ export function compileWorkerApplication(
     const assets = new EmissionMap<string, CompileManifest["assets"][number]>();
     for (const result of results)
         for (const asset of result.manifest.assets) {
-            const key = `${asset.kind}:${asset.source}:${asset.faceSize ?? ""}`;
+            // Retained UI paths and hashed texture paths can package the same
+            // source independently. Only one output must share specialization.
+            const key = `${asset.kind}:${asset.source}:${asset.faceSize ?? ""}:${asset.output}`;
             const prior = assets.get(key);
             if (prior && JSON.stringify(prior) !== JSON.stringify(asset)) {
                 fail(

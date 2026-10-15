@@ -1,0 +1,14 @@
+The maximum-decibel setting updates the analyser from its own value.
+
+diff --git a/src/core/AnalyserNode.cpp b/src/core/AnalyserNode.cpp
+--- a/src/core/AnalyserNode.cpp
++++ b/src/core/AnalyserNode.cpp
+@@ -72,7 +72,7 @@
+     _detail->_maxDecibels->setFloat(-30.f);
+     _detail->_maxDecibels->setValueChanged(
+         [this]() {
+-            _detail->m_analyser->setMaxDecibels(_detail->_minDecibels->valueFloat());
++            _detail->m_analyser->setMaxDecibels(_detail->_maxDecibels->valueFloat());
+         });
+ 
+     _detail->_smoothingTimeConstant->setFloat(0.8f);

@@ -1,0 +1,312 @@
+CSS aspect-ratio for non-replaced boxes: the preferred ratio sizes an auto axis from the
+definite one through the box-sizing box, exactly for scroll containers or under an authored
+minimum, otherwise above the automatic minimum the content sets (CSS Box Sizing 4 §5).
+Flex columns transfer a definite or stretched width (CSS Flexbox 9.2.3); the forms layout
+does not represent refuse at layout.
+
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 31eb1f0..72031dc 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -174,6 +174,7 @@ enum class PropertyId : uint8_t {
+ 	GridAutoColumns,
+ 	GridAutoRows,
+ 	GridTemplateAreas,
++	AspectRatio,
+ 	Isolation,
+ 	ContainerType,
+ 	JustifyItems,
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 3a65e8a..0e225ac 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1412,6 +1412,7 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::GridAutoColumns:
+ 	case PropertyId::GridAutoRows:
+ 	case PropertyId::GridTemplateAreas:
++	case PropertyId::AspectRatio:
+ 	case PropertyId::Isolation:
+ 		break; // Consumed by the grid track formatter.
+ 	case PropertyId::JustifyItems:
+diff --git a/Source/Core/Layout/BlockFormattingContext.cpp b/Source/Core/Layout/BlockFormattingContext.cpp
+index f580ebb..561e620 100644
+--- a/Source/Core/Layout/BlockFormattingContext.cpp
++++ b/Source/Core/Layout/BlockFormattingContext.cpp
+@@ -106,6 +106,7 @@ UniquePtr<LayoutBox> BlockFormattingContext::Format(ContainerBox* parent_contain
+ 
+ 	float min_height, max_height;
+ 	LayoutDetails::GetDefiniteMinMaxHeight(min_height, max_height, element->GetComputedValues(), box, containing_block.y);
++	LayoutDetails::ApplyAspectRatioHeight(min_height, max_height, element, box);
+ 
+ 	UniquePtr<BlockContainer> container = MakeUnique<BlockContainer>(parent_container, nullptr, element, box, min_height, max_height);
+ 
+@@ -144,6 +145,7 @@ bool BlockFormattingContext::FormatBlockBox(BlockContainer* parent_container, El
+ 	LayoutDetails::BuildBox(box, containing_block, element);
+ 	float min_height, max_height;
+ 	LayoutDetails::GetDefiniteMinMaxHeight(min_height, max_height, element->GetComputedValues(), box, containing_block.y);
++	LayoutDetails::ApplyAspectRatioHeight(min_height, max_height, element, box);
+ 
+ 	BlockContainer* container = parent_container->OpenBlockBox(element, box, min_height, max_height);
+ 	if (!container)
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index 1e8fe47..c63b6f6 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -44,6 +44,7 @@ UniquePtr<LayoutBox> FlexFormattingContext::Format(ContainerBox* parent_containe
+ 
+ 	LayoutDetails::GetMinMaxWidth(context.flex_min_size.x, context.flex_max_size.x, computed, box, containing_block.x);
+ 	LayoutDetails::GetMinMaxHeight(context.flex_min_size.y, context.flex_max_size.y, computed, box, containing_block.y);
++	LayoutDetails::ApplyAspectRatioHeight(context.flex_min_size.y, context.flex_max_size.y, element, box);
+ 
+ 	const Vector2f box_content_size = box.GetSize();
+ 	const bool auto_height = (box_content_size.y < 0.0f);
+@@ -390,6 +391,19 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 			if (computed.align_self() == Style::AlignSelf::Auto && !element_flex->GetLocalProperty(PropertyId::AlignItems))
+ 				item.align_self = Style::AlignSelf::Start;
+ 		}
++		// A preferred aspect ratio with both sizes auto transfers the line's stretched cross size when that is
++		// definite (CSS Flexbox 9.2.3 B, 9.8): a column formats a stretched width; a single-line row of definite
++		// height would size the base from it, which is not represented.
++		if (!is_grid && item.box.GetSize().x < 0.f && item.box.GetSize().y < 0.f && LayoutDetails::GetPreferredAspectRatio(element) > 0.f)
++		{
++			using Style::Margin;
++			const bool stretched = item.align_self == Style::AlignSelf::Stretch &&
++				(main_axis_horizontal ? computed.margin_top().type != Margin::Auto && computed.margin_bottom().type != Margin::Auto
++									  : computed.margin_left().type != Margin::Auto && computed.margin_right().type != Margin::Auto);
++			if (main_axis_horizontal ? (stretched && flex_single_line && flex_available_content_size.y >= 0.f)
++									 : (!stretched || flex_available_content_size.x < 0.f))
++				throw std::runtime_error("UI aspect-ratio on a flex item with auto sizes needs a stretched column width or an indefinite row height.");
++		}
+ 		auto GetMainSize = [&](const Box& box) { return box.GetSize()[main_axis_horizontal ? 0 : 1]; };
+ 
+ 		const float sum_padding_border = item.main.sum_edges - (item.main.margin_a + item.main.margin_b);
+diff --git a/Source/Core/Layout/LayoutDetails.cpp b/Source/Core/Layout/LayoutDetails.cpp
+index 6c53e67..601831a 100644
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -5,10 +5,16 @@
+ #include "../../../Include/RmlUi/Core/ElementText.h"
+ #include "../../../Include/RmlUi/Core/Math.h"
+ #include "../../../Include/RmlUi/Core/Profiling.h"
++#include "../../../Include/RmlUi/Core/Property.h"
++#include "../../../Include/RmlUi/Core/StringUtilities.h"
++#include "../NumberParsing.h"
+ #include "ContainerBox.h"
+ #include "FormattingContext.h"
+ #include "LayoutEngine.h"
++#include <cmath>
+ #include <float.h>
++#include <stdexcept>
++#include <string_view>
+ 
+ namespace Rml {
+ 
+@@ -21,6 +27,156 @@ static inline float BorderSizeToContentSize(float border_size, float border_padd
+ 	return Math::Max(0.0f, border_size - border_padding_edges_size);
+ }
+ 
++// CSS Box Sizing 4 §5.1 aspect-ratio: `auto || <ratio>`, a <ratio> being `<number [0,∞]> [ / <number [0,∞]> ]?`.
++// Returns width / height, or 0 for auto and degenerate ratios; `automatic` reports the auto keyword.
++static float ParseAspectRatio(const String& source, bool& automatic)
++{
++	auto fail = [] { throw std::runtime_error("UI aspect-ratio requires auto and/or a ratio of finite nonnegative numbers."); };
++	std::string_view input(source);
++	auto space = [&] {
++		while (!input.empty() && StringUtilities::IsWhitespace(input.front()))
++			input.remove_prefix(1);
++	};
++	auto number = [&] {
++		space();
++		float value = 0.f;
++		const auto parsed = number_parsing::from_chars(input.data(), input.data() + input.size(), value);
++		if (parsed.ec != std::errc{} || !std::isfinite(value) || value < 0.f)
++			fail();
++		input.remove_prefix(size_t(parsed.ptr - input.data()));
++		return value;
++	};
++	automatic = false;
++	float ratio = -1.f;
++	for (space(); !input.empty(); space())
++	{
++		if (input.size() >= 4 && StringUtilities::ToLower(String(input.substr(0, 4))) == "auto" &&
++			(input.size() == 4 || StringUtilities::IsWhitespace(input[4])))
++		{
++			if (automatic)
++				fail();
++			automatic = true;
++			input.remove_prefix(4);
++			continue;
++		}
++		if (ratio >= 0.f)
++			fail();
++		const float width = number();
++		float height = 1.f;
++		space();
++		if (!input.empty() && input.front() == '/')
++		{
++			input.remove_prefix(1);
++			height = number();
++		}
++		// A zero or infinite term is a degenerate ratio, which behaves as auto.
++		ratio = (width > 0.f && height > 0.f && std::isfinite(width / height)) ? width / height : 0.f;
++	}
++	if (!automatic && ratio < 0.f)
++		fail();
++	return Math::Max(ratio, 0.f);
++}
++
++float LayoutDetails::GetPreferredAspectRatio(Element* element)
++{
++	// Not inherited and initially auto: only an authored value can set a ratio.
++	if (!element->GetLocalProperty(PropertyId::AspectRatio))
++		return 0.f;
++	const Property* property = element->GetProperty(PropertyId::AspectRatio);
++	bool automatic = false;
++	const float ratio = property ? ParseAspectRatio(property->Get<String>(), automatic) : 0.f;
++	if (ratio > 0.f && element->IsReplaced())
++	{
++		Vector2f natural_size;
++		float natural_ratio = -1.f;
++		if (!automatic || !element->GetIntrinsicDimensions(natural_size, natural_ratio) || natural_ratio <= 0.f)
++			throw std::runtime_error("UI aspect-ratio on replaced elements is not represented.");
++		return 0.f;
++	}
++	return ratio;
++}
++
++// The content size the ratio transfers to one axis from the other axis's content size; the ratio relates the boxes
++// box-sizing names.
++static float TransferAspectRatio(float ratio, const Box& box, const ComputedValues& computed, bool to_height, float from_content_size)
++{
++	float edges_from = 0.f, edges_to = 0.f;
++	if (computed.box_sizing() == Style::BoxSizing::BorderBox)
++	{
++		const float horizontal = box.GetSizeAcross(BoxDirection::Horizontal, BoxArea::Border, BoxArea::Padding);
++		const float vertical = box.GetSizeAcross(BoxDirection::Vertical, BoxArea::Border, BoxArea::Padding);
++		edges_from = to_height ? horizontal : vertical;
++		edges_to = to_height ? vertical : horizontal;
++	}
++	const float from = from_content_size + edges_from;
++	return Math::Max(0.f, (to_height ? from / ratio : from * ratio) - edges_to);
++}
++
++// A ratio-derived size is definite for a scroll container or under an authored minimum; otherwise the automatic
++// minimum lets content grow it (CSS Box Sizing 4 §5.2).
++static bool IsDefiniteAspectRatioSize(Element* element, bool height)
++{
++	const ComputedValues& computed = element->GetComputedValues();
++	return LayoutDetails::IsScrollContainer(computed.overflow_x(), computed.overflow_y()) ||
++		element->GetLocalProperty(height ? PropertyId::MinHeight : PropertyId::MinWidth);
++}
++
++// Sizes the auto axis of a box with a preferred aspect ratio from its definite axis (CSS Box Sizing 4 §5.1).
++static void ApplyAspectRatio(Box& box, Vector2f& content_area, Vector2f min_size, Vector2f max_size, Vector2f containing_block,
++	Element* element, BuildBoxMode box_context)
++{
++	const float ratio = LayoutDetails::GetPreferredAspectRatio(element);
++	if (ratio <= 0.f)
++		return;
++	if (box_context == BuildBoxMode::IntrinsicWidth)
++		throw std::runtime_error("UI aspect-ratio on grid items is not represented.");
++	const ComputedValues& computed = element->GetComputedValues();
++	if (content_area.x >= 0.f && content_area.y < 0.f)
++	{
++		if (IsDefiniteAspectRatioSize(element, true))
++			content_area.y = Math::Clamp(TransferAspectRatio(ratio, box, computed, true, content_area.x), min_size.y, max_size.y);
++	}
++	else if (content_area.y >= 0.f && content_area.x < 0.f)
++	{
++		float width = TransferAspectRatio(ratio, box, computed, false, content_area.y);
++		if (!IsDefiniteAspectRatioSize(element, false))
++		{
++			// The automatic minimum is the min-content width: the content formatted at zero inline size.
++			Box measure = box;
++			measure.SetContent({0.f, content_area.y});
++			RootBox root(Math::Max(containing_block, Vector2f(0.f)));
++			const auto layout = FormattingContext::FormatIndependent(&root, element, &measure, FormattingContextType::Block);
++			width = Math::Max(width, layout->GetShrinkToFitWidth());
++		}
++		content_area.x = Math::Clamp(width, min_size.x, max_size.x);
++	}
++}
++
++// The auto block size a preferred aspect ratio transfers from the box's resolved inline size, clamped, or -1.
++// `definite` reports whether it is the used size or a minimum the content can exceed.
++static float AspectRatioHeight(Element* element, const Box& box, float min_height, float max_height, bool& definite)
++{
++	const Vector2f size = box.GetSize();
++	if (size.y >= 0.f || size.x < 0.f)
++		return -1.f;
++	const float ratio = LayoutDetails::GetPreferredAspectRatio(element);
++	if (ratio <= 0.f)
++		return -1.f;
++	definite = IsDefiniteAspectRatioSize(element, true);
++	return Math::Clamp(TransferAspectRatio(ratio, box, element->GetComputedValues(), true, size.x), min_height, max_height);
++}
++
++void LayoutDetails::ApplyAspectRatioHeight(float& min_height, float& max_height, Element* element, const Box& box)
++{
++	bool definite = false;
++	const float height = AspectRatioHeight(element, box, min_height, max_height, definite);
++	if (height < 0.f)
++		return;
++	min_height = height;
++	if (definite)
++		max_height = height;
++}
++
+ void LayoutDetails::BuildBox(Box& box, Vector2f containing_block, Element* element, BuildBoxMode box_context)
+ {
+ 	if (!element)
+@@ -101,6 +257,9 @@ void LayoutDetails::BuildBox(Box& box, Vector2f containing_block, Element* eleme
+ 
+ 		if (replaced_element)
+ 			content_area = CalculateSizeForReplacedElement(content_area, min_size, max_size, intrinsic_size, intrinsic_ratio);
++
++		if (box_context != BuildBoxMode::Inline)
++			ApplyAspectRatio(box, content_area, min_size, max_size, containing_block, element, box_context);
+ 	}
+ 
+ 	box.SetContent(content_area);
+@@ -217,6 +376,12 @@ void LayoutDetails::BuildBoxSizeAndMargins(Box& box, Vector2f min_size, Vector2f
+ 	{
+ 		// The element is block, so we need to run the box through the ringer to potentially evaluate auto margins and dimensions.
+ 		BuildBoxWidth(box, computed, min_size.x, max_size.x, containing_block, element, replaced_element);
++		// The resolved inline size transfers through a preferred aspect ratio to an auto block size; one the
++		// content may still grow stays auto (ApplyAspectRatioHeight raises its minimum).
++		bool definite = false;
++		const float ratio_height = replaced_element ? -1.f : AspectRatioHeight(element, box, min_size.y, max_size.y, definite);
++		if (ratio_height >= 0.f && definite)
++			box.SetContent({box.GetSize().x, ratio_height});
+ 		BuildBoxHeight(box, computed, min_size.y, max_size.y, containing_block.y);
+ 	}
+ }
+diff --git a/Source/Core/Layout/LayoutDetails.h b/Source/Core/Layout/LayoutDetails.h
+index 47144e6..19bdacd 100644
+--- a/Source/Core/Layout/LayoutDetails.h
++++ b/Source/Core/Layout/LayoutDetails.h
+@@ -63,6 +63,12 @@ public:
+ 	/// @param[in] parent_container The parent container of the current box.
+ 	/// @param[in] position The position property of the current box.
+ 	/// @return The containing block box and size, possibly indefinite (represented by negative size) along one or both axes.
++	// The width / height preferred aspect ratio of a non-replaced box (CSS Box Sizing 4 §5.1), or 0 for none.
++	static float GetPreferredAspectRatio(Element* element);
++	// Bounds an auto block size by the size the box's preferred aspect ratio transfers from its inline size: exactly
++	// for a scroll container or an authored min-height, otherwise as a minimum the content can exceed.
++	static void ApplyAspectRatioHeight(float& min_height, float& max_height, Element* element, const Box& box);
++
+ 	static ContainingBlock GetContainingBlock(ContainerBox* parent_container, Style::Position position);
+ 
+ 	/// Builds margins of a Box, and resolves any auto width or height for non-inline elements. The height may be left unresolved if it depends on the
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index 4e9bea4..0f6f3be 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -449,6 +449,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::GridAutoRows, "grid-auto-rows", "auto", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridTemplateAreas, "grid-template-areas", "none", false, true).AddParser("string");
+ 	RegisterShorthand(ShorthandId::GridArea, "grid-area", "grid-row, grid-column", ShorthandType::GridArea);
++	RegisterProperty(PropertyId::AspectRatio, "aspect-ratio", "auto", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::Isolation, "isolation", "auto", false, false).AddParser("keyword", "auto, isolate");
+ 	RegisterProperty(PropertyId::ContainerType, "container-type", "normal", false, true).AddParser("keyword", "normal, inline-size");
+ 	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");

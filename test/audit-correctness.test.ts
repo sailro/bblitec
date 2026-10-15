@@ -988,7 +988,16 @@ function uiTextMutationFixture(source: string): string {
             return false;
         }
         }
-        namespace bbl { ${functions} }
+        namespace bbl {
+        // Revision fixtures contain no scripts; dom-script-elements covers their preparation.
+        void prepare_script(Engine& engine, UiElementHandle element) {
+            assert(engine.ui_elements.at(element.value).tag != "script");
+        }
+        void prepare_connected_scripts(Engine& engine, UiElementHandle) {
+            assert(!engine.ui_has_scripts);
+        }
+        ${functions}
+        }
     `;
 }
 

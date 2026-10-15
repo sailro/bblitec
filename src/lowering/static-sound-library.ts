@@ -2,7 +2,8 @@
  * The pin's audio family lowered from its own declarations, as one
  * `PinnedRecordModel`: the engine (`audio-engine.ts` with its buses, ramped
  * parameters and signals) and, as a program reaches them, `static-sound.ts`
- * with the modules it reaches (the sound buffer and sub-graph).
+ * with the modules it reaches (the sound buffer and sub-graph) and the mixer
+ * buses of `audio-bus.ts`.
  *
  * Web Audio is the application surface's own (`webAudioRecords`). The
  * engine is the native `bbl::AudioEngineHandle` (`bblite/audio_types.hpp`)
@@ -15,9 +16,11 @@
  * looped sound started while the context is not running -- refuses at run
  * time.
  *
- * Spatial audio (`spatial.ts`) joins the model when a program reaches it,
- * as the pin tree-shakes it: a panner sub-node per sound and the engine's
- * listener over the context's `AudioListener`. A host is a static sound,
+ * Spatial audio (`spatial.ts`), stereo panning (`stereo.ts`) and the
+ * analyzer (`analyzer.ts`) join the model when a program reaches them, as
+ * the pin tree-shakes them: a panner, stereo panner or analyser sub-node per
+ * sound and, for spatial audio, the engine's listener over the context's
+ * `AudioListener`. A host is a static sound,
  * the one host this surface lowers; the engine keeps the listener and the
  * attached nodes' updates in its native handle.
  */
@@ -36,6 +39,7 @@ import {
     functionOf as fn,
     members,
     optionalOf,
+    promiseOf,
     reads,
     recordOf as record,
     recordScalars,
@@ -44,6 +48,8 @@ import {
 import {
     webAudioClasses,
     webAudioConstructors,
+    webAudioAdapters,
+    webAudioInstanceOf,
     webAudioRecords,
     webPlatformConstructors,
     webPlatformGlobals,
@@ -82,13 +88,53 @@ export const ENGINE_ROOTS = [
     "getMasterVolume",
 ] as const;
 
-/** The static-sound functions a program calls. */
+/** The static-sound functions a program calls, sound buffers included. */
 export const STATIC_SOUND_ROOTS = [
+    "createSoundBufferAsync",
     "createSoundAsync",
     "playSound",
     "stopSound",
     "setSoundVolume",
     "disposeSound",
+] as const;
+
+/** The sound-source functions a program calls: a caller-built node routed as a sound. */
+const SOURCE_ROOTS = [
+    "createSoundSourceAsync",
+    "setSoundSourceVolume",
+    "disposeSoundSource",
+] as const;
+
+/** The streaming-sound functions a program calls: a media element routed as a sound. */
+const STREAMING_ROOTS = [
+    "createStreamingSoundAsync",
+    "playStreamingSound",
+    "pauseStreamingSound",
+    "resumeStreamingSound",
+    "stopStreamingSound",
+    "setStreamingSoundVolume",
+    "disposeStreamingSound",
+    "preloadStreamingInstanceAsync",
+    "preloadStreamingInstancesAsync",
+] as const;
+
+/** The bus functions a program calls. */
+const BUS_ROOTS = [
+    "createAudioBusAsync",
+    "setBusVolume",
+    "disposeAudioBus",
+] as const;
+
+/** The stereo functions a program calls. */
+const STEREO_ROOTS = ["enableStereo", "setStereoPan"] as const;
+
+/** The analyzer functions a program calls. */
+const ANALYZER_ROOTS = [
+    "enableAnalyzer",
+    "getByteFrequencyData",
+    "getFloatFrequencyData",
+    "getByteTimeDomainData",
+    "getFloatTimeDomainData",
 ] as const;
 
 /** The spatial functions a program calls. */
@@ -108,6 +154,11 @@ const MEDIA_STREAM_ROOTS = ["createAudioEngineMediaStream"] as const;
 export const AUDIO_LIBRARY_ROOTS: readonly string[] = [
     ...ENGINE_ROOTS,
     ...STATIC_SOUND_ROOTS,
+    ...SOURCE_ROOTS,
+    ...STREAMING_ROOTS,
+    ...BUS_ROOTS,
+    ...STEREO_ROOTS,
+    ...ANALYZER_ROOTS,
     ...SPATIAL_ROOTS,
     ...MEDIA_STREAM_ROOTS,
 ];
@@ -267,7 +318,20 @@ const engineRecords = (
                 "onStateChanged",
                 reads(record("AudioEngineStateSignal"), (owner) => owner),
             ],
+            [
+                "onUserGesture",
+                reads(record("AudioEngineGestureSignal"), (owner) => owner),
+            ],
             ["_isOffline", reads(recordScalars.boolean, () => "false")],
+            // A held engine's creation has settled: it is ready.
+            [
+                "_isReady",
+                reads(
+                    promiseOf(none),
+                    () =>
+                        "bbl::js::Promise<bbl::js::PromiseVoid>::resolved({})",
+                ),
+            ],
             [
                 "_spatialUpdaters",
                 field(
@@ -288,6 +352,22 @@ const engineRecords = (
         reference: true,
         native: true,
         members: members([["_dispose", field(fn([], none), "dispose")]]),
+    },
+    {
+        pinned: ["AudioEngineGestureSignal"],
+        cpp: "AudioEngineHandle",
+        reference: false,
+        native: true,
+        members: members([
+            [
+                "addOnce",
+                spelled(
+                    fn([fn([], none)], fn([], none)),
+                    () =>
+                        `[]() -> bbl::js::Callback<void()> { throw std::runtime_error("Retrying a streaming sound whose play() failed waits for a user gesture, which the native engine does not report."); }()`,
+                ),
+            ],
+        ]),
     },
     {
         pinned: ["AudioEngineStateSignal"],
@@ -398,7 +478,6 @@ const soundRecords: readonly RecordSpec[] = [
         bases: ["AudioEngineSound"],
     },
     { pinned: ["SoundInstance"], cpp: "SoundInstance", reference: true },
-    { pinned: ["SoundSubGraph"], cpp: "SoundSubGraph", reference: true },
     {
         pinned: ["SoundBuffer"],
         cpp: "SoundBuffer",
@@ -410,9 +489,24 @@ const soundRecords: readonly RecordSpec[] = [
             "length",
         ]),
     },
+];
+
+/**
+ * The mixer records a sound and a bus share: a bus's options, the bus (an
+ * engine sound the engine disposes), and the sub-graph each routes through
+ * with its optional sub-node slots.
+ */
+const graphRecords: readonly RecordSpec[] = [
+    { pinned: ["AudioBusOptions"], cpp: "AudioBusOptions", reference: false },
+    { pinned: ["SoundSubGraph"], cpp: "SoundSubGraph", reference: true },
     { pinned: ["PreVolumeSlot"], cpp: "SoundPreVolumeSlot", reference: true },
     { pinned: ["AnalyzerSlot"], cpp: "SoundAnalyzerSlot", reference: true },
-    { pinned: ["AudioBus"], cpp: "AudioBus", reference: true },
+    {
+        pinned: ["AudioBus"],
+        cpp: "AudioBus",
+        reference: true,
+        bases: ["AudioEngineSound"],
+    },
 ];
 
 /**
@@ -475,6 +569,95 @@ const spatialRecords: readonly RecordSpec[] = [
     },
 ];
 
+/** A sound source's records: its options and the source, an engine sound. */
+const sourceRecords: readonly RecordSpec[] = [
+    {
+        pinned: ["SoundSourceOptions"],
+        cpp: "SoundSourceOptions",
+        reference: false,
+    },
+    {
+        pinned: ["AudioInputSource"],
+        cpp: "AudioInputSource",
+        reference: true,
+        bases: ["AudioEngineSound"],
+    },
+];
+
+const STREAMING_SOUND = "src/audio/streaming-sound.ts";
+
+/** A streaming sound's records: its options, the sound (an engine sound) and its instances. */
+const streamingRecords: readonly RecordSpec[] = [
+    {
+        pinned: ["StreamingInstanceOptions"],
+        cpp: "StreamingInstanceOptions",
+        reference: false,
+        typeOf: `${STREAMING_SOUND}#StreamingInstance._options`,
+    },
+    {
+        pinned: ["StoredStreamingOptions"],
+        cpp: "StreamingSoundStoredOptions",
+        reference: false,
+    },
+    {
+        pinned: ["StreamingSoundOptions"],
+        cpp: "StreamingSoundOptions",
+        reference: false,
+    },
+    {
+        pinned: ["StreamingSoundPlayOptions"],
+        cpp: "StreamingSoundPlayOptions",
+        reference: false,
+    },
+    {
+        pinned: ["StreamingSound"],
+        cpp: "StreamingSound",
+        reference: true,
+        accessors: new Set([
+            "state",
+            "instanceCount",
+            "preloadCompletedCount",
+            "onEnded",
+        ]),
+        bases: ["AudioEngineSound"],
+    },
+    {
+        pinned: ["StreamingInstance"],
+        cpp: "StreamingInstance",
+        reference: true,
+    },
+];
+
+/** Stereo panning's records: its options and its sub-node, the sub-graph's slot. */
+const stereoRecords: readonly RecordSpec[] = [
+    {
+        pinned: ["StereoSoundOptions"],
+        cpp: "StereoSoundOptions",
+        reference: false,
+    },
+    {
+        pinned: ["StereoSubNode"],
+        cpp: "StereoSubNode",
+        reference: true,
+        bases: ["PreVolumeSlot"],
+    },
+];
+
+/** The analyzer's records: its options and its tap, the sub-graph's slot. */
+const analyzerRecords: readonly RecordSpec[] = [
+    {
+        pinned: ["AudioAnalyzerOptions"],
+        cpp: "AudioAnalyzerOptions",
+        reference: false,
+    },
+    {
+        pinned: ["AnalyzerSubNode"],
+        cpp: "AnalyzerSubNode",
+        reference: true,
+        bases: ["AnalyzerSlot"],
+    },
+];
+
 /** An optional part of the family, lowered when a program reaches one of its roots. */
 interface FamilyPart {
     readonly roots: readonly string[];
@@ -488,6 +671,17 @@ interface FamilyPart {
 
 const FAMILY_PARTS: readonly FamilyPart[] = [
     {
+        // Every sound, source and bus routes through a sub-graph into a bus.
+        roots: [
+            ...STATIC_SOUND_ROOTS,
+            ...SOURCE_ROOTS,
+            ...STREAMING_ROOTS,
+            ...BUS_ROOTS,
+        ],
+        modules: [],
+        records: graphRecords,
+    },
+    {
         // A sound decodes on native jobs, fetches its URL, and probes a
         // format through `Audio.canPlayType`.
         roots: STATIC_SOUND_ROOTS,
@@ -498,6 +692,31 @@ const FAMILY_PARTS: readonly FamilyPart[] = [
             "bblite/pal_audio_element.hpp",
             "bblite/web_platform.hpp",
         ],
+    },
+    {
+        // A streaming sound plays a packaged media element through the
+        // element's source node.
+        roots: STREAMING_ROOTS,
+        modules: [STREAMING_SOUND],
+        records: streamingRecords,
+        includes: ["bblite/pal_audio_element.hpp", "bblite/web_platform.hpp"],
+    },
+    {
+        // A source over a stream source stops the stream's tracks.
+        roots: SOURCE_ROOTS,
+        modules: ["src/audio/sound-source.ts"],
+        records: sourceRecords,
+        includes: ["bblite/pal_media_stream.hpp"],
+    },
+    {
+        roots: STEREO_ROOTS,
+        modules: ["src/audio/stereo.ts"],
+        records: stereoRecords,
+    },
+    {
+        roots: ANALYZER_ROOTS,
+        modules: ["src/audio/analyzer.ts"],
+        records: analyzerRecords,
     },
     {
         roots: SPATIAL_ROOTS,
@@ -568,7 +787,7 @@ function staticSoundLibraryModel(
                 ...webPlatformValues,
                 ...parts.flatMap((part) => part.values ?? []),
             ]),
-            adapters: ENGINE_ADAPTERS,
+            adapters: new Map([...ENGINE_ADAPTERS, ...webAudioAdapters]),
             constructors: new Map([
                 ...webPlatformConstructors,
                 ...webAudioConstructors,
@@ -576,6 +795,7 @@ function staticSoundLibraryModel(
             ]),
             globals: webPlatformGlobals,
             platformClasses: webAudioClasses,
+            instanceOf: webAudioInstanceOf,
             // A type-only module the bundle does not declare: the host
             // state the spatial functions read off a static sound.
             unresolved: new Map([

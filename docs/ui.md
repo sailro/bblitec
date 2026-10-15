@@ -50,7 +50,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Area | Admitted | Refuses |
 | --- | --- | --- |
 | Tree | Static tags, text nodes, append/insert/prepend/replaceChildren, remove, `replaceWith`, `insertAdjacentElement`, parent/child/sibling reads | Stored child collections, prepend spreads, tree reads inside innerHTML, `replaceWith` text/spreads, dynamic adjacent positions |
-| Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties, dataset, packaged img `src` choices | Compound text/dataset writes, dynamic dataset keys, other property writes; `title` tooltips not rendered |
+| Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties, dataset, `new Image()`, img `src` selecting packaged images (literals or runtime strings with inferable candidates; load/error, natural size, `complete`), `scrollTop`/`scrollLeft` (applied clamped at the next layout) | Compound text/dataset writes, dynamic dataset keys, other property writes, img `src` without inferable candidates (incl. `data:`/object URLs), `draggable = true`, `autocomplete` reads; `title` tooltips not rendered |
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
 | Queries | Literal selectors, runtime text in quoted attribute values, unions of literal selectors, state pseudo-classes, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements, other runtime selector text |
 | Pointer/keyboard | Mouse, multi-touch, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events |
@@ -62,6 +62,12 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - `:hover`/`:active` read the UI's last update, so a listener of the pointer event that changes them sees the earlier
   state; focus states, `:checked` and `:disabled` read the document.
 - Listener options: `capture`, `once`, `passive`, `signal` ([abort](fidelity.md#semantic-contract)).
+- An event's `target`/`currentTarget` narrowed by `instanceof` to an element is that retained element; writes through it
+  lower as the element's own.
+- Dynamically created scripts are retained, never rendered: an external script fails to load (a task fires `error`
+  after it connects, never `load`); inline text refuses, or throws NotSupportedError when a connected script gets it.
+- `inputmode`, input `type` and inherited `spellcheck` choose the platform keyboard and autocorrection; labels activate
+  their `for` or nested control.
 - Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
   events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
   mouse beyond the window.
@@ -87,8 +93,8 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 ## Markup and SVG
 
 - Static innerHTML is parsed at generation by Chromium (the browser's tree, entities and implied end tags).
-- innerHTML admits text/div/span/label, comments, packaged img, reviewed SVG path/rect, role/aria-*/data-*; runtime text
-  is escaped. Scripts, event attributes and runtime tag or attribute names refuse.
+- innerHTML admits text/div/span/label, comments, packaged img, reviewed SVG path/rect and packaged PNG/JPEG `<image>`,
+  role/aria-*/data-*; runtime text is escaped. Scripts, event attributes and runtime tag or attribute names refuse.
 - Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
   ones do: div/span/p/h1/h2/b/strong/label/button and reviewed control attributes. Comments, other tags, textarea
   content and dynamic markup with controls refuse; whitespace between options is not kept.
@@ -106,20 +112,20 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 
 | Area | Admitted | Refuses |
 | --- | --- | --- |
-| Box | fixed/inset, px/rem/viewport calc/min/max/clamp (also over `var()`, with times and angles), box sizing, physical and horizontal-LTR logical edges, float/clear | Vertical/RTL logical mapping, element-font-relative math, other units in math over `var()` |
+| Box | fixed/inset, px/rem/viewport calc/min/max/clamp (also over `var()`, with times and angles), box sizing, physical and horizontal-LTR logical edges, float/clear, `aspect-ratio` | Vertical/RTL logical mapping, element-font-relative math, other units in math over `var()`; `aspect-ratio` on replaced elements, grid items and flex items with both sizes auto in a stretched definite row |
 | Flex | Wrap, direction, grow/shrink/basis, alignment, gaps | Intrinsic basis keywords |
-| Grid | Line placement, spans, auto/px/fr/minmax, repeat/auto-fit/auto-fill (≤256 tracks/axis) | Named areas/lines, subgrid, percentage tracks |
+| Grid | Line placement, spans, named areas (`grid-template-areas`, `grid-area`), auto/fr/minmax with px/em/rem/vw/vh lengths, repeat/auto-fit/auto-fill (≤256 tracks/axis) | Named lines, subgrid, percentage tracks |
 | Containers/media | inline-size containment, unnamed max-width queries; max-width, orientation, reduced-motion media | Named/height/style queries |
 | Text | Wrapping, italic, casing, ellipsis, vertical-align keywords, decoration lines | Oblique, decoration colors/styles, vertical-align lengths |
 | Borders/backgrounds | Solid borders, radii, gradients, one packaged image, raster border-image slices | Elliptical radius syntax, multiple image layers, sized repetition |
 | Shadows/filters | Box shadows, filters, drop-shadow chains, backdrop blur | Non-pixel shadow lengths, other backdrop functions (may degrade) |
-| Transforms | Uniform nonnegative scale | Nonuniform scale, nonempty clip rectangles |
-| Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way) | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
+| Transforms/clipping | Uniform nonnegative scale; `clip-path` inset()/polygon() over px/%/calc() (aliased edges) | Nonuniform scale, nonempty clip rectangles, other basic shapes, `round`, reference boxes |
+| Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way); inline style, cssText and removal writes transition like rule changes | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
 | Selectors | Tags/IDs/classes, attribute presence/equality, combinators, state pseudo-classes, An+B, `not/is/where/has`, `::before/::after` | Nested `:has`, wider attribute operators, counters |
 | Other | `!important`, custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` | Runtime-generated stylesheet text, list markers, translucent accents |
 
-In [deferred mode](features.md#deferred-capabilities), registered missing CSS properties, grid-track forms, nonconstant
-stylesheet installation and unstructured declaration strings throw at the write; host-page sheets still need admission.
+In [deferred mode](features.md#deferred-capabilities), registered missing CSS properties and grid-track forms throw at
+the write; host-page sheets still need admission.
 
 ## Fonts
 
@@ -132,8 +138,8 @@ stylesheet installation and unstructured declaration strings throw at the write;
 
 - Scene drivers render each UI segment into a transparent layer at scene sample count; sprite and Window drivers blend
   into single-sample targets. Canvas overlays precede DOM chrome.
-- An engine canvas beneath the UI is an opaque rectangle; a rounded, transformed, translucent, filtered, masked or
-  overflow-clipped engine canvas refuses.
+- An engine canvas beneath the UI is an opaque rectangle; a rounded, transformed, translucent, filtered, masked,
+  clip-path or overflow-clipped engine canvas refuses.
 - Backdrop blur snapshots preceding UI into FP16 scratch.
 
 ## Limits

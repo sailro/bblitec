@@ -94,12 +94,15 @@ void audio_param_set_value_curve(AudioParamHandle, const bbl::js::F32Array&, dou
 
 /**
  * The whole parameter surface the lowered engine reaches, for a fixture
- * that stubs the PAL: a parameter reads its default and schedules nothing.
+ * that stubs the PAL: a parameter reads its default and schedules nothing;
+ * no node is a stream source.
  */
 export const ENGINE_PARAMETER_STUBS = `${ENGINE_RAMP_STUBS}
 namespace bbl::pal {
 AudioParamHandle audio_node_param(AudioNodeHandle node, AudioParamName name) { return {node, name}; }
 float audio_param_value(AudioParamHandle) { return 1.0f; }
 void audio_param_set_value(AudioParamHandle, float) {}
+bool audio_is_media_stream_source(AudioNodeHandle) { return false; }
+std::shared_ptr<MediaStream> audio_source_stream(AudioNodeHandle) { return {}; }
 }
 `;

@@ -13,24 +13,24 @@ test("CSS deferral inventories independent features without hiding language gaps
     const source =
         prefix +
         `
-        panel.style.cssText="aspect-ratio:2;clip-path:inset(1px);animation-direction:reverse";
+        panel.style.cssText="caption-side:bottom;empty-cells:hide;animation-direction:reverse";
         panel.style.gridTemplateColumns="[start] 1fr [end]";
         panel.style.setProperty("columns", "2");
         const sheet=document.createElement("style");
-        sheet.textContent='@media(max-width:600px){.panel{mask:none;grid-template-areas:"a b"}}';
+        sheet.textContent='@media(max-width:600px){.panel{mask:none;break-inside:avoid}}';
     `;
     assert.throws(() => compileSource(source), /Retained UI style/);
     const result = compileSource(source, { deferredCapabilities });
     assert.deepEqual(
         result.manifest.deferredCapabilities?.map((s) => s.id),
         [
-            "css:property:aspect-ratio",
-            "css:property:clip-path",
+            "css:property:caption-side",
+            "css:property:empty-cells",
             "css:property:animation-direction",
             "css:grid-tracks:grid-template-columns",
             "css:property:columns",
             "css:property:mask",
-            "css:property:grid-template-areas",
+            "css:property:break-inside",
         ],
     );
     assert.throws(
@@ -54,7 +54,7 @@ test("CSS deferral inventories independent features without hiding language gaps
         () =>
             compileSource(
                 prefix +
-                    `panel.style.clipPath=String(new FinalizationRegistry(() => {}));`,
+                    `panel.style.emptyCells=String(new FinalizationRegistry(() => {}));`,
                 {
                     deferredCapabilities,
                 },
@@ -93,12 +93,7 @@ test("deferred grid contracts retain strict surrounding syntax validation", () =
             /Retained UI style/,
         );
     }
-    for (const value of [
-        "[start] 1fr [end]",
-        "10% 2rem",
-        "repeat(2, minmax(1em, 1fr))",
-        "subgrid [first]",
-    ]) {
+    for (const value of ["[start] 1fr [end]", "10% 2rem", "subgrid [first]"]) {
         const result = compileSource(
             prefix +
                 `panel.style.cssText=${JSON.stringify(`grid-template-columns:${value}`)};`,
@@ -119,25 +114,34 @@ test("CSS stubs evaluate values once and throw at each reached installation", (t
         function text(value:string):string { ++effects; return value; }
         const panel=document.createElement("div");
         const sheet=document.createElement("style");
-        try { panel.style.clipPath=text("inset(1px)"); } catch(e) {
-            if(!e.message.includes("css:property:clip-path"))throw new Error("property identity");
+        try { panel.style.emptyCells=text("hide"); } catch(e) {
+            if(!e.message.includes("css:property:empty-cells"))throw new Error("property identity");
             ++catches;
         }
-        try { panel.style.cssText=text("color:red"); } catch(e) {
-            if(!e.message.includes("css:runtime-declaration-installation-bridge"))throw new Error("declaration bridge identity");
-            ++catches;
-        }
-        try { sheet.textContent=text(".panel{color:red}"); } catch(e) {
-            if(!e.message.includes("css:runtime-stylesheet-installation-bridge"))throw new Error("sheet bridge identity");
+        try { sheet.textContent=".panel{mask:none}"; } catch(e) {
+            if(!e.message.includes("css:property:mask"))throw new Error("sheet identity");
             ++catches;
         }
         try { panel.style.cssText=\`mask:\${text("none")};columns:2\`; } catch { ++catches; }
-        if(effects!==4||catches!==4)throw new Error("evaluation or catch order");
+        sheet.textContent=text(".panel{color:red}");
+        if(effects!==3||catches!==3)throw new Error("evaluation or catch order");
         if(panel.style.color!=="")throw new Error("deferred write must not change styles");
         globalThis.close();
     `;
     const result = compileSource(source, { deferredCapabilities });
-    assert.equal(result.manifest.deferredCapabilities?.length, 5);
+    assert.equal(result.manifest.deferredCapabilities?.length, 4);
+    // Text generation cannot read is no deferred capability: it refuses.
+    for (const write of [
+        `panel.style.cssText=text("color:red");`,
+        `sheet.textContent=text(String(performance.now()));`,
+    ])
+        assert.throws(
+            () =>
+                compileSource(source.replace("globalThis.close();", write), {
+                    deferredCapabilities,
+                }),
+            /Native UI cssText|Module constant|Builder|static|string literal/,
+        );
     writeFileSync(resolve(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "deferred-ui-style", {
         macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },

@@ -7,7 +7,12 @@ import { deploymentUrl } from "./deployment.js";
 import { CompileError } from "./compile-error.js";
 import { forEachReturn } from "./loop-control.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDefaultLibrary,
+    isNullishLiteral,
+    resolvedSymbol,
+} from "./symbols.js";
+import { objectIdentityCallArgument } from "./static-evaluator.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import {
     isAssignmentExpression,
@@ -42,6 +47,11 @@ interface Origin {
 type Environment = ReadonlyMap<ts.Symbol, Origin>;
 type Domain = readonly string[] | undefined;
 const candidateLimit = 256;
+/**
+ * The domain of a value no string reaches: a nullish operand `??` replaces,
+ * or a branch its own test rules out. Unions skip it.
+ */
+const nothing: readonly string[] = Object.freeze([]);
 
 interface SourceGraph {
     readonly calls: ReadonlyMap<
@@ -70,7 +80,9 @@ function calledFunction(
     const declaration = checker.getResolvedSignature(call)?.declaration;
     return (
         declaration &&
-        (ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration)
+        (ts.isArrowFunction(declaration) ||
+        ts.isFunctionExpression(declaration) ||
+        (ts.isMethodDeclaration(declaration) && declaration.body)
             ? declaration
             : functionOfDeclaration(declaration))
     );
@@ -84,6 +96,11 @@ function sourceGraph(
     if (cached) return cached;
 
     const calls = new Map<SupportedFunction, ts.CallExpression[]>();
+    // An object literal's methods implement the members of the type it is
+    // written as (`return { show() {} }` from a function typed `Toast`):
+    // calls through that type's member reach them.
+    const implementations = new Map<ts.Node, SupportedFunction[]>();
+    const memberCalls: [ts.Node, ts.CallExpression][] = [];
     const writes = new Map<ts.Symbol, ts.Expression[]>();
     const mutated = new Set<ts.Symbol>();
     const aliases = new Map<ts.Symbol, Set<ts.Symbol>>();
@@ -109,6 +126,18 @@ function sourceGraph(
         const symbol = root && resolvedSymbol(checker, root);
         if (symbol) mutated.add(symbol);
     };
+    const recordCall = (
+        declaration: SupportedFunction,
+        call: ts.CallExpression,
+    ): void => {
+        const sites = calls.get(declaration) ?? [];
+        sites.push(call);
+        calls.set(declaration, sites);
+        declaration.parameters.forEach((parameter, index) => {
+            if (ts.isIdentifier(parameter.name) && call.arguments[index])
+                alias(parameter.name, call.arguments[index]);
+        });
+    };
     for (const source of sourceFiles) {
         forEachAnalysisNode(
             source,
@@ -119,20 +148,55 @@ function sourceGraph(
                     node.initializer
                 )
                     alias(node.name, node.initializer);
+                if (ts.isObjectLiteralExpression(node)) {
+                    const type = checker.getContextualType(node);
+                    for (const property of node.properties) {
+                        if (
+                            !(
+                                ts.isMethodDeclaration(property) ||
+                                ts.isPropertyAssignment(property)
+                            ) ||
+                            !ts.isIdentifier(property.name)
+                        )
+                            continue;
+                        const implementation = ts.isMethodDeclaration(property)
+                            ? property
+                            : ts.isArrowFunction(property.initializer) ||
+                                ts.isFunctionExpression(property.initializer)
+                              ? property.initializer
+                              : undefined;
+                        if (!implementation) continue;
+                        const member = type?.getProperty(property.name.text);
+                        for (const signature of member?.declarations ?? []) {
+                            if (
+                                !ts.isMethodSignature(signature) &&
+                                !ts.isPropertySignature(signature)
+                            )
+                                continue;
+                            const implemented =
+                                implementations.get(signature) ?? [];
+                            implemented.push(implementation);
+                            implementations.set(signature, implemented);
+                        }
+                    }
+                }
                 if (ts.isCallExpression(node)) {
                     const declaration = calledFunction(checker, node);
-                    if (declaration) {
-                        const sites = calls.get(declaration) ?? [];
-                        sites.push(node);
-                        calls.set(declaration, sites);
-                        declaration.parameters.forEach((parameter, index) => {
-                            if (
-                                ts.isIdentifier(parameter.name) &&
-                                node.arguments[index]
-                            )
-                                alias(parameter.name, node.arguments[index]);
-                        });
+                    const signature =
+                        checker.getResolvedSignature(node)?.declaration;
+                    if (
+                        !declaration &&
+                        signature &&
+                        !ts.isJSDocSignature(signature)
+                    ) {
+                        // A property typed as a function type resolves to
+                        // that type's signature; the member names it.
+                        const member = ts.isFunctionTypeNode(signature)
+                            ? signature.parent
+                            : signature;
+                        memberCalls.push([member, node]);
                     }
+                    if (declaration) recordCall(declaration, node);
                     const callee = unwrapExpression(node.expression);
                     if (
                         ts.isPropertyAccessExpression(callee) &&
@@ -160,6 +224,9 @@ function sourceGraph(
             { types: "skip" },
         );
     }
+    for (const [member, call] of memberCalls)
+        for (const implementation of implementations.get(member) ?? [])
+            recordCall(implementation, call);
     const pending = [...mutated];
     for (let index = 0; index < pending.length; index++) {
         for (const target of aliases.get(pending[index]!) ?? []) {
@@ -183,12 +250,15 @@ function sourceGraph(
 export function assetUrlDomain(
     context: Context,
     expression: ts.Expression,
+    unpackaged: (url: string) => boolean = () => false,
 ): Domain {
-    const domain = new AssetUrlDomain(context, expression).read(
+    const read = new AssetUrlDomain(context, expression).read(
         expression,
         [],
         new Map(),
     );
+    const domain =
+        read === nothing ? undefined : read?.filter((url) => !unpackaged(url));
     const base = deploymentUrl(context.options);
     const safe = domain?.every((source) => {
         if (/%2f|%5c|\\/i.test(source)) return false;
@@ -228,6 +298,14 @@ class AssetUrlDomain {
     private readonly graph: SourceGraph;
     /** @unjournaled Traversal budget for one URL-domain query, discarded with that query. */
     private remaining = 4096;
+    /**
+     * @unjournaled Whether the value read is an operand `??` replaces when
+     * nullish: an omitted argument, a missing record member or a nullish
+     * literal then contributes nothing. Operands of string operations reset it.
+     */
+    private nullish = false;
+    /** @unjournaled Bindings the enclosing conditional tests truthy: never "". */
+    private readonly truthy = new Set<ts.Symbol>();
 
     constructor(
         private readonly context: Context,
@@ -249,7 +327,9 @@ class AssetUrlDomain {
         return [...result];
     }
 
-    private union(values: readonly Domain[]): Domain {
+    private union(domains: readonly Domain[]): Domain {
+        const values = domains.filter((value) => value !== nothing);
+        if (domains.length && !values.length) return nothing;
         if (values.some((value) => value?.length === 0)) return [];
         return values.length &&
             values.every(
@@ -280,14 +360,104 @@ class AssetUrlDomain {
         }
     }
 
+    /** Reads an operand that builds a string: its nullish values are not replaced. */
+    private operand(
+        expression: ts.Expression,
+        projection: Projection,
+        environment: Environment,
+    ): Domain {
+        const nullish = this.nullish;
+        this.nullish = false;
+        try {
+            return this.read(expression, projection, environment);
+        } finally {
+            this.nullish = nullish;
+        }
+    }
+
+    /** Reads `expression` where its nullish values are replaced (`??`). */
+    private replaced(
+        expression: ts.Expression,
+        projection: Projection,
+        environment: Environment,
+    ): Domain {
+        const nullish = this.nullish;
+        this.nullish = true;
+        try {
+            return this.read(expression, projection, environment);
+        } finally {
+            this.nullish = nullish;
+        }
+    }
+
     private value(
         node: ts.Expression,
         projection: Projection,
         environment: Environment,
     ): Domain {
+        if (
+            this.nullish &&
+            (isNullishLiteral(this.context.checker, node) ||
+                ts.isVoidExpression(node))
+        )
+            return nothing;
         if (ts.isIdentifier(node)) {
             const symbol = resolvedSymbol(this.context.checker, node);
             if (!symbol) return undefined;
+            const domain = this.identifier(
+                node,
+                symbol,
+                projection,
+                environment,
+            );
+            // A binding its conditional tested truthy holds no "" there.
+            if (
+                !projection.length &&
+                this.truthy.has(symbol) &&
+                domain?.length &&
+                domain !== nothing
+            ) {
+                const truthy = domain.filter((value) => value !== "");
+                return truthy.length ? truthy : nothing;
+            }
+            return domain;
+        }
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        )
+            return this.union([
+                this.replaced(node.left, projection, environment),
+                this.read(node.right, projection, environment),
+            ]);
+        if (ts.isConditionalExpression(node)) {
+            const test = unwrapExpression(node.condition);
+            const tested =
+                ts.isIdentifier(test) &&
+                resolvedSymbol(this.context.checker, test);
+            const narrows = tested && !this.truthy.has(tested);
+            if (narrows) this.truthy.add(tested);
+            let whenTrue: Domain;
+            try {
+                whenTrue = this.read(node.whenTrue, projection, environment);
+            } finally {
+                if (narrows) this.truthy.delete(tested);
+            }
+            return this.union([
+                whenTrue,
+                this.read(node.whenFalse, projection, environment),
+            ]);
+        }
+        return this.member(node, projection, environment);
+    }
+
+    private identifier(
+        node: ts.Identifier,
+        symbol: ts.Symbol,
+        projection: Projection,
+        environment: Environment,
+    ): Domain {
+        {
             if (this.graph.mutated.has(symbol)) {
                 const type = this.context.checker.getTypeAtLocation(node);
                 // Native browser objects (including the existing module URL
@@ -330,7 +500,8 @@ class AssetUrlDomain {
             if (declaration && ts.isParameter(declaration)) {
                 const owner =
                     ts.isArrowFunction(declaration.parent) ||
-                    ts.isFunctionExpression(declaration.parent)
+                    ts.isFunctionExpression(declaration.parent) ||
+                    ts.isMethodDeclaration(declaration.parent)
                         ? declaration.parent
                         : functionOfDeclaration(declaration.parent);
                 if (!owner) return undefined;
@@ -339,19 +510,22 @@ class AssetUrlDomain {
                     (this.graph.calls.get(owner) ?? []).map((call) => {
                         const argument =
                             call.arguments[index] ?? declaration.initializer;
-                        return argument
-                            ? this.read(argument, projection, environment)
-                            : undefined;
+                        if (argument)
+                            return this.read(argument, projection, environment);
+                        // An omitted argument is undefined.
+                        return this.nullish ? nothing : undefined;
                     }),
                 );
             }
         }
-        if (ts.isConditionalExpression(node))
-            return this.union(
-                [node.whenTrue, node.whenFalse].map((value) =>
-                    this.read(value, projection, environment),
-                ),
-            );
+        return undefined;
+    }
+
+    private member(
+        node: ts.Expression,
+        projection: Projection,
+        environment: Environment,
+    ): Domain {
         if (ts.isPropertyAccessExpression(node)) {
             const domain = this.read(
                 node.expression,
@@ -393,8 +567,30 @@ class AssetUrlDomain {
                     );
                 return undefined;
             }
-            return undefined;
+            // A record without the member reads undefined.
+            return this.nullish && projection.length === 1
+                ? nothing
+                : undefined;
         }
+        // A record read by a runtime key selects one of its member values.
+        if (ts.isObjectLiteralExpression(node) && projection[0] === element)
+            return this.union(
+                node.properties.map((property) =>
+                    ts.isPropertyAssignment(property)
+                        ? this.read(
+                              property.initializer,
+                              projection.slice(1),
+                              environment,
+                          )
+                        : ts.isShorthandPropertyAssignment(property)
+                          ? this.read(
+                                property.name,
+                                projection.slice(1),
+                                environment,
+                            )
+                          : undefined,
+                ),
+            );
         if (ts.isArrayLiteralExpression(node) && projection[0] === element)
             return this.union(
                 node.elements.map((value) =>
@@ -410,7 +606,7 @@ class AssetUrlDomain {
         if (ts.isTemplateExpression(node)) {
             const parts: Domain[] = [[node.head.text]];
             for (const span of node.templateSpans)
-                parts.push(this.read(span.expression, [], environment), [
+                parts.push(this.operand(span.expression, [], environment), [
                     span.literal.text,
                 ]);
             return this.concatenate(parts);
@@ -432,7 +628,7 @@ class AssetUrlDomain {
                 ) {
                     collect(operand.left);
                     collect(operand.right);
-                } else parts.push(this.read(operand, [], environment));
+                } else parts.push(this.operand(operand, [], environment));
             };
             collect(node);
             return this.concatenate(parts);
@@ -494,6 +690,14 @@ class AssetUrlDomain {
         const callee = unwrapExpression(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return undefined;
         const method = callee.name.text;
+        // Object.freeze returns its argument.
+        const frozen =
+            method === "freeze"
+                ? objectIdentityCallArgument(call, (node) =>
+                      this.context.libraryGlobal(node),
+                  )
+                : undefined;
+        if (frozen) return this.read(frozen, projection, environment);
         const receiverType = this.context.checker.getTypeAtLocation(
             callee.expression,
         );
@@ -546,20 +750,24 @@ class AssetUrlDomain {
             !(receiverType.flags & ts.TypeFlags.StringLike)
         )
             return undefined;
-        const source = this.read(callee.expression, [], environment);
+        const source = this.operand(callee.expression, [], environment);
         if (!source) return undefined;
         if (
             (method === "replace" || method === "replaceAll") &&
             call.arguments.length === 2
         ) {
-            const replacement = this.read(call.arguments[1]!, [], environment);
+            const replacement = this.operand(
+                call.arguments[1]!,
+                [],
+                environment,
+            );
             const patternNode = unwrapExpression(call.arguments[0]!);
             const regex = ts.isRegularExpressionLiteral(patternNode)
                 ? regularExpressionParts(patternNode)
                 : undefined;
             const patterns = regex
                 ? [new RegExp(regex.pattern, regex.flags)]
-                : this.read(patternNode, [], environment);
+                : this.operand(patternNode, [], environment);
             if (!replacement || !patterns) return [];
             const candidates = function* () {
                 for (const value of source)

@@ -329,7 +329,7 @@ test("refused media element forms name their limit", () => {
             compile(
                 'const audio = new Audio("/tone.wav"); audio.addEventListener("seeked", () => {});',
             ),
-        /Only timeupdate, ended, play, pause listeners are represented/,
+        /Only timeupdate, ended, play, pause, canplaythrough, error listeners are represented/,
     );
     assert.throws(
         () =>

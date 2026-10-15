@@ -7,7 +7,6 @@ import { supportedUiGridTracks } from "./ui-grid.js";
 
 /** Missing projection contracts, admitted only at an explicit throwing operation. */
 const properties = new Set([
-    "aspect-ratio",
     "zoom",
     "columns",
     "column-count",
@@ -26,9 +25,6 @@ const properties = new Set([
     "table-layout",
     "caption-side",
     "empty-cells",
-    "grid-template-areas",
-    "grid-area",
-    "clip-path",
     "mask",
     "mask-image",
     "mask-size",
@@ -78,13 +74,10 @@ export function deferredUiStyleCapability(
             );
         if (explicit && represented.trim() === "subgrid")
             return `css:grid-tracks:${property}`;
-        represented = represented.replace(
-            /(?:\d+(?:\.\d*)?|\.\d+)(?:%|(?:em|rem|vw|vh)\b)/g,
-            () => {
-                missing = true;
-                return "1px";
-            },
-        );
+        represented = represented.replace(/(?:\d+(?:\.\d*)?|\.\d+)%/g, () => {
+            missing = true;
+            return "1px";
+        });
         if (missing && supportedUiGridTracks(represented, !explicit))
             return `css:grid-tracks:${property}`;
     }

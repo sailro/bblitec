@@ -1373,17 +1373,27 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "audio:pinned-engine": {
         provenance:
             "src/audio/audio-engine.ts createAudioEngineAsync/setMasterVolume/" +
-            "getMasterVolume with the main output and bus, ramped parameters " +
-            "and signals they reach, lowered from the pin over the engine's " +
-            "native handle",
+            "getMasterVolume and src/audio/audio-bus.ts createAudioBusAsync/" +
+            "setBusVolume/disposeAudioBus with the main output and bus, ramped " +
+            "parameters and signals they reach, lowered from the pin over the " +
+            "engine's native handle",
         consumers: CMAKE,
     },
     "audio:static-sound": {
         provenance:
             "src/audio/static-sound.ts createSoundAsync/playSound/stopSound/" +
-            "setSoundVolume/disposeSound with the sound buffer, sub-graph, " +
+            "setSoundVolume/disposeSound and src/audio/sound-buffer.ts " +
+            "createSoundBufferAsync with the sound buffer, sub-graph, " +
             "ramped parameters, signals and fetch they reach, lowered whole",
         consumers: CMAKE,
+        applicationRealm: true,
+    },
+    "audio:streaming-sound": {
+        provenance:
+            "src/audio/streaming-sound.ts createStreamingSoundAsync and the " +
+            "streaming-sound functions, lowered with the audio family over " +
+            "packaged media elements",
+        consumers: INVENTORY,
         applicationRealm: true,
     },
     "audio:media-stream": {
@@ -1394,6 +1404,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "audio:stereo-panner": {
         provenance:
             "the reached Web Audio graph calls AudioContext.createStereoPanner()",
+        consumers: CMAKE,
+    },
+    "audio:analyser": {
+        provenance:
+            "the reached Web Audio graph constructs an AnalyserNode " +
+            "(src/audio/analyzer.ts createAnalyzerSubNode)",
         consumers: CMAKE,
     },
     "audio:engine-media-stream": {
@@ -1706,6 +1722,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "generation-validated inline svg/path/rect markup projected through the pinned RmlUi SVG plugin",
         consumers: CMAKE,
+    },
+    "ui:svg-image": {
+        provenance:
+            "generation-validated inline SVG <image> markup over packaged PNG/JPEG assets",
+        consumers: ["features.cmake", "feature macros"],
     },
     "data:locale": {
         provenance:

@@ -1,0 +1,51 @@
+AudioNodeInput took the single-connection fast path for every node, handing it the
+connection's own bus; WebKit takes it only for a node whose channel count follows
+its inputs (channelCountMode max). A node with an explicit or clamped count (the
+destination, a recorder, a stream destination, a panner) so received whatever count
+its one input carried, unmixed: a recorder that had seen stereo then recorded a later
+mono input in its first channel only. The fast path is WebKit's again, and the
+summing bus, sized to the computed count, mixes each connection as the node
+interprets its channels rather than always as speakers.
+
+diff --git a/src/core/AudioNodeInput.cpp b/src/core/AudioNodeInput.cpp
+index 75c564b..cf4b5cf 100644
+--- a/src/core/AudioNodeInput.cpp
++++ b/src/core/AudioNodeInput.cpp
+@@ -121,11 +121,10 @@ int AudioNodeInput::numberOfChannels(ContextRenderLock & r) const
+ 
+ AudioBus * AudioNodeInput::bus(ContextRenderLock & r)
+ {
+-    // Handle single connection specially to allow for in-place processing.
+-    // note: The webkit sources check for max, but I can't see how that's correct
+-
+-    // @tofix - did I miss part of the merge?
+-    if (numberOfRenderingConnections(r) == 1)  // && node()->channelCountMode() == ChannelCountMode::Max)
++    // Handle single connection specially to allow for in-place processing. Only a node whose
++    // channel count follows its inputs (Max) can take the connection's own bus; an explicit or
++    // clamped count is the summing bus's, mixed to that count.
++    if (numberOfRenderingConnections(r) == 1 && destinationNode()->channelCountMode() == ChannelCountMode::Max)
+     {
+         std::shared_ptr<AudioNodeOutput> output = renderingOutput(r, 0);
+         if (output)
+@@ -145,8 +144,8 @@ AudioBus * AudioNodeInput::pull(ContextRenderLock & r, AudioBus * inPlaceBus, in
+ 
+     size_t num_connections = numberOfRenderingConnections(r);
+ 
+-    // Handle single connection case.
+-    if (num_connections == 1)
++    // Handle single connection case, for a node whose channel count follows its inputs.
++    if (num_connections == 1 && destinationNode()->channelCountMode() == ChannelCountMode::Max)
+     {
+         // If this input is simply passing data through, then immediately delegate the pull request to it.
+         auto output = renderingOutput(r, 0);
+@@ -177,8 +176,8 @@ AudioBus * AudioNodeInput::pull(ContextRenderLock & r, AudioBus * inPlaceBus, in
+             // Render audio from this output.
+             AudioBus * connectionBus = output->pull(r, 0, bufferSize);
+ 
+-            // Sum, with unity-gain.
+-            m_internalSummingBus->sumFrom(*connectionBus);
++            // Sum, with unity-gain, mixing as the node interprets its channels.
++            m_internalSummingBus->sumFrom(*connectionBus, destinationNode()->channelInterpretation());
+         }
+     }
+     return m_internalSummingBus.get();

@@ -1,7 +1,8 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { valueForKind, type Value } from "./types.js";
-import { domTargetIdentity } from "./dom-targets.js";
+import { domTargetIdentity, elementInterfaceTag } from "./dom-targets.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { documentEngine } from "./window-events.js";
 import {
     compileBooleanOptions,
@@ -143,6 +144,30 @@ export function elementDomHandlerFamily(
         type === "resize"
         ? undefined
         : family;
+}
+
+/**
+ * Whether `type` is the load or error a script or img element fires: a
+ * task-queued, non-bubbling event of the application realm's resource loads.
+ */
+export function resourceLoadEvent(
+    context: Pick<Context, "checker" | "options">,
+    element: Value,
+    receiver: ts.Expression,
+    type: string,
+): boolean {
+    if ((type !== "error" && type !== "load") || element.kind !== "ui-element")
+        return false;
+    const tag =
+        element.uiTag ??
+        elementInterfaceTag(
+            context.checker
+                .getNonNullableType(context.checker.getTypeAtLocation(receiver))
+                .getSymbol()?.name ?? "",
+        );
+    if (tag !== "script" && tag !== "img") return false;
+    if (!context.options.workers) throw new ApplicationRealmRequired();
+    return true;
 }
 
 /** Each family's borrowed event view. */
@@ -602,7 +627,11 @@ export function emitDomEventListener(
     )
         return false;
     // Page transitions dispatch through the pointer family's Window path.
-    const family = pageLifecycle ? "pointer" : domListenerFamily(type);
+    const resourceLoad = element
+        ? resourceLoadEvent(context, element, callee.expression, type)
+        : false;
+    const family =
+        pageLifecycle || resourceLoad ? "pointer" : domListenerFamily(type);
     if (!family) return false;
     const custom = family === "custom";
     if (

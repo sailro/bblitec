@@ -1,0 +1,756 @@
+clip-path inset() and polygon() (nonzero/evenodd) over px/dp/%/calc() lengths: the
+border-box region clips the element and its descendants through the clip mask, its own
+filter or mask layer before it; it establishes a stacking context, limits hit testing, hides
+everything when it encloses no area, and transitions between shapes of one function
+(CSS Masking 1 §5, CSS Shapes 1).
+
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 72031dc..520ab8b 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -175,6 +175,7 @@ enum class PropertyId : uint8_t {
+ 	GridAutoRows,
+ 	GridTemplateAreas,
+ 	AspectRatio,
++	ClipPath,
+ 	Isolation,
+ 	ContainerType,
+ 	JustifyItems,
+diff --git a/Source/Core/ClipPath.h b/Source/Core/ClipPath.h
+new file mode 100644
+index 0000000..19108f8
+--- /dev/null
++++ b/Source/Core/ClipPath.h
+@@ -0,0 +1,419 @@
++#pragma once
++
++#include "../../Include/RmlUi/Core/Mesh.h"
++#include "../../Include/RmlUi/Core/Types.h"
++#include "NumberParsing.h"
++#include <algorithm>
++#include <cctype>
++#include <cmath>
++#include <stdexcept>
++#include <string_view>
++
++namespace Rml {
++
++// One <length-percentage> of a basic shape, linear in its reference dimension.
++struct ClipPathLength {
++	float percent = 0.f, dp = 0.f, px = 0.f;
++	float Resolve(float reference, float dp_ratio) const { return percent * 0.01f * reference + dp * dp_ratio + px; }
++};
++
++// The clip-path basic shapes (CSS Masking 1 §5, CSS Shapes 1 §3), inset() and polygon(), against the border box.
++struct ClipPathShape {
++	enum class Kind { None, Inset, Polygon };
++	Kind kind = Kind::None;
++	bool evenodd = false;
++	// inset(): top, right, bottom, left; polygon(): x and y of each vertex.
++	Vector<ClipPathLength> values;
++};
++
++namespace clip_path_detail {
++
++	[[noreturn]] inline void Fail()
++	{
++		throw std::runtime_error("UI clip-path requires none, inset() with one to four lengths or polygon() with an optional fill rule, "
++								 "over px/%/calc() lengths.");
++	}
++
++	class Parser {
++	public:
++		explicit Parser(std::string_view source) : input(source) {}
++
++		void Space()
++		{
++			while (!input.empty() && std::isspace(static_cast<unsigned char>(input.front())))
++				input.remove_prefix(1);
++		}
++		bool Take(char token)
++		{
++			Space();
++			if (input.empty() || input.front() != token)
++				return false;
++			input.remove_prefix(1);
++			return true;
++		}
++		// A case-insensitive identifier followed by a non-identifier character.
++		bool Keyword(std::string_view word)
++		{
++			Space();
++			if (input.size() < word.size())
++				return false;
++			for (size_t i = 0; i < word.size(); ++i)
++				if (std::tolower(static_cast<unsigned char>(input[i])) != word[i])
++					return false;
++			if (input.size() > word.size() && (std::isalnum(static_cast<unsigned char>(input[word.size()])) || input[word.size()] == '-'))
++				return false;
++			input.remove_prefix(word.size());
++			return true;
++		}
++		bool Done()
++		{
++			Space();
++			return input.empty();
++		}
++		char Peek()
++		{
++			Space();
++			return input.empty() ? '\0' : input.front();
++		}
++
++		// A <length-percentage>: a dimension, a unitless zero, or calc() of them.
++		ClipPathLength Length()
++		{
++			Space();
++			const Value value = Keyword("calc") ? Function() : Atom(false);
++			if (value.scalar && !(value.number == 0.f && !value.from_calc))
++				Fail();
++			return value.length;
++		}
++
++	private:
++		struct Value {
++			ClipPathLength length;
++			float number = 0.f;
++			bool scalar = false, from_calc = false;
++		};
++
++		std::string_view input;
++
++		Value Function()
++		{
++			if (input.empty() || input.front() != '(')
++				Fail();
++			input.remove_prefix(1);
++			Value value = Sum();
++			if (!Take(')'))
++				Fail();
++			value.from_calc = true;
++			return value;
++		}
++		Value Atom(bool in_calc)
++		{
++			Space();
++			if (in_calc && !input.empty() && input.front() == '(')
++				return Function();
++			if (in_calc && Keyword("calc"))
++				return Function();
++			if (!input.empty() && input.front() == '+')
++				input.remove_prefix(1);
++			float number = 0.f;
++			const auto parsed = number_parsing::from_chars(input.data(), input.data() + input.size(), number);
++			if (parsed.ec != std::errc{} || !std::isfinite(number))
++				Fail();
++			input.remove_prefix(size_t(parsed.ptr - input.data()));
++			Value value;
++			if (!input.empty() && input.front() == '%')
++			{
++				input.remove_prefix(1);
++				value.length.percent = number;
++			}
++			else if (input.size() >= 2 && (input.substr(0, 2) == "px" || input.substr(0, 2) == "dp") &&
++				(input.size() == 2 || !std::isalnum(static_cast<unsigned char>(input[2]))))
++			{
++				(input[0] == 'p' ? value.length.px : value.length.dp) = number;
++				input.remove_prefix(2);
++			}
++			else if (!input.empty() && (std::isalpha(static_cast<unsigned char>(input.front()))))
++				Fail();
++			else
++			{
++				value.scalar = true;
++				value.number = number;
++			}
++			return value;
++		}
++		static Value Scale(Value value, float factor)
++		{
++			value.length = {value.length.percent * factor, value.length.dp * factor, value.length.px * factor};
++			value.number *= factor;
++			return value;
++		}
++		Value Product()
++		{
++			Value value = Atom(true);
++			for (;;)
++			{
++				// Leave the whitespace before a + or - for Sum() to read.
++				const std::string_view before = input;
++				Space();
++				const bool multiply = !input.empty() && input.front() == '*';
++				if (!multiply && (input.empty() || input.front() != '/'))
++				{
++					input = before;
++					return value;
++				}
++				input.remove_prefix(1);
++				const Value other = Atom(true);
++				if (multiply && !value.scalar && !other.scalar)
++					Fail();
++				if (!multiply && (!other.scalar || other.number == 0.f))
++					Fail();
++				if (multiply && value.scalar && !other.scalar)
++					value = Scale(other, value.number);
++				else
++					value = Scale(value, multiply ? other.number : 1.f / other.number);
++			}
++		}
++		Value Sum()
++		{
++			Value value = Product();
++			for (;;)
++			{
++				// calc() requires whitespace on both sides of + and -.
++				if (input.size() < 3 || !std::isspace(static_cast<unsigned char>(input.front())))
++				{
++					Space();
++					return value;
++				}
++				std::string_view rest = input;
++				while (!rest.empty() && std::isspace(static_cast<unsigned char>(rest.front())))
++					rest.remove_prefix(1);
++				if (rest.size() < 2 || (rest.front() != '+' && rest.front() != '-') || !std::isspace(static_cast<unsigned char>(rest[1])))
++				{
++					Space();
++					return value;
++				}
++				const float sign = rest.front() == '-' ? -1.f : 1.f;
++				input = rest.substr(1);
++				const Value other = Scale(Product(), sign);
++				if (value.scalar != other.scalar)
++					Fail();
++				value.length = {value.length.percent + other.length.percent, value.length.dp + other.length.dp, value.length.px + other.length.px};
++				value.number += other.number;
++			}
++		}
++	};
++
++	// A fixed six-decimal form, independent of the C locale's decimal separator.
++	inline String FormatNumber(float value)
++	{
++		if (!(std::abs(value) < 1e12f))
++			Fail();
++		const long long micro = std::llround(double(value) * 1e6);
++		const unsigned long long magnitude = static_cast<unsigned long long>(micro < 0 ? -micro : micro);
++		String fraction = std::to_string(magnitude % 1000000);
++		fraction.insert(0, 6 - fraction.size(), '0');
++		return (micro < 0 ? "-" : "") + std::to_string(magnitude / 1000000) + "." + fraction;
++	}
++
++	inline String Format(const ClipPathLength& length)
++	{
++		return "calc(" + FormatNumber(length.percent) + "% + " + FormatNumber(length.dp) + "dp + " + FormatNumber(length.px) + "px)";
++	}
++
++	// The signed side of `point` against the directed edge a->b.
++	inline float Side(Vector2f a, Vector2f b, Vector2f point)
++	{
++		return (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
++	}
++
++} // namespace clip_path_detail
++
++inline ClipPathShape ParseClipPath(std::string_view source)
++{
++	using namespace clip_path_detail;
++	Parser parser(source);
++	ClipPathShape shape;
++	if (parser.Keyword("none"))
++	{
++		if (!parser.Done())
++			Fail();
++		return shape;
++	}
++	if (parser.Keyword("inset"))
++	{
++		shape.kind = ClipPathShape::Kind::Inset;
++		if (!parser.Take('('))
++			Fail();
++		while (parser.Peek() != ')' && shape.values.size() < 4)
++			shape.values.push_back(parser.Length());
++		if (shape.values.empty() || !parser.Take(')'))
++			Fail();
++		// CSS box shorthand order: top, right = top, bottom = top, left = right.
++		if (shape.values.size() < 2)
++			shape.values.push_back(shape.values[0]);
++		if (shape.values.size() < 3)
++			shape.values.push_back(shape.values[0]);
++		if (shape.values.size() < 4)
++			shape.values.push_back(shape.values[1]);
++	}
++	else if (parser.Keyword("polygon"))
++	{
++		shape.kind = ClipPathShape::Kind::Polygon;
++		if (!parser.Take('('))
++			Fail();
++		const bool nonzero = parser.Keyword("nonzero");
++		shape.evenodd = !nonzero && parser.Keyword("evenodd");
++		if ((nonzero || shape.evenodd) && !parser.Take(','))
++			Fail();
++		do
++		{
++			shape.values.push_back(parser.Length());
++			shape.values.push_back(parser.Length());
++		} while (parser.Take(',') && shape.values.size() < 2 * 1024);
++		if (!parser.Take(')'))
++			Fail();
++	}
++	else
++		Fail();
++	if (!parser.Done())
++		Fail();
++	return shape;
++}
++
++inline String SerializeClipPath(const ClipPathShape& shape)
++{
++	using namespace clip_path_detail;
++	if (shape.kind == ClipPathShape::Kind::None)
++		return "none";
++	String result = shape.kind == ClipPathShape::Kind::Inset ? "inset(" : shape.evenodd ? "polygon(evenodd, " : "polygon(";
++	for (size_t i = 0; i < shape.values.size(); ++i)
++	{
++		if (i > 0)
++			result += (shape.kind == ClipPathShape::Kind::Polygon && i % 2 == 0) ? ", " : " ";
++		result += Format(shape.values[i]);
++	}
++	return result + ")";
++}
++
++// CSS Shapes 1 §6: shapes of one function interpolate per value, polygons only with equal vertex counts and fill rules.
++inline bool InterpolateClipPath(const ClipPathShape& from, const ClipPathShape& to, float alpha, ClipPathShape& result)
++{
++	if (from.kind == ClipPathShape::Kind::None || from.kind != to.kind || from.evenodd != to.evenodd ||
++		from.values.size() != to.values.size())
++		return false;
++	result = from;
++	for (size_t i = 0; i < from.values.size(); ++i)
++	{
++		const auto& a = from.values[i];
++		const auto& b = to.values[i];
++		result.values[i] = {a.percent + (b.percent - a.percent) * alpha, a.dp + (b.dp - a.dp) * alpha, a.px + (b.px - a.px) * alpha};
++	}
++	return true;
++}
++
++// The vertices of the shape in border-box pixels.
++inline Vector<Vector2f> ClipPathPoints(const ClipPathShape& shape, Vector2f size, float dp_ratio)
++{
++	Vector<Vector2f> points;
++	if (shape.kind == ClipPathShape::Kind::Inset)
++	{
++		const float top = shape.values[0].Resolve(size.y, dp_ratio), right = size.x - shape.values[1].Resolve(size.x, dp_ratio);
++		const float bottom = size.y - shape.values[2].Resolve(size.y, dp_ratio), left = shape.values[3].Resolve(size.x, dp_ratio);
++		// Opposing insets that meet or cross enclose no area.
++		if (left < right && top < bottom)
++			points = {{left, top}, {right, top}, {right, bottom}, {left, bottom}};
++	}
++	else if (shape.kind == ClipPathShape::Kind::Polygon)
++	{
++		for (size_t i = 0; i + 1 < shape.values.size(); i += 2)
++			points.push_back({shape.values[i].Resolve(size.x, dp_ratio), shape.values[i + 1].Resolve(size.y, dp_ratio)});
++	}
++	return points;
++}
++
++// The filled region of the shape as triangles in border-box pixels, by fill rule: the edges crossing each band
++// between consecutive vertex and intersection heights never cross inside it, so the band fills as trapezoids.
++inline Mesh ClipPathMesh(const ClipPathShape& shape, Vector2f size, float dp_ratio)
++{
++	const Vector<Vector2f> points = ClipPathPoints(shape, size, dp_ratio);
++	Mesh mesh;
++	if (points.size() < 3)
++		return mesh;
++	struct Edge {
++		Vector2f top, bottom;
++		int winding;
++		float X(float y) const { return top.x + (bottom.x - top.x) * (y - top.y) / (bottom.y - top.y); }
++	};
++	Vector<Edge> edges;
++	Vector<float> heights;
++	for (size_t i = 0; i < points.size(); ++i)
++	{
++		const Vector2f a = points[i], b = points[(i + 1) % points.size()];
++		heights.push_back(a.y);
++		if (a.y != b.y)
++			edges.push_back(a.y < b.y ? Edge{a, b, 1} : Edge{b, a, -1});
++	}
++	for (size_t i = 0; i < edges.size(); ++i)
++		for (size_t j = i + 1; j < edges.size(); ++j)
++		{
++			const Edge &p = edges[i], &q = edges[j];
++			const float denominator = (p.bottom.x - p.top.x) * (q.bottom.y - q.top.y) - (p.bottom.y - p.top.y) * (q.bottom.x - q.top.x);
++			if (denominator == 0.f)
++				continue;
++			const float t = ((q.top.x - p.top.x) * (q.bottom.y - q.top.y) - (q.top.y - p.top.y) * (q.bottom.x - q.top.x)) / denominator;
++			if (t > 0.f && t < 1.f)
++				heights.push_back(p.top.y + t * (p.bottom.y - p.top.y));
++		}
++	std::sort(heights.begin(), heights.end());
++	heights.erase(std::unique(heights.begin(), heights.end()), heights.end());
++	const ColourbPremultiplied white(255);
++	struct Crossing {
++		float top, middle, bottom;
++		int winding;
++	};
++	Vector<Crossing> crossings;
++	for (size_t band = 0; band + 1 < heights.size(); ++band)
++	{
++		const float y0 = heights[band], y1 = heights[band + 1], middle = 0.5f * (y0 + y1);
++		if (!(y1 > y0))
++			continue;
++		crossings.clear();
++		for (const Edge& edge : edges)
++			if (edge.top.y <= y0 && edge.bottom.y >= y1)
++				crossings.push_back({edge.X(y0), edge.X(middle), edge.X(y1), edge.winding});
++		std::sort(crossings.begin(), crossings.end(), [](const Crossing& a, const Crossing& b) { return a.middle < b.middle; });
++		int winding = 0;
++		for (size_t i = 0; i + 1 < crossings.size(); ++i)
++		{
++			winding += crossings[i].winding;
++			if (shape.evenodd ? (winding & 1) == 0 : winding == 0)
++				continue;
++			const Crossing &left = crossings[i], &right = crossings[i + 1];
++			const int base = int(mesh.vertices.size());
++			for (const Vector2f position : {Vector2f{left.top, y0}, Vector2f{right.top, y0}, Vector2f{right.bottom, y1}, Vector2f{left.bottom, y1}})
++				mesh.vertices.push_back(Vertex{position, white, Vector2f{}});
++			mesh.indices.insert(mesh.indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
++		}
++	}
++	return mesh;
++}
++
++// Whether a border-box point lies inside the shape, by its fill rule.
++inline bool ClipPathContains(const ClipPathShape& shape, Vector2f size, float dp_ratio, Vector2f point)
++{
++	if (shape.kind == ClipPathShape::Kind::None)
++		return true;
++	const Vector<Vector2f> points = ClipPathPoints(shape, size, dp_ratio);
++	int winding = 0;
++	for (size_t i = 0; i < points.size(); ++i)
++	{
++		const Vector2f a = points[i], b = points[(i + 1) % points.size()];
++		if (a.y <= point.y && b.y > point.y && clip_path_detail::Side(a, b, point) > 0.f)
++			++winding;
++		else if (b.y <= point.y && a.y > point.y && clip_path_detail::Side(a, b, point) < 0.f)
++			--winding;
++	}
++	return shape.evenodd ? (winding & 1) != 0 : winding != 0;
++}
++
++} // namespace Rml
+diff --git a/Source/Core/Context.cpp b/Source/Core/Context.cpp
+index d837b43..838910c 100644
+--- a/Source/Core/Context.cpp
++++ b/Source/Core/Context.cpp
+@@ -12,6 +12,7 @@
+ #include "../../Include/RmlUi/Core/StreamMemory.h"
+ #include "../../Include/RmlUi/Core/SystemInterface.h"
+ #include "DataModel.h"
++#include "ElementEffects.h"
+ #include "EventDispatcher.h"
+ #include "PluginRegistry.h"
+ #include "ScrollController.h"
+@@ -1481,6 +1482,7 @@ Element* Context::GetElementAtPoint(Vector2f point, const Element* ignore_elemen
+ 		return nullptr;
+ 
+ 	// Projection may fail if we have a singular transformation matrix.
++	const Vector2f window_point = point;
+ 	bool projection_result = element->Project(point);
+ 
+ 	// Check if the point is actually within this element.
+@@ -1491,6 +1493,8 @@ Element* Context::GetElementAtPoint(Vector2f point, const Element* ignore_elemen
+ 		Rectanglei clip_region;
+ 		if (ElementUtilities::GetClippingRegion(element, clip_region))
+ 			within_element = clip_region.Contains(Vector2i(point));
++		// Points a clip-path of the element or an ancestor excludes do not hit it.
++		within_element = within_element && ElementEffects::ClipPathHits(element, window_point);
+ 	}
+ 
+ 	if (within_element)
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 8957327..301b795 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -188,6 +188,12 @@ void Element::Render()
+ 
+ 	UpdateAbsoluteOffsetAndRenderBoxData();
+ 
++	// A clip-path enclosing no area hides the element and its stacking context, which it always establishes.
++	bool clipped_away = false;
++	ElementEffects::GetClipPath(this, clipped_away);
++	if (clipped_away)
++		return;
++
+ 	if (stacking_context_dirty)
+ 		BuildLocalStackingContext();
+ 
+@@ -1924,14 +1930,18 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		changed_properties.Contains(PropertyId::TransformOriginY) || changed_properties.Contains(PropertyId::TransformOriginZ);
+ 
+ 	// Update the z-index and stacking context.
+-	if (changed_properties.Contains(PropertyId::ZIndex) || changed_properties.Contains(PropertyId::Isolation) || filter_or_mask_changed || perspective_changed || transform_changed)
++	if (changed_properties.Contains(PropertyId::ZIndex) || changed_properties.Contains(PropertyId::Isolation) || filter_or_mask_changed || perspective_changed || transform_changed ||
++		changed_properties.Contains(PropertyId::ClipPath))
+ 	{
+ 		const Style::ZIndex z_index_property = meta->computed_values.z_index();
++		const Property* clip_path = GetLocalProperty(PropertyId::ClipPath) ? GetProperty(PropertyId::ClipPath) : nullptr;
++		const bool has_clip_path = clip_path && StringUtilities::ToLower(StringUtilities::StripWhitespace(clip_path->Get<String>())) != "none";
+ 
+ 		const float new_z_index = (z_index_property.type == Style::ZIndex::Auto ? 0.f : z_index_property.value);
+ 		const bool enable_local_stacking_context = (z_index_property.type != Style::ZIndex::Auto || local_stacking_context_forced ||
+ 			meta->computed_values.has_filter() || meta->computed_values.has_backdrop_filter() || meta->computed_values.has_mask_image() ||
+-			meta->computed_values.has_local_transform() || meta->computed_values.has_local_perspective() || meta->computed_values.isolation() == Style::Isolation::Isolate);
++			meta->computed_values.has_local_transform() || meta->computed_values.has_local_perspective() || meta->computed_values.isolation() == Style::Isolation::Isolate ||
++			has_clip_path);
+ 
+ 		if (z_index != new_z_index || local_stacking_context != enable_local_stacking_context)
+ 		{
+diff --git a/Source/Core/ElementAnimation.cpp b/Source/Core/ElementAnimation.cpp
+index ed4d367..8db96ff 100644
+--- a/Source/Core/ElementAnimation.cpp
++++ b/Source/Core/ElementAnimation.cpp
+@@ -10,6 +10,7 @@
+ #include "../../Include/RmlUi/Core/StyleSheetTypes.h"
+ #include "../../Include/RmlUi/Core/Transform.h"
+ #include "../../Include/RmlUi/Core/TransformPrimitive.h"
++#include "ClipPath.h"
+ #include "ComputeProperty.h"
+ #include "ElementStyle.h"
+ #include "TransformUtilities.h"
+@@ -201,6 +202,15 @@ static Property InterpolateProperties(const Property& p0, const Property& p1, fl
+ {
+ 	const Property& p_discrete = (alpha < 0.5f ? p0 : p1);
+ 
++	// Basic shapes of one function interpolate per value (CSS Shapes 1 §6); others swap discretely.
++	if (definition && definition->GetId() == PropertyId::ClipPath && p0.unit == Unit::STRING && p1.unit == Unit::STRING)
++	{
++		ClipPathShape shape;
++		if (!InterpolateClipPath(ParseClipPath(p0.Get<String>()), ParseClipPath(p1.Get<String>()), alpha, shape))
++			return p_discrete;
++		return Property{SerializeClipPath(shape), Unit::STRING};
++	}
++
+ 	if (Any(p0.unit & Unit::NUMERIC) && Any(p1.unit & Unit::NUMERIC))
+ 	{
+ 		NumericValue v = InterpolateNumericValue(p0.GetNumericValue(), p1.GetNumericValue(), alpha, element, definition);
+@@ -641,7 +651,8 @@ bool ElementAnimation::InternalAddKey(float time, const Property& in_property, E
+ 	const Units valid_units =
+ 		(Unit::NUMBER_LENGTH_PERCENT | Unit::ANGLE | Unit::COLOUR | Unit::TRANSFORM | Unit::KEYWORD | Unit::DECORATOR | Unit::FILTER);
+ 
+-	if (!Any(in_property.unit & valid_units))
++	// clip-path keeps its basic shapes as authored strings.
++	if (!Any(in_property.unit & valid_units) && !(property_id == PropertyId::ClipPath && in_property.unit == Unit::STRING))
+ 	{
+ 		const char* property_type = (in_property.unit == Unit::BOXSHADOWLIST ? "Box shadows do not" : "Property value does not");
+ 		Log::Message(Log::LT_WARNING, "%s support animations or transitions. Value: %s", property_type, in_property.ToString().c_str());
+diff --git a/Source/Core/ElementEffects.cpp b/Source/Core/ElementEffects.cpp
+index 3a276a4..6cf0503 100644
+--- a/Source/Core/ElementEffects.cpp
++++ b/Source/Core/ElementEffects.cpp
+@@ -6,7 +6,9 @@
+ #include "../../Include/RmlUi/Core/ElementUtilities.h"
+ #include "../../Include/RmlUi/Core/Filter.h"
+ #include "../../Include/RmlUi/Core/Profiling.h"
++#include "../../Include/RmlUi/Core/RenderManager.h"
+ #include "../../Include/RmlUi/Core/StyleSheet.h"
++#include "ElementMeta.h"
+ #include "ElementStyle.h"
+ #include <stdexcept>
+ 
+@@ -294,6 +296,7 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 		if (!filters.empty() || !mask_images.empty())
+ 		{
+ 			render_manager->PushLayer();
++			layer_open = true;
+ 		}
+ 
+ 		if (!backdrop_filters.empty())
+@@ -325,11 +328,16 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 			// A backdrop root: a descendant's backdrop-filter reads only what this subtree painted before it.
+ 			backdrop_root_layer = filters.empty() && mask_images.empty() && HasBackdropFilterDescendant(element);
+ 			if (backdrop_root_layer)
++			{
+ 				render_manager->PushLayer();
++				layer_open = true;
++			}
+ 		}
+ 	}
+ 	else if (render_stage == RenderStage::Exit)
+ 	{
++		// The composite takes this element's clipping, its own clip-path included.
++		layer_open = false;
+ 		if (!filters.empty() || !mask_images.empty())
+ 		{
+ 			ApplyClippingRegion(PropertyId::Filter);
+@@ -372,6 +380,60 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 	}
+ }
+ 
++Geometry* ElementEffects::GetClipPath(Element* element, bool& empty)
++{
++	empty = false;
++	// Not inherited and initially none: only an authored or animating value clips.
++	if (!element->GetLocalProperty(PropertyId::ClipPath))
++		return nullptr;
++	const Property* property = element->GetProperty(PropertyId::ClipPath);
++	if (!property || property->unit != Unit::STRING)
++		return nullptr;
++	const String source = property->Get<String>();
++	auto& clip_path = element->meta->effects.clip_path;
++	if (!clip_path)
++		clip_path = MakeUnique<ClipPath>();
++	const Vector2f size = element->GetBox().GetSize(BoxArea::Border);
++	const float dp_ratio = ElementUtilities::GetDensityIndependentPixelRatio(element);
++	if (clip_path->source != source || clip_path->size != size || clip_path->dp_ratio != dp_ratio)
++	{
++		if (clip_path->source != source || clip_path->dp_ratio == 0.f)
++			clip_path->shape = ParseClipPath(source);
++		clip_path->source = source;
++		clip_path->size = size;
++		clip_path->dp_ratio = dp_ratio;
++		Mesh mesh = ClipPathMesh(clip_path->shape, size, dp_ratio);
++		clip_path->empty = !mesh;
++		RenderManager* render_manager = element->GetRenderManager();
++		clip_path->geometry = render_manager && mesh ? render_manager->MakeGeometry(std::move(mesh)) : Geometry();
++	}
++	if (clip_path->shape.kind == ClipPathShape::Kind::None)
++		return nullptr;
++	empty = clip_path->empty;
++	return &clip_path->geometry;
++}
++
++bool ElementEffects::ClipPathHits(Element* element, Vector2f point)
++{
++	for (Element* clipping = element; clipping; clipping = clipping->GetParentNode())
++	{
++		bool empty = false;
++		if (!GetClipPath(clipping, empty))
++			continue;
++		Vector2f local = point;
++		const ClipPath& clip_path = *clipping->meta->effects.clip_path;
++		if (empty || !clipping->Project(local) ||
++			!ClipPathContains(clip_path.shape, clip_path.size, clip_path.dp_ratio, local - clipping->GetAbsoluteOffset(BoxArea::Border)))
++			return false;
++	}
++	return true;
++}
++
++bool ElementEffects::PaintsIntoOpenLayer(Element* element)
++{
++	return element->meta->effects.layer_open;
++}
++
+ void ElementEffects::DirtyEffects()
+ {
+ 	effects_dirty = true;
+diff --git a/Source/Core/ElementEffects.h b/Source/Core/ElementEffects.h
+index 92e55e4..45a7814 100644
+--- a/Source/Core/ElementEffects.h
++++ b/Source/Core/ElementEffects.h
+@@ -1,8 +1,10 @@
+ #pragma once
+ 
+ #include "../../Include/RmlUi/Core/CompiledFilterShader.h"
++#include "../../Include/RmlUi/Core/Geometry.h"
+ #include "../../Include/RmlUi/Core/Types.h"
+ #include "../../Include/RmlUi/Core/StyleSheetTypes.h"
++#include "ClipPath.h"
+ 
+ namespace Rml {
+ 
+@@ -30,7 +32,23 @@ public:
+ 	// Mark the element data of effects as dirty.
+ 	void DirtyEffectsData();
+ 
++	// The element's clip-path region in border-box pixels, rebuilt when its value, border-box size or density
++	// changes: nullptr for none, `empty` when the shape encloses no area.
++	static Geometry* GetClipPath(Element* element, bool& empty);
++	// Whether a window point lies inside the clip-path of the element and of each of its ancestors.
++	static bool ClipPathHits(Element* element, Vector2f point);
++	// Whether the element paints into its filter, mask or backdrop-root layer, not yet composited.
++	static bool PaintsIntoOpenLayer(Element* element);
++
+ private:
++	struct ClipPath {
++		String source;
++		Vector2f size;
++		float dp_ratio = 0.f;
++		ClipPathShape shape;
++		Geometry geometry;
++		bool empty = false;
++	};
+ 	// Releases existing element data of effects, and regenerates it.
+ 	void ReloadEffectsData();
+ 	// Releases all existing effects and their element data.
+@@ -64,6 +82,9 @@ private:
+ 	bool effects_data_dirty = false;
+ 	// Set while this backdrop root paints its descendants into a layer of its own.
+ 	bool backdrop_root_layer = false;
++	// Set between pushing a filter, mask or backdrop-root layer and compositing it.
++	bool layer_open = false;
++	UniquePtr<ClipPath> clip_path;
+ };
+ 
+ } // namespace Rml
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 0e225ac..b7efc27 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1413,6 +1413,7 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::GridAutoRows:
+ 	case PropertyId::GridTemplateAreas:
+ 	case PropertyId::AspectRatio:
++	case PropertyId::ClipPath:
+ 	case PropertyId::Isolation:
+ 		break; // Consumed by the grid track formatter.
+ 	case PropertyId::JustifyItems:
+diff --git a/Source/Core/ElementUtilities.cpp b/Source/Core/ElementUtilities.cpp
+index 30b2a1f..701aa51 100644
+--- a/Source/Core/ElementUtilities.cpp
++++ b/Source/Core/ElementUtilities.cpp
+@@ -14,6 +14,7 @@
+ #include "DataModel.h"
+ #include "DataView.h"
+ #include "ElementBackgroundBorder.h"
++#include "ElementEffects.h"
+ #include "ElementStyle.h"
+ #include "Layout/LayoutDetails.h"
+ #include "Layout/LayoutEngine.h"
+@@ -204,6 +205,22 @@ bool ElementUtilities::GetClippingRegion(Element* element, Rectanglei& out_clip_
+ 		clipping_element = clipping_element->GetOffsetParent();
+ 	}
+ 
++	// clip-path clips its element and every descendant (CSS Masking 1 §5). The owner of an open filter or mask
++	// layer and its ancestors clip the layer's composite instead, since filters apply before clipping.
++	if (out_clip_mask_list)
++	{
++		for (Element* clipping = element; clipping && !ElementEffects::PaintsIntoOpenLayer(clipping); clipping = clipping->GetParentNode())
++		{
++			bool empty = false;
++			Geometry* geometry = ElementEffects::GetClipPath(clipping, empty);
++			if (!geometry || empty)
++				continue;
++			const TransformState* transform_state = clipping->GetTransformState();
++			out_clip_mask_list->push_back(ClipMaskGeometry{out_clip_mask_list->empty() ? ClipMaskOperation::Set : ClipMaskOperation::Intersect,
++				geometry, clipping->GetAbsoluteOffset(BoxArea::Border).Round(), transform_state ? transform_state->GetTransform() : nullptr});
++		}
++	}
++
+ 	if (clip_region.Valid())
+ 	{
+ 		Math::SnapToPixelGrid(clip_region);
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index 0f6f3be..e0d3562 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -450,6 +450,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::GridTemplateAreas, "grid-template-areas", "none", false, true).AddParser("string");
+ 	RegisterShorthand(ShorthandId::GridArea, "grid-area", "grid-row, grid-column", ShorthandType::GridArea);
+ 	RegisterProperty(PropertyId::AspectRatio, "aspect-ratio", "auto", false, true).AddParser("string");
++	RegisterProperty(PropertyId::ClipPath, "clip-path", "none", false, false).AddParser("string");
+ 	RegisterProperty(PropertyId::Isolation, "isolation", "auto", false, false).AddParser("keyword", "auto, isolate");
+ 	RegisterProperty(PropertyId::ContainerType, "container-type", "normal", false, true).AddParser("keyword", "normal, inline-size");
+ 	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
