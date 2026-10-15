@@ -291,9 +291,11 @@ inline std::string rml_css_length_math(std::string value, double width, double h
         if (!tail.starts_with("calc(") && !tail.starts_with("min(") && !tail.starts_with("max(") &&
             !tail.starts_with("clamp("))
             continue;
-        // Math over var() resolves once the style engine substitutes the variables.
         const std::size_t end = detail::css_function_end(value, value.find('(', index));
-        if (std::string_view(value).substr(index, end - index).find("var(") != std::string::npos) {
+        // Math over var() resolves once the style engine substitutes the variables; clip-path math keeps its
+        // percentages for the shape to resolve against its reference box.
+        if (property == "clip-path" ||
+            std::string_view(value).substr(index, end - index).find("var(") != std::string::npos) {
             index = end;
             continue;
         }

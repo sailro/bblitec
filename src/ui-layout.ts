@@ -6,6 +6,7 @@ const signedLength = String.raw`(?:[+-]?${magnitude}${lengthUnit}|[+-]?0)`;
 const basis = `(?:auto|${length})`;
 const direction = "(?:row|row-reverse|column|column-reverse)";
 const wrap = "(?:nowrap|wrap|wrap-reverse)";
+const ratio = String.raw`${magnitude}(?:\s*/\s*${magnitude})?`;
 const logicalSpacingValues = new Map<string, RegExp>();
 for (const [family, value] of [
     ["padding", length],
@@ -30,6 +31,12 @@ export const uiLogicalSpacingProperties: readonly string[] = [
 /** Values whose layout is represented by the pinned layout formatters. */
 const layoutValues: ReadonlyMap<string, RegExp> = new Map([
     ...logicalSpacingValues,
+    [
+        "aspect-ratio",
+        new RegExp(
+            String.raw`^(?:auto|${ratio}|auto\s+${ratio}|${ratio}\s+auto)$`,
+        ),
+    ],
     ["float", /^(?:none|left|right)$/],
     ["clear", /^(?:none|left|right|both)$/],
     [

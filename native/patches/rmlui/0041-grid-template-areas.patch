@@ -1,0 +1,340 @@
+Named grid areas: grid-template-areas extends the explicit grid and names each area's
+edge lines; the grid-area shorthand and custom-ident grid-row/grid-column lines resolve
+against them (CSS Grid 7.3, 8.3, 8.4).
+
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 0c884cb..31eb1f0 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -34,6 +34,7 @@ enum class ShorthandId : uint8_t {
+ 	FlexFlow,
+ 	Nav,
+ 	PlaceItems,
++	GridArea,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+@@ -172,6 +173,7 @@ enum class PropertyId : uint8_t {
+ 	GridRow,
+ 	GridAutoColumns,
+ 	GridAutoRows,
++	GridTemplateAreas,
+ 	Isolation,
+ 	ContainerType,
+ 	JustifyItems,
+diff --git a/Include/RmlUi/Core/PropertySpecification.h b/Include/RmlUi/Core/PropertySpecification.h
+index 4ca3a06..0abe694 100644
+--- a/Include/RmlUi/Core/PropertySpecification.h
++++ b/Include/RmlUi/Core/PropertySpecification.h
+@@ -29,7 +29,9 @@ enum class ShorthandType {
+ 	// The 'flex' shorthand has some special behavior but otherwise acts like 'FallThrough'.
+ 	Flex,
+ 	// Unordered longhands, resetting omitted components to their defaults.
+-	Unordered
++	Unordered,
++	// 'grid-area': up to four slash-separated grid lines onto the row and column placements.
++	GridArea
+ };
+ 
+ /**
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 9df7e71..3a65e8a 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1411,6 +1411,7 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::GridRow:
+ 	case PropertyId::GridAutoColumns:
+ 	case PropertyId::GridAutoRows:
++	case PropertyId::GridTemplateAreas:
+ 	case PropertyId::Isolation:
+ 		break; // Consumed by the grid track formatter.
+ 	case PropertyId::JustifyItems:
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index 29f214e..1e8fe47 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -267,14 +267,18 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		};
+ 		grid_columns = parse_tracks("grid-template-columns", main_available_size, main_min_size, main_max_size, main_gap_size);
+ 		grid_rows = parse_tracks("grid-template-rows", cross_available_size, cross_min_size, cross_max_size, cross_gap_size);
++		// CSS Grid 7.1: the explicit grid spans the larger of the sized tracks and the area grid.
++		const auto areas = ParseGridTemplateAreas(element_flex->GetProperty<String>("grid-template-areas"));
++		const int explicit_columns = std::max(int(grid_columns.size()), areas.columns);
++		const int explicit_rows = std::max(int(grid_rows.size()), areas.rows);
+         for (int index = 0; index < element_flex->GetNumChildren(); ++index) {
+             auto* child = element_flex->GetChild(index);
+             const auto& style = child->GetComputedValues();
+             if (style.display() == Style::Display::None || style.position() == Style::Position::Absolute || style.position() == Style::Position::Fixed) continue;
+-			grid_placements.push_back({ParseGridPlacement(child->GetProperty<String>("grid-column"), int(grid_columns.size())),
+-				ParseGridPlacement(child->GetProperty<String>("grid-row"), int(grid_rows.size()))});
++			grid_placements.push_back({ParseGridPlacement(child->GetProperty<String>("grid-column"), explicit_columns, areas.column_lines),
++				ParseGridPlacement(child->GetProperty<String>("grid-row"), explicit_rows, areas.row_lines)});
+         }
+-		const auto bounds = PlaceGridItems(grid_placements, int(grid_columns.size()), int(grid_rows.size()));
++		const auto bounds = PlaceGridItems(grid_placements, explicit_columns, explicit_rows);
+ 		auto implicit_tracks = [&](Vector<GridTrack>& tracks, int origin, int count, const char* property) {
+ 			const auto pattern = GridTrackParser::Parse(element_flex->GetProperty<String>(property), dp_ratio, -1.f, 0.f, false, false);
+ 			if (pattern.empty()) throw std::runtime_error("UI implicit grid tracks cannot be none.");
+diff --git a/Source/Core/Layout/GridPlacement.h b/Source/Core/Layout/GridPlacement.h
+index 3411b83..646a18f 100644
+--- a/Source/Core/Layout/GridPlacement.h
++++ b/Source/Core/Layout/GridPlacement.h
+@@ -14,19 +14,58 @@ struct GridAxisPlacement {
+ 	bool definite = false;
+ };
+ 
+-inline GridAxisPlacement ParseGridPlacement(std::string_view source, int explicit_tracks)
++// The line names one axis of an explicit grid carries: each named area of
++// grid-template-areas names its edges `<area>-start` and `<area>-end` (CSS Grid 7.3.2).
++struct GridLineNames {
++	UnorderedMap<String, int> lines;
++	int Find(const String& name) const
++	{
++		const auto found = lines.find(name);
++		return found == lines.end() ? -1 : found->second;
++	}
++};
++
++inline bool IsGridNameCharacter(char c)
++{
++	const auto code = static_cast<unsigned char>(c);
++	return std::isalnum(code) || c == '-' || c == '_' || code >= 0x80;
++}
++
++// A <custom-ident> grid line name: an identifier that is no CSS-wide or grid keyword.
++inline bool IsGridCustomIdent(std::string_view token)
+ {
+-	struct Line { int number = 0; bool span = false; };
+-	String lower(source);
++	if (token.empty() || !std::all_of(token.begin(), token.end(), IsGridNameCharacter)) return false;
++	const auto first = static_cast<unsigned char>(token[0] == '-' && token.size() > 1 ? token[1] : token[0]);
++	if (!(std::isalpha(first) || first == '_' || first >= 0x80)) return false;
++	String lower(token);
+ 	std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+-	std::string_view input(lower);
+-	auto fail = [] { throw std::runtime_error("UI grid placement requires auto, nonzero integer lines, or positive spans within 256 tracks."); };
++	return lower != "auto" && lower != "span" && lower != "inherit" && lower != "initial" && lower != "unset" && lower != "default";
++}
++
++inline GridAxisPlacement ParseGridPlacement(std::string_view source, int explicit_tracks, const GridLineNames& names)
++{
++	struct Line { int number = 0; bool span = false; String name; };
++	std::string_view input(source);
++	auto fail = [] { throw std::runtime_error("UI grid placement requires auto, area names, nonzero integer lines, or positive spans within 256 tracks."); };
+ 	auto space = [&] { while (!input.empty() && std::isspace(static_cast<unsigned char>(input.front()))) input.remove_prefix(1); };
++	auto keyword = [&](std::string_view word) {
++		if (input.size() < word.size() || (input.size() > word.size() && IsGridNameCharacter(input[word.size()]))) return false;
++		for (size_t i = 0; i < word.size(); ++i)
++			if (std::tolower(static_cast<unsigned char>(input[i])) != word[i]) return false;
++		input.remove_prefix(word.size());
++		return true;
++	};
+ 	auto line = [&] {
+ 		space(); Line result;
+-		if (input.substr(0, 4) == "auto") { input.remove_prefix(4); return result; }
+-		if (input.substr(0, 4) == "span") {
+-			input.remove_prefix(4);
++		if (keyword("auto")) return result;
++		size_t length = 0;
++		while (length < input.size() && IsGridNameCharacter(input[length])) ++length;
++		if (IsGridCustomIdent(input.substr(0, length))) {
++			result.name = String(input.substr(0, length));
++			input.remove_prefix(length);
++			return result;
++		}
++		if (keyword("span")) {
+ 			if (input.empty() || !std::isspace(static_cast<unsigned char>(input.front()))) fail();
+ 			space(); result.span = true;
+ 		}
+@@ -43,23 +82,98 @@ inline GridAxisPlacement ParseGridPlacement(std::string_view source, int explici
+ 	Line first = line(), last;
+ 	space();
+ 	if (!input.empty() && input.front() == '/') { input.remove_prefix(1); last = line(); space(); }
++	// CSS Grid 8.4: a lone <custom-ident> also names the end edge.
++	else if (!first.name.empty()) last = first;
+ 	if (!input.empty()) fail();
+ 	// CSS Grid 8.3.1: discard the end span when both sides specify spans.
+ 	if (first.span && last.span) last = {};
+-	auto index = [=](int number) { return number > 0 ? number - 1 : explicit_tracks + number + 1; };
+-	const bool start = first.number != 0 && !first.span;
+-	const bool end = last.number != 0 && !last.span;
++	auto position = [&](const Line& edge, bool end_edge) {
++		if (edge.name.empty()) return edge.number > 0 ? edge.number - 1 : explicit_tracks + edge.number + 1;
++		// CSS Grid 8.3: the area edge `<name>-start`/`<name>-end`, else a line called
++		// <name>; with neither, every implicit line has the name, so the first after the grid.
++		int found = names.Find(edge.name + (end_edge ? "-end" : "-start"));
++		if (found < 0) found = names.Find(edge.name);
++		return found < 0 ? explicit_tracks : found;
++	};
++	const bool start = !first.name.empty() || (first.number != 0 && !first.span);
++	const bool end = !last.name.empty() || (last.number != 0 && !last.span);
+ 	if (start && end) {
+-		int a = index(first.number), b = index(last.number);
++		int a = position(first, false), b = position(last, true);
+ 		if (a > b) std::swap(a, b);
+ 		return {a, std::max(1, b - a), true};
+ 	}
+ 	const int span = first.span ? first.number : last.span ? last.number : 1;
+-	if (start) return {index(first.number), span, true};
+-	if (end) return {index(last.number) - span, span, true};
++	if (start) return {position(first, false), span, true};
++	if (end) return {position(last, true) - span, span, true};
+ 	return {0, span, false};
+ }
+ 
++// The explicit grid grid-template-areas describes, and the line names of its areas.
++struct GridTemplateAreas {
++	int columns = 0, rows = 0;
++	GridLineNames column_lines, row_lines;
++};
++
++inline GridTemplateAreas ParseGridTemplateAreas(std::string_view source)
++{
++	auto fail = [] { throw std::runtime_error("UI grid-template-areas requires none or equal rows of strings whose named cells form rectangles, within 256 tracks."); };
++	auto whitespace = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; };
++	while (!source.empty() && whitespace(source.front())) source.remove_prefix(1);
++	while (!source.empty() && whitespace(source.back())) source.remove_suffix(1);
++	GridTemplateAreas result;
++	String keyword(source);
++	std::transform(keyword.begin(), keyword.end(), keyword.begin(), [](unsigned char c) { return char(std::tolower(c)); });
++	if (keyword == "none") return result;
++	Vector<Vector<String>> grid;
++	while (!source.empty()) {
++		const char quote = source.front();
++		if (quote != '"' && quote != '\'') fail();
++		const size_t close = source.find(quote, 1);
++		if (close == std::string_view::npos) fail();
++		const std::string_view row = source.substr(1, close - 1);
++		source.remove_prefix(close + 1);
++		Vector<String> cells;
++		for (size_t i = 0; i < row.size();) {
++			const size_t begin = i;
++			if (whitespace(row[i])) { ++i; continue; }
++			if (row[i] == '.') {
++				while (i < row.size() && row[i] == '.') ++i;
++				cells.emplace_back();
++			} else if (IsGridNameCharacter(row[i])) {
++				while (i < row.size() && IsGridNameCharacter(row[i])) ++i;
++				cells.emplace_back(row.substr(begin, i - begin));
++			} else fail();
++		}
++		if (cells.empty() || (!grid.empty() && cells.size() != grid.front().size()) || cells.size() > 256) fail();
++		grid.push_back(std::move(cells));
++		while (!source.empty() && whitespace(source.front())) source.remove_prefix(1);
++	}
++	if (grid.empty() || grid.size() > 256) fail();
++	result.rows = int(grid.size());
++	result.columns = int(grid.front().size());
++	struct Bounds { int left, right, top, bottom, count; };
++	UnorderedMap<String, Bounds> areas;
++	for (int row = 0; row < result.rows; ++row)
++		for (int column = 0; column < result.columns; ++column) {
++			const String& name = grid[size_t(row)][size_t(column)];
++			if (name.empty()) continue;
++			auto& area = areas.try_emplace(name, Bounds{column, column + 1, row, row + 1, 0}).first->second;
++			area.left = std::min(area.left, column);
++			area.right = std::max(area.right, column + 1);
++			area.bottom = row + 1;
++			++area.count;
++		}
++	for (const auto& [name, area] : areas) {
++		// CSS Grid 7.3: the cells of one name form a single filled-in rectangle.
++		if ((area.right - area.left) * (area.bottom - area.top) != area.count) fail();
++		result.column_lines.lines.emplace(name + "-start", area.left);
++		result.column_lines.lines.emplace(name + "-end", area.right);
++		result.row_lines.lines.emplace(name + "-start", area.top);
++		result.row_lines.lines.emplace(name + "-end", area.bottom);
++	}
++	return result;
++}
++
+ struct GridPlacement { GridAxisPlacement column, row; };
+ struct GridBounds { int columns = 1, rows = 1, column_origin = 0, row_origin = 0; };
+ 
+diff --git a/Source/Core/PropertySpecification.cpp b/Source/Core/PropertySpecification.cpp
+index f79fe84..2500f76 100644
+--- a/Source/Core/PropertySpecification.cpp
++++ b/Source/Core/PropertySpecification.cpp
+@@ -5,6 +5,7 @@
+ #include "../../Include/RmlUi/Core/PropertyDefinition.h"
+ #include "../../Include/RmlUi/Core/PropertyDictionary.h"
+ #include "IdNameMap.h"
++#include "Layout/GridPlacement.h"
+ #include "PropertyShorthandDefinition.h"
+ #include <algorithm>
+ #include <limits.h>
+@@ -257,8 +258,10 @@ bool PropertySpecification::ParsePropertyDeclaration(PropertyDictionary& diction
+ 	if (!property_definition)
+ 		return false;
+ 
++	// The area grid is a list of CSS strings: the layout reads every string, quotes included.
++	const bool string_list = (property_id == PropertyId::GridTemplateAreas);
+ 	StringList property_values;
+-	switch (ParsePropertyValues(property_values, property_value, SplitOption::None))
++	switch (ParsePropertyValues(property_values, property_value, string_list ? SplitOption::Whitespace : SplitOption::None))
+ 	{
+ 	case ParsePropertyResult::Success: break;
+ 	case ParsePropertyResult::ContainsVariable:
+@@ -273,6 +276,15 @@ bool PropertySpecification::ParsePropertyDeclaration(PropertyDictionary& diction
+ 	}
+ 	RMLUI_ASSERT(!property_values.empty());
+ 
++	if (string_list)
++	{
++		Property areas;
++		if (!property_definition->ParseValue(areas, StringUtilities::StripWhitespace(property_value)))
++			return false;
++		dictionary.SetProperty(property_id, areas);
++		return true;
++	}
++
+ 	Property new_property;
+ 	if (!property_definition->ParseValue(new_property, property_values[0]))
+ 		return false;
+@@ -307,6 +319,33 @@ bool PropertySpecification::ParseShorthandDeclaration(PropertyDictionary& dictio
+ 	}
+ 	RMLUI_ASSERT(!property_values.empty());
+ 
++	if (shorthand_definition->type == ShorthandType::GridArea)
++	{
++		// CSS Grid 8.4: row-start / column-start / row-end / column-end. An omitted
++		// edge repeats the custom-ident naming the opposite start edge, else auto.
++		StringList lines;
++		StringUtilities::ExpandString(lines, property_value, '/', '(', ')', false);
++		if (lines.empty() || lines.size() > 4 || std::any_of(lines.begin(), lines.end(), [](const String& line) { return line.empty(); }))
++			return false;
++		const String& row_start = lines[0];
++		const String column_start = lines.size() > 1 ? lines[1] : IsGridCustomIdent(row_start) ? row_start : "auto";
++		const String row_end = lines.size() > 2 ? lines[2] : IsGridCustomIdent(row_start) ? row_start : "auto";
++		const String column_end = lines.size() > 3 ? lines[3] : IsGridCustomIdent(column_start) ? column_start : "auto";
++		RMLUI_ASSERT(shorthand_definition->items.size() == 2);
++		auto placement_value = [](const String& start, const String& end) {
++			return StringUtilities::ToLower(start) == "auto" && StringUtilities::ToLower(end) == "auto" ? String("auto") : start + " / " + end;
++		};
++		const String placements[] = {placement_value(row_start, row_end), placement_value(column_start, column_end)};
++		for (size_t i = 0; i < 2; i++)
++		{
++			Property placement;
++			if (!shorthand_definition->items[i].property_definition->ParseValue(placement, placements[i]))
++				return false;
++			dictionary.SetProperty(shorthand_definition->items[i].property_id, placement);
++		}
++		return true;
++	}
++
+ 	if (shorthand_definition->type == ShorthandType::Unordered)
+ 	{
+ 		const auto& items = shorthand_definition->items;
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index d99082f..4e9bea4 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -447,6 +447,8 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::GridRow, "grid-row", "auto", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridAutoColumns, "grid-auto-columns", "auto", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridAutoRows, "grid-auto-rows", "auto", false, true).AddParser("string");
++	RegisterProperty(PropertyId::GridTemplateAreas, "grid-template-areas", "none", false, true).AddParser("string");
++	RegisterShorthand(ShorthandId::GridArea, "grid-area", "grid-row, grid-column", ShorthandType::GridArea);
+ 	RegisterProperty(PropertyId::Isolation, "isolation", "auto", false, false).AddParser("keyword", "auto, isolate");
+ 	RegisterProperty(PropertyId::ContainerType, "container-type", "normal", false, true).AddParser("keyword", "normal, inline-size");
+ 	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");

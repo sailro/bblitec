@@ -48,6 +48,7 @@ import {
 import {
     webAudioClasses,
     webAudioConstructors,
+    webAudioAdapters,
     webAudioInstanceOf,
     webAudioRecords,
     webPlatformConstructors,
@@ -104,6 +105,19 @@ const SOURCE_ROOTS = [
     "disposeSoundSource",
 ] as const;
 
+/** The streaming-sound functions a program calls: a media element routed as a sound. */
+const STREAMING_ROOTS = [
+    "createStreamingSoundAsync",
+    "playStreamingSound",
+    "pauseStreamingSound",
+    "resumeStreamingSound",
+    "stopStreamingSound",
+    "setStreamingSoundVolume",
+    "disposeStreamingSound",
+    "preloadStreamingInstanceAsync",
+    "preloadStreamingInstancesAsync",
+] as const;
+
 /** The bus functions a program calls. */
 const BUS_ROOTS = [
     "createAudioBusAsync",
@@ -141,6 +155,7 @@ export const AUDIO_LIBRARY_ROOTS: readonly string[] = [
     ...ENGINE_ROOTS,
     ...STATIC_SOUND_ROOTS,
     ...SOURCE_ROOTS,
+    ...STREAMING_ROOTS,
     ...BUS_ROOTS,
     ...STEREO_ROOTS,
     ...ANALYZER_ROOTS,
@@ -303,6 +318,10 @@ const engineRecords = (
                 "onStateChanged",
                 reads(record("AudioEngineStateSignal"), (owner) => owner),
             ],
+            [
+                "onUserGesture",
+                reads(record("AudioEngineGestureSignal"), (owner) => owner),
+            ],
             ["_isOffline", reads(recordScalars.boolean, () => "false")],
             // A held engine's creation has settled: it is ready.
             [
@@ -333,6 +352,22 @@ const engineRecords = (
         reference: true,
         native: true,
         members: members([["_dispose", field(fn([], none), "dispose")]]),
+    },
+    {
+        pinned: ["AudioEngineGestureSignal"],
+        cpp: "AudioEngineHandle",
+        reference: false,
+        native: true,
+        members: members([
+            [
+                "addOnce",
+                spelled(
+                    fn([fn([], none)], fn([], none)),
+                    () =>
+                        `[]() -> bbl::js::Callback<void()> { throw std::runtime_error("Retrying a streaming sound whose play() failed waits for a user gesture, which the native engine does not report."); }()`,
+                ),
+            ],
+        ]),
     },
     {
         pinned: ["AudioEngineStateSignal"],
@@ -549,6 +584,50 @@ const sourceRecords: readonly RecordSpec[] = [
     },
 ];
 
+const STREAMING_SOUND = "src/audio/streaming-sound.ts";
+
+/** A streaming sound's records: its options, the sound (an engine sound) and its instances. */
+const streamingRecords: readonly RecordSpec[] = [
+    {
+        pinned: ["StreamingInstanceOptions"],
+        cpp: "StreamingInstanceOptions",
+        reference: false,
+        typeOf: `${STREAMING_SOUND}#StreamingInstance._options`,
+    },
+    {
+        pinned: ["StoredStreamingOptions"],
+        cpp: "StreamingSoundStoredOptions",
+        reference: false,
+    },
+    {
+        pinned: ["StreamingSoundOptions"],
+        cpp: "StreamingSoundOptions",
+        reference: false,
+    },
+    {
+        pinned: ["StreamingSoundPlayOptions"],
+        cpp: "StreamingSoundPlayOptions",
+        reference: false,
+    },
+    {
+        pinned: ["StreamingSound"],
+        cpp: "StreamingSound",
+        reference: true,
+        accessors: new Set([
+            "state",
+            "instanceCount",
+            "preloadCompletedCount",
+            "onEnded",
+        ]),
+        bases: ["AudioEngineSound"],
+    },
+    {
+        pinned: ["StreamingInstance"],
+        cpp: "StreamingInstance",
+        reference: true,
+    },
+];
+
 /** Stereo panning's records: its options and its sub-node, the sub-graph's slot. */
 const stereoRecords: readonly RecordSpec[] = [
     {
@@ -593,7 +672,12 @@ interface FamilyPart {
 const FAMILY_PARTS: readonly FamilyPart[] = [
     {
         // Every sound, source and bus routes through a sub-graph into a bus.
-        roots: [...STATIC_SOUND_ROOTS, ...SOURCE_ROOTS, ...BUS_ROOTS],
+        roots: [
+            ...STATIC_SOUND_ROOTS,
+            ...SOURCE_ROOTS,
+            ...STREAMING_ROOTS,
+            ...BUS_ROOTS,
+        ],
         modules: [],
         records: graphRecords,
     },
@@ -608,6 +692,14 @@ const FAMILY_PARTS: readonly FamilyPart[] = [
             "bblite/pal_audio_element.hpp",
             "bblite/web_platform.hpp",
         ],
+    },
+    {
+        // A streaming sound plays a packaged media element through the
+        // element's source node.
+        roots: STREAMING_ROOTS,
+        modules: [STREAMING_SOUND],
+        records: streamingRecords,
+        includes: ["bblite/pal_audio_element.hpp", "bblite/web_platform.hpp"],
     },
     {
         // A source over a stream source stops the stream's tracks.
@@ -695,7 +787,7 @@ function staticSoundLibraryModel(
                 ...webPlatformValues,
                 ...parts.flatMap((part) => part.values ?? []),
             ]),
-            adapters: ENGINE_ADAPTERS,
+            adapters: new Map([...ENGINE_ADAPTERS, ...webAudioAdapters]),
             constructors: new Map([
                 ...webPlatformConstructors,
                 ...webAudioConstructors,

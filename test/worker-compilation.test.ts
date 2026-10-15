@@ -106,6 +106,50 @@ test("application asset merging retains independent texture and binary uses of o
     assert.equal(shared[0]!.output, shared[1]!.output);
 });
 
+test("worker asset merging deduplicates identical outputs and refuses conflicting specialization", () => {
+    const directory = resolve("artifacts/worker-asset-specialization");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
+    const frontend = createCompilerProgram(
+        'new Worker(new URL("./worker.ts", import.meta.url), {type: "module"});',
+        resolve(directory, "entry.ts"),
+    );
+    const statement = frontend.sourceFile.statements[0]!;
+    assert.ok(ts.isExpressionStatement(statement));
+    const worker = statement.expression;
+    assert.ok(ts.isNewExpression(worker));
+    const base = compileSource("const value = 1;");
+    const join = (conflicting: boolean) =>
+        compileWorkerApplication(
+            frontend,
+            (input, configuration) => {
+                const isWorker = configuration.namespace !== undefined;
+                if (!isWorker) configuration.register(worker);
+                return {
+                    ...base,
+                    manifest: {
+                        ...base.manifest,
+                        source: input.sourceFile.fileName,
+                        assets: [
+                            {
+                                source: "shared.glb",
+                                output: "shared.glb",
+                                kind: "gltf",
+                                selectedVariant:
+                                    isWorker && conflicting ? "night" : "day",
+                            },
+                        ],
+                    },
+                };
+            },
+            (_node, message) => {
+                throw new Error(message);
+            },
+        );
+    assert.equal(join(false).manifest.assets.length, 1);
+    assert.throws(() => join(true), /specializes .* differently across realms/);
+});
+
 test("module Worker compilation retains per-instance module state and cloned messages", (t) => {
     const directory = resolve("artifacts/worker-compilation-check");
     mkdirSync(directory, { recursive: true });

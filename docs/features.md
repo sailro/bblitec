@@ -6,9 +6,9 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 ## Deferred capabilities
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
-as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon streaming
-sounds, microphone sources, the unmute UI and the visualizer, `prompt`, and the [UI](ui.md) items marked deferred.
-Unregistered APIs still refuse.
+as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon microphone
+sources, the unmute UI and the visualizer, `prompt`, and the [UI](ui.md) items
+marked deferred. Unregistered APIs still refuse.
 
 ## Language
 
@@ -28,8 +28,9 @@ Rules:
 
 - Operands that touch the same state evaluate left to right; the compiler pins them into temporaries.
 - Loose equality across types refuses. Telling `null` from `undefined` needs tagged storage; otherwise strict comparison refuses.
-- Generation-known positions fold through `const` literals, settled conditionals, spreads and parameterless literal-returning
-  functions. A fold reaching the host, clock, `Math.random`, locale or a written constant refuses.
+- Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
+  functions, module `const`s run at generation, and an inlined call's argument for a parameter its body never
+  rebinds. A fold reaching the host, clock, `Math.random`, locale or a written constant refuses.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
 - `import.meta.env`: `MODE="production"`, `PROD=true`, `DEV=false`, `SSR=false`, `BASE_URL` from deployment; custom
@@ -201,7 +202,9 @@ Static sounds (`createSoundAsync`, `playSound`, `stopSound`, `setSoundVolume`, `
 family in an application realm. Sources: an audio URL, an array literal of them, an `ArrayBuffer`, an `AudioBuffer` or a
 sound buffer (`createSoundBufferAsync`, over the same sources). A looped sound started while its context is not running
 throws (no statechange). Sound sources (`createSoundSourceAsync` with its options, `setSoundSourceVolume`,
-`disposeSoundSource`) route a caller-built node through the same sub-graph, in any realm. Buses (`createAudioBusAsync`,
+`disposeSoundSource`) route a caller-built node through the same sub-graph, in any realm. Streaming sounds
+(`createStreamingSoundAsync` and the streaming-sound functions) play a media element per instance: an audio URL, an
+array literal of them (source children, tried in order) or an Audio element. Buses (`createAudioBusAsync`,
 `setBusVolume`, `disposeAudioBus`, the `outBus` option) run the pin's mixer. `enableSpatial`, `setSpatialPosition` and
 `setSpatialListenerPosition` add the pin's panner sub-node and listener; the `position`, orientation and attachment
 options refuse. `enableStereo` and `setStereoPan` add its stereo panner sub-node, `enableAnalyzer` and the `get*Data`
@@ -209,8 +212,8 @@ readouts its analyser tap. Sub-node hosts are static sounds.
 `createAudioEngineMediaStream` taps the engine's master output into a stream destination's stream.
 
 Media elements (application realm): `new Audio(url)` with an audio URL, `play`/`pause`/`load`, `removeAttribute("src")`,
-`loop`, `preload`, `currentTime` (seek), `duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause`
-listeners without payloads.
+`loop`, `preload`, `currentTime` (seek), `duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause`/
+`canplaythrough`/`error` listeners without payloads.
 An unrouted element plays to the default output; `createMediaElementSource` routes it once (again:
 InvalidStateError), moving its playback into the graph. Other members and attributes refuse.
 

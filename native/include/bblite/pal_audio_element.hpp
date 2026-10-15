@@ -58,6 +58,20 @@ using AudioElement = std::shared_ptr<AudioElementState>;
     return js::make_gc_shared<AudioElementState>();
 }
 
+/** `document.createElement("source")`: a candidate source for an Audio element. */
+struct AudioSourceElementState {
+    std::string src;
+    void gc_trace(const js::TraceVisitor&) const {}
+};
+using AudioSourceElement = std::shared_ptr<AudioSourceElementState>;
+[[nodiscard]] inline AudioSourceElement audio_create_source_element() {
+    return js::make_gc_shared<AudioSourceElementState>();
+}
+/** `source.src = url`, read when the element selects its resource. */
+inline void audio_source_element_set_src(const AudioSourceElement& source, std::string src) {
+    source->src = std::move(src);
+}
+
 #if BBLITE_HAS_AUDIO_MEDIA_ELEMENT
 /**
  * `new Audio([url])` in `session`, whose default output it plays to until
@@ -79,6 +93,12 @@ void audio_element_pause(const AudioElement& element);
 void audio_element_load(const AudioElement& element);
 /** `removeAttribute("src")`: takes effect at the next `load()`. */
 void audio_element_remove_source(const AudioElement& element);
+/**
+ * `appendChild(source)`: without a `src`, the element tries its source
+ * children in order, each packaged and decodable or the next; when none is,
+ * it waits with no `error` of its own, as browsers do.
+ */
+void audio_element_append_source(const AudioElement& element, const AudioSourceElement& source);
 
 /** `duration`: NaN until the source is decoded. */
 [[nodiscard]] double audio_element_duration(const AudioElement& element);
@@ -91,9 +111,25 @@ void audio_element_set_loop(const AudioElement& element, bool loop);
 void audio_element_set_preload(const AudioElement& element, std::string preload);
 [[nodiscard]] bool audio_element_paused(const AudioElement& element);
 [[nodiscard]] bool audio_element_ended(const AudioElement& element);
+/**
+ * `crossOrigin = value` and `controls = value`: kept, with no effect on
+ * playback (a packaged source has no origin, a native element no controls).
+ */
+void audio_element_set_cross_origin(const AudioElement& element, js::Nullable<std::string> value);
+void audio_element_set_controls(const AudioElement& element, bool value);
 
-/** The events an element dispatches to listeners. */
-enum class AudioElementEvent : std::uint8_t { TimeUpdate, Ended, Play, Pause };
+/**
+ * The events an element dispatches to listeners: `canplaythrough` once its
+ * source is decoded, `error` when no supported source was found.
+ */
+enum class AudioElementEvent : std::uint8_t {
+    TimeUpdate,
+    Ended,
+    Play,
+    Pause,
+    CanPlayThrough,
+    Error,
+};
 /** An addition under an AbortSignal holds its `lease`; false for a listener already added. */
 bool audio_element_add_listener(const AudioElement& element, AudioElementEvent type,
                                 std::size_t identity, js::Callback<void()> callback, bool capture,
@@ -108,6 +144,19 @@ void audio_element_remove_listener(const AudioElement& element, AudioElementEven
  */
 [[nodiscard]] AudioNodeHandle audio_create_media_element_source(AudioContextHandle context,
                                                                 const AudioElement& element);
+
+/** `MediaElementAudioSourceOptions`: the member a lowered library passes. */
+struct MediaElementAudioSourceInit {
+    AudioElement media_element;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(media_element); }
+};
+
+/** `new MediaElementAudioSourceNode(context, { mediaElement })`. */
+[[nodiscard]] inline AudioNodeHandle
+audio_create_media_element_source(AudioContextHandle context,
+                                  const MediaElementAudioSourceInit& options) {
+    return audio_create_media_element_source(context, options.media_element);
+}
 #endif
 
 namespace audio_element_detail {

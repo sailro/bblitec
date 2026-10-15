@@ -2,6 +2,7 @@
 #include "../../artifacts/deferred-dom-node-boundaries/program.hpp"
 #undef main
 #include "pal_ui_rml.cpp"
+#include <bblite/deferred_capability.hpp>
 #include <cassert>
 
 namespace bbl::pal {

@@ -2291,8 +2291,8 @@ function arrayResultType(
 
 /**
  * A filter predicate selects the result's represented element type. Union
- * members and parsed values convert only after the predicate succeeds;
- * narrowed string tags use their destination's enum storage.
+ * members and parsed scalars convert only after the predicate succeeds;
+ * parsed containers retain their owners, and string tags use their enum storage.
  */
 function narrowedFilterResult(
     lowerer: DataLowerer,
@@ -2328,7 +2328,14 @@ function narrowedFilterResult(
             signature &&
             lowerer.context.checker.getTypePredicateOfSignature(signature)
         )
-            return result;
+            return {
+                ...result,
+                element: lowerer.retainedResultType(
+                    lowerer.leafValue("", element),
+                    result.element,
+                    call,
+                ),
+            };
     }
     if (
         element.kind !== "enum" ||

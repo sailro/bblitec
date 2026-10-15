@@ -4920,7 +4920,11 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.1,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: adHocCaptureEnvironment(),
+            nativeEnvironment: {
+                ...adHocCaptureEnvironment(),
+                // The initial HUD message hides after 3s, then fades for 300ms.
+                BBLITE_SCREENSHOT_FRAME: "211",
+            },
         },
     },
     {

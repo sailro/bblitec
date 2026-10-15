@@ -87,58 +87,28 @@ test("retained text nodes, child reads and insertion preserve identity and DOM o
     });
 });
 
-test("unrepresented markup bridges use explicit typed throws beside native pointer capture", (t) => {
+test("a detached element's pointer capture throws natively beside a typed deferred stub", (t) => {
     const source = `
     const host = document.createElement('div'); host.textContent = 'retained';
     let calls = 0, caught = 0;
-    function value(): string { calls++; return 'asset.png'; }
-    try { host.innerHTML = '<svg><image href="' + value() + '"/></svg>'; }
-    catch(error) { if (!error.message.includes('dom:Element.innerHTML.svg-image')) throw error; caught++; }
     function pointer(): number { calls++; return 1; }
     // The mouse is an active pointer; a detached element cannot capture it.
     try { host.setPointerCapture(pointer()); }
     catch(error) { if (!(error instanceof DOMException) || error.name !== 'InvalidStateError') throw error; caught++; }
     host.releasePointerCapture(pointer());
     if (host.hasPointerCapture(pointer())) throw new Error('detached capture');
-    if (calls !== 4 || caught !== 2 || host.textContent !== 'retained') throw new Error('deferred mutation');
-    const conditional = document.createElement('div');
-    let completed = 0, selectedCalls = 0;
-    function selected(): string { selectedCalls++; return 'choice'; }
-    function write(unsupported: boolean): void {
-        conditional.innerHTML = unsupported ? '<svg><image href="' + selected() + '"/></svg>' : '<label>' + selected() + '</label>';
-        completed++;
-    }
-    write(false);
-    write(host.hasAttribute('missing'));
-    try { write(true); } catch(error) {
-        if (!error.message.includes('dom:Element.innerHTML.svg-image')) throw error;
-        caught++;
-    }
-    try { write(!host.hasAttribute('missing')); } catch(error) {
-        if (!error.message.includes('dom:Element.innerHTML.svg-image')) throw error;
-        caught++;
-    }
-    if (completed !== 2 || selectedCalls !== 4 || caught !== 4) throw new Error('conditional markup');
+    if (calls !== 3 || caught !== 1 || host.textContent !== 'retained') throw new Error('deferred mutation');
     const local = { setPointerCapture: (value: number) => value + 1 };
     if (local.setPointerCapture(2) !== 3) throw new Error('authored method');
     globalThis.close();
     `;
     const directory = resolve("artifacts/deferred-dom-node-boundaries");
     mkdirSync(directory, { recursive: true });
-    assert.throws(() => compileSource(source), /outside the bounded/);
     const result = compileSource(source, {
         deferredCapabilities: "runtime-throw",
         fileName: join(directory, "entry.ts"),
     });
-    assert.deepEqual(
-        new Set(result.manifest.deferredCapabilities?.map((site) => site.id)),
-        new Set(["dom:Element.innerHTML.svg-image"]),
-    );
-    assert.ok(
-        result.manifest.deferredCapabilities?.every(
-            (site) => site.origin === "dom" && site.timing === "throw",
-        ),
-    );
+    assert.equal(result.manifest.deferredCapabilities, undefined);
     assert.ok(!result.manifest.features.includes("ui:inline-svg"));
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "deferred-dom-node-boundaries", {

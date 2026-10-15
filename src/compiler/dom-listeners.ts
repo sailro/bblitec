@@ -146,6 +146,30 @@ export function elementDomHandlerFamily(
         : family;
 }
 
+/**
+ * Whether `type` is the load or error a script or img element fires: a
+ * task-queued, non-bubbling event of the application realm's resource loads.
+ */
+export function resourceLoadEvent(
+    context: Pick<Context, "checker" | "options">,
+    element: Value,
+    receiver: ts.Expression,
+    type: string,
+): boolean {
+    if ((type !== "error" && type !== "load") || element.kind !== "ui-element")
+        return false;
+    const tag =
+        element.uiTag ??
+        elementInterfaceTag(
+            context.checker
+                .getNonNullableType(context.checker.getTypeAtLocation(receiver))
+                .getSymbol()?.name ?? "",
+        );
+    if (tag !== "script" && tag !== "img") return false;
+    if (!context.options.workers) throw new ApplicationRealmRequired();
+    return true;
+}
+
 /** Each family's borrowed event view. */
 const DOM_CALLBACK_EVENTS = {
     storage: {
@@ -602,24 +626,12 @@ export function emitDomEventListener(
                 target === "bbl::DomEventTarget::canvas()"))
     )
         return false;
-    // A script element's load and error are task-queued, non-bubbling events
-    // the application realm fires; page transitions dispatch through the
-    // pointer family's Window path.
-    const scriptLoad =
-        (type === "error" || type === "load") &&
-        element?.kind === "ui-element" &&
-        (element.uiTag ??
-            elementInterfaceTag(
-                context.checker
-                    .getNonNullableType(
-                        context.checker.getTypeAtLocation(callee.expression),
-                    )
-                    .getSymbol()?.name ?? "",
-            )) === "script";
-    if (scriptLoad && !context.options.workers)
-        throw new ApplicationRealmRequired();
+    // Page transitions dispatch through the pointer family's Window path.
+    const resourceLoad = element
+        ? resourceLoadEvent(context, element, callee.expression, type)
+        : false;
     const family =
-        pageLifecycle || scriptLoad ? "pointer" : domListenerFamily(type);
+        pageLifecycle || resourceLoad ? "pointer" : domListenerFamily(type);
     if (!family) return false;
     const custom = family === "custom";
     if (

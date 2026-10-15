@@ -424,28 +424,10 @@ export async function runInstrumentedCapture(
             mkdirSync(captureShadersDirectory(outputDirectory), {
                 recursive: true,
             });
-            // The golden's screenshot, shot-for-shot: full page (with
-            // the reference capture's CSS-animation freeze at the fixed
-            // frame) by default; canvas-only when `BBLITE_CAPTURE_UI=0`
-            // took the golden that way too.
+            // The shared fixed clock holds the reference's CSS phase.
+            // Match its full-page or canvas-only capture mode.
             const screenshotPath = join(outputDirectory, "screenshot.png");
             if (captureUi) {
-                if (referenceFrame !== undefined) {
-                    // requestAnimationFrame and performance.now() are
-                    // pinned by the deterministic harness, but CSS
-                    // animations use the document timeline directly.
-                    // Freeze them at the same requested frame, as the
-                    // reference capture does.
-                    await page.evaluate(
-                        (elapsedMilliseconds) => {
-                            for (const animation of document.getAnimations()) {
-                                animation.pause();
-                                animation.currentTime = elapsedMilliseconds;
-                            }
-                        },
-                        referenceFrame * (1000 / 60),
-                    );
-                }
                 await page.screenshot({ path: screenshotPath });
             } else {
                 await hideNonCanvasChrome(page);

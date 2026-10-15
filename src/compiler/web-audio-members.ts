@@ -113,6 +113,16 @@ export const AUDIO_ELEMENT_PROPERTIES = [
     ["preload", "string", "preload", true],
 ] as const;
 
+/** `HTMLAudioElement` event types and their `AudioElementEvent`. */
+export const AUDIO_ELEMENT_EVENTS: Readonly<Record<string, string>> = {
+    timeupdate: "TimeUpdate",
+    ended: "Ended",
+    play: "Play",
+    pause: "Pause",
+    canplaythrough: "CanPlayThrough",
+    error: "Error",
+};
+
 /** `MediaStream` reads: `media_stream_<native>`; a changing one is impure. */
 export const MEDIA_STREAM_PROPERTIES = [
     ["id", "string", "id", false],

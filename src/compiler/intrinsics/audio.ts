@@ -64,17 +64,14 @@ function engineSoundsDisposer(context: AudioIntrinsicContext): string {
 }
 
 /**
- * The Lite audio functions that are not lowered: streaming sounds, the
- * microphone, the unmute UI and the visualizer refuse by name, because a
- * silent no-op would be a scene that renders without sounding. The engine,
- * its master volume, sound buffers, static sounds, buses, their spatial
- * audio, stereo panning and analyzer, and the engine's media-stream tap run
- * the pin's lowered family (`compileLibraryCall`).
+ * The Lite audio functions that are not lowered: the microphone, the unmute
+ * UI and the visualizer refuse by name, because a silent no-op would be a
+ * scene that renders without sounding. The engine, its master volume, sound
+ * buffers, static and streaming sounds, sources, buses, their spatial audio,
+ * stereo panning and analyzer, and the engine's media-stream tap run the
+ * pin's lowered family (`compileLibraryCall`).
  */
 const REFUSED_BY_NAME: Readonly<Record<string, string>> = {
-    createStreamingSoundAsync:
-        "streaming sounds wrap an HTMLAudioElement, which a native build " +
-        "has no equivalent for.",
     createMicrophoneSoundSourceAsync:
         "microphone capture needs a device-permission contract this " +
         "runtime does not have",
@@ -99,19 +96,17 @@ function reachLibraryRoot(
     context.sceneManifest.recordAudioLibraryRoot(root);
 }
 
-/** The engine a family function takes, evaluated into a temporary in source order. */
-function engineArgument(
+/** An audio receiver evaluated and pinned before the remaining arguments. */
+function receiverArgument(
     context: AudioIntrinsicContext,
     call: ts.CallExpression,
+    kind: Value["kind"],
     label: string,
 ): string {
-    const engine = context.compileValue(argumentAt(call, 0));
-    context.expectKind(engine, "audio-engine", argumentAt(call, 0));
-    return context.bindings.pinValueToTemporary(
-        engine,
-        label,
-        argumentAt(call, 0),
-    ).cpp;
+    const argument = argumentAt(call, 0);
+    const value = context.compileValue(argument);
+    context.expectKind(value, kind, argument);
+    return context.bindings.pinValueToTemporary(value, label, argument).cpp;
 }
 
 // -- static sounds -------------------------------------------------------
@@ -124,6 +119,22 @@ const soundBufferType: DataType = { kind: "handle", handle: "sound-buffer" };
 
 /** The source handle `createSoundSourceAsync` settles with. */
 const audioSourceType: DataType = { kind: "handle", handle: "audio-source" };
+
+/** The streaming-sound handle `createStreamingSoundAsync` settles with. */
+const streamingSoundType: DataType = {
+    kind: "handle",
+    handle: "streaming-sound",
+};
+
+/** A promise the pin settles with nothing. */
+function voidPromise(cpp: string): Value {
+    return {
+        kind: "promise",
+        cpp,
+        promiseType: "bbl::js::PromiseVoid",
+        promiseResult: { kind: "void", cpp: "" },
+    };
+}
 
 /** The bus handle `createAudioBusAsync` settles with. */
 const audioBusType: DataType = { kind: "handle", handle: "audio-bus" };
@@ -169,6 +180,23 @@ const ANALYZER_OPTIONS: OptionKinds = {
 const SOURCE_OPTIONS: OptionKinds = {
     name: "string",
     outBusAutoDefault: "boolean",
+    volume: "number",
+};
+
+/** A streaming sound's options (`createStreamingSoundAsync`); `outBus` is consumed. */
+const STREAMING_OPTIONS: OptionKinds = {
+    autoplay: "boolean",
+    loop: "boolean",
+    maxInstances: "number",
+    preloadCount: "number",
+    startOffset: "number",
+    volume: "number",
+};
+
+/** A streaming sound's per-play options. */
+const STREAMING_PLAY_OPTIONS: OptionKinds = {
+    loop: "boolean",
+    startOffset: "number",
     volume: "number",
 };
 
@@ -366,6 +394,29 @@ function soundOptions(
     return { options: target, ...(refused ? { refused } : {}) };
 }
 
+/** The pin's scalar setters share one ordered value and optional ramp contract. */
+function rampedScalarCall(
+    context: AudioIntrinsicContext,
+    call: ts.CallExpression,
+    receiver: string,
+    nativeFunction: string,
+    label: string,
+): Value {
+    const value = pinCpp(
+        context,
+        context.compileNumber(argumentAt(call, 1), "double"),
+        label,
+        "const double",
+    );
+    const ramp = call.arguments[2]
+        ? soundOptions(context, call.arguments[2], RAMP_OPTIONS)
+        : undefined;
+    return {
+        kind: "void",
+        cpp: `bbl::${nativeFunction}(${receiver}, ${value}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp.options})` : ""})`,
+    };
+}
+
 /** `outBus`: a bus the program created (`createAudioBusAsync`). */
 function outBusConsumer(context: AudioIntrinsicContext): OptionConsumer {
     return (member, target, site) => {
@@ -439,34 +490,6 @@ function refuseHrtf(
         );
 }
 
-/** A source function's source, evaluated into a temporary in source order. */
-function sourceArgument(
-    context: AudioIntrinsicContext,
-    call: ts.CallExpression,
-): string {
-    const source = context.compileValue(argumentAt(call, 0));
-    context.expectKind(source, "audio-source", argumentAt(call, 0));
-    return context.bindings.pinValueToTemporary(
-        source,
-        "audio_source",
-        argumentAt(call, 0),
-    ).cpp;
-}
-
-/** A bus function's bus, evaluated into a temporary in source order. */
-function busArgument(
-    context: AudioIntrinsicContext,
-    call: ts.CallExpression,
-): string {
-    const bus = context.compileValue(argumentAt(call, 0));
-    context.expectKind(bus, "audio-bus", argumentAt(call, 0));
-    return context.bindings.pinValueToTemporary(
-        bus,
-        "audio_bus",
-        argumentAt(call, 0),
-    ).cpp;
-}
-
 /**
  * An analyzer readout's destination, evaluated into a temporary in source
  * order: a `Float32Array` as it is, a `Uint8Array` as the library's view over
@@ -493,20 +516,6 @@ function analyserReadout(
     return bytes
         ? `bbl::js::TypedArray<std::uint8_t>(${out}.buffer(), static_cast<double>(${out}.byte_offset()), static_cast<double>(${out}.size()))`
         : out;
-}
-
-/** A sound function's sound, evaluated into a temporary in source order. */
-function soundArgument(
-    context: AudioIntrinsicContext,
-    call: ts.CallExpression,
-): string {
-    const sound = context.compileValue(argumentAt(call, 0));
-    context.expectKind(sound, "static-sound", argumentAt(call, 0));
-    return context.bindings.pinValueToTemporary(
-        sound,
-        "static_sound",
-        argumentAt(call, 0),
-    ).cpp;
 }
 
 /** The pin's own `cleanAudioUrl` (audio-fetch.ts), run at generation: the URL as the library requests it. */
@@ -681,20 +690,19 @@ function compileLibraryCall(
                 "audio:pinned-engine",
                 call,
             );
-            const engine = engineArgument(context, call, "master_engine");
-            const volume = pinCpp(
+            const engine = receiverArgument(
                 context,
-                context.compileNumber(argumentAt(call, 1), "double"),
-                "master_volume",
-                "const double",
+                call,
+                "audio-engine",
+                "master_engine",
             );
-            const ramp = call.arguments[2]
-                ? soundOptions(context, call.arguments[2], RAMP_OPTIONS)
-                : undefined;
-            return {
-                kind: "void",
-                cpp: `bbl::set_master_volume(${engine}, ${volume}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp.options})` : ""})`,
-            };
+            return rampedScalarCall(
+                context,
+                call,
+                engine,
+                "set_master_volume",
+                "master_volume",
+            );
         }
         case "getMasterVolume": {
             context.expectArgumentCount(call, 1, 1);
@@ -718,7 +726,12 @@ function compileLibraryCall(
             // native jobs: both are an application realm's.
             context.expectArgumentCount(call, 2, 3);
             reachLibraryRoot(context, importedName, "audio:static-sound", call);
-            const engine = engineArgument(context, call, "sound_engine");
+            const engine = receiverArgument(
+                context,
+                call,
+                "audio-engine",
+                "sound_engine",
+            );
             const source = soundSource(context, call, importedName);
             const { options, refused } = soundOptions(
                 context,
@@ -748,7 +761,12 @@ function compileLibraryCall(
             // Decoded on native jobs and fetched like a sound's source.
             context.expectArgumentCount(call, 2, 3);
             reachLibraryRoot(context, importedName, "audio:static-sound", call);
-            const engine = engineArgument(context, call, "buffer_engine");
+            const engine = receiverArgument(
+                context,
+                call,
+                "audio-engine",
+                "buffer_engine",
+            );
             const source = soundSource(context, call, importedName);
             const { options } = soundOptions(context, call.arguments[2], {
                 cppType: "bbl::SoundBufferOptions",
@@ -775,7 +793,12 @@ function compileLibraryCall(
                 "audio:pinned-engine",
                 call,
             );
-            const engine = engineArgument(context, call, "source_engine");
+            const engine = receiverArgument(
+                context,
+                call,
+                "audio-engine",
+                "source_engine",
+            );
             const node = context.compileValue(argumentAt(call, 1));
             context.expectKind(node, "audio-node", argumentAt(call, 1));
             const input = context.bindings.pinValueToTemporary(
@@ -821,20 +844,19 @@ function compileLibraryCall(
                 "audio:pinned-engine",
                 call,
             );
-            const source = sourceArgument(context, call);
-            const volume = pinCpp(
+            const source = receiverArgument(
                 context,
-                context.compileNumber(argumentAt(call, 1), "double"),
-                "source_volume",
-                "const double",
+                call,
+                "audio-source",
+                "audio_source",
             );
-            const ramp = call.arguments[2]
-                ? soundOptions(context, call.arguments[2], RAMP_OPTIONS)
-                : undefined;
-            return {
-                kind: "void",
-                cpp: `bbl::set_sound_source_volume(${source}, ${volume}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp.options})` : ""})`,
-            };
+            return rampedScalarCall(
+                context,
+                call,
+                source,
+                "set_sound_source_volume",
+                "source_volume",
+            );
         }
         case "disposeSoundSource": {
             context.expectArgumentCount(call, 1, 1);
@@ -846,8 +868,157 @@ function compileLibraryCall(
             );
             return {
                 kind: "void",
-                cpp: `bbl::dispose_sound_source(${sourceArgument(context, call)})`,
+                cpp: `bbl::dispose_sound_source(${receiverArgument(context, call, "audio-source", "audio_source")})`,
             };
+        }
+        case "createStreamingSoundAsync": {
+            // A packaged media element per instance, played through its
+            // source node; its events and decode are an application realm's.
+            context.expectArgumentCount(call, 2, 3);
+            if (!context.options.workers) throw new ApplicationRealmRequired();
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:streaming-sound",
+                call,
+            );
+            const engine = receiverArgument(
+                context,
+                call,
+                "audio-engine",
+                "streaming_engine",
+            );
+            const argument = argumentAt(call, 1);
+            let source: string;
+            if (
+                context.checker.getTypeAtLocation(argument).flags &
+                    ts.TypeFlags.StringLike ||
+                ts.isArrayLiteralExpression(context.unwrap(argument))
+            )
+                source = soundSource(context, call, importedName);
+            else {
+                // An Audio element the program built plays as given.
+                const element = context.compileValue(argument);
+                if (element.kind !== "audio-element")
+                    return context.fail(
+                        argument,
+                        "createStreamingSoundAsync takes a packaged URL, an array literal of packaged URLs or an Audio element.",
+                    );
+                source = context.bindings.pinValueToTemporary(
+                    element,
+                    "streaming_element",
+                    argument,
+                ).cpp;
+            }
+            const { options, refused } = soundOptions(
+                context,
+                call.arguments[2],
+                {
+                    cppType: "bbl::StreamingSoundOptions",
+                    kinds: STREAMING_OPTIONS,
+                    consumers: { outBus: outBusConsumer(context) },
+                    label: "Streaming sound",
+                },
+            );
+            return {
+                kind: "promise",
+                cpp: rejectedWhenRefused(
+                    refused,
+                    "std::shared_ptr<bbl::StreamingSound>",
+                    `bbl::create_streaming_sound_async(${engine}, ${source}, ${options})`,
+                ),
+                promiseType: "std::shared_ptr<bbl::StreamingSound>",
+                promiseResult: {
+                    kind: "streaming-sound",
+                    cpp: "",
+                    dataType: streamingSoundType,
+                },
+            };
+        }
+        case "playStreamingSound":
+        case "resumeStreamingSound": {
+            context.expectArgumentCount(call, 1, 2);
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:streaming-sound",
+                call,
+            );
+            const sound = receiverArgument(
+                context,
+                call,
+                "streaming-sound",
+                "streaming_sound",
+            );
+            const lowered = soundOptions(context, call.arguments[1], {
+                cppType: "bbl::StreamingSoundPlayOptions",
+                kinds: STREAMING_PLAY_OPTIONS,
+                label: "Streaming sound",
+            });
+            return {
+                kind: "void",
+                cpp: `bbl::${snakeCase(importedName)}(${sound}, ${lowered.options})`,
+            };
+        }
+        case "pauseStreamingSound":
+        case "stopStreamingSound":
+        case "disposeStreamingSound": {
+            context.expectArgumentCount(call, 1, 1);
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:streaming-sound",
+                call,
+            );
+            return {
+                kind: "void",
+                cpp: `bbl::${snakeCase(importedName)}(${receiverArgument(context, call, "streaming-sound", "streaming_sound")})`,
+            };
+        }
+        case "setStreamingSoundVolume": {
+            context.expectArgumentCount(call, 2, 3);
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:streaming-sound",
+                call,
+            );
+            const sound = receiverArgument(
+                context,
+                call,
+                "streaming-sound",
+                "streaming_sound",
+            );
+            return rampedScalarCall(
+                context,
+                call,
+                sound,
+                "set_streaming_sound_volume",
+                "streaming_volume",
+            );
+        }
+        case "preloadStreamingInstanceAsync":
+        case "preloadStreamingInstancesAsync": {
+            const many = importedName === "preloadStreamingInstancesAsync";
+            context.expectArgumentCount(call, many ? 2 : 1, many ? 2 : 1);
+            reachLibraryRoot(
+                context,
+                importedName,
+                "audio:streaming-sound",
+                call,
+            );
+            const sound = receiverArgument(
+                context,
+                call,
+                "streaming-sound",
+                "streaming_sound",
+            );
+            const count = many
+                ? `, ${pinCpp(context, context.compileNumber(argumentAt(call, 1), "double"), "preload_count", "const double")}`
+                : "";
+            return voidPromise(
+                `bbl::${snakeCase(importedName)}(${sound}${count})`,
+            );
         }
         case "createAudioBusAsync": {
             // The bus settles on the realm's loop, as the pin's does.
@@ -859,7 +1030,12 @@ function compileLibraryCall(
                 "audio:pinned-engine",
                 call,
             );
-            const engine = engineArgument(context, call, "bus_engine");
+            const engine = receiverArgument(
+                context,
+                call,
+                "audio-engine",
+                "bus_engine",
+            );
             const name = context.compileValue(argumentAt(call, 1));
             context.expectKind(name, "string", argumentAt(call, 1));
             const pinnedName = context.bindings.pinValueToTemporary(
@@ -900,20 +1076,19 @@ function compileLibraryCall(
                 "audio:pinned-engine",
                 call,
             );
-            const bus = busArgument(context, call);
-            const volume = pinCpp(
+            const bus = receiverArgument(
                 context,
-                context.compileNumber(argumentAt(call, 1), "double"),
-                "bus_volume",
-                "const double",
+                call,
+                "audio-bus",
+                "audio_bus",
             );
-            const ramp = call.arguments[2]
-                ? soundOptions(context, call.arguments[2], RAMP_OPTIONS)
-                : undefined;
-            return {
-                kind: "void",
-                cpp: `bbl::set_bus_volume(${bus}, ${volume}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp.options})` : ""})`,
-            };
+            return rampedScalarCall(
+                context,
+                call,
+                bus,
+                "set_bus_volume",
+                "bus_volume",
+            );
         }
         case "disposeAudioBus": {
             context.expectArgumentCount(call, 1, 1);
@@ -925,14 +1100,19 @@ function compileLibraryCall(
             );
             return {
                 kind: "void",
-                cpp: `bbl::dispose_audio_bus(${busArgument(context, call)})`,
+                cpp: `bbl::dispose_audio_bus(${receiverArgument(context, call, "audio-bus", "audio_bus")})`,
             };
         }
         case "playSound":
         case "stopSound": {
             context.expectArgumentCount(call, 1, 2);
             reachLibraryRoot(context, importedName, "audio:static-sound", call);
-            const sound = soundArgument(context, call);
+            const sound = receiverArgument(
+                context,
+                call,
+                "static-sound",
+                "static_sound",
+            );
             const lowered = soundOptions(
                 context,
                 call.arguments[1],
@@ -955,27 +1135,26 @@ function compileLibraryCall(
         case "setSoundVolume": {
             context.expectArgumentCount(call, 2, 3);
             reachLibraryRoot(context, importedName, "audio:static-sound", call);
-            const sound = soundArgument(context, call);
-            const volume = pinCpp(
+            const sound = receiverArgument(
                 context,
-                context.compileNumber(argumentAt(call, 1), "double"),
-                "sound_volume",
-                "const double",
+                call,
+                "static-sound",
+                "static_sound",
             );
-            const ramp = call.arguments[2]
-                ? soundOptions(context, call.arguments[2], RAMP_OPTIONS)
-                : undefined;
-            return {
-                kind: "void",
-                cpp: `bbl::set_sound_volume(${sound}, ${volume}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp.options})` : ""})`,
-            };
+            return rampedScalarCall(
+                context,
+                call,
+                sound,
+                "set_sound_volume",
+                "sound_volume",
+            );
         }
         case "disposeSound": {
             context.expectArgumentCount(call, 1, 1);
             reachLibraryRoot(context, importedName, "audio:static-sound", call);
             return {
                 kind: "void",
-                cpp: `bbl::dispose_sound(${soundArgument(context, call)})`,
+                cpp: `bbl::dispose_sound(${receiverArgument(context, call, "static-sound", "static_sound")})`,
             };
         }
         case "enableSpatial": {
@@ -986,7 +1165,12 @@ function compileLibraryCall(
                 "audio:spatial-sound",
                 call,
             );
-            const sound = soundArgument(context, call);
+            const sound = receiverArgument(
+                context,
+                call,
+                "static-sound",
+                "static_sound",
+            );
             refuseHrtf(context, call.arguments[1]);
             const lowered = soundOptions(context, call.arguments[1], {
                 cppType: "bbl::SpatialSoundOptions",
@@ -1005,7 +1189,12 @@ function compileLibraryCall(
             context.expectArgumentCount(call, 1, 2);
             reachLibraryRoot(context, importedName, "audio:static-sound", call);
             context.reachFeature("audio:analyser", call);
-            const sound = soundArgument(context, call);
+            const sound = receiverArgument(
+                context,
+                call,
+                "static-sound",
+                "static_sound",
+            );
             const lowered = soundOptions(context, call.arguments[1], {
                 cppType: "bbl::AudioAnalyzerOptions",
                 kinds: ANALYZER_OPTIONS,
@@ -1023,7 +1212,12 @@ function compileLibraryCall(
             context.expectArgumentCount(call, 2, 2);
             reachLibraryRoot(context, importedName, "audio:static-sound", call);
             context.reachFeature("audio:analyser", call);
-            const sound = soundArgument(context, call);
+            const sound = receiverArgument(
+                context,
+                call,
+                "static-sound",
+                "static_sound",
+            );
             return {
                 kind: "void",
                 cpp: `bbl::${snakeCase(importedName)}(${sound}, ${analyserReadout(context, call, importedName.includes("Byte"))})`,
@@ -1036,7 +1230,12 @@ function compileLibraryCall(
             context.expectArgumentCount(call, stereo ? 1 : 2, stereo ? 2 : 3);
             reachLibraryRoot(context, importedName, "audio:static-sound", call);
             context.reachFeature("audio:stereo-panner", call);
-            const sound = soundArgument(context, call);
+            const sound = receiverArgument(
+                context,
+                call,
+                "static-sound",
+                "static_sound",
+            );
             if (stereo) {
                 const lowered = soundOptions(context, call.arguments[1], {
                     cppType: "bbl::StereoSoundOptions",
@@ -1048,19 +1247,13 @@ function compileLibraryCall(
                     cpp: `bbl::enable_stereo(${sound}, ${lowered.options})`,
                 };
             }
-            const pan = pinCpp(
+            return rampedScalarCall(
                 context,
-                context.compileNumber(argumentAt(call, 1), "double"),
+                call,
+                sound,
+                "set_stereo_pan",
                 "stereo_pan",
-                "const double",
             );
-            const ramp = call.arguments[2]
-                ? soundOptions(context, call.arguments[2], RAMP_OPTIONS)
-                : undefined;
-            return {
-                kind: "void",
-                cpp: `bbl::set_stereo_pan(${sound}, ${pan}${ramp ? `, bbl::js::Nullable<bbl::RampOptions>(${ramp.options})` : ""})`,
-            };
         }
         case "setSpatialPosition": {
             context.expectArgumentCount(call, 2, 2);
@@ -1070,7 +1263,12 @@ function compileLibraryCall(
                 "audio:spatial-sound",
                 call,
             );
-            const sound = soundArgument(context, call);
+            const sound = receiverArgument(
+                context,
+                call,
+                "static-sound",
+                "static_sound",
+            );
             return {
                 kind: "void",
                 cpp: `bbl::set_spatial_position(${sound}, ${spatialVector(context, argumentAt(call, 1))})`,
@@ -1113,7 +1311,12 @@ function compileLibraryCall(
                 "audio:spatial-sound",
                 call,
             );
-            const engine = engineArgument(context, call, "listener_engine");
+            const engine = receiverArgument(
+                context,
+                call,
+                "audio-engine",
+                "listener_engine",
+            );
             return {
                 kind: "void",
                 cpp: `bbl::set_spatial_listener_position(${engine}, ${spatialVector(context, argumentAt(call, 1))})`,

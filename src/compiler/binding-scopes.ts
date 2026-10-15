@@ -236,6 +236,12 @@ export class BindingScopes {
         return undefined;
     }
 
+    /** The innermost scope binding the variable an identifier names. */
+    public scopeOf(identifier: ts.Identifier): object | undefined {
+        const symbol = this.context.symbols.valueSymbol(identifier);
+        return symbol && this.bindingScope(symbol);
+    }
+
     public lookup(identifier: ts.Identifier): Value {
         const symbol = this.context.symbols.valueSymbol(identifier);
         if (!symbol) {

@@ -220,6 +220,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     StaticSound: "static-sound",
     AudioBus: "audio-bus",
     SoundBuffer: "sound-buffer",
+    StreamingSound: "streaming-sound",
     EngineContext: "engine",
     DeviceLostRecoveryHandle: "device-recovery",
     EnvironmentTextures: "gpu-environment",

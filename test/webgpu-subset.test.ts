@@ -102,6 +102,7 @@ function runDawnStream(): Map<string, string> | undefined {
     if (!tools || !existsSync(join(dawnRoot, "lib/webgpu_dawn.lib")))
         return undefined;
     const output = resolve("artifacts/test-webgpu-subset/dawn");
+    mkdirSync(output, { recursive: true });
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [
         `/I${resolve("native/src")}`,

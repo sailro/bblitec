@@ -36,6 +36,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "static-sound": "std::shared_ptr<bbl::StaticSound>",
     "audio-bus": "std::shared_ptr<bbl::AudioBus>",
     "sound-buffer": "std::shared_ptr<bbl::SoundBuffer>",
+    "streaming-sound": "std::shared_ptr<bbl::StreamingSound>",
     "audio-element": "bbl::pal::AudioElement",
     "audio-context": "bbl::pal::AudioContextHandle",
     "audio-node": "bbl::pal::AudioNodeHandle",

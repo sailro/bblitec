@@ -757,6 +757,20 @@ export const propertyRules: readonly PropertyRule[] = [
         access: (record) => `${record}->name`,
         dataType: { kind: "string" },
     })),
+    // A lowered streaming sound's getters, over its changing playback.
+    ...(
+        [
+            ["state", "state"],
+            ["instanceCount", "instance_count"],
+            ["preloadCompletedCount", "preload_completed_count"],
+        ] as const
+    ).map(([property, native]): PropertyRead => ({
+        owner: "streaming-sound",
+        property,
+        value: "number",
+        access: (owner) => `${owner}->get_${native}()`,
+        impure: true,
+    })),
     // A lowered sound buffer's getters over its decoded buffer.
     ...(
         [

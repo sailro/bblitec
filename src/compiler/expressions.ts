@@ -8,6 +8,7 @@ import { compileBoundCollectionMethod } from "./collection-functions.js";
 import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
+import type { UiProjection } from "./ui-projection.js";
 // Expression lowering: the value switch and its call dispatch.
 //
 // `compileValue` is the one door every value position goes through. It
@@ -359,6 +360,7 @@ export interface ExpressionContext
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
         > {
+    readonly ui: UiProjection;
     nullableResourceKind(
         node: ts.Node,
         allowDirect?: boolean,
@@ -1115,6 +1117,8 @@ export class ExpressionLowerer {
             if (platform) return platform;
             const audio = compileAudioConstructor(this.context, unwrapped);
             if (audio) return audio;
+            const image = this.context.ui.compileImageConstructor(unwrapped);
+            if (image) return image;
             const browserFile = compileBrowserFileConstructor(
                 this.context,
                 unwrapped,

@@ -313,10 +313,9 @@ pal::SceneRun run_renderer(Engine& engine, RendererKind kind, const pal::GpuBack
 /** Rejects the first-frame promise, or reports a later failure as the realm's uncaught error. */
 void deliver_realm_frame_failure(js::Promise<js::PromiseVoid>& ready, std::exception_ptr failure) {
     if (ready.pending())
-        ready.reject(std::move(failure));
+        ready.reject(failure);
     else
-        pal::EventLoop::current().post(
-            [failure = std::move(failure)] { std::rethrow_exception(failure); });
+        pal::EventLoop::current().post([failure] { std::rethrow_exception(failure); });
 }
 
 js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,

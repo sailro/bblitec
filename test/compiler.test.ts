@@ -9192,7 +9192,7 @@ test("UI text reads the string a record type declares where a shared layout may 
     // `name` storage they leave empty; a city's own name is still a string.
     const result = compileSource(`
         interface City { x: number; y: number; size: number; name: string }
-        const cities: City[] = [{ x: 1, y: 2, size: 5, name: "Rome" }];
+        const cities: City[] = [{ x: 1, y: 2, size: 5, name: String(Date.now()) }];
         const tiles: { x: number; y: number }[] = [{ x: 3, y: 4 }];
         const visited = new Set<{ x: number; y: number }>();
         const start = cities[1] ?? tiles[0]!;
@@ -11312,7 +11312,7 @@ test("refuses retained style properties outside the reviewed surface", () => {
     assert.doesNotMatch(difference.cpp, /mix-blend-mode/);
     // The refusal names the accepted sets so the boundary is discoverable.
     assert.throws(
-        () => compileSource(withCss("clip-path:circle(4px);")),
+        () => compileSource(withCss("shape-outside:circle(4px);")),
         /accepted with a recorded degradation: .*backdrop-filter.*font-variant-numeric/,
     );
     assert.match(
@@ -11358,10 +11358,10 @@ test("refuses direct style writes and reads outside the reviewed surface", () =>
         () =>
             compileSource(
                 withStatement(
-                    'if (panel.style.clipPath === "") panel.remove();',
+                    'if (panel.style.shapeOutside === "") panel.remove();',
                 ),
             ),
-        /Retained UI style property 'clip-path' is not lowered/,
+        /Retained UI style property 'shape-outside' is not lowered/,
     );
 });
 

@@ -1,6 +1,7 @@
 #include <bblite/features/has_browser_file.hpp>
 #include <bblite/features/has_dom_input.hpp>
 #include <bblite/features/has_image_decoder.hpp>
+#include <bblite/features/ui_svg_images.hpp>
 #include <bblite/features/workers.hpp>
 
 #include <bblite/pal_ui.hpp>
@@ -321,6 +322,50 @@ void replace_all(std::string& text, std::string_view needle, std::string_view re
     }
 }
 
+/**
+ * An inline SVG's packaged <image> rasters as base64 data URLs. The compiler
+ * marks each packaged href `data-bbl-href`; RmlUi's SVG plugin hands LunaSVG
+ * nothing but the markup, so the bytes travel inside it.
+ */
+std::string inline_svg_images(std::string markup) {
+#if BBLITE_UI_SVG_IMAGES
+    constexpr std::string_view marker = " data-bbl-href=\"";
+    constexpr std::string_view digits =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (auto at = markup.find(marker); at != std::string::npos; at = markup.find(marker, at)) {
+        const auto begin = at + marker.size();
+        const auto end = markup.find('"', begin);
+        if (end == std::string::npos)
+            throw std::runtime_error("Unterminated packaged SVG image reference.");
+        std::string path = markup.substr(begin, end - begin);
+        while (!path.empty() && path.front() == '/')
+            path.erase(path.begin());
+        const std::string lower = js::string_lower(path);
+        const char* type = lower.ends_with(".png")                               ? "image/png"
+                           : lower.ends_with(".jpg") || lower.ends_with(".jpeg") ? "image/jpeg"
+                                                                                 : nullptr;
+        if (!type)
+            throw std::runtime_error("A packaged SVG image is a PNG or JPEG: " + path);
+        const std::vector<std::uint8_t> bytes = pal::read_binary_file(asset_path(path));
+        std::string replacement = std::string(" href=\"data:") + type + ";base64,";
+        replacement.reserve(replacement.size() + (bytes.size() + 2) / 3 * 4 + 1);
+        for (std::size_t index = 0; index < bytes.size(); index += 3) {
+            const std::size_t count = std::min<std::size_t>(3, bytes.size() - index);
+            const std::uint32_t group = (std::uint32_t(bytes[index]) << 16) |
+                                        (count > 1 ? std::uint32_t(bytes[index + 1]) << 8 : 0u) |
+                                        (count > 2 ? std::uint32_t(bytes[index + 2]) : 0u);
+            for (std::size_t digit = 0; digit < 4; ++digit)
+                replacement.push_back(digit <= count ? digits[(group >> (18 - 6 * digit)) & 63]
+                                                     : '=');
+        }
+        replacement.push_back('"');
+        markup.replace(at, end + 1 - at, replacement);
+        at += replacement.size();
+    }
+#endif
+    return markup;
+}
+
 /** Expand HTML named entities that RmlUi's XML-oriented RML parser lacks. */
 std::string normalize_html_entities_for_rml(std::string_view markup) {
     constexpr std::array<std::pair<std::string_view, std::string_view>, 12> entities{{
@@ -617,6 +662,14 @@ UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
         engine.ui_has_scripts = true;
     engine.ui_elements.push_back(std::move(element));
     mark_ui_changed(engine);
+    return handle;
+}
+
+UiElementHandle ui_create_compiled_script(Engine& engine) {
+    const auto handle = ui_create_element(engine, "script");
+    auto& record = ui_element(engine, handle);
+    record.script_started = true;
+    record.script_force_async = false;
     return handle;
 }
 
@@ -1292,7 +1345,27 @@ std::string ui_escape_rml(std::string_view text) {
 
 #if BBLITE_WORKERS
 namespace {
-std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle element) {
+/**
+ * HTML's image request completion: a task fires `load` at a decoded image, else `error`; an
+ * aborted request (its src changed again) fires neither.
+ */
+void queue_image_event(Engine& engine, UiElementHandle element,
+                       std::shared_ptr<UiImageRequest> request) {
+    pal::EventLoop::current().post([&engine, element, request = std::move(request)] {
+        if (request->invalidated || !engine.dom_input || element.value >= engine.ui_elements.size())
+            return;
+        PlatformMouseEvent payload;
+        payload.payload_kind = DomInputEventKind::Event;
+        const auto event = dom_event(payload, request->decoded ? "load" : "error",
+                                     dom_ui_path(engine, element), false, false);
+        event.dom->trusted = true;
+        dispatch_dom_pointer(engine, event);
+    });
+}
+
+/** The img element's current request; a src write starts one that `notifies` load or error. */
+std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle element,
+                                              bool notifies = false) {
     auto& record = ui_element(engine, element);
     if (record.tag != "img")
         throw std::runtime_error("Image readiness requires an img element.");
@@ -1301,10 +1374,13 @@ std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle el
     auto request = std::make_shared<UiImageRequest>();
     request->source = ui_get_attribute(engine, element, "src");
     record.image_request = request;
-    if (request->source.empty())
+    if (request->source.empty()) {
+        // An empty source is a broken request at once.
         request->complete = true;
-    else
-        pal::EventLoop::current().queue_microtask([request] {
+        if (notifies)
+            queue_image_event(engine, element, request);
+    } else
+        pal::EventLoop::current().queue_microtask([&engine, element, request, notifies] {
             if (request->invalidated)
                 return;
             try {
@@ -1330,6 +1406,8 @@ std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle el
                 request->height = 0;
             }
             request->complete = true;
+            if (notifies)
+                queue_image_event(engine, element, request);
         });
     return request;
 }
@@ -1457,14 +1535,17 @@ void prepare_script(Engine& engine, UiElementHandle element) {
 #endif
 }
 
-/** Prepares the scripts of a subtree that just became connected, in tree order. */
-void prepare_connected_scripts(Engine& engine, UiElementHandle node) {
-    if (!engine.ui_has_scripts || !ui_is_connected(engine, node))
-        return;
+void prepare_subtree_scripts(Engine& engine, UiElementHandle node) {
     prepare_script(engine, node);
     // Preparing a script runs no code, so the children cannot change underneath.
     for (const auto child : ui_element(engine, node).children)
-        prepare_connected_scripts(engine, child);
+        prepare_subtree_scripts(engine, child);
+}
+
+/** Prepares the scripts of a subtree that just became connected, in tree order. */
+void prepare_connected_scripts(Engine& engine, UiElementHandle node) {
+    if (engine.ui_has_scripts && ui_is_connected(engine, node))
+        prepare_subtree_scripts(engine, node);
 }
 
 UiElementRecord& script_record(Engine& engine, UiElementHandle element) {
@@ -1623,7 +1704,7 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
         queue_details_toggle(engine, element);
 #if BBLITE_WORKERS
     if (updates_image)
-        static_cast<void>(image_request(engine, element));
+        static_cast<void>(image_request(engine, element, true));
 #endif
     mark_ui_changed(engine);
     if (prepares_script)
@@ -5526,8 +5607,9 @@ struct UiRmlRuntime {
             else
                 element.SetProperty(name + "-delay", "auto");
         }
+        // Author writes: a property the element's transition list covers animates (RmlUi patch 0044).
         if (value.empty()) {
-            element.RemoveProperty(name);
+            element.SetInlineProperty(name, {});
             if (name == "display")
                 element.RemoveProperty("--bbl-authored-display");
             return;
@@ -5544,7 +5626,7 @@ struct UiRmlRuntime {
         // Motion values keep their case (keyframes names) and refuse rather than drop.
         const bool motion = name == "transition" || name == "animation" ||
                             name == "transition-delay" || name == "animation-delay";
-        const bool accepted = element.SetProperty(
+        const bool accepted = element.SetInlineProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
                                   : value,
@@ -6236,7 +6318,7 @@ struct UiRmlRuntime {
             set_projected_property(*raw, name, record.style_properties.at(name));
         }
         if (!record.inner_rml.empty()) {
-            raw->SetInnerRML(normalize_html_entities_for_rml(record.inner_rml));
+            raw->SetInnerRML(inline_svg_images(normalize_html_entities_for_rml(record.inner_rml)));
             project_markup_styles(*raw);
             bind_markup_descendants(handle, *raw);
         } else if (record.tag == "textarea") {
@@ -6476,7 +6558,7 @@ struct UiRmlRuntime {
         for (const auto& [name, old_value] : projected.style_properties) {
             static_cast<void>(old_value);
             if (!record.style_properties.contains(name)) {
-                raw.RemoveProperty(name);
+                raw.SetInlineProperty(name, {});
             }
         }
         if (resolved_style_changed) {
@@ -6530,7 +6612,8 @@ struct UiRmlRuntime {
                 Rml::ElementPtr removed = raw.RemoveChild(raw.GetChild(0));
             }
             if (!record.inner_rml.empty()) {
-                raw.SetInnerRML(normalize_html_entities_for_rml(record.inner_rml));
+                raw.SetInnerRML(
+                    inline_svg_images(normalize_html_entities_for_rml(record.inner_rml)));
                 project_markup_styles(raw);
                 bind_markup_descendants(handle, raw);
             } else if (!record.text.empty()) {
@@ -7195,7 +7278,7 @@ struct UiRmlRuntime {
     /**
      * Refuses an engine canvas the opaque presented rectangle beneath the
      * page does not represent: rounded, or under a transform, opacity, a
-     * filter, a mask or an ancestor's overflow clip. (Painting the canvas
+     * filter, a mask, a clip-path or an ancestor's overflow clip. (Painting the canvas
      * in paint order would represent them.)
      */
     static void refuse_unpresented_canvas(Rml::Element& canvas, const UiContentBox& box) {
@@ -7216,6 +7299,9 @@ struct UiRmlRuntime {
                 refuse("under opacity");
             if (values.has_filter() || values.has_backdrop_filter() || values.has_mask_image())
                 refuse("under a filter or mask");
+            if (const Rml::Property* clip_path = element->GetLocalProperty("clip-path");
+                clip_path && js::string_lower(clip_path->Get<Rml::String>()) != "none")
+                refuse("under a clip-path");
             if (element == &canvas || (values.overflow_x() == Rml::Style::Overflow::Visible &&
                                        values.overflow_y() == Rml::Style::Overflow::Visible))
                 continue;

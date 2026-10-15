@@ -19,10 +19,11 @@ struct AudioEngineSound {
 using AudioEngineSoundHandle = std::shared_ptr<AudioEngineSound>;
 
 /**
- * The lowered static sound, sound source, bus and sound buffer
- * (`bblite/upstream_static_sound.hpp`), held by handle.
+ * The lowered static and streaming sounds, sound source, bus and sound
+ * buffer (`bblite/upstream_static_sound.hpp`), held by handle.
  */
 struct StaticSound;
+struct StreamingSound;
 struct AudioInputSource;
 struct AudioBus;
 struct SoundBuffer;

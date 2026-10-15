@@ -26,6 +26,8 @@ namespace bbl {
 enum class UiDocumentPart { Html, Head, Body };
 UiElementHandle ui_document_root(Engine& engine, UiDocumentPart part);
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag);
+/** A parser script whose checked startup body is dispatched by generated code. */
+UiElementHandle ui_create_compiled_script(Engine& engine);
 UiElementHandle ui_create_svg_element(Engine& engine, std::string_view tag);
 #if BBLITE_WORKERS
 bool ui_image_complete(Engine&, UiElementHandle);

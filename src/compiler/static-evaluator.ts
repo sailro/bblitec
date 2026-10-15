@@ -43,7 +43,7 @@ export function objectIdentityCallArgument(
 import { EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import { isStringValue, presenceCpp, type Value } from "./types.js";
-import type { CompileError } from "./compile-error.js";
+import { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
     declaredSymbol,
@@ -272,6 +272,14 @@ export class StaticEvaluator {
         private readonly objectProperties: (
             object: ts.ObjectLiteralExpression,
         ) => readonly ts.ObjectLiteralElementLike[],
+        /**
+         * The text an inlined call's argument folds to for the read-only
+         * parameter an identifier reads. `Compiler.inlinedArgumentText`
+         * owns the rule.
+         */
+        private readonly inlinedArgumentText: (
+            identifier: ts.Identifier,
+        ) => string | undefined,
     ) {}
 
     /** @unjournaled A module constant's required text, fixed when first read: JS evaluates it once. */
@@ -1257,6 +1265,27 @@ export class StaticEvaluator {
 
     public compileStringLiteral(expression: ts.Expression): string {
         const unwrapped = this.resolveStaticExpression(expression);
+        const named = this.unwrap(expression);
+        if (unwrapped === named || !ts.isIdentifier(named))
+            return this.foldStringLiteral(unwrapped);
+        // A module constant whose initializer this fold cannot read runs at
+        // generation, once, as `staticText` reads it.
+        try {
+            return this.foldStringLiteral(unwrapped);
+        } catch (error) {
+            if (!(error instanceof CompileError)) throw error;
+            let text: string | undefined;
+            try {
+                text = this.generationText(named);
+            } catch (declined) {
+                if (!(declined instanceof CompileError)) throw declined;
+            }
+            if (text === undefined) throw error;
+            return text;
+        }
+    }
+
+    private foldStringLiteral(unwrapped: ts.Expression): string {
         if (
             ts.isStringLiteral(unwrapped) ||
             ts.isNoSubstitutionTemplateLiteral(unwrapped)
@@ -1272,7 +1301,7 @@ export class StaticEvaluator {
                 return value.staticString;
             }
             const folded = value.parameterBinding
-                ? undefined
+                ? this.inlinedArgumentText(unwrapped)
                 : this.generationText(unwrapped);
             if (folded !== undefined) return folded;
             this.fail(

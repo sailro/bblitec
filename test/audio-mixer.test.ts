@@ -171,6 +171,7 @@ test("buses, stereo, sound buffers, analysers and sound sources in a LabSound ca
         "test/fixtures/audio-mixer-capture-check.cpp",
         [
             "/DBBLITE_AUDIO_CAPTURE=1",
+            "/DBBLITE_HAS_AUDIO_MEDIA_ELEMENT=1",
             "/DBBLITE_HAS_AUDIO_PANNER=1",
             "/DBBLITE_HAS_AUDIO_STEREO_PANNER=1",
             "/DBBLITE_HAS_AUDIO_ANALYSER=1",

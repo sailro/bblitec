@@ -1388,6 +1388,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
         applicationRealm: true,
     },
+    "audio:streaming-sound": {
+        provenance:
+            "src/audio/streaming-sound.ts createStreamingSoundAsync and the " +
+            "streaming-sound functions, lowered with the audio family over " +
+            "packaged media elements",
+        consumers: INVENTORY,
+        applicationRealm: true,
+    },
     "audio:media-stream": {
         provenance:
             "the reached Web Audio graph calls AudioContext.createMediaStreamDestination() or createMediaStreamSource()",
@@ -1714,6 +1722,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "generation-validated inline svg/path/rect markup projected through the pinned RmlUi SVG plugin",
         consumers: CMAKE,
+    },
+    "ui:svg-image": {
+        provenance:
+            "generation-validated inline SVG <image> markup over packaged PNG/JPEG assets",
+        consumers: ["features.cmake", "feature macros"],
     },
     "data:locale": {
         provenance:

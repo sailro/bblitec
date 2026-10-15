@@ -78,6 +78,35 @@ test("conflicting scalar dictionary demands refuse without changing the retained
 });
 
 check(
+    "generic intersection spreads preserve dynamic dictionary keys",
+    `
+    interface OptionalWeight { weight?:number|boolean; }
+    interface Input extends OptionalWeight { nested:{count:number}; extra:number; }
+    function normalize<T extends object>(value:T):T {
+        const raw=(value as OptionalWeight).weight;
+        if(raw===undefined)return value;
+        const copy:T & OptionalWeight={...value};
+        if(typeof raw==='number')copy.weight=raw;
+        else if(raw===true)copy.weight=0.25;
+        else delete copy.weight;
+        return copy;
+    }
+    const parsed=JSON.parse('{"weight":true,"nested":{"count":2},"extra":4}') as Input;
+    const input={...parsed};
+    const output=normalize(input);
+    if(output===input||output.weight!==0.25||input.weight!==true||output.extra!==4||output.nested!==input.nested)
+        throw Error('fresh copy and nested identity');
+    output.nested.count=7;
+    if(input.nested.count!==7)throw Error('nested mutation');
+    const removed=normalize({...input,weight:false});
+    if('weight' in removed||Object.keys(removed).join()!=='nested,extra'||input.weight!==true)
+        throw Error('copied own keys');
+    const missing={...JSON.parse('{"extra":8}') as {extra:number}};
+    if(normalize(missing)!==missing)throw Error('unchanged identity');
+`,
+);
+
+check(
     "runtime deletion promotes a fresh generic spread",
     `
     interface Frame { x:number; y:number; }

@@ -928,6 +928,22 @@ const callbacks = new Map();
 const timeouts = new Map();
 const intervals = new Map();
 let nextTimerId = 1000000000;
+// CSS uses the document timeline, independently of the JavaScript clock.
+// Keep each effect at its own age: a late transition must not inherit the
+// whole capture time. Weak keys release completed and replaced effects.
+const animationEpochs = new WeakMap();
+const advanceCssAnimations = () => {
+    for (const animation of document.getAnimations()) {
+        if (!(animation instanceof CSSAnimation) && !(animation instanceof CSSTransition)) continue;
+        let epoch = animationEpochs.get(animation);
+        if (epoch === undefined) {
+            epoch = now;
+            animationEpochs.set(animation, epoch);
+        }
+        animation.pause();
+        animation.currentTime = now - epoch;
+    }
+};
 const schedule = () => {
     if (
         scheduled || flushing || done ||
@@ -952,6 +968,7 @@ const schedule = () => {
         now = engineStartFrame < 0
             ? 0
             : (frame - engineStartFrame) * step;
+        advanceCssAnimations();
         const due = Array.from(callbacks.entries());
         callbacks.clear();
         for (const [id, callback] of due) {
@@ -975,6 +992,7 @@ const schedule = () => {
             timer.due += timer.period;
             timer.callback(...timer.args);
         }
+        advanceCssAnimations();
         const captureFrame = engineStartFrame < 0
             ? -1
             : frame - engineStartFrame;
@@ -1118,22 +1136,6 @@ export async function captureSuiteReference(
             }
             mkdirSync(resolve(referencePath, ".."), { recursive: true });
             if (captureUiEnabled()) {
-                if (options.fixedAnimationFrame !== undefined) {
-                    // requestAnimationFrame and performance.now() are pinned
-                    // by the deterministic harness above, but CSS animations
-                    // use the document timeline directly. Freeze them at the
-                    // same requested frame so animated DOM UI has a stable,
-                    // backend-comparable reference phase.
-                    await page.evaluate(
-                        (elapsedMilliseconds) => {
-                            for (const animation of document.getAnimations()) {
-                                animation.pause();
-                                animation.currentTime = elapsedMilliseconds;
-                            }
-                        },
-                        options.fixedAnimationFrame * (1000 / 60),
-                    );
-                }
                 await page.screenshot({ path: referencePath });
             } else {
                 if (

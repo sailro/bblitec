@@ -99,13 +99,13 @@ test("Object.assign styles reuse property adaptation and capability admission", 
         "--bbl-background-color",
     ])
         assert.ok(result.cpp.includes(`"${property}"`), property);
-    const source = `const panel=document.createElement('div');Object.assign(panel.style,{clipPath:'inset(1px)'});globalThis.close();`;
+    const source = `const panel=document.createElement('div');Object.assign(panel.style,{emptyCells:'hide'});globalThis.close();`;
     assert.throws(() => compileSource(source), /Retained UI style/);
     assert.deepEqual(
         compileSource(source, {
             deferredCapabilities: "runtime-throw",
         }).manifest.deferredCapabilities?.map((entry) => entry.id),
-        ["css:property:clip-path"],
+        ["css:property:empty-cells"],
     );
 });
 

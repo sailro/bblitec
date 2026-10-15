@@ -324,6 +324,41 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0041-grid-template-areas.patch",
+      "purpose": "Named grid areas, grid-area and area line names",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0042-aspect-ratio.patch",
+      "purpose": "Preferred aspect ratio of non-replaced boxes",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0043-clip-path.patch",
+      "purpose": "clip-path inset() and polygon() clipping, hit testing and transitions",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0044-inline-transitions.patch",
+      "purpose": "Transitions for author inline declarations",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0045-grid-relative-lengths.patch",
+      "purpose": "Grid track lengths resolve against the container font and viewport",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",
@@ -404,6 +439,20 @@
       "library": "labsound",
       "file": "native/patches/labsound/0007-output-in-place-bus.patch",
       "purpose": "An output sets the sample rate of this quantum's bus, not a stale in-place one",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "labsound",
+      "file": "native/patches/labsound/0008-explicit-channel-inputs.patch",
+      "purpose": "A node with an explicit or clamped channel count mixes its single input to that count",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "labsound",
+      "file": "native/patches/labsound/0009-analyser-max-decibels.patch",
+      "purpose": "The maximum-decibel setting updates the analyser from its own value",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },

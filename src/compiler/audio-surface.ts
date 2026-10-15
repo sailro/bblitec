@@ -24,6 +24,7 @@ import {
     webAudioMemberCall,
 } from "../lowering/web-platform-schema.js";
 import {
+    AUDIO_ELEMENT_EVENTS,
     AUDIO_CONTEXT_TRANSITIONS,
     AUDIO_ELEMENT_PROPERTIES,
     AUDIO_NODE_FACTORIES,
@@ -497,14 +498,6 @@ export function compileAudioMethodCall(
     }
     return compileAudioReceiverMethod(context, call, callee, receiver);
 }
-
-/** `HTMLAudioElement` event types and their `AudioElementEvent`. */
-const AUDIO_ELEMENT_EVENTS: Readonly<Record<string, string>> = {
-    timeupdate: "TimeUpdate",
-    ended: "Ended",
-    play: "Play",
-    pause: "Pause",
-};
 
 /**
  * `add/removeEventListener(type, listener[, options])` on an audio target,

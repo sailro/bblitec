@@ -33,7 +33,13 @@ import {
     parseHtmlFragments,
     type HtmlFragmentNode,
 } from "../host-page-parser.js";
-import { supportedUiGridPlacement, supportedUiGridTracks } from "../ui-grid.js";
+import { supportedUiClipPath } from "../ui-clip-path.js";
+import {
+    supportedUiGridArea,
+    supportedUiGridPlacement,
+    supportedUiGridTemplateAreas,
+    supportedUiGridTracks,
+} from "../ui-grid.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
 import {
     supportedUiImageBackground,
@@ -92,6 +98,7 @@ import {
     emitDomEventHandler,
     eventHandlerResult,
     pinDetached,
+    resourceLoadEvent,
 } from "./dom-listeners.js";
 import {
     elementInterfaceTag,
@@ -101,6 +108,7 @@ import {
     isDomReceiver,
 } from "./dom-targets.js";
 import { registerUiImageAsset } from "./assets.js";
+import { packagedUrlAssets } from "./static-fetch.js";
 import {
     canvasContextIds,
     engineCanvasIds,
@@ -124,13 +132,6 @@ import {
     dataTypeMayHoldUiElement,
     typeMayMapToUiElement,
 } from "./ui-element-analysis.js";
-
-/** Browser markup whose renderer exists but retained DOM state has no bridge. */
-class DeferredMarkupBridge extends Error {
-    constructor(readonly capability: "svg-image") {
-        super(`Retained markup requires the ${capability} bridge.`);
-    }
-}
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -291,6 +292,8 @@ interface UiProjectionContext extends Pick<
     | "expectSameEngine"
     | "fail"
     | "failAtFile"
+    | "staticAssetUrlCandidates"
+    | "propertyName"
     | "refuseLoweredSite"
     | "hasFeature"
     | "hasPresentationHost"
@@ -315,6 +318,7 @@ interface UiProjectionContext extends Pick<
     | "resolveThisField"
     | "symbols"
     | "unwrap"
+    | "userFunctions"
 > {}
 
 /** String IDL attributes reflecting one content attribute. */
@@ -471,8 +475,71 @@ export class UiProjection {
                   .join(", ")}`;
     }
 
+    /** `new Image()`: a created img element of the Window document, detached. */
+    public compileImageConstructor(
+        expression: ts.NewExpression,
+    ): Value | undefined {
+        if (this.context.libraryGlobal(expression.expression) !== "Image")
+            return undefined;
+        if (expression.arguments?.length)
+            this.context.fail(
+                expression,
+                "new Image(width, height) is not lowered; write width and height after construction.",
+            );
+        const engine = this.documentEngine(expression);
+        this.context.reachFeature("ui:rml", expression);
+        return {
+            kind: "ui-element",
+            cpp: `bbl::ui_create_element(${engine}, "img")`,
+            engineCpp: engine,
+            uiTag: "img",
+            uiStaticId: this.createUiStaticElement("img"),
+        };
+    }
+
     public registerImageSource(source: string): void {
         if (source) registerUiImageAsset(this.context, source, source);
+    }
+
+    /**
+     * A runtime img src among the packaged images the URL inference finds
+     * (`packagedUrlAssets`, as fetch and audio sources): each candidate is
+     * packaged where the retained image loads it, and the string selects at
+     * run time. The empty string loads nothing; another string the program
+     * computes outside the candidates fails to load like a missing file.
+     */
+    private runtimeUiImageSource(expression: ts.Expression): string {
+        const packaged = packagedUrlAssets(
+            this.context,
+            expression,
+            (_, logicalSource) => {
+                if (!/^\/?[^/:?#][^:?#]*$/.test(logicalSource))
+                    this.context.fail(
+                        expression,
+                        `An img src candidate '${logicalSource}' must be a root-relative or relative URL without a query or fragment.`,
+                    );
+                return registerUiImageAsset(
+                    this.context,
+                    logicalSource,
+                    logicalSource,
+                ).output;
+            },
+            (source) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(source),
+            (url) => url === "",
+        );
+        // A generation-known source with no packaged file fails to load.
+        if (packaged?.selected.staticString !== undefined)
+            return this.context.cppString(packaged.selected.staticString);
+        if (!packaged || packaged.assets.length === 0)
+            return this.context.fail(
+                expression,
+                "An img src write requires sources generation can package: string literals, conditionals of them, host data attributes the program never writes, or a runtime string whose packaged image candidates generation can find.",
+            );
+        return this.context.dataLowerer.compileKnownValueForSink(
+            packaged.selected,
+            { kind: "string" },
+            expression,
+        );
     }
 
     public documentEngine(node: ts.Node): string {
@@ -789,7 +856,7 @@ export class UiProjection {
     private declaredMemberType(
         member: ts.PropertyAccessExpression,
     ): DataType | undefined {
-        const symbol = this.context.checker.getSymbolAtLocation(member.name);
+        const symbol = declaredSymbol(this.context.checker, member.name);
         return symbol
             ? this.context.dataTypes.fromTsType(
                   this.context.checker.getTypeOfSymbol(symbol),
@@ -1731,6 +1798,7 @@ export class UiProjection {
             "accent-color",
             "appearance",
             "-webkit-appearance",
+            "aspect-ratio",
             "align-content",
             "align-items",
             "align-self",
@@ -1768,11 +1836,14 @@ export class UiProjection {
             "color",
             "color-scheme",
             "clip",
+            "clip-path",
             "clear",
             "column-gap",
             "cursor",
             "display",
             "grid-template-columns",
+            "grid-template-areas",
+            "grid-area",
             "grid-column",
             "grid-row",
             "grid-auto-columns",
@@ -2587,7 +2658,7 @@ export class UiProjection {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    "expected finite auto/px/fr or minmax(auto or px, auto/px/fr) tracks, with bounded repeat only for explicit tracks",
+                    "expected finite auto/length/fr or minmax(auto or length, auto/length/fr) tracks over px/em/rem/vw/vh, with bounded repeat only for explicit tracks",
                 );
             }
             if (
@@ -2597,9 +2668,30 @@ export class UiProjection {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    "expected auto, nonzero numeric lines, or positive spans, bounded to 256 tracks per axis",
+                    "expected auto, area names, nonzero numeric lines, or positive spans, bounded to 256 tracks per axis",
                 );
             }
+            if (property === "clip-path" && !supportedUiClipPath(literalValue))
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "expected none, inset() with one to four lengths or polygon() with an optional nonzero/evenodd fill rule, over px/% lengths and calc() of them",
+                );
+            if (property === "grid-area" && !supportedUiGridArea(literalValue))
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "expected up to four slash-separated lines: auto, area names, nonzero numeric lines, or positive spans, bounded to 256 tracks per axis",
+                );
+            if (
+                property === "grid-template-areas" &&
+                !supportedUiGridTemplateAreas(declaration.slice(colon + 1))
+            )
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "expected none or equal rows of strings whose named cells form rectangles, within 256 tracks per axis",
+                );
             if (
                 property === "isolation" &&
                 !/^(?:auto|isolate)$/.test(literalValue.trim().toLowerCase())
@@ -4088,7 +4180,51 @@ export class UiProjection {
         );
     }
 
-    /** Classify missing CSS runtime work without swallowing a compiler refusal. */
+    /**
+     * Where a stylesheet's text is written: through the argument of each
+     * inlined call whose read-only parameter carries it, to a constant's
+     * initializer. The sheet's refusals and traps point there.
+     */
+    private uiSheetSource(expression: ts.Expression): ts.Expression {
+        let source = expression;
+        for (;;) {
+            const node = this.context.unwrap(source);
+            if (!ts.isIdentifier(node)) return source;
+            let next: ts.Expression;
+            try {
+                next =
+                    this.context.userFunctions.inlinedArgument(node, (name) =>
+                        this.context.bindings.scopeOf(name),
+                    ) ?? this.context.evaluator.resolveStaticExpression(node);
+            } catch (error) {
+                if (error instanceof CompileError) return source;
+                throw error;
+            }
+            if (next === node) {
+                const declaration = declaredSymbol(
+                    this.context.checker,
+                    node,
+                )?.valueDeclaration;
+                if (declaration && ts.isParameter(declaration)) {
+                    // Shared native bodies cannot attach a caller's sheet source.
+                    // The shared-body probe retries this operation at its call site.
+                    this.context.compileStringLiteral(node);
+                    this.context.fail(
+                        node,
+                        "Stylesheet text through a parameter requires a call-site specialization.",
+                        "static-value-required",
+                    );
+                }
+                return source;
+            }
+            source = next;
+        }
+    }
+
+    /**
+     * Classify missing CSS runtime work without swallowing a compiler
+     * refusal: text generation cannot read refuses at its own lowering.
+     */
     private deferredUiStyleCapabilities(
         expression: ts.Expression,
         sheet: boolean,
@@ -4096,17 +4232,10 @@ export class UiProjection {
         if (!this.context.options.deferredCapabilities) return [];
         let source = this.tryUiStaticString(expression);
         if (source === undefined) {
-            if (sheet) return ["css:runtime-stylesheet-installation-bridge"];
-            const parts = this.collectUiStringParts(expression);
-            if (!parts) {
-                // Conditional/concatenated structures have an existing lowering
-                // path. Leave its branch-specific admission authoritative.
-                const node = this.context.unwrap(expression);
-                return ts.isConditionalExpression(node) ||
-                    ts.isBinaryExpression(node)
-                    ? []
-                    : ["css:runtime-declaration-installation-bridge"];
-            }
+            const parts = sheet
+                ? undefined
+                : this.collectUiStringParts(expression);
+            if (!parts) return [];
             source = parts
                 .map((part) =>
                     typeof part === "string" ? part : "__BBLITE_DYNAMIC_CSS__",
@@ -4246,7 +4375,7 @@ export class UiProjection {
         const pathData =
             /^(?:(?:[MmLlHhVvCcSsQqTtAaZz])|(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)|[\s,])*$/;
         const svgAttributeSchemas: Record<
-            "svg" | "path" | "rect",
+            "svg" | "path" | "rect" | "image",
             {
                 allowed: ReadonlySet<string>;
                 numeric: ReadonlySet<string>;
@@ -4299,6 +4428,19 @@ export class UiProjection {
                     "stroke-width",
                 ]),
             },
+            // A packaged raster drawn at its viewport rectangle; the PAL
+            // inlines it for RmlUi's SVG plugin.
+            image: {
+                allowed: new EmissionSet([
+                    "href",
+                    "x",
+                    "y",
+                    "width",
+                    "height",
+                    "preserveaspectratio",
+                ]),
+                numeric: new EmissionSet(["x", "y", "width", "height"]),
+            },
         };
         const markupHole = /__BBLITE_UI_MARKUP_\d+__/i;
         // The browser's tree for the markup; a runtime operand stands in it as
@@ -4328,14 +4470,6 @@ export class UiProjection {
                 return escapeText(node.text);
             }
             const tag = node.tag.toLowerCase();
-            // RmlUi can draw SVG images, but their references do not yet
-            // retain browser state; only that named bridge defers.
-            if (
-                this.context.options.deferredCapabilities &&
-                insideSvg &&
-                tag === "image"
-            )
-                throw new DeferredMarkupBridge("svg-image");
             // Controls own state only as retained elements (`emitUiAuthoredMarkup`).
             if (
                 !insideSvg &&
@@ -4358,7 +4492,7 @@ export class UiProjection {
                     !/^(?:div|span|h1|h2|p|button|b|strong|a|label|img|svg)$/.test(
                         tag,
                     )) ||
-                (insideSvg && !/^(?:path|rect)$/.test(tag))
+                (insideSvg && !/^(?:path|rect|image)$/.test(tag))
             ) {
                 fail(`tag '<${tag}>' is outside the bounded HTML/SVG subset.`);
             }
@@ -4540,6 +4674,35 @@ export class UiProjection {
                     ) {
                         fail("attribute 'xmlns' has an unsupported value.");
                     }
+                    if (tag === "image" && lowerName === "href") {
+                        if (
+                            !/^[^:?#&"<>\\]+\.(?:png|jpe?g)$/i.test(
+                                attributeValue,
+                            )
+                        )
+                            fail(
+                                "<image> href requires a packaged PNG or JPEG path.",
+                            );
+                        this.registerImageSource(attributeValue);
+                    }
+                    if (
+                        tag === "image" &&
+                        lowerName === "preserveaspectratio" &&
+                        !/^(?:none|x(?:Min|Mid|Max)Y(?:Min|Mid|Max)(?:\s+(?:meet|slice))?)$/.test(
+                            attributeValue.trim(),
+                        )
+                    ) {
+                        fail(
+                            "<image> preserveAspectRatio requires none or an alignment with meet or slice.",
+                        );
+                    }
+                    if (
+                        tag === "image" &&
+                        (lowerName === "width" || lowerName === "height") &&
+                        Number(attributeValue) < 0
+                    ) {
+                        fail(`<image> ${lowerName} must be nonnegative.`);
+                    }
                 }
                 if (tag === "svg" || tag === "path" || tag === "rect") {
                     attributeValue = validateSharedSvgAttribute(
@@ -4556,9 +4719,25 @@ export class UiProjection {
                     svgPaint[lowerName] = attribute.value.trim().toLowerCase();
                 }
                 loweredAttributes.push({
-                    name: lowerName === "viewbox" ? "viewBox" : lowerName,
+                    // The PAL replaces a packaged image reference with its data.
+                    name:
+                        lowerName === "viewbox"
+                            ? "viewBox"
+                            : lowerName === "preserveaspectratio"
+                              ? "preserveAspectRatio"
+                              : tag === "image" && lowerName === "href"
+                                ? "data-bbl-href"
+                                : lowerName,
                     value: attributeValue,
                 });
+            }
+            // currentColor tints the whole rasterized SVG, an image included.
+            if (tag === "image" && svgPaint) {
+                svgPaint.usesLiteralPaint = true;
+                if (svgPaint.usesCurrentColor)
+                    fail(
+                        "cannot mix currentColor with an <image> because whole-image tinting would recolor it.",
+                    );
             }
             if ((tag === "path" || tag === "rect") && svgPaint) {
                 const declaredPaint = (name: "fill" | "stroke"): string =>
@@ -4597,6 +4776,14 @@ export class UiProjection {
             ) {
                 fail("<rect> requires static x, y, width, and height.");
             }
+            if (
+                tag === "image" &&
+                !["href", "width", "height"].every((name) =>
+                    attributeNames.has(name),
+                )
+            ) {
+                fail("<image> requires a static href, width and height.");
+            }
             const lowered: UiStaticMarkupNode = {
                 id: nextMarkupNodeId++,
                 tag,
@@ -4612,6 +4799,8 @@ export class UiProjection {
             if (parent) parent.children.push(lowered);
             else roots.push(lowered);
             if (tag === "svg") this.context.reachFeature("ui:inline-svg", site);
+            if (tag === "image")
+                this.context.reachFeature("ui:svg-image", site);
             const children = lowerNodes(node.children ?? [], lowered, svgPaint);
             const renderedAttributes = loweredAttributes
                 .map(
@@ -4625,7 +4814,12 @@ export class UiProjection {
                     : "";
             const opening = `<${tag}${renderedAttributes} data-bbl-node="${lowered.id}"`;
             // Void elements and SVG shapes close themselves, as RML spells them.
-            if (tag === "img" || tag === "path" || tag === "rect")
+            if (
+                tag === "img" ||
+                tag === "path" ||
+                tag === "rect" ||
+                tag === "image"
+            )
                 return `${opening}/>${children}`;
             return `${opening}${currentColor}>${children}</${tag}>`;
         };
@@ -4813,26 +5007,6 @@ export class UiProjection {
         for (const node of nodes) build(receiver, node);
     }
 
-    /** A selected unsupported markup arm throws before the setter mutates its owner. */
-    private deferredUiMarkup(
-        site: ts.Node,
-        error: DeferredMarkupBridge,
-        result: "string" | "void",
-    ): Value {
-        const trap = this.context.deferredCapabilities.emitKnown(
-            site,
-            {
-                id: `dom:Element.innerHTML.${error.capability}`,
-                origin: "dom",
-                operation: "write",
-                timing: "throw",
-                signature: "Element.innerHTML: string",
-            },
-            result === "string" ? { kind: "string" } : undefined,
-        );
-        return trap ?? this.context.fail(site, error.message);
-    }
-
     private uiStoredMarkupShape(
         expression: ts.Expression,
     ): UiMarkupShape | undefined {
@@ -4933,7 +5107,6 @@ export class UiProjection {
             pending: readonly UiMarkupPart[],
             prefix: string,
             substitutions: readonly string[],
-            runtimeBranch = false,
         ): string => {
             let source = prefix;
             const values = [...substitutions];
@@ -4970,7 +5143,6 @@ export class UiProjection {
                             ],
                             source,
                             values,
-                            runtimeBranch,
                         );
                     const branch = (parts: UiMarkupPart[]): string => {
                         let result = "";
@@ -4981,7 +5153,6 @@ export class UiProjection {
                                     [...parts, ...pending.slice(index + 1)],
                                     source,
                                     values,
-                                    true,
                                 );
                             } finally {
                                 this.context.leaveRuntimeControlFlow();
@@ -4997,26 +5168,10 @@ export class UiProjection {
                     expression,
                     "Native UI innerHTML exceeds 32 closed markup alternatives.",
                 );
-            try {
-                const lowered = this.context.probeEmission(() =>
-                    this.lowerUiMarkupLiteral(source, expression, ownerId),
-                );
-                return this.uiMarkupConcat(lowered, (index) => values[index]!);
-            } catch (error) {
-                if (!(error instanceof DeferredMarkupBridge)) throw error;
-                if (!runtimeBranch) throw error;
-                const owner =
-                    ownerId === undefined
-                        ? undefined
-                        : this.uiStaticElements.get(ownerId);
-                if (owner) {
-                    // A caught throw retains the old children; the successful
-                    // alternatives alone cannot prove the owner's whole shape.
-                    writable(owner).childShapeKnown = false;
-                    writable(owner).childCardinalityKnown = false;
-                }
-                return this.deferredUiMarkup(expression, error, "string").cpp;
-            }
+            const lowered = this.context.probeEmission(() =>
+                this.lowerUiMarkupLiteral(source, expression, ownerId),
+            );
+            return this.uiMarkupConcat(lowered, (index) => values[index]!);
         };
         this.context.reachJsData();
         return emit(sourceParts, "", []);
@@ -5053,7 +5208,11 @@ export class UiProjection {
             this.context.callbacks.hoistForwardCallbackBindings(handler);
         if (element.uiFileInput && (type === "change" || type === "input"))
             this.context.reachFeature("browser:file", assignment);
-        const family = elementDomHandlerFamily(type);
+        const family =
+            elementDomHandlerFamily(type) ??
+            (resourceLoadEvent(this.context, element, receiver, type)
+                ? "pointer"
+                : undefined);
         if (!family)
             this.context.fail(
                 assignment.left,
@@ -5779,11 +5938,12 @@ export class UiProjection {
                     this.uiCreatedElementTag(expression.left.expression) ===
                     "style"
                 ) {
+                    const source = this.uiSheetSource(expression.right);
                     if (
                         this.emitDeferredUiStyle(
                             directElement,
                             expression.right,
-                            expression,
+                            source === expression.right ? expression : source,
                             this.deferredUiStyleCapabilities(
                                 expression.right,
                                 true,
@@ -5800,7 +5960,7 @@ export class UiProjection {
                         engine,
                         directElement.cpp,
                         sheet,
-                        expression.right,
+                        source,
                         directElement.uiStaticId,
                     ))
                         this.context.emit({ kind: "expression", code });
@@ -5835,29 +5995,13 @@ export class UiProjection {
                     );
                     return true;
                 }
-                let markup: string;
-                try {
-                    markup = this.context.probeEmission(() => {
-                        this.recordUiStaticReplaceChildren(receiver);
-                        return this.compileUiMarkupString(
-                            expression.right,
-                            receiver.uiStaticId,
-                        );
-                    });
-                } catch (error) {
-                    if (!(error instanceof DeferredMarkupBridge)) throw error;
-                    this.context.emitDiscardedValue({
-                        kind: "string",
-                        cpp: this.uiStringCpp(
-                            expression.right,
-                            "Deferred innerHTML",
-                        ),
-                    });
-                    this.context.emitDiscardedValue(
-                        this.deferredUiMarkup(expression, error, "void"),
+                const markup = this.context.probeEmission(() => {
+                    this.recordUiStaticReplaceChildren(receiver);
+                    return this.compileUiMarkupString(
+                        expression.right,
+                        receiver.uiStaticId,
                     );
-                    return true;
-                }
+                });
                 this.context.emit({
                     kind: "expression",
                     code: `bbl::ui_set_inner_rml(${engine}, ${receiver.cpp}, ${markup});`,
@@ -5905,11 +6049,13 @@ export class UiProjection {
                 // Every source the write can select is packaged; the
                 // selection itself runs as written.
                 const sources = this.uiImageSourceCandidates(expression.right);
-                if (!sources)
-                    this.context.fail(
-                        expression.right,
-                        "An img src write requires sources generation can package: string literals, conditionals of them, or host data attributes the program never writes.",
-                    );
+                if (!sources) {
+                    this.context.emit({
+                        kind: "expression",
+                        code: `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, "src", ${this.runtimeUiImageSource(expression.right)});`,
+                    });
+                    return true;
+                }
                 for (const source of sources) this.registerImageSource(source);
                 const fixed = this.tryUiStaticString(expression.right);
                 this.context.emit({
@@ -6035,6 +6181,9 @@ export class UiProjection {
                 "transform-origin",
                 "transition",
                 "animation",
+                "grid-area",
+                "grid-template-areas",
+                "clip-path",
             ].includes(nativeProperty) ||
             isUiLayoutProperty(nativeProperty)
         ) {
@@ -6601,9 +6750,15 @@ export class UiProjection {
             }
             const handle =
                 this.context.allocateTemporaryCppName("host_ui_element");
+            if (element.startupScript && normalizedTag !== "script")
+                this.context.failAtFile(
+                    "A checked page startup program requires a script element.",
+                );
             emitted.push(
                 `${indent}const auto ${handle} = ` +
-                    `bbl::ui_create_element(${engine}, ${this.context.cppString(normalizedTag)});`,
+                    (element.startupScript
+                        ? `bbl::ui_create_compiled_script(${engine});`
+                        : `bbl::ui_create_element(${engine}, ${this.context.cppString(normalizedTag)});`),
             );
             if (element.text !== undefined) {
                 emitted.push(

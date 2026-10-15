@@ -357,6 +357,35 @@ export function compileJsonCall(
     );
 }
 
+function representedReadType(
+    context: Pick<JsonBridgeContext, "unwrap" | "bindings" | "dataTypes">,
+    expression: ts.Expression,
+): DataType | undefined {
+    const source = context.unwrap(expression);
+    if (ts.isIdentifier(source))
+        return context.bindings.lookupOptional(source)?.dataType;
+    if (
+        !ts.isPropertyAccessExpression(source) &&
+        !ts.isElementAccessExpression(source)
+    )
+        return undefined;
+    let parent = representedReadType(context, source.expression);
+    if (parent?.kind === "optional") parent = parent.inner;
+    if (parent?.kind === "map") return parent.value;
+    if (parent?.kind === "vector" || parent?.kind === "span")
+        return parent.element;
+    const key = ts.isPropertyAccessExpression(source)
+        ? source.name.text
+        : ts.isStringLiteral(source.argumentExpression)
+          ? source.argumentExpression.text
+          : undefined;
+    return parent?.kind === "struct" && key !== undefined
+        ? context.dataTypes.findStructField(parent.name, key, source)?.type
+        : parent?.kind === "json"
+          ? parent
+          : undefined;
+}
+
 /**
  * Whether an expression is a read rooted in a parsed document, decided
  * without compiling it. Callers that must know before they commit to a
@@ -376,33 +405,7 @@ export function isJsonRootedExpression(
         ts.isElementAccessExpression(unwrapped)
     ) {
         const owner = context.unwrap(unwrapped.expression);
-        const representedType = (node: ts.Expression): DataType | undefined => {
-            const source = context.unwrap(node);
-            if (ts.isIdentifier(source))
-                return context.bindings.lookupOptional(source)?.dataType;
-            if (
-                !ts.isPropertyAccessExpression(source) &&
-                !ts.isElementAccessExpression(source)
-            )
-                return undefined;
-            let parent = representedType(source.expression);
-            if (parent?.kind === "optional") parent = parent.inner;
-            if (parent?.kind === "map") return parent.value;
-            if (parent?.kind === "vector" || parent?.kind === "span")
-                return parent.element;
-            const key = ts.isPropertyAccessExpression(source)
-                ? source.name.text
-                : ts.isStringLiteral(source.argumentExpression)
-                  ? source.argumentExpression.text
-                  : undefined;
-            return parent?.kind === "struct" && key !== undefined
-                ? context.dataTypes.findStructField(parent.name, key, source)
-                      ?.type
-                : parent?.kind === "json"
-                  ? parent
-                  : undefined;
-        };
-        const type = representedType(owner);
+        const type = representedReadType(context, owner);
         if (type?.kind === "json") return true;
         if (type?.kind === "map" && type.value.kind === "json") return true;
         return isJsonRootedExpression(context, unwrapped.expression);
@@ -423,6 +426,14 @@ export function hasDynamicObjectSpread(
         if (!ts.isSpreadAssignment(property)) return false;
         if (isJsonRootedExpression(context, property.expression)) return true;
         const source = context.unwrap(property.expression);
+        let represented = representedReadType(context, source);
+        if (represented?.kind === "optional") represented = represented.inner;
+        if (
+            represented?.kind === "map" &&
+            represented.dictionary &&
+            represented.value.kind === "json"
+        )
+            return true;
         const type = context.checker.getTypeAtLocation(source);
         return (
             (type.flags & ts.TypeFlags.Any) !== 0 ||

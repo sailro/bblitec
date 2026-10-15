@@ -256,7 +256,7 @@ int main() try {
         }
         assert(refused);
     }
-    for (const auto* placement : {"0", "+-1", "span 257", "header", "1 / 2 / 3"}) {
+    for (const auto* placement : {"0", "+-1", "span 257", "span header", "1 / 2 / 3"}) {
         bool refused = false;
         try {
             Engine engine;

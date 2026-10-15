@@ -1,12 +1,11 @@
 // The lowered audio library's mixer surface (test/audio-mixer.test.ts writes
 // it) over the real LabSound PAL, rendered offline between its calls: a
 // looped constant-level WAVE sound routed through two nested buses, each
-// bus's volume set and ramped, then a bus disposed; sound buffers decoded
-// from URL lists and played; an analyser's readouts of a sine; caller-built
-// nodes as sound sources; a last sound panned across the stereo field
-// (LabSound up-mixes a later mono input to the left channel only once a
-// stereo source has left the main bus, so mono measurements come first).
-// Prints one line per step: the left and right channel peaks once settled.
+// bus's volume set and ramped, then a bus disposed; a sound panned across
+// the stereo field, then mono sounds again (sound buffers decoded from URL
+// lists, an analyser's readouts of a sine, caller-built nodes as sound
+// sources), each still up-mixed to both channels. Prints one line per step:
+// the left and right channel peaks once settled.
 
 #include "pal_audio_labsound.cpp"
 #include "labsound-fixture.hpp"
@@ -98,6 +97,23 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::string broken, std::strin
     dispose_sound(sound);
     dispose_audio_bus(music);
 
+    // A sound on the main bus, panned: equal-power stereo panning of mono,
+    // measured once LabSound's de-zippered pan settles.
+    StaticSoundOptions panned_options{};
+    panned_options.loop = true;
+    const auto panned =
+        co_await create_sound_async(engine, std::string("/sounds/tone.wav"), panned_options);
+    StereoSoundOptions stereo{};
+    stereo.pan = 1.0;
+    enable_stereo(panned, stereo);
+    play_sound(panned);
+    lines.push_back("pan-right" + render(context, 19200, 4800));
+    set_stereo_pan(panned, -1.0, instant);
+    lines.push_back("pan-left" + render(context, 19200, 4800));
+    set_stereo_pan(panned, 0.0, instant);
+    lines.push_back("pan-centre" + render(context, 19200, 4800));
+    dispose_sound(panned);
+
     // A sound buffer from a URL list: the codec check skips an extension no
     // linked decoder reads, and the first decodable URL wins.
     const auto buffer = co_await create_sound_buffer_async(
@@ -179,6 +195,15 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::string broken, std::strin
     reconfigured.smoothing = 0.5;
     enable_analyzer(sine, reconfigured);
     lines.push_back("reconfigured" + attributes());
+    // Changing the range must affect the spectrum, not just the reflected setting.
+    pal::audio_set_analyser_property(analyser, pal::AnalyserProperty::SmoothingTimeConstant, 0.0);
+    static_cast<void>(render(context, 9600, 2400));
+    get_byte_frequency_data(sine, bins);
+    const auto narrow_range = bins.load(32);
+    pal::audio_set_analyser_property(analyser, pal::AnalyserProperty::MaxDecibels, 0.0);
+    get_byte_frequency_data(sine, bins);
+    if (bins.load(32) == 0 || bins.load(32) >= narrow_range)
+        throw std::runtime_error("Maximum decibels must rescale the analyser spectrum.");
     lines.push_back("refused " + labsound_fixture::thrown([&] {
                         pal::audio_set_analyser_property(analyser, pal::AnalyserProperty::FftSize,
                                                          1000.0);
@@ -220,24 +245,6 @@ js::Promise<js::PromiseVoid> run(std::string wav, std::string broken, std::strin
     lines.push_back("stream " + pal::media_stream_track_ready_state(track));
     dispose_sound_source(streamed);
     lines.push_back("stream-disposed " + pal::media_stream_track_ready_state(track));
-
-    // A sound on the main bus, panned: equal-power stereo panning of mono,
-    // measured once LabSound's de-zippered pan settles.
-    StaticSoundOptions panned_options{};
-    panned_options.loop = true;
-    const auto panned =
-        co_await create_sound_async(engine, std::string("/sounds/tone.wav"), panned_options);
-    StereoSoundOptions stereo{};
-    stereo.pan = 1.0;
-    enable_stereo(panned, stereo);
-    play_sound(panned);
-    lines.push_back("pan-right" + render(context, 19200, 4800));
-    set_stereo_pan(panned, -1.0, instant);
-    lines.push_back("pan-left" + render(context, 19200, 4800));
-    set_stereo_pan(panned, 0.0, instant);
-    lines.push_back("pan-centre" + render(context, 19200, 4800));
-    dispose_sound(panned);
-
     co_return js::PromiseVoid{};
 }
 

@@ -71,6 +71,7 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_DOM_INPUT", anyOf: ["input:dom"] },
     { macro: "BBLITE_HAS_BROWSER_FILE", anyOf: ["browser:file"] },
     { macro: "BBLITE_HAS_UI", anyOf: ["ui:rml"] },
+    { macro: "BBLITE_UI_SVG_IMAGES", anyOf: ["ui:svg-image"] },
     { macro: "BBLITE_HAS_PBR_RENDERER", anyOf: ["renderer:scene"] },
     { macro: "BBLITE_HAS_SPRITE_RENDERER", anyOf: ["renderer:sprite"] },
     {

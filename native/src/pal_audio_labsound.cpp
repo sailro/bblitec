@@ -129,9 +129,19 @@ struct AudioSourceState {
 #endif
 };
 
+#if BBLITE_HAS_AUDIO_ANALYSER
+struct AudioAnalyserScratch {
+    std::vector<std::uint8_t> bytes;
+    std::vector<float> floats;
+};
+#endif
+
 struct AudioNodeRecord {
     std::shared_ptr<lab::AudioNode> node;
     std::shared_ptr<AudioSourceState> source;
+#if BBLITE_HAS_AUDIO_ANALYSER
+    std::unique_ptr<AudioAnalyserScratch> analyser_scratch;
+#endif
 #if BBLITE_WORKERS
     std::array<PlatformEventListeners<void()>, 2> ended;
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(ended); }
@@ -1059,6 +1069,8 @@ AudioContextHandle create_context(const std::shared_ptr<AudioPlaybackDevice>& de
             *record.context, std::make_shared<lab::AudioDevice_Null>(in_config, out_config));
         record.context->setDestinationNode(record.destination);
         record.recorder = std::make_shared<lab::RecorderNode>(*record.context, out_config);
+        // It stands in for the destination, which up-mixes as speakers do.
+        record.recorder->setChannelInterpretation(lab::ChannelInterpretation::Speakers);
         record.context->connect(record.destination, record.recorder, 0, 0);
         record.recorder->startRecording();
     } else
@@ -1362,19 +1374,6 @@ std::shared_ptr<lab::AnalyserNode> require_analyser(AudioNodeHandle node) {
     return analyser;
 }
 
-/**
- * The decibel range, written through LabSound's settings: its maxDecibels
- * setting hands the analyser the minDecibels setting's value, and a setting
- * notifies only on change. So the minimum setting carries the maximum first,
- * a changed maximum setting copies it, then the minimum is set.
- */
-void set_decibel_range(lab::AnalyserNode& analyser, double minimum, double maximum) {
-    const auto top = static_cast<float>(maximum);
-    analyser.setMinDecibels(top);
-    analyser.setMaxDecibels(top + 1.0f);
-    analyser.setMaxDecibels(top);
-    analyser.setMinDecibels(static_cast<float>(minimum));
-}
 } // namespace
 #else
 namespace {
@@ -1391,6 +1390,7 @@ AudioNodeHandle audio_create_analyser(AudioContextHandle context) {
     // LabSound's own default size is 1024; its decibel range and smoothing
     // defaults are Web Audio's.
     value->node = std::make_shared<lab::AnalyserNode>(*record.context, 2048);
+    value->analyser_scratch = std::make_unique<AudioAnalyserScratch>();
     const auto node = value->node;
     auto handle = insert_node(context, record, std::move(value));
     record.context->addAutomaticPullNode(node);
@@ -1454,12 +1454,12 @@ void audio_set_analyser_property(AudioNodeHandle node, AnalyserProperty property
     case AnalyserProperty::MinDecibels:
         if (value >= analyser->maxDecibels())
             throw out_of_range("minDecibels must be less than maxDecibels.");
-        set_decibel_range(*analyser, value, analyser->maxDecibels());
+        analyser->setMinDecibels(value);
         return;
     case AnalyserProperty::MaxDecibels:
         if (value <= analyser->minDecibels())
             throw out_of_range("maxDecibels must be greater than minDecibels.");
-        set_decibel_range(*analyser, analyser->minDecibels(), value);
+        analyser->setMaxDecibels(value);
         return;
     case AnalyserProperty::SmoothingTimeConstant:
         if (value < 0.0 || value > 1.0)
@@ -1481,7 +1481,8 @@ void audio_analyser_byte_data(AudioNodeHandle node, AnalyserData data,
     const auto analyser = require_analyser(node);
     const std::size_t held =
         data == AnalyserData::Frequency ? analyser->frequencyBinCount() : analyser->fftSize();
-    std::vector<std::uint8_t> values(std::min(out.size(), held));
+    auto& values = node.ownership->analyser_scratch->bytes;
+    values.assign(std::min(out.size(), held), 0);
     if (data == AnalyserData::Frequency)
         analyser->getByteFrequencyData(values);
     else
@@ -1501,7 +1502,8 @@ void audio_analyser_float_data(AudioNodeHandle node, AnalyserData data, js::F32A
     const auto analyser = require_analyser(node);
     const std::size_t held =
         data == AnalyserData::Frequency ? analyser->frequencyBinCount() : analyser->fftSize();
-    std::vector<float> values(std::min(out.size(), held));
+    auto& values = node.ownership->analyser_scratch->floats;
+    values.assign(std::min(out.size(), held), 0.0f);
     if (data == AnalyserData::Frequency)
         analyser->getFloatFrequencyData(values);
     else
@@ -2230,6 +2232,9 @@ void audio_param_set_value_curve(AudioParamHandle param, const bbl::js::F32Array
 struct AudioElementPlayback {
     /** The URL `new Audio(url)` set; absent after `removeAttribute("src")`. */
     std::optional<std::string> source;
+    /** Source children, tried in order without a `source`; `candidate` is the one loading. */
+    std::vector<AudioSourceElement> children;
+    std::size_t candidate = 0;
     std::string preload = "auto";
     bool loop = false;
     bool paused = true;
@@ -2256,8 +2261,11 @@ struct AudioElementPlayback {
     double segment_offset = 0.0;
     EventLoop::TimerId timer = 0;
     std::vector<js::Promise<js::PromiseVoid>> pending_plays;
+    /** Kept writes with no effect on playback. */
+    js::Nullable<std::string> cross_origin;
+    bool controls = false;
     /** Capture and non-capture listeners per `AudioElementEvent`. */
-    std::array<std::array<PlatformEventListeners<void()>, 2>, 4> listeners;
+    std::array<std::array<PlatformEventListeners<void()>, 2>, 6> listeners;
 };
 
 AudioElementState::AudioElementState() : playback(std::make_unique<AudioElementPlayback>()) {}
@@ -2448,11 +2456,23 @@ void resolve_plays(AudioElementPlayback& playback) {
         play.resolve(js::PromiseVoid{});
 }
 
+/** The URL the element loads: its `src`, or else the source child it has reached. */
+const std::string* element_resource(const AudioElementPlayback& playback) {
+    if (playback.source)
+        return &*playback.source;
+    return playback.candidate < playback.children.size()
+               ? &playback.children[playback.candidate]->src
+               : nullptr;
+}
+
 void fail_element_source(AudioElementPlayback& playback) {
     playback.loading = false;
     playback.failed = true;
     reject_plays(std::exchange(playback.pending_plays, {}),
                  "Failed to load because no supported source was found.", "NotSupportedError");
+    // Source children that all failed leave the element waiting, without an error of its own.
+    if (playback.source)
+        dispatch_element_event(playback, AudioElementEvent::Error);
 }
 
 /** The output node plays the decoded source, its channels configured before a pull. */
@@ -2473,6 +2493,19 @@ AudioNodeHandle create_element_output(AudioContextHandle context) {
     return insert_node(context, record, std::move(value));
 }
 
+void begin_element_load(const AudioElement& element);
+
+/** A source that failed: the next source child, or the element fails. */
+void next_element_resource(const AudioElement& element) {
+    auto& playback = *element->playback;
+    if (!playback.source && ++playback.candidate < playback.children.size() &&
+        element_node(playback) && audio_state(playback.context) != "closed") {
+        begin_element_load(element);
+        return;
+    }
+    fail_element_source(playback);
+}
+
 void finish_element_load(const AudioElement& element, std::uint64_t generation,
                          std::shared_ptr<const DecodedAudio> decoded) {
     auto& playback = *element->playback;
@@ -2480,7 +2513,7 @@ void finish_element_load(const AudioElement& element, std::uint64_t generation,
         return;
     const auto node = element_node(playback);
     if (!decoded || !node || audio_state(playback.context) == "closed") {
-        fail_element_source(playback);
+        next_element_resource(element);
         return;
     }
     playback.loading = false;
@@ -2490,6 +2523,8 @@ void finish_element_load(const AudioElement& element, std::uint64_t generation,
     bind_decoded_source(playback);
     // A position set before the source loaded is its default start position.
     playback.position = std::clamp(playback.position, 0.0, playback.duration);
+    // The whole source is decoded: it can play through.
+    dispatch_element_event(playback, AudioElementEvent::CanPlayThrough);
     if (!playback.paused) {
         start_segment(element);
         resolve_plays(playback);
@@ -2504,15 +2539,18 @@ void begin_element_load(const AudioElement& element) {
     auto& playback = *element->playback;
     playback.loading = true;
     const auto generation = playback.generation;
-    auto packaged = packaged_response(*playback.source);
+    auto packaged = packaged_response(*element_resource(playback));
     if (!packaged) {
         EventLoop::current().post([element, generation] {
             if (generation == element->playback->generation)
-                fail_element_source(*element->playback);
+                next_element_resource(element);
         });
         return;
     }
     using Decoded = std::shared_ptr<const DecodedAudio>;
+    // A bare `new Audio()` loads in an audio session of its own.
+    if (!playback.session)
+        playback.session = std::make_shared<AudioSession>();
     AudioSessionMedia::Key key{std::move(packaged->path), audio_sample_rate(playback.context)};
     if (auto shared = AudioSessionMedia::find(*playback.session, key)) {
         EventLoop::current().post([element, generation, shared = std::move(shared)] {
@@ -2546,7 +2584,7 @@ void begin_element_load(const AudioElement& element) {
 /** The resource selection an element with a source and an output runs when it may load. */
 void select_element_resource(const AudioElement& element, bool playing) {
     auto& playback = *element->playback;
-    if (playback.source && playback.output && !playback.decoded && !playback.loading &&
+    if (element_resource(playback) && playback.output && !playback.decoded && !playback.loading &&
         !playback.failed && (playing || audio_element_detail::lowered(playback.preload) != "none"))
         begin_element_load(element);
 }
@@ -2570,6 +2608,7 @@ void AudioElementState::gc_trace(const js::TraceVisitor& visitor) const {
     if (!playback)
         return;
     visitor(playback->pending_plays);
+    visitor(playback->children);
     visitor(playback->listeners);
     visitor(playback->output);
 }
@@ -2608,7 +2647,7 @@ AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session) {
 
 js::Promise<js::PromiseVoid> audio_element_play(const AudioElement& element) {
     auto& playback = playback_of(element);
-    if (!playback.source || playback.failed)
+    if (!element_resource(playback) || playback.failed)
         return js::Promise<js::PromiseVoid>::rejected(
             js::dom_exception_error("The element has no supported sources.", "NotSupportedError"));
     if (!playback.output) {
@@ -2674,6 +2713,7 @@ void audio_element_load(const AudioElement& element) {
         node->setBus(std::make_shared<lab::AudioBus>(1, 1));
     playback.duration = std::numeric_limits<double>::quiet_NaN();
     playback.failed = false;
+    playback.candidate = 0;
     playback.paused = true;
     playback.position = 0.0;
     if (moved)
@@ -2685,6 +2725,17 @@ void audio_element_load(const AudioElement& element) {
 
 void audio_element_remove_source(const AudioElement& element) {
     playback_of(element).source.reset();
+}
+
+void audio_element_append_source(const AudioElement& element, const AudioSourceElement& source) {
+    auto& playback = playback_of(element);
+    playback.children.push_back(source);
+    // A source child arriving while the element has none starts its selection.
+    if (!playback.source && playback.failed && playback.candidate >= playback.children.size() - 1) {
+        playback.failed = false;
+        playback.candidate = playback.children.size() - 1;
+    }
+    select_element_resource(element, !playback.paused);
 }
 
 double audio_element_duration(const AudioElement& element) { return playback_of(element).duration; }
@@ -2736,6 +2787,14 @@ void audio_element_set_preload(const AudioElement& element, std::string preload)
 }
 
 bool audio_element_paused(const AudioElement& element) { return playback_of(element).paused; }
+
+void audio_element_set_cross_origin(const AudioElement& element, js::Nullable<std::string> value) {
+    playback_of(element).cross_origin = std::move(value);
+}
+
+void audio_element_set_controls(const AudioElement& element, bool value) {
+    playback_of(element).controls = value;
+}
 
 bool audio_element_ended(const AudioElement& element) {
     const auto& playback = playback_of(element);

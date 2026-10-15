@@ -1,0 +1,125 @@
+Grid track lengths use the grid container's font and viewport through RmlUi's length resolver.
+CSS Grid track sizes: https://www.w3.org/TR/css-grid-1/#track-sizing
+
+diff --git a/Source/Core/Layout/GridTrackSizing.h b/Source/Core/Layout/GridTrackSizing.h
+index 33907b696..6d41d2dea 100644
+--- a/Source/Core/Layout/GridTrackSizing.h
++++ b/Source/Core/Layout/GridTrackSizing.h
+@@ -1,6 +1,9 @@
+ #pragma once
+ 
+ #include "../../../Include/RmlUi/Core/Types.h"
++#include "../../../Include/RmlUi/Core/Element.h"
++#include "../../../Include/RmlUi/Core/Property.h"
++#include "../PropertyParserNumber.h"
+ #include <algorithm>
+ #include "../NumberParsing.h"
+ #include <cctype>
+@@ -28,11 +31,11 @@ struct GridTrack {
+ 
+ class GridTrackParser {
+ public:
+-	static Vector<GridTrack> Parse(std::string_view value, float dp_ratio, float available = -1.f, float gap = 0.f, bool minimum_size = false, bool allow_repeat = true)
++	static Vector<GridTrack> Parse(std::string_view value, Element& element, float available = -1.f, float gap = 0.f, bool minimum_size = false, bool allow_repeat = true)
+ 	{
+ 		String lower(value);
+ 		std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+-		GridTrackParser parser(lower, dp_ratio, allow_repeat);
++		GridTrackParser parser(lower, element, allow_repeat);
+ 		parser.Space();
+ 		if (parser.Take("none")) {
+ 			parser.Space();
+@@ -66,11 +69,11 @@ public:
+ 
+ private:
+ 	std::string_view input;
+-	float dp_ratio;
++	Element& element;
+ 	bool allow_repeat;
+ 	size_t automatic_start = 0, automatic_count = 0;
+-	GridTrackParser(std::string_view input, float dp_ratio, bool allow_repeat) : input(input), dp_ratio(dp_ratio), allow_repeat(allow_repeat) {}
+-	[[noreturn]] static void Fail() { throw std::runtime_error("UI grid tracks require finite auto/px/fr, minmax(auto or px, auto/px/fr), or bounded repeat tracks, at most 256 tracks."); }
++	GridTrackParser(std::string_view input, Element& element, bool allow_repeat) : input(input), element(element), allow_repeat(allow_repeat) {}
++	[[noreturn]] static void Fail() { throw std::runtime_error("UI grid tracks require finite auto/length/fr, minmax(auto or length, auto/length/fr), or bounded repeat tracks, at most 256 tracks."); }
+ 	void Space() { while (!input.empty() && (input.front() == ' ' || input.front() == '\t' || input.front() == '\n' || input.front() == '\r')) input.remove_prefix(1); }
+ 	bool Take(std::string_view prefix) {
+ 		if (input.substr(0, prefix.size()) != prefix) return false;
+@@ -83,39 +86,40 @@ private:
+ 		input.remove_prefix(size_t(parsed.ptr - input.data()));
+ 		return value;
+ 	}
+-	float Length() {
+-		const float value = Number();
+-		if (Take("px")) return value;
+-		if (Take("dp")) return value * dp_ratio;
+-		if (value != 0.f) Fail();
+-		return 0.f;
++	float Length(std::string_view beginning) {
++		while (!input.empty() && input.front() >= 'a' && input.front() <= 'z') input.remove_prefix(1);
++		const String token(beginning.substr(0, beginning.size() - input.size()));
++		Property property;
++		const PropertyParserNumber parser(Unit::PX | Unit::DP | Unit::EM | Unit::REM | Unit::VW | Unit::VH, Unit::PX);
++		if (!parser.ParseValue(property, token, {})) Fail();
++		const float result = element.ResolveLength(property.GetNumericValue());
++		if (!std::isfinite(result) || result < 0.f) Fail();
++		return result;
+ 	}
+ 	GridTrack Track() {
+ 		GridTrack track;
+ 		if (Take("auto")) return track;
+ 		if (Take("minmax(")) {
+ 			Space(); track.automatic_minimum = Take("auto");
+-			if (!track.automatic_minimum) track.minimum = Length();
++			if (!track.automatic_minimum) { const auto beginning = input; Number(); track.minimum = Length(beginning); }
+ 			Space(); if (!Take(",")) Fail(); Space();
+ 			if (!Take("auto")) {
++				const auto beginning = input;
+ 				const float value = Number();
+ 				if (Take("fr")) { track.kind = GridTrack::Kind::Flexible; track.fraction = value; }
+ 				else {
+ 					track.fixed_maximum = true;
+-					if (Take("px")) track.maximum = value;
+-					else if (Take("dp")) track.maximum = value * dp_ratio;
+-					else if (value != 0.f) Fail();
++					track.maximum = Length(beginning);
+ 				}
+ 			}
+ 			Space(); if (!Take(")")) Fail();
+ 			return track;
+ 		}
++		const auto beginning = input;
+ 		const float value = Number();
+ 		if (Take("fr")) { track.kind = GridTrack::Kind::Flexible; track.fraction = value; return track; }
+ 		track.kind = GridTrack::Kind::Fixed; track.automatic_minimum = false;
+-		if (Take("px")) track.minimum = value;
+-		else if (Take("dp")) track.minimum = value * dp_ratio;
+-		else if (value != 0.f) Fail();
++		track.minimum = Length(beginning);
+ 		return track;
+ 	}
+ 	Vector<GridTrack> List(bool repeated) {
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index c63b6f6fc..4defb0c9c 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -261,10 +261,9 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 	Vector<GridPlacement> grid_placements;
+ 	Vector<GridContribution> grid_column_contributions;
+ 	if (is_grid) {
+-		const float dp_ratio = element_flex->GetContext()->GetDensityIndependentPixelRatio();
+ 		auto parse_tracks = [&](const char* name, float available, float minimum, float maximum, float gap) {
+ 			const float size = available >= 0.f ? Math::Clamp(available, minimum, maximum) : maximum < FLT_MAX ? maximum : minimum > 0.f ? minimum : -1.f;
+-			return GridTrackParser::Parse(element_flex->GetProperty<String>(name), dp_ratio, size, gap, available < 0.f && maximum == FLT_MAX && minimum > 0.f);
++			return GridTrackParser::Parse(element_flex->GetProperty<String>(name), *element_flex, size, gap, available < 0.f && maximum == FLT_MAX && minimum > 0.f);
+ 		};
+ 		grid_columns = parse_tracks("grid-template-columns", main_available_size, main_min_size, main_max_size, main_gap_size);
+ 		grid_rows = parse_tracks("grid-template-rows", cross_available_size, cross_min_size, cross_max_size, cross_gap_size);
+@@ -281,7 +280,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+         }
+ 		const auto bounds = PlaceGridItems(grid_placements, explicit_columns, explicit_rows);
+ 		auto implicit_tracks = [&](Vector<GridTrack>& tracks, int origin, int count, const char* property) {
+-			const auto pattern = GridTrackParser::Parse(element_flex->GetProperty<String>(property), dp_ratio, -1.f, 0.f, false, false);
++			const auto pattern = GridTrackParser::Parse(element_flex->GetProperty<String>(property), *element_flex, -1.f, 0.f, false, false);
+ 			if (pattern.empty()) throw std::runtime_error("UI implicit grid tracks cannot be none.");
+ 			const int explicit_count = int(tracks.size());
+ 			tracks.insert(tracks.begin(), size_t(-origin), GridTrack{});

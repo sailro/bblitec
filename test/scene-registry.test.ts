@@ -482,7 +482,7 @@ test("registers unique generated scene targets", () => {
     );
     assert.equal(
         getScene("quake").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
-        "181",
+        "211",
     );
     assert.equal(getScene("quake").parity?.maxFullMad, 0.1);
     assert.equal(getScene("quake").parity?.maxForegroundMad, 0.1);
