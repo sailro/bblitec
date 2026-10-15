@@ -1223,25 +1223,6 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
-        id: "regression-compiler-state",
-        name: "Regression - Compiler State",
-        source: "examples/regression-compiler-state.ts",
-        sourceOrigin: "bblitec-regression",
-        title: "Babylon Lite Native - Compiler State",
-        buildDirectory: "native/build-regression-compiler-state-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path: "reference/regression-compiler-state/babylon-lite-golden.png",
-            },
-            outputDirectory: "artifacts/parity/regression-compiler-state",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [9, 11, 18],
-            backgroundThreshold: 30,
-        },
-    },
-    {
         // updateTexture2DFromPixels regions, full-texture and defaulted
         // writes on shader, Standard and billboard custom-shader textures;
         // writes from the frame callback land before that frame's draws.

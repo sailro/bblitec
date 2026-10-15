@@ -23,7 +23,6 @@ import {
     mkdirSync,
     readdirSync,
     readFileSync,
-    renameSync,
     rmSync,
     statSync,
     utimesSync,
@@ -43,6 +42,7 @@ import { artifactDirectory } from "../src/tooling/artifacts.js";
 import {
     hashEntries,
     inputIdentity,
+    renameWithRetry,
     toolIdentity,
     withoutRepositoryRoot,
 } from "../src/tooling/records.js";
@@ -293,7 +293,7 @@ export class FixtureBuildCache {
         key: string,
         plan: FixtureCompilePlan,
         includes: readonly string[],
-    ): void {
+    ): boolean {
         const identities: StoredInclude[] = [
             ...new Set(includes.map((include) => resolve(include))),
         ]
@@ -312,7 +312,7 @@ export class FixtureBuildCache {
         );
         const folder = join(this.directory, key);
         const target = join(folder, variant);
-        if (existsSync(join(target, "build.json"))) return;
+        if (existsSync(join(target, "build.json"))) return true;
         const staging = `${target}.${process.pid}.partial`;
         try {
             rmSync(staging, { recursive: true, force: true });
@@ -324,22 +324,42 @@ export class FixtureBuildCache {
                 join(staging, "build.json"),
                 JSON.stringify(identities),
             );
-            renameSync(staging, target);
+            renameWithRetry(staging, target, () =>
+                existsSync(join(target, "build.json")),
+            );
+            rmSync(staging, { recursive: true, force: true });
             for (const sibling of readdirSync(folder))
                 if (sibling !== variant && !sibling.endsWith(".partial"))
                     rmSync(join(folder, sibling), {
                         recursive: true,
                         force: true,
                     });
+            return true;
         } catch {
-            // Another test process stored the same build first, or an
-            // output the plan named was not written; nothing is stored.
+            // An output was missing or could not be published.
             rmSync(staging, { recursive: true, force: true });
+            return false;
         }
     }
 }
 
 let fixtureBuilds: FixtureBuildCache | undefined;
+
+const statistics =
+    process.env.BBLITE_FIXTURE_CACHE_STATS === "1"
+        ? {
+              hits: 0,
+              misses: 0,
+              bypasses: 0,
+              stored: 0,
+              unpublished: 0,
+              compilerMilliseconds: 0,
+          }
+        : undefined;
+if (statistics)
+    process.on("exit", () =>
+        console.log(`[native-fixture-cache] ${JSON.stringify(statistics)}`),
+    );
 
 /**
  * Runs `compiler` with `args` in `cwd`, restoring a stored build whose
@@ -363,11 +383,19 @@ export function runFixtureCompiler(
           ))
         : undefined;
     const key = plan && cache?.commandKey(compiler, environment, plan);
-    if (plan && key && cache!.restore(key, plan)) return;
+    if (plan && key && cache!.restore(key, plan)) {
+        if (statistics) statistics.hits++;
+        return;
+    }
+    if (statistics) {
+        if (key) statistics.misses++;
+        else statistics.bypasses++;
+    }
     // The include notes name every header the build read, in English. The
     // flag leads the command: everything after `/link` goes to the linker.
     const reportsIncludes = key !== undefined && plan!.sources.length > 0;
     let output: string;
+    const started = statistics ? performance.now() : 0;
     try {
         output = execFileSync(
             compiler,
@@ -389,10 +417,15 @@ export function runFixtureCompiler(
             `${failure.message}\n${includeNotes(failure.stdout ?? "").rest}\n${failure.stderr ?? ""}`,
             { cause: error },
         );
+    } finally {
+        if (statistics)
+            statistics.compilerMilliseconds += performance.now() - started;
     }
     if (!plan || !key) return;
     const { includes } = includeNotes(output);
     // A compile that reported no header cannot prove what it read.
-    if (!reportsIncludes || includes.length > 0)
-        cache!.store(key, plan, includes);
+    if (!reportsIncludes || includes.length > 0) {
+        const stored = cache!.store(key, plan, includes);
+        if (statistics) statistics[stored ? "stored" : "unpublished"]++;
+    } else if (statistics) statistics.unpublished++;
 }

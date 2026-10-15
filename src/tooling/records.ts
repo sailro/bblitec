@@ -209,13 +209,23 @@ export function writeJsonRecord(
     mkdirSync(dirname(path), { recursive: true });
     const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(value, null, indent)}\n`);
+    renameWithRetry(temporary, path);
+}
+
+/** Publish a file or directory, tolerating transient Windows reader locks. */
+export function renameWithRetry(
+    source: string,
+    target: string,
+    alreadyPublished?: () => boolean,
+): void {
     const deadline = performance.now() + 5000;
     let waitCell: Int32Array | undefined;
     for (;;) {
         try {
-            renameSync(temporary, path);
+            renameSync(source, target);
             return;
         } catch (error) {
+            if (alreadyPublished?.()) return;
             // Windows readers can briefly deny replacement of an open file.
             // Keep the old record intact while that handle closes.
             if (

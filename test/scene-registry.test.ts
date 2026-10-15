@@ -93,7 +93,6 @@ test("registers unique generated scene targets", () => {
             "regression-runtime-options",
             "regression-engine-calls",
             "regression-no-camera-floating-origin",
-            "regression-compiler-state",
             "regression-texture-region-writes",
             "regression-vat-time",
             "regression-csm-static-cache",
@@ -388,10 +387,6 @@ test("registers unique generated scene targets", () => {
     );
     assert.equal(
         getScene("regression-track-clamp").sourceOrigin,
-        "bblitec-regression",
-    );
-    assert.equal(
-        getScene("regression-compiler-state").sourceOrigin,
         "bblitec-regression",
     );
     assert.equal(getScene("scene8").parity?.maxFullMad, 0.2);

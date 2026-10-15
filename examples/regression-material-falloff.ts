@@ -19,9 +19,7 @@
 // off, so the shading in the golden is the write: with the write removed the
 // same scene measures 0.334 full MAD against it, peaking at 134.
 //
-// The corpus scenes that write it this way are 166 and 179, both of which
-// build a clustered light container this port does not reach. This gate
-// retires when one of them compiles.
+// Scenes 166 and 179 write true. This gate exercises the alternate false arm.
 
 import {
     addToScene,

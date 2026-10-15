@@ -8346,7 +8346,7 @@ test("snapshots scalar members of records retained by classes", () => {
     assert.match(result.cpp, /double bodyRestY\{\};/);
 });
 
-test("reads mutated flat-entry variables from live generated state", () => {
+test("reads mutated flat-entry variables from live generated state", (t) => {
     const body = `
         const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
         const engine = await createEngine(canvas);
@@ -8356,6 +8356,9 @@ test("reads mutated flat-entry variables from live generated state", () => {
         counter++;
         counter++;
         box.position.x = counter;
+        box.rotation.y += 0.3;
+        if (counter !== 2 || box.position.x !== 2 || Math.abs(box.rotation.y - 0.3) > 0.000001)
+            throw new Error("scalar and compound transform writes must read live state");
     `;
     const imports = `
         import {
@@ -8379,27 +8382,52 @@ test("reads mutated flat-entry variables from live generated state", () => {
         );
         assert.match(result.cpp, /\.position\.x = v_counter;/);
         assert.doesNotMatch(result.cpp, /\.position\.x = 0\.0;/);
+        assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
+        assert.equal(
+            (result.cpp.match(/bbl::mark_mesh_dirty\(/g) ?? []).length,
+            2,
+        );
     }
-});
-
-test("compiles the flat-entry compiler state regression scene", () => {
-    const sourcePath = "examples/regression-compiler-state.ts";
-    const result = compileSource(readFileSync(resolve(sourcePath), "utf8"), {
-        fileName: sourcePath,
-    });
-
-    assert.match(result.cpp, /double v_offset = 0\.0/);
-    assert.match(result.cpp, /v_offset\+\+/);
-    assert.match(result.cpp, /\.position\.x = v_offset/);
-    assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
-    // Transform writes mark the mesh (and any setParent descendants) dirty
-    // so the backends re-upload their baked vertices.
-    assert.match(result.cpp, /bbl::mark_mesh_dirty\(v_engine, [^)]+\);/);
     assert.ok(
-        !result.manifest.adaptations.some(
+        !flat.manifest.adaptations.some(
             ({ id }) => id === "entry-main-wrapper-erasure",
         ),
     );
+    const tools = optionalNativeFixtureTools();
+    if (!tools)
+        return t.skip(
+            "Native fixture compiler unavailable; generation assertions passed.",
+        );
+    for (const [name, result] of [
+        ["flat", flat],
+        ["main", main],
+    ] as const)
+        runGeneratedProgram(
+            tools,
+            `compiler-live-state-${name}`,
+            `
+#define main generated_main
+${result.cpp}
+#undef main
+#include <cassert>
+namespace { unsigned writes = 0; }
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
+MeshHandle create_box(Engine& engine, BoxOptions) {
+    const auto index = static_cast<std::uint32_t>(engine.meshes.size());
+    engine.meshes.emplace_back();
+    return MeshHandle{index};
+}
+void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
+    const auto& record = handle_at(engine.meshes, mesh);
+    assert(record.position.x == 2.0);
+    if (++writes == 2) assert(std::abs(record.rotation.y - 0.3f) < 0.000001f);
+}
+}
+int main() { assert(generated_main() == 0); assert(writes == 2); }
+`,
+        );
 });
 
 test("retains module-level let constants for main entries", () => {

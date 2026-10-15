@@ -73,13 +73,17 @@ const source = `
     if (ended !== 2) throw new Error('void completion');
 `;
 
+let compiled: ReturnType<typeof compileSource> | undefined;
+const compiledSource = (): ReturnType<typeof compileSource> =>
+    (compiled ??= compileSource(source));
+
 test("synchronous finally transports returns and loop exits across overriding cleanup", () => {
     runInNewContext(
         ts.transpileModule(source, {
             compilerOptions: { target: ts.ScriptTarget.ES2022 },
         }).outputText,
     );
-    compileSource(source);
+    compiledSource();
 });
 
 test(
@@ -89,7 +93,7 @@ test(
         runGeneratedProgram(
             optionalNativeFixtureTools()!,
             "finally-completions",
-            compileSource(source).cpp,
+            compiledSource().cpp,
             { timeoutMs: 5000 },
         );
     },

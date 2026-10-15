@@ -294,12 +294,7 @@ localStorage.setItem("mark", "x");
 // that generate produce the same bytes under a survey and no census entries,
 // which also proves that refusals decided inside speculative probes are the
 // probe's and not the survey's.
-for (const id of [
-    "scene2",
-    "scene3",
-    "scene240",
-    "regression-compiler-state",
-]) {
+for (const id of ["scene2", "scene3", "scene240", "scene10"]) {
     test(`a survey of ${id} generates identical bytes and records nothing`, () => {
         const scene = getScene(id);
         const options = registrySceneCompileOptions(scene);
