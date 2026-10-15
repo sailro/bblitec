@@ -496,6 +496,7 @@ void native_jobs_settle_in_start_order() {
     std::atomic<bool> fast_finished = false;
     std::thread::id probe_released;
     std::vector<std::string> order;
+    EventLoop::TimerId poll = 0;
     loop.run([&] {
         run_native_job<int>(
             [&] {
@@ -533,7 +534,6 @@ void native_jobs_settle_in_start_order() {
                          loop.close();
                      });
         // The later job finishes first; its settlement still waits for the earlier one.
-        EventLoop::TimerId poll = 0;
         poll = loop.set_timeout(
             [&] {
                 if (!fast_finished)

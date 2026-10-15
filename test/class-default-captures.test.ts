@@ -71,13 +71,17 @@ const source = `
         throw new Error('document null and present values keep their argument');
 `;
 
+let compiled: ReturnType<typeof compileSource> | undefined;
+const compiledSource = (): ReturnType<typeof compileSource> =>
+    (compiled ??= compileSource(source));
+
 test("class defaults preserve undefined until the callee binds captured parameters", () => {
     runInNewContext(
         ts.transpileModule(source, {
             compilerOptions: { target: ts.ScriptTarget.ES2022 },
         }).outputText,
     );
-    compileSource(source);
+    compiledSource();
 });
 
 test(
@@ -87,7 +91,7 @@ test(
         runGeneratedProgram(
             optionalNativeFixtureTools()!,
             "class-default-captures",
-            compileSource(source).cpp,
+            compiledSource().cpp,
         );
     },
 );

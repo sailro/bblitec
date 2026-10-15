@@ -1,45 +1,46 @@
-/**
- * The gate on emitting Babylon Lite's own composed shaders instead of the
- * transcription under `src/lowering/templates/renderer/`.
- *
- * `TODO.md` framed this as a shader-IR problem — parse the pinned fragment and
- * re-emit it. Measurement says the IR is not needed: the pin's composed WGSL
- * compiles through the pinned Tint to HLSL, MSL and SPIR-V unchanged, and the
- * existing HLSL register normalization already re-addresses bindings for
- * SDL_GPU's dense convention. So what remains is the PAL binding the pin's own
- * uniform groups, not any rewriting of shader text.
- *
- * This test measures the claim over every variant generation emits, so a pinned
- * shader that stops being consumable becomes a build failure rather than a
- * surprise during the PAL migration.
- */
+/** Raw pinned PBR variants must compile unchanged to HLSL, MSL and SPIR-V. */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import test from "node:test";
 import { captureIsCurrent } from "../src/capture-instrumented.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import { findPinnedTint } from "../src/tint-tool.js";
+import { scenes } from "../src/scene-registry.js";
+import { findPinnedTint, tintToolMismatch } from "../src/tint-tool.js";
+import { artifactDirectory } from "../src/tooling/artifacts.js";
+import { validateTintStages } from "./tint-stage-validation.js";
+import { jsonRecords, jsonString } from "./json.js";
 
 // Compiled to `dist/test/`, so the repository root is two levels up.
 const root = resolve(import.meta.dirname, "..", "..");
 const generated = resolve(root, "generated");
-const tint =
-    process.env["TINT_PATH"] ??
-    findPinnedTint(root, discoverDevelopmentTools().cmake) ??
-    "";
+const cmake = discoverDevelopmentTools().cmake;
+const tint = process.env["TINT_PATH"] ?? findPinnedTint(root, cmake) ?? "";
 
 function composedStages(): string[] {
     if (!existsSync(generated)) return [];
     const found: string[] = [];
-    for (const scene of readdirSync(generated)) {
-        const directory = resolve(generated, scene, "upstream", "pbr-variants");
-        if (!existsSync(directory)) continue;
-        for (const file of readdirSync(directory)) {
-            if (file.endsWith(".wgsl")) found.push(resolve(directory, file));
+    for (const scene of scenes) {
+        const directory = resolve(
+            generated,
+            scene.id,
+            "upstream",
+            "pbr-variants",
+        );
+        const manifest = resolve(directory, "variants.json");
+        if (!existsSync(manifest)) continue;
+        const files = new Set<string>();
+        for (const variant of jsonRecords(
+            JSON.parse(readFileSync(manifest, "utf8")),
+        )) {
+            for (const property of ["vertex", "fragment"]) {
+                const file = jsonString(variant[property]);
+                assert.ok(/^[^/\\]+\.wgsl$/.test(file));
+                files.add(file);
+            }
         }
+        for (const file of [...files].sort())
+            found.push(resolve(directory, file));
     }
     return found;
 }
@@ -56,39 +57,20 @@ test("the pin's composed shaders compile through Tint unchanged", (t) => {
         );
         return;
     }
-    const out = mkdtempSync(resolve(tmpdir(), "bblite-variant-"));
-    const failures: string[] = [];
-    for (const format of ["hlsl", "msl", "spirv"] as const) {
-        for (const stage of stages) {
-            try {
-                execFileSync(
-                    tint,
-                    [
-                        "--format",
-                        format,
-                        stage,
-                        "-o",
-                        resolve(out, `o.${format}`),
-                    ],
-                    { stdio: "pipe" },
-                );
-            } catch (error) {
-                const detail = error instanceof Error ? error.message : error;
-                failures.push(
-                    `${format} ${stage.slice(generated.length + 1)}: ` +
-                        String(detail).slice(0, 160),
-                );
-            }
-        }
-    }
+    assert.equal(tintToolMismatch(tint, root, cmake), undefined);
+    const result = validateTintStages(
+        tint,
+        stages,
+        resolve(root, artifactDirectory("shader-cache", "raw-validation")),
+    );
     assert.deepEqual(
-        failures,
+        result.failures,
         [],
-        `Pinned composed stages Tint cannot consume:\n${failures.join("\n")}`,
+        `Pinned composed stages Tint cannot consume:\n${result.failures.join("\n")}`,
     );
     console.log(
-        `${stages.length} pinned composed stage(s) compile to HLSL, MSL and ` +
-            "SPIR-V unchanged",
+        `${stages.length} pinned composed stages, ${result.unique} distinct; ` +
+            `${result.compiled} Tint compilations, ${result.reused} cached successes (HLSL/MSL/SPIR-V)`,
     );
 });
 

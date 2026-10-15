@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
+    cpSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
@@ -122,6 +125,63 @@ function checkout(root: string): { source: string; header: string } {
 const environment = { INCLUDE: "C:/sdk/include", LIB: "C:/sdk/lib" };
 const command = ["/Fo:out/", "/Fe:out/check.exe", "check.cpp"];
 
+for (const competingWriter of [false, true])
+    test(
+        competingWriter
+            ? "a competing cache publication completes without waiting for its directory to disappear"
+            : "a transient Windows rename lock does not discard a successful native build",
+        { skip: process.platform !== "win32" },
+        (t) => {
+            const root = scratch(t);
+            const { header } = checkout(root);
+            const cache = new FixtureBuildCache(join(root, "cache"), root);
+            const plan = fixtureCompilePlan(command, root)!;
+            mkdirSync(join(root, "out"));
+            writeFileSync(plan.outputs[0]!, "successful program");
+            const key = cache.commandKey(
+                join(root, "cl.exe"),
+                environment,
+                plan,
+            );
+            const rename = fs.renameSync;
+            let attempts = 0;
+            const mock = t.mock.method(
+                fs,
+                "renameSync",
+                (source: string, target: string): void => {
+                    attempts++;
+                    if (competingWriter)
+                        cpSync(source, target, { recursive: true });
+                    if (competingWriter || attempts <= 2)
+                        throw Object.assign(
+                            new Error("temporary reader lock"),
+                            { code: "EPERM" },
+                        );
+                    rename(source, target);
+                },
+            );
+            syncBuiltinESMExports();
+            try {
+                assert.equal(cache.store(key, plan, [header]), true);
+                assert.equal(attempts, competingWriter ? 1 : 3);
+            } finally {
+                mock.mock.restore();
+                syncBuiltinESMExports();
+            }
+            assert.ok(
+                readdirSync(join(root, "cache", key)).every(
+                    (entry) => !entry.endsWith(".partial"),
+                ),
+            );
+            rmSync(plan.outputs[0]!);
+            assert.equal(cache.restore(key, plan), true);
+            assert.equal(
+                readFileSync(plan.outputs[0]!, "utf8"),
+                "successful program",
+            );
+        },
+    );
+
 test("a stored build is restored only while every header it read keeps its bytes", (t) => {
     const root = scratch(t);
     const { source, header } = checkout(root);
@@ -132,7 +192,7 @@ test("a stored build is restored only while every header it read keeps its bytes
     assert.equal(cache.restore(key, plan), false);
     mkdirSync(join(root, "out"), { recursive: true });
     writeFileSync(executable, "program v1");
-    cache.store(key, plan, [header]);
+    assert.equal(cache.store(key, plan, [header]), true);
     rmSync(join(root, "out"), { recursive: true });
     assert.equal(cache.restore(key, plan), true);
     assert.equal(readFileSync(executable, "utf8"), "program v1");
@@ -196,7 +256,7 @@ test("a linker output the command names is stored and restored with the executab
         environment,
         missing,
     );
-    cache.store(missingKey, missing, [header]);
+    assert.equal(cache.store(missingKey, missing, [header]), false);
     assert.equal(cache.restore(missingKey, missing), false);
 });
 

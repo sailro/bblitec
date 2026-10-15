@@ -1,7 +1,6 @@
-// Project-owned differential gate federating the residual runtime capabilities
-// no registered scene or demo reaches. Scene 267 measures raw typed-array
-// meshes, Scenes 16 and 279 measure `setThinInstances`, and Doom/Tetris exercise
-// `removeFromScene`; the flush and visible-count mutations remain unique here:
+// Project-owned differential gate for live runtime mutations and handle lifetime.
+// Official scenes and demos cover overlapping APIs; this scene exercises the
+// following mutations together before settling to a deterministic capture:
 //
 //   * raw typed-array meshes through createMeshFromData, built here rather
 //     than loaded, so the generated vertex path is exercised end to end;

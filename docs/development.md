@@ -169,6 +169,20 @@ npm run lint:cpp -- all --generated --backend both
 
 Run focused checks per unit. Run the full set only for final validation of a compiler PR or on request:
 
+| Test command | Scope |
+| --- | --- |
+| `npm test` | Every test file, including native and shader tests |
+| `npm run test:fast` | Tests whose local test helpers do not launch subprocesses; includes compiler assertions |
+| `npm run test:native` | Tests with subprocess/native helpers, excluding the shader integration suite |
+| `npm run test:shaders` | Refresh all registered scene outputs, then run tool-backed shader integration tests |
+| `npm run test:scenes` | Scene sweep; interaction checks remain separate (`scene check <id>`) |
+
+Focused suites accept `-- --list`, `-- --test-concurrency N`, and `-- --test-name-pattern pattern`.
+Their test-file sets partition `npm test`; fast/native selection follows imports through local test helpers.
+Raw PBR validation reads registered scenes' variant manifests. Successful checks are shared by shader bytes, format,
+Tint executable and provenance in `artifacts/shader-cache/raw-validation` (30 days); `BBLITE_SHADER_TEST_CACHE=0`
+bypasses reuse. `npm test` uses available generated outputs; `test:shaders` refreshes the complete corpus first.
+
 ```powershell
 npm run lint:ts
 npm run lint:tools
@@ -206,7 +220,8 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
   (`-Wundef`, MSVC `/we4668`). Sources are UTF-8 (MSVC needs `/utf-8`).
 - Native fixtures (`test/native-fixture.ts`) take `bblite_core`'s standard and options from `native/CMakeLists.txt` and
   refuse fixtures that restate them. Successful builds are cached in `artifacts/native-fixture-cache/` (30 days);
-  `BBLITE_FIXTURE_CACHE=0` disables it.
+  `BBLITE_FIXTURE_CACHE=0` disables it. `BBLITE_FIXTURE_CACHE_STATS=1` prints per-process hits, misses, bypasses,
+  publication counts and compiler time.
 - vcpkg installs: `artifacts/vcpkg-installed/development-full-<key>` (`BBLITE_VCPKG_INSTALLED_ROOT` relocates), reconciled
   once per `scene build`; three most recent per name kept.
 - Worktrees: `tools/setup-worktree.ps1 -Path <path> -Branch <branch> [-SharedVcpkg]`; `-Remove` unlinks junctions first.
