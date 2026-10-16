@@ -513,7 +513,7 @@ struct SceneSyncOutcome {
  * `upload_mesh(item)`, `prune_shared_resources()`,
  * `reject_unbuilt_family_growth(families)`, `shared_shader_geometry_count()`,
  * `shared_shader_material_count()`, `rebuild_task_draw_lists()`,
- * `mesh_rows()` (the `sync_plan_mesh_rows` writes), `publish_storage()`,
+ * `mesh_rows()` (the `sync_plan_mesh_rows` writes), `refresh_shader_textures()`, `publish_storage()`,
  * `upload_pixels_texture_writes()` (pixels-texture writes builds only),
  * `submit_uploads()`, `mark_uploaded()`, `settle_pass(outcome)` (the
  * frame's own copy of the pass, which the later steps and the encode read),
@@ -572,6 +572,7 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     }
     if (outcome.topology_updated || draw_lists_moved)
         backend.rebuild_task_draw_lists();
+    backend.refresh_shader_textures();
 #if BBLITE_SHADER_EXTERNAL_TEXTURES
     // A shader packet with external textures rebinds them on every refresh,
     // and the pin checks each slot as it binds.

@@ -1522,11 +1522,14 @@ export function readScalarOperand(
     value: Value,
     label: string,
 ): Value | undefined {
-    if (value.staticNumber !== undefined)
+    // A known payload does not replace its optional or union container:
+    // later consumers still inspect that storage's presence or active arm.
+    const representation = value.dataType?.kind ?? value.kind;
+    if (representation === "number" && value.staticNumber !== undefined)
         return { ...value, cpp: doubleLiteral(value.staticNumber) };
-    if (value.staticBoolean !== undefined)
+    if (representation === "boolean" && value.staticBoolean !== undefined)
         return { ...value, cpp: value.staticBoolean ? "true" : "false" };
-    if (value.staticString !== undefined)
+    if (representation === "string" && value.staticString !== undefined)
         return { ...value, cpp: context.cppString(value.staticString) };
     // A scalar is copied where it stands. Its variable may be written by
     // the later operand, so its binding's own stability cannot stand in

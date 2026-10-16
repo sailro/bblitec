@@ -36,6 +36,74 @@ void release_dawn_shader_bindings(DawnShaderBindings& bindings) {
     bindings = {};
 }
 
+void upload_material_slot_texture(DawnState& state, DawnSampledTexture& sampled,
+                                  const TextureData& data,
+                                  std::vector<std::shared_ptr<DawnTexture>>* leases) {
+    if (data.render_source)
+        return;
+    if (const auto& source = data.gpu_source) {
+        const auto image = std::dynamic_pointer_cast<DawnComputeTexture>(source->allocation);
+        if (source->owners == 0 || !image || !image->sampled_view || !image->sampler)
+            throw std::runtime_error("Material texture has no live Dawn sampled allocation.");
+        sampled.borrowed_image = std::make_shared<GpuTextureLease>(source);
+        sampled.texture = image->texture.retain();
+        sampled.view = image->sampled_view.retain();
+        wgpuSamplerAddRef(image->sampler);
+        sampled.sampler = image->sampler.get();
+        return;
+    }
+    const auto upload = [&] {
+        std::uint32_t mip_count = 1;
+        return DawnTexture{
+            upload_material_texture(state, data, data.srgb, {255, 255, 255, 255}, mip_count)};
+    };
+    if (leases) {
+        auto image =
+            state.shared_material_images.acquire(data, data.srgb, {255, 255, 255, 255}, upload);
+        leases->push_back(image);
+        sampled.texture = image->retain();
+    } else {
+        sampled.texture = upload();
+    }
+    sampled.view = create_dawn_texture_view(sampled.texture, nullptr);
+    sampled.sampler = create_texture_sampler(state.device, data.sampler);
+}
+
+void upload_shader_material_textures(DawnState& state, const MaterialRecord& material,
+                                     DawnSharedShaderMaterialTextures& textures) {
+    for (std::size_t slot = 0; slot < material.shader_textures.size(); ++slot) {
+        DawnSampledTexture& sampled = textures.textures.emplace_back();
+        if (slot < material.shader_render_textures.size() && material.shader_render_textures[slot])
+            continue;
+#if BBLITE_SHADOWS_CSM
+        if (slot < material.shader_csm_textures.size() &&
+            material.shader_csm_textures[slot].value != invalid_handle)
+            continue;
+#endif
+        upload_material_slot_texture(state, sampled, material.shader_textures[slot].data,
+                                     &textures.image_leases);
+    }
+    textures.texture_version = material.shader_texture_version;
+}
+
+void refresh_shader_material_textures(DawnState& state, const Engine& engine) {
+    bool changed = false;
+    for (const auto& textures : state.shared_shader_material_textures) {
+        const auto* material = handle_find(engine.materials, textures->material);
+        if (!material || textures->texture_version == material->shader_texture_version)
+            continue;
+        DawnSharedShaderMaterialTextures replacement;
+        upload_shader_material_textures(state, *material, replacement);
+        state.release_shader_bindings(textures->material);
+        textures->textures.swap(replacement.textures);
+        textures->image_leases.swap(replacement.image_leases);
+        textures->texture_version = replacement.texture_version;
+        changed = true;
+    }
+    if (changed)
+        state.shared_material_images.prune();
+}
+
 void release_dawn_composed_material_textures(DawnSharedComposedMaterialTextures& textures) {
     for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
         if (textures.views[slot]) {
@@ -207,17 +275,22 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         }
     }
     const auto existing = mesh.shader_bindings.find(key);
+    DawnShaderBindings bindings;
     if (existing != mesh.shader_bindings.end()) {
-        if (existing->second.render_views == render_views)
+        if (existing->second.render_views == render_views &&
+            existing->second.resource_version == material.shader_resource_version)
             return existing->second;
+        bindings = std::move(existing->second);
         mesh.shader_bindings.erase(existing);
+        bindings.resources.reset();
+        if (bindings.storage_buffers != material.shader_storage_buffers)
+            bindings.storage.reset();
     }
 
     shader_pipeline_layout_for(state, variant);
     const std::array<WGPUBindGroupLayout, 4> layouts{
         shader_group_layout(state, variant, 0), shader_group_layout(state, variant, 1),
         shader_group_layout(state, variant, 2), shader_group_layout(state, variant, 3)};
-    DawnShaderBindings bindings;
     const auto storage_buffer = [&](std::size_t declared_slot) {
         if (declared_slot >= material.shader_storage_buffers.size()) {
             dawn_error((std::string("Shader material storage binding count is "
@@ -249,7 +322,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         entry.size = WGPU_WHOLE_SIZE;
         storage_entries.push_back(entry);
     }
-    if (!storage_entries.empty()) {
+    if (!storage_entries.empty() && !bindings.storage) {
         WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         descriptor.layout = layouts[0];
         descriptor.entryCount = storage_entries.size();
@@ -261,7 +334,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         }
     }
 
-    if (info.vertex.present) {
+    if (info.vertex.present && !bindings.scene) {
         if (!vertex_uniforms) {
             dawn_error("Shader vertex uniform buffer is not ready.");
         }
@@ -348,7 +421,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         }
     }
 
-    if (info.fragment.present) {
+    if (info.fragment.present && !bindings.material) {
         WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
         entry.binding = 0;
         entry.buffer = mesh.material_uniforms;
@@ -364,6 +437,8 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         }
     }
     bindings.render_views = render_views;
+    bindings.resource_version = material.shader_resource_version;
+    bindings.storage_buffers = material.shader_storage_buffers;
     return mesh.shader_bindings.emplace(key, std::move(bindings)).first->second;
 }
 #endif
@@ -616,48 +691,6 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
             }
         }
     }
-    const auto upload_material_slot_texture =
-        [&](DawnSampledTexture& sampled, const auto& texture,
-            std::vector<std::shared_ptr<DawnTexture>>* leases) {
-            if (texture.data.render_source)
-                return;
-            if (const auto& source = texture.data.gpu_source) {
-                const auto image =
-                    std::dynamic_pointer_cast<DawnComputeTexture>(source->allocation);
-                if (source->owners == 0 || !image || !image->sampled_view || !image->sampler)
-                    throw std::runtime_error(
-                        "Material texture has no live Dawn sampled allocation.");
-                sampled.borrowed_image = std::make_shared<GpuTextureLease>(source);
-                sampled.texture = image->texture.retain();
-                sampled.view = image->sampled_view.retain();
-                wgpuSamplerAddRef(image->sampler);
-                sampled.sampler = image->sampler.get();
-                return;
-            }
-            const auto upload = [&] {
-                std::uint32_t mip_count = 1;
-                return DawnTexture{upload_material_texture(state, texture.data, texture.data.srgb,
-                                                           {255, 255, 255, 255}, mip_count)};
-            };
-            if (leases) {
-                auto image = state.shared_material_images.acquire(texture.data, texture.data.srgb,
-                                                                  {255, 255, 255, 255}, upload);
-                leases->push_back(image);
-                sampled.texture = image->retain();
-            } else {
-                sampled.texture = upload();
-            }
-            sampled.view = create_dawn_texture_view(sampled.texture, nullptr);
-            sampled.sampler = create_texture_sampler(state.device, texture.data.sampler);
-        };
-    const auto upload_shader_textures = [&](std::vector<DawnSampledTexture>& textures,
-                                            std::vector<std::shared_ptr<DawnTexture>>* leases =
-                                                nullptr) {
-        for (const FileTexture& texture : material->shader_textures) {
-            DawnSampledTexture& sampled = textures.emplace_back();
-            upload_material_slot_texture(sampled, texture, leases);
-        }
-    };
     // A node graph's declared images take the same per-MATERIAL cache
     // the shader family uses -- keyed by handle, and a material is
     // exactly one family -- so two meshes sharing one graph decode and
@@ -673,13 +706,14 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
             state.shared_shader_material_textures.push_back(std::move(created));
             mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
             ++mesh.shared_shader_textures->users;
-            upload_shader_textures(mesh.shared_shader_textures->textures,
-                                   &mesh.shared_shader_textures->image_leases);
+            upload_shader_material_textures(state, *material, *mesh.shared_shader_textures);
         } else {
             ++mesh.shared_shader_textures->users;
         }
     } else if (material) {
-        upload_shader_textures(mesh.shader_textures);
+        for (const FileTexture& texture : material->shader_textures)
+            upload_material_slot_texture(state, mesh.shader_textures.emplace_back(), texture.data,
+                                         nullptr);
     }
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
     // The textures this material's plugins bound, uploaded once per
@@ -698,7 +732,7 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
             ++mesh.shared_plugin_textures->users;
             for (const MaterialPluginTexture& texture : material->plugin_textures) {
                 DawnSampledTexture& sampled = mesh.shared_plugin_textures->textures.emplace_back();
-                upload_material_slot_texture(sampled, texture,
+                upload_material_slot_texture(state, sampled, texture.data,
                                              &mesh.shared_plugin_textures->image_leases);
             }
         } else {

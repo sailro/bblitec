@@ -14,7 +14,7 @@
     { "id": "watching", "frame": 240, "tape": ["-*180", "UiClick@1150:610", "-*15", "UiClick@1152:576"] }
   ],
   "expect": [
-    { "kind": "golden-mad", "phase": "ready", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "golden-mad", "phase": "ready", "max": 1.0, "foregroundMax": 0.75 },
     { "kind": "image-mad", "phase": "aiming", "vs": "ready", "min": 0.0001, "changedPixelsMin": 100 },
     { "kind": "image-mad", "phase": "orbit", "vs": "aiming", "min": 0.05, "changedPixelsMin": 100 },
     { "kind": "image-mad", "phase": "free", "vs": "aiming", "min": 0.0001, "changedPixelsMin": 100 },

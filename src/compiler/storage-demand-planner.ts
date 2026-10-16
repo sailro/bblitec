@@ -14,6 +14,7 @@ import {
 import { CompileError } from "./compile-error.js";
 import { AbsenceTagStorageRequired } from "./absence-tag-storage.js";
 import { EngineOwnerStorageRequired } from "./engine-owner-storage.js";
+import { AssertedHandleFieldStorageRequired } from "./asserted-handle-field-storage.js";
 import { CompletionStorageRequired } from "./completion-storage.js";
 import { TupleArraySlotRequired } from "./tuple-array-storage.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
@@ -33,6 +34,7 @@ type StorageDemand =
     | GenericFunctionStorageRequired
     | AbsenceTagStorageRequired
     | EngineOwnerStorageRequired
+    | AssertedHandleFieldStorageRequired
     | CompletionStorageRequired
     | TupleArraySlotRequired
     | NumericSlotStorageRequired
@@ -51,6 +53,12 @@ export function storageRequest(error: StorageDemand): StorageRequest {
         return { kind: "absence-tag", declaration: error.declaration };
     if (error instanceof EngineOwnerStorageRequired)
         return { kind: "engine-owner", declaration: error.declaration };
+    if (error instanceof AssertedHandleFieldStorageRequired)
+        return {
+            kind: "asserted-handle-field",
+            declaration: error.declaration,
+            storage: error.storage,
+        };
     if (error instanceof CompletionStorageRequired)
         return {
             kind: "completion",
@@ -77,6 +85,7 @@ export function isStorageDemand(error: unknown): error is StorageDemand {
         error instanceof GenericFunctionStorageRequired ||
         error instanceof AbsenceTagStorageRequired ||
         error instanceof EngineOwnerStorageRequired ||
+        error instanceof AssertedHandleFieldStorageRequired ||
         error instanceof CompletionStorageRequired ||
         error instanceof TupleArraySlotRequired ||
         error instanceof NumericSlotStorageRequired ||

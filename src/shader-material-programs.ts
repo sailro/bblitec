@@ -25,6 +25,10 @@ export interface ShaderMaterialProgramSource {
     backFaceCulling: boolean;
     depthWrite: boolean;
     depthCompare?: string;
+    /** Keep the fragment stage on a target without color attachments. */
+    depthOnlyFragment?: boolean;
+    depthBias?: number;
+    depthBiasSlopeScale?: number;
     /**
      * The material binds the mesh's thin-instance matrices and its vertex
      * stage reads them, so the pin's own thin-instance module appends the

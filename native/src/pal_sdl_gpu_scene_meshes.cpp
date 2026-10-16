@@ -181,27 +181,11 @@ GpuMeshSlotMembers mesh_slot_members(upstream::MaterialTextureSource source) {
 
 void bind_mesh_vertex_buffers(SDL_GPURenderPass* pass, const GpuMesh& mesh) {
 #if BBLITE_GPU_INSTANCE_COLORS
-    // The matrix pool at slot 1 and the per-instance RGBA rows at slot 2,
-    // which the line family's vertex stage reads as `instanceColor`.
-    const std::array<SDL_GPUBufferBinding, 3> bindings{
-        SDL_GPUBufferBinding{mesh.vertices, 0},
-        SDL_GPUBufferBinding{mesh.instances, 0},
-        SDL_GPUBufferBinding{mesh.instance_colors, 0},
-    };
-    SDL_BindGPUVertexBuffers(pass, 0, bindings.data(), static_cast<Uint32>(bindings.size()));
-#elif BBLITE_GPU_INSTANCING
-    const std::array<SDL_GPUBufferBinding, 2> bindings{
-        SDL_GPUBufferBinding{mesh.vertices, 0},
-        SDL_GPUBufferBinding{mesh.instances, 0},
-    };
-    SDL_BindGPUVertexBuffers(pass, 0, bindings.data(), static_cast<Uint32>(bindings.size()));
+    SDL_GPUBuffer* colors = mesh.instance_colors;
 #else
-    const SDL_GPUBufferBinding binding{
-        mesh.vertices,
-        0,
-    };
-    SDL_BindGPUVertexBuffers(pass, 0, &binding, 1);
+    SDL_GPUBuffer* colors = nullptr;
 #endif
+    bind_composed_mesh_vertex_buffers(pass, mesh.vertices, mesh.instances, colors);
 #if BBLITE_GPU_MORPH_STORAGE
     const std::array<SDL_GPUBuffer*, 2> storage{
         mesh.morph_deltas,
@@ -428,6 +412,82 @@ void prune_shared_shader_geometries(GpuState& state) {
         state.kept_buffers.release(state.device, geometry.vertex_buffer.release());
         state.kept_buffers.release(state.device, geometry.index_buffer.release());
     });
+}
+
+void upload_material_slot_texture(GpuState& state, SharedMaterialTextures& textures,
+                                  const TextureData& data) {
+    if (data.render_source) {
+        textures.bindings.push_back({nullptr, nullptr});
+        return;
+    }
+    if (const auto& source = data.gpu_source) {
+        const auto image = std::dynamic_pointer_cast<SdlComputeTexture>(source->allocation);
+        if (source->owners == 0 || !image || !image->texture || !image->sampler)
+            throw std::runtime_error("Material texture has no live SDL sampled allocation.");
+        textures.append_borrowed_texture(source, image->texture, image->sampler);
+        return;
+    }
+    auto image = state.shared_material_images.acquire(data, data.srgb, {255, 255, 255, 255}, [&] {
+        return OwnedSdlTexture{upload_texture(state.device, data, data.srgb, {255, 255, 255, 255}),
+                               {state.device}};
+    });
+    auto& binding = textures.append_shared_texture(std::move(image));
+    binding.sampler = create_texture_sampler(state.device, data.sampler);
+}
+
+void upload_shader_material_textures(GpuState& state, const MaterialRecord& material,
+                                     SharedShaderMaterialTextures& textures) {
+    if (material.node_material) {
+        for (const FileTexture& texture : material.shader_textures) {
+            upload_material_slot_texture(state, textures, texture.data);
+        }
+    } else {
+        const upstream::ShaderVariantInfo& shader_info =
+            upstream::shader_variant_info(material.shader_variant);
+        const PinnedStageSlots& slots = state.shader_fragment_slots[material.shader_variant];
+        for (const std::string& texture_name : slots.textures) {
+            const auto declared =
+                std::find_if(shader_info.samplers.begin(), shader_info.samplers.end(),
+                             [&](const char* candidate) { return texture_name == candidate; });
+            if (declared == shader_info.samplers.end()) {
+                gpu_error(shader_sampler_unmapped(shader_info, texture_name).c_str());
+            }
+            const std::size_t slot =
+                static_cast<std::size_t>(declared - shader_info.samplers.begin());
+            if (slot >= material.shader_textures.size()) {
+                gpu_error(
+                    shader_sampler_shortfall(shader_info, material.shader_textures.size()).c_str());
+            }
+#if BBLITE_SHADOWS_CSM
+            const bool csm_texture = slot < material.shader_csm_textures.size() &&
+                                     material.shader_csm_textures[slot].value != invalid_handle;
+#else
+            constexpr bool csm_texture = false;
+#endif
+            if (csm_texture || (slot < material.shader_render_textures.size() &&
+                                material.shader_render_textures[slot]))
+                textures.bindings.emplace_back();
+            else
+                upload_material_slot_texture(state, textures, material.shader_textures[slot].data);
+        }
+    }
+    textures.texture_version = material.shader_texture_version;
+}
+
+void refresh_shader_material_textures(GpuState& state, const Engine& engine) {
+    bool changed = false;
+    for (const auto& textures : state.shared_shader_material_textures) {
+        const auto* material = handle_find(engine.materials, textures->material);
+        if (!material || textures->texture_version == material->shader_texture_version)
+            continue;
+        SharedShaderMaterialTextures replacement(state.device);
+        upload_shader_material_textures(state, *material, replacement);
+        textures->swap(replacement);
+        textures->texture_version = replacement.texture_version;
+        changed = true;
+    }
+    if (changed)
+        state.shared_material_images.prune();
 }
 
 void prune_shared_shader_material_textures(GpuState& state) {
@@ -659,28 +719,6 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
     // samplers and a node graph's `TextureBlock` bindings alike --
     // upload the same way: the image's own bytes, the material's own
     // sampler, and the white fallback every slot takes.
-    const auto upload_material_slot_texture = [&](SharedMaterialTextures& textures,
-                                                  const auto& texture) {
-        if (texture.data.render_source) {
-            textures.bindings.push_back({nullptr, nullptr});
-            return;
-        }
-        if (const auto& source = texture.data.gpu_source) {
-            const auto image = std::dynamic_pointer_cast<SdlComputeTexture>(source->allocation);
-            if (source->owners == 0 || !image || !image->texture || !image->sampler)
-                throw std::runtime_error("Material texture has no live SDL sampled allocation.");
-            textures.append_borrowed_texture(source, image->texture, image->sampler);
-            return;
-        }
-        auto image = state.shared_material_images.acquire(
-            texture.data, texture.data.srgb, {255, 255, 255, 255}, [&] {
-                return OwnedSdlTexture{upload_texture(state.device, texture.data, texture.data.srgb,
-                                                      {255, 255, 255, 255}),
-                                       {state.device}};
-            });
-        auto& binding = textures.append_shared_texture(std::move(image));
-        binding.sampler = create_texture_sampler(state.device, texture.data.sampler);
-    };
     // The caller-owned texture families share one per-MATERIAL
     // cache -- keyed by handle, and a material is exactly one
     // family -- so two meshes sharing one material decode and
@@ -700,42 +738,7 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
         if (!gpu_mesh.shared_shader_textures) {
             auto created = std::make_unique<SharedShaderMaterialTextures>(state.device);
             created->material = item.material;
-            if (material->node_material) {
-                for (const FileTexture& texture : material->shader_textures) {
-                    upload_material_slot_texture(*created, texture);
-                }
-            } else {
-                const upstream::ShaderVariantInfo& shader_info =
-                    upstream::shader_variant_info(material->shader_variant);
-                const PinnedStageSlots& slots =
-                    state.shader_fragment_slots[material->shader_variant];
-                for (const std::string& texture_name : slots.textures) {
-                    const auto declared = std::find_if(
-                        shader_info.samplers.begin(), shader_info.samplers.end(),
-                        [&](const char* candidate) { return texture_name == candidate; });
-                    if (declared == shader_info.samplers.end()) {
-                        gpu_error(shader_sampler_unmapped(shader_info, texture_name).c_str());
-                    }
-                    const std::size_t slot =
-                        static_cast<std::size_t>(declared - shader_info.samplers.begin());
-                    if (slot >= material->shader_textures.size()) {
-                        gpu_error(
-                            shader_sampler_shortfall(shader_info, material->shader_textures.size())
-                                .c_str());
-                    }
-#if BBLITE_SHADOWS_CSM
-                    const bool csm_texture =
-                        slot < material->shader_csm_textures.size() &&
-                        material->shader_csm_textures[slot].value != invalid_handle;
-#else
-                    constexpr bool csm_texture = false;
-#endif
-                    if (csm_texture)
-                        created->bindings.emplace_back();
-                    else
-                        upload_material_slot_texture(*created, material->shader_textures[slot]);
-                }
-            }
+            upload_shader_material_textures(state, *material, *created);
             state.shared_shader_material_textures.push_back(std::move(created));
             gpu_mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
         }
@@ -754,7 +757,7 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
             auto created = std::make_unique<SharedPluginMaterialTextures>(state.device);
             created->material = item.material;
             for (const MaterialPluginTexture& texture : material->plugin_textures) {
-                upload_material_slot_texture(*created, texture);
+                upload_material_slot_texture(state, *created, texture.data);
             }
             state.shared_plugin_material_textures.push_back(std::move(created));
             gpu_mesh.shared_plugin_textures = state.shared_plugin_material_textures.back().get();

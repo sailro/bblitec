@@ -157,11 +157,12 @@ function facts(
     return result;
 }
 
-/** A prototype compared with another value is observed without exposing it. */
-function onlyCompared(
+/** Comparisons and numeric construction do not expose a prototype for mutation. */
+function onlyObserved(
     checker: ts.TypeChecker,
     state: RegExpEffects,
     value: ts.Node,
+    constructor = false,
     seen = new Set<ts.Symbol>(),
 ): boolean {
     const expression = outermostWrapper(value);
@@ -176,6 +177,23 @@ function onlyCompared(
         ].includes(parent.operatorToken.kind)
     )
         return true;
+    if (
+        constructor &&
+        ts.isNewExpression(parent) &&
+        parent.expression === expression &&
+        parent.arguments?.length === 1 &&
+        !ts.isSpreadElement(parent.arguments[0]!)
+    ) {
+        // In particular, an extracted Function constructor cannot compile
+        // source from a primitive number. A string or coercible object is
+        // still an escape, as are calls and constructor-property reads.
+        const type = checker.getTypeAtLocation(parent.arguments[0]!);
+        const numeric = (member: ts.Type): boolean =>
+            member.isUnion()
+                ? member.types.every(numeric)
+                : (member.flags & ts.TypeFlags.NumberLike) !== 0;
+        if (numeric(type)) return true;
+    }
     if (!constant(parent) || parent.initializer !== expression) return false;
     const symbol = resolvedSymbol(checker, parent.name);
     if (!symbol || seen.has(symbol)) return false;
@@ -183,7 +201,7 @@ function onlyCompared(
     return (state.references.get(symbol) ?? []).every(
         (reference) =>
             declarationName(reference) ||
-            onlyCompared(checker, state, reference, seen),
+            onlyObserved(checker, state, reference, constructor, seen),
     );
 }
 
@@ -227,7 +245,13 @@ export function isReadOnlyRegExpCall(
     if (!root) return false;
     const state = facts(checker, files);
     state.prototypeSafe ??= state.prototypeUses.every((use) =>
-        onlyCompared(checker, state, use),
+        onlyObserved(
+            checker,
+            state,
+            use,
+            ts.isPropertyAccessExpression(use) &&
+                use.name.text === "constructor",
+        ),
     );
     if (!state.prototypeSafe) return false;
     const cached = state.receivers.get(root);

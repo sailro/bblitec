@@ -8,7 +8,12 @@ import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { shaderUniformRecoveryPublication } from "../src/lowering/shader-uniforms.js";
 import { lowerThinInstanceBindingCreation } from "../src/lowering/thin-instance-binding-update.js";
 import {
+    fixtureShaderProgram,
+    reachedFixtureProgram,
+} from "./shader-program-fixtures.js";
+import {
     cppFunction,
+    cppSection,
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
@@ -23,12 +28,29 @@ test("thin material bindings retain source captures across overrides, refresh an
     }).source;
     const renderer = new RendererLowerer(context).lowerRenderPlan({
         gpuInstancing: true,
+        shaderPrograms: [
+            {
+                ...reachedFixtureProgram(fixtureShaderProgram("alpha-card")),
+                runtimeInstanceLayoutCheck: true,
+            },
+        ],
     });
     assert.match(renderer.header, /ThinMaterialBindingOwner thin_binding/);
     assert.match(renderer.source, /item\.thin_binding = output->thin_binding/);
     assert.match(
         renderer.source,
         /overridden\.thin_binding = packet_owners\[entry_index\]\.thin_binding/,
+    );
+    assert.match(
+        cppFunction(renderer.source, "void append_draw("),
+        /\{\s*require_shader_instance_layout\(item, engine\);/,
+    );
+    assert.doesNotMatch(
+        cppFunction(
+            new RendererLowerer(context).lowerRenderPlan().source,
+            "void append_draw(",
+        ),
+        /require_shader_instance_layout/,
     );
     runGeneratedProgram(
         native,
@@ -41,6 +63,20 @@ struct NodeAttribute { std::string_view name; };
 struct NodeVariant { std::size_t first_attribute, attribute_count; bool uses_instance_index; };
 constexpr std::array<NodeAttribute,3> node_variant_attributes{{{"world1"},{"world0"},{"position"}}};
 constexpr std::array<NodeVariant,3> node_variants{{{0,1,false},{1,1,false},{2,1,true}}};
+${cppSection(renderer.header, "enum class RenderMaterialKind", "struct RenderDrawCommand")}
+${cppSection(renderer.header, "enum class ShaderSystemMatrix", "std::uint32_t shader_variant_count()")}
+const ShaderVariantInfo& shader_variant_info(std::uint32_t variant) {
+    static const auto variants=[] {
+        std::array<ShaderVariantInfo,4> result{};
+        for (auto& info:result) { info.name="layout"; info.runtime_instance_layout_check=true; }
+        result[1].thin_instances=true; result[1].thin_instance_color_option=0.0;
+        result[2].thin_instances=true; result[2].instance_colors=true;
+        result[3].runtime_instance_layout_check=false;
+        return result;
+    }();
+    return variants.at(variant);
+}
+${cppFunction(renderer.header, "inline void require_shader_instance_layout(")}
 }
 namespace bbl {
 ${lowerThinInstanceBindingCreation(context)}
@@ -51,7 +87,45 @@ ${cppFunction(tasks, "static void initialize_refreshed_render_task_shader_materi
 ${renderTaskShaderPacketOwnersCpp(context, true)}
 void recover_bindings(Engine& engine) { ${shaderUniformRecoveryPublication(context, true)} }
 }
+void check_instance_layouts() {
+    using namespace bbl;
+    using namespace bbl::upstream;
+    Engine engine; engine.materials.resize(3); engine.meshes.resize(1);
+    for (auto& material:engine.materials) material.shader_material=true;
+    engine.materials[1].shader_thin_instance_colors=0.0;
+    RenderItem normal; normal.mesh={0}; normal.material_kind=RenderMaterialKind::shader;
+    normal.thin_binding=create_thin_material_binding(engine,{0},{0});
+    const auto check=[&](RenderItem item,std::uint32_t variant,bool accepted) {
+        item.shader_variant=variant;
+        bool refused=false;
+        try { require_shader_instance_layout(item,engine); }
+        catch (const std::runtime_error& error) {
+            assert(std::string_view(error.what()).find("cannot draw with this thin-instance layout")!=std::string_view::npos);
+            refused=true;
+        }
+        assert(refused!=accepted);
+    };
+    check(normal,0,true);
+    const auto pool=std::make_shared<ThinInstancePoolData>();
+    pool->colors=js::F32Array(0); engine.meshes[0].thin_instances=pool;
+    RenderItem thin=normal; thin.thin_binding=create_thin_material_binding(engine,{0},{1});
+    RenderItem colored=normal; colored.thin_binding=create_thin_material_binding(engine,{0},{2});
+    assert(pool->count==0 && !thin.thin_binding->shader_has_color && colored.thin_binding->shader_has_color);
+    check(thin,1,true); check(colored,2,true);
+    check(thin,0,false); check(thin,2,false); check(colored,1,false); check(normal,1,false);
+    // The captured empty owner and color selection survive later mesh/pool writes.
+    check(normal,0,true);
+    pool->colors=std::nullopt; engine.meshes[0].thin_instances.reset();
+    check(thin,1,true); check(colored,2,true);
+    RenderItem current=normal; current.thin_binding.reset();
+    check(current,0,true); check(current,1,false); check(current,2,false);
+    engine.meshes[0].thin_instances=std::make_shared<ThinInstancePoolData>();
+    check(current,1,true); check(current,2,false); check(current,0,false);
+    engine.meshes[0].thin_instances->colors=js::F32Array(0);
+    check(current,1,true); check(current,2,true); check(current,3,true);
+}
 int main() {
+    check_instance_layouts();
     using namespace bbl;
     Engine engine; engine.materials.resize(5); engine.meshes.resize(1);
     engine.materials[0].standard_material=true;

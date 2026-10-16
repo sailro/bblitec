@@ -33,5 +33,6 @@ export function adHocCaptureEnvironment(): Record<string, string> {
         // index therefore equals the number of elapsed fixed steps needed to
         // cross the wall-clock boundary rather than being one less than it.
         BBLITE_SCREENSHOT_FRAME: String(elapsedFrameCount),
+        BBLITE_CAPTURE_ENGINE_FRAME: String(elapsedFrameCount),
     };
 }

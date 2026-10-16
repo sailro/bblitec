@@ -10,6 +10,7 @@ import {
     expressionMayRunCode,
     isAssignmentExpression,
     isUpdateExpression,
+    soleReturnedExpression,
     unwrapExpression,
 } from "./syntax.js";
 import { emitReachableStatements } from "./loop-control.js";
@@ -42,15 +43,18 @@ import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import {
     bindingIsOnlyCalledDirectly,
+    generationKnownStringArgument,
     borrowsReferenceParameter,
     isSupportedFunction,
     requiresDefaultParameterBinding,
     resolveFunctionDeclaration,
+    snapshotArrayLiteral,
     type SupportedFunction,
 } from "./user-functions.js";
 import {
     fixedLengthParameterWrites,
     parameterIsReadOnly,
+    parameterOnlyRead,
 } from "./parameter-effects.js";
 
 export interface NativeFunctionContext extends Pick<
@@ -425,6 +429,25 @@ export class NativeFunctionLowerer {
             return undefined;
         }
         if (
+            signature.parameters.some((parameter, index) => {
+                const argument = call.arguments[index];
+                if (!parameter.borrowedWrapper || !argument) return false;
+                const value =
+                    this.context.knownValueWithoutEvaluation(argument);
+                return (
+                    value?.kind === "data" &&
+                    value.recordProperties !== undefined &&
+                    this.context.bindings.recordPropertiesAreCurrent(value) &&
+                    value.dataType?.kind === "struct" &&
+                    this.context.dataTypes.carriesFunction(value.dataType)
+                );
+            })
+        ) {
+            // The specialized body retains these concrete callbacks and their
+            // effects on sibling fields; generic native parameters cannot.
+            return undefined;
+        }
+        if (
             signature.returnType?.kind === "string" &&
             signature.parameters.every(
                 (parameter) => parameter.type.kind === "string",
@@ -452,6 +475,39 @@ export class NativeFunctionLowerer {
         ) {
             // Closed string transforms retain their facts at the call site.
             // Inspect without emitting argument effects twice.
+            return undefined;
+        }
+        const body = declaration.body;
+        const returned = body && soleReturnedExpression(body);
+        const arrayReturn =
+            returned && signature.returnType
+                ? snapshotArrayLiteral(returned, signature.returnType)
+                : undefined;
+        if (
+            arrayReturn &&
+            arrayReturn.elements.every(
+                (element) =>
+                    ts.isIdentifier(unwrapExpression(element)) ||
+                    this.context.evaluationOrder.isPureExpression(element),
+            ) &&
+            signature.parameters.every((parameter, index) => {
+                const argument =
+                    call.arguments[index] ??
+                    (ts.isParameter(parameter.name.parent)
+                        ? parameter.name.parent.initializer
+                        : undefined);
+                if (!argument) return false;
+                return this.context.probeEmission(
+                    () =>
+                        generationKnownStringArgument(
+                            this.context.compileValue(argument),
+                        ),
+                    () => false,
+                );
+            })
+        ) {
+            // Shared calls preserve these fresh array facts on their native
+            // result storage, including a descriptor's scalar fields.
             return undefined;
         }
         if (call.arguments.some(ts.isSpreadElement)) {
@@ -1023,6 +1079,19 @@ export class NativeFunctionLowerer {
                               expression,
                           )
                         : rawValue;
+                // Constness belongs to the borrowed wrapper, not its record.
+                // Writing or retaining it invalidates every linked view's facts.
+                if (
+                    value.kind === "data" &&
+                    (value.recordProperties || value.staticElementsOwner) &&
+                    (!directKernel ||
+                        !parameterOnlyRead(
+                            this.context.checker,
+                            directKernel,
+                            parameter.name,
+                        ))
+                )
+                    this.context.bindings.invalidateRecordProperties(value);
                 if (
                     value.kind === "data" &&
                     value.dataType?.kind === "struct" &&

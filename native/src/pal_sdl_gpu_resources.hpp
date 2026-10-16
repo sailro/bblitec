@@ -128,6 +128,13 @@ public:
         external_images_.at(index) = std::move(owner);
         bindings.at(index) = binding;
     }
+    /** Exchange bindings on the same device, keeping replacement images alive before retirement. */
+    void swap(SdlSampledTextures& other) noexcept {
+        bindings.swap(other.bindings);
+        shared_images_.swap(other.shared_images_);
+        borrowed_images_.swap(other.borrowed_images_);
+        external_images_.swap(other.external_images_);
+    }
     void clear() noexcept {
         for (std::size_t i = 0; i < bindings.size(); ++i) {
             const auto& binding = bindings[i];

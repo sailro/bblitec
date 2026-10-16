@@ -295,7 +295,9 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     // than "is 4x" so a single-sample run keeps one main set instead of
     // filing every pipeline under the task buckets.
     const std::uint32_t samples = requested_samples == 0 ? state.sample_count : requested_samples;
-    const auto color_format = target ? target->color : state.frame_color_format;
+    const auto color_format =
+        target ? target->color
+               : (shadow_pass ? WGPUTextureFormat_Undefined : state.frame_color_format);
     const auto depth_format = target ? target->depth
                                      : (shadow_pass ? WGPUTextureFormat_Depth32Float
                                                     : WGPUTextureFormat_Depth24PlusStencil8);
@@ -370,7 +372,9 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
         state.shader_vertex_modules[shader_variant] =
             load_wgsl_module(state, (base_name + ".vert").c_str());
     }
-    if (!shadow_pass && !state.shader_fragment_modules[shader_variant]) {
+    const bool has_color = color_format != WGPUTextureFormat_Undefined;
+    const bool wants_fragment = has_color || shader_info.depth_only_fragment;
+    if (wants_fragment && !state.shader_fragment_modules[shader_variant]) {
         const std::string base_name = shader_info.name;
         state.shader_fragment_modules[shader_variant] =
             load_wgsl_module(state, (base_name + ".frag").c_str());
@@ -402,6 +406,8 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
         depth_write_off ? WGPUOptionalBool_False : WGPUOptionalBool_True;
     depth_stencil.depthCompare = dawn_depth_compare(
         shader_info.depth_compare ? *shader_info.depth_compare : pass_depth_compare(shadow_pass));
+    depth_stencil.depthBias = shader_info.depth_bias;
+    depth_stencil.depthBiasSlopeScale = shader_info.depth_bias_slope_scale;
     // Depth-less render-task targets need attachment-compatible
     // pipelines; WebGPU validates what SDL_GPU tolerated.
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
@@ -424,9 +430,9 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = state.shader_fragment_modules[shader_variant];
     fragment.entryPoint = string_view("mainFragment");
-    fragment.targetCount = 1;
-    fragment.targets = &color_target;
-    descriptor.fragment = shadow_pass ? nullptr : &fragment;
+    fragment.targetCount = has_color ? 1u : 0u;
+    fragment.targets = has_color ? &color_target : nullptr;
+    descriptor.fragment = wants_fragment ? &fragment : nullptr;
 
     DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
     if (!pipeline)
@@ -1815,6 +1821,10 @@ public:
         void rebuild_task_draw_lists() { run.rebuild_task_draw_lists(); }
 
         MeshRowWrites& mesh_rows() { return rows; }
+
+        void refresh_shader_textures() {
+            refresh_shader_material_textures(rows.state, rows.engine);
+        }
 
         void publish_storage() { sync_shader_storage_buffers(rows.state, rows.engine); }
 

@@ -75,8 +75,10 @@ test("local immutable aliases retain pure helpers' branch-composed text", () => 
             }
             const narrow=compose(false);
             const wide=compose(true);
+            function body():string {let text="20";while(false) text+="0";return text;}
+            const unchanged=body();
             const sheet=document.createElement("style");
-            sheet.textContent=\`.narrow {\${narrow}} .wide {\${wide}}\`;
+            sheet.textContent=\`.narrow {\${narrow}} .wide {\${wide}} .unchanged {width:\${unchanged}px;}\`;
             document.head.appendChild(sheet);
         }
         main();
@@ -86,6 +88,10 @@ test("local immutable aliases retain pure helpers' branch-composed text", () => 
         /ui_add_class_style[^\n]*"narrow"[^\n]*width:10px/,
     );
     assert.match(result.cpp, /ui_add_class_style[^\n]*"wide"[^\n]*width:20px/);
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*"unchanged"[^\n]*width:20px/,
+    );
 });
 
 test("retained text reads preserve activation, TDZ, mutable aliases and concatenation effects", (t) => {
@@ -195,7 +201,6 @@ test("runtime and mutable text do not acquire immutable initializer facts", () =
         `let width=20; function body():string {let text=String(width);return text;}`,
         `const settings={width:20}; function body():string {let text=String(settings.width);return text;} settings.width=30;`,
         `function body():string {let text=String(Math.random());return text;}`,
-        `function body():string {let text="20";while(false) text+="0";return text;}`,
     ]) {
         assert.throws(
             () =>

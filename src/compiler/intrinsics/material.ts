@@ -340,6 +340,19 @@ function compileShaderUniformWrite(
     expectedCounts: number[],
     compiledName?: string,
 ): Value {
+    if (!material.shaderVariant) {
+        const target = context.bindings.pinValueToTemporary(
+            material,
+            "uniform_material",
+            call,
+        );
+        const name = context.bindings.pinValueToTemporary(
+            context.compileValue(argumentAt(call, 1)),
+            "uniform_name",
+            call,
+        );
+        return compileDynamicShaderUniformWrite(context, call, target, name);
+    }
     const uniform = context.intrinsicOptions.resolveShaderUniform(
         material,
         argumentAt(call, 1),
@@ -481,11 +494,18 @@ function compileDynamicShaderUniformWrite(
     );
     const numeric = (type: NonNullable<Value["dataType"]>): boolean =>
         type.kind === "number" ||
+        type.kind === "tuple" ||
         isTypedArrayType(type) ||
         (type.kind === "vector" && type.element.kind === "number") ||
         (type.kind === "union" && type.members.every(numeric));
+    const tuple =
+        input.kind === "tuple" &&
+        input.tupleElements?.every((element) => element.kind === "number")
+            ? input.tupleElements
+            : undefined;
     if (
         input.kind !== "number" &&
+        !tuple &&
         !(input.kind === "data" && input.dataType && numeric(input.dataType))
     )
         context.fail(
@@ -493,9 +513,12 @@ function compileDynamicShaderUniformWrite(
             "Dynamic shader uniform values require a number or numeric array.",
         );
     context.reachFeature("material:shader", call);
+    const value = tuple
+        ? `std::array<double, ${tuple.length}>{${tuple.map((element) => element.cpp).join(", ")}}`
+        : input.cpp;
     return {
         kind: "void",
-        cpp: `bbl::set_shader_uniform(${context.requireEngine(material, call)}, ${material.cpp}, ${name.cpp}, ${input.cpp})`,
+        cpp: `bbl::set_shader_uniform(${context.requireEngine(material, call)}, ${material.cpp}, ${name.cpp}, ${value})`,
     };
 }
 
@@ -1122,22 +1145,40 @@ function compileSetShaderStorageBuffer(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
-    const material = context.compileValue(argumentAt(call, 0));
-    context.expectKind(material, "material", argumentAt(call, 0));
-    const slot = context.intrinsicOptions.resolveShaderStorageBufferSlot(
-        material,
-        argumentAt(call, 1),
+    const material = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 0)),
+        "storage_material",
+        call,
     );
-    const buffer = context.compileValue(argumentAt(call, 2));
+    context.expectKind(material, "material", argumentAt(call, 0));
+    const name = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 1)),
+        "storage_name",
+        call,
+    );
+    if (!isStringValue(name))
+        context.fail(
+            argumentAt(call, 1),
+            "Shader storage-buffer names require a string.",
+        );
+    const buffer = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 2)),
+        "storage_buffer",
+        call,
+    );
     context.expectKind(buffer, "storage-buffer", argumentAt(call, 2));
     context.expectSameEngine(material, buffer, call);
     context.reachFeature("material:shader-storage", call);
+    const dynamic = !material.shaderVariant || name.staticString === undefined;
+    const slot = dynamic
+        ? name.cpp
+        : `${context.intrinsicOptions.resolveShaderStorageBufferSlot(material, argumentAt(call, 1))}u`;
     return {
         kind: "void",
         cpp:
-            `bbl::set_shader_storage_buffer(` +
+            `bbl::set_shader_storage_buffer${dynamic ? "_by_name" : ""}(` +
             `${context.requireEngine(material, call)}, ` +
-            `${material.cpp}, ${slot}u, ${buffer.cpp})`,
+            `${material.cpp}, ${slot}, ${buffer.cpp})`,
     };
 }
 
@@ -1234,7 +1275,7 @@ function compileSetShaderUniform(
         "uniform_name",
         call,
     );
-    if (name.staticString === undefined)
+    if (!material.shaderVariant || name.staticString === undefined)
         return compileDynamicShaderUniformWrite(context, call, material, name);
     return compileShaderUniformWrite(
         context,
@@ -1249,20 +1290,33 @@ function compileSetShaderTexture(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    // src/material/shader/shader-material.ts: the setter stores the
-    // texture on the slot the sampler name owns and bumps the
-    // material's resource version so the bind group rebuilds. The
-    // slot is settled at generation, and the reached slice binds
-    // once before registration, so what stays at run time is the
-    // texture itself.
     context.expectArgumentCount(call, 3, 3);
-    const material = context.compileValue(argumentAt(call, 0));
-    context.expectKind(material, "material", argumentAt(call, 0));
-    const slot = context.intrinsicOptions.resolveShaderTextureSlot(
-        material,
-        argumentAt(call, 1),
+    const material = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 0)),
+        "texture_material",
+        call,
     );
-    const texture = context.compileValue(argumentAt(call, 2));
+    context.expectKind(material, "material", argumentAt(call, 0));
+    const name = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 1)),
+        "texture_name",
+        call,
+    );
+    if (!isStringValue(name))
+        context.fail(
+            argumentAt(call, 1),
+            "Shader texture names require a string.",
+        );
+    const texture = context.bindings.pinValueToTemporary(
+        context.compileValue(argumentAt(call, 2)),
+        "shader_texture",
+        call,
+    );
+    const engine = context.requireEngine(material, call);
+    const dynamic = !material.shaderVariant || name.staticString === undefined;
+    const slot = dynamic
+        ? `bbl::shader_texture_slot_by_name(${engine}, ${material.cpp}, ${name.cpp}, ${texture.csmReceiverGeneratorIndex !== undefined ? "true" : "false"})`
+        : `${context.intrinsicOptions.resolveShaderTextureSlot(material, argumentAt(call, 1))}u`;
     if (texture.kind === "render-texture") {
         if (texture.isDepthTexture)
             context.fail(
@@ -1274,8 +1328,8 @@ function compileSetShaderTexture(
             kind: "void",
             cpp:
                 `bbl::set_shader_render_texture(` +
-                `${context.requireEngine(material, call)}, ` +
-                `${material.cpp}, ${slot}u, ${texture.cpp})`,
+                `${engine}, ` +
+                `${material.cpp}, ${slot}, ${texture.cpp})`,
         };
     }
     context.expectKind(texture, "texture", argumentAt(call, 2));
@@ -1301,8 +1355,8 @@ function compileSetShaderTexture(
         kind: "void",
         cpp:
             `bbl::${setter}(` +
-            `${context.requireEngine(material, call)}, ` +
-            `${material.cpp}, ${slot}u, ${texture.cpp})`,
+            `${engine}, ` +
+            `${material.cpp}, ${slot}, ${texture.cpp})`,
     };
 }
 

@@ -166,6 +166,6 @@ test("navigation keeps retained tile-cache connections outside the admitted boun
                 compileSource(
                     `${imports}const connections:OffMeshConnection[]=[${connection}];async function main(){const engine=await createEngine({});const mesh=createBox(engine);const nav=await createNavigationPluginAsync();createNavMesh(nav,[mesh],{maxObstacles:1,offMeshConnections:${list}});}`,
                 ),
-            /TileCacheMeshProcess|static array literal/,
+            /TileCacheMeshProcess|Module constant 'connections' reads 'connections', which the program writes through/,
         );
 });

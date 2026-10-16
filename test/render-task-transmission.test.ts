@@ -63,11 +63,7 @@ test("grab textures are nullable Texture2D values beside ordinary textures", () 
     ).cpp;
     assert.match(
         fallback,
-        /bbl::transmission_grab_texture\(v_engine, v_grab\)/,
-    );
-    assert.match(
-        fallback,
-        /: bbl::StoredTexture\{bbl::solid_texture_file\(v_solid\)\}\)\)/,
+        /auto (v_bblite_nullish_\d+) = bbl::transmission_grab_texture\(v_engine, v_grab\);\s+\[\[maybe_unused\]\] auto (v_bblite_shader_texture_\d+) = \(\1.has_value\(\) \? \(\*\1\) : bbl::StoredTexture\{bbl::solid_texture_file\(v_solid\)\}\);\s+bbl::set_shader_pixels_texture\(v_engine, v_material, 0u, \2\);/,
     );
     const local = compileSource(
         program(
@@ -86,6 +82,6 @@ test("grab textures are nullable Texture2D values beside ordinary textures", () 
     );
     assert.match(
         local,
-        /\? \(\*v_bblite_nullish_\d+\) : bbl::StoredTexture\{v_pixels\}\)\)/,
+        /auto (v_bblite_nullish_\d+) = bbl::js::snapshot_value\(v_bound\);\s+\[\[maybe_unused\]\] auto (v_bblite_shader_texture_\d+) = \(\1.has_value\(\) \? \(\*\1\) : bbl::StoredTexture\{v_pixels\}\);\s+bbl::set_shader_pixels_texture\(v_engine, v_material, 0u, \2\);/,
     );
 });

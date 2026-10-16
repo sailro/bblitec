@@ -16,6 +16,7 @@ export {
     presenceFlagCpp,
     readsNativeStorage,
     representedStorage,
+    scalarFacts,
     snapshotReadCpp,
     statedTruthinessCpp,
     valueForKind,
@@ -842,6 +843,10 @@ export interface CompiledShaderProgram {
     readonly depthWrite: boolean;
     /** Explicit material compare; absent uses the pinned pass convention. */
     readonly depthCompare?: string;
+    /** Keep the fragment stage on a target without color attachments. */
+    readonly depthOnlyFragment?: boolean;
+    readonly depthBias?: number;
+    readonly depthBiasSlopeScale?: number;
     /**
      * The pin's own `_topology`, absent where it resolves
      * `material._topology ?? "triangle-list"`. A line material is the one
@@ -862,6 +867,8 @@ export interface CompiledShaderProgram {
      * prelude the stage compiles against.
      */
     readonly useThinInstanceColors?: boolean;
+    /** Unknown material selections validate the baked instance lanes before drawing. */
+    readonly runtimeInstanceLayoutCheck?: boolean;
     /** Original ShaderMaterialOptions value retained separately from the composed color lane. */
     readonly thinInstanceColorOption?: boolean;
 }

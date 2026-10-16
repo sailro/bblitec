@@ -17,22 +17,31 @@ async function main(){
 void main();`;
 }
 const pool = "setThinInstances(mesh,new Float32Array(16),1);";
-test("thin pools refuse split frame submissions and device recovery in either source order", () => {
-    for (const [action, expected] of [
-        [
-            "const scene=createSceneContext(engine);const task=createComputeTask(engine,'task');addTaskAtStart(scene,task);",
+test("thin pools refuse split frame submissions and admit recovery registration in either source order", () => {
+    const frameGraph =
+        "const scene=createSceneContext(engine);const task=createComputeTask(engine,'task');addTaskAtStart(scene,task);";
+    for (const actions of [
+        [pool, frameGraph],
+        [frameGraph, pool],
+    ])
+        assert.throws(
+            () => compileSource(source(actions)),
             /shared indirect-argument write ordering/,
-        ],
-        [
-            "enableDeviceLostSceneRecovery(engine);",
-            /device-recovery buffer ownership/,
-        ],
-    ] as const)
-        for (const actions of [
-            [pool, action],
-            [action, pool],
-        ])
-            assert.throws(() => compileSource(source(actions)), expected);
+        );
+    const recovery = "enableDeviceLostSceneRecovery(engine);";
+    for (const actions of [
+        [pool, recovery],
+        [recovery, pool],
+    ]) {
+        const result = compileSource(source(actions));
+        assert.ok(result.manifest.features.includes("mesh:thin-instances"));
+        assert.ok(result.manifest.features.includes("engine:device-recovery"));
+        assert.ok(
+            result.manifest.generatedSources.includes(
+                "upstream/src/device_recovery.cpp",
+            ),
+        );
+    }
 });
 test("thin pools retain ordinary compute resources without a split frame graph", () => {
     const result = compileSource(

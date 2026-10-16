@@ -317,6 +317,7 @@ export interface LoweringServices {
         expression: ts.Expression,
         resolving?: ReadonlySet<ts.Symbol>,
     ): ts.Expression;
+    resolveStaticLiteral(expression: ts.Expression): ts.Expression;
     compileTypedArrayArgument(
         expression: ts.Expression,
         kind: TypedArrayKind,

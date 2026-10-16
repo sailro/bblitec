@@ -225,7 +225,7 @@ import {
     ModuleNamespaces,
 } from "./compiler/module-namespaces.js";
 import { RecordProxies } from "./compiler/proxies.js";
-import { PropertyAccessLowerer } from "./compiler/properties.js";
+import { PropertyAccessLowerer, propertyRules } from "./compiler/properties.js";
 import {
     CompilerSymbols,
     accessedPropertySymbol,
@@ -241,6 +241,7 @@ import {
     typeCanCarryReference,
 } from "./compiler/type-facts.js";
 import { StaticEvaluator } from "./compiler/static-evaluator.js";
+import { programObservations } from "./compiler/program-observations.js";
 import { StatementLowerer } from "./compiler/statements.js";
 import { HandleCollections } from "./compiler/handle-collections.js";
 import {
@@ -271,9 +272,11 @@ import {
     isDeclaredInside,
     isUpdateExpression,
     objectProperty,
+    propertyNameText,
     sourceFunctionName,
     stringLiteralText,
     unwrappedIdentifier,
+    wrappedParent,
 } from "./compiler/syntax.js";
 import { CompileError } from "./compiler/compile-error.js";
 import { mutatingArrayMethods } from "./compiler/receiver-methods.js";
@@ -956,6 +959,11 @@ class Compiler implements LoweringServices {
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
     /** @unjournaled `moduleConstantIsWritten` answers, a function of the program. */
     private readonly writtenModuleConstants = new Map<ts.Symbol, boolean>();
+    /** @unjournaled Destination exposure depends only on the checked program. */
+    private readonly nativeValueExposure = new Map<
+        ts.Type,
+        Map<string, boolean>
+    >();
     /**
      * @unjournaled Only compared before and after one initializer's compile; a
      * discarded attempt can only over-count, which keeps a `const` a snapshot.
@@ -1794,7 +1802,7 @@ class Compiler implements LoweringServices {
             ts.isPropertyAccessExpression(expression.expression) &&
             expression.expression.name.text === "catch"
         ) {
-            const promise = this.entryReporterPromise(expression);
+            const promise = this.entryReporterPromise(expression, true);
             if (!promise) return false;
             expression = promise;
         }
@@ -1879,6 +1887,7 @@ class Compiler implements LoweringServices {
 
     private entryReporterPromise(
         expression: ts.Expression,
+        terminalMain = false,
     ): ts.CallExpression | undefined {
         if (this.options.workers) return undefined;
         const call = this.unwrap(expression);
@@ -1900,9 +1909,42 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         const handler = this.unwrap(argumentAt(call, 0));
-        return this.browserErasure.isBrowserOnlyHandler(handler, true)
+        return (terminalMain && this.isIdentityRejectionHandler(handler)) ||
+            this.browserErasure.isBrowserOnlyHandler(handler, true)
             ? promise
             : undefined;
+    }
+
+    /** A terminal rethrow leaves the entry's original rejection unchanged. */
+    private isIdentityRejectionHandler(handler: ts.Expression): boolean {
+        if (
+            (!ts.isArrowFunction(handler) &&
+                !ts.isFunctionExpression(handler)) ||
+            (ts.isFunctionExpression(handler) && handler.asteriskToken) ||
+            handler.modifiers?.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            ) ||
+            handler.parameters.length !== 1 ||
+            !ts.isBlock(handler.body) ||
+            handler.body.statements.length !== 1
+        )
+            return false;
+        const parameter = handler.parameters[0]!;
+        const statement = handler.body.statements[0]!;
+        if (
+            !ts.isIdentifier(parameter.name) ||
+            parameter.initializer ||
+            parameter.dotDotDotToken ||
+            !ts.isThrowStatement(statement)
+        )
+            return false;
+        const thrown = this.unwrap(statement.expression);
+        const parameterSymbol = this.symbols.valueSymbol(parameter.name);
+        return (
+            parameterSymbol !== undefined &&
+            ts.isIdentifier(thrown) &&
+            this.symbols.valueSymbol(thrown) === parameterSymbol
+        );
     }
 
     public emitStatement(statement: ts.Statement): void {
@@ -2005,6 +2047,9 @@ class Compiler implements LoweringServices {
                   ...resource.implied,
                   cpp: `(*${storage})`,
               });
+        // The new slot owns its current value; an initializer's lookup-copy
+        // expression must not bypass a later assignment to this slot.
+        if (!resource.dataType) delete writable(present).ownedCpp;
         return {
             ...present,
             optionalFoundCpp: optionalPresentCpp(storage),
@@ -2916,17 +2961,128 @@ class Compiler implements LoweringServices {
                   symbol,
               )
             : [declaration.getSourceFile()];
-        const written = files.some((file) =>
-            this.writesThroughBinding(file, symbol),
-        );
+        const written = this.writesThroughBinding(files, symbol);
         this.writtenModuleConstants.set(symbol, written);
         return written;
     }
 
+    /** A copied native value cannot expose its source identity when never read back. */
+    private unobservedNativeValueAssignment(
+        node: ts.BinaryExpression,
+    ): boolean {
+        const left = this.unwrap(node.left);
+        if (
+            node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            !ts.isExpressionStatement(wrappedParent(node)) ||
+            !ts.isPropertyAccessExpression(left)
+        )
+            return false;
+        const ownerType = this.checker.getTypeAtLocation(left.expression);
+        const owner = pinnedHandleKind(ownerType);
+        const property = left.name.text;
+        if (
+            !propertyRules.some(
+                (rule) =>
+                    rule.owner === owner &&
+                    rule.property === property &&
+                    "value" in rule &&
+                    rule.value === "color4" &&
+                    rule.field !== undefined,
+            )
+        )
+            return false;
+        let byProperty = this.nativeValueExposure.get(ownerType);
+        if (!byProperty)
+            this.nativeValueExposure.set(
+                ownerType,
+                (byProperty = new Map<string, boolean>()),
+            );
+        const known = byProperty.get(property);
+        if (known !== undefined) return !known;
+        const observations = programObservations(this.program);
+        const exposed =
+            (observations.namedReads.get(property)?.length ?? 0) > 0 ||
+            observations.wholesaleReads.some((read) => {
+                const parent = read.parent;
+                if (
+                    ts.isElementAccessExpression(parent) &&
+                    parent.expression === read
+                ) {
+                    const key = this.checker.getTypeAtLocation(
+                        parent.argumentExpression,
+                    );
+                    const keys = key.isUnion() ? key.types : [key];
+                    if (
+                        keys.every(
+                            (member) =>
+                                member.isStringLiteral() &&
+                                member.value !== property,
+                        )
+                    )
+                        return false;
+                }
+                const type = this.checker.getTypeAtLocation(read);
+                return (
+                    (type.flags &
+                        (ts.TypeFlags.Any |
+                            ts.TypeFlags.Unknown |
+                            ts.TypeFlags.TypeParameter |
+                            ts.TypeFlags.IndexedAccess |
+                            ts.TypeFlags.Conditional |
+                            ts.TypeFlags.Substitution)) !==
+                        0 || this.checker.isTypeAssignableTo(ownerType, type)
+                );
+            });
+        byProperty.set(property, exposed);
+        return !exposed;
+    }
+
     private writesThroughBinding(
-        file: ts.SourceFile,
+        initialFiles: readonly ts.SourceFile[],
         symbol: ts.Symbol,
     ): boolean {
+        const declaration = symbol.valueDeclaration;
+        const initializer =
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.initializer
+                ? this.unwrap(declaration.initializer)
+                : undefined;
+        const scalarRecord =
+            initializer &&
+            ts.isObjectLiteralExpression(initializer) &&
+            initializer.properties.every(
+                (property) =>
+                    (ts.isPropertyAssignment(property) &&
+                        propertyNameText(property.name) !== undefined &&
+                        propertyNameText(property.name) !== "__proto__" &&
+                        !typeCanCarryReference(
+                            this.checker.getTypeAtLocation(
+                                property.initializer,
+                            ),
+                        )) ||
+                    (ts.isShorthandPropertyAssignment(property) &&
+                        !typeCanCarryReference(
+                            this.checker.getTypeAtLocation(property.name),
+                        )),
+            );
+        const selectedRecordKeys =
+            scalarRecord &&
+            initializer &&
+            ts.isObjectLiteralExpression(initializer)
+                ? new Set(
+                      initializer.properties.flatMap((property) => {
+                          if (
+                              !ts.isPropertyAssignment(property) &&
+                              !ts.isShorthandPropertyAssignment(property)
+                          )
+                              return [];
+                          const key = propertyNameText(property.name);
+                          return key === undefined ? [] : [key];
+                      }),
+                  )
+                : undefined;
+        const files = new Set(initialFiles);
         const aliases = new Set([symbol]);
         const names = (node: ts.Node): boolean => {
             const named =
@@ -2964,6 +3120,8 @@ class Compiler implements LoweringServices {
                                 (reference) => {
                                     if (names(reference)) retained = true;
                                 },
+                                scalarRecord ? names : undefined,
+                                selectedRecordKeys,
                             );
                         });
                         return retained ? true : "skip";
@@ -2984,67 +3142,128 @@ class Compiler implements LoweringServices {
                 (reference) => {
                     if (names(reference)) written = true;
                 },
+                scalarRecord ? names : undefined,
+                selectedRecordKeys,
             );
             return written;
         };
         let changed = true;
+        const addAlias = (aliased: ts.Symbol): void => {
+            if (aliases.has(aliased)) return;
+            aliases.add(aliased);
+            changed = true;
+            for (const file of moduleContainerReferenceFiles(
+                this.program,
+                this.checker,
+                this.symbols,
+                aliased,
+            ))
+                files.add(file);
+        };
         const alias = (binding: ts.BindingName): void => {
             for (const identifier of bindingNameIdentifiers(binding)) {
                 const aliased = this.symbols.valueSymbol(identifier);
-                if (aliased && !aliases.has(aliased)) {
-                    aliases.add(aliased);
-                    changed = true;
-                }
+                if (aliased) addAlias(aliased);
             }
         };
         while (changed) {
             changed = false;
-            const written = someAnalysisNode(file, (node) => {
-                if (
-                    ts.isVariableDeclaration(node) &&
-                    node.initializer &&
-                    mentions(node.initializer)
-                )
-                    alias(node.name);
-                if (
-                    ts.isForOfStatement(node) &&
-                    ts.isVariableDeclarationList(node.initializer) &&
-                    mentions(node.expression)
-                )
-                    for (const iterated of node.initializer.declarations)
-                        alias(iterated.name);
-                return (
-                    // The alias walk can stop at a getter's scalar result,
-                    // but evaluating that getter may still mutate its owner.
-                    ((ts.isPropertyAccessExpression(node) ||
-                        ts.isElementAccessExpression(node)) &&
-                        mentions(node.expression) &&
-                        accessedPropertySymbol(
-                            this.checker,
+            for (const file of files) {
+                const written = someAnalysisNode(file, (node) => {
+                    if (
+                        scalarRecord &&
+                        ts.isReturnStatement(node) &&
+                        node.expression &&
+                        mentions(node.expression)
+                    ) {
+                        // A named helper can return a container holding the
+                        // identity. Follow its callers, including importing files.
+                        const owner = ts.findAncestor(
+                            node.parent,
+                            ts.isFunctionLike,
+                        );
+                        if (
+                            !owner ||
+                            !ts.isFunctionDeclaration(owner) ||
+                            !owner.name
+                        )
+                            return true;
+                        const returnedBy = this.symbols.valueSymbol(owner.name);
+                        if (!returnedBy) return true;
+                        addAlias(returnedBy);
+                    }
+                    // Stored or returned references can acquire aliases outside
+                    // this binding walk. A closed scalar-record certificate must
+                    // not use its initializer after that identity escapes.
+                    if (
+                        scalarRecord &&
+                        ((isAssignmentExpression(node) &&
+                            mentions(node.right) &&
+                            !(
+                                names(this.unwrap(node.right)) &&
+                                this.unobservedNativeValueAssignment(node)
+                            )) ||
+                            ((ts.isThrowStatement(node) ||
+                                ts.isExportAssignment(node)) &&
+                                node.expression !== undefined &&
+                                mentions(node.expression)) ||
+                            (ts.isArrowFunction(node) &&
+                                !ts.isBlock(node.body) &&
+                                mentions(node.body)) ||
+                            ((ts.isParameter(node) ||
+                                ts.isPropertyDeclaration(node)) &&
+                                node.initializer !== undefined &&
+                                mentions(node.initializer)))
+                    )
+                        return true;
+                    if (
+                        ts.isVariableDeclaration(node) &&
+                        node.initializer &&
+                        mentions(node.initializer)
+                    )
+                        alias(node.name);
+                    if (
+                        ts.isForOfStatement(node) &&
+                        ts.isVariableDeclarationList(node.initializer) &&
+                        mentions(node.expression)
+                    )
+                        for (const iterated of node.initializer.declarations)
+                            alias(iterated.name);
+                    return (
+                        // The alias walk can stop at a getter's scalar result,
+                        // but evaluating that getter may still mutate its owner.
+                        ((ts.isPropertyAccessExpression(node) ||
+                            ts.isElementAccessExpression(node)) &&
+                            mentions(node.expression) &&
+                            accessedPropertySymbol(
+                                this.checker,
+                                node,
+                            )?.declarations?.some(
+                                ts.isGetAccessorDeclaration,
+                            ) &&
+                            this.evaluationOrder.writesStorage(node)) ||
+                        writesThroughTrackedRoot(
                             node,
-                        )?.declarations?.some(ts.isGetAccessorDeclaration) &&
-                        this.evaluationOrder.writesStorage(node)) ||
-                    writesThroughTrackedRoot(
-                        node,
-                        (target) => names(this.unwrap(target)),
-                        undefined,
-                        this.checker,
-                        this.program.getSourceFiles(),
-                    ) ||
-                    (ts.isCallExpression(node) &&
-                        node.arguments.some(
-                            (argument, index) =>
-                                mentions(argument) &&
-                                !libraryArgumentIsReadOnly(
-                                    this.checker,
-                                    node,
-                                    index,
-                                ) &&
-                                writesArgument(node, index),
-                        ))
-                );
-            });
-            if (written) return true;
+                            (target) => names(this.unwrap(target)),
+                            undefined,
+                            this.checker,
+                            this.program.getSourceFiles(),
+                        ) ||
+                        (ts.isCallExpression(node) &&
+                            node.arguments.some(
+                                (argument, index) =>
+                                    mentions(argument) &&
+                                    !libraryArgumentIsReadOnly(
+                                        this.checker,
+                                        node,
+                                        index,
+                                    ) &&
+                                    writesArgument(node, index),
+                            ))
+                    );
+                });
+                if (written) return true;
+            }
         }
         return false;
     }
@@ -3537,19 +3756,22 @@ class Compiler implements LoweringServices {
     public expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression {
+        const literal = this.evaluator.staticArrayLiteral(expression);
+        if (literal) return literal;
+        const resolved = this.resolveStaticLiteral(expression);
+        if (ts.isArrayLiteralExpression(resolved)) return resolved;
         return this.evaluator.expectStaticArrayLiteral(expression);
     }
 
     public expectStaticArrayElements(
         expression: ts.Expression,
     ): ts.Expression[] {
-        return this.evaluator
-            .expectStaticArrayLiteral(expression)
-            .elements.flatMap((element) =>
+        return this.expectStaticArrayLiteral(expression).elements.flatMap(
+            (element) =>
                 ts.isSpreadElement(element)
                     ? this.expectStaticArrayElements(element.expression)
                     : [element],
-            );
+        );
     }
 
     public referenceSearch(): string {
@@ -3719,10 +3941,56 @@ class Compiler implements LoweringServices {
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression {
         const resolved = this.evaluator.resolveStaticLiteral(expression);
-        if (!ts.isObjectLiteralExpression(resolved)) {
-            this.fail(resolved, "Expected an object literal.");
+        if (ts.isObjectLiteralExpression(resolved)) return resolved;
+        const node = this.unwrap(expression);
+        const bound = ts.isIdentifier(node)
+            ? this.bindings.lookupOptional(node)
+            : undefined;
+        const properties = bound?.recordProperties;
+        const keys =
+            bound?.recordOwnKeys ??
+            (bound?.kind === "record" && properties
+                ? Object.keys(properties)
+                : undefined);
+        if (
+            bound &&
+            properties &&
+            keys &&
+            this.bindings.recordPropertiesAreCurrent(bound) &&
+            !Object.keys(bound.recordGetters ?? {}).length &&
+            !Object.keys(bound.recordSetters ?? {}).length &&
+            !Object.keys(bound.recordMethods ?? {}).length &&
+            keys.every(
+                (key) =>
+                    key !== "__proto__" &&
+                    properties[key] !== undefined &&
+                    !properties[key].conditionalOwnKey,
+            )
+        ) {
+            // Project current fields from the bound owner. Its initializer has
+            // already run, and dynamic fields remain ordinary native reads.
+            const object = ts.factory.createObjectLiteralExpression(
+                keys.map((key) => {
+                    const access = ts.factory.createPropertyAccessExpression(
+                        node,
+                        key,
+                    );
+                    ts.setOriginalNode(access, node);
+                    ts.setTextRange(access, node);
+                    writable(access).parent = node.parent;
+                    writable(access.name).parent = access;
+                    return ts.factory.createPropertyAssignment(
+                        ts.factory.createStringLiteral(key),
+                        access,
+                    );
+                }),
+            );
+            ts.setOriginalNode(object, node);
+            ts.setTextRange(object, node);
+            writable(object).parent = node.parent;
+            return object;
         }
-        return resolved;
+        return this.fail(resolved, "Expected an object literal.");
     }
 
     public objectProperty(
@@ -4766,7 +5034,8 @@ class Compiler implements LoweringServices {
     /**
      * A module constant run at generation, as its module runs it, once: the
      * run reaches only module constants and functions, none of which the
-     * program writes through (`moduleConstantIsWritten`). Undefined when it
+     * program writes through unless an earlier fresh record is unchanged
+     * before this primitive initialization snapshot. Undefined when it
      * reaches what generation does not carry (the host, the engine, a class,
      * a `let`, the clock, a written constant) or returns what is not plain
      * data, which leaves the value to the static evaluator.
@@ -4786,17 +5055,108 @@ class Compiler implements LoweringServices {
         }
     }
 
+    /** A primitive module result snapshots an earlier fresh record before later escapes. */
+    private moduleRecordUnchangedBeforeSnapshot(
+        name: ts.Identifier,
+        snapshot: ts.VariableDeclaration,
+    ): boolean {
+        const source = this.moduleConstantDeclaration(name)?.declaration;
+        if (
+            !source ||
+            source.getSourceFile() !== snapshot.getSourceFile() ||
+            source.end >= snapshot.pos ||
+            typeCanCarryReference(this.checker.getTypeAtLocation(snapshot.name))
+        )
+            return false;
+        const initializer = this.unwrap(source.initializer!);
+        if (
+            !ts.isObjectLiteralExpression(initializer) ||
+            !initializer.properties.every((property) => {
+                if (
+                    !ts.isPropertyAssignment(property) ||
+                    ts.isComputedPropertyName(property.name)
+                )
+                    return false;
+                const key = propertyNameText(property.name);
+                return (
+                    key !== undefined &&
+                    key !== "__proto__" &&
+                    !typeCanCarryReference(
+                        this.checker.getTypeAtLocation(property.initializer),
+                    )
+                );
+            }) ||
+            !this.evaluationOrder.isPureExpression(initializer) ||
+            this.evaluationOrder.hasModuleEffects(initializer)
+        )
+            return false;
+        const before = source.parent.parent;
+        const after = snapshot.parent.parent;
+        if (
+            !ts.isVariableStatement(before) ||
+            !ts.isVariableStatement(after) ||
+            !ts.isSourceFile(before.parent) ||
+            after.parent !== before.parent ||
+            before.declarationList.declarations.length !== 1 ||
+            after.declarationList.declarations.length !== 1
+        )
+            return false;
+        const statements = before.parent.statements;
+        const start = statements.indexOf(before);
+        const end = statements.indexOf(after);
+        if (start < 0 || end <= start) return false;
+        for (let index = start + 1; index < end; index++) {
+            const statement = statements[index]!;
+            if (
+                ts.isFunctionDeclaration(statement) ||
+                ts.isInterfaceDeclaration(statement) ||
+                ts.isTypeAliasDeclaration(statement) ||
+                ts.isImportDeclaration(statement) ||
+                ts.isExportDeclaration(statement) ||
+                ts.isEmptyStatement(statement)
+            )
+                continue;
+            if (
+                !ts.isVariableStatement(statement) ||
+                statement.declarationList.declarations.some(
+                    (binding) =>
+                        binding.initializer !== undefined &&
+                        (!this.evaluationOrder.isPureExpression(
+                            binding.initializer,
+                        ) ||
+                            this.evaluationOrder.hasModuleEffects(
+                                binding.initializer,
+                            )),
+                )
+            )
+                return false;
+        }
+        return true;
+    }
+
     /**
      * The text a call to a source `function` declaration returns when
-     * generation runs it: every argument, or the default an omitted one
-     * takes, folds to a generation-known scalar (a wrapper parameter every
-     * call omits folds to its default); an omitted function-valued default
-     * runs where it is declared. Undefined for any other call, an arrow
+     * generation runs it: every supplied argument folds to a generation-known
+     * scalar (a wrapper parameter every call omits folds to its default).
+     * Omitted arguments take defaults in the closed function's own scope.
+     * Undefined for any other call, an arrow
      * builder included, which keeps the template path that lifts a run-time
      * number into a uniform; a function that runs and returns anything but
      * text refuses.
      */
     private runGenerationBuilder(call: ts.CallExpression): string | undefined {
+        const executed = this.runGenerationCall(call);
+        if (!executed) return undefined;
+        const { value, label } = executed;
+        if (typeof value === "string") return value;
+        if (typeof value === "number") return String(value);
+        return this.fail(call, `${label} returned ${typeof value}, not text.`);
+    }
+
+    /** Closed helpers share argument admission and execution for text and data. */
+    private runGenerationCall(
+        call: ts.CallExpression,
+    ): { value: unknown; label: string } | undefined {
         const callee = this.unwrap(call.expression);
         if (!ts.isIdentifier(callee)) return undefined;
         const declaration = resolveFunctionDeclaration(
@@ -4819,36 +5179,22 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         const args: Array<ExecutedScalar | undefined> = [];
-        for (const [index, parameter] of declaration.parameters.entries()) {
-            const argument = call.arguments[index];
-            const initializer = parameter.initializer;
-            if (
-                !argument &&
-                initializer &&
-                (ts.isArrowFunction(initializer) ||
-                    ts.isFunctionExpression(initializer))
-            ) {
-                args.push(undefined);
-                continue;
-            }
-            const settled = argument ?? initializer;
-            if (!settled) {
-                args.push(undefined);
-                continue;
-            }
-            const value = ts.isSpreadElement(settled)
+        // Omitted arguments stay omitted: the closed function evaluates its
+        // own defaults in parameter order and observes the authored arity.
+        for (const argument of call.arguments) {
+            const value = ts.isSpreadElement(argument)
                 ? undefined
                 : this.staticScalar(
-                      this.alwaysUsedParameterDefault(settled) ?? settled,
+                      this.alwaysUsedParameterDefault(argument) ?? argument,
                   );
             if (value === undefined) return undefined;
             args.push(value);
         }
         const label = `Builder '${callee.text}'`;
-        const text = this.runGenerationFunction(declaration, args, label);
-        if (typeof text === "string") return text;
-        if (typeof text === "number") return String(text);
-        return this.fail(call, `${label} returned ${typeof text}, not text.`);
+        return {
+            value: this.runGenerationFunction(declaration, args, label),
+            label,
+        };
     }
 
     /**
@@ -4886,7 +5232,11 @@ class Compiler implements LoweringServices {
                 ...(ts.isVariableDeclaration(declaration)
                     ? {
                           writtenThrough: (name: ts.Identifier) =>
-                              this.moduleConstantIsWritten(name),
+                              this.moduleConstantIsWritten(name) &&
+                              !this.moduleRecordUnchangedBeforeSnapshot(
+                                  name,
+                                  declaration,
+                              ),
                       }
                     : {}),
             },
@@ -4911,6 +5261,166 @@ class Compiler implements LoweringServices {
         resolving: ReadonlySet<ts.Symbol> = new EmissionSet(),
     ): ts.Expression {
         return this.evaluator.resolveStaticExpression(expression, resolving);
+    }
+
+    /** Read complete current snapshots through the ordinary property ownership rules. */
+    private currentStaticLiteral(
+        carried: Value,
+        expression: ts.Expression,
+        active: ReadonlySet<Value> = new Set(),
+        projectedTypes: ReadonlySet<string> = new Set(),
+    ): unknown {
+        if (
+            carried.parameterBinding ||
+            active.has(carried) ||
+            !this.bindings.recordPropertiesAreCurrent(carried)
+        )
+            return undefined;
+        const scalar =
+            carried.staticString ??
+            carried.staticNumber ??
+            carried.staticBoolean;
+        if (scalar !== undefined)
+            return typeof scalar === "number" &&
+                (!Number.isFinite(scalar) || Object.is(scalar, -0))
+                ? undefined
+                : scalar;
+        const nested = new Set([...active, carried]);
+        const elements =
+            carried.staticElementIndex !== undefined
+                ? undefined
+                : carried.staticElementsOwner
+                  ? carried.staticElementsOwner.staticElements
+                  : (carried.staticElements ?? carried.tupleElements);
+        if (elements) {
+            const values = elements.map((element, index) =>
+                this.currentStaticLiteral(
+                    element,
+                    ts.factory.createElementAccessExpression(
+                        expression,
+                        ts.factory.createNumericLiteral(index),
+                    ),
+                    nested,
+                    projectedTypes,
+                ),
+            );
+            return values.every((value) => value !== undefined)
+                ? values
+                : undefined;
+        }
+        const projectedType =
+            carried.kind === "data" &&
+            carried.dataType?.kind === "struct" &&
+            carried.recordProperties === undefined
+                ? carried.dataType.name
+                : undefined;
+        if (projectedType && projectedTypes.has(projectedType))
+            return undefined;
+        const nestedTypes = projectedType
+            ? new Set([...projectedTypes, projectedType])
+            : projectedTypes;
+        const fields =
+            carried.kind === "data" && carried.dataType?.kind === "struct"
+                ? this.dataTypes
+                      .structFields(
+                          carried.dataType.name,
+                          expression,
+                          "accessors",
+                      )
+                      .filter(
+                          (field) =>
+                              carried.recordOwnKeys === undefined ||
+                              carried.recordOwnKeys.includes(field.sourceName),
+                      )
+                      .map((field) => ({
+                          sourceName: field.sourceName,
+                          accessor: field.accessor !== undefined,
+                      }))
+                : (carried.kind === "record" ||
+                        (carried.kind === "data" &&
+                            carried.dataType?.kind === "union" &&
+                            carried.recordOwnKeys !== undefined)) &&
+                    carried.recordProperties &&
+                    Object.keys(carried.recordMethods ?? {}).length === 0 &&
+                    Object.keys(carried.recordGetters ?? {}).length === 0 &&
+                    Object.keys(carried.recordSetters ?? {}).length === 0
+                  ? (
+                        carried.recordOwnKeys ??
+                        Object.keys(carried.recordProperties)
+                    ).map((sourceName) => ({ sourceName, accessor: false }))
+                  : undefined;
+        if (!fields) return undefined;
+        const entries: Array<[string, unknown]> = [];
+        for (const field of fields) {
+            if (field.accessor || field.sourceName === "__proto__")
+                return undefined;
+            if (
+                carried.kind === "data" &&
+                carried.dataType?.kind === "union" &&
+                !carried.recordProperties?.[field.sourceName]
+            )
+                return undefined;
+            const access = ts.factory.createPropertyAccessExpression(
+                expression,
+                field.sourceName,
+            );
+            const member = this.propertyAccess.readResolvedProperty(
+                carried,
+                access,
+            );
+            if (!member) return undefined;
+            const value = this.currentStaticLiteral(
+                member,
+                access,
+                nested,
+                nestedTypes,
+            );
+            if (value === undefined) return undefined;
+            entries.push([field.sourceName, value]);
+        }
+        return Object.fromEntries(entries);
+    }
+
+    /** Required descriptors may read closed helpers or unwritten module constants. */
+    public resolveStaticLiteral(expression: ts.Expression): ts.Expression {
+        const resolved = this.evaluator.resolveStaticLiteral(expression);
+        let value: unknown;
+        if (
+            ts.isIdentifier(resolved) ||
+            ts.isPropertyAccessExpression(resolved) ||
+            ts.isElementAccessExpression(resolved)
+        ) {
+            const carried = this.compileValue(resolved);
+            value = this.currentStaticLiteral(carried, resolved);
+            const constant =
+                value === undefined && ts.isIdentifier(resolved)
+                    ? this.moduleConstantDeclaration(resolved)
+                    : undefined;
+            if (constant)
+                value = this.runGenerationFunction(
+                    constant.declaration,
+                    [],
+                    `Module constant '${constant.name.text}'`,
+                );
+        } else if (
+            ts.isCallExpression(resolved) &&
+            !resolved.questionDotToken
+        ) {
+            value = this.runGenerationCall(resolved)?.value;
+        }
+        if (value === undefined) return resolved;
+        // The executor admits only lossless JSON data and rejects module
+        // constants the program writes through. Keep ordinary literal validation.
+        const file = ts.createSourceFile(
+            `${expression.getSourceFile().fileName}.static-literal.ts`,
+            `(${JSON.stringify(value)});`,
+            ts.ScriptTarget.ESNext,
+            true,
+        );
+        const statement = file.statements[0];
+        return statement && ts.isExpressionStatement(statement)
+            ? this.unwrap(statement.expression)
+            : resolved;
     }
 
     public compileTypedArrayArgument(
@@ -5629,7 +6139,9 @@ class Compiler implements LoweringServices {
 
     /**
      * Predeclare class data that needs storage before the constructor body.
-     * Optional fields begin at JavaScript undefined. Arrays are also created
+     * Optional fields and object references begin at JavaScript undefined.
+     * Their backing cells belong to construction, not the first method that
+     * writes them. Arrays are also created
      * here because a readonly array field must own the constructor value;
      * wiring it only at `this.field = value` would otherwise infer the
      * parameter's non-owning span representation.
@@ -5646,7 +6158,11 @@ class Compiler implements LoweringServices {
             !dataType ||
             (!assignedBeforeRead &&
                 dataType.kind !== "optional" &&
-                dataType.kind !== "vector")
+                dataType.kind !== "vector" &&
+                !(
+                    dataType.kind === "struct" &&
+                    this.dataTypes.isReferenceStruct(dataType.name)
+                ))
         ) {
             return undefined;
         }

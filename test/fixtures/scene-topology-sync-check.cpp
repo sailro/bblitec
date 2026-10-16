@@ -137,6 +137,7 @@ struct Hooks {
     std::size_t shared_shader_geometry_count() const { return 0; }
     std::size_t shared_shader_material_count() const { return 0; }
     void rebuild_task_draw_lists() { note("task lists"); }
+    void refresh_shader_textures() { note("shader textures"); }
     RowWrites& mesh_rows() {
         note("rows");
         return rows;
@@ -389,8 +390,9 @@ void check_retained_blocks() {
 }
 
 const std::vector<std::string> steady_steps{
-    "sprites", "rows",     "storage", "submit",     "uploaded", "pass",           "palettes",
-    "capture", "clusters", "text",    "billboards", "splats",   "render capture", "pass blocks"};
+    "sprites", "shader textures", "rows",       "storage",  "submit", "uploaded",
+    "pass",    "palettes",        "capture",    "clusters", "text",   "billboards",
+    "splats",  "render capture",  "pass blocks"};
 
 /**
  * A camera-less scene still runs every step, through a null pass; the

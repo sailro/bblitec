@@ -13,6 +13,7 @@ import {
     isPrimitiveBrowserValue,
 } from "./browser-erasure.js";
 import { CompileError } from "./compile-error.js";
+import { retainedStaticText } from "./static-evaluator.js";
 import { storesAsTexture2D } from "./data-sinks/resources.js";
 import { isNeverResized } from "./data-lowering.js";
 import { isStoringDataCall } from "./receiver-methods.js";
@@ -71,6 +72,7 @@ import {
 import {
     commonResourceValue,
     isCompileTimeOnlyValue,
+    isStringValue,
     nativeDataMetadata,
     optionalPresentCpp,
     optionalValueCpp,
@@ -118,6 +120,7 @@ interface DeclarationContext
             | "classLowerer"
             | "callbackIdentity"
             | "captureManagedClosureLines"
+            | "captureEmittedStatements"
             | "compileCallbackWithValues"
             | "compileEngineCreation"
             | "compileForDataSink"
@@ -989,6 +992,25 @@ export class DeclarationLowerer {
         let value = this.context.compileValue(declaration.initializer);
         const readsImpure = this.context.impureReadCount !== impureReads;
         if (
+            isStringValue(value) &&
+            value.staticString === undefined &&
+            !value.parameterBinding &&
+            !readsImpure
+        ) {
+            const text = retainedStaticText(
+                this.context,
+                declaration.initializer,
+            );
+            if (text !== undefined) value = { ...value, staticString: text };
+        }
+        const keepsInitializerText =
+            value.staticString !== undefined &&
+            !value.parameterBinding &&
+            ((ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !==
+                0 ||
+                (!sharedClosureStorage &&
+                    this.localTextBindingIsUnwritten(declaration)));
+        if (
             nullableResource &&
             !this.context.dynamicBindings.has(declaration) &&
             (value.kind === "json-null" ||
@@ -1487,9 +1509,7 @@ export class DeclarationLowerer {
                         ...(narrowed.dataType.kind === "string" &&
                         narrowed.staticString !== undefined &&
                         !narrowed.parameterBinding &&
-                        (ts.getCombinedNodeFlags(declaration) &
-                            ts.NodeFlags.Const) !==
-                            0
+                        keepsInitializerText
                             ? { staticString: narrowed.staticString }
                             : {}),
                         ...(staticElementsOwner
@@ -1530,6 +1550,12 @@ export class DeclarationLowerer {
                         narrowed.dataType.kind !== "error"
                             ? {
                                   recordProperties: narrowed.recordProperties,
+                                  ...(narrowed.recordOwnKeys
+                                      ? {
+                                            recordOwnKeys:
+                                                narrowed.recordOwnKeys,
+                                        }
+                                      : {}),
                               }
                             : {}),
                         ...(narrowed.borrowedData
@@ -1704,15 +1730,78 @@ export class DeclarationLowerer {
             ts.isVariableDeclarationList(declaration.parent) &&
             (declaration.parent.flags & ts.NodeFlags.Const) === 0
         ) {
-            // Mutable locals must never fold to their initial value:
-            // later reads reference the native local, not the constant
-            // the declaration happened to start from.
+            // Rebound locals read their current native storage. Text keeps
+            // its initialization fact only when no reached path replaces it.
             delete writable(stored).staticNumber;
-            delete writable(stored).staticString;
+            if (!keepsInitializerText) delete writable(stored).staticString;
             delete writable(stored).staticBoolean;
             delete writable(stored).packagedBodySource;
         }
         this.context.bindings.defineVariable(declaration.name, stored);
+    }
+
+    /** Preserve initialization-time text only when no reached path replaces it. */
+    private localTextBindingIsUnwritten(
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        if ((ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0)
+            return true;
+        if (!ts.isIdentifier(declaration.name)) return false;
+        const owner = ts.findAncestor(declaration, ts.isFunctionLike);
+        if (!isSupportedFunction(owner) || !owner.body) return false;
+        const symbol = this.context.symbols.valueSymbol(declaration.name);
+        const names = (expression: ts.Expression): boolean => {
+            const target = this.context.unwrap(expression);
+            return (
+                ts.isIdentifier(target) &&
+                this.context.symbols.valueSymbol(target) === symbol
+            );
+        };
+        const writes = (node: ts.Node): boolean =>
+            isAssignmentExpression(node)
+                ? assignmentTargets(node.left).some(names)
+                : isUpdateExpression(node)
+                  ? names(node.operand)
+                  : (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+                    !ts.isVariableDeclarationList(node.initializer) &&
+                    assignmentTargets(node.initializer).some(names);
+        const visit = (node: ts.Node): boolean => {
+            if (writes(node)) return true;
+            if (ts.isFunctionLike(node)) return someAnalysisNode(node, writes);
+            if (ts.isIfStatement(node)) {
+                if (!someAnalysisNode(node, writes)) return false;
+                if (visit(node.expression)) return true;
+                let condition: string | undefined;
+                try {
+                    condition = this.context.probeEmission(() => {
+                        const reads = this.context.impureReadCount;
+                        let compiled: string | undefined;
+                        const effects = this.context.captureEmittedStatements(
+                            () => {
+                                compiled =
+                                    this.context.conditions.compileCondition(
+                                        node.expression,
+                                    );
+                            },
+                        );
+                        return effects.length === 0 &&
+                            this.context.impureReadCount === reads &&
+                            (compiled === "true" || compiled === "false")
+                            ? compiled
+                            : undefined;
+                    });
+                } catch (error) {
+                    if (!(error instanceof CompileError)) throw error;
+                }
+                if (condition === "true") return visit(node.thenStatement);
+                if (condition === "false")
+                    return node.elseStatement
+                        ? visit(node.elseStatement)
+                        : false;
+            }
+            return ts.forEachChild(node, visit) ?? false;
+        };
+        return !visit(owner.body);
     }
 
     /**
@@ -2643,10 +2732,26 @@ export class DeclarationLowerer {
                     !this.context.sharedClosures.identifierIsRebound(name)
                         ? this.context.compileValue(declaration.initializer)
                         : undefined;
+                const plainRecordSnapshot =
+                    (type.kind === "union" || type.kind === "struct") &&
+                    !resourceRecordSnapshot &&
+                    !sharedClosureStorage &&
+                    !this.context.sharedClosures.identifierIsRebound(name) &&
+                    ts.isObjectLiteralExpression(literal) &&
+                    literal.properties.every(
+                        (property) =>
+                            (ts.isPropertyAssignment(property) ||
+                                ts.isShorthandPropertyAssignment(property)) &&
+                            !ts.isComputedPropertyName(property.name) &&
+                            property.name.text !== "__proto__",
+                    )
+                        ? this.context.compileValue(literal)
+                        : undefined;
                 const snapshot =
                     arraySnapshot ??
                     resourceRecordSnapshot ??
-                    resourceArraySnapshot;
+                    resourceArraySnapshot ??
+                    plainRecordSnapshot;
                 if (snapshot)
                     type = this.context.dataLowerer.retainedResultType(
                         snapshot,
@@ -2698,6 +2803,26 @@ export class DeclarationLowerer {
                     );
                     if (properties)
                         writable(bound).recordProperties = properties;
+                }
+                if (
+                    plainRecordSnapshot?.kind === "record" &&
+                    this.context.bindings.recordPropertiesAreCurrent(
+                        plainRecordSnapshot,
+                    )
+                ) {
+                    const properties = plainRecordSnapshot.recordProperties;
+                    if (properties) {
+                        writable(bound).recordProperties = Object.fromEntries(
+                            Object.entries(properties).filter(
+                                ([, value]) =>
+                                    !value.parameterBinding &&
+                                    (value.staticString !== undefined ||
+                                        value.staticNumber !== undefined ||
+                                        value.staticBoolean !== undefined),
+                            ),
+                        );
+                        writable(bound).recordOwnKeys = Object.keys(properties);
+                    }
                 }
                 const resourceElements =
                     resourceArraySnapshot?.tupleElements ??
@@ -2925,11 +3050,20 @@ export class DeclarationLowerer {
             !declaration.type &&
             annotated?.kind === "function" &&
             this.isReassignedFunctionLiteral(declaration);
+        const inferredSpreadArray =
+            !declaration.type &&
+            annotated?.kind === "vector" &&
+            annotated.element.kind === "union" &&
+            !sharedClosureStorage &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            ts.isArrayLiteralExpression(initializer) &&
+            initializer.elements.some(ts.isSpreadElement);
         if (
             !declaration.type &&
             !inferredMutableArray &&
             !inferredMutableObject &&
-            !inferredReboundFunction
+            !inferredReboundFunction &&
+            !inferredSpreadArray
         ) {
             return false;
         }
@@ -3190,9 +3324,61 @@ export class DeclarationLowerer {
             !this.context.sharedClosures.identifierIsRebound(name) &&
             ts.isArrayLiteralExpression(initializer) &&
             initializer.elements.every(ts.isObjectLiteralExpression);
+        const freshArrayBranches = (expression: ts.Expression): boolean => {
+            const value = this.context.unwrap(expression);
+            return (
+                ts.isArrayLiteralExpression(value) ||
+                (ts.isConditionalExpression(value) &&
+                    freshArrayBranches(value.whenTrue) &&
+                    freshArrayBranches(value.whenFalse))
+            );
+        };
+        const scalarArrayLiteral =
+            annotated.kind === "vector" &&
+            ["number", "boolean", "string", "enum"].includes(
+                annotated.element.kind,
+            ) &&
+            !sharedClosureStorage &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            freshArrayBranches(initializer);
+        const conditionalArray =
+            annotated.kind === "vector" &&
+            ts.isConditionalExpression(initializer) &&
+            freshArrayBranches(initializer) &&
+            !sharedClosureStorage &&
+            !this.context.sharedClosures.identifierIsRebound(name);
+        const initializerType = annotated;
+        const compileInitializerSnapshot = (): Value => {
+            if (
+                (scalarArrayLiteral || inferredSpreadArray) &&
+                initializerType.kind === "vector" &&
+                ts.isArrayLiteralExpression(initializer) &&
+                initializer.elements.some(ts.isSpreadElement)
+            ) {
+                let staticElements: readonly Value[] | undefined;
+                const cpp = this.context.dataLowerer.compileVectorSink(
+                    initializer,
+                    initializerType,
+                    (elements) => {
+                        staticElements = elements;
+                    },
+                );
+                return {
+                    kind: "data",
+                    cpp,
+                    dataType: initializerType,
+                    freshData: true,
+                    ...(staticElements ? { staticElements } : {}),
+                };
+            }
+            return this.context.compileValue(initializer);
+        };
         const initializerSnapshot =
             readonlyResourceCall ||
             recordArrayLiteral ||
+            scalarArrayLiteral ||
+            conditionalArray ||
+            inferredSpreadArray ||
             (annotated.kind === "vector" &&
                 annotated.element.kind === "handle" &&
                 ts.isArrayLiteralExpression(initializer)) ||
@@ -3210,7 +3396,7 @@ export class DeclarationLowerer {
                 ((ts.isObjectLiteralExpression(initializer) &&
                     !initializer.properties.some(ts.isSpreadAssignment)) ||
                     ts.isConditionalExpression(initializer)))
-                ? this.context.compileValue(initializer)
+                ? compileInitializerSnapshot()
                 : undefined;
         if (initializerSnapshot && !selfLiteral && !selfReferentialBinding)
             annotated = this.context.dataLowerer.retainedResultType(
@@ -3222,6 +3408,11 @@ export class DeclarationLowerer {
             initializerSnapshot?.tupleElements ??
             initializerSnapshot?.staticElementsOwner?.staticElements ??
             initializerSnapshot?.staticElements;
+        if (
+            (recordArrayLiteral || scalarArrayLiteral || conditionalArray) &&
+            returnedElements?.length === 0
+        )
+            staticElements = [];
         if (
             staticElements === undefined &&
             staticHandleElementType &&
@@ -3507,7 +3698,10 @@ export class DeclarationLowerer {
         } else {
             this.context.bindings.defineVariable(name, represented);
         }
-        if (recordArrayLiteral && initializerSnapshot)
+        if (
+            (recordArrayLiteral || scalarArrayLiteral || inferredSpreadArray) &&
+            initializerSnapshot
+        )
             this.context.dataLowerer.retainArrayLiteralFacts(
                 represented,
                 initializerSnapshot,

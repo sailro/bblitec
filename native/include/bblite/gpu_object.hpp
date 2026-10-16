@@ -26,6 +26,8 @@ struct GpuObject {
     GpuObject& operator=(const GpuObject&) = delete;
     virtual ~GpuObject() = default;
     virtual const void* device_identity() const { return nullptr; }
+    /** Retained source identities can outlive their native resource. */
+    virtual bool resource_alive() const noexcept { return true; }
     /** A known buffer extent; borrowed platform destinations may leave it unknown. */
     virtual std::optional<std::size_t> buffer_capacity() const { return std::nullopt; }
     virtual void write_buffer_bytes(std::size_t, std::span<const std::uint8_t>) {

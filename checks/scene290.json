@@ -1,8 +1,9 @@
 {
   "scene": "scene290",
   "twin": true,
-  "notes": "Thin-instance counts, free fall, post-impact transforms, draw counts, camera input and resize. CPU timings are reported without an FPS gate.",
+  "notes": "Thin-instance counts, free fall, post-impact transforms, draw counts, camera input and resize. Serial physics keeps contact ordering deterministic for exact backend image comparison. CPU timings are reported without an FPS gate.",
   "base": "fixed",
+  "env": { "BBLITE_PHYSICS_THREADS": "1" },
   "phases": [
     { "id": "frame-1", "frame": 0 },
     { "id": "frame-60", "frame": 59 },

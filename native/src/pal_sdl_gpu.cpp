@@ -382,6 +382,7 @@ void release(GpuState& state) {
         }
     }
     state.shader_task_pipelines.clear();
+    state.depth_only_fragment_shader.reset();
 #if BBLITE_LOCAL_CUBEMAP
     state.local_cubemaps.clear();
 #endif
@@ -858,12 +859,13 @@ public:
         const bool use_shader_shadow_material = std::any_of(
             render_features.shader_shadow_variants.begin(),
             render_features.shader_shadow_variants.end(), [](bool reached) { return reached; });
-        auto depth_only_fragment_shader =
-            use_no_color_material || use_shader_shadow_material
+        const bool use_shader_materials = render_features.shader_material;
+        state.depth_only_fragment_shader =
+            use_no_color_material || use_shader_shadow_material ||
+                    (use_shader_materials && scene.has_frame_passes())
                 ? load_shader(state.device, "depth-only.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0,
                               "mainFragment")
                 : nullptr;
-        const bool use_shader_materials = render_features.shader_material;
         std::vector<OwnedSdlShader> shader_vertex_shaders;
         std::vector<OwnedSdlShader> shader_fragment_shaders;
         if (use_shader_materials) {
@@ -1060,11 +1062,11 @@ public:
                 "SDL_CreateGPUGraphicsPipeline transmission grab");
         }
 #endif
-        for (std::size_t index = 0; use_no_color_material && depth_only_fragment_shader &&
+        for (std::size_t index = 0; use_no_color_material && state.depth_only_fragment_shader &&
                                     index < state.depth_only_pipelines.size();
              ++index) {
             SDL_GPUGraphicsPipelineCreateInfo depth_pipeline_info = pipeline_info;
-            depth_pipeline_info.fragment_shader = depth_only_fragment_shader.get();
+            depth_pipeline_info.fragment_shader = state.depth_only_fragment_shader.get();
             depth_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             depth_pipeline_info.multisample_state.sample_count =
                 index == 0 ? SDL_GPU_SAMPLECOUNT_1 : state.sample_count;
@@ -1126,6 +1128,12 @@ public:
                     shader_pipeline_info.depth_stencil_state.compare_op =
                         gpu_depth_compare(*info.depth_compare);
                 }
+                shader_pipeline_info.rasterizer_state.enable_depth_bias =
+                    info.depth_bias != 0 || info.depth_bias_slope_scale != 0.0f;
+                shader_pipeline_info.rasterizer_state.depth_bias_constant_factor =
+                    static_cast<float>(info.depth_bias);
+                shader_pipeline_info.rasterizer_state.depth_bias_slope_factor =
+                    info.depth_bias_slope_scale;
                 shader_pipeline_info.target_info.color_target_descriptions = &shader_target;
 #if BBLITE_GPU_INSTANCE_COLORS
                 // A material reading the per-instance RGBA stream draws
@@ -1155,18 +1163,19 @@ public:
                         static_cast<Uint32>(color_attributes.size());
                 }
 #endif
-                // A custom material installed only as a shadow caster keeps
-                // its vertex stage and drops the placeholder fragment. SDL
-                // still requires a fragment stage for a depth-only pipeline,
-                // so use the existing no-output depth fragment. The pipeline
+                // The pin keeps a depth-only caster's fragment when requested
+                // so its discard mask still executes. Otherwise SDL requires
+                // the existing no-output fragment in place of no stage. The pipeline
                 // targets the generator's one-sample depth32 texture and uses
                 // its standard-Z comparison, just like the composed families.
                 if (render_features.shader_shadow_variants[variant]) {
-                    if (!depth_only_fragment_shader) {
+                    if (!info.depth_only_fragment && !state.depth_only_fragment_shader) {
                         gpu_error("Shader shadow caster requires the depth-only fragment");
                     }
                     SDL_GPUGraphicsPipelineCreateInfo shadow_pipeline_info = shader_pipeline_info;
-                    shadow_pipeline_info.fragment_shader = depth_only_fragment_shader.get();
+                    shadow_pipeline_info.fragment_shader =
+                        info.depth_only_fragment ? variant_fragment_shader
+                                                 : state.depth_only_fragment_shader.get();
                     shadow_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
                     shadow_pipeline_info.depth_stencil_state.compare_op =
                         gpu_depth_compare(pass_depth_compare(true));
@@ -1207,7 +1216,8 @@ public:
                 if (scene.has_frame_passes()) {
                     state.shader_task_pipelines[variant] = ShaderTaskPipeline{
                         std::move(shader_vertex_shaders[variant]),
-                        std::move(shader_fragment_shaders[variant]), shader_pipeline_info};
+                        std::move(shader_fragment_shaders[variant]), shader_pipeline_info,
+                        info.depth_only_fragment, state.depth_only_fragment_shader.get()};
                 }
             }
         }
@@ -1291,7 +1301,6 @@ public:
         image_processing_vertex.shader.reset();
         image_processing_fragment.shader.reset();
 #endif
-        depth_only_fragment_shader.reset();
         shader_vertex_shaders.clear();
         shader_fragment_shaders.clear();
         id_fragment_shader.reset();
@@ -1842,6 +1851,10 @@ public:
         void rebuild_task_draw_lists() { run.rebuild_task_draw_lists(); }
 
         MeshRowUploads& mesh_rows() { return rows; }
+
+        void refresh_shader_textures() {
+            refresh_shader_material_textures(rows.state, run.data_.engine);
+        }
 
         void publish_storage() {
             sync_shader_storage_buffers(rows.state, run.data_.engine, rows.uploads);

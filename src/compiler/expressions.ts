@@ -39,6 +39,7 @@ import {
     isHandleKind,
     isUndefinedDataType,
     primitiveTraits,
+    propertyIsReadOnly,
     TYPED_ARRAY_KINDS,
     typeofTag,
 } from "./data-types.js";
@@ -130,6 +131,7 @@ import {
     mediaStreamTypeof,
 } from "./media-streams.js";
 import { CompileError } from "./compile-error.js";
+import { retainedStaticText } from "./static-evaluator.js";
 import { firstReturn } from "./loop-control.js";
 import {
     regexpCaptureCount,
@@ -264,6 +266,7 @@ export interface ExpressionContext
         Pick<
             LoweringServices,
             | "noteImpureRead"
+            | "impureReadCount"
             | "compileWorkerValue"
             | "audioSessionCpp"
             | "staticAssetUrlCandidates"
@@ -659,6 +662,11 @@ export class ExpressionLowerer {
             );
             const assertedType =
                 this.context.dataLowerer.dataTypeAt(expression);
+            if (assertedType)
+                this.context.dataTypes.requireAssertedHandleFieldStorage(
+                    expression.expression,
+                    assertedType,
+                );
             if (
                 sourceType?.kind === "optional" &&
                 assertedType &&
@@ -1365,6 +1373,56 @@ export class ExpressionLowerer {
                             )
                             .map(({ value }) => value),
                     };
+                if (
+                    dataType.kind === "vector" &&
+                    !this.context.dataTypes.carriesBorrowedPlatformEvent(
+                        dataType.element,
+                    ) &&
+                    [
+                        "number",
+                        "boolean",
+                        "string",
+                        "enum",
+                        "union",
+                        "struct",
+                    ].includes(dataType.element.kind)
+                ) {
+                    let elements: readonly Value[] | undefined;
+                    const copiedRecordSources: Value[] = [];
+                    const value = this.context.bindings.pinValueToTemporary(
+                        {
+                            kind: "data",
+                            cpp: this.context.dataLowerer.compileVectorSink(
+                                unwrapped,
+                                dataType,
+                                (evaluated) => {
+                                    elements = evaluated;
+                                },
+                                copiedRecordSources,
+                            ),
+                            dataType,
+                            freshData: true,
+                        },
+                        "array_literal",
+                        unwrapped,
+                    );
+                    if (elements)
+                        this.context.dataLowerer.retainArrayLiteralFacts(
+                            value,
+                            {
+                                kind: "tuple",
+                                cpp: "",
+                                tupleElements: [...elements],
+                            },
+                            unwrapped,
+                        );
+                    if (!value.staticElements)
+                        for (const source of copiedRecordSources)
+                            this.context.dataLowerer.invalidateRecordArrayFacts(
+                                source,
+                            );
+                    return value;
+                }
                 return {
                     kind: "data",
                     cpp: this.context.dataLowerer.compileForSink(
@@ -1567,7 +1625,12 @@ export class ExpressionLowerer {
         if (this.context.evaluator.isNumberExpression(unwrapped)) {
             const staticNumber = ts.isNumericLiteral(unwrapped)
                 ? Number(unwrapped.text)
-                : undefined;
+                : ts.isPrefixUnaryExpression(unwrapped) &&
+                    (unwrapped.operator === ts.SyntaxKind.PlusToken ||
+                        unwrapped.operator === ts.SyntaxKind.MinusToken) &&
+                    ts.isNumericLiteral(this.context.unwrap(unwrapped.operand))
+                  ? staticNumberValue(this.context, unwrapped)
+                  : undefined;
             return {
                 kind: "number",
                 // A value-position number still has JavaScript's double
@@ -6051,7 +6114,29 @@ export class ExpressionLowerer {
         const getters: Record<string, ts.GetAccessorDeclaration> = {};
         const setters: Record<string, ts.SetAccessorDeclaration> = {};
         const ownKeys = new Set<string>();
-        const storeProperty = (name: string, value: Value): void => {
+        const storeProperty = (
+            name: string,
+            value: Value,
+            source?: ts.Expression,
+        ): void => {
+            const contextual =
+                this.context.checker.getContextualType(unwrapped);
+            const field =
+                contextual &&
+                this.context.checker.getPropertyOfType(contextual, name);
+            if (
+                source &&
+                field &&
+                propertyIsReadOnly(field) &&
+                isStringValue(value) &&
+                !value.parameterBinding
+            ) {
+                const text =
+                    value.staticString ??
+                    retainedStaticText(this.context, source);
+                if (text !== undefined)
+                    value = { ...value, staticString: text, readOnly: true };
+            }
             ownKeys.add(name);
             properties[name] = value;
             delete methods[name];
@@ -6330,6 +6415,7 @@ export class ExpressionLowerer {
                         propertyType.isStringLiteral()
                         ? { ...value, readOnly: true }
                         : value,
+                    property.initializer,
                 );
             } else if (ts.isShorthandPropertyAssignment(property)) {
                 if (this.context.namesLocalFunction(property.name)) {
@@ -6339,6 +6425,7 @@ export class ExpressionLowerer {
                 storeProperty(
                     property.name.text,
                     member(this.laneValue(property.name), index, property.name),
+                    property.name,
                 );
             } else {
                 this.context.fail(
@@ -7269,6 +7356,37 @@ export class ExpressionLowerer {
                 ? (this.context.classLowerer.hydrate(receiverValue, receiver) ??
                   receiverValue)
                 : undefined;
+            // A known-absent receiver can occur in a runtime branch even
+            // when its declared type names a class. Read the method with
+            // JavaScript's failure semantics before evaluating arguments;
+            // the declared call result only types that throwing branch.
+            if (instance?.kind === "json-null") {
+                this.context.emitDiscardedValue(instance);
+                if (callee.questionDotToken)
+                    return { kind: "json-null", cpp: "std::nullopt" };
+                const message = this.context.cppString(
+                    `Cannot read properties of ${instance.cpp === "std::nullopt" ? "undefined" : "null"} (reading '${callee.name.text}')`,
+                );
+                const type = this.context.dataLowerer.dataTypeAt(call);
+                this.context.reachJsData();
+                if (type)
+                    return this.context.dataLowerer.leafValue(
+                        `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
+                        type,
+                    );
+                if (
+                    this.context.checker.getTypeAtLocation(call).flags &
+                    (ts.TypeFlags.Void | ts.TypeFlags.Never)
+                )
+                    return {
+                        kind: "void",
+                        cpp: `bbl::js::throw_nullish_access(${message})`,
+                    };
+                return this.context.fail(
+                    call,
+                    "A method call on an absent receiver requires a represented result type.",
+                );
+            }
             const callableProperty = instance
                 ? readCallableProperty(
                       this.context,
@@ -7286,9 +7404,6 @@ export class ExpressionLowerer {
             const optionalCall =
                 call.questionDotToken !== undefined ||
                 callee.questionDotToken !== undefined;
-            if (instance?.kind === "json-null" && optionalCall) {
-                return { kind: "json-null", cpp: "std::nullopt" };
-            }
             if (
                 instance?.kind === "splat-mesh" &&
                 callee.name.text === "updateData"
@@ -7353,8 +7468,14 @@ export class ExpressionLowerer {
                 instance &&
                 call.questionDotToken &&
                 !recordMethod &&
-                !recordCallback
+                (!recordCallback ||
+                    recordCallback.kind === "json-null" ||
+                    isUndefinedDataType(recordCallback.dataType))
             ) {
+                // An explicitly absent property short-circuits just like a
+                // missing one; none of the call's arguments are evaluated.
+                if (recordCallback)
+                    this.context.emitDiscardedValue(recordCallback);
                 return { kind: "json-null", cpp: "std::nullopt" };
             }
             if (instance && recordMethod) {

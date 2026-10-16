@@ -4360,7 +4360,7 @@ test("preserves missing Map handle storage in nullable locals", () => {
     assert.match(
         result.cpp,
         new RegExp(
-            String.raw`std::optional<${ownedMesh}> v_mesh = bbl::js::Nullable<${ownedMesh}>\{\(${lookup[1]}\.has_value\(\) \? bbl::js::Nullable<${ownedMesh}>\{${ownedMesh}\{bbl::StoredEngine\{v_engine\}, \(\*${lookup[1]}\)\}\} : bbl::js::Nullable<${ownedMesh}>\{std::nullopt\}\)\}\.to_optional\(\);`,
+            String.raw`std::optional<${ownedMesh}> v_mesh = bbl::js::Nullable<${ownedMesh}>\{\(${lookup[1]}\.has_value\(\) \? bbl::js::Nullable<${ownedMesh}>\{${ownedMesh}\{bbl::StoredEngine\{v_engine\}, ${lookup[1]}\.value_or\(bbl::MeshHandle\{\}\)\}\} : bbl::js::Nullable<${ownedMesh}>\{std::nullopt\}\)\}\.to_optional\(\);`,
         ),
     );
     assert.equal(
@@ -8014,7 +8014,7 @@ test("asks the pin's cone-tip question of the option the scene named", () => {
 test("iterates runtime data arrays through a retained owner and live index", () => {
     const result = compileSource(`
         function values(): number[] {
-            return [1, 2, 3];
+            return [Math.random(), 2, 3];
         }
         let total = 0;
         for (const value of values()) {
@@ -8336,13 +8336,20 @@ test("snapshots scalar members of records retained by classes", () => {
         /VehicleData\{std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{(\w+)\}, (\w+)\}, std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{bbl::StoredEngine\{\1\}, \w+\}, bbl::handle_at\(\1\.meshes, \2\)\.position\.y\}/,
     );
     const stored =
-        /bblscene::Vehicle (v_bblite_class_field_vehicle_\d+) = \w+;/.exec(
+        /bblscene::Vehicle (v_bblite_class_field_vehicle_\d+)\{\};/.exec(
             result.cpp,
         );
     assert.ok(stored);
+    const initialized = new RegExp(
+        String.raw`auto& (\w+) = v_vehicle;\s*${stored[1]} = \1;`,
+    ).exec(result.cpp);
+    assert.ok(initialized);
+    assert.ok(
+        result.cpp.indexOf(initialized[0]) > result.cpp.indexOf(stored[0]),
+    );
     assert.ok(result.cpp.includes(`return ${stored[1]}->bodyRestY;`));
     const mutation = result.cpp.indexOf(".position.y = 10.0;");
-    assert.ok(mutation > result.cpp.indexOf(stored[0]));
+    assert.ok(mutation > result.cpp.indexOf(initialized[0]));
     assert.match(result.cpp, /double bodyRestY\{\};/);
 });
 
@@ -10127,7 +10134,7 @@ test("lowers compound classes and add remove forced-toggle mutations", () => {
             result.cpp,
             new RegExp(
                 `if \\(${temporary}\\.has_value\\(\\)\\) \\{\\s+` +
-                    `\\[\\[maybe_unused\\]\\] auto (\\w+) = \\(\\*${temporary}\\);\\s+` +
+                    `\\[\\[maybe_unused\\]\\] auto (\\w+) = ${temporary}\\.value_or\\(bbl::UiElementHandle\\{\\}\\);\\s+` +
                     `bbl::ui_toggle_class\\([^,\\n]+, \\1, "active", (?:true|false)\\);\\s+\\}`,
             ),
         );
@@ -10219,7 +10226,7 @@ test("preserves Map UI identity across dynamic grid geometry changes", () => {
         safe.cpp,
         new RegExp(
             `if \\(${get[1]}\\.has_value\\(\\)\\) \\{\\s+` +
-                `\\[\\[maybe_unused\\]\\] auto (\\w+) = \\(\\*${get[1]}\\);\\s+` +
+                `\\[\\[maybe_unused\\]\\] auto (\\w+) = ${get[1]}\\.value_or\\(bbl::UiElementHandle\\{\\}\\);\\s+` +
                 `bbl::ui_toggle_class\\([^,\\n]+, \\1, "active", true\\);\\s+\\}`,
         ),
     );
@@ -13678,11 +13685,11 @@ test("folds a light include set to the meshes its ids name", () => {
     // frame's alias of the caller's handle.
     assert.match(
         result.cpp,
-        /v_fn1_light = v_light;[\s\S]*?\.lights, v_fn1_light\)\.included_meshes = \{v_box, v_ball\};/,
+        /(v_fn\d+_light) = v_light;[\s\S]*?\.lights, \1\)\.included_meshes = \{v_box, v_ball\};/,
     );
     assert.match(
         result.cpp,
-        /v_fn2_light = v_other;[\s\S]*?\.lights, v_fn2_light\)\.included_meshes = \{v_ball\};/,
+        /(v_fn\d+_light) = v_other;[\s\S]*?\.lights, \1\)\.included_meshes = \{v_ball\};/,
     );
     // `Mesh.id` has one reader upstream and the join folds here, so no
     // record lane carries the string; the scene's own id arrays are its

@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type { DataType } from "./data-types/model.js";
 import type { CompletionProof } from "./completion-storage.js";
 import type { AbsenceTagDeclaration } from "./absence-tag-storage.js";
 import type { EngineOwnerStorageDeclaration } from "./engine-owner-storage.js";
@@ -33,6 +34,11 @@ export type StorageRequest =
     | { kind: "generic"; demand: GenericFunctionDemand }
     | { kind: "absence-tag"; declaration: AbsenceTagDeclaration }
     | { kind: "engine-owner"; declaration: EngineOwnerStorageDeclaration }
+    | {
+          kind: "asserted-handle-field";
+          declaration: ts.PropertySignature | ts.PropertyDeclaration;
+          storage: DataType;
+      }
     | { kind: "completion"; signatureSite: string; proof: CompletionProof }
     | {
           kind: "tuple-array";
@@ -67,6 +73,8 @@ export class ReplayStorage {
     readonly absenceTags = new Set<ts.Declaration>();
     /** @unjournaled Resource storages whose reached uses require their actual engine. */
     readonly engineOwners = new Set<ts.Declaration>();
+    /** @unjournaled Reached assertions settle erased resource field layouts before emission. */
+    readonly assertedHandleFields = new Map<ts.Declaration, DataType>();
     /** @unjournaled Completion contracts are monotonic across replay attempts. */
     readonly completions = new Map<string, CompletionProof>();
     /** @unjournaled Demands outlive the attempts that met them. Record properties storing their numeric tuples as growable arrays. */
@@ -121,6 +129,14 @@ export class ReplayStorage {
                 return addNew(this.absenceTags, request.declaration);
             case "engine-owner":
                 return addNew(this.engineOwners, request.declaration);
+            case "asserted-handle-field":
+                if (this.assertedHandleFields.has(request.declaration))
+                    return false;
+                this.assertedHandleFields.set(
+                    request.declaration,
+                    request.storage,
+                );
+                return true;
             case "completion": {
                 const known = this.completions.get(request.signatureSite);
                 if (known === "undefined" || known === request.proof)

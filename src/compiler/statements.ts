@@ -2026,12 +2026,21 @@ export class StatementLowerer {
         const staticCleanup = this.jumpTargets.some(
             ({ iteration }) => iteration && iteration.mode !== "scoped",
         );
+        // Coroutine return analysis must see a throwing cleanup's abrupt
+        // completion; a scope guard's run() call hides that control flow.
         if (
             (coroutine || !staticCleanup) &&
             someAnalysisNode(
                 finallyBlock,
                 (node) =>
-                    (coroutine && ts.isAwaitExpression(node)) ||
+                    (coroutine &&
+                        (ts.isAwaitExpression(node) ||
+                            ts.isThrowStatement(node) ||
+                            (ts.isExpressionStatement(node) &&
+                                callsNever(
+                                    context.checker,
+                                    node.expression,
+                                )))) ||
                     ts.isReturnStatement(node) ||
                     ts.isBreakStatement(node) ||
                     ts.isContinueStatement(node),
@@ -2049,7 +2058,7 @@ export class StatementLowerer {
             this.emitTryBody(context, statement),
         );
         const abruptBody =
-            context.activeNativeReturnType() !== undefined &&
+            (coroutine || context.activeNativeReturnType() !== undefined) &&
             !this.staticIterationCompleted() &&
             this.terminatesAfterLowering(statement.tryBlock) &&
             (!statement.catchClause ||
@@ -4891,15 +4900,29 @@ export class StatementLowerer {
                 } else if (
                     target.kind === "json-null" &&
                     operator === "=" &&
-                    (context.browserErasure.isBrowserOnlyExpression(
+                    context.browserErasure.isBrowserOnlyExpression(
                         unwrapped.right,
-                    ) ||
-                        context.unwrap(unwrapped.right).kind ===
-                            ts.SyntaxKind.NullKeyword)
+                    )
                 ) {
                     // Browser timer ids exist only to cancel their browser
                     // timers. When the timer call itself erases, its nullable
                     // bookkeeping erases with it.
+                    return;
+                } else if (target.kind === "json-null" && operator === "=") {
+                    // An optional resource specialized to absence needs no
+                    // store when the new value is the same absence. Resolve
+                    // its RHS normally so any preceding effects still run.
+                    const value = context.compileValue(unwrapped.right);
+                    if (
+                        value.kind !== "json-null" ||
+                        (value.cpp === "std::nullopt") !==
+                            (target.cpp === "std::nullopt")
+                    )
+                        context.fail(
+                            unwrapped,
+                            "A generation-known absent binding requires storage before its value can change.",
+                        );
+                    context.emitDiscardedValue(value);
                     return;
                 } else {
                     context.fail(

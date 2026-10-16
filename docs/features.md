@@ -30,7 +30,12 @@ Rules:
 - Loose equality across types refuses. Telling `null` from `undefined` needs tagged storage; otherwise strict comparison refuses.
 - Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
   functions, module `const`s run at generation, and an inlined call's argument for a parameter its body never
-  rebinds. A fold reaching the host, clock, `Math.random`, locale or a written constant refuses.
+  rebinds. A fold reaching the host, clock, `Math.random` or locale refuses; written constants require the
+  initialization snapshot proof below.
+- Scalar facts survive readonly return fields; string facts survive locals with no reachable writes. Forwarded option
+  records project complete current fields from their native owner. Single-expression helpers returning
+  fresh primitive records retain call-time field facts when the expression writes no storage. Primitive module constants
+  can snapshot an earlier fresh scalar record in the same module across only pure initializers and inert declarations.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
 - `import.meta.env`: `MODE="production"`, `PROD=true`, `DEV=false`, `SSR=false`, `BASE_URL` from deployment; custom
@@ -131,7 +136,7 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 - Reached builders, data factories, lines, CSG and thin instances with admitted options.
 - `updateMeshGeometry`/`updateMeshGeometryCapacity`: owned, unshared, packed Float32/Uint32 geometry; imported geometry
   updates refuse. Device recovery re-uploads CPU arrays and drops GPU-only writes.
-- Thin-instance pools with compute tasks, geometry-output tasks or device recovery refuse.
+- Thin-instance pools with compute tasks or geometry-output tasks refuse. Device recovery fails explicitly when thin-instance GPU buffers remain owned; recovery registration is admitted.
 - Meshes parent to meshes or transform nodes; transform nodes only to transform nodes. Scene writes to imported nodes load
   the pin's glTF node hierarchy; animated/morphed assets, punctual lights and cameras then refuse.
 - A mesh removed from its last scene or passed to `disposeMeshGpu` retires
@@ -143,10 +148,15 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
 - Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions, except Standard
   `diffuseColor` after `enableMaterialTracking` (re-read each frame).
-- Shader materials: 2D/array samplers (render-target colour textures rebind per draw), storage buffers,
-  `get/setShaderUniform` by runtime name, `enableShaderUniformRangeUpdates`. Template text and plugin `getCustomCode`
+- Shader materials: 2D/array samplers, storage buffers, `get/setShaderUniform` by runtime name,
+  `enableShaderUniformRangeUpdates`. Runtime resource replacements refresh shared GPU bindings;
+  render-target colour textures rebind per draw. Template text and plugin `getCustomCode`
   functions run at generation; reaching host/engine APIs, `this`, module `let`, clock or random refuses.
-  Alpha-to-coverage only on shader materials.
+  `depthBias`, `depthBiasSlopeScale` and `depthOnlyFragment` control pipeline depth behaviour. WGSL `@interpolate`
+  and reads of `scene.view`, `scene.viewProjection` and `scene.vEyePosition` are supported. Fragment entry points may
+  return no value; vertex entry points may return `@builtin(position) vec4<f32>` directly.
+  Known mixed instance layouts refuse at generation; unknown material selections validate the compiled lanes before drawing.
+  Alpha-to-coverage only on shader materials. Storage uploads preserve typed-array subview byte ranges.
 - External video textures come from a closed zero-parameter producer before engine start.
 - Node materials: closed NME graphs; scalar inputs writable live; vector writes and topology changes refuse. Geometry MRTs
   need static packed FLOAT attributes.

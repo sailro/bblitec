@@ -56,10 +56,13 @@ test("fresh record returns permit elision and preserve borrowed callable aliases
             throw new Error("owned optional return");
     `);
     runGeneratedProgram(native, "record-return-ownership", result.cpp);
-    assert.doesNotMatch(result.cpp, /return std::move\(v_bblite_return_/);
+    assert.doesNotMatch(
+        result.cpp,
+        /return std::move\(v_bblite_(?:return_|record_)/,
+    );
     assert.match(
         result.cpp,
-        /bbl::js::take_temporary\(v_bblite_return_factory_\d+\)/,
+        /auto (\w+) = bbl::js::make_ref<bblscene::ApiData>\([^;\n]+\);\s+\[\[maybe_unused\]\] bblscene::Api& v_direct = \1;/,
     );
     assert.match(
         result.cpp,
