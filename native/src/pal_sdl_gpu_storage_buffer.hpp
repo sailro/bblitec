@@ -30,13 +30,19 @@ struct SdlStorageBuffer final : StorageBufferAllocation {
     std::optional<std::size_t> buffer_capacity() const override { return byte_length; }
     ~SdlStorageBuffer() override { destroy(); }
     void destroy() override {
-        if (buffer)
-            SDL_ReleaseGPUBuffer(device, std::exchange(buffer, nullptr));
+        if (!buffer)
+            return;
+        if (auto* staged = SdlStagedWrites::batch_for(device))
+            staged->discard(buffer);
+        SDL_ReleaseGPUBuffer(device, std::exchange(buffer, nullptr));
     }
     void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
         if (!buffer)
             throw std::runtime_error("GPU buffer has been destroyed.");
-        write_sdl_gpu_buffer(device, buffer, offset, bytes);
+        if (auto* staged = SdlStagedWrites::batch_for(device); staged && !bytes.empty())
+            staged->update(buffer, offset, bytes.data(), bytes.size());
+        else
+            write_sdl_gpu_buffer(device, buffer, offset, bytes);
     }
 };
 

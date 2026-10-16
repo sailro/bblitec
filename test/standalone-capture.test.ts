@@ -50,12 +50,26 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
             "[[nodiscard]] bool screenshot_due() const",
         ),
     );
+    const sdlShared = readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8");
     writeFileSync(
         join(directory, "buffer-batch.hpp"),
-        cppRecord(
-            readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"),
-            "class GpuBufferUploadBatch : public SdlGpuWriteDevice {",
-        ),
+        [
+            cppRecord(
+                sdlShared,
+                "class GpuBufferUploadBatch : public SdlGpuWriteDevice {",
+            ),
+            cppRecord(
+                sdlShared,
+                "class SdlStagedStorageWrites final : public SdlStagedWrites {",
+            ),
+            cppRecord(
+                readFileSync(
+                    "native/src/pal_sdl_gpu_storage_buffer.hpp",
+                    "utf8",
+                ),
+                "struct SdlStorageBuffer final : StorageBufferAllocation {",
+            ),
+        ].join("\n"),
     );
     writeFileSync(
         join(directory, "texture-copy.hpp"),

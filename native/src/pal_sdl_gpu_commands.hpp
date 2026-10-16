@@ -1,9 +1,54 @@
 #pragma once
 
 #include <SDL3/SDL_gpu.h>
+#include <stdexcept>
 #include <utility>
 
 namespace bbl::pal {
+
+class GpuBufferUploadBatch;
+
+/**
+ * The queue writes a thread stages into one batch, one staging at a time. Every command buffer
+ * the thread submits first submits them, as WebGPU orders `queue.writeBuffer` before later
+ * submissions.
+ */
+class SdlStagedWrites {
+public:
+    SdlStagedWrites(const SdlStagedWrites&) = delete;
+    SdlStagedWrites& operator=(const SdlStagedWrites&) = delete;
+
+    /** The active staging's batch for `device`, or null. */
+    static GpuBufferUploadBatch* batch_for(const SDL_GPUDevice* device) {
+        return active_ && active_->device_ == device ? active_->batch_ : nullptr;
+    }
+    /** Submits the active staging, which its own submission does not re-enter. */
+    static void submit_active() {
+        if (SdlStagedWrites* staged = std::exchange(active_, nullptr)) {
+            struct Reset {
+                SdlStagedWrites* value;
+                ~Reset() { active_ = value; }
+            } reset{staged};
+            staged->submit();
+        }
+    }
+
+protected:
+    SdlStagedWrites(const SDL_GPUDevice* device, GpuBufferUploadBatch& batch)
+        : device_(device), batch_(&batch) {
+        if (active_)
+            throw std::logic_error("Staged SDL writes do not nest.");
+        active_ = this;
+    }
+    ~SdlStagedWrites() { active_ = nullptr; }
+    GpuBufferUploadBatch& batch() const { return *batch_; }
+    virtual void submit() = 0;
+
+private:
+    const SDL_GPUDevice* device_;
+    GpuBufferUploadBatch* batch_;
+    inline static thread_local SdlStagedWrites* active_ = nullptr;
+};
 
 /** A command is consumed even when submission fails. Acquired swapchains forbid cancellation. */
 class SdlGpuCommand {
@@ -36,12 +81,18 @@ public:
             acquired_swapchain_ = true;
         return success;
     }
-    bool submit() noexcept { return SDL_SubmitGPUCommandBuffer(std::exchange(command_, nullptr)); }
-    SDL_GPUFence* submit_with_fence() noexcept {
+    // The thread's staged writes go first; if they throw, the destructor consumes this command.
+    bool submit() {
+        SdlStagedWrites::submit_active();
+        return SDL_SubmitGPUCommandBuffer(std::exchange(command_, nullptr));
+    }
+    SDL_GPUFence* submit_with_fence() {
+        SdlStagedWrites::submit_active();
         return SDL_SubmitGPUCommandBufferAndAcquireFence(std::exchange(command_, nullptr));
     }
     void reset() noexcept {
         if (auto* command = std::exchange(command_, nullptr)) {
+            // An abandoned frame still owes its swapchain image; it needs no staged writes.
             if (acquired_swapchain_)
                 SDL_SubmitGPUCommandBuffer(command);
             else

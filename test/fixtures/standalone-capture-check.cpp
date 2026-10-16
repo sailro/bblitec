@@ -1,5 +1,6 @@
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/pal_storage_buffer.hpp>
 #include "pal_sdl_gpu_commands.hpp"
 #include "pal_sdl_gpu_resources.hpp"
 #include "pal_sdl_gpu_writes.hpp"
@@ -615,6 +616,37 @@ void check_batched_creation() {
     assert(rejected && buffers.size() == count);
 }
 
+void check_staged_storage_writes() {
+    reset_observations();
+    copied_regions = 0;
+    auto* device = reinterpret_cast<SDL_GPUDevice*>(1);
+    GpuBufferUploadBatch batch{device};
+    const std::array<std::uint8_t, 4> first{1, 2, 3, 4}, second{5, 6, 7, 8};
+    SDL_GPUBufferCreateInfo info{};
+    info.size = 4;
+    SdlStorageBuffer storage{device}, released{device};
+    storage.buffer = SDL_CreateGPUBuffer(device, &info);
+    released.buffer = SDL_CreateGPUBuffer(device, &info);
+    storage.byte_length = released.byte_length = 4;
+    SDL_GPUCommandBuffer command;
+    {
+        const SdlStagedStorageWrites staged{batch};
+        storage.write_buffer_bytes(0, first);
+        released.write_buffer_bytes(0, first);
+        released.destroy();
+        assert(submissions == 0);
+        // The next command buffer submits the staged writes first, without the released one.
+        assert(SdlGpuCommand{&command}.submit());
+        assert(submissions == 2 && copied_regions == 1 &&
+               storage.buffer->bytes == std::vector<std::uint8_t>(first.begin(), first.end()));
+        // Submitting the staged batch itself uploads its writes once.
+        storage.write_buffer_bytes(0, second);
+        batch.submit();
+        assert(submissions == 3 && copied_regions == 2);
+    }
+    assert(!SdlStagedWrites::batch_for(device));
+}
+
 void check_texture_writes() {
     texture_uploads_enabled = true;
     texture_writes.clear();
@@ -661,6 +693,7 @@ int main() {
     check_registration<DawnSprite>();
     check_batched_uploads();
     check_batched_creation();
+    check_staged_storage_writes();
     check_texture_writes();
     surface_available = false;
     SdlEffect sdl_effect;

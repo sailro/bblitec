@@ -129,6 +129,24 @@ extern "C" void SDLCALL SDL_EndGPURenderPass(SDL_GPURenderPass* pass) { end(pass
 extern "C" void SDLCALL SDL_EndGPUCopyPass(SDL_GPUCopyPass* pass) { end(pass); }
 extern "C" void SDLCALL SDL_EndGPUComputePass(SDL_GPUComputePass* pass) { end(pass); }
 
+namespace bbl::pal {
+class GpuBufferUploadBatch {};
+} // namespace bbl::pal
+
+/** Staged writes submitted as a command of their own, as GpuBufferUploadBatch's are. */
+struct Staging final : bbl::pal::SdlStagedWrites {
+    Staging(const SDL_GPUDevice* device, bbl::pal::GpuBufferUploadBatch& batch)
+        : SdlStagedWrites(device, batch) {}
+    bool fail = false;
+    void submit() override {
+        if (fail)
+            throw std::runtime_error("staged writes failed");
+        events += 'W';
+        SDL_GPUCommandBuffer raw;
+        assert(bbl::pal::SdlGpuCommand{&raw}.submit());
+    }
+};
+
 int main() {
     using namespace bbl::pal;
     for (bool acquired : {false, true}) {
@@ -208,6 +226,34 @@ int main() {
         command.submit();
     }
     assert(events == "EES");
+    {
+        SDL_GPUDevice staged_device, other_device;
+        GpuBufferUploadBatch batch;
+        Staging staging{&staged_device, batch};
+        assert(SdlStagedWrites::batch_for(&staged_device) == &batch &&
+               !SdlStagedWrites::batch_for(&other_device));
+        bool nested = false;
+        try {
+            Staging inner{&staged_device, batch};
+        } catch (const std::logic_error&) {
+            nested = true;
+        }
+        events.clear();
+        SDL_GPUCommandBuffer submitted, fenced, failed;
+        assert(nested && SdlGpuCommand{&submitted}.submit());
+        assert(SdlGpuCommand{&fenced}.submit_with_fence());
+        staging.fail = true;
+        bool thrown = false;
+        try {
+            static_cast<void>(SdlGpuCommand{&failed}.submit());
+        } catch (const std::runtime_error&) {
+            thrown = true;
+        }
+        assert(thrown && failed.consumed && events == "WSSWSFC");
+        assert(SdlStagedWrites::batch_for(&staged_device) == &batch);
+    }
+    SDL_GPUDevice unstaged;
+    assert(!SdlStagedWrites::batch_for(&unstaged));
     const std::array<std::uint8_t, 4> bytes{1, 3, 5, 7};
     SDL_GPUDevice device;
     for (fail_step = 0; fail_step <= 6; ++fail_step) {
