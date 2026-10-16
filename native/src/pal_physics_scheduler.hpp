@@ -35,7 +35,6 @@ namespace bbl::pal {
  * a solver iteration's dozens of short phases per sub-step need.
  */
 class PhysicsWorkerPool final : public btITaskScheduler {
-    static constexpr unsigned spin_iterations = 4096;
     struct Work {
         int begin, end, grain;
         Work(int first, int last, int width) : begin(first), end(last), grain(width) {}
@@ -122,11 +121,6 @@ public:
             workers_.emplace_back([this](StopToken stop) {
                 std::uint64_t observed = 0;
                 for (;;) {
-                    // Keep short solver phases off the OS parking path, then sleep.
-                    for (unsigned spin = 0; spin < spin_iterations &&
-                                            generation_.load(std::memory_order_acquire) == observed;
-                         ++spin)
-                        spin_pause();
                     generation_.wait(observed, std::memory_order_acquire);
                     if (stop.stop_requested())
                         return;
