@@ -23,7 +23,7 @@ test("inlined DOM array callbacks snapshot selected string values", () => {
     `);
     assert.match(
         result.cpp,
-        /std::string v_fn\d+_name = bbl::js::snapshot_value\(v_bblite_map_source_\d+\[v_bblite_map_index_\d+\]\);/,
+        /std::string v_fn\d+_name = (?:std::string\{)?bbl::js::snapshot_value\(v_bblite_map_source_\d+\[v_bblite_map_index_\d+\]\)\}?;/,
     );
 });
 

@@ -450,10 +450,9 @@ inline std::string promise_error_message(std::exception_ptr error) {
 }
 
 /**
- * The value of the promise `start` returns, awaited where no event loop runs:
- * the entry realm reads an `await`'s settlement in place, so a lowered
- * coroutine it calls runs on a private loop that closes once the promise
- * settles. A rejection is thrown.
+ * The value of the promise `start` returns: the entry realm reads an `await`'s
+ * settlement in place, so a lowered coroutine it calls runs on a private loop
+ * that closes once the promise settles. A rejection is thrown.
  */
 template <typename T, typename Start> T settle_in_place(Start start) {
     std::optional<T> value;

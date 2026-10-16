@@ -80,6 +80,8 @@ native events to the owning realm; promise reactions stay on the realm thread.
   `wgsl-<text digest>.<entry>.<stage>` (`src/wgsl-artifacts.ts`); uniform buffers are CPU bytes pushed at encode;
   encoders record and encode at submission; each dispatch is its own compute pass; indirect dispatch reads a copy of its
   arguments; queue writes stage in one upload ring; `MAP_READ` buffers map after a fence; sizes are 32-bit.
+- SDL_GPU scene frames stage source-device storage-buffer writes in the frame's upload batch; every command
+  buffer the thread submits submits them first. Writes outside a frame or on another thread submit at once.
 - Device limits are WebGPU defaults raised by the engine's `requiredLimits`.
 - `engine:webgpu-device` binds the device at `createEngine` with an empty scene layout; a renderable shader reading
   group 0 fails.

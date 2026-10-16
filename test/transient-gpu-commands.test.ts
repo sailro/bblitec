@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -32,3 +32,21 @@ test(
         );
     },
 );
+
+test("SDL command buffers are submitted only through SdlGpuCommand", () => {
+    // Its submissions are the ones that submit a thread's staged writes first.
+    const owner = join("native", "src", "pal_sdl_gpu_commands.hpp");
+    const submitters = ["native/src", "native/include"].flatMap((root) =>
+        readdirSync(root, { recursive: true, encoding: "utf8" })
+            .map((path) => join(root, path))
+            .filter(
+                (path) =>
+                    /\.(?:cpp|hpp|mm)$/.test(path) &&
+                    path !== owner &&
+                    /\bSDL_SubmitGPUCommandBuffer\w*\s*\(/.test(
+                        readFileSync(path, "utf8"),
+                    ),
+            ),
+    );
+    assert.deepEqual(submitters, []);
+});

@@ -793,12 +793,19 @@ public:
             SDL_UploadToGPUTexture(copy, &source, &destination, false);
         }
         copy.end();
-        if (!command.submit()) {
-            gpu_error("SDL_SubmitGPUCommandBuffer buffer batch");
-        }
+        // Empty once recorded: submitting first submits the staged writes, which may be these.
         uploads_.clear();
         texture_uploads_.clear();
         bytes_size_ = 0;
+        if (!command.submit()) {
+            gpu_error("SDL_SubmitGPUCommandBuffer buffer batch");
+        }
+    }
+
+    /** Drops the staged writes to a buffer being released: nothing can read them. */
+    void discard(const SDL_GPUBuffer* buffer) noexcept {
+        std::erase_if(uploads_,
+                      [buffer](const StagedUpload& upload) { return upload.buffer == buffer; });
     }
 
 private:
@@ -892,6 +899,16 @@ private:
     std::unique_ptr<std::uint8_t[]> bytes_;
     std::size_t bytes_size_ = 0;
     std::size_t bytes_capacity_ = 0;
+};
+
+/** Stages the storage-buffer writes on `batch`'s device into it (`SdlStagedWrites`). */
+class SdlStagedStorageWrites final : public SdlStagedWrites {
+public:
+    explicit SdlStagedStorageWrites(GpuBufferUploadBatch& batch)
+        : SdlStagedWrites(batch.device, batch) {}
+
+private:
+    void submit() override { batch().submit(); }
 };
 
 /**

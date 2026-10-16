@@ -178,6 +178,29 @@ void ordering_and_recovery() {
             "Promise reactions ran in the wrong order");
 }
 
+/** An `await` read in place inside a dispatching loop: an entry frame's key listener. */
+void settle_in_place_inside_a_dispatching_loop() {
+    const js::RealmScope realm;
+    pal::EventLoop loop;
+    std::vector<int> order;
+    double result = 0;
+    loop.run([&] {
+        result = js::settle_in_place<double>([&] {
+            bool refused = false;
+            try {
+                loop.poll();
+            } catch (const std::logic_error&) {
+                refused = true;
+            }
+            require(refused, "A dispatching loop dispatched again inside a nested one");
+            return compute(js::Promise<double>::resolved(4), &order);
+        });
+        require(&pal::EventLoop::current() == &loop, "A nested loop left its outer loop");
+        loop.close();
+    });
+    require(result == 8, "An in-place await inside a dispatching loop did not settle");
+}
+
 void aggregate_promises() {
     const js::RealmScope realm;
     pal::EventLoop loop;
@@ -495,6 +518,7 @@ void file_textures_decode_off_the_realm_and_settle_in_call_order() {
 int main() {
     try {
         ordering_and_recovery();
+        settle_in_place_inside_a_dispatching_loop();
         result_views_preserve_protocol();
         aggregate_promises();
         shutdown_releases_suspended_activations();

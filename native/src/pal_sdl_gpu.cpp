@@ -687,6 +687,14 @@ public:
     void discard_frame() { frame_.reset(); }
     bool yield_when_skipped() const { return frame_ && frame_->yield_when_skipped; }
 
+    /** One frame, its storage-buffer writes staged with its uploads (`SdlStagedWrites`). */
+    FrameOutcome conduct_staged_frame() {
+        const SdlStagedStorageWrites staged{*data_.frame_buffer_uploads};
+        const FrameOutcome outcome = conduct_frame(*this);
+        SdlStagedWrites::submit_active();
+        return outcome;
+    }
+
     Iteration<bool> setup() {
         StartupWorkBudget startup_budget;
         [[maybe_unused]] auto& engine = data_.engine;
@@ -4671,7 +4679,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         co_yield false;
     for (;;) {
         renderer.discard_frame();
-        const FrameOutcome outcome = conduct_frame(renderer);
+        const FrameOutcome outcome = renderer.conduct_staged_frame();
         if (outcome == FrameOutcome::stopped || outcome == FrameOutcome::restart)
             break;
 #if BBLITE_WORKERS
