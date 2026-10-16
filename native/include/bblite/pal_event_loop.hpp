@@ -497,13 +497,23 @@ private:
                 context->leave();
         }
     };
+    /**
+     * A loop dispatches once at a time. A distinct loop may dispatch inside it on the same
+     * thread and is current until it returns.
+     */
     struct Activation {
-        explicit Activation(EventLoop& loop) {
-            if (current_)
+        EventLoop& loop;
+        EventLoop* outer;
+        explicit Activation(EventLoop& value) : loop(value), outer(current_) {
+            if (loop.active_)
                 throw std::logic_error("Reentrant realm dispatch is unsupported.");
+            loop.active_ = true;
             current_ = &loop;
         }
-        ~Activation() { current_ = nullptr; }
+        ~Activation() {
+            loop.active_ = false;
+            current_ = outer;
+        }
     };
     struct Timer {
         Task callback;
@@ -935,6 +945,7 @@ private:
     bool draining_microtasks_ = false;
     bool discarding_ = false;
     bool closing_ = false;
+    bool active_ = false;
     ContinuationId next_continuation_ = 1;
     std::map<ContinuationId, Continuation> continuations_;
     std::vector<Task> cleanups_;
