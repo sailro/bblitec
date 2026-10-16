@@ -59,6 +59,7 @@ interface SceneManifestContext extends Pick<
     | "hasFeature"
     | "hasRegisteredScene"
     | "isInFrameCallback"
+    | "isRuntimeCallback"
     | "isInRuntimeControlFlow"
     | "sourceFile"
 > {}
@@ -214,7 +215,9 @@ export class SceneManifestRecorder {
     >();
     private readonly scenePbrMaterialsWithUnknownMesh =
         new EmissionSet<number>();
-    @journaled private accessor unknownSceneMaterialAssignment = false;
+    private readonly unknownMaterialMeshProfiles = new EmissionSet<
+        number | undefined
+    >();
     @journaled private accessor standardMaterialUnknownMesh = false;
     private readonly runtimeMaterialProfiles = new EmissionSet<number>();
     @journaled private accessor runtimeMeshProfileCount = 0;
@@ -272,7 +275,7 @@ export class SceneManifestRecorder {
                     sceneMeshIndices: [
                         ...(this.scenePbrMaterialMeshes.get(index) ?? []),
                     ].sort((left, right) => left - right),
-                    ...(this.unknownSceneMaterialAssignment ||
+                    ...(this.unknownMaterialMeshProfiles.size > 0 ||
                     this.scenePbrMaterialsWithUnknownMesh.has(index)
                         ? { unknownSceneMesh: true as const }
                         : {}),
@@ -283,7 +286,7 @@ export class SceneManifestRecorder {
             standardMaterialPluginInputs:
                 this.sceneMaterials.standardMaterialPluginInputs,
             ...(this.standardMaterialUnknownMesh ||
-            (this.unknownSceneMaterialAssignment &&
+            (this.unknownMaterialMeshProfiles.size > 0 &&
                 this.context.hasFeature("material:standard"))
                 ? { standardMaterialUnknownMesh: true as const }
                 : {}),
@@ -348,7 +351,52 @@ export class SceneManifestRecorder {
 
     /** Settles the records whose final shape depends on the whole entry. */
     public settle(): void {
-        if (this.unknownSceneMaterialAssignment) {
+        if (this.unknownMaterialMeshProfiles.size > 0) {
+            // Explicit assignments must agree independently of unknown ones.
+            // A retained callback with an unknown material cannot change an
+            // already-settled program's layout; an incompatible runtime use
+            // refuses before its draw is submitted.
+            shaderThinInstanceLanes(this.sceneMeshes, (message) =>
+                this.context.failAtFile(message),
+            );
+            const knownLayouts = new Map<string, SceneMeshManifest>();
+            for (const mesh of this.sceneMeshes)
+                for (const variant of [
+                    ...(mesh.shaderVariant === undefined
+                        ? []
+                        : [mesh.shaderVariant]),
+                    ...(mesh.shaderVariants ?? []),
+                ])
+                    knownLayouts.set(variant, mesh);
+            for (const program of this.reachedShaderPrograms)
+                writable(program).runtimeInstanceLayoutCheck = true;
+            for (const [index, mesh] of this.sceneMeshes.entries()) {
+                if (
+                    this.unknownMaterialMeshProfiles.has(undefined) ||
+                    this.unknownMaterialMeshProfiles.has(index)
+                ) {
+                    const variants = this.reachedShaderPrograms
+                        .filter(({ name }) => {
+                            const known = knownLayouts.get(name);
+                            return (
+                                known === undefined ||
+                                (known.thinInstances === mesh.thinInstances &&
+                                    known.thinInstanceColors ===
+                                        mesh.thinInstanceColors)
+                            );
+                        })
+                        .map(({ name }) => name);
+                    writable(mesh).shaderVariants = [
+                        ...new Set([
+                            ...(mesh.shaderVariant === undefined
+                                ? []
+                                : [mesh.shaderVariant]),
+                            ...(mesh.shaderVariants ?? []),
+                            ...variants,
+                        ]),
+                    ].sort();
+                }
+            }
             if (this.context.hasFeature("material:standard")) {
                 for (const mesh of this.sceneMeshes)
                     writable(mesh).standardMaterial = true;
@@ -940,8 +988,8 @@ export class SceneManifestRecorder {
         this.scenePbrMaterialsWithUnknownMesh.add(materialIndex);
     }
 
-    public recordUnknownSceneMaterialAssignment(): void {
-        this.unknownSceneMaterialAssignment = true;
+    public recordUnknownSceneMaterialAssignment(meshIndex?: number): void {
+        this.unknownMaterialMeshProfiles.add(meshIndex);
     }
 
     public recordUnknownStandardMeshMaterial(): void {
@@ -1199,7 +1247,7 @@ export class SceneManifestRecorder {
         const mesh = this.sceneMeshes[sceneMeshIndex];
         if (!mesh) return;
         if (
-            this.context.isInFrameCallback() &&
+            this.context.isRuntimeCallback() &&
             mesh.thinInstances !== "always"
         ) {
             writable(mesh).thinInstances = "possible";

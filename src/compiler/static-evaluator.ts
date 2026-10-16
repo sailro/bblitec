@@ -72,6 +72,7 @@ import { isJsonValue } from "./json-bridge.js";
 import { absenceKind, excludesObjectColour, isNullable } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
+import type { LoweringServices } from "./lowering-services.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
     isAssignmentExpression,
@@ -224,6 +225,30 @@ export function numberFromOptionalCpp(
                   : doubleCpp(undefinedReads);
     if (fallback === undefined) return undefined;
     return `bbl::js::number_from_optional(${value.cpp}${fallback ? `, ${fallback}` : ""})`;
+}
+
+/** Read text facts after evaluation without repeating effects or retaining speculative state. */
+export function retainedStaticText(
+    context: Pick<
+        LoweringServices,
+        "evaluationOrder" | "probeEmission" | "evaluator" | "impureReadCount"
+    >,
+    expression: ts.Expression,
+): string | undefined {
+    if (context.evaluationOrder.writesStorage(expression)) return undefined;
+    return context.probeEmission(
+        () => {
+            const reads = context.impureReadCount;
+            try {
+                const text = context.evaluator.staticTextValue(expression);
+                return context.impureReadCount === reads ? text : undefined;
+            } catch (error) {
+                if (!(error instanceof CompileError)) throw error;
+                return undefined;
+            }
+        },
+        () => false,
+    );
 }
 
 export class StaticEvaluator {
@@ -551,6 +576,15 @@ export class StaticEvaluator {
         }
         if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) {
             return "false";
+        }
+        if (ts.isConditionalExpression(unwrapped)) {
+            const condition = this.compileCondition(unwrapped.condition);
+            if (condition === "true" || condition === "false")
+                return this.compileBoolean(
+                    condition === "true"
+                        ? unwrapped.whenTrue
+                        : unwrapped.whenFalse,
+                );
         }
         if (
             ts.isPrefixUnaryExpression(unwrapped) &&
@@ -1848,7 +1882,20 @@ export class StaticEvaluator {
     }
 
     public staticTextValue(expression: ts.Expression): string | undefined {
-        const unwrapped = this.resolveStaticExpression(expression);
+        const unwrapped = selectedStaticExpression(
+            {
+                conditions: {
+                    compileCondition: (node) =>
+                        this.evaluationOrder.isPureExpression(node)
+                            ? this.compileCondition(node)
+                            : "",
+                },
+                resolveStaticExpression: (node) =>
+                    this.resolveStaticExpression(node),
+            },
+            expression,
+        );
+        if (!unwrapped) return undefined;
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return "null";
         if (isGlobalUndefined(this.checker, unwrapped)) return "undefined";
         if (
@@ -1859,6 +1906,15 @@ export class StaticEvaluator {
         }
         if (ts.isNumericLiteral(unwrapped)) {
             return String(Number(unwrapped.text));
+        }
+        if (ts.isTemplateExpression(unwrapped)) {
+            let text = unwrapped.head.text;
+            for (const span of unwrapped.templateSpans) {
+                const value = this.staticTextValue(span.expression);
+                if (value === undefined) return undefined;
+                text += value + span.literal.text;
+            }
+            return text;
         }
         const numeric = this.staticNumberValue(unwrapped);
         if (numeric !== undefined) return String(numeric);
@@ -1918,11 +1974,43 @@ export class StaticEvaluator {
                 return value.staticString;
             }
             if (
+                ts.isIdentifier(unwrapped) &&
+                value?.dataType?.kind === "string" &&
+                !value.parameterBinding
+            ) {
+                const symbol = this.resolveSymbol(unwrapped);
+                if (symbol && isModuleConstant(symbol)) {
+                    const known = this.constantTexts.get(symbol);
+                    if (known !== undefined) return known;
+                    // A materialized module string may come from a closed
+                    // builder. Use the same immutable-module execution as a
+                    // required shader string while this template is evaluated.
+                    const text = this.generationText(unwrapped);
+                    if (text !== undefined) {
+                        this.constantTexts.set(symbol, text);
+                        return text;
+                    }
+                }
+            }
+            if (
                 value?.kind === "number" &&
                 value.staticNumber !== undefined &&
                 !value.parameterBinding
             ) {
                 return String(value.staticNumber);
+            }
+        }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            (this.checker.getTypeAtLocation(unwrapped).flags &
+                ts.TypeFlags.StringLike) !==
+                0
+        ) {
+            try {
+                return this.generationText(unwrapped);
+            } catch (error) {
+                if (!(error instanceof CompileError)) throw error;
+                return undefined;
             }
         }
         return undefined;

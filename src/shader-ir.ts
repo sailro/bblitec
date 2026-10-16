@@ -34,6 +34,7 @@ const shaderTypeShorthands: Readonly<Record<string, ShaderType>> = {
 interface ShaderAttribute {
     kind: "builtin" | "location";
     value: string | number;
+    interpolation?: readonly string[];
 }
 
 interface ShaderStructMember {
@@ -171,7 +172,6 @@ export interface ShaderFunction {
 
 export interface ShaderEntryPoint extends ShaderFunction {
     stage: ShaderStage;
-    returnType: string;
     returnAttribute?: ShaderAttribute | undefined;
 }
 
@@ -1726,12 +1726,34 @@ function shaderAttribute(attribute: WgslAttribute): ShaderAttribute {
 function singleShaderAttribute(
     attributes: readonly WgslAttribute[],
 ): ShaderAttribute | undefined {
-    if (attributes.length > 1) {
+    const locations = attributes.filter(({ name }) => name !== "interpolate");
+    const interpolations = attributes.filter(
+        ({ name }) => name === "interpolate",
+    );
+    if (locations.length > 1) {
         throw new Error(
-            `Unsupported WGSL attribute '@${attributes[1]!.name}' beside '@${attributes[0]!.name}'.`,
+            `Unsupported WGSL attribute '@${locations[1]!.name}' beside '@${locations[0]!.name}'.`,
         );
     }
-    return attributes[0] ? shaderAttribute(attributes[0]) : undefined;
+    const attribute = locations[0] ? shaderAttribute(locations[0]) : undefined;
+    if (interpolations.length === 0) return attribute;
+    const interpolation = interpolations[0]!;
+    if (
+        interpolations.length !== 1 ||
+        attribute?.kind !== "location" ||
+        interpolation.arguments.length < 1 ||
+        interpolation.arguments.length > 2
+    ) {
+        throw new Error(
+            "WGSL @interpolate requires a location and one or two identifiers.",
+        );
+    }
+    const arguments_ = interpolation.arguments.map((argument) => {
+        if (argument.kind !== "path" || argument.parts.length !== 1)
+            throw new Error("WGSL @interpolate arguments must be identifiers.");
+        return argument.parts[0]!;
+    });
+    return { ...attribute, interpolation: arguments_ };
 }
 
 function shaderMember(member: WgslMemberSyntax): ShaderStructMember {
@@ -1841,7 +1863,7 @@ function shaderEntryPoint(
             `Unsupported WGSL attribute on entry point '${declaration.name}'.`,
         );
     }
-    if (!declaration.returnType) {
+    if (stage === "vertex" && !declaration.returnType) {
         throw new Error(
             `Expected one @${stage} WGSL entry point with an explicit return type.`,
         );
@@ -1850,7 +1872,9 @@ function shaderEntryPoint(
         stage,
         name: declaration.name,
         parameters: declaration.parameters.map(shaderParameter),
-        returnType: declaration.returnType.text,
+        ...(declaration.returnType
+            ? { returnType: declaration.returnType.text }
+            : {}),
         returnAttribute: singleShaderAttribute(declaration.returnAttributes),
         statements: declaration.statements,
     };
@@ -2112,15 +2136,22 @@ export function mapShaderExpression(
     }
 }
 
+type ScopedShaderRewrite = (
+    expression: ShaderExpression,
+    boundNames: ReadonlySet<string>,
+) => ShaderExpression;
+
 function mapShaderStatement(
     statement: ShaderStatement,
-    rewrite: (expression: ShaderExpression) => ShaderExpression,
+    rewrite: ScopedShaderRewrite,
+    boundNames: Set<string>,
 ): ShaderStatement {
     const map = (expression: ShaderExpression): ShaderExpression =>
-        mapShaderExpression(expression, rewrite);
+        mapShaderExpression(expression, (value) => rewrite(value, boundNames));
     const mapAll = (
         statements: readonly ShaderStatement[],
-    ): ShaderStatement[] => mapShaderStatements(statements, rewrite);
+    ): ShaderStatement[] =>
+        mapShaderStatements(statements, rewrite, boundNames);
     switch (statement.kind) {
         case "assign":
             return {
@@ -2139,42 +2170,66 @@ function mapShaderStatement(
                     ? { alternative: mapAll(statement.alternative) }
                     : {}),
             };
-        case "for":
+        case "for": {
+            const loopNames = new Set(boundNames);
+            const initializer = statement.initializer
+                ? mapShaderStatement(statement.initializer, rewrite, loopNames)
+                : undefined;
             return {
                 ...statement,
-                ...(statement.initializer
+                ...(initializer ? { initializer } : {}),
+                ...(statement.condition
                     ? {
-                          initializer: mapShaderStatement(
-                              statement.initializer,
-                              rewrite,
+                          condition: mapShaderExpression(
+                              statement.condition,
+                              (value) => rewrite(value, loopNames),
                           ),
                       }
                     : {}),
-                ...(statement.condition
-                    ? { condition: map(statement.condition) }
-                    : {}),
                 ...(statement.update
-                    ? { update: mapShaderStatement(statement.update, rewrite) }
+                    ? {
+                          update: mapShaderStatement(
+                              statement.update,
+                              rewrite,
+                              loopNames,
+                          ),
+                      }
                     : {}),
-                statements: mapAll(statement.statements),
+                statements: mapShaderStatements(
+                    statement.statements,
+                    rewrite,
+                    loopNames,
+                ),
             };
+        }
         case "while":
             return {
                 ...statement,
                 condition: map(statement.condition),
                 statements: mapAll(statement.statements),
             };
-        case "loop":
+        case "loop": {
+            const loopNames = new Set(boundNames);
+            const statements = statement.statements.map((item) =>
+                mapShaderStatement(item, rewrite, loopNames),
+            );
+            const continuing = statement.continuing?.map((item) =>
+                mapShaderStatement(item, rewrite, loopNames),
+            );
             return {
                 ...statement,
-                statements: mapAll(statement.statements),
-                ...(statement.continuing
-                    ? { continuing: mapAll(statement.continuing) }
-                    : {}),
+                statements,
+                ...(continuing ? { continuing } : {}),
                 ...(statement.breakIf
-                    ? { breakIf: map(statement.breakIf) }
+                    ? {
+                          breakIf: mapShaderExpression(
+                              statement.breakIf,
+                              (value) => rewrite(value, loopNames),
+                          ),
+                      }
                     : {}),
             };
+        }
         case "switch":
             return {
                 ...statement,
@@ -2190,11 +2245,17 @@ function mapShaderStatement(
             return { ...statement, statements: mapAll(statement.statements) };
         case "let":
         case "const":
+        case "var": {
+            const mapped = statement.value
+                ? { ...statement, value: map(statement.value) }
+                : statement;
+            boundNames.add(statement.name);
+            return mapped;
+        }
         case "expression":
         case "assert":
             return { ...statement, value: map(statement.value) };
         case "return":
-        case "var":
             return statement.value
                 ? { ...statement, value: map(statement.value) }
                 : statement;
@@ -2207,25 +2268,37 @@ function mapShaderStatement(
 
 export function mapShaderStatements(
     statements: readonly ShaderStatement[],
-    rewrite: (expression: ShaderExpression) => ShaderExpression,
+    rewrite: ScopedShaderRewrite,
+    inheritedNames?: Iterable<string>,
 ): ShaderStatement[] {
+    const boundNames = new Set(inheritedNames);
     return statements.map((statement) =>
-        mapShaderStatement(statement, rewrite),
+        mapShaderStatement(statement, rewrite, boundNames),
     );
 }
 
 /** The same rewrite over every expression a module states. */
 export function mapShaderModule(
     module: ShaderModule,
-    rewrite: (expression: ShaderExpression) => ShaderExpression,
+    rewrite: ScopedShaderRewrite,
 ): ShaderModule {
+    const globals = new Set([
+        ...(module.constants ?? []).map(({ name }) => name),
+        ...(module.bindings ?? []).map(({ name }) => name),
+    ]);
+    const functionNames = (fn: ShaderFunction): string[] => [
+        ...globals,
+        ...fn.parameters.map(({ name }) => name),
+    ];
     return {
         ...module,
         ...(module.constants
             ? {
                   constants: module.constants.map((constant) => ({
                       ...constant,
-                      value: mapShaderExpression(constant.value, rewrite),
+                      value: mapShaderExpression(constant.value, (value) =>
+                          rewrite(value, globals),
+                      ),
                   })),
               }
             : {}),
@@ -2233,7 +2306,11 @@ export function mapShaderModule(
             ? {
                   functions: module.functions.map((fn) => ({
                       ...fn,
-                      statements: mapShaderStatements(fn.statements, rewrite),
+                      statements: mapShaderStatements(
+                          fn.statements,
+                          rewrite,
+                          functionNames(fn),
+                      ),
                   })),
               }
             : {}),
@@ -2242,6 +2319,7 @@ export function mapShaderModule(
             statements: mapShaderStatements(
                 module.entryPoint.statements,
                 rewrite,
+                functionNames(module.entryPoint),
             ),
         },
     };
@@ -2630,6 +2708,7 @@ function reflectUniformBlock(
 export function lowerWgslShaderProgram(
     source: ShaderMaterialProgramSource,
 ): ShaderIrProgram {
+    const sceneSystemUniforms = new Set<ShaderSystemMatrix>();
     const lowerModule = (text: string, stage: ShaderStage): ShaderModule => {
         const module = parseWgslModule(text, stage, { helpers: true });
         for (const structure of module.structs) {
@@ -2641,7 +2720,47 @@ export function lowerWgslShaderProgram(
                 }
             }
         }
-        return module;
+        // The pin's scene prelude exposes camera fields independently of a
+        // material's declared uniforms. Native stages pack those reads into
+        // their existing system block; the source pack leaves eye.w zero.
+        return mapShaderModule(module, (expression, boundNames) => {
+            if (
+                expression.kind !== "path" ||
+                expression.parts[0] !== "scene" ||
+                boundNames.has("scene")
+            )
+                return expression;
+            const field = expression.parts[1];
+            let replacement: ShaderExpression;
+            if (field === "view" || field === "viewProjection") {
+                sceneSystemUniforms.add(field);
+                replacement = { kind: "path", parts: ["shaderSystem", field] };
+            } else if (field === "vEyePosition") {
+                sceneSystemUniforms.add("cameraPosition");
+                replacement = {
+                    kind: "construct",
+                    type: "vec4<f32>",
+                    arguments: [
+                        {
+                            kind: "path",
+                            parts: ["shaderSystem", "cameraPosition"],
+                        },
+                        { kind: "number", value: "0.0" },
+                    ],
+                };
+            } else {
+                throw new Error(
+                    `Shader scene uniform '${field ?? "scene"}' is not lowered.`,
+                );
+            }
+            for (const member of expression.parts.slice(2))
+                replacement = {
+                    kind: "member",
+                    expression: replacement,
+                    member,
+                };
+            return replacement;
+        });
     };
     const vertex = lowerModule(source.vertexSource, "vertex");
     const fragment = lowerModule(source.fragmentSource, "fragment");
@@ -2658,6 +2777,9 @@ export function lowerWgslShaderProgram(
         }
     }
     const uniforms = source.uniforms.map(parseUniformSignature);
+    for (const name of sceneSystemUniforms)
+        if (!uniforms.some((uniform) => uniform.name === name))
+            uniforms.push({ name, type: shaderSystemUniformType(name) });
     // A sampler pair binds in the fragment stage alone here. The pin
     // declares both stages' visibility, but SDL_GPU gives a vertex texture
     // its own register space, and no reached scene samples in a vertex
@@ -2682,7 +2804,11 @@ export function lowerWgslShaderProgram(
     const vertexOutput = vertex.structs.find(
         ({ name }) => name === vertex.entryPoint.returnType,
     );
-    if (!vertexOutput) {
+    const directPosition =
+        vertex.entryPoint.returnType === "vec4<f32>" &&
+        vertex.entryPoint.returnAttribute?.kind === "builtin" &&
+        vertex.entryPoint.returnAttribute.value === "position";
+    if (!vertexOutput && !directPosition) {
         throw new Error(
             `Vertex entry point returns unknown struct '${vertex.entryPoint.returnType}'.`,
         );
@@ -2698,7 +2824,7 @@ export function lowerWgslShaderProgram(
                 { stage: "fragment", name: fragment.entryPoint.name },
             ],
             attributes,
-            varyings: vertexOutput.members,
+            varyings: vertexOutput?.members ?? [],
             uniformBlocks: [vertexBlock, fragmentBlock].filter(
                 (block): block is ShaderUniformBlockReflection => !!block,
             ),

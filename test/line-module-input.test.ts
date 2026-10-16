@@ -58,7 +58,7 @@ test("realm line constants cannot fold past direct, aliased or retained child mu
     ])
         assert.throws(
             () => compileSource(source(mutation, declarations)),
-            /Expected a static array literal/,
+            /Module constant 'INITIAL' reads 'INITIAL', which the program writes through/,
             mutation,
         );
     const unknown = source(
@@ -70,7 +70,7 @@ test("realm line constants cannot fold past direct, aliased or retained child mu
     );
     assert.throws(
         () => compileSource(unknown),
-        /Expected a static array literal/,
+        /Module constant 'INITIAL' reads 'INITIAL', which the program writes through/,
         "an unknown consumer may retain geometry for later writes",
     );
 });

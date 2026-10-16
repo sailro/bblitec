@@ -319,7 +319,7 @@ test("fits CSM casters to every active non-degenerate thin instance", () => {
     );
 });
 
-test("builds vertex-only custom shader pipelines for shadow targets", () => {
+test("preserves requested depth-only fragments in custom shadow pipelines", () => {
     const sdl = sceneBackendSource("sdl");
     assert.match(
         sdl,
@@ -327,7 +327,11 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     );
     assert.match(
         sdl,
-        /if \(render_features\.shader_shadow_variants\[variant\]\) \{[\s\S]{0,700}shadow_pipeline_info\.fragment_shader =\s*depth_only_fragment_shader\.get\(\);[\s\S]{0,700}pass_depth_compare\(true\)[\s\S]{0,700}SDL_GPU_TEXTUREFORMAT_D32_FLOAT[\s\S]{0,700}shader_shadow_pipelines\[variant\]/,
+        /if \(render_features\.shader_shadow_variants\[variant\]\) \{[\s\S]{0,700}shadow_pipeline_info\.fragment_shader =\s*info\.depth_only_fragment \? variant_fragment_shader\s*:\s*state\.depth_only_fragment_shader\.get\(\);[\s\S]{0,700}pass_depth_compare\(true\)[\s\S]{0,700}SDL_GPU_TEXTUREFORMAT_D32_FLOAT[\s\S]{0,700}shader_shadow_pipelines\[variant\]/,
+    );
+    assert.match(
+        sdl,
+        /shadow_pipeline_info\.target_info\.color_target_descriptions = nullptr;\s*shadow_pipeline_info\.target_info\.num_color_targets = 0;/,
     );
     assert.match(
         sdl,
@@ -351,10 +355,13 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
         dawn,
         /depth_format = target\s*\? target->depth[\s\S]{0,100}shadow_pass\s*\? WGPUTextureFormat_Depth32Float/,
     );
-    assert.match(dawn, /descriptor\.fragment =\s*shadow_pass\s*\? nullptr/);
     assert.match(
         dawn,
-        /if \(!shadow_pass && !state\.shader_fragment_modules\[shader_variant\]\) \{/,
+        /const bool has_color = color_format != WGPUTextureFormat_Undefined;\s*const bool wants_fragment = has_color \|\| shader_info\.depth_only_fragment;\s*if \(wants_fragment && !state\.shader_fragment_modules\[shader_variant\]\) \{/,
+    );
+    assert.match(
+        dawn,
+        /fragment\.targetCount = has_color \? 1u : 0u;\s*fragment\.targets = has_color \? &color_target : nullptr;\s*descriptor\.fragment = wants_fragment \? &fragment : nullptr;/,
     );
     // Reflection describes uniform blocks, not whether a fragment stage
     // exists. A color shader without a fragment UBO is not a shadow caster.

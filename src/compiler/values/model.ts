@@ -65,6 +65,23 @@ export function withNativeMetadata(
     });
 }
 
+/** Copy only scalar facts that the source value actually carries. */
+export function scalarFacts(
+    value: Value,
+): Pick<Value, "staticString" | "staticNumber" | "staticBoolean"> {
+    return {
+        ...(value.staticString !== undefined
+            ? { staticString: value.staticString }
+            : {}),
+        ...(value.staticNumber !== undefined
+            ? { staticNumber: value.staticNumber }
+            : {}),
+        ...(value.staticBoolean !== undefined
+            ? { staticBoolean: value.staticBoolean }
+            : {}),
+    };
+}
+
 /** Whether a value's spelling reads storage that already exists. */
 export function readsNativeStorage(value: Value): boolean {
     return (

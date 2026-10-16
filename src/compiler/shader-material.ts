@@ -87,6 +87,7 @@ export interface ShaderMaterialContext
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
             | "expectStaticArrayElements"
+            | "resolveStaticLiteral"
             | "objectProperty"
             | "compileValue"
             | "compileNumber"
@@ -133,9 +134,12 @@ export function compileShaderMaterialOptions(
             "backFaceCulling",
             "depthWrite",
             "depthCompare",
+            "depthOnlyFragment",
+            "depthBias",
+            "depthBiasSlopeScale",
             "transmissive",
         ],
-        "Reached shader materials support source, attributes, uniforms, samplers, external textures, storage buffers, defines, alpha state and blend mode, culling, depthWrite, depthCompare and transmissive only.",
+        "Reached shader materials support source, attributes, uniforms, samplers, external textures, storage buffers, defines, alpha state and blend mode, culling, depthWrite, depthCompare, depthOnlyFragment, depthBias, depthBiasSlopeScale and transmissive only.",
     );
 
     const vertexExpression = context.objectProperty(object, "vertexSource");
@@ -234,6 +238,16 @@ export function compileShaderMaterialOptions(
         context.objectProperty(object, "depthWrite"),
         !needAlphaBlending,
     );
+    const depthOnlyFragmentExpression = context.objectProperty(
+        object,
+        "depthOnlyFragment",
+    );
+    const depthOnlyFragment = compileOptionalStaticBoolean(
+        context,
+        depthOnlyFragmentExpression,
+        false,
+        "Shader depthOnlyFragment",
+    );
     const depthCompareExpression = context.objectProperty(
         object,
         "depthCompare",
@@ -258,6 +272,31 @@ export function compileShaderMaterialOptions(
             depthCompareExpression!,
             `Unsupported shader depthCompare '${depthCompare}'.`,
         );
+    const depthBiasOptions: {
+        depthBias?: number;
+        depthBiasSlopeScale?: number;
+    } = {};
+    for (const option of ["depthBias", "depthBiasSlopeScale"] as const) {
+        const expression = context.objectProperty(object, option);
+        if (!expression) continue;
+        const value = context.compileValue(expression);
+        const number = value.kind === "json-null" ? 0 : value.staticNumber;
+        if (
+            number === undefined ||
+            !Number.isFinite(number) ||
+            (option === "depthBias"
+                ? !Number.isInteger(number) ||
+                  number < -2147483648 ||
+                  number > 2147483647
+                : !Number.isFinite(Math.fround(number)))
+        ) {
+            context.fail(
+                expression,
+                `Shader ${option} requires a static ${option === "depthBias" ? "signed 32-bit integer" : "finite float32 number"}.`,
+            );
+        }
+        depthBiasOptions[option] = number;
+    }
 
     // Scene-local variant: the entry file's own WGSL compiles through
     // the typed shader IR instead of matching a predeclared program.
@@ -316,6 +355,8 @@ export function compileShaderMaterialOptions(
         backFaceCulling,
         depthWrite,
         ...(depthCompare === undefined ? {} : { depthCompare }),
+        ...(depthOnlyFragmentExpression ? { depthOnlyFragment } : {}),
+        ...depthBiasOptions,
     };
     try {
         lowerWgslShaderProgram(sceneProgram);
@@ -399,7 +440,7 @@ function compileShaderSamplers(
         // dimension and comparison mode. Everything else goes through the
         // same static-string resolution `attributes` and `uniforms` take, so
         // a module constant naming a sampler works in all three.
-        const resolved = context.resolveStaticExpression(element);
+        const resolved = context.resolveStaticLiteral(element);
         let name: string;
         let sampleType: CompiledShaderSampler["sampleType"] = "float";
         let viewDimension: CompiledShaderSampler["viewDimension"] = "2d";
@@ -549,7 +590,7 @@ function compileShaderStorageBuffers(
     const buffers = context
         .expectStaticArrayElements(expression)
         .map((element): CompiledShaderStorageBuffer => {
-            const resolved = context.resolveStaticExpression(element);
+            const resolved = context.resolveStaticLiteral(element);
             if (!ts.isObjectLiteralExpression(resolved)) {
                 context.fail(
                     element,
@@ -676,7 +717,7 @@ function compileShaderUniformSignatures(
         components: string[];
     }> = [];
     const signatures = elements.map((element) => {
-        const resolved = context.resolveStaticExpression(element);
+        const resolved = context.resolveStaticLiteral(element);
         if (
             ts.isStringLiteral(resolved) ||
             ts.isNoSubstitutionTemplateLiteral(resolved)
@@ -779,9 +820,7 @@ function reachShaderProgram(
         JSON.stringify(candidate);
     const programIdentity = identity(program);
     const existing = context.sceneManifest.reachedShaderPrograms.findIndex(
-        (candidate) =>
-            candidate.name === program.name ||
-            identity(candidate) === programIdentity,
+        (candidate) => identity(candidate) === programIdentity,
     );
     if (existing >= 0) {
         return {
@@ -789,9 +828,19 @@ function reachShaderProgram(
             id: existing,
         };
     }
-    context.sceneManifest.reachedShaderPrograms.push(program);
+    let name = program.name;
+    let suffix = 1;
+    while (
+        context.sceneManifest.reachedShaderPrograms.some(
+            (candidate) => candidate.name === name,
+        )
+    )
+        name = `${program.name}-${suffix++}`;
+    context.sceneManifest.reachedShaderPrograms.push(
+        name === program.name ? program : { ...program, name },
+    );
     return {
-        name: program.name,
+        name,
         id: context.sceneManifest.reachedShaderPrograms.length - 1,
     };
 }
@@ -800,12 +849,8 @@ function reachShaderProgram(
  * Registers a program folded out of a pinned factory, composing it at most
  * once per variant name.
  *
- * `reachShaderProgram` already dedupes by name, but composing is the
- * expensive half -- it walks the pinned factory's own AST -- so the two
- * pinned-material families (`createLineMaterial`,
- * `createLinearDepthMaterial`) both memoized it before calling. That memo,
- * the shader-IR validation and its refusal wording live here instead of
- * once per family.
+ * Pinned factories have deterministic variant names. Memoizing those names
+ * avoids repeating their AST composition before structural registration.
  */
 export function reachFoldedShaderProgram(
     context: ShaderMaterialContext,

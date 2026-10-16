@@ -28,7 +28,7 @@ import {
     literalSelf,
     type LiteralSelf,
 } from "../home-object-methods.js";
-import { unaliasedValue } from "./aliasing.js";
+import { unaliasedDataRecord, unaliasedValue } from "./aliasing.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -594,22 +594,43 @@ function valueStruct(
     if (value.kind === "data" && value.dataType?.kind === "struct") {
         requireCopiedOwnUndefinedFields(lowerer, dataType, node, value);
         const sourceType = value.dataType;
+        const sourceFields = new EmissionMap(
+            lowerer.context.dataTypes
+                .structFields(sourceType.name, node, "accessors")
+                .map((field) => [field.sourceName, field]),
+        );
+        const fields = lowerer.context.dataTypes.structFields(
+            dataType.name,
+            node,
+            "accessors",
+        );
         // Receiver-aware slots retain presence independently of their payload.
-        // Their owner types must share one layout even for a fresh object.
-        if (
+        // Fresh plain literals can move their data into new owner cells;
+        // authored accessors and aliased records must share one layout.
+        const receiverAccessors =
             sourceType.name !== dataType.name &&
-            [sourceType, dataType].some((type) =>
-                lowerer.context.dataTypes
-                    .structFields(type.name, node, "accessors")
-                    .some((field) => field.accessorReceiver),
-            )
-        )
-            lowerer.context.dataTypes.joinSpreadTarget(sourceType, dataType);
+            [...sourceFields.values(), ...fields].some(
+                (field) => field.accessorReceiver,
+            );
+        const copyDataSlots =
+            receiverAccessors &&
+            unaliasedDataRecord(lowerer, value, node) &&
+            fields.every((field) => {
+                const source = sourceFields.get(field.sourceName);
+                return (
+                    (!source?.accessorReceiver || !!field.accessorReceiver) &&
+                    (!source?.accessor || !!source.accessorReceiver) &&
+                    (!field.accessor || !!field.accessorReceiver)
+                );
+            });
         // JavaScript stores the same object under the other type. A record
         // nothing else reaches, or one whose copy nothing can tell apart, is
         // copied; any other source shares one layout with the target or
         // refuses.
-        if (!unaliasedValue(lowerer, value, node))
+        if (
+            (receiverAccessors && !copyDataSlots) ||
+            !unaliasedValue(lowerer, value, node)
+        )
             lowerer.context.dataTypes.storeRecordAs(
                 sourceType,
                 dataType,
@@ -620,18 +641,14 @@ function valueStruct(
                     stored: lowerer.convertedExpression(node),
                 },
             );
-        const sourceFields = new EmissionMap(
-            lowerer.context.dataTypes
-                .structFields(sourceType.name, node, "accessors")
-                .map((field) => [field.sourceName, field]),
-        );
+        const held = copyDataSlots
+            ? lowerer.context.bindings.pinValueToTemporary(
+                  value,
+                  "record_data_source",
+              )
+            : value;
         const sourceArrow = lowerer.context.dataTypes.isReferenceStruct(
             sourceType.name,
-        );
-        const fields = lowerer.context.dataTypes.structFields(
-            dataType.name,
-            node,
-            "accessors",
         );
         const stored = new Set(fields.map((field) => field.sourceName));
         lowerer.context.dataTypes.noteRecordConversion(
@@ -649,6 +666,16 @@ function valueStruct(
                 );
                 const source = sourceFields.get(field.sourceName);
                 if (!source) {
+                    if (
+                        copyDataSlots &&
+                        field.accessorReceiver &&
+                        (field.defaultWhenMissing ||
+                            field.type.kind === "optional")
+                    )
+                        return lowerer.context.dataTypes.structFieldInitializerCpp(
+                            field,
+                            "{}",
+                        );
                     if (field.defaultWhenMissing) {
                         return "{}";
                     }
@@ -664,7 +691,34 @@ function valueStruct(
                     source,
                     node,
                 );
-                const sourceCpp = `${value.cpp}${sourceArrow ? "->" : "."}${source.name}`;
+                const sourceCpp = `${held.cpp}${sourceArrow ? "->" : "."}${source.name}`;
+                if (copyDataSlots && field.accessorReceiver) {
+                    let stored = "";
+                    const lines = lowerer.context.captureEmittedLines(() => {
+                        stored = lowerer.compileMemberForSink(
+                            lowerer.leafValue(
+                                source.accessorReceiver
+                                    ? `${sourceCpp}.get()`
+                                    : sourceCpp,
+                                source.type,
+                            ),
+                            field.type,
+                            node,
+                            field.sourceName,
+                        );
+                    });
+                    const slot =
+                        lowerer.context.dataTypes.structFieldCppType(field);
+                    const initialized =
+                        lowerer.context.dataTypes.structFieldInitializerCpp(
+                            field,
+                            stored,
+                        );
+                    const presence = source.accessorReceiver
+                        ? `if (!${sourceCpp}.has_own()) return {}; `
+                        : "";
+                    return `([&]() -> ${slot} { ${presence}${lines.join(" ")} return ${initialized}; }())`;
+                }
                 // One object seen through two record types keeps its
                 // accessors; a stored value becomes the target's cell.
                 if (source.accessor || field.accessor) {

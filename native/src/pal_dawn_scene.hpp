@@ -148,6 +148,8 @@ struct DawnShaderBindings {
     DawnBindGroup material{};
     /** The render-target views the resource group was built from, by sampler slot. */
     std::vector<WGPUTextureView> render_views;
+    std::optional<std::uint64_t> resource_version;
+    std::vector<StorageBufferHandle> storage_buffers;
 };
 
 struct DawnShaderBindingKey {
@@ -453,6 +455,7 @@ struct DawnSharedShaderGeometry {
 /** Texture/sampler triples shared by every mesh using one material. */
 struct DawnSharedMaterialTextures {
     MaterialHandle material{};
+    std::uint64_t texture_version = 0;
     std::vector<DawnSampledTexture> textures;
     std::vector<std::shared_ptr<DawnTexture>> image_leases;
     std::size_t users = 0;
@@ -1244,15 +1247,24 @@ struct DawnState : DawnDevice {
         render_tasks.clear();
     }
 
-    /** Drop groups that can name a recreated storage or shadow-map view. */
-    void release_shader_bindings() {
-        const auto release = [](std::vector<DawnMesh>& mesh_list) {
+    /** Drop groups before their resources retire; one texture material keeps its uniform groups. */
+    void release_shader_bindings(std::optional<MaterialHandle> material = {}) {
+        const auto release = [material](std::vector<DawnMesh>& mesh_list) {
             for (DawnMesh& mesh : mesh_list) {
+                if (material && (!mesh.shared_shader_textures ||
+                                 mesh.shared_shader_textures->material != *material))
+                    continue;
                 for (auto& [key, bindings] : mesh.shader_bindings) {
                     (void)key;
-                    release_dawn_shader_bindings(bindings);
+                    if (material) {
+                        bindings.resources.reset();
+                        bindings.resource_version.reset();
+                    } else {
+                        release_dawn_shader_bindings(bindings);
+                    }
                 }
-                mesh.shader_bindings.clear();
+                if (!material)
+                    mesh.shader_bindings.clear();
             }
         };
         release(meshes);
@@ -3150,6 +3162,8 @@ DawnMeshBindings& diagnostic_bindings_for(DawnState& state, DawnMesh& mesh);
  * queue writes: what the diagnostic and depth-only draws read through
  * `serve_mesh_stage_binding`.
  */
+void refresh_shader_material_textures(DawnState& state, const Engine& engine);
+
 void write_mesh_stage_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                              const MeshRecord& mesh, const DawnMeshResources& gpu);
 

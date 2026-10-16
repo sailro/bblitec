@@ -1707,6 +1707,7 @@ struct TextureSamplerState {
     TextureAddressMode address_v = TextureAddressMode::repeat;
     float max_anisotropy = 1.0f;
     float max_lod = 1000.0f;
+    bool operator==(const TextureSamplerState&) const = default;
 };
 
 /**
@@ -3168,6 +3169,10 @@ struct MaterialRecord {
     // bindings resolved against the scene's `textures` record. Empty for
     // every other family, and for a program that samples nothing.
     std::vector<FileTexture> shader_textures;
+    /** Sampler slots changed since their shared GPU texture upload. */
+    std::uint64_t shader_texture_version = 0;
+    /** Texture or storage slots changed since a shader bind group was built. */
+    std::uint64_t shader_resource_version = 0;
     /** Shader slots a render target fills, resolved where each draw binds them. */
     std::vector<std::optional<RenderTextureRef>> shader_render_textures;
     /** A shader material's `transmissive` option: its draws wait for a transmission grab. */
@@ -4238,6 +4243,10 @@ struct Engine {
      * native device it uses, so it retires first.
      */
     std::shared_ptr<GpuDevice> webgpu_device;
+    /** Weak ownership census for thin buffers published through this device. */
+    std::unordered_map<const ThinInstancePoolData*, std::weak_ptr<ThinInstancePoolData>>
+        thin_instance_gpu_owners;
+    std::size_t thin_instance_gpu_prune_count = 0;
     /** `engine._currentEncoder` while a renderer prepares a pass's external renderables. */
     std::shared_ptr<GpuCommandEncoder> current_encoder;
     /**
@@ -4873,6 +4882,37 @@ void set_global_callback(Engine& engine, std::string key, std::function<void()> 
 std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(Engine& engine);
 void disable_device_recovery(const std::shared_ptr<DeviceRecoveryRegistration>& registration);
 void force_device_loss(Engine& engine);
+inline void track_thin_instance_gpu_pool(Engine& engine,
+                                         const std::shared_ptr<ThinInstancePoolData>& pool) {
+    if (!pool)
+        return;
+    auto& owners = engine.thin_instance_gpu_owners;
+    const auto [entry, inserted] = owners.try_emplace(pool.get(), pool);
+    if (!inserted) {
+        if (entry->second.expired())
+            entry->second = pool;
+        return;
+    }
+    if (++engine.thin_instance_gpu_prune_count >= std::max<std::size_t>(64, owners.size() / 2)) {
+        std::erase_if(owners, [](const auto& entry) { return entry.second.expired(); });
+        engine.thin_instance_gpu_prune_count = 0;
+    }
+}
+inline void assert_thin_instance_device_recovery_supported(Engine& engine) {
+    const auto live = [](const GpuHandle& buffer) { return buffer && buffer->resource_alive(); };
+    for (auto entry = engine.thin_instance_gpu_owners.begin();
+         entry != engine.thin_instance_gpu_owners.end();) {
+        const auto pool = entry->second.lock();
+        if (!pool) {
+            entry = engine.thin_instance_gpu_owners.erase(entry);
+            continue;
+        }
+        if (live(pool->gpu_buffer) || live(pool->color_gpu_buffer) || live(pool->draw_args_buffer))
+            throw std::runtime_error(
+                "Device recovery does not represent live thin-instance GPU buffer ownership.");
+        ++entry;
+    }
+}
 void begin_device_recovery(Engine& engine);
 void complete_device_recovery(Engine& engine);
 void fail_device_recovery(Engine& engine, const std::string& error);
@@ -5272,16 +5312,33 @@ inline void PickingInfo::bind_engine(Engine& engine) {
     state->engine_lifetime = engine.lifetime.token();
 }
 
+/** Upload the exact source view's byte range, including numeric subarrays. */
+template <typename Data>
+[[nodiscard]] inline std::span<const std::uint8_t> storage_buffer_bytes(const Data& data) {
+    if constexpr (requires {
+                      data.buffer();
+                      data.byte_offset();
+                      data.byte_length();
+                  }) {
+        if (data.byte_length() == 0)
+            return {};
+        return {data.buffer().data() + data.byte_offset(), data.byte_length()};
+    } else {
+        using Element = typename Data::value_type;
+        return {reinterpret_cast<const std::uint8_t*>(data.data()), data.size() * sizeof(Element)};
+    }
+}
+
 /** Copy a typed-array view into an engine-owned GPU storage record. */
 template <typename Data>
 [[nodiscard]] inline StorageBufferHandle create_storage_buffer(Engine& engine, const Data& data,
                                                                std::string label) {
-    using Element = typename Data::value_type;
+    const auto bytes = storage_buffer_bytes(data);
     Engine::StorageBufferRecord record;
-    const std::size_t byte_length = data.size() * sizeof(Element);
+    const std::size_t byte_length = bytes.size();
     record.bytes.resize(byte_length);
     if (byte_length != 0) {
-        std::memcpy(record.bytes.data(), data.data(), byte_length);
+        std::memcpy(record.bytes.data(), bytes.data(), byte_length);
     }
     record.label = std::move(label);
     const StorageBufferHandle handle{static_cast<std::uint32_t>(engine.storage_buffers.size())};
@@ -5293,13 +5350,10 @@ template <typename Data>
 template <typename Data>
 inline void update_storage_buffer(Engine& engine, StorageBufferHandle handle, const Data& data,
                                   double byte_offset) {
+    const auto bytes = storage_buffer_bytes(data);
     Engine::StorageBufferRecord* found = handle_find(engine.storage_buffers, handle);
     if (found && found->gpu) {
-        using Element = typename Data::value_type;
-        found->gpu->update(
-            engine, handle.value,
-            {reinterpret_cast<const std::uint8_t*>(data.data()), data.size() * sizeof(Element)},
-            byte_offset);
+        found->gpu->update(engine, handle.value, bytes, byte_offset);
         return;
     }
     if (!found || !std::isfinite(byte_offset) || byte_offset < 0.0 ||
@@ -5310,14 +5364,13 @@ inline void update_storage_buffer(Engine& engine, StorageBufferHandle handle, co
     if (record.disposed) {
         throw std::runtime_error("Cannot update a disposed storage buffer.");
     }
-    using Element = typename Data::value_type;
     const std::size_t offset = static_cast<std::size_t>(byte_offset);
-    const std::size_t byte_length = data.size() * sizeof(Element);
+    const std::size_t byte_length = bytes.size();
     if (offset > record.bytes.size() || byte_length > record.bytes.size() - offset) {
         throw std::runtime_error("Storage-buffer update exceeds its allocation.");
     }
     if (byte_length != 0) {
-        std::memcpy(record.bytes.data() + offset, data.data(), byte_length);
+        std::memcpy(record.bytes.data() + offset, bytes.data(), byte_length);
     }
     ++record.version;
 }
@@ -6557,6 +6610,8 @@ void set_scene_shader_uniform_value(Engine& engine, std::size_t slot, std::uint3
 }
 void set_shader_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                         FileTexture texture);
+std::uint32_t shader_texture_slot_by_name(Engine& engine, MaterialHandle material,
+                                          const std::string& name, bool is_depth_texture);
 MaterialRecord& shader_material(Engine& engine, MaterialHandle handle);
 VideoHandle create_baked_video(int ready_state);
 VideoHandle create_baked_video(const std::string& path, std::uint32_t width, std::uint32_t height,
@@ -6567,6 +6622,8 @@ void set_shader_external_texture(Engine& engine, MaterialHandle material, std::u
                                  ExternalTextureHandle texture);
 void set_shader_storage_buffer(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                StorageBufferHandle buffer);
+void set_shader_storage_buffer_by_name(Engine& engine, MaterialHandle material,
+                                       const std::string& name, StorageBufferHandle buffer);
 void set_shader_render_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                RenderTextureRef texture);
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,

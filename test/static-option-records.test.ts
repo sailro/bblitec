@@ -5,8 +5,8 @@ import { compileSource } from "../src/compiler.js";
 
 /**
  * Static option positions (shader-material lists and records) read a
- * parameterless module function's returned literal and a spread generation
- * settles, and refuse what they cannot settle.
+ * closed helper's returned data and a spread generation settles, and refuse
+ * what they cannot settle.
  */
 
 const shaderMaterial = (prelude: string, options: string) => `
@@ -54,10 +54,8 @@ test("reads the literal a parameterless module function returns", () => {
     }
 });
 
-test("leaves calls the static reader cannot replace to their own refusal", () => {
+test("reads closed descriptor helpers with scalar arguments and local bindings", () => {
     for (const [prelude, call] of [
-        // A parameter, a body with more than a return, recursion and an
-        // async function all keep the call.
         [
             `function uniforms(name: string) { return [name] as const; }`,
             `uniforms("worldViewProjection")`,
@@ -66,19 +64,35 @@ test("leaves calls the static reader cannot replace to their own refusal", () =>
             `function uniforms() { const list = ["worldViewProjection"] as const; return list; }`,
             "uniforms()",
         ],
+    ] as const) {
+        const compiled = program(
+            prelude,
+            `uniforms: [...${call}, { name: "uTint", type: "vec4<f32>", defaultValue: [0.25, 0.5, 0.75, 1] }],`,
+        );
+        assert.deepEqual(compiled.uniforms, [
+            "worldViewProjection",
+            "uTint:vec4<f32>",
+        ]);
+        assert.deepEqual(compiled.uniformDefaults, [
+            { name: "uTint", values: [0.25, 0.5, 0.75, 1] },
+        ]);
+    }
+});
+
+test("refuses recursive and asynchronous descriptor helpers", () => {
+    for (const [prelude, call, expected] of [
         [
             `function uniforms(): readonly string[] { return uniforms(); }`,
             "uniforms()",
+            /Builder 'uniforms' threw at generation: Maximum call stack size exceeded/,
         ],
         [
             `async function uniforms() { return ["worldViewProjection"] as const; }`,
             "await uniforms()",
+            /Builder 'uniforms' returned a value that is not plain data/,
         ],
     ] as const) {
-        assert.throws(
-            () => program(prelude, `uniforms: ${call},`),
-            /Expected a static array literal/,
-        );
+        assert.throws(() => program(prelude, `uniforms: ${call},`), expected);
     }
 });
 

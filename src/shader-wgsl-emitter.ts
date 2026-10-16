@@ -246,6 +246,9 @@ function emitStruct(structure: ShaderStruct): string {
 }
 
 function emitEntryPoint(entry: ShaderEntryPoint): string {
+    const result = entry.returnType
+        ? ` -> ${memberAttribute({ attribute: entry.returnAttribute })}${entry.returnType}`
+        : "";
     return [
         `@${entry.stage}`,
         `fn ${entry.name}(${entry.parameters
@@ -253,9 +256,7 @@ function emitEntryPoint(entry: ShaderEntryPoint): string {
                 (parameter) =>
                     `${memberAttribute(parameter)}${parameter.name}: ${parameter.type}`,
             )
-            .join(
-                ", ",
-            )}) -> ${memberAttribute({ attribute: entry.returnAttribute })}${entry.returnType} {`,
+            .join(", ")})${result} {`,
         ...emitStatements(entry.statements, "    "),
         "}",
     ].join("\n");
@@ -280,9 +281,16 @@ function memberAttribute(member: {
     attribute?: ShaderStruct["members"][number]["attribute"];
 }): string {
     if (!member.attribute) return "";
-    return member.attribute.kind === "builtin"
-        ? `@builtin(${member.attribute.value}) `
-        : `@location(${member.attribute.value}) `;
+    const location =
+        member.attribute.kind === "builtin"
+            ? `@builtin(${member.attribute.value}) `
+            : `@location(${member.attribute.value}) `;
+    return (
+        location +
+        (member.attribute.interpolation
+            ? `@interpolate(${member.attribute.interpolation.join(", ")}) `
+            : "")
+    );
 }
 
 function emitUniformBlock(
@@ -468,19 +476,10 @@ export function emitNativeWgslProgram(
                   "};",
               ].join("\n")
             : undefined;
-    // Native shader inputs carry attributes on their reflected structs;
-    // this entry interface preserves only a direct return location.
+    // Struct members and direct entry parameters both carry authored stage IO.
     const entry: ShaderEntryPoint = {
         ...module.entryPoint,
         stage,
-        parameters: module.entryPoint.parameters.map(({ name, type }) => ({
-            name,
-            type,
-        })),
-        returnAttribute:
-            module.entryPoint.returnAttribute?.kind === "location"
-                ? module.entryPoint.returnAttribute
-                : undefined,
     };
     return [
         "// Native-specialized WGSL generated from the bblitec typed shader IR.",

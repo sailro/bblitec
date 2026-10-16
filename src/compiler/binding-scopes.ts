@@ -12,7 +12,7 @@ import { CPP_SCALAR } from "../lowering/cpp-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { syntaxKindName } from "../source-location.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { isDeclaredInside, unwrapExpression } from "./syntax.js";
+import { isDeclaredInside, literalMember, unwrapExpression } from "./syntax.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     isHandleKind,
@@ -128,6 +128,8 @@ export class BindingScopes {
     private readonly rootScope = this.variableScopes[0]!;
     /** @unjournaled Derived alias graph observes every source mutation and rollback. */
     private readonly factIndex = new ScopedValueIndex(this.variableScopes);
+    private readonly invalidatedRecordMaps = new EmissionWeakSet<object>();
+    private readonly sharedRecordMaps = new EmissionWeakSet<object>();
     /** @unjournaled Derived from the program alone, on first use. */
     private readonly codeReadsByNode = new WeakMap<ts.Node, CodeReads>();
     /** @unjournaled Derived from the program alone, on first use. */
@@ -886,6 +888,25 @@ export class BindingScopes {
             return;
         }
         innermost.set(symbol, rebound);
+        // A branch or loop in the declaring invocation updates the same
+        // native handle slot. Only generation facts shared by both paths
+        // survive the join; a nested callback still has the refusal below.
+        const declaration = symbol.valueDeclaration;
+        if (
+            declaration &&
+            value.kind === binding.value.kind &&
+            isHandleKind(value.kind) &&
+            ts.findAncestor(identifier, ts.isFunctionLike) ===
+                ts.findAncestor(declaration, ts.isFunctionLike)
+        ) {
+            const shared = commonResourceValue(binding.value, [
+                binding.value,
+                value,
+            ]);
+            this.context.describeNativeValue(shared);
+            owner.set(symbol, { ...binding, value: shared });
+            return;
+        }
         // A retained element's generation facts (tag, construction identity,
         // canvas and host roles) are knowledge: an element without them is
         // any element, which the native calls check. After a nested rebind
@@ -1146,7 +1167,11 @@ export class BindingScopes {
         owner.set(symbol, { ...binding, value });
     }
 
-    public bindParameterValue(identifier: ts.Identifier, value: Value): void {
+    public bindParameterValue(
+        identifier: ts.Identifier,
+        value: Value,
+        argument?: ts.Expression,
+    ): void {
         let narrowed =
             value.kind === "data"
                 ? this.context.dataLowerer.narrowForDeclaration(
@@ -1216,6 +1241,7 @@ export class BindingScopes {
             true,
             undefined,
             this.context.mutableCapturedParameter(identifier, narrowed),
+            argument,
         );
     }
 
@@ -1225,6 +1251,7 @@ export class BindingScopes {
         parameter: boolean,
         explicitCppName?: string,
         sharedStorage = false,
+        argument?: ts.Expression,
     ): void {
         this.context.useNativeValue(value);
         const nativeRecordOwner = isNativeOwnerRecord(value);
@@ -1276,10 +1303,36 @@ export class BindingScopes {
                 !this.context.classOf(owner);
             const plainScalar = (member: Value): boolean =>
                 !member.sharedRecordScalar &&
-                !member.nativeBinding &&
                 (member.kind === "number" ||
                     member.kind === "boolean" ||
                     isStringValue(member));
+            const scalarStorage = (type: DataType): boolean =>
+                [
+                    "number",
+                    "boolean",
+                    "string",
+                    "enum",
+                    "null",
+                    "undefined",
+                    "bigint",
+                    "symbol",
+                ].includes(type.kind) ||
+                ((type.kind === "optional" || type.kind === "tagged") &&
+                    scalarStorage(type.inner)) ||
+                (type.kind === "union" && type.members.every(scalarStorage));
+            const scalarSequence = (member: Value): boolean => {
+                const type =
+                    member.kind === "data" ? member.dataType : undefined;
+                return (
+                    type !== undefined &&
+                    (type.kind === "tuple" ||
+                        isTypedArrayType(type) ||
+                        (type.kind === "vector" &&
+                            scalarStorage(type.element)) ||
+                        (type.kind === "product" &&
+                            type.elements.every(scalarStorage)))
+                );
+            };
             const independentFields =
                 rawOwner(value) &&
                 Object.keys(value.recordGetters ?? {}).length === 0 &&
@@ -1288,6 +1341,7 @@ export class BindingScopes {
                 Object.values(value.recordProperties ?? {}).every(
                     (member) =>
                         plainScalar(member) ||
+                        scalarSequence(member) ||
                         (member.kind === "tuple" &&
                             rawOwner(member) &&
                             member.tupleElements !== undefined &&
@@ -1320,6 +1374,7 @@ export class BindingScopes {
                                 ),
                                 [name],
                                 independentFields,
+                                argument,
                             ),
                     )
                     .map(([name]) => name),
@@ -1494,7 +1549,10 @@ export class BindingScopes {
                 kind: "declaration",
                 type: nativeType,
                 name: cppName,
-                initializer: initializerCpp,
+                initializer:
+                    nativeType === "std::string"
+                        ? `std::string{${initializerCpp}}`
+                        : initializerCpp,
                 attributes: "[[maybe_unused]] ",
             });
         }
@@ -1524,7 +1582,7 @@ export class BindingScopes {
         const constantParameter =
             readOnlyParameter &&
             ((value.kind === "number" && value.staticNumber !== undefined) ||
-                (value.kind === "string" && value.staticString !== undefined) ||
+                (isStringValue(value) && value.staticString !== undefined) ||
                 (value.kind === "boolean" &&
                     value.staticBoolean !== undefined)) &&
             !value.parameterBinding;
@@ -1616,9 +1674,18 @@ export class BindingScopes {
             elements?.[0]?.staticElementIndex === 0 &&
             elements[0].staticElementsOwner === owner;
         if (recordSnapshot)
-            for (const element of elements ?? [])
-                for (const key of Object.keys(element.recordProperties ?? {}))
-                    delete writable(element.recordProperties!)[key];
+            for (const element of elements ?? []) {
+                const properties = element.recordProperties;
+                if (!properties) continue;
+                if (
+                    element.dataType?.kind === "union" ||
+                    this.sharedRecordMaps.has(properties)
+                )
+                    this.invalidateRecordMap(properties);
+                else
+                    for (const key of Object.keys(properties))
+                        delete writable(properties)[key];
+            }
         const cardinality =
             owner.collectionCardinality ?? value.collectionCardinality;
         if (cardinality && !preserveCardinality) {
@@ -1659,19 +1726,36 @@ export class BindingScopes {
         invalidate(owner);
     }
 
+    /** A saved, unbound view must not revive a map withdrawn from live aliases. */
+    public recordPropertiesAreCurrent(value: Value): boolean {
+        return (
+            value.recordProperties === undefined ||
+            !this.invalidatedRecordMaps.has(value.recordProperties)
+        );
+    }
+
+    /** An indexed view retains the source record's field-map identity. */
+    public retainRecordPropertiesAlias(value: Value): void {
+        if (value.recordProperties)
+            this.sharedRecordMaps.add(value.recordProperties);
+    }
+
+    private invalidateRecordMap(
+        properties: Readonly<Record<string, Value>>,
+    ): void {
+        this.invalidatedRecordMaps.add(properties);
+        for (const candidate of this.factIndex.matching([properties]))
+            if (candidate.recordProperties === properties)
+                delete writable(candidate).recordProperties;
+    }
+
     /** Invalidate one native map/object snapshot through all shared aliases. */
     public invalidateRecordProperties(value: Value): void {
         if (value.staticElementsOwner) this.invalidateStaticElements(value);
         const properties = value.recordProperties;
         if (!properties) return;
-        const invalidate = (candidate: Value): void => {
-            if (candidate.recordProperties === properties) {
-                delete writable(candidate).recordProperties;
-            }
-        };
-        for (const candidate of this.factIndex.matching([properties]))
-            invalidate(candidate);
-        invalidate(value);
+        this.invalidateRecordMap(properties);
+        delete writable(value).recordProperties;
     }
 
     /** Materialize mutable members when a compile-time value escapes. */
@@ -1983,7 +2067,7 @@ export class BindingScopes {
                 initializer:
                     value.kind === "engine"
                         ? value.cpp
-                        : snapshotReadCpp(value),
+                        : (value.ownedCpp ?? snapshotReadCpp(value)),
                 attributes: "[[maybe_unused]] ",
             });
             const pinned = this.withPickingEngine(
@@ -1995,6 +2079,7 @@ export class BindingScopes {
                 },
                 cpp,
             );
+            delete pinned.ownedCpp;
             delete pinned.optionalStorageCpp;
             delete pinned.stableOwnerCpp;
             if (type === "auto") this.context.registerNativeConstBinding(cpp);
@@ -2178,6 +2263,16 @@ export class BindingScopes {
                 node,
                 "A retained record field requires native data storage.",
             );
+        if (
+            represented.kind === "data" &&
+            value.recordProperties &&
+            this.recordPropertiesAreCurrent(value)
+        ) {
+            this.retainRecordPropertiesAlias(value);
+            writable(represented).recordProperties = value.recordProperties;
+            if (value.recordOwnKeys)
+                writable(represented).recordOwnKeys = value.recordOwnKeys;
+        }
         const metadata = {
             sharedStorageCpp: storage,
             nativeLvalue: true as const,
@@ -2197,6 +2292,15 @@ export class BindingScopes {
         parameter?: ts.ParameterDeclaration,
         path: readonly string[] = [],
     ): Value {
+        if (
+            field &&
+            propertyIsReadOnly(field) &&
+            (value.staticString !== undefined ||
+                value.staticNumber !== undefined ||
+                value.staticBoolean !== undefined) &&
+            !value.parameterBinding
+        )
+            return { ...value, readOnly: true };
         const present = this.context.checker.getNonNullableType(type);
         if (
             field &&
@@ -2333,6 +2437,107 @@ export class BindingScopes {
             this.context.classOf(value) !== undefined
         )
             return undefined;
+        const retainFields = (
+            projected: Value,
+            type: DataType<"struct">,
+        ): Value => {
+            const literal = unwrapExpression(node);
+            const properties = value.recordProperties;
+            if (
+                properties &&
+                this.recordPropertiesAreCurrent(value) &&
+                ts.isObjectLiteralExpression(literal) &&
+                !Object.keys(value.recordMethods ?? {}).length &&
+                !Object.keys(value.recordGetters ?? {}).length &&
+                !Object.keys(value.recordSetters ?? {}).length &&
+                !Object.hasOwn(properties, "__proto__") &&
+                Object.values(properties).every(
+                    (property) => !property.conditionalOwnKey,
+                )
+            ) {
+                // Keep the evaluated field map shared with the native owner.
+                // Field reads still select native storage and apply the
+                // declared readonly/resource rules; aliases withdraw together.
+                projected = this.pinValueToTemporary(projected, "record", node);
+                for (const field of this.context.dataTypes.structFields(
+                    type.name,
+                    node,
+                    "accessors",
+                )) {
+                    const source = properties[field.sourceName];
+                    const memberType =
+                        field.type.kind === "optional"
+                            ? field.type.inner
+                            : field.type;
+                    if (
+                        source?.kind !== "tuple" ||
+                        memberType.kind !== "vector"
+                    )
+                        continue;
+                    const storedSlot = `${projected.cpp}->${field.name}`;
+                    const slot = field.accessor
+                        ? `${storedSlot}.get()`
+                        : storedSlot;
+                    const member = this.context.dataLowerer.leafValue(
+                        field.type.kind === "optional" ? `(*${slot})` : slot,
+                        memberType,
+                    );
+                    this.context.dataLowerer.retainArrayLiteralFacts(
+                        member,
+                        source,
+                        node,
+                    );
+                    writable(properties)[field.sourceName] = member;
+                }
+                this.retainRecordPropertiesAlias(value);
+                projected = valueForKind("data", {
+                    ...projected,
+                    recordProperties: properties,
+                    recordOwnKeys:
+                        value.recordOwnKeys ?? Object.keys(properties),
+                });
+            }
+            return projected;
+        };
+        const projectRecord = (type: DataType<"struct">): Value => {
+            const fields =
+                ts.isObjectLiteralExpression(unwrapExpression(node)) &&
+                this.recordPropertiesAreCurrent(value) &&
+                !Object.keys(value.recordMethods ?? {}).length &&
+                !Object.keys(value.recordGetters ?? {}).length &&
+                !Object.keys(value.recordSetters ?? {}).length
+                    ? Object.entries(value.recordProperties ?? {}).flatMap(
+                          ([key, member]) =>
+                              member.freshData &&
+                              !member.conditionalOwnKey &&
+                              member.dataType?.kind === "vector" &&
+                              member.staticElements
+                                  ? [
+                                        {
+                                            key,
+                                            value: member,
+                                            node:
+                                                literalMember(node, key) ??
+                                                node,
+                                        },
+                                    ]
+                                  : [],
+                      )
+                    : [];
+            return this.context.dataLowerer.withRetainedArraySinks(fields, () =>
+                retainFields(
+                    this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            value,
+                            type,
+                            node,
+                        ),
+                        type,
+                    ),
+                    type,
+                ),
+            );
+        };
         return this.context.probeEmission(() => {
             const mutableContainer = this.recordHasMutableContainer(value);
             const storedCallbacks = Object.values(
@@ -2356,16 +2561,9 @@ export class BindingScopes {
                 this.context.dataTypes
                     .structFields(declared.name, node, "accessors")
                     .some((field) => field.accessorReceiver);
-            if (receiverRecord)
+            if (receiverRecord && declared?.kind === "struct")
                 return {
-                    ...this.context.dataLowerer.leafValue(
-                        this.context.dataLowerer.compileKnownValueForSink(
-                            value,
-                            declared,
-                            node,
-                        ),
-                        declared,
-                    ),
+                    ...projectRecord(declared),
                     freshData: true,
                 };
             if (
@@ -2478,6 +2676,7 @@ export class BindingScopes {
                     recordProperties: properties,
                 });
             }
+            projected = retainFields(projected, stored);
             return { ...projected, freshData: true };
         });
     }
@@ -2650,7 +2849,12 @@ export class BindingScopes {
                 !unchangedFields?.has(name) &&
                 !property.sharedRecordScalar &&
                 !property.sharedRecordContainer &&
-                !(property.readOnly && property.staticString !== undefined) &&
+                !(
+                    property.readOnly &&
+                    (property.staticString !== undefined ||
+                        property.staticNumber !== undefined ||
+                        property.staticBoolean !== undefined)
+                ) &&
                 !(
                     classFields &&
                     property.sharedStorageCpp &&
@@ -2673,7 +2877,12 @@ export class BindingScopes {
                 properties[name] = property;
                 continue;
             }
-            if (property.readOnly && property.staticString !== undefined) {
+            if (
+                property.readOnly &&
+                (property.staticString !== undefined ||
+                    property.staticNumber !== undefined ||
+                    property.staticBoolean !== undefined)
+            ) {
                 properties[name] = property;
                 continue;
             }

@@ -28,7 +28,7 @@ import {
     borrowsReferenceParameter,
     type UserFunctionContext,
 } from "./user-functions.js";
-import { parameterIsReadOnly } from "./parameter-effects.js";
+import { parameterIsReadOnly, parameterOnlyRead } from "./parameter-effects.js";
 import { firstReturn } from "./loop-control.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
@@ -3032,6 +3032,18 @@ export class ClassLowerer {
                                   argument,
                               )
                             : rawValue;
+                    if (
+                        value.kind === "data" &&
+                        (value.recordProperties || value.staticElementsOwner) &&
+                        (!ts.isIdentifier(declaration.name) ||
+                            !ts.isMethodDeclaration(declaration.parent) ||
+                            !parameterOnlyRead(
+                                this.context.checker,
+                                declaration.parent,
+                                declaration.name,
+                            ))
+                    )
+                        this.context.bindings.invalidateRecordProperties(value);
                     if (
                         value.kind === "data" &&
                         value.dataType &&

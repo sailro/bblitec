@@ -3587,7 +3587,11 @@ export class PropertyAccessLowerer {
         if (character) return character;
         const physics = readPhysicsProperty(this.context, owner, expression);
         if (physics) return physics;
-        const staticProperty = owner.recordProperties?.[expression.name.text];
+        const staticProperty = this.context.bindings.recordPropertiesAreCurrent(
+            owner,
+        )
+            ? owner.recordProperties?.[expression.name.text]
+            : undefined;
         if (
             staticProperty &&
             !(owner.kind === "data" && owner.dataType?.kind === "struct")

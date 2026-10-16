@@ -9,6 +9,7 @@ import {
     presenceFlagCpp,
     readsNativeStorage,
     representedStorage,
+    scalarFacts,
     statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
@@ -546,6 +547,7 @@ interface DataLoweringContext extends Pick<
     | "nativeEmission"
     | "checker"
     | "evaluationOrder"
+    | "impureReadCount"
     | "bindings"
     | "sharedClosures"
     | "dataTypes"
@@ -1934,7 +1936,7 @@ export class DataLowerer {
     }
 
     public markEscaped(value: Value): void {
-        this.invalidateRecordArrayFacts(value);
+        this.invalidateStoredArrayFacts(value);
         if (value.kind !== "data" || this.sharesObjectStorage(value.dataType)) {
             return;
         }
@@ -5148,20 +5150,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const slot = this.context.dataTypes.isReferenceStruct(dataType.name)
                 ? `${owner.cpp}->${field.name}`
                 : `${owner.cpp}.${field.name}`;
-            // An accessor-backed field runs its getter on every read.
-            if (field.accessor)
+            // Authored getters do not expose a stored field snapshot.
+            if (field.accessor && !field.accessorReceiver)
                 return {
                     ...this.leafValue(`${slot}.get()`, field.type),
                     impure: true,
                 };
-            const value = this.leafValue(slot, field.type);
-            writable(value).nativeLvalue = true;
+            // A generated receiver cell still runs its native read.
+            const value = this.leafValue(
+                field.accessor ? `${slot}.get()` : slot,
+                field.type,
+            );
+            if (field.accessor) writable(value).impure = true;
+            else writable(value).nativeLvalue = true;
             if (field.uncheckedProperty)
                 writable(value).preserveUncheckedLookup = true;
             // The slot's own declarations, should a use demand it retyped.
             if (field.declarations)
                 writable(value).slotDeclarations = field.declarations;
-            const sourceField = owner.recordProperties?.[property];
+            const sourceField =
+                this.context.bindings.recordPropertiesAreCurrent(owner)
+                    ? owner.recordProperties?.[property]
+                    : undefined;
             const sourceType = this.context.checker.getTypeAtLocation(
                 access.expression,
             );
@@ -5183,12 +5193,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 stableResourceField ||
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
                 field.readOnly ||
+                sourceField?.readOnly ||
                 (owner.recordProperties !== undefined &&
                     owner.staticElementIndex !== undefined &&
                     owner.staticElementsOwner?.staticElements?.[
                         owner.staticElementIndex
                     ]?.recordProperties === owner.recordProperties)
-                    ? owner.recordProperties?.[property]
+                    ? sourceField
                     : undefined;
             if (staticField && field.type.kind === "handle") {
                 const transported = withCommonResourceMetadata(value, [
@@ -5200,25 +5211,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             if (
                 staticField &&
-                field.type.kind === "vector" &&
-                field.type.element.kind === "handle"
+                (field.type.kind === "vector" ||
+                    (field.type.kind === "optional" &&
+                        field.type.inner.kind === "vector"))
             ) {
+                const facts = staticField.staticElementsOwner ?? staticField;
                 return {
                     ...value,
-                    ...(staticField.staticElements
-                        ? { staticElements: staticField.staticElements }
+                    ...(facts.staticElements
+                        ? { staticElements: facts.staticElements }
                         : {}),
-                    ...(staticField.staticElements
+                    ...(facts.staticElements
                         ? {
-                              staticElementsOwner:
-                                  staticField.staticElementsOwner ??
-                                  staticField,
+                              staticElementsOwner: facts,
                           }
                         : {}),
-                    ...(staticField.runtimeElementTemplate
+                    ...(facts.runtimeElementTemplate
                         ? {
                               runtimeElementTemplate:
-                                  staticField.runtimeElementTemplate,
+                                  facts.runtimeElementTemplate,
                           }
                         : {}),
                 };
@@ -9000,31 +9011,100 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         node: ts.Node,
     ): void {
         const type = owner.dataType;
+        const elements =
+            initializer.tupleElements ??
+            initializer.staticElementsOwner?.staticElements ??
+            initializer.staticElements;
+        if (type?.kind !== "vector" || !elements) return;
         if (
-            type?.kind !== "vector" ||
-            type.element.kind !== "struct" ||
-            initializer.kind !== "tuple" ||
-            !initializer.tupleElements
+            elements.some(
+                (element) =>
+                    !this.context.bindings.recordPropertiesAreCurrent(element),
+            )
         )
             return;
+        if (
+            type.element.kind === "union" ||
+            (type.element.kind === "struct" &&
+                elements.every(
+                    (element) =>
+                        element.kind === "data" &&
+                        element.dataType?.kind === "struct",
+                ))
+        ) {
+            if (
+                !elements.every(
+                    (element) =>
+                        !element.parameterBinding &&
+                        (element.staticString !== undefined ||
+                            element.staticNumber !== undefined ||
+                            element.staticBoolean !== undefined ||
+                            (element.recordProperties !== undefined &&
+                                (element.recordOwnKeys !== undefined ||
+                                    element.kind === "record") &&
+                                Object.keys(element.recordGetters ?? {})
+                                    .length === 0 &&
+                                Object.keys(element.recordSetters ?? {})
+                                    .length === 0 &&
+                                Object.keys(element.recordMethods ?? {})
+                                    .length === 0)),
+                )
+            )
+                return;
+            const captures = this.context.captureNativeDependencies(() =>
+                this.context.useNativeValue(owner),
+            );
+            for (const element of elements)
+                this.context.bindings.retainRecordPropertiesAlias(element);
+            writable(owner).staticElements = elements.map((element, index) => ({
+                kind: "data",
+                cpp: `bbl::js::array_index_checked(${owner.cpp}, ${index}.0, ${this.context.cppString(sceneRelativeSourceLabel(node))})`,
+                dataType: type.element,
+                nativeCaptures: captures.nativeCaptures,
+                staticElementsOwner: owner,
+                staticElementIndex: index,
+                ...(type.element.kind === "struct"
+                    ? { optionalFoundCpp: "true" }
+                    : {}),
+                ...scalarFacts(element),
+                ...(element.recordProperties
+                    ? {
+                          // Keep the source identity: writes through either
+                          // record view invalidate the same indexed fact map.
+                          recordProperties: element.recordProperties,
+                          recordOwnKeys:
+                              element.recordOwnKeys ??
+                              Object.keys(element.recordProperties),
+                      }
+                    : {}),
+            }));
+            return;
+        }
+        if (
+            ["number", "boolean", "string", "enum"].includes(type.element.kind)
+        ) {
+            const captures = this.context.captureNativeDependencies(() =>
+                this.context.useNativeValue(owner),
+            );
+            writable(owner).staticElements = elements.map((element, index) => ({
+                ...this.leafValue(
+                    `bbl::js::array_index_checked(${owner.cpp}, ${index}.0, ${this.context.cppString(sceneRelativeSourceLabel(node))})`,
+                    type.element,
+                ),
+                nativeCaptures: captures.nativeCaptures,
+                ...(!element.parameterBinding ? scalarFacts(element) : {}),
+            }));
+            return;
+        }
+        if (type.element.kind !== "struct") return;
         const fields = this.context.dataTypes.structFields(
             type.element.name,
             node,
             "accessors",
         );
+        if (fields.some((field) => field.accessor)) return;
         if (
-            fields.some(
-                (field) =>
-                    field.accessor ||
-                    field.optionalProperty ||
-                    !["number", "boolean", "string", "enum", "handle"].includes(
-                        field.type.kind,
-                    ),
-            )
-        )
-            return;
-        if (
-            !initializer.tupleElements.every(
+            !elements.every(
                 (element) =>
                     element.kind === "record" &&
                     element.recordProperties &&
@@ -9033,8 +9113,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     Object.keys(element.recordMethods ?? {}).length === 0 &&
                     fields.every(
                         (field) =>
+                            field.optionalProperty ||
                             element.recordProperties?.[field.sourceName] !==
-                            undefined,
+                                undefined,
                     ),
             )
         )
@@ -9046,38 +9127,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const reference = this.context.dataTypes.isReferenceStruct(
             elementType.name,
         );
-        writable(owner).staticElements = initializer.tupleElements.map(
-            (element, index) => {
-                const cpp = `bbl::js::array_index_checked(${owner.cpp}, ${index}.0, ${this.context.cppString(sceneRelativeSourceLabel(node))})`;
-                const recordProperties: Record<string, Value> = {};
-                for (const field of fields) {
-                    const source = element.recordProperties![field.sourceName]!;
-                    recordProperties[field.sourceName] = {
-                        ...this.leafValue(
-                            `${cpp}${reference ? "->" : "."}${field.name}`,
-                            field.type,
-                        ),
-                        nativeCaptures: captures.nativeCaptures,
-                        ...(source.staticNumber !== undefined
-                            ? { staticNumber: source.staticNumber }
-                            : {}),
-                        ...(source.staticString !== undefined
-                            ? { staticString: source.staticString }
-                            : {}),
-                        ...(source.staticBoolean !== undefined
-                            ? { staticBoolean: source.staticBoolean }
-                            : {}),
-                    };
-                }
-                const value = this.leafValue(cpp, elementType);
-                writable(value).nativeCaptures = captures.nativeCaptures;
-                writable(value).optionalFoundCpp = "true";
-                writable(value).staticElementsOwner = owner;
-                writable(value).staticElementIndex = index;
-                writable(value).recordProperties = recordProperties;
-                return value;
-            },
-        );
+        writable(owner).staticElements = elements.map((element, index) => {
+            const cpp = `bbl::js::array_index_checked(${owner.cpp}, ${index}.0, ${this.context.cppString(sceneRelativeSourceLabel(node))})`;
+            const recordProperties: Record<string, Value> = {};
+            for (const field of fields) {
+                const source = element.recordProperties![field.sourceName];
+                if (!source || source.parameterBinding) continue;
+                if (
+                    source.staticNumber === undefined &&
+                    source.staticString === undefined &&
+                    source.staticBoolean === undefined &&
+                    field.type.kind !== "handle"
+                )
+                    continue;
+                recordProperties[field.sourceName] = {
+                    ...this.leafValue(
+                        `${cpp}${reference ? "->" : "."}${field.name}`,
+                        field.type,
+                    ),
+                    nativeCaptures: captures.nativeCaptures,
+                    ...scalarFacts(source),
+                };
+            }
+            const value = this.leafValue(cpp, elementType);
+            writable(value).nativeCaptures = captures.nativeCaptures;
+            writable(value).optionalFoundCpp = "true";
+            writable(value).staticElementsOwner = owner;
+            writable(value).staticElementIndex = index;
+            writable(value).recordProperties = recordProperties;
+            writable(value).recordOwnKeys = Object.keys(
+                element.recordProperties!,
+            );
+            return value;
+        });
     }
 
     /** Clear a complete element snapshot through every compiler alias. */
@@ -9109,10 +9191,51 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             value.staticElements?.[0]?.staticElementsOwner;
         if (
             owner &&
+            owner.staticElements?.some(
+                (element) => element.recordProperties !== undefined,
+            ) &&
             owner.staticElements?.[0]?.staticElementIndex === 0 &&
             owner.staticElements[0].staticElementsOwner === owner
         )
             this.invalidateEscapingCollection(owner);
+    }
+
+    /** A stored scalar array alias can replace elements outside the binding graph. */
+    private invalidateStoredArrayFacts(value: Value): void {
+        this.invalidateRecordArrayFacts(value);
+        if (
+            !value.freshData &&
+            value.dataType?.kind === "vector" &&
+            ["number", "boolean", "string", "enum"].includes(
+                value.dataType.element.kind,
+            )
+        )
+            this.invalidateEscapingCollection(value);
+    }
+
+    /** @unjournaled Active only while one tracked record is stored; restored by finally. */
+    private retainedArraySinks:
+        readonly { value: Value; node: ts.Expression }[] | undefined;
+
+    /** Keep fresh array fields only while the resulting record retains their owner. */
+    public withRetainedArraySinks(
+        fields: readonly { value: Value; node: ts.Expression; key: string }[],
+        work: () => Value,
+    ): Value {
+        const previous = this.retainedArraySinks;
+        this.retainedArraySinks = fields;
+        try {
+            const result = work();
+            for (const field of fields)
+                if (
+                    result.recordProperties?.[field.key] !== field.value ||
+                    !this.context.bindings.recordPropertiesAreCurrent(result)
+                )
+                    this.invalidateRecordArrayFacts(field.value);
+            return result;
+        } finally {
+            this.retainedArraySinks = previous;
+        }
     }
 
     /**
@@ -10891,7 +11014,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (value.cameraVector)
             this.context.admissions.noteCameraVectorCopy(value, node);
         this.context.useNativeValue(value);
-        this.invalidateRecordArrayFacts(value);
+        const storedType =
+            dataType.kind === "optional" ? dataType.inner : dataType;
+        const trackedArrayField = this.retainedArraySinks?.some(
+            (field) =>
+                field.node === node &&
+                field.value === value &&
+                value.freshData &&
+                value.dataType?.kind === "vector" &&
+                dataTypesEqual(value.dataType, storedType),
+        );
+        if (!trackedArrayField) this.invalidateStoredArrayFacts(value);
         // A stored tuple aliases its source. Once that alias leaves the local
         // binding graph, generation cannot retain a snapshot of its contents.
         if (value.dataType?.kind === "tuple")
@@ -11177,7 +11310,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.materializeStaticTable(expression) ??
             this.context.compileValue(expression);
         const value = this.narrowOptional(rawValue, expression);
-        this.invalidateRecordArrayFacts(value);
+        this.invalidateStoredArrayFacts(value);
         if (isJsonValue(value))
             return this.compileKnownValueForSink(value, dataType, expression);
         if (value.dataType?.kind === "tuple")
@@ -12333,7 +12466,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   "copy_source",
                   ts.isExpression(source) ? source : undefined,
               );
-        const declaredType = this.context.checker.getTypeAtLocation(source);
+        const declaredType = this.context.dataTypes.resolveTypeParameter(
+            this.context.checker.getTypeAtLocation(source),
+        );
         const sourceFields = new EmissionMap(
             this.context.dataTypes
                 .structFields(sourceType.name, source, "accessors")
@@ -19291,9 +19426,83 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public spreadSource(
         spread: ts.SpreadElement,
         dataType: DataType<"vector">,
+        copiedRecordSources?: Value[],
     ): Value & { freshSpread?: true } {
         const expression = this.context.unwrap(spread.expression);
         if (ts.isConditionalExpression(expression)) {
+            if (
+                [
+                    "number",
+                    "boolean",
+                    "string",
+                    "enum",
+                    "union",
+                    "struct",
+                ].includes(dataType.element.kind)
+            ) {
+                const condition = this.context.probeEmission(() => {
+                    const reads = this.context.impureReadCount;
+                    let compiled: string | undefined;
+                    const effects = this.context.captureEmittedStatements(
+                        () => {
+                            compiled = this.context.conditions.compileCondition(
+                                expression.condition,
+                            );
+                        },
+                    );
+                    return effects.length === 0 &&
+                        this.context.impureReadCount === reads
+                        ? compiled
+                        : undefined;
+                });
+                if (condition === "true" || condition === "false") {
+                    const selected = this.context.unwrap(
+                        condition === "true"
+                            ? expression.whenTrue
+                            : expression.whenFalse,
+                    );
+                    const value = this.context.compileValue(selected);
+                    if (
+                        copiedRecordSources &&
+                        value.dataType &&
+                        dataTypesEqual(value.dataType, dataType)
+                    ) {
+                        if (
+                            this.context.dataTypes.carriesBorrowedPlatformEvent(
+                                dataType.element,
+                            )
+                        )
+                            this.context.refuseBorrowedPlatformEventEscape(
+                                value,
+                                spread,
+                                "Array spread",
+                            );
+                        copiedRecordSources.push(value);
+                        return {
+                            ...value,
+                            ...(ts.isArrayLiteralExpression(selected)
+                                ? { freshSpread: true as const }
+                                : {}),
+                        };
+                    }
+                    const cpp = this.compileKnownValueForSink(
+                        value,
+                        dataType,
+                        selected,
+                    );
+                    const elements =
+                        value.tupleElements ??
+                        value.staticElementsOwner?.staticElements ??
+                        value.staticElements;
+                    return {
+                        ...this.leafValue(cpp, dataType),
+                        ...(elements ? { staticElements: elements } : {}),
+                        ...(ts.isArrayLiteralExpression(selected)
+                            ? { freshSpread: true as const }
+                            : {}),
+                    };
+                }
+            }
             // Fresh branches inherit the destination element type before
             // their tuples choose narrower native storage independently.
             return this.leafValue(
@@ -19352,7 +19561,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             spread.expression,
             true,
         );
-        this.invalidateRecordArrayFacts(iterable);
+        // A copied array can keep linked record identities when its caller
+        // retains every element. Otherwise the new alias escapes tracking.
+        if (copiedRecordSources) copiedRecordSources.push(iterable);
+        else this.invalidateRecordArrayFacts(iterable);
         if (
             this.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.element,
@@ -19417,6 +19629,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     )
                     .join(", ")}}`,
                 dataType: { kind: "vector", element: dataType.element },
+                ...([
+                    "number",
+                    "boolean",
+                    "string",
+                    "enum",
+                    "union",
+                    "struct",
+                ].includes(dataType.element.kind)
+                    ? { staticElements: iterated.lanes }
+                    : {}),
             };
         }
         const sourceElement = iterated?.element;
@@ -19543,13 +19765,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType & {
             kind: "vector";
         },
+        retainElements?: (elements: readonly Value[] | undefined) => void,
+        copiedRecordSources?: Value[],
     ): string {
         if (ts.isArrayLiteralExpression(unwrapped)) {
             this.context.reachJsData();
             const spreads = unwrapped.elements.filter(ts.isSpreadElement);
             if (spreads.length > 0) {
                 if (spreads.length === 1 && unwrapped.elements.length === 1) {
-                    const iterable = this.spreadSource(spreads[0]!, dataType);
+                    const iterable = this.spreadSource(
+                        spreads[0]!,
+                        dataType,
+                        copiedRecordSources,
+                    );
+                    retainElements?.(
+                        iterable.staticElementsOwner?.staticElements ??
+                            iterable.staticElements,
+                    );
                     if (iterable.freshSpread) return iterable.cpp;
                     return `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(${iterable.cpp})`;
                 }
@@ -19565,16 +19797,49 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     initializer: "{}",
                 });
                 this.context.registerNativeTemporary(result, dataType);
+                let elements: Value[] | undefined = retainElements
+                    ? []
+                    : undefined;
                 for (const element of unwrapped.elements) {
                     let statement: string;
                     if (ts.isSpreadElement(element)) {
-                        const iterable = this.spreadSource(element, dataType);
+                        const iterable = this.spreadSource(
+                            element,
+                            dataType,
+                            copiedRecordSources,
+                        );
+                        const known =
+                            iterable.staticElementsOwner?.staticElements ??
+                            iterable.staticElements;
+                        if (elements && known)
+                            elements.push(
+                                ...known.map((value) =>
+                                    dataType.element.kind === "union"
+                                        ? value
+                                        : { ...value },
+                                ),
+                            );
+                        else elements = undefined;
                         statement = `bbl::js::array_append(${result}, ${iterable.cpp});`;
+                    } else if (retainElements) {
+                        const value = this.context.compileValue(element);
+                        elements?.push(
+                            dataType.element.kind === "union"
+                                ? value
+                                : { ...value },
+                        );
+                        const converted = this.compileKnownValueForSink(
+                            value,
+                            dataType.element,
+                            element,
+                        );
+                        statement = `${result}.push_back(${converted});`;
                     } else {
                         statement = `${result}.push_back(${this.compileForRetainedSink(element, dataType.element, "Array literal")});`;
                     }
                     this.context.emit({ kind: "expression", code: statement });
                 }
+                retainElements?.(elements);
                 return result;
             }
             const pins = this.context.evaluationOrder.operandsToPin(

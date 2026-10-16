@@ -1163,6 +1163,10 @@ function compileKnownDataMethod(
             ])[0]
                 ? "const auto"
                 : "const auto&";
+        const receiverInitializer =
+            receiverBinding === "const auto"
+                ? `bbl::js::snapshot_value(${narrowed.cpp})`
+                : narrowed.cpp;
         const field = lowerer.context.dataTypes.findStructField(
             recordType.name,
             method,
@@ -1191,7 +1195,7 @@ function compileKnownDataMethod(
                     kind: "declaration",
                     type: receiverBinding,
                     name: receiver,
-                    initializer: narrowed.cpp,
+                    initializer: receiverInitializer,
                 });
                 return lowerer.compileStoredCall(
                     call,
@@ -1214,7 +1218,7 @@ function compileKnownDataMethod(
                 kind: "declaration",
                 type: receiverBinding,
                 name: receiver,
-                initializer: narrowed.cpp,
+                initializer: receiverInitializer,
             });
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
@@ -1242,7 +1246,7 @@ function compileKnownDataMethod(
                 kind: "declaration",
                 type: receiverBinding,
                 name: receiver,
-                initializer: narrowed.cpp,
+                initializer: receiverInitializer,
             });
             const record = optional ? `(*${receiver})` : receiver;
             const present = optional
@@ -3509,6 +3513,10 @@ function compileMapDataMethod(
                     lowerer.leafValue(`(*${result})`, dataType.value),
                     known,
                 ),
+                // Copying a lookup must not dereference a missing resource
+                // before its source guard runs. Its presence stays separate;
+                // direct reads still use the checked present-value spelling.
+                ownedCpp: `${result}.value_or(${lowerer.context.dataTypes.cppType(dataType.value)}{})`,
                 optionalFoundCpp: optionalPresentCpp(result),
                 optionalStorageCpp: `${result}.to_optional()`,
                 ...(slotFoundCpp ? { slotFoundCpp } : {}),
@@ -4027,7 +4035,7 @@ function compileStringDataMethod(
         const begin = lowerer.context.castNumber(staticBegin, "double");
         const end = staticEnd
             ? lowerer.context.castNumber(staticEnd, "double")
-            : `static_cast<double>(${narrowed.cpp}.size())`;
+            : "std::numeric_limits<double>::infinity()";
         return {
             kind: "data",
             cpp: `bbl::js::string_slice(${narrowed.cpp}, ${begin}, ${end})`,

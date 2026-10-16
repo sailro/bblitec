@@ -12,6 +12,8 @@ import { recordAt } from "../../compiler/record-access.js";
 import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
 import { lowerNodeInputScalarSetter } from "../node-input-uniform-lowerer.js";
 import { lowerPixelsTextureWrites } from "../pixels-texture-writes.js";
+import { lowerShaderStorageNameBinding } from "../shader-storage-bindings.js";
+import { lowerShaderTextureNameBinding } from "../shader-texture-bindings.js";
 import {
     lowerShaderUniformApi,
     lowerShaderUniformRangeUpdates,
@@ -548,11 +550,12 @@ void set_shader_uniform_value(
     set_shader_uniform_values(engine, material, offset, 4u, values);
 }
 
+${lowerShaderTextureNameBinding(this.context)}
+
 // setShaderTexture: the pin stores the Texture2D on the slot the sampler
 // name owns and bumps _resourceVersion so the group-1 bind group rebuilds.
-// The compiler resolved the name to that slot; the version has no native
-// counterpart because a reached scene binds before registration, so the
-// bind group is built once from what the record holds.
+// Texture uploads and resource groups follow separate versions: replacing
+// storage changes a group without re-uploading its unchanged images.
 void set_shader_texture(
     Engine& engine,
     MaterialHandle material,
@@ -567,9 +570,36 @@ void set_shader_texture(
     if (record.shader_textures.size() <= slot) {
         record.shader_textures.resize(slot + 1);
     }
+    const FileTexture& previous = record.shader_textures[slot];
+    const bool same_image = texture.data.pixels
+        ? previous.data.pixels == texture.data.pixels
+        : texture.identity != 0 && previous.identity == texture.identity;
+    const bool render_bound = slot < record.shader_render_textures.size() &&
+                              record.shader_render_textures[slot].has_value();
+#if BBLITE_SHADOWS_CSM
+    const bool csm_bound = slot < record.shader_csm_textures.size() &&
+                          record.shader_csm_textures[slot].value != invalid_handle;
+#else
+    constexpr bool csm_bound = false;
+#endif
+    if (same_image && !render_bound && !csm_bound &&
+        previous.data.sampler == texture.data.sampler &&
+        previous.data.srgb == texture.data.srgb &&
+        previous.data.rgba_width == texture.data.rgba_width &&
+        previous.data.rgba_height == texture.data.rgba_height &&
+        previous.data.invert_y == texture.data.invert_y &&
+        previous.data.premultiply_alpha == texture.data.premultiply_alpha &&
+        previous.data.gpu_source == texture.data.gpu_source)
+        return;
     record.shader_textures[slot] = std::move(texture);
     if (slot < record.shader_render_textures.size())
         record.shader_render_textures[slot].reset();
+#if BBLITE_SHADOWS_CSM
+    if (slot < record.shader_csm_textures.size())
+        record.shader_csm_textures[slot] = {};
+#endif
+    ++record.shader_texture_version;
+    ++record.shader_resource_version;
 }
 
 // A render target's colour texture in the same slot: each draw binds the
@@ -591,7 +621,19 @@ void set_shader_render_texture(
     if (record.shader_render_textures.size() <= slot) {
         record.shader_render_textures.resize(slot + 1);
     }
+    const auto& previous = record.shader_render_textures[slot];
+    if (previous && previous->source == texture.source &&
+        previous->target == texture.target && previous->task == texture.task &&
+        previous->depth_only == texture.depth_only)
+        return;
     record.shader_render_textures[slot] = texture;
+    record.shader_textures[slot] = {};
+#if BBLITE_SHADOWS_CSM
+    if (slot < record.shader_csm_textures.size())
+        record.shader_csm_textures[slot] = {};
+#endif
+    ++record.shader_texture_version;
+    ++record.shader_resource_version;
 }
 
 void set_shader_storage_buffer(
@@ -607,8 +649,13 @@ void set_shader_storage_buffer(
     if (record.shader_storage_buffers.size() <= slot) {
         record.shader_storage_buffers.resize(slot + 1);
     }
+    if (record.shader_storage_buffers[slot] == buffer)
+        return;
     record.shader_storage_buffers[slot] = buffer;
+    ++record.shader_resource_version;
 }
+
+${lowerShaderStorageNameBinding(this.context)}
 
 #if BBLITE_SHADOWS_CSM
 void set_shader_csm_texture(
@@ -628,7 +675,14 @@ void set_shader_csm_texture(
     if (record.shader_csm_textures.size() <= slot) {
         record.shader_csm_textures.resize(slot + 1);
     }
+    if (record.shader_csm_textures[slot].value == generator.value)
+        return;
     record.shader_csm_textures[slot] = generator;
+    record.shader_textures[slot] = {};
+    if (slot < record.shader_render_textures.size())
+        record.shader_render_textures[slot].reset();
+    ++record.shader_texture_version;
+    ++record.shader_resource_version;
 }
 #endif
 

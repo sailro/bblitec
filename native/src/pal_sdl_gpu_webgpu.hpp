@@ -285,6 +285,15 @@ struct SdlWebGpuBuffer final : GpuObject,
 
     std::size_t byte_size() const { return gpu_size(size); }
     const void* device_identity() const override { return owner->device; }
+    bool resource_alive() const noexcept override {
+        if (destroyed || !owner || !owner->device)
+            return false;
+        if (kind == SdlWebGpuBufferKind::gpu)
+            return buffer && buffer->live();
+        if (kind == SdlWebGpuBufferKind::readback)
+            return transfer && transfer->live();
+        return true;
+    }
     std::optional<std::size_t> buffer_capacity() const override { return byte_size(); }
     SDL_GPUBuffer* gpu_buffer() const {
         if (kind != SdlWebGpuBufferKind::gpu)

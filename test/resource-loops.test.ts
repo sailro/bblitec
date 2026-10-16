@@ -1413,7 +1413,7 @@ test("small sign loops do not duplicate an expensive data callback", () => {
         };
         for (const sign of [1, -1] as const) patch(sign);
     `);
-    assert.match(result.cpp, /for \(std::size_t/);
+    assert.equal(result.cpp.match(/for \(/g)?.length, 1);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 80);
 });
 

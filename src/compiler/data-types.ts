@@ -1,5 +1,6 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
 import { isEngineScopedHandleKind } from "./data-types/handles.js";
+import { AssertedHandleFieldStorageRequired } from "./asserted-handle-field-storage.js";
 import {
     EngineOwnerStorageRequired,
     isEngineOwnerStorageDeclaration,
@@ -99,6 +100,7 @@ import {
     stringLiteral,
 } from "../cpp-literals.js";
 import {
+    accessedPropertySymbol,
     declaredIn,
     declaredInDefaultLibrary,
     declaredInDomLibrary,
@@ -2729,6 +2731,67 @@ export class DataTypeRegistry {
         );
     }
 
+    /** A reached native-handle assertion settles an otherwise erased field's layout. */
+    public requireAssertedHandleFieldStorage(
+        expression: ts.Expression,
+        target: DataType,
+    ): void {
+        const present =
+            target.kind === "optional" || target.kind === "tagged"
+                ? target.inner
+                : target;
+        if (present.kind !== "handle") return;
+        const access = unwrapExpression(expression);
+        if (
+            !ts.isPropertyAccessExpression(access) &&
+            !ts.isElementAccessExpression(access)
+        )
+            return;
+        const property = accessedPropertySymbol(this.checker, access);
+        const declaration =
+            property?.declarations?.length === 1
+                ? property.declarations[0]
+                : undefined;
+        if (
+            !declaration ||
+            (!ts.isPropertySignature(declaration) &&
+                !ts.isPropertyDeclaration(declaration)) ||
+            (this.checker.getTypeAtLocation(declaration).flags &
+                ts.TypeFlags.Unknown) ===
+                0
+        )
+            return;
+        const storage = this.engineOwnedStorage(target);
+        const known = this.storage.assertedHandleFields.get(declaration);
+        if (!known)
+            throw new AssertedHandleFieldStorageRequired(declaration, storage);
+        if (!dataTypesEqual(known, storage))
+            this.fail(
+                expression,
+                "An erased field has incompatible native handle assertions.",
+            );
+    }
+
+    private assertedHandleFieldStorage(
+        node: ts.Node,
+        property?: ts.Symbol,
+    ): DataType | undefined {
+        const declaration =
+            property?.declarations?.length === 1
+                ? property.declarations[0]
+                : ts.isPropertySignature(node) || ts.isPropertyDeclaration(node)
+                  ? node
+                  : node.parent &&
+                      (ts.isPropertySignature(node.parent) ||
+                          ts.isPropertyDeclaration(node.parent)) &&
+                      node.parent.name === node
+                    ? node.parent
+                    : undefined;
+        return (
+            declaration && this.storage.assertedHandleFields.get(declaration)
+        );
+    }
+
     private engineFieldStorage(
         type: DataType,
         declarations: readonly ts.Declaration[] | undefined,
@@ -2924,23 +2987,28 @@ export class DataTypeRegistry {
                 ? "its record types have no checked source"
                 : sharedArray
                   ? "the array holding them is one shared array"
-                  : union && this.isReferenceStruct(sourceType.name)
-                    ? "a union view shares its arm's storage"
-                    : recordCopyObservation(
-                          observation,
-                          source.type,
-                          target.type,
-                          targetFields.map((field) => field.sourceName),
-                          sourceFields.some(
-                              (field) =>
-                                  !targetFields.some(
-                                      (candidate) =>
-                                          candidate.sourceName ===
-                                          field.sourceName,
-                                  ),
-                          ),
-                          argument,
-                      );
+                  : sourceType.name !== targetType.name &&
+                      [...sourceFields, ...targetFields].some(
+                          (field) => field.accessorReceiver,
+                      )
+                    ? "receiver-aware property slots retain their owner"
+                    : union && this.isReferenceStruct(sourceType.name)
+                      ? "a union view shares its arm's storage"
+                      : recordCopyObservation(
+                            observation,
+                            source.type,
+                            target.type,
+                            targetFields.map((field) => field.sourceName),
+                            sourceFields.some(
+                                (field) =>
+                                    !targetFields.some(
+                                        (candidate) =>
+                                            candidate.sourceName ===
+                                            field.sourceName,
+                                    ),
+                            ),
+                            argument,
+                        );
         // A copy lent to a callee that only reads it lives for the call.
         if (observed === undefined || lentForCall) return;
         this.requireSharedValueViews(sourceType, targetType);
@@ -6515,6 +6583,8 @@ export class DataTypeRegistry {
         node: ts.Node,
         property?: ts.Symbol,
     ): DataType | undefined {
+        const assertedHandle = this.assertedHandleFieldStorage(node, property);
+        if (assertedHandle) return assertedHandle;
         const resolved = this.resolveTypeParameter(type);
         const members = resolved.isUnion() ? resolved.types : [resolved];
         // A required null-only field has storage before its record joins
@@ -7981,6 +8051,8 @@ export class DataTypeRegistry {
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
+        const assertedHandle = this.assertedHandleFieldStorage(node);
+        if (assertedHandle) return assertedHandle;
         return this.withClassDemand(false, () => this.fromTsType(type, node));
     }
 

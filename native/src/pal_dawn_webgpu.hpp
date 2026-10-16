@@ -100,6 +100,7 @@ struct DawnWebGpuBuffer final : GpuObject,
 
     std::size_t byte_size() const { return gpu_size(size); }
     const void* device_identity() const override { return owner->queue; }
+    bool resource_alive() const noexcept override { return lease && lease->live(); }
     std::optional<std::size_t> buffer_capacity() const override { return byte_size(); }
     void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
         require_webgpu_buffer_write(usage, mapping, byte_size(), offset, bytes.size());

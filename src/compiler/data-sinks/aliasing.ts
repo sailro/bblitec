@@ -2,12 +2,13 @@ import ts from "typescript";
 
 import type { DataType } from "../data-types.js";
 import {
+    returnsOnly,
     yieldsFreshObject,
     yieldsFreshRecordElements,
     yieldsNewArray,
 } from "../fresh-records.js";
 import { returnedRecordLocal } from "../record-observations.js";
-import { unwrapExpression } from "../syntax.js";
+import { propertyNameText, unwrapExpression } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { DataSinkHost } from "./contracts.js";
 
@@ -90,4 +91,33 @@ export function unaliasedValue(
             ts.isCallExpression(expression))
         ? "object"
         : undefined;
+}
+
+/** A directly returned fresh literal has data slots, even where a spread read getters. */
+export function unaliasedDataRecord(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): boolean {
+    if (!unaliasedValue(lowerer, value, node)) return false;
+    const converted = lowerer.convertedExpression(node);
+    if (!converted) return false;
+    const dataLiteral = (expression: ts.Expression): boolean => {
+        const literal = unwrapExpression(expression);
+        return (
+            ts.isObjectLiteralExpression(literal) &&
+            literal.properties.every(
+                (property) =>
+                    ts.isSpreadAssignment(property) ||
+                    ((ts.isPropertyAssignment(property) ||
+                        ts.isShorthandPropertyAssignment(property)) &&
+                        !ts.isComputedPropertyName(property.name) &&
+                        propertyNameText(property.name) !== "__proto__"),
+            )
+        );
+    };
+    const expression = unwrapExpression(converted);
+    return ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)
+        ? returnsOnly(expression, new Set(), dataLiteral)
+        : dataLiteral(expression);
 }

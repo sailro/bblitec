@@ -2,6 +2,7 @@ import {
     commonResourceValue,
     isStringValue,
     optionalPresentCpp,
+    scalarFacts,
     statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
@@ -68,6 +69,7 @@ import {
     parameterOnlyRead,
 } from "./parameter-effects.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
@@ -88,6 +90,7 @@ import {
     isAssignmentExpression,
     isUpdateExpression,
     mutatingCallTarget,
+    outermostWrapper,
     rootIdentifier,
     sourceFunctionName,
     unwrapExpression,
@@ -163,7 +166,38 @@ function generationKnownPrimitive(value: Value): boolean {
     );
 }
 
-function generationKnownStringArgument(value: Value): boolean {
+/** Array snapshots copy scalars or keep plain record values and their aliases. */
+export function snapshotArrayLiteral(
+    expression: ts.Expression,
+    type: DataType,
+): ts.ArrayLiteralExpression | undefined {
+    const literal = unwrapExpression(expression);
+    if (type.kind !== "vector" || !ts.isArrayLiteralExpression(literal))
+        return undefined;
+    if (["number", "boolean", "string", "enum"].includes(type.element.kind))
+        return literal;
+    if (
+        type.element.kind === "struct" &&
+        literal.elements.every((element) => {
+            const record = unwrapExpression(element);
+            return (
+                ts.isIdentifier(record) ||
+                (ts.isObjectLiteralExpression(record) &&
+                    record.properties.every(
+                        (property) =>
+                            (ts.isPropertyAssignment(property) ||
+                                ts.isShorthandPropertyAssignment(property)) &&
+                            !ts.isComputedPropertyName(property.name) &&
+                            property.name.text !== "__proto__",
+                    ))
+            );
+        })
+    )
+        return literal;
+    return undefined;
+}
+
+export function generationKnownStringArgument(value: Value): boolean {
     const completed = new Map<Value, boolean>();
     const known = (candidate: Value): boolean => {
         if (generationKnownPrimitive(candidate)) return true;
@@ -1593,9 +1627,14 @@ export class UserFunctionLowerer {
         context: UserFunctionContext,
         parameter: UserFunctionParameterIr,
         value: Value,
+        argument?: ts.Expression,
     ): void {
         if (ts.isIdentifier(parameter.name)) {
-            context.bindings.bindParameterValue(parameter.name, value);
+            context.bindings.bindParameterValue(
+                parameter.name,
+                value,
+                argument,
+            );
             return;
         }
         if (ts.isObjectBindingPattern(parameter.name)) {
@@ -1676,6 +1715,7 @@ export class UserFunctionLowerer {
         declaration: SupportedFunction,
         parameter: UserFunctionParameterIr,
         value: Value,
+        argument?: ts.Expression,
     ): void {
         if (
             generationKnownPrimitive(value) &&
@@ -1685,7 +1725,7 @@ export class UserFunctionLowerer {
             context.bindings.bindCompileTimeValue(parameter.name, value);
             return;
         }
-        this.bindParameter(context, parameter, value);
+        this.bindParameter(context, parameter, value, argument);
     }
 
     /**
@@ -1893,6 +1933,157 @@ export class UserFunctionLowerer {
                     ts.isExpression(call) ? call : undefined,
                     true,
                 );
+            const arrayReturn =
+                ir.returnExpression && returnType
+                    ? snapshotArrayLiteral(ir.returnExpression, returnType)
+                    : undefined;
+            const recordReturn =
+                ir.returnExpression && context.unwrap(ir.returnExpression);
+            if (
+                !group &&
+                returnType?.kind === "struct" &&
+                recordReturn &&
+                ts.isObjectLiteralExpression(recordReturn) &&
+                recordReturn.properties.every(
+                    (property) =>
+                        (ts.isPropertyAssignment(property) ||
+                            ts.isShorthandPropertyAssignment(property)) &&
+                        !ts.isComputedPropertyName(property.name) &&
+                        property.name.text !== "__proto__",
+                ) &&
+                ir.statements.length === 0 &&
+                !context.evaluationOrder.writesStorage(recordReturn) &&
+                argumentValues.every(generationKnownStringArgument)
+            ) {
+                const fields = context.dataTypes.structFields(
+                    returnType.name,
+                    call,
+                    "accessors",
+                );
+                if (
+                    fields.every(
+                        (field) =>
+                            !field.accessor &&
+                            ["number", "boolean", "string"].includes(
+                                field.type.kind,
+                            ),
+                    )
+                ) {
+                    let facts:
+                        | Record<
+                              string,
+                              Pick<
+                                  Value,
+                                  | "staticNumber"
+                                  | "staticBoolean"
+                                  | "staticString"
+                              >
+                          >
+                        | undefined;
+                    let ownKeys: readonly string[] | undefined;
+                    try {
+                        context.probeEmission(() => {
+                            this.lower(
+                                context,
+                                ir,
+                                argumentValues,
+                                call,
+                                false,
+                                undefined,
+                                (value) => {
+                                    if (
+                                        !context.bindings.recordPropertiesAreCurrent(
+                                            value,
+                                        )
+                                    )
+                                        return;
+                                    ownKeys = Object.keys(
+                                        value.recordProperties ?? {},
+                                    );
+                                    facts = Object.fromEntries(
+                                        Object.entries(
+                                            value.recordProperties ?? {},
+                                        )
+                                            .filter(
+                                                ([, field]) =>
+                                                    !field.parameterBinding,
+                                            )
+                                            .map(([name, field]) => [
+                                                name,
+                                                scalarFacts(field),
+                                            ]),
+                                    );
+                                },
+                            );
+                            return undefined;
+                        });
+                    } catch (error) {
+                        if (!(error instanceof CompileError)) throw error;
+                        facts = undefined;
+                    }
+                    if (facts && ownKeys) {
+                        const captured = facts;
+                        const present = new Set(ownKeys);
+                        // Capture at the return expression's evaluation, before
+                        // mutable storage erases the facts. Only primitives are
+                        // copied; every read still uses the real call's owner.
+                        const access = context.dataTypes.isReferenceStruct(
+                            returnType.name,
+                        )
+                            ? "->"
+                            : ".";
+                        writable(result).recordProperties = Object.fromEntries(
+                            fields
+                                .filter((field) =>
+                                    present.has(field.sourceName),
+                                )
+                                .map((field) => [
+                                    field.sourceName,
+                                    {
+                                        ...context.dataLowerer.leafValue(
+                                            `${result.cpp}${access}${field.name}`,
+                                            field.type,
+                                        ),
+                                        ...captured[field.sourceName],
+                                    },
+                                ]),
+                        );
+                        writable(result).recordOwnKeys = ownKeys;
+                    }
+                }
+            }
+            // A fresh literal array can keep its scalar field facts across a
+            // shared native call. Project them onto that call's own storage;
+            // the probe's temporary expressions never escape its transaction.
+            if (
+                !group &&
+                returnType?.kind === "vector" &&
+                ir.statements.length === 0 &&
+                arrayReturn &&
+                !ir.returnNeedsSnapshot &&
+                arrayReturn.elements.every(
+                    (element) =>
+                        ts.isIdentifier(context.unwrap(element)) ||
+                        context.evaluationOrder.isPureExpression(element),
+                ) &&
+                argumentValues.every(generationKnownStringArgument)
+            ) {
+                let folded: Value | undefined;
+                try {
+                    context.probeEmission(() => {
+                        folded = this.lower(context, ir, argumentValues, call);
+                        return undefined;
+                    });
+                } catch (error) {
+                    if (!(error instanceof CompileError)) throw error;
+                }
+                if (folded)
+                    context.dataLowerer.retainArrayLiteralFacts(
+                        result,
+                        folded,
+                        arrayReturn,
+                    );
+            }
             if (
                 returnType &&
                 ["number", "boolean", "string"].includes(returnType.kind) &&
@@ -5373,6 +5564,7 @@ export class UserFunctionLowerer {
                 ir.declaration,
                 parameter,
                 this.absenceTaggedParameter(context, parameter, value, source),
+                source,
             );
         });
     }
@@ -5628,6 +5820,7 @@ export class UserFunctionLowerer {
         callNode: ts.Node,
         discardReturn = false,
         body?: CallbackInvocationOptions,
+        captureReturn?: (value: Value) => void,
     ): Value {
         if (
             !body?.generator &&
@@ -5824,6 +6017,7 @@ export class UserFunctionLowerer {
                 ir,
                 ir.returnExpression,
                 body?.resultType,
+                captureReturn,
             );
         } finally {
             context.bindings.popScope();
@@ -6127,6 +6321,7 @@ export class UserFunctionLowerer {
         ir: UserFunctionIr,
         expression: ts.Expression,
         sinkResult?: DataType,
+        captureReturn?: (value: Value) => void,
     ): Value {
         const signature = context.checker.getSignatureFromDeclaration(
             ir.declaration,
@@ -6141,6 +6336,7 @@ export class UserFunctionLowerer {
                 expression,
                 sinkResult,
             ) ?? context.compileValue(expression);
+        captureReturn?.(returned);
         const asynchronous =
             (ts.getCombinedModifierFlags(ir.declaration) &
                 ts.ModifierFlags.Async) !==
@@ -6220,23 +6416,90 @@ export class UserFunctionLowerer {
             }
         }
         const label = `return_${ir.name}`;
+        const unchangedFields = this.freshReturnReadOnlyFields(
+            context,
+            ir,
+            expression,
+            returned,
+        );
         return {
             // A body that wrote state outliving the frame returns an
             // expression OVER that state, so it is read here rather than
             // at the use site, where the next call would have moved it.
-            ...(ir.returnNeedsSnapshot
-                ? context.bindings.pinValueToTemporary(
+            ...(unchangedFields
+                ? context.bindings.materializeRecordScalars(
                       returned,
                       label,
-                      expression,
+                      true,
+                      undefined,
+                      undefined,
+                      unchangedFields,
                   )
-                : context.bindings.materializeEscapingValue(
-                      returned,
-                      label,
-                      expression,
-                  )),
+                : ir.returnNeedsSnapshot
+                  ? context.bindings.pinValueToTemporary(
+                        returned,
+                        label,
+                        expression,
+                    )
+                  : context.bindings.materializeEscapingValue(
+                        returned,
+                        label,
+                        expression,
+                    )),
             requiresExplicitDiscard: true,
         };
+    }
+
+    /** Fresh argument records keep scalar facts across a read-only consumer. */
+    private freshReturnReadOnlyFields(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        expression: ts.Expression,
+        value: Value,
+    ): ReadonlySet<string> | undefined {
+        if (
+            ir.returnNeedsSnapshot ||
+            value.kind !== "record" ||
+            !ts.isObjectLiteralExpression(context.unwrap(expression)) ||
+            Object.keys(value.recordMethods ?? {}).length > 0 ||
+            Object.keys(value.recordGetters ?? {}).length > 0 ||
+            Object.keys(value.recordSetters ?? {}).length > 0
+        )
+            return undefined;
+        const invocation = this.invocations.get(ir.declaration)?.call;
+        if (!invocation) return undefined;
+        const argument = outermostWrapper(invocation);
+        if (!ts.isExpression(argument)) return undefined;
+        const consumer = argument.parent;
+        if (!ts.isCallExpression(consumer)) return undefined;
+        const index = consumer.arguments.indexOf(argument);
+        const declaration =
+            context.checker.getResolvedSignature(consumer)?.declaration;
+        if (
+            index < 0 ||
+            !isSupportedFunction(declaration) ||
+            consumer.arguments.slice(0, index + 1).some(ts.isSpreadElement) ||
+            declaration.parameters[index]?.dotDotDotToken
+        )
+            return undefined;
+        const fields = new Set(
+            Object.entries(value.recordProperties ?? {})
+                .filter(
+                    ([name, field]) =>
+                        (field.staticString !== undefined ||
+                            field.staticNumber !== undefined ||
+                            field.staticBoolean !== undefined) &&
+                        parameterProjectionIsReadOnly(
+                            context.checker,
+                            declaration,
+                            index,
+                            [name],
+                            true,
+                        ),
+                )
+                .map(([name]) => name),
+        );
+        return fields.size > 0 ? fields : undefined;
     }
 
     private resolve(

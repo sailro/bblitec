@@ -1,6 +1,7 @@
 // A pass's matrices as a shader material reads them: the camera pass
 // matrices, the per-draw products and the stage block gather.
 #pragma once
+#include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/thin_instances.hpp>
 
@@ -165,6 +166,9 @@ ShaderPassMatrices shader_packet_published_matrices(const ShaderPacketSystemOwne
 #if BBLITE_THIN_INSTANCES
 inline GpuHandle synchronize_thin_binding(Engine& engine, ThinMaterialBinding& binding,
                                           double index_count, bool has_color) {
+#if BBLITE_DEVICE_RECOVERY
+    track_thin_instance_gpu_pool(engine, binding.pool);
+#endif
     return sync_thin_instance_for_draw(engine, thin_instance_data(binding.pool), has_color,
                                        ThinInstanceGeometry{index_count, {}},
                                        source_gpu_device(engine));

@@ -16,6 +16,51 @@ template <typename F> void must_throw(F function) {
     assert(threw);
 }
 
+struct RecoveryBuffer final : bbl::GpuObject {
+    bool alive = true;
+    bool resource_alive() const noexcept override { return alive; }
+    void destroy() override { alive = false; }
+};
+
+void thin_pool_ownership() {
+    using namespace bbl;
+    Engine engine;
+    const auto pool = std::make_shared<ThinInstancePoolData>();
+    pool->matrices = js::F32Array(16);
+    pool->capacity = 1;
+    track_thin_instance_gpu_pool(engine, pool);
+    assert_thin_instance_device_recovery_supported(engine);
+    for (const auto member :
+         {&ThinInstancePoolData::gpu_buffer, &ThinInstancePoolData::color_gpu_buffer,
+          &ThinInstancePoolData::draw_args_buffer}) {
+        const auto buffer = std::make_shared<RecoveryBuffer>();
+        pool.get()->*member = buffer;
+        // An inactive pool still owns its GPU allocations.
+        assert(pool->count == 0);
+        bool refused = false;
+        try {
+            assert_thin_instance_device_recovery_supported(engine);
+        } catch (const std::runtime_error& error) {
+            refused = std::string_view(error.what()) ==
+                      "Device recovery does not represent live thin-instance GPU buffer ownership.";
+        }
+        assert(refused);
+        buffer->destroy();
+        assert_thin_instance_device_recovery_supported(engine);
+        (pool.get()->*member).reset();
+    }
+    std::weak_ptr<ThinInstancePoolData> lifetime;
+    {
+        const auto expired = std::make_shared<ThinInstancePoolData>();
+        lifetime = expired;
+        expired->gpu_buffer = std::make_shared<RecoveryBuffer>();
+        track_thin_instance_gpu_pool(engine, expired);
+    }
+    assert(lifetime.expired());
+    assert_thin_instance_device_recovery_supported(engine);
+    assert(engine.thin_instance_gpu_owners.size() == 1);
+}
+
 void mixed_contexts() {
     using namespace bbl;
     Engine engine;
@@ -66,6 +111,7 @@ void mixed_contexts() {
 }
 
 int main() {
+    thin_pool_ownership();
     mixed_contexts();
     bbl::Engine engine;
     must_throw([&] { bbl::force_device_loss(engine); });

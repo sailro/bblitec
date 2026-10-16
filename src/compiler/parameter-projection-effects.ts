@@ -19,6 +19,7 @@ import {
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
+import { concreteArgumentIdentityPaths } from "./concrete-argument-identities.js";
 
 type Path = readonly string[];
 
@@ -73,9 +74,15 @@ export function visitMutableArgumentReferences(
     node: ts.CallExpression,
     index: number,
     reference: (value: ts.Expression) => void,
+    selectedIdentity?: (value: ts.Expression) => boolean,
+    selectedRecordKeys?: ReadonlySet<string>,
 ): void {
     const argument = node.arguments[index];
     if (!argument) return;
+    const concreteIdentities = new Map<
+        ts.Expression,
+        readonly Path[] | undefined
+    >();
     const visit = (
         value: ts.Expression,
         path: readonly string[],
@@ -83,12 +90,27 @@ export function visitMutableArgumentReferences(
         parameterIndex = index,
     ): void => {
         if (!typeCanCarryReference(checker.getTypeAtLocation(value))) return;
+        const source = consumer.arguments[parameterIndex]!;
+        if (selectedIdentity && !concreteIdentities.has(source))
+            concreteIdentities.set(
+                source,
+                concreteArgumentIdentityPaths(
+                    checker,
+                    source,
+                    selectedIdentity,
+                    selectedRecordKeys,
+                ),
+            );
+        const identityPaths = concreteIdentities.get(source);
+        if (identityPaths?.length === 0) return;
         if (
-            callArgumentProjectionIsReadOnly(
+            callProjection(
                 checker,
                 consumer,
                 parameterIndex,
                 path,
+                new Set(),
+                identityPaths,
             )
         )
             return;
@@ -175,7 +197,24 @@ export function parameterProjectionIsReadOnly(
     index: number,
     path: Path,
     independentFields = false,
+    argument?: ts.Expression,
 ): boolean {
+    const literal = argument && unwrapExpression(argument);
+    const keys =
+        independentFields &&
+        literal &&
+        ts.isObjectLiteralExpression(literal) &&
+        literal.properties.every(
+            (property) =>
+                (ts.isPropertyAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(property)) &&
+                !ts.isComputedPropertyName(property.name) &&
+                propertyNameText(property.name) !== "__proto__",
+        )
+            ? literal.properties.map((property) =>
+                  propertyNameText(property.name!)!,
+              )
+            : undefined;
     return parameterProjection(
         checker,
         declaration,
@@ -183,6 +222,8 @@ export function parameterProjectionIsReadOnly(
         path,
         new Set(),
         independentFields,
+        undefined,
+        keys,
     );
 }
 
@@ -192,6 +233,7 @@ function callProjection(
     index: number,
     path: Path,
     active: Set<ts.FunctionLikeDeclaration>,
+    identityPaths?: readonly Path[],
 ): boolean {
     const declaration = checker.getResolvedSignature(call)?.declaration;
     if (!declaration) return false;
@@ -209,6 +251,8 @@ function callProjection(
                 index,
                 path,
                 active,
+                false,
+                identityPaths,
             ),
         )
     );
@@ -221,6 +265,8 @@ function parameterProjection(
     path: Path,
     active: Set<ts.FunctionLikeDeclaration>,
     independentFields = false,
+    identityPaths?: readonly Path[],
+    ownKeys?: readonly string[],
 ): boolean {
     if (!isSupportedFunction(declaration) || !declaration.body) return false;
     const parameter = declaration.parameters[index];
@@ -232,7 +278,13 @@ function parameterProjection(
         return false;
     const symbol = declaredSymbol(checker, parameter.name);
     if (!symbol || active.has(declaration)) return false;
-    const cacheKey = JSON.stringify([index, path, independentFields]);
+    const cacheKey = JSON.stringify([
+        index,
+        path,
+        independentFields,
+        identityPaths,
+        ownKeys,
+    ]);
     let functions = results.get(checker);
     let known = functions?.get(declaration);
     const cached = known?.get(cacheKey);
@@ -254,9 +306,29 @@ function parameterProjection(
         }
         return projectedType;
     };
-    const projectedType = typeAt(path);
-    const scalarProjection =
-        projectedType !== undefined && !typeCanCarryReference(projectedType);
+    const absent = ownKeys
+        ? checker
+              .getPropertiesOfType(checker.getTypeAtLocation(parameter.name))
+              .filter(
+                  (property) =>
+                      (property.flags & ts.SymbolFlags.Optional) !== 0 &&
+                      !ownKeys.includes(property.name) &&
+                      !Object.hasOwn(Object.prototype, property.name),
+              )
+              .map((property) => property.name)
+        : [];
+    // Absence is a dependency too: adding a missing member anywhere in this
+    // body, including a retained callback, defeats optional-call pruning.
+    const selected = (
+        identityPaths ?? [path, ...absent.map((key) => [key])]
+    ).map((selectedPath) => {
+        const type = typeAt(selectedPath);
+        return {
+            path: selectedPath,
+            type,
+            scalar: type !== undefined && !typeCanCarryReference(type),
+        };
+    });
     active.add(declaration);
 
     const nativeHandle = (
@@ -289,25 +361,32 @@ function parameterProjection(
         ),
         declaration.body,
     ];
+    // Every consumer must keep the same conservative alias relation: a
+    // sibling retained here cannot be discarded later by a path-only check.
+    const mayAffectSelection = (
+        from: Path,
+        entry: (typeof selected)[number],
+    ): boolean => {
+        if (overlaps(from, entry.path)) return true;
+        if (independentFields || identityPaths) return false;
+        const divergent = from.findIndex(
+            (key, i) => !compatible(key, entry.path[i]!),
+        );
+        const sibling = typeAt(from.slice(0, divergent + 1));
+        if (!sibling || typeCanCarryReference(sibling)) {
+            // Nominal native handles cannot alias an authored data object.
+            // Other reference fields may share children or point back to
+            // their parent, despite having different source access paths.
+            const siblingHandle = sibling && nativeHandle(sibling);
+            const selectedHandle = entry.type && nativeHandle(entry.type);
+            return !siblingHandle || selectedHandle !== undefined;
+        }
+        return false;
+    };
     const relevant = (values: readonly Projection[]): Projection[] =>
-        values.filter((value) => {
-            if (overlaps(value.from, path)) return true;
-            if (independentFields) return false;
-            const divergent = value.from.findIndex(
-                (key, i) => !compatible(key, path[i]!),
-            );
-            const sibling = typeAt(value.from.slice(0, divergent + 1));
-            if (!sibling || typeCanCarryReference(sibling)) {
-                // Nominal native handles cannot alias an authored data object.
-                // Other reference fields may share children or point back to
-                // their parent, despite having different source access paths.
-                const siblingHandle = sibling && nativeHandle(sibling);
-                const selectedHandle =
-                    projectedType && nativeHandle(projectedType);
-                return !siblingHandle || selectedHandle !== undefined;
-            }
-            return false;
-        });
+        values.filter((value) =>
+            selected.some((entry) => mayAffectSelection(value.from, entry)),
+        );
     const receiver = (node: ts.CallExpression): ts.Expression | undefined => {
         const callee = unwrapExpression(node.expression);
         return ts.isPropertyAccessExpression(callee)
@@ -358,8 +437,50 @@ function parameterProjection(
             return [...flow(node.left), ...flow(node.right)];
         if (ts.isObjectLiteralExpression(node))
             return node.properties.flatMap((property): Projection[] => {
-                if (ts.isSpreadAssignment(property))
-                    return [...flow(property.expression)];
+                if (ts.isSpreadAssignment(property)) {
+                    const source = flow(property.expression);
+                    const type = checker.getNonNullableType(
+                        checker.getTypeAtLocation(property.expression),
+                    );
+                    const properties = checker.getPropertiesOfType(type);
+                    if (
+                        (type.flags &
+                            (ts.TypeFlags.Any |
+                                ts.TypeFlags.Unknown |
+                                ts.TypeFlags.TypeParameter)) !==
+                            0 ||
+                        properties.some((member) =>
+                            member.declarations?.some(
+                                ts.isGetAccessorDeclaration,
+                            ),
+                        )
+                    )
+                        return [...source];
+                    // A shallow copy carries reference-valued children, not
+                    // its source object or copied scalar fields.
+                    const keys = properties
+                        .filter((member) =>
+                            typeCanCarryReference(
+                                checker.getTypeOfSymbolAtLocation(
+                                    member,
+                                    property.expression,
+                                ),
+                            ),
+                        )
+                        .map((member) => member.name);
+                    if (
+                        checker
+                            .getIndexInfosOfType(type)
+                            .some((index) => typeCanCarryReference(index.type))
+                    )
+                        keys.push("*");
+                    return keys.flatMap((key) =>
+                        project(source, key).map((entry) => ({
+                            at: [key, ...entry.at],
+                            from: entry.from,
+                        })),
+                    );
+                }
                 if (
                     !ts.isPropertyAssignment(property) &&
                     !ts.isShorthandPropertyAssignment(property)
@@ -511,10 +632,63 @@ function parameterProjection(
                 ts.isNumericLiteral(node.argumentExpression)
               ? node.argumentExpression.text
               : "*";
-        return relevant(project(flow(node.expression), key)).some(
-            (value) =>
-                value.from.length > path.length ||
-                (scalarProjection && value.from.length === path.length),
+        return project(flow(node.expression), key).some((value) =>
+            selected.some(
+                (entry) =>
+                    mayAffectSelection(value.from, entry) &&
+                    (value.from.length > entry.path.length ||
+                        (entry.scalar &&
+                            value.from.length === entry.path.length)),
+            ),
+        );
+    };
+    const captures = (identifier: ts.Identifier): boolean => {
+        let values = aliases.get(declaredSymbol(checker, identifier)!) ?? [];
+        if (values.length === 0) return false;
+        let expression: ts.Expression = identifier;
+        while (
+            (ts.isPropertyAccessExpression(expression.parent) ||
+                ts.isElementAccessExpression(expression.parent)) &&
+            expression.parent.expression === expression
+        ) {
+            const access = expression.parent;
+            const property = accessedPropertySymbol(checker, access);
+            if (
+                property?.declarations?.some(
+                    (item) =>
+                        ts.isGetAccessorDeclaration(item) ||
+                        ts.isSetAccessorDeclaration(item),
+                ) ||
+                (ts.isCallExpression(access.parent) &&
+                    access.parent.expression === access)
+            )
+                return relevant(values).length > 0;
+            const key = ts.isPropertyAccessExpression(access)
+                ? access.name.text
+                : unwrapExpression(access.argumentExpression);
+            values = project(
+                values,
+                typeof key === "string"
+                    ? key
+                    : ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
+                      ? key.text
+                      : "*",
+            );
+            expression = access;
+        }
+        return relevant(values).length > 0;
+    };
+    const absentOptionalCall = (node: ts.Node): boolean => {
+        if (!ts.isCallExpression(node) || !node.questionDotToken) return false;
+        const callee = unwrapExpression(node.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const owners = flow(callee.expression);
+        return (
+            absent.includes(callee.name.text) &&
+            owners.length > 0 &&
+            owners.every(
+                (owner) => owner.at.length === 0 && owner.from.length === 0,
+            )
         );
     };
     const unsafe =
@@ -524,17 +698,16 @@ function parameterProjection(
             someAnalysisNode(
                 root,
                 (node) => {
+                    if (absentOptionalCall(node)) return "skip";
                     if (ts.isFunctionLike(node)) {
                         return (
                             someAnalysisNode(
                                 node,
                                 (part) =>
-                                    ts.isIdentifier(part) &&
-                                    relevant(
-                                        aliases.get(
-                                            declaredSymbol(checker, part)!,
-                                        ) ?? [],
-                                    ).length > 0,
+                                    absentOptionalCall(part)
+                                        ? "skip"
+                                        : ts.isIdentifier(part) &&
+                                          captures(part),
                                 { types: "skip" },
                             ) || "skip"
                         );
@@ -594,19 +767,22 @@ function parameterProjection(
                     if (!ts.isCallExpression(node)) return false;
                     const owner = receiver(node);
                     if (!owner && uses(node.expression)) return true;
-                    // Distinct native identity rules out aliasing, not effects:
-                    // an opaque method can invoke a callback into the caller.
-                    if (owner && flow(owner).length > 0 && !uses(owner))
-                        return true;
                     if (
                         !independentFields &&
+                        !identityPaths &&
                         node.arguments.some(
                             (argument) =>
                                 flow(argument).length > 0 && !uses(argument),
                         )
                     )
                         return true;
-                    if (owner && uses(owner)) {
+                    // Unrelated receivers still need a resolved nonreentrant
+                    // read: an opaque method can call back into the owner.
+                    if (
+                        owner &&
+                        flow(owner).length > 0 &&
+                        ((!independentFields && !identityPaths) || uses(owner))
+                    ) {
                         const method = arrayMethod(node);
                         const element = checker.getIndexTypeOfType(
                             checker.getTypeAtLocation(owner),
@@ -622,22 +798,32 @@ function parameterProjection(
                                         .getTypeAtLocation(argument)
                                         .getCallSignatures().length > 0,
                             ) &&
-                                (!element || typeCanCarryReference(element)))
+                                (!uses(owner) ||
+                                    !element ||
+                                    typeCanCarryReference(element)))
                         )
                             return true;
                     }
                     return node.arguments.some((argument, argumentIndex) =>
-                        relevant(flow(argument)).some((value) => {
-                            const suffix =
-                                value.from.length < path.length
-                                    ? path.slice(value.from.length)
-                                    : [];
-                            return !callProjection(
-                                checker,
-                                node,
-                                argumentIndex,
-                                [...value.at, ...suffix],
-                                active,
+                        flow(argument).some((value) => {
+                            return selected.some(
+                                (entry) =>
+                                    mayAffectSelection(value.from, entry) &&
+                                    !callProjection(
+                                        checker,
+                                        node,
+                                        argumentIndex,
+                                        [
+                                            ...value.at,
+                                            ...(value.from.length <
+                                            entry.path.length
+                                                ? entry.path.slice(
+                                                      value.from.length,
+                                                  )
+                                                : []),
+                                        ],
+                                        active,
+                                    ),
                             );
                         }),
                     );

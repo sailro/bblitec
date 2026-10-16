@@ -57,7 +57,7 @@ test("TAA fog admits fresh config/color literals and refuses retained identity i
                     `${taa} const fog = ${literal}; const alias = fog; setFog(scene, alias);`,
                 ),
             ),
-        /Expected an object literal/,
+        /TAA requires setFog to receive a fresh inline config/,
     );
     assert.throws(
         () => compileSource(program(`${taa} setFog(scene, null);`)),

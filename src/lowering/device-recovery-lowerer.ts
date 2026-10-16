@@ -1027,6 +1027,7 @@ void begin_device_recovery(Engine& engine) {
         state.requested = false;
         throw std::runtime_error("The GPU device was lost with no armed recovery to rebuild it.");
     }
+    ${thinBindings ? "assert_thin_instance_device_recovery_supported(engine);" : ""}
     // runDeviceLostRecovery: the PAL recreates its device over retained owners.
     state.resources_ready = false;
     const bool was_running = !engine.stopped;

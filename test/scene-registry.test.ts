@@ -603,6 +603,7 @@ test("derives defaults for an unregistered scene source", () => {
         assert.deepEqual(scene.parity?.nativeEnvironment, {
             BBLITE_FRAME_DELTA_MS: String(1000 / 60),
             BBLITE_SCREENSHOT_FRAME: "181",
+            BBLITE_CAPTURE_ENGINE_FRAME: "181",
         });
     } finally {
         rmSync(source, { force: true });

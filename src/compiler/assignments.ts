@@ -541,6 +541,7 @@ export interface AssignmentContext
             | "browserErasure"
             | "isNativeUiValueExpression"
             | "emit"
+            | "emitDiscardedValue"
             | "allocateTemporaryCppName"
             | "nativeEmission"
             | "reachFeature"
@@ -1154,6 +1155,38 @@ export function emitPropertyAssignment(
     }
     if (emitSpriteLayerViewAssignment(context, expression)) {
         return;
+    }
+    if (
+        ts.isPropertyAccessExpression(expression.left) ||
+        ts.isElementAccessExpression(expression.left)
+    ) {
+        const receiver = context.unwrap(expression.left.expression);
+        const absent = ts.isIdentifier(receiver)
+            ? context.bindings.lookupOptional(receiver)
+            : undefined;
+        if (absent?.kind === "json-null") {
+            // A computed target evaluates its key first. A simple write
+            // then evaluates the RHS before PutValue throws; a compound
+            // write throws while reading the absent target, before its RHS.
+            if (ts.isElementAccessExpression(expression.left))
+                context.emitDiscardedValue(
+                    context.compileValue(expression.left.argumentExpression),
+                );
+            const simple =
+                expression.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+            if (simple)
+                context.emitDiscardedValue(
+                    context.compileValue(expression.right),
+                );
+            context.reachJsData();
+            context.emit({
+                kind: "expression",
+                code: `bbl::js::throw_nullish_access(${context.cppString(
+                    `Cannot ${simple ? "set" : "read"} properties of ${absent.cpp === "std::nullopt" ? "undefined" : "null"}`,
+                )});`,
+            });
+            return;
+        }
     }
     if (!ts.isPropertyAccessExpression(expression.left)) {
         context.fail(
@@ -3532,9 +3565,14 @@ function emitMaterialAssignment(
             material.scenePbrMaterialIndex === undefined &&
             !material.standardMaterial &&
             material.nodeMaterialIndex === undefined &&
-            material.shaderVariant === undefined
+            material.shaderVariant === undefined &&
+            material.sceneShaderVariant === undefined &&
+            !material.possibleSceneShaderVariants?.length &&
+            !material.assetPbrMaterial
         ) {
-            context.sceneManifest.recordUnknownSceneMaterialAssignment();
+            context.sceneManifest.recordUnknownSceneMaterialAssignment(
+                meshProfile,
+            );
         }
         return true;
     }

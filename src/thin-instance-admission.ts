@@ -8,8 +8,6 @@ export function thinInstanceOwnershipFailure(
     if (!has("mesh:thin-instances")) return undefined;
     if (has("compute:frame-graph"))
         return "Thin-instance GPU pools cannot share a compute frame graph: its native split submissions do not preserve the source's shared indirect-argument write ordering.";
-    if (has("engine:device-recovery"))
-        return "Thin-instance GPU pools do not represent device-recovery buffer ownership.";
     if ((options.geometryOutputTasks ?? 0) > 0)
         return "Thin-instance GPU pools do not represent geometry-output task buffer ownership and update gates.";
     return undefined;

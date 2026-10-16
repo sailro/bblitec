@@ -845,6 +845,9 @@ export class RendererLowerer {
                 storageBuffers: reflection.storageBuffers,
                 topology: program.topology ?? "triangle-list",
                 instanceColors: program.useThinInstanceColors === true,
+                thinInstances: program.useThinInstances === true,
+                runtimeInstanceLayoutCheck:
+                    program.runtimeInstanceLayoutCheck === true,
                 thinInstanceColorOption: program.thinInstanceColorOption,
                 alphaBlending: program.needAlphaBlending,
                 additiveBlending: program.blendMode === "additive",
@@ -852,6 +855,9 @@ export class RendererLowerer {
                 backFaceCulling: program.backFaceCulling,
                 depthWrite: program.depthWrite,
                 depthCompare: program.depthCompare,
+                depthBias: program.depthBias,
+                depthBiasSlopeScale: program.depthBiasSlopeScale,
+                depthOnlyFragment: program.depthOnlyFragment,
                 valueCount,
                 defaults,
                 uniformSlots: shaderUniformSlots(program.uniforms).map(
@@ -865,7 +871,14 @@ export class RendererLowerer {
                 ),
                 vertex: stageBlock("vertex"),
                 fragment: stageBlock("fragment"),
-                system: systemLayout(program.uniforms),
+                system: systemLayout([
+                    ...new Set([
+                        ...program.uniforms,
+                        ...reflection.uniformBlocks.flatMap(
+                            (block) => block.systemMatrices,
+                        ),
+                    ]),
+                ]),
             };
         });
         const floatLiteral = (value: number): string =>
@@ -896,6 +909,8 @@ export class RendererLowerer {
         "${info.name}",
         ShaderTopology::${info.topology === "line-list" ? "line_list" : "triangle_list"},
         ${info.instanceColors},
+        ${info.thinInstances},
+        ${info.runtimeInstanceLayoutCheck},
         ${info.alphaBlending},
         ${info.additiveBlending},
         ${info.alphaTesting},
@@ -923,6 +938,13 @@ export class RendererLowerer {
         {${info.uniformSlots.map((slot) => `ShaderUniformInfo{"${slot.name}", "${slot.type}", ${slot.offset === undefined ? "bbl::invalid_handle" : `${slot.offset}u`}, ${slot.count}u, {${slot.defaults.map(floatLiteral).join(", ")}}}`).join(", ")}},
         ${info.thinInstanceColorOption === undefined ? "js::Nullable<double>{}" : `js::Nullable<double>{${info.thinInstanceColorOption ? "1.0" : "0.0"}}`},
         {${info.system.map((bits) => `${bits}u`).join(", ")}},
+${
+    info.depthBias === undefined &&
+    info.depthBiasSlopeScale === undefined &&
+    info.depthOnlyFragment === undefined
+        ? ""
+        : `        ${info.depthBias ?? 0}, ${floatLiteral(info.depthBiasSlopeScale ?? 0)}, ${info.depthOnlyFragment ?? false},\n`
+}\
     },`,
             )
             .join("\n");
@@ -1231,6 +1253,8 @@ struct ShaderVariantInfo {
     // pipeline declares the lane the pin's own thin-instance module
     // appends and its draws bind that buffer.
     bool instance_colors = false;
+    bool thin_instances = false;
+    bool runtime_instance_layout_check = false;
     bool alpha_blending = false;
     bool additive_blending = false;
     bool alpha_testing = false;
@@ -1257,10 +1281,26 @@ struct ShaderVariantInfo {
     // The declared system uniforms' dependency bits, in their layout's order
     // (shader-system-dependencies.ts).
     std::vector<std::uint32_t> system_dependencies;
+    std::int32_t depth_bias = 0;
+    float depth_bias_slope_scale = 0.0f;
+    bool depth_only_fragment = false;
 };
 
 std::uint32_t shader_variant_count();
 const ShaderVariantInfo& shader_variant_info(std::uint32_t variant);
+
+inline void require_shader_instance_layout(const RenderItem& item, const Engine& engine) {
+    if (item.material_kind != RenderMaterialKind::shader) return;
+    const auto& info = shader_variant_info(item.shader_variant);
+    if (!info.runtime_instance_layout_check) return;
+    const auto& mesh = ${recordAt("engine.meshes", "item.mesh")};
+    const bool has_pool = ${options.gpuInstancing ? "item.thin_binding ? static_cast<bool>(item.thin_binding->pool) : " : ""}static_cast<bool>(mesh.thin_instances);
+    const bool has_colors = ${options.gpuInstancing ? "item.thin_binding ? item.thin_binding->shader_has_color : " : ""}(mesh.thin_instances && mesh.thin_instances->colors.has_value() && info.thin_instance_color_option.value_or(1.0) != 0.0);
+    if (has_pool != info.thin_instances || (has_pool && has_colors != info.instance_colors)) {
+        throw std::runtime_error(std::string("Shader material '") + info.name +
+            "' cannot draw with this thin-instance layout; its matrix and color lanes differ from the compiled program.");
+    }
+}
 
 #if BBLITE_SHADER_EXTERNAL_TEXTURES
 // The bind-time checks the pin runs whenever a shader packet binds its
@@ -1457,6 +1497,7 @@ PbrUniforms build_pbr_uniforms(
     /** The emitted renderer_plan.cpp, verbatim from the adopted plan. */
     private renderPlanSourceCpp(
         options: {
+            shaderPrograms?: CompiledShaderProgram[];
             standardVertexAlpha?: boolean;
             standardVertexColors?: boolean;
             meshProfiles?: MeshProfileTable;
@@ -1682,6 +1723,7 @@ void append_draw(
     std::uint32_t item_index,
     const RenderItem& item,
     const Engine& engine) {
+${options.shaderPrograms?.some((program) => program.runtimeInstanceLayoutCheck) ? "    require_shader_instance_layout(item, engine);\n" : ""}\
     // Opaque lists are the pin's cached render bundles: visibility is read when a bundle
     // is RECORDED, and the two writers differ by design. setMeshVisible
     // bumps the visibility epoch, which the backends answer by re-running
@@ -2656,6 +2698,28 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
     private assertPinnedRestatedContracts(options: {
         shaderPrograms: CompiledShaderProgram[];
     }): void {
+        if (options.shaderPrograms.length > 0) {
+            const { declaration } = this.context.functionDeclaration(
+                sceneUniformsModule,
+                "_packSceneUniforms",
+            );
+            this.context.assertStatementShapes(
+                declaration,
+                declaration.body!.statements.slice(0, 7),
+                `data.fill(0);
+                 const viewProj = getViewProjectionMatrix(camera, aspect);
+                 const viewMat = getViewMatrix(camera);
+                 const wm = camera.worldMatrix;
+                 packMat4IntoF32(data, viewProj, 0);
+                 packMat4IntoF32(data, viewMat, 16);
+                 if (eng.useFloatingOrigin) {
+                     data[32] = 0; data[33] = 0; data[34] = 0;
+                 } else {
+                     data[32] = wm[12]!; data[33] = wm[13]!; data[34] = wm[14]!;
+                 }`,
+                "Shader scene camera fields",
+            );
+        }
         for (const [modulePath, builder, order] of [
             [backgroundDdsModule, "buildDdsSkyboxRenderable", 0],
             [backgroundHdrModule, "buildHdrSkyboxRenderable", 0],
@@ -3427,6 +3491,41 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                 shaderPipelineModule,
                 'cullMode: material.backFaceCulling ? "back" : "none" }',
                 "shader-material cull fork",
+            ],
+            [
+                "src/material/shader/shader-material.ts",
+                "depthOnlyFragment: options.depthOnlyFragment ?? false,",
+                "shader-material depth-only fragment default",
+            ],
+            [
+                shaderPipelineModule,
+                "const wantsFragment = !!sig._colorFormat || material.depthOnlyFragment;",
+                "shader-material depth-only fragment selection",
+            ],
+            [
+                shaderPipelineModule,
+                '...(fragModule ? { fragment: { module: fragModule, entryPoint: "mainFragment", targets: colorTarget ? [colorTarget] : [] } } : {}),',
+                "shader-material colourless fragment targets",
+            ],
+            [
+                "src/material/shader/shader-material.ts",
+                "depthBias: options.depthBias ?? 0,",
+                "shader-material depth bias default",
+            ],
+            [
+                "src/material/shader/shader-material.ts",
+                "depthBiasSlopeScale: options.depthBiasSlopeScale ?? 0,",
+                "shader-material slope bias default",
+            ],
+            [
+                shaderPipelineModule,
+                "...(material.depthBias ? { depthBias: material.depthBias } : {}),",
+                "shader-material depth bias forwarding",
+            ],
+            [
+                shaderPipelineModule,
+                "...(material.depthBiasSlopeScale ? { depthBiasSlopeScale: material.depthBiasSlopeScale } : {}),",
+                "shader-material slope bias forwarding",
             ],
             [
                 "src/loader-gltf/gltf-feature-primitive.ts",

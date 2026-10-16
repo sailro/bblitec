@@ -393,6 +393,7 @@ struct SharedShaderGeometry {
 struct SharedMaterialTextures : SdlSampledTextures {
     using SdlSampledTextures::SdlSampledTextures;
     MaterialHandle material{};
+    std::uint64_t texture_version = 0;
     std::size_t users = 0;
 };
 
@@ -514,6 +515,9 @@ struct ShaderTaskTarget {
 struct ShaderTaskPipeline {
     OwnedSdlShader vertex;
     OwnedSdlShader fragment;
+    /** Borrowed from the owning GpuState. */
+    SDL_GPUShader* empty_depth_fragment = nullptr;
+    bool depth_only_fragment = false;
     SDL_GPUGraphicsPipelineCreateInfo base{};
     SDL_GPUColorTargetDescription color{};
     std::vector<SDL_GPUVertexBufferDescription> buffers;
@@ -524,9 +528,11 @@ struct ShaderTaskPipeline {
 
     ShaderTaskPipeline() = default;
     ShaderTaskPipeline(OwnedSdlShader vertex_shader, OwnedSdlShader fragment_shader,
-                       const SDL_GPUGraphicsPipelineCreateInfo& info)
-        : vertex(std::move(vertex_shader)), fragment(std::move(fragment_shader)), base(info),
-          color(*info.target_info.color_target_descriptions) {
+                       const SDL_GPUGraphicsPipelineCreateInfo& info, bool keep_depth_fragment,
+                       SDL_GPUShader* shared_depth_fragment)
+        : vertex(std::move(vertex_shader)), fragment(std::move(fragment_shader)),
+          empty_depth_fragment(shared_depth_fragment), depth_only_fragment(keep_depth_fragment),
+          base(info), color(*info.target_info.color_target_descriptions) {
         const auto& input = info.vertex_input_state;
         if (input.num_vertex_buffers)
             buffers.assign(input.vertex_buffer_descriptions,
@@ -554,11 +560,15 @@ struct ShaderTaskPipeline {
         auto info = base;
         auto attachment = color;
         attachment.format = target.color;
+        const bool has_color = target.color != SDL_GPU_TEXTUREFORMAT_INVALID;
         info.vertex_shader = vertex.get();
         info.fragment_shader = fragment.get();
+        if (!has_color && !depth_only_fragment)
+            info.fragment_shader = empty_depth_fragment;
         info.vertex_input_state.vertex_buffer_descriptions = buffers.data();
         info.vertex_input_state.vertex_attributes = attributes.data();
-        info.target_info.color_target_descriptions = &attachment;
+        info.target_info.color_target_descriptions = has_color ? &attachment : nullptr;
+        info.target_info.num_color_targets = has_color ? 1u : 0u;
         info.target_info.depth_stencil_format = target.depth;
         info.target_info.has_depth_stencil_target = target.depth != SDL_GPU_TEXTUREFORMAT_INVALID;
         info.depth_stencil_state.enable_depth_test &= info.target_info.has_depth_stencil_target;
@@ -753,8 +763,9 @@ struct GpuState : SdlGpuDevice {
     // shader variant, indexed by the variant id from the emitted table.
     std::vector<SDL_GPUGraphicsPipeline*> shader_pipelines;
     std::vector<SDL_GPUGraphicsPipeline*> shader_a2c_pipelines;
-    /** Vertex-only custom-material pipelines for depth shadow targets. */
+    /** Custom-material pipelines for depth shadow targets. */
     std::vector<SDL_GPUGraphicsPipeline*> shader_shadow_pipelines;
+    OwnedSdlShader depth_only_fragment_shader;
     std::vector<ShaderTaskPipeline> shader_task_pipelines;
     // What the compaction pass assigned each shader-material stage, by the
     // caller's own block and sampler names. The stage's contents depend on
@@ -1896,6 +1907,7 @@ inline void release_gpu_mesh(GpuState&, GpuMesh& mesh) { mesh.reset(); }
 void prune_shared_shader_geometries(GpuState& state);
 
 void prune_shared_shader_material_textures(GpuState& state);
+void refresh_shader_material_textures(GpuState& state, const Engine& engine);
 
 void prune_shared_composed_material_textures(GpuState& state);
 

@@ -2158,20 +2158,24 @@ template <typename T> struct ValueHash {
 
 /** Owned native keys compare both their engine and their resource. */
 template <typename First, typename Second> struct ValueHash<std::pair<First, Second>> {
-    [[nodiscard]] std::size_t operator()(const std::pair<First, Second>& value) const noexcept {
+    [[nodiscard]] std::size_t operator()(const std::pair<First, Second>& value) const
+        noexcept(noexcept(ValueHash<First>{}(value.first)) &&
+                 noexcept(ValueHash<Second>{}(value.second))) {
         return std::rotl(ValueHash<First>{}(value.first), 1) ^ ValueHash<Second>{}(value.second);
     }
 };
 
 template <typename T> struct ValueHash<Tagged<T>> {
-    [[nodiscard]] std::size_t operator()(const Tagged<T>& value) const noexcept {
+    [[nodiscard]] std::size_t operator()(const Tagged<T>& value) const
+        noexcept(noexcept(ValueHash<T>{}(std::declval<const T&>()))) {
         return value.defined() ? ValueHash<T>{}(value.value()) : 0;
     }
 };
 
 /** Optional keys hash their payload, with one stable hash for absence. */
 template <typename T> struct ValueHash<Nullable<T>> {
-    [[nodiscard]] std::size_t operator()(const Nullable<T>& value) const noexcept {
+    [[nodiscard]] std::size_t operator()(const Nullable<T>& value) const
+        noexcept(noexcept(ValueHash<T>{}(std::declval<const T&>()))) {
         return value.has_value() ? ValueHash<T>{}(*value) : 0;
     }
 };
@@ -2190,7 +2194,7 @@ template <typename Table> struct ValueHash<GenericCallback<Table>> {
 };
 
 template <typename... T> struct ValueHash<std::variant<T...>> {
-    [[nodiscard]] std::size_t operator()(const std::variant<T...>& value) const noexcept {
+    [[nodiscard]] std::size_t operator()(const std::variant<T...>& value) const {
         return std::visit(
             [](const auto& member) { return ValueHash<std::decay_t<decltype(member)>>{}(member); },
             value);
@@ -4637,6 +4641,17 @@ template <typename T, std::size_t N, typename Tag>
     const auto index = static_cast<std::size_t>(tag);
     assert(index < N);
     return slots[index];
+}
+
+// A projected slot must outlive a temporary map, including a const temporary.
+template <typename T, std::size_t N, typename Tag>
+[[nodiscard]] inline T enum_map_at(EnumMap<T, N>&& slots, Tag tag) {
+    return std::move(enum_map_at(slots, tag));
+}
+
+template <typename T, std::size_t N, typename Tag>
+[[nodiscard]] inline T enum_map_at(const EnumMap<T, N>&& slots, Tag tag) {
+    return enum_map_at(slots, tag);
 }
 
 template <typename Values> [[nodiscard]] inline double array_length(const Values& values) {
