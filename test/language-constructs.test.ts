@@ -5377,7 +5377,12 @@ test("static early returns preserve shader composition records", () => {
         const text = composition(true).text + ":" + composition(false).text;
         if (text !== "enabled:disabled") throw new Error("composition branch");
     `);
-    assert.ok(result.cpp.includes("enabled:disabled"));
+    // Both branches fold through the early returns, so the composed text is
+    // static and the comparison against it leaves no check behind.
+    assert.ok(
+        result.cpp.includes('bbl::js::concat("enabled", ":", "disabled")'),
+    );
+    assert.ok(!result.cpp.includes("composition branch"));
 });
 
 check(
@@ -6747,6 +6752,29 @@ check(
     }
     main();
 `,
+);
+
+test(
+    "arrays of always-present objects grow through length writes",
+    { skip: !native },
+    () => {
+        const result = compileSource(`
+    function main(): void {
+        const rows: Array<{ id: number }> = [];
+        rows.length = 3;
+        for (let index = 0; index < rows.length; index++) rows[index] = { id: index };
+        if (rows.length !== 3 || rows[2]!.id !== 2) throw new Error("growth");
+        rows.length = 1;
+        if (rows.length !== 1 || rows[0]!.id !== 0) throw new Error("truncation");
+    }
+    main();
+`);
+        runGeneratedProgram(
+            native!,
+            "language-constructs/dense-length-growth",
+            result.cpp,
+        );
+    },
 );
 
 test("dense arrays refuse sparse length growth", { skip: !native }, () => {

@@ -781,7 +781,8 @@ int main(int argc, const char** argv) {
     const uint32_t sampled = count('t');
     const uint32_t readonly_textures = count('i');
 
-    // HLSL: the register each slot compacts to, in its SDL space.
+    // HLSL: the register each slot compacts to, in its SDL space; each sampler
+    // at its first texture's index, matching SDL_GPU's texture-sampler binding.
     tint::hlsl::writer::Output hlsl;
     {
         auto ir = LoweredIr(program);
@@ -791,7 +792,16 @@ int main(int argc, const char** argv) {
         options.extensions.polyfill_dot_4x8_packed = true;
         options.extensions.polyfill_pack_unpack_4x8 = true;
         options.compiler = tint::hlsl::writer::Options::Compiler::kDXC_2021;
-        options.bindings = BindingsFor(slots, [](const Slot& slot) -> std::optional<BindingPoint> {
+        options.bindings = BindingsFor(slots, [&](const Slot& slot) -> std::optional<BindingPoint> {
+            if (slot.kind == 's') {
+                const auto texture =
+                    sampler_textures.find({slot.resource.bind_group, slot.resource.binding});
+                if (texture == sampler_textures.end()) {
+                    Fail("HLSL sampler " + slot.resource.variable_name +
+                         " has no sampled texture pair");
+                }
+                return BindingPoint{slot.space, texture->second->index};
+            }
             return BindingPoint{slot.space, slot.index};
         });
         options.resource_table = tint::core::ir::transform::GenerateResourceTableConfig(ir, false);

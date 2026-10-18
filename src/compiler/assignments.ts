@@ -3289,6 +3289,22 @@ function emitIdAssignment(
     return false;
 }
 
+function emitRenderOnTopAssignment(
+    context: AssignmentContext,
+    state: TargetPropertyAssignment,
+): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "mesh" && property === "renderOnTop") {
+        requireSimpleAssignment(context, expression, "mesh renderOnTop");
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}.render_on_top = ${context.compileBoolean(expression.right)};`,
+        });
+        return true;
+    }
+    return false;
+}
+
 function emitReceiveShadowsAssignment(
     context: AssignmentContext,
     state: TargetPropertyAssignment,
@@ -3306,19 +3322,19 @@ function emitReceiveShadowsAssignment(
                   ? false
                   : undefined);
         if (staticEnabled === false) {
+            if (target.sceneMeshIndex === undefined) {
+                context.emit({
+                    kind: "expression",
+                    code:
+                        `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}` +
+                        `.receives_shadows = false;`,
+                });
+            }
             return true;
         }
-        if (staticEnabled !== true) {
-            context.fail(
-                expression.right,
-                "Only `receiveShadows = true` is lowered: the composed " +
-                    "variant is selected at generation, so a value the " +
-                    "scene computes would need both fragments.",
-            );
-        }
-        if (target.sceneMeshIndex === undefined) {
-            // A handle read from a runtime collection has no generation-known
-            // mesh row. Keep both composed states; the emitted record lane is
+        if (staticEnabled !== true || target.sceneMeshIndex === undefined) {
+            // A handle read from a runtime collection or assigned a runtime
+            // boolean keeps both composed states; the emitted record lane is
             // the runtime half of the same key used by both material families.
             context.sceneManifest.recordDynamicShadowReceivers();
         } else {
@@ -3333,7 +3349,7 @@ function emitReceiveShadowsAssignment(
             kind: "expression",
             code:
                 `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}` +
-                `.receives_shadows = true;`,
+                `.receives_shadows = ${staticEnabled === true ? "true" : enabled.cpp};`,
         });
         return true;
     }
@@ -3957,11 +3973,16 @@ function emitParentAssignment(
         // TransformNodeRecord keeps only the node lane, which is why a node
         // hung under a mesh still refuses: it is a record the port does not
         // have, not a call site it declines.
+        const nullParent = parent.kind === "json-null";
         const meshParent = mesh && parent.kind === "mesh";
-        if (!meshParent) {
+        if (!meshParent && !nullParent) {
             context.expectKind(parent, "transform-node", expression.right);
         }
-        context.expectSameEngine(target, parent, expression);
+        if (!nullParent) {
+            context.expectSameEngine(target, parent, expression);
+        } else {
+            context.reachFeature("mesh:transform-node", expression);
+        }
         if (meshParent) {
             context.reachFeature("mesh:parenting", expression);
         }
@@ -3974,7 +3995,7 @@ function emitParentAssignment(
                         : "set_transform_node_parent"
                 }(` +
                 `${context.requireEngine(target, expression)}, ` +
-                `${target.cpp}, ${parent.cpp});`,
+                `${target.cpp}, ${nullParent ? "bbl::TransformNodeHandle{}" : parent.cpp});`,
         });
         return true;
     }
@@ -3999,6 +4020,7 @@ const targetPropertyHandlers1 = new EmissionMap<
     ["camera", emitCameraAssignment],
     ["fixedDeltaMs", emitFixedDeltaMsAssignment],
     ["renderOrder", emitRenderOrderAssignment],
+    ["renderOnTop", emitRenderOnTopAssignment],
     ["name", emitNameAssignment],
     ["id", emitIdAssignment],
     ["receiveShadows", emitReceiveShadowsAssignment],

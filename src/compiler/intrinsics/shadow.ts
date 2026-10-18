@@ -568,6 +568,7 @@ export function compileShadowIntrinsic(
             return {
                 kind: "callback",
                 cpp: disposer,
+                dataType: { kind: "function", parameters: [] },
                 nativeCallbackParameterTypes: [],
             };
         }

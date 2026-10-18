@@ -13,7 +13,10 @@ import {
     isPrimitiveBrowserValue,
 } from "./browser-erasure.js";
 import { CompileError } from "./compile-error.js";
-import { retainedStaticText } from "./static-evaluator.js";
+import {
+    objectIdentityCallArgument,
+    retainedStaticText,
+} from "./static-evaluator.js";
 import { storesAsTexture2D } from "./data-sinks/resources.js";
 import { isNeverResized } from "./data-lowering.js";
 import { isStoringDataCall } from "./receiver-methods.js";
@@ -42,7 +45,7 @@ import {
 import { nativeReturnTsType } from "./native-return-type.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
-import { nullability } from "./type-facts.js";
+import { nullability, presentLiteralKeys } from "./type-facts.js";
 import {
     provenUndefinedValue,
     isNonThenableDataType,
@@ -61,6 +64,7 @@ import { walkReachedLoopNodes } from "./resource-loops.js";
 import {
     type CompilerSymbols,
     declaredSymbol,
+    libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
 import {
@@ -73,6 +77,7 @@ import {
     commonResourceValue,
     isCompileTimeOnlyValue,
     isStringValue,
+    keepsStaticMember,
     nativeDataMetadata,
     optionalPresentCpp,
     optionalValueCpp,
@@ -1003,13 +1008,14 @@ export class DeclarationLowerer {
             );
             if (text !== undefined) value = { ...value, staticString: text };
         }
+        const initializerFactsStable = (): boolean =>
+            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 ||
+            (!sharedClosureStorage &&
+                this.localTextBindingIsUnwritten(declaration));
         const keepsInitializerText =
             value.staticString !== undefined &&
             !value.parameterBinding &&
-            ((ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !==
-                0 ||
-                (!sharedClosureStorage &&
-                    this.localTextBindingIsUnwritten(declaration)));
+            initializerFactsStable();
         if (
             nullableResource &&
             !this.context.dynamicBindings.has(declaration) &&
@@ -1485,6 +1491,11 @@ export class DeclarationLowerer {
                           narrowed.dataType,
                       )
                     : undefined;
+            const keepsInitializerScalar =
+                !narrowed.parameterBinding &&
+                (narrowed.staticNumber !== undefined ||
+                    narrowed.staticBoolean !== undefined) &&
+                initializerFactsStable();
             this.context.bindings.defineVariable(
                 declaration.name,
                 valueForKind(
@@ -1511,6 +1522,16 @@ export class DeclarationLowerer {
                         !narrowed.parameterBinding &&
                         keepsInitializerText
                             ? { staticString: narrowed.staticString }
+                            : {}),
+                        ...(narrowed.dataType.kind === "boolean" &&
+                        narrowed.staticBoolean !== undefined &&
+                        keepsInitializerScalar
+                            ? { staticBoolean: narrowed.staticBoolean }
+                            : {}),
+                        ...(narrowed.dataType.kind === "number" &&
+                        narrowed.staticNumber !== undefined &&
+                        keepsInitializerScalar
+                            ? { staticNumber: narrowed.staticNumber }
                             : {}),
                         ...(staticElementsOwner
                             ? {
@@ -1738,6 +1759,108 @@ export class DeclarationLowerer {
             delete writable(stored).packagedBodySource;
         }
         this.context.bindings.defineVariable(declaration.name, stored);
+    }
+
+    /** The fields of a record local every reached initializer or write provides non-nullable. */
+    private invariantPresentStructFields(
+        declaration: ts.VariableDeclaration,
+        name: ts.Identifier,
+    ): ReadonlySet<string> | undefined {
+        if (!declaration.initializer) return undefined;
+        const symbol = this.context.symbols.valueSymbol(name);
+        if (!symbol) return undefined;
+        const sources: ts.Expression[] = [declaration.initializer];
+        if (this.context.sharedClosures.identifierIsRebound(name)) {
+            let scope: ts.Node = declaration;
+            while (scope.parent && !ts.isFunctionLike(scope)) {
+                scope = scope.parent;
+            }
+            let unknownWrite = false;
+            forEachAnalysisNode(scope, (node) => {
+                if (unknownWrite) return "skip";
+                if (
+                    isAssignmentExpression(node) &&
+                    assignmentTargets(node.left).some(
+                        (target) =>
+                            ts.isIdentifier(target) &&
+                            this.context.symbols.valueSymbol(target) === symbol,
+                    )
+                ) {
+                    if (
+                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                        ts.isIdentifier(this.context.unwrap(node.left))
+                    ) {
+                        sources.push(node.right);
+                    } else {
+                        unknownWrite = true;
+                    }
+                } else if (
+                    isUpdateExpression(node) &&
+                    ts.isIdentifier(this.context.unwrap(node.operand)) &&
+                    this.context.symbols.valueSymbol(
+                        this.context.unwrap(node.operand) as ts.Identifier,
+                    ) === symbol
+                ) {
+                    unknownWrite = true;
+                }
+                return undefined;
+            });
+            if (unknownWrite) return undefined;
+        }
+        const literalOf = (
+            expression: ts.Expression,
+        ): ts.ObjectLiteralExpression | undefined => {
+            const unwrapped = this.context.unwrap(expression);
+            if (ts.isObjectLiteralExpression(unwrapped)) return unwrapped;
+            if (!ts.isCallExpression(unwrapped)) return undefined;
+            const callee =
+                this.context.checker.getResolvedSignature(
+                    unwrapped,
+                )?.declaration;
+            if (!callee || !("body" in callee) || !callee.body)
+                return undefined;
+            if (!ts.isBlock(callee.body)) {
+                const bodyExpr = this.context.unwrap(callee.body);
+                return ts.isObjectLiteralExpression(bodyExpr)
+                    ? bodyExpr
+                    : undefined;
+            }
+            const statements = callee.body.statements;
+            const last = statements.at(-1);
+            if (
+                !last ||
+                !ts.isReturnStatement(last) ||
+                !last.expression ||
+                someAnalysisNode(
+                    callee.body,
+                    (part) => part !== last && ts.isReturnStatement(part),
+                    { functions: "skip" },
+                )
+            )
+                return undefined;
+            const returned = this.context.unwrap(last.expression);
+            return ts.isObjectLiteralExpression(returned)
+                ? returned
+                : undefined;
+        };
+        let common: Set<string> | undefined;
+        for (const source of sources) {
+            const literal = literalOf(source);
+            if (
+                !literal ||
+                literal.properties.some((property) =>
+                    ts.isSpreadAssignment(property),
+                )
+            )
+                return undefined;
+            const present = new Set(
+                presentLiteralKeys(this.context.checker, literal),
+            );
+            common = common
+                ? new Set([...common].filter((key) => present.has(key)))
+                : present;
+        }
+        return common;
     }
 
     /** Preserve initialization-time text only when no reached path replaces it. */
@@ -2097,8 +2220,10 @@ export class DeclarationLowerer {
             this.context.fail(name, "Function bindings require an identifier.");
 
         if (
-            value.kind === "data" &&
-            value.dataType?.kind === "function" &&
+            ((value.kind === "data" && value.dataType?.kind === "function") ||
+                (value.kind === "callback" &&
+                    !value.callbackDeclaration &&
+                    value.nativeCallbackParameterTypes !== undefined)) &&
             value.cpp.length > 0
         ) {
             // A function stored in a plain-data record (for example an
@@ -2109,20 +2234,24 @@ export class DeclarationLowerer {
                 kind: "expression",
                 code: `${forward.storageCpp} = ${value.cpp};`,
             });
+            const sourceFunction: DataType & { kind: "function" } =
+                value.dataType?.kind === "function"
+                    ? value.dataType
+                    : { kind: "function", parameters: [] };
             const {
                 result: _result,
                 awaitedUndefinedCompletion: _awaited,
                 ...contract
-            } = value.dataType;
+            } = sourceFunction;
             this.context.bindings.rebindVariable(name, {
                 kind: "callback",
                 dataType: {
                     ...contract,
                     parameters: [...forward.parameterTypes],
-                    ...(value.dataType.undefinedCompletion
+                    ...(sourceFunction.undefinedCompletion
                         ? { awaitedUndefinedCompletion: true as const }
                         : {}),
-                    ...(isNonThenableDataType(value.dataType.result)
+                    ...(isNonThenableDataType(sourceFunction.result)
                         ? { nonThenableCompletion: true as const }
                         : {}),
                 },
@@ -2710,7 +2839,9 @@ export class DeclarationLowerer {
                 // returned arrays; a span would outlive a temporary projection.
                 type = this.context.dataTypes.ownReturnedArray(type);
                 this.context.reachJsData();
-                const literal = this.context.unwrap(declaration.initializer);
+                const literal = this.context.resolveStaticExpression(
+                    declaration.initializer,
+                );
                 const arraySnapshot =
                     type.kind === "vector" &&
                     type.element.kind === "struct" &&
@@ -2813,15 +2944,13 @@ export class DeclarationLowerer {
                     const properties = plainRecordSnapshot.recordProperties;
                     if (properties) {
                         writable(bound).recordProperties = Object.fromEntries(
-                            Object.entries(properties).filter(
-                                ([, value]) =>
-                                    !value.parameterBinding &&
-                                    (value.staticString !== undefined ||
-                                        value.staticNumber !== undefined ||
-                                        value.staticBoolean !== undefined),
+                            Object.entries(properties).filter(([, value]) =>
+                                keepsStaticMember(value),
                             ),
                         );
-                        writable(bound).recordOwnKeys = Object.keys(properties);
+                        writable(bound).recordOwnKeys =
+                            plainRecordSnapshot.recordOwnKeys ??
+                            Object.keys(properties);
                     }
                 }
                 const resourceElements =
@@ -2986,7 +3115,14 @@ export class DeclarationLowerer {
             ) &&
             (this.inferredArrayIsMutated(name) ||
                 this.context.moduleContainerIsMutated(name));
-        const initializer = this.context.unwrap(declaration.initializer);
+        const unwrappedInitializer = this.context.unwrap(
+            declaration.initializer,
+        );
+        const initializer = this.context.unwrap(
+            objectIdentityCallArgument(unwrappedInitializer, (expression) =>
+                libraryGlobal(this.context.checker, expression),
+            ) ?? unwrappedInitializer,
+        );
         if (
             !annotated &&
             inferredMutableArray &&
@@ -3425,6 +3561,7 @@ export class DeclarationLowerer {
             sharedDataBinding || selfReferentialBinding
                 ? `(*${cppName})`
                 : cppName;
+        let spreadRecordProperties: Record<string, Value> | undefined;
         if (
             spreadTarget &&
             ts.isObjectLiteralExpression(initializer) &&
@@ -3436,11 +3573,12 @@ export class DeclarationLowerer {
                 sharedDataBinding || selfReferentialBinding
                     ? this.context.allocateTemporaryCppName("shared_initial")
                     : cppName;
-            this.context.dataLowerer.emitSpreadStructDeclaration(
-                targetCpp,
-                initializer,
-                spreadTarget,
-            );
+            spreadRecordProperties =
+                this.context.dataLowerer.emitSpreadStructDeclaration(
+                    targetCpp,
+                    initializer,
+                    spreadTarget,
+                );
             if (sharedDataBinding) {
                 this.context.emit({
                     kind: "declaration",
@@ -3543,7 +3681,9 @@ export class DeclarationLowerer {
         const staticRecordProperties: Record<string, Value> = {
             ...(readonlyResourceCall
                 ? {}
-                : (initializerSnapshot?.recordProperties ?? {})),
+                : (spreadRecordProperties ??
+                  initializerSnapshot?.recordProperties ??
+                  {})),
         };
         if (readonlyResourceCall && initializerSnapshot)
             Object.assign(
@@ -3583,12 +3723,38 @@ export class DeclarationLowerer {
             const reference = this.context.dataTypes.isReferenceStruct(
                 annotated.name,
             );
-            for (const field of this.context.dataTypes.structFields(
+            const fields = this.context.dataTypes.structFields(
                 annotated.name,
                 initializer,
                 "accessors",
-            )) {
+            );
+            const invariantFields =
+                ts.isIdentifier(name) &&
+                fields.some(
+                    (field) =>
+                        !field.accessor &&
+                        field.type.kind === "optional" &&
+                        staticRecordProperties[field.sourceName] === undefined,
+                )
+                    ? this.invariantPresentStructFields(declaration, name)
+                    : undefined;
+            for (const field of fields) {
                 const source = staticRecordProperties[field.sourceName];
+                if (
+                    !field.accessor &&
+                    source === undefined &&
+                    field.type.kind === "optional" &&
+                    invariantFields?.has(field.sourceName)
+                ) {
+                    staticRecordProperties[field.sourceName] = {
+                        ...this.context.dataLowerer.leafValue(
+                            `${boundCpp}${reference ? "->" : "."}${field.name}`,
+                            field.type,
+                        ),
+                        optionalFoundCpp: "true",
+                    };
+                    continue;
+                }
                 if (
                     field.accessor ||
                     field.type.kind !== "vector" ||

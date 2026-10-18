@@ -238,6 +238,8 @@ export interface LoweringServices {
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
+    /** A named record's field number, proven unreplaced (compiler.ts `staticProperty`). */
+    staticProperty(access: ts.PropertyAccessExpression): number | undefined;
     compileVec3(
         expression: ts.Expression,
         precision?: "float" | "double",

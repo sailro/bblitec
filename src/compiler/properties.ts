@@ -1095,6 +1095,25 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     {
         owner: "mesh",
+        property: "receiveShadows",
+        value: "boolean",
+        record: ["meshes", "receives_shadows"],
+    },
+    {
+        owner: "mesh",
+        property: "renderOnTop",
+        value: "boolean",
+        record: ["meshes", "render_on_top"],
+    },
+    {
+        owner: "texture",
+        property: "texture",
+        value: "texture",
+        retag: true,
+        alwaysTruthy: true,
+    },
+    {
+        owner: "mesh",
         property: "_topology",
         value: "data",
         dataType: { kind: "optional", inner: { kind: "number" } },

@@ -1192,6 +1192,10 @@ function compileSetShadowCasterMaterial(
     const caster = context.compileValue(argumentAt(call, 1));
     context.expectKind(caster, "material", argumentAt(call, 1));
     context.expectSameEngine(material, caster, call);
+    context.sceneManifest.recordShadowCasterShaderVariant(
+        material.sceneShaderVariant ?? material.shaderVariant,
+        caster.sceneShaderVariant ?? caster.shaderVariant,
+    );
     return {
         kind: "void",
         cpp:
@@ -1281,7 +1285,7 @@ function compileSetShaderUniform(
         context,
         material,
         call,
-        [1, 2, 3, 4],
+        [1, 2, 3, 4, 16],
         name.staticString,
     );
 }

@@ -146,6 +146,8 @@ struct DawnShaderBindings {
     DawnBindGroup scene{};
     DawnBindGroup resources{};
     DawnBindGroup material{};
+    DawnBuffer vertex_uniforms{};
+    DawnBuffer fragment_uniforms{};
     /** The render-target views the resource group was built from, by sampler slot. */
     std::vector<WGPUTextureView> render_views;
     std::optional<std::uint64_t> resource_version;
@@ -282,8 +284,6 @@ struct DawnMeshResources {
     bool owns_geometry_buffers = true;
     DawnSharedShaderGeometry* shared_geometry = nullptr;
     std::uint32_t index_count = 0;
-    WGPUBuffer material_uniforms = nullptr;
-    std::uint64_t material_uniform_size = 0;
 #if BBLITE_PBR_VARIANTS > 0
     // The pin's own per-draw blocks and group-1 bind group, keyed by
     // MATERIAL for the reason `standard_states` is: a render task drawing
@@ -379,8 +379,6 @@ struct DawnMeshResources {
     // Standard-material `.babylon` reflection cube view, non-owning
     // (points into DawnState::reflection_cube_views).
     WGPUTextureView reflection = nullptr;
-    // Alpha-card shader vertex uniforms (center/angle/depth).
-    WGPUBuffer shader_vertex_uniforms = nullptr;
     std::uint64_t attribute_version = 0;
 #if BBLITE_MESH_GEOMETRY_UPDATE
     std::uint64_t index_version = 0;
@@ -1515,12 +1513,6 @@ struct DawnState : DawnDevice {
 #endif
 #endif
 #endif
-        if (mesh.material_uniforms) {
-            wgpuBufferRelease(mesh.material_uniforms);
-        }
-        if (mesh.shader_vertex_uniforms) {
-            wgpuBufferRelease(mesh.shader_vertex_uniforms);
-        }
 #if BBLITE_GPU_DEFORMATION
         if (mesh.deformation_uniforms) {
             wgpuBufferRelease(mesh.deformation_uniforms);
@@ -1981,6 +1973,23 @@ inline WGPUShaderModule load_wgsl_module(DawnState& state, const std::string& ba
 
 WGPUBuffer create_buffer(DawnState& state, WGPUBufferUsage usage, const void* data,
                          std::uint64_t size);
+
+/** A shader stage block's uniform bytes: the vertex block is at least a vec4. */
+inline std::uint64_t shader_vertex_uniform_bytes(std::uint64_t float_size) {
+    return std::max<std::uint64_t>(float_size * 4ull, 16ull);
+}
+
+/** The fragment block is padded to a 16-byte multiple. */
+inline std::uint64_t shader_fragment_uniform_bytes(std::uint64_t float_size) {
+    return (shader_vertex_uniform_bytes(float_size) + 15ull) & ~15ull;
+}
+
+/** Creates a shader pass's own uniform buffer the first time it is needed. */
+inline void ensure_uniform_buffer(DawnState& state, DawnBuffer& buffer, std::uint64_t bytes) {
+    if (!buffer) {
+        buffer = DawnBuffer{create_buffer(state, WGPUBufferUsage_Uniform, nullptr, bytes)};
+    }
+}
 
 /** Mirror Engine storage records into Dawn read-only storage buffers. */
 void sync_shader_storage_buffers(DawnState& state, const Engine& engine);

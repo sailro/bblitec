@@ -387,10 +387,24 @@ export interface StaticFoldContext extends Omit<
     "bindings"
 > {
     readonly bindings: BindingLookup;
-    /** A static record field's number; a fold that leaves it out reads none. */
+    /** A static record field's number; a fold that supplies it decides what it reads. */
     readonly staticProperty?: (
         expression: ts.PropertyAccessExpression,
     ) => number | undefined;
+}
+
+/** The same fold, reading no record field: its answer must not depend on one. */
+export function foldingNoRecordFields(
+    context: PositiveIntegerContext,
+): StaticFoldContext {
+    return {
+        libraryGlobal: (expression) => context.libraryGlobal(expression),
+        resolveStaticExpression: (expression, resolving) =>
+            context.resolveStaticExpression(expression, resolving),
+        bindings: context.bindings,
+        fail: (node, message, reason) => context.fail(node, message, reason),
+        staticProperty: () => undefined,
+    };
 }
 
 export function compilePositiveInteger(

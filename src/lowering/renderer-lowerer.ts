@@ -844,8 +844,16 @@ export class RendererLowerer {
                 externalTextures: program.externalTextures?.length ?? 0,
                 storageBuffers: reflection.storageBuffers,
                 topology: program.topology ?? "triangle-list",
-                instanceColors: program.useThinInstanceColors === true,
-                thinInstances: program.useThinInstances === true,
+                instanceColors:
+                    program.useThinInstanceColors === true ||
+                    reflection.attributes.some(
+                        (attribute) => attribute.name === "instanceColor",
+                    ),
+                thinInstances:
+                    program.useThinInstances === true ||
+                    reflection.attributes.some(
+                        (attribute) => attribute.name === "world0",
+                    ),
                 runtimeInstanceLayoutCheck:
                     program.runtimeInstanceLayoutCheck === true,
                 thinInstanceColorOption: program.thinInstanceColorOption,
@@ -2008,6 +2016,13 @@ void sort_transparent_draws(
             transparent.commands.push_back(command);
         }
     }
+    // Mesh.renderOnTop draws after every other transparent mesh.
+    std::stable_partition(
+        transparent.commands.begin(),
+        transparent.commands.end(),
+        [&engine](const RenderDrawCommand& command) {
+            return !${recordAt("engine.meshes", "command.item.mesh")}.render_on_top;
+        });
 }
 
 ${options.meshProfiles ? meshProfileBeginCpp : ""}\

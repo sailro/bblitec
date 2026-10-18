@@ -1422,6 +1422,7 @@ export class StaticEvaluator {
      */
     public tryResolveNullish(
         expression: ts.BinaryExpression,
+        allowMaterializedOptional = false,
     ): ts.Expression | undefined {
         const left = this.unwrap(expression.left);
         if (ts.isIdentifier(left)) {
@@ -1460,8 +1461,33 @@ export class StaticEvaluator {
             }
             const owner = this.resolveValue(left.expression);
             // Initializer metadata does not settle the current contents of a
-            // materialized field; writes may have happened through a helper.
-            if (owner.kind === "data") return undefined;
+            // materialized field unless whole-program observation proved that
+            // field is never written.
+            if (owner.kind === "data") {
+                if (
+                    owner.recordProperties === undefined &&
+                    owner.recordOwnKeys === undefined
+                ) {
+                    return undefined;
+                }
+                const resolvedField = this.resolveProperty(left);
+                if (resolvedField?.optionalFoundCpp === "false") {
+                    return expression.right;
+                }
+                if (
+                    resolvedField &&
+                    (allowMaterializedOptional ||
+                        resolvedField.dataType?.kind !== "optional") &&
+                    (resolvedField.staticString !== undefined ||
+                        resolvedField.staticNumber !== undefined ||
+                        resolvedField.staticBoolean !== undefined ||
+                        resolvedField.staticElements !== undefined ||
+                        resolvedField.tupleElements !== undefined)
+                ) {
+                    return expression.left;
+                }
+                return undefined;
+            }
             const name = left.name.text;
             const property = owner.recordProperties?.[name];
             if (property) {
@@ -1641,7 +1667,7 @@ export class StaticEvaluator {
             // unresolved so the value path can lower it over the data
             // model. A position that genuinely needs a compile-time
             // number then fails as that position, naming what it needed.
-            const resolved = this.tryResolveNullish(unwrapped);
+            const resolved = this.tryResolveNullish(unwrapped, true);
             if (resolved) {
                 return this.resolveStaticExpression(resolved, resolving);
             }
@@ -1866,6 +1892,44 @@ export class StaticEvaluator {
         return staticNumberValue(this.staticFoldContext(), expression);
     }
 
+    /**
+     * `staticNumberValue`, also reading the numbers a named record's fields
+     * hold. Only the text folds ask: reading a field may compile a getter.
+     */
+    private staticNumberThroughRecords(
+        expression: ts.Expression,
+    ): number | undefined {
+        return staticNumberValue(
+            {
+                ...this.staticFoldContext(),
+                staticProperty: (access) => this.staticPropertyNumber(access),
+            },
+            expression,
+        );
+    }
+
+    /** The number a named record's field holds at generation, when its value is known. */
+    public staticPropertyNumber(
+        access: ts.PropertyAccessExpression,
+    ): number | undefined {
+        // Resolving an owner that is not a plain path would inline, and so
+        // emit, the calls that build it.
+        if (!this.isNamedPath(access.expression)) return undefined;
+        const value = this.resolveProperty(access);
+        return value?.kind === "number" && !value.parameterBinding
+            ? value.staticNumber
+            : undefined;
+    }
+
+    private isNamedPath(expression: ts.Expression): boolean {
+        const unwrapped = this.unwrap(expression);
+        return (
+            ts.isIdentifier(unwrapped) ||
+            (ts.isPropertyAccessExpression(unwrapped) &&
+                this.isNamedPath(unwrapped.expression))
+        );
+    }
+
     private staticFoldContext(): StaticFoldContext {
         return {
             libraryGlobal: this.libraryGlobal,
@@ -1916,7 +1980,7 @@ export class StaticEvaluator {
             }
             return text;
         }
-        const numeric = this.staticNumberValue(unwrapped);
+        const numeric = this.staticNumberThroughRecords(unwrapped);
         if (numeric !== undefined) return String(numeric);
         if (
             ts.isCallExpression(unwrapped) &&
@@ -1975,7 +2039,8 @@ export class StaticEvaluator {
             }
             if (
                 ts.isIdentifier(unwrapped) &&
-                value?.dataType?.kind === "string" &&
+                value &&
+                isStringValue(value) &&
                 !value.parameterBinding
             ) {
                 const symbol = this.resolveSymbol(unwrapped);
@@ -2060,18 +2125,7 @@ export class StaticEvaluator {
                 },
                 expression,
             ) ?? this.resolveStaticExpression(expression);
-        const number = staticNumberValue(
-            {
-                ...this.staticFoldContext(),
-                staticProperty: (access) => {
-                    const value = this.resolveProperty(access);
-                    return value?.kind === "number" && !value.parameterBinding
-                        ? value.staticNumber
-                        : undefined;
-                },
-            },
-            resolved,
-        );
+        const number = this.staticNumberThroughRecords(resolved);
         if (number !== undefined) return String(number);
         if (
             (this.checker.getTypeAtLocation(resolved).flags &

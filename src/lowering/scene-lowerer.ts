@@ -1051,19 +1051,23 @@ void set_mesh_transform_parent(
     if (mesh.value >= engine.meshes.size()) {
         throw std::runtime_error("Invalid mesh child handle.");
     }
-    if (parent.value >= engine.transform_nodes.size()) {
+    if (parent.value != invalid_handle && parent.value >= engine.transform_nodes.size()) {
         throw std::runtime_error("Invalid transform-node parent handle " + std::to_string(parent.value) +
             " for mesh " + std::to_string(mesh.value) + " (" + ${recordAt("engine.meshes", "mesh")}.name + ").");
     }
     MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (
         record.transform_parent.value == parent.value &&
-        record.parent.value >= engine.meshes.size()) {
+        record.parent.value >= engine.meshes.size() &&
+        !record.parent_world) {
         return;
     }
     unregister_from_parents(engine, record, mesh);
     record.parent = MeshHandle{};
     record.transform_parent = parent;
+    if (parent.value == invalid_handle) {
+        record.parent_world.reset();
+    }
     mark_mesh_dirty(engine, mesh);
     if (parent.value < engine.transform_nodes.size()) {
         std::vector<MeshHandle>& new_children =

@@ -33,6 +33,7 @@ import {
     writable,
 } from "./emission-transaction.js";
 import { readScalarOperand } from "./evaluation-order.js";
+import { homeObjectMembers } from "./home-object-methods.js";
 import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -44,6 +45,7 @@ import {
     commonResourceValue,
     isCompileTimeOnlyValue,
     isStringValue,
+    keepsStaticMember,
     optionalPresentCpp,
     presenceFlagCpp,
     readsNativeStorage,
@@ -1213,6 +1215,10 @@ export class BindingScopes {
                         declaration,
                         "source",
                     );
+                const properties = this.recordPropertiesAreCurrent(narrowed)
+                    ? narrowed.recordProperties
+                    : undefined;
+                const ownKeys = narrowed.recordOwnKeys;
                 narrowed = this.pinValueToTemporary(
                     this.context.dataLowerer.leafValue(
                         this.context.dataLowerer.compileKnownValueForSink(
@@ -1225,6 +1231,15 @@ export class BindingScopes {
                     "parameter_object",
                     identifier,
                 );
+                if (properties) {
+                    writable(narrowed).recordProperties = Object.fromEntries(
+                        Object.entries(properties).filter(([, propertyValue]) =>
+                            keepsStaticMember(propertyValue),
+                        ),
+                    );
+                    writable(narrowed).recordOwnKeys =
+                        ownKeys ?? Object.keys(properties);
+                }
             }
         }
         if (
@@ -1333,32 +1348,38 @@ export class BindingScopes {
                             type.elements.every(scalarStorage)))
                 );
             };
+            const literalArgument = argument && unwrapExpression(argument);
+            const unreferencedLiteralArgument =
+                literalArgument !== undefined &&
+                ts.isObjectLiteralExpression(literalArgument) &&
+                homeObjectMembers(literalArgument).size === 0;
             const independentFields =
                 rawOwner(value) &&
                 Object.keys(value.recordGetters ?? {}).length === 0 &&
                 Object.keys(value.recordSetters ?? {}).length === 0 &&
                 Object.keys(value.recordMethods ?? {}).length === 0 &&
-                Object.values(value.recordProperties ?? {}).every(
-                    (member) =>
-                        plainScalar(member) ||
-                        scalarSequence(member) ||
-                        (member.kind === "tuple" &&
-                            rawOwner(member) &&
-                            member.tupleElements !== undefined &&
-                            member.tupleElements.every(plainScalar)) ||
-                        (member.kind === "record" &&
-                            rawOwner(member) &&
-                            member.recordProperties !== undefined &&
-                            Object.keys(member.recordGetters ?? {}).length ===
-                                0 &&
-                            Object.keys(member.recordSetters ?? {}).length ===
-                                0 &&
-                            Object.keys(member.recordMethods ?? {}).length ===
-                                0 &&
-                            Object.values(member.recordProperties ?? {}).every(
-                                plainScalar,
-                            )),
-                );
+                (unreferencedLiteralArgument ||
+                    Object.values(value.recordProperties ?? {}).every(
+                        (member) =>
+                            plainScalar(member) ||
+                            scalarSequence(member) ||
+                            (member.kind === "tuple" &&
+                                rawOwner(member) &&
+                                member.tupleElements !== undefined &&
+                                member.tupleElements.every(plainScalar)) ||
+                            (member.kind === "record" &&
+                                rawOwner(member) &&
+                                member.recordProperties !== undefined &&
+                                Object.keys(member.recordGetters ?? {})
+                                    .length === 0 &&
+                                Object.keys(member.recordSetters ?? {})
+                                    .length === 0 &&
+                                Object.keys(member.recordMethods ?? {})
+                                    .length === 0 &&
+                                Object.values(
+                                    member.recordProperties ?? {},
+                                ).every(plainScalar)),
+                    ));
             const unchangedFields = new Set(
                 Object.entries(value.recordProperties ?? {})
                     .filter(

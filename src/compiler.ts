@@ -261,6 +261,7 @@ import {
     parameterIsReadOnly,
 } from "./compiler/parameter-effects.js";
 import { recordComponents } from "./compiler/record-components.js";
+import { recordFieldIsWritten } from "./compiler/record-observations.js";
 import { visitMutableArgumentReferences } from "./compiler/parameter-projection-effects.js";
 import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
@@ -3783,6 +3784,40 @@ class Compiler implements LoweringServices {
         return this.symbols.libraryGlobal(expression);
     }
 
+    /**
+     * The number a named record's field holds, when its binding still holds
+     * the record it was declared with and no write in the program (through
+     * this type or any view of it) can have replaced the field.
+     */
+    public staticProperty(
+        access: ts.PropertyAccessExpression,
+    ): number | undefined {
+        // Resolving anything but a name may inline, and so emit, its calls.
+        if (!ts.isIdentifier(access.expression)) return undefined;
+        const target = this.resolveStaticExpression(access.expression);
+        if (!ts.isIdentifier(target)) return undefined;
+        const owner = this.bindings.lookupOptional(target);
+        // Another closure may replace a shared cell's whole record.
+        if (
+            !owner ||
+            owner.sharedStorageCpp !== undefined ||
+            !this.bindings.recordPropertiesAreCurrent(owner)
+        )
+            return undefined;
+        const property = owner.recordProperties?.[access.name.text];
+        if (
+            property?.kind !== "number" ||
+            property.parameterBinding ||
+            recordFieldIsWritten(
+                this,
+                this.checker.getTypeAtLocation(access.expression),
+                access.name.text,
+            )
+        )
+            return undefined;
+        return property.staticNumber;
+    }
+
     /** The value symbol an expression names once unwrapped, or undefined. */
     public unwrappedValueSymbol(
         expression: ts.Expression,
@@ -3979,10 +4014,17 @@ class Compiler implements LoweringServices {
                     ts.setTextRange(access, node);
                     writable(access).parent = node.parent;
                     writable(access.name).parent = access;
-                    return ts.factory.createPropertyAssignment(
-                        ts.factory.createStringLiteral(key),
+                    const keyLiteral = ts.factory.createStringLiteral(key);
+                    ts.setOriginalNode(keyLiteral, node);
+                    ts.setTextRange(keyLiteral, node);
+                    const assignment = ts.factory.createPropertyAssignment(
+                        keyLiteral,
                         access,
                     );
+                    ts.setOriginalNode(assignment, node);
+                    ts.setTextRange(assignment, node);
+                    writable(keyLiteral).parent = assignment;
+                    return assignment;
                 }),
             );
             ts.setOriginalNode(object, node);
@@ -5383,7 +5425,15 @@ class Compiler implements LoweringServices {
 
     /** Required descriptors may read closed helpers or unwritten module constants. */
     public resolveStaticLiteral(expression: ts.Expression): ts.Expression {
-        const resolved = this.evaluator.resolveStaticLiteral(expression);
+        const resolved =
+            selectedStaticExpression(
+                {
+                    conditions: this.conditions,
+                    resolveStaticExpression: (node) =>
+                        this.evaluator.resolveStaticLiteral(node),
+                },
+                expression,
+            ) ?? this.evaluator.resolveStaticLiteral(expression);
         let value: unknown;
         if (
             ts.isIdentifier(resolved) ||

@@ -659,7 +659,8 @@ function parameterProjection(
                         ts.isGetAccessorDeclaration(item) ||
                         ts.isSetAccessorDeclaration(item),
                 ) ||
-                (ts.isCallExpression(access.parent) &&
+                (!independentFields &&
+                    ts.isCallExpression(access.parent) &&
                     access.parent.expression === access)
             )
                 return relevant(values).length > 0;

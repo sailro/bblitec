@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { declaredSymbol } from "./symbols.js";
-import { unwrapExpression, wrappedParent } from "./syntax.js";
+import { propertyNameText, unwrapExpression, wrappedParent } from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
@@ -169,6 +169,35 @@ export function nullability(type: ts.Type): Nullability {
         undefined: (flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
         void: (flags & ts.TypeFlags.Void) !== 0,
     };
+}
+
+/**
+ * The literal's named keys whose value types admit neither `null` nor
+ * `undefined`: each is present on the object the literal builds.
+ */
+export function presentLiteralKeys(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+): string[] {
+    const keys: string[] = [];
+    for (const property of literal.properties) {
+        if (
+            !ts.isPropertyAssignment(property) &&
+            !ts.isShorthandPropertyAssignment(property)
+        )
+            continue;
+        const key = propertyNameText(property.name);
+        if (key === undefined) continue;
+        const absent = nullability(
+            checker.getTypeAtLocation(
+                ts.isPropertyAssignment(property)
+                    ? property.initializer
+                    : property.name,
+            ),
+        );
+        if (!absent.null && !absent.undefined) keys.push(key);
+    }
+    return keys;
 }
 
 /**
